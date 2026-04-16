@@ -18,17 +18,20 @@
 
 use std::ffi::{c_void, CString};
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use hew_runtime::actor::{hew_actor_send, hew_actor_spawn};
 use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::internal::types::HewActorState;
 use hew_runtime::link::hew_actor_link;
-use hew_runtime::monitor::hew_actor_monitor;
+use hew_runtime::monitor::{hew_actor_demonitor, hew_actor_monitor};
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_child_count, hew_supervisor_get_child,
     hew_supervisor_get_child_circuit_state, hew_supervisor_new, hew_supervisor_set_circuit_breaker,
     hew_supervisor_start, hew_supervisor_stop, HewChildSpec, HEW_CIRCUIT_BREAKER_CLOSED,
+    SYS_MSG_DOWN,
 };
 
 static SCHED_INIT: std::sync::Once = std::sync::Once::new();
@@ -59,6 +62,131 @@ unsafe extern "C" fn counting_dispatch(
     _data_size: usize,
 ) {
     DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+struct DownMessageView {
+    monitored_actor_id: u64,
+    ref_id: u64,
+    reason: i32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MonitorDispatchState {
+    total_dispatches: usize,
+    down_messages: Vec<DownMessageView>,
+}
+
+struct MonitorDispatchSignal {
+    state: Mutex<MonitorDispatchState>,
+    cond: Condvar,
+}
+
+impl MonitorDispatchSignal {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(MonitorDispatchState {
+                total_dispatches: 0,
+                down_messages: Vec::new(),
+            }),
+            cond: Condvar::new(),
+        }
+    }
+
+    fn reset(&self) {
+        *self.state.lock().unwrap() = MonitorDispatchState::default();
+    }
+
+    fn record_dispatch(&self, msg_type: i32, data: *mut c_void, data_size: usize) {
+        let mut state = self.state.lock().unwrap();
+        state.total_dispatches += 1;
+        if msg_type == SYS_MSG_DOWN
+            && !data.is_null()
+            && data_size == std::mem::size_of::<DownMessageView>()
+        {
+            let down = unsafe { (data.cast::<DownMessageView>().cast_const()).read_unaligned() };
+            state.down_messages.push(down);
+        }
+        self.cond.notify_all();
+    }
+
+    fn snapshot(&self) -> MonitorDispatchState {
+        self.state.lock().unwrap().clone()
+    }
+
+    fn wait_for_total_dispatches(&self, expected: usize, timeout: Duration) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let deadline = Instant::now() + timeout;
+        while state.total_dispatches < expected {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (guard, result) = self.cond.wait_timeout(state, remaining).unwrap();
+            state = guard;
+            if result.timed_out() && state.total_dispatches < expected {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn wait_for_down_count(
+        &self,
+        expected: usize,
+        timeout: Duration,
+    ) -> Option<Vec<DownMessageView>> {
+        let mut state = self.state.lock().unwrap();
+        let deadline = Instant::now() + timeout;
+        while state.down_messages.len() < expected {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let (guard, result) = self.cond.wait_timeout(state, remaining).unwrap();
+            state = guard;
+            if result.timed_out() && state.down_messages.len() < expected {
+                return None;
+            }
+        }
+        Some(state.down_messages.clone())
+    }
+}
+
+static MONITOR_DISPATCH_SIGNAL: MonitorDispatchSignal = MonitorDispatchSignal::new();
+
+unsafe extern "C" fn monitor_dispatch(
+    _state: *mut c_void,
+    msg_type: i32,
+    data: *mut c_void,
+    data_size: usize,
+) {
+    MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
+}
+
+unsafe extern "C" fn noop_dispatch(
+    _state: *mut c_void,
+    _msg_type: i32,
+    _data: *mut c_void,
+    _data_size: usize,
+) {
+}
+
+fn wait_for_actor_state(
+    actor: *mut hew_runtime::actor::HewActor,
+    expected: HewActorState,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let state = unsafe { &*actor }.actor_state.load(Ordering::Acquire);
+        if state == expected as i32 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    unsafe { &*actor }.actor_state.load(Ordering::Acquire) == expected as i32
 }
 
 fn cstr(s: &str) -> CString {
@@ -331,11 +459,11 @@ fn monitor_detects_crash() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_scheduler();
     hew_deterministic_reset();
-    DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    MONITOR_DISPATCH_SIGNAL.reset();
 
     unsafe {
-        let watcher = hew_actor_spawn(std::ptr::null_mut(), 0, Some(counting_dispatch));
-        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(counting_dispatch));
+        let watcher = hew_actor_spawn(std::ptr::null_mut(), 0, Some(monitor_dispatch));
+        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
         assert!(!watcher.is_null());
         assert!(!target.is_null());
 
@@ -348,32 +476,70 @@ fn monitor_detects_crash() {
         hew_fault_inject_crash(target_id, 1);
         hew_actor_send(target, 1, std::ptr::null_mut(), 0);
 
-        // Wait for the target to enter Crashed state (poll to avoid CI flakiness)
-        let mut state = 0i32;
-        for _ in 0..50 {
-            state = (*target).actor_state.load(Ordering::Acquire);
-            if state == HewActorState::Crashed as i32 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        assert_eq!(
-            state,
-            HewActorState::Crashed as i32,
-            "target should be in Crashed state"
+        assert!(
+            wait_for_actor_state(target, HewActorState::Crashed, Duration::from_secs(5)),
+            "target should enter Crashed state"
         );
 
-        // Watcher should have received a DOWN notification (as a system message
-        // dispatched through its dispatch function). We can verify by checking
-        // that the watcher received messages (the monitor DOWN is sent as a
-        // system message to the watcher's mailbox).
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let dispatch_count = DISPATCH_COUNT.load(Ordering::SeqCst);
-        // At least 2 dispatches: the initial send to both actors, plus
-        // potential DOWN notification to watcher
+        let down_messages = MONITOR_DISPATCH_SIGNAL
+            .wait_for_down_count(1, Duration::from_secs(5))
+            .expect("watcher should receive a DOWN notification");
+        let down = down_messages
+            .last()
+            .copied()
+            .expect("DOWN notification should be recorded");
+        assert_eq!(
+            down,
+            DownMessageView {
+                monitored_actor_id: target_id,
+                ref_id,
+                reason: HewActorState::Crashed as i32,
+            },
+            "DOWN payload should identify the crashed actor and monitor ref"
+        );
+
+        hew_deterministic_reset();
+    }
+}
+
+/// Demonitoring before a crash suppresses the watcher DOWN notification.
+#[test]
+fn demonitor_before_crash_suppresses_down() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    MONITOR_DISPATCH_SIGNAL.reset();
+
+    unsafe {
+        let watcher = hew_actor_spawn(std::ptr::null_mut(), 0, Some(monitor_dispatch));
+        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+        assert!(!watcher.is_null());
+        assert!(!target.is_null());
+
+        let ref_id = hew_actor_monitor(watcher, target);
+        assert_ne!(ref_id, 0, "monitor ref_id should be non-zero");
+        hew_actor_demonitor(ref_id);
+
+        let target_id = (*target).id;
+        hew_fault_inject_crash(target_id, 1);
+        hew_actor_send(target, 1, std::ptr::null_mut(), 0);
+
         assert!(
-            dispatch_count >= 1,
-            "watcher should have received dispatches"
+            wait_for_actor_state(target, HewActorState::Crashed, Duration::from_secs(5)),
+            "target should enter Crashed state after injected fault"
+        );
+
+        hew_actor_send(watcher, 77, std::ptr::null_mut(), 0);
+        assert!(
+            MONITOR_DISPATCH_SIGNAL.wait_for_total_dispatches(1, Duration::from_secs(5)),
+            "watcher should process the probe message"
+        );
+        let dispatch_state = MONITOR_DISPATCH_SIGNAL.snapshot();
+        assert!(
+            dispatch_state.down_messages.is_empty(),
+            "demonitored watcher must not receive DOWN for actor {target_id}"
         );
 
         hew_deterministic_reset();

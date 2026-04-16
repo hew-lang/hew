@@ -59,6 +59,7 @@ struct Formatter<'a> {
     comments: Vec<Comment>,
     next_comment: usize,
     prev_source_pos: usize,
+    scope_binding: Option<String>,
 }
 
 impl<'a> Formatter<'a> {
@@ -70,6 +71,7 @@ impl<'a> Formatter<'a> {
             comments,
             next_comment: 0,
             prev_source_pos: 0,
+            scope_binding: None,
         }
     }
 
@@ -1732,7 +1734,10 @@ impl<'a> Formatter<'a> {
                     self.write(name);
                     self.write("| ");
                 }
+                let prev_binding = self.scope_binding.clone();
+                self.scope_binding.clone_from(binding);
                 self.format_block(body, self.source.len());
+                self.scope_binding = prev_binding;
             }
             Expr::InterpolatedString(parts) => {
                 self.write("f\"");
@@ -1882,14 +1887,31 @@ impl<'a> Formatter<'a> {
                 self.format_expr(&inner.0);
             }
             Expr::ScopeLaunch(block) => {
-                self.write("s.launch ");
+                let name = self
+                    .scope_binding
+                    .clone()
+                    .unwrap_or_else(|| "s".to_string());
+                self.write(&name);
+                self.write(".launch ");
                 self.format_block(block, self.source.len());
             }
             Expr::ScopeSpawn(block) => {
-                self.write("s.spawn ");
+                let name = self
+                    .scope_binding
+                    .clone()
+                    .unwrap_or_else(|| "s".to_string());
+                self.write(&name);
+                self.write(".spawn ");
                 self.format_block(block, self.source.len());
             }
-            Expr::ScopeCancel => self.write("s.cancel()"),
+            Expr::ScopeCancel => {
+                let name = self
+                    .scope_binding
+                    .clone()
+                    .unwrap_or_else(|| "s".to_string());
+                self.write(&name);
+                self.write(".cancel()");
+            }
 
             Expr::RegexLiteral(pattern) => {
                 self.write("re\"");

@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+#[cfg(test)]
+use std::sync::{Arc, Barrier, Mutex};
 use std::sync::{LazyLock, RwLock};
 
 use crate::actor::HewActor;
@@ -144,61 +146,104 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
 
         let linked_actor = linked_actor_addr as *mut HewActor;
 
-        // Guard: skip actors that have already been freed.
-        if !crate::actor::is_actor_live(linked_actor) {
-            continue;
-        }
+        crate::actor::with_live_actor(linked_actor, |linked_actor_ref| {
+            let linked_id = linked_actor_ref.id;
 
-        // SAFETY: linked_actor is live (checked above).
-        let linked_actor_ref = unsafe { &*linked_actor };
-        let linked_id = linked_actor_ref.id;
+            // Remove the reverse link: linked_actor -/-> crashing_actor
+            remove_link_by_target(linked_id, actor_id);
 
-        // Remove the reverse link: linked_actor -/-> crashing_actor
-        remove_link_by_target(linked_id, actor_id);
+            // Send EXIT system message with reason code.
+            let mailbox = linked_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
+            if !mailbox.is_null() {
+                // Prepare EXIT message data: { crashed_actor_id: u64, reason: i32 }
+                let exit_data = ExitMessage {
+                    crashed_actor_id: actor_id,
+                    reason,
+                };
 
-        // Send EXIT system message with reason code.
-        let mailbox = linked_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
-        if !mailbox.is_null() {
-            // Prepare EXIT message data: { crashed_actor_id: u64, reason: i32 }
-            let exit_data = ExitMessage {
-                crashed_actor_id: actor_id,
-                reason,
-            };
+                let data_ptr = (&raw const exit_data).cast::<c_void>();
+                let data_size = std::mem::size_of::<ExitMessage>();
 
-            let data_ptr = (&raw const exit_data).cast::<c_void>();
-            let data_size = std::mem::size_of::<ExitMessage>();
+                // SAFETY: LIVE_ACTORS keeps the linked actor and mailbox live.
+                unsafe {
+                    mailbox::hew_mailbox_send_sys(
+                        mailbox,
+                        SYS_MSG_EXIT,
+                        data_ptr.cast_mut(),
+                        data_size,
+                    );
+                }
 
-            // SAFETY: mailbox is valid for the actor's lifetime, exit_data is valid.
-            unsafe {
-                mailbox::hew_mailbox_send_sys(
-                    mailbox,
-                    SYS_MSG_EXIT,
-                    data_ptr.cast_mut(),
-                    data_size,
-                );
+                // Wake the linked actor so it processes the EXIT message.
+                // Without this, an idle actor would never see the system message.
+                if linked_actor_ref
+                    .actor_state
+                    .compare_exchange(
+                        HewActorState::Idle as i32,
+                        HewActorState::Runnable as i32,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    linked_actor_ref
+                        .idle_count
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    linked_actor_ref
+                        .hibernating
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    crate::scheduler::sched_enqueue(linked_actor);
+                }
             }
 
-            // Wake the linked actor so it processes the EXIT message.
-            // Without this, an idle actor would never see the system message.
-            if linked_actor_ref
-                .actor_state
-                .compare_exchange(
-                    HewActorState::Idle as i32,
-                    HewActorState::Runnable as i32,
-                    std::sync::atomic::Ordering::AcqRel,
-                    std::sync::atomic::Ordering::Acquire,
-                )
-                .is_ok()
-            {
-                linked_actor_ref
-                    .idle_count
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-                linked_actor_ref
-                    .hibernating
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-                crate::scheduler::sched_enqueue(linked_actor);
-            }
-        }
+            #[cfg(test)]
+            run_propagate_exit_hook();
+        });
+    }
+}
+
+#[cfg(test)]
+type PropagateExitHook = Option<(Arc<Barrier>, Arc<Barrier>)>;
+
+#[cfg(test)]
+static PROPAGATE_EXIT_HOOK: LazyLock<Mutex<PropagateExitHook>> = LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+fn run_propagate_exit_hook() {
+    let hook = {
+        let guard = PROPAGATE_EXIT_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.clone()
+    };
+
+    if let Some((entered, release)) = hook {
+        entered.wait();
+        release.wait();
+    }
+}
+
+#[cfg(test)]
+struct PropagateExitHookGuard;
+
+#[cfg(test)]
+impl PropagateExitHookGuard {
+    fn install(entered: Arc<Barrier>, release: Arc<Barrier>) -> Self {
+        let mut guard = PROPAGATE_EXIT_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = Some((entered, release));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for PropagateExitHookGuard {
+    fn drop(&mut self) {
+        let mut guard = PROPAGATE_EXIT_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = None;
     }
 }
 
@@ -289,6 +334,15 @@ pub(crate) fn has_links_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> b
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64};
+    use std::time::Duration;
+
+    unsafe extern "C" fn noop_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+    }
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
@@ -472,5 +526,76 @@ mod tests {
         let ptr = (&raw const actor).cast_mut();
         remove_all_links_for_actor(30_300, ptr);
         assert!(!has_links_for_actor(30_300, ptr));
+    }
+
+    #[test]
+    fn propagate_exit_keeps_actor_live_through_sys_send() {
+        let _guard = crate::runtime_test_guard();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let _hook = PropagateExitHookGuard::install(Arc::clone(&entered), Arc::clone(&release));
+
+        // SAFETY: spawned actors are owned by this test and freed before return.
+        unsafe {
+            let linked_actor =
+                crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+            let target =
+                crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!linked_actor.is_null());
+            assert!(!target.is_null());
+
+            (*linked_actor).actor_state.store(
+                HewActorState::Runnable as i32,
+                std::sync::atomic::Ordering::Release,
+            );
+
+            hew_actor_link(linked_actor, target);
+            let target_id = (*target).id;
+
+            let propagate = std::thread::spawn(move || propagate_exit_to_links(target_id, 91));
+            entered.wait();
+
+            (*linked_actor).actor_state.store(
+                HewActorState::Idle as i32,
+                std::sync::atomic::Ordering::Release,
+            );
+
+            let free_started = Arc::new(AtomicBool::new(false));
+            let free_done = Arc::new(AtomicBool::new(false));
+            let linked_actor_addr = linked_actor as usize;
+            let free_started_thread = Arc::clone(&free_started);
+            let free_done_thread = Arc::clone(&free_done);
+            let free_handle = std::thread::spawn(move || {
+                free_started_thread.store(true, std::sync::atomic::Ordering::Release);
+                let rc = crate::actor::hew_actor_free(linked_actor_addr as *mut HewActor);
+                assert_eq!(rc, 0);
+                free_done_thread.store(true, std::sync::atomic::Ordering::Release);
+            });
+
+            while !free_started.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+
+            let mailbox = (*linked_actor).mailbox.cast::<mailbox::HewMailbox>();
+            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, SYS_MSG_EXIT);
+            let payload = &*((*node).data.cast::<ExitMessage>());
+            assert_eq!(payload.crashed_actor_id, target_id);
+            assert_eq!(payload.reason, 91);
+            mailbox::hew_msg_node_free(node);
+
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(
+                !free_done.load(std::sync::atomic::Ordering::Acquire),
+                "hew_actor_free must wait until propagate_exit_to_links releases LIVE_ACTORS"
+            );
+
+            release.wait();
+            propagate.join().unwrap();
+            free_handle.join().unwrap();
+
+            assert_eq!(crate::actor::hew_actor_free(target), 0);
+        }
     }
 }

@@ -87,6 +87,24 @@ impl DispatchLog {
     }
 }
 
+fn wait_for_actor_state(
+    actor: *mut hew_runtime::actor::HewActor,
+    expected: HewActorState,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        if state == expected as i32 {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 unsafe extern "C" fn noop_dispatch(
     _state: *mut c_void,
     _msg_type: i32,
@@ -503,8 +521,10 @@ fn ask_stopped_actor_returns_null() {
         // Stop the actor (closes mailbox + enqueues sys message).
         hew_actor_stop(actor);
 
-        // Brief sleep to let the stop propagate through the scheduler.
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            wait_for_actor_state(actor, HewActorState::Stopped, Duration::from_secs(5)),
+            "actor should reach Stopped before ask"
+        );
 
         // Ask should fail immediately (mailbox is closed) and return null.
         let val: i32 = 7;

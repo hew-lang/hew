@@ -4925,6 +4925,88 @@ fn test_trait_object_type_args_substitution() {
 }
 
 #[test]
+fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
+    let source = r#"
+        trait Transform {
+            fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+        }
+
+        trait Label {
+            fn tag<V>(item: Self, prefix: V) -> string;
+        }
+
+        type Holder { value: int }
+
+        impl Transform for Holder {
+            fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+                f(item.value)
+            }
+        }
+
+        impl Label for Holder {
+            fn tag<V>(item: Holder, prefix: V) -> string {
+                "tagged"
+            }
+        }
+
+        fn is_odd(x: int) -> bool { x % 2 != 0 }
+
+        fn run<T: Transform + Label>(item: T) {
+            let odd = item.apply(is_odd);
+            let tagged_num = item.tag(42);
+            let tagged_str = item.tag("lbl");
+            println(odd);
+            println(tagged_num);
+            println(tagged_str);
+        }
+    "#;
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "type check errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.call_type_args.len(),
+        3,
+        "expected one entry per compound-bound generic method call"
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::Bool]),
+        "expected one Transform call to infer U=bool, got {:?}",
+        output.call_type_args
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::I64]),
+        "expected one Label call to infer V=int, got {:?}",
+        output.call_type_args
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![crate::ty::Ty::String]),
+        "expected one Label call to infer V=string, got {:?}",
+        output.call_type_args
+    );
+}
+
+#[test]
 fn test_wire_since_without_version_warns() {
     use hew_parser::ast::{WireFieldMeta, WireMetadata};
     let wire = WireMetadata {
@@ -7115,6 +7197,112 @@ fn bound_diagnostic_e1_associated_type_requires_explicit_impl_hint() {
             .any(|s| s.contains("explicit") && s.contains("impl")),
         "suggestion should mention explicit impl for E1 (associated type) guard; got: {:?}",
         err.suggestions
+    );
+}
+
+#[test]
+fn trait_method_where_clause_bound_enforced_negative() {
+    let source = r#"
+        trait Printable {
+            fn print(val: Self) -> string;
+        }
+
+        trait Formatter {
+            fn apply<U>(item: Self, value: U) -> string where U: Printable;
+        }
+
+        type Printer {}
+        type Page {}
+        type Rock {}
+
+        impl Printable for Page {
+            fn print(val: Page) -> string { "page" }
+        }
+
+        impl Formatter for Printer {
+            fn apply<U>(item: Printer, value: U) -> string where U: Printable {
+                "formatted"
+            }
+        }
+
+        fn run<T: Formatter>(item: T) {
+            let _ = item.apply(Rock {});
+        }
+    "#;
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let err = output
+        .errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied))
+        .expect("expected BoundsNotSatisfied error");
+
+    assert!(
+        err.message.contains("Printable") && err.message.contains('U'),
+        "expected bound error to mention the method-level bound, got {err:?}"
+    );
+}
+
+#[test]
+fn trait_method_where_clause_bound_enforced_positive() {
+    let source = r#"
+        trait Printable {
+            fn print(val: Self) -> string;
+        }
+
+        trait Formatter {
+            fn apply<U>(item: Self, value: U) -> string where U: Printable;
+        }
+
+        type Printer {}
+        type Page {}
+
+        impl Printable for Page {
+            fn print(val: Page) -> string { "page" }
+        }
+
+        impl Formatter for Printer {
+            fn apply<U>(item: Printer, value: U) -> string where U: Printable {
+                "formatted"
+            }
+        }
+
+        fn run<T: Formatter>(item: T) {
+            let ok = item.apply(Page {});
+            println(ok);
+        }
+    "#;
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "expected method-level where-clause bound to be satisfied, got {:?}",
+        output.errors
+    );
+    assert!(
+        output.call_type_args.values().any(|args| args
+            == &vec![crate::ty::Ty::Named {
+                name: "Page".to_string(),
+                args: vec![]
+            }]),
+        "expected method-level bound call to infer U=Page, got {:?}",
+        output.call_type_args
     );
 }
 

@@ -1,0 +1,36 @@
+// Test: compound trait bounds with per-method generic params on both traits.
+trait Transform {
+    fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+}
+
+trait Label {
+    fn tag<V>(item: Self, prefix: V) -> string;
+}
+
+type Holder {
+    value: int,
+}
+
+impl Transform for Holder {
+    fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+        return f(item.value);
+    }
+}
+
+impl Label for Holder {
+    fn tag<V>(item: Holder, prefix: V) -> string {
+        return "tagged";
+    }
+}
+
+fn is_odd(x: int) -> bool { x % 2 != 0 }
+
+fn process<T: Transform + Label>(item: T) {
+    println(item.apply(is_odd));
+    println(item.tag(42));
+    println(item.tag("lbl"));
+}
+
+fn main() {
+    process<Holder>(Holder { value: 21 });
+}

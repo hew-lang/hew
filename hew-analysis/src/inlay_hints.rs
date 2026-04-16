@@ -3,11 +3,14 @@
 //! Produces inlay hints (type annotations for unannotated `let`/`var` bindings
 //! and lambda return types) using byte offsets rather than LSP positions.
 
-use hew_parser::ast::{Block, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem};
+use hew_parser::ast::{
+    Block, CallArg, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
+};
 use hew_parser::ParseResult;
-use hew_types::check::SpanKey;
+use hew_types::check::{FnSig, SpanKey};
 use hew_types::TypeCheckOutput;
 
+use crate::method_lookup::{collect_method_sigs_for_receiver, find_receiver_type};
 use crate::{InlayHint, InlayHintKind};
 
 /// Build inlay hints for the entire document.
@@ -318,13 +321,23 @@ fn collect_inlay_hints_from_expr(
         }
         Expr::Call { function, args, .. } => {
             collect_inlay_hints_from_expr(source, &function.0, tc, hints);
+            if let Some(sig) = find_call_signature(source, &function.0, &function.1, tc) {
+                push_parameter_hints(source, args, &sig.param_names, hints);
+            }
             for arg in args {
                 let expr = arg.expr();
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             }
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } => {
             collect_inlay_hints_from_expr(source, &receiver.0, tc, hints);
+            if let Some(sig) = find_method_call_signature(tc, &receiver.1, method) {
+                push_parameter_hints(source, args, &sig.param_names, hints);
+            }
             for arg in args {
                 let expr = arg.expr();
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
@@ -414,6 +427,89 @@ fn collect_inlay_hints_from_expr(
     }
 }
 
+fn find_call_signature(
+    source: &str,
+    function: &Expr,
+    function_span: &Span,
+    tc: &TypeCheckOutput,
+) -> Option<FnSig> {
+    let callee = source.get(function_span.start..function_span.end)?.trim();
+    if let Some(sig) = tc.fn_sigs.get(callee) {
+        return Some(sig.clone());
+    }
+    if let Some(sig) = find_fallback_fn_sig(callee, tc) {
+        return Some(sig);
+    }
+    if let Expr::Identifier(name) = function {
+        return tc.fn_sigs.get(name.as_str()).cloned();
+    }
+    None
+}
+
+fn find_method_call_signature(
+    tc: &TypeCheckOutput,
+    receiver_span: &Span,
+    method: &str,
+) -> Option<FnSig> {
+    let receiver_ty = tc
+        .expr_types
+        .get(&SpanKey {
+            start: receiver_span.start,
+            end: receiver_span.end,
+        })
+        .or_else(|| find_receiver_type(tc, receiver_span.end))?;
+    collect_method_sigs_for_receiver(tc, receiver_ty)
+        .into_iter()
+        .find_map(|(candidate, sig)| (candidate == method).then_some(sig))
+}
+
+fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
+    let last = name
+        .rsplit(['.', ':'])
+        .find(|segment| !segment.is_empty())?;
+    if last == name {
+        return None;
+    }
+    if let Some(sig) = tc.fn_sigs.get(last) {
+        return Some(sig.clone());
+    }
+    for (sig_name, sig) in &tc.fn_sigs {
+        if sig_name.ends_with(&format!("::{last}")) {
+            return Some(sig.clone());
+        }
+    }
+    None
+}
+
+fn push_parameter_hints(
+    source: &str,
+    args: &[CallArg],
+    param_names: &[String],
+    hints: &mut Vec<InlayHint>,
+) {
+    if args.len() <= 1 {
+        return;
+    }
+    for (arg, param_name) in args.iter().zip(param_names) {
+        if arg.name().is_some() || param_name.starts_with('_') {
+            continue;
+        }
+        let expr = arg.expr();
+        let Some(arg_text) = source.get(expr.1.start..expr.1.end) else {
+            continue;
+        };
+        if arg_text.trim_start().starts_with(param_name) {
+            continue;
+        }
+        hints.push(InlayHint {
+            offset: expr.1.start,
+            label: format!("{param_name}:"),
+            kind: InlayHintKind::Parameter,
+            padding_left: true,
+        });
+    }
+}
+
 /// Find the end offset of the variable name in a `var name = ...` statement.
 fn find_var_name_end(source: &str, value_span: &Span, name: &str) -> usize {
     let before_eq = &source[..value_span.start];
@@ -476,6 +572,71 @@ mod tests {
             .filter(|hint| hint.kind == InlayHintKind::Type && hint.label.starts_with("-> "))
             .map(|hint| hint.label.as_str())
             .collect()
+    }
+
+    fn parameter_hint_labels(hints: &[InlayHint]) -> Vec<&str> {
+        hints
+            .iter()
+            .filter(|hint| hint.kind == InlayHintKind::Parameter)
+            .map(|hint| hint.label.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn multi_arg_function_call_gets_parameter_hints() {
+        let source = r"
+fn add(left: int, right: int) -> int { left + right }
+fn main() {
+    add(1, 2);
+}
+";
+        let pr = parse(source);
+        let tc = type_check(&pr);
+        let hints = build_inlay_hints(source, &pr, &tc);
+
+        assert_eq!(parameter_hint_labels(&hints), vec!["left:", "right:"]);
+    }
+
+    #[test]
+    fn method_call_gets_parameter_hints_without_receiver_name() {
+        let source = r"
+type Point { x: int, y: int }
+trait PointMethods {
+    fn shift(pt: Point, dx: int, dy: int) -> Point;
+}
+impl PointMethods for Point {
+    fn shift(pt: Point, dx: int, dy: int) -> Point {
+        Point { x: pt.x + dx, y: pt.y + dy }
+    }
+}
+fn main() {
+    let p = Point { x: 1, y: 2 };
+    p.shift(3, 4);
+}
+";
+        let pr = parse(source);
+        let tc = type_check(&pr);
+        let hints = build_inlay_hints(source, &pr, &tc);
+
+        assert_eq!(parameter_hint_labels(&hints), vec!["dx:", "dy:"]);
+    }
+
+    #[test]
+    fn parameter_hints_skip_single_arg_calls_and_same_name_arguments() {
+        let source = r#"
+fn label(name: String, age: int) {}
+fn echo(value: String) {}
+fn main() {
+    let name = "Ada";
+    label(name, 42);
+    echo(name);
+}
+"#;
+        let pr = parse(source);
+        let tc = type_check(&pr);
+        let hints = build_inlay_hints(source, &pr, &tc);
+
+        assert_eq!(parameter_hint_labels(&hints), vec!["age:"]);
     }
 
     #[test]

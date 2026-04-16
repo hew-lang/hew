@@ -15,6 +15,10 @@ pub struct DiagnosticInfo {
 }
 
 /// Build code actions from a set of diagnostics.
+#[allow(
+    clippy::too_many_lines,
+    reason = "diagnostic-to-fix mapping stays clearer as one exhaustive match"
+)]
 #[must_use]
 pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<CodeAction> {
     let mut actions = Vec::new();
@@ -111,6 +115,31 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
             Some("UnusedImport") => {
                 actions.push(CodeAction {
                     title: "Remove unused import".to_string(),
+                    edits: vec![RenameEdit {
+                        span: diag.span,
+                        new_text: String::new(),
+                    }],
+                });
+            }
+
+            Some("StyleSuggestion")
+                if diag.message.contains("while true")
+                    && diag
+                        .suggestions
+                        .iter()
+                        .any(|suggestion| suggestion.contains("loop")) =>
+            {
+                if let Some(edit) = replace_while_true_with_loop(source, diag.span) {
+                    actions.push(CodeAction {
+                        title: "Replace `while true` with `loop`".to_string(),
+                        edits: vec![edit],
+                    });
+                }
+            }
+
+            Some("UnreachableCode") => {
+                actions.push(CodeAction {
+                    title: "Remove unreachable code".to_string(),
                     edits: vec![RenameEdit {
                         span: diag.span,
                         new_text: String::new(),
@@ -241,6 +270,24 @@ fn prefix_with_underscore(source: &str, diag_span: OffsetSpan, name: &str) -> Op
             end: abs_end,
         },
         new_text: format!("_{name}"),
+    })
+}
+
+fn replace_while_true_with_loop(source: &str, diag_span: OffsetSpan) -> Option<RenameEdit> {
+    let region = source.get(diag_span.start..diag_span.end)?;
+    let while_rel = region.find("while")?;
+    let after_while = &region[while_rel + "while".len()..];
+    let trimmed = after_while.trim_start_matches(char::is_whitespace);
+    if !trimmed.starts_with("true") {
+        return None;
+    }
+    let ws_len = after_while.len() - trimmed.len();
+    Some(RenameEdit {
+        span: OffsetSpan {
+            start: diag_span.start + while_rel,
+            end: diag_span.start + while_rel + "while".len() + ws_len + "true".len(),
+        },
+        new_text: "loop".to_string(),
     })
 }
 
@@ -620,6 +667,94 @@ mod tests {
         );
         let actions = build_code_actions(source, &[d]);
         assert!(actions.is_empty());
+    }
+
+    fn apply_edit(source: &str, edit: &RenameEdit) -> String {
+        format!(
+            "{}{}{}",
+            &source[..edit.span.start],
+            edit.new_text,
+            &source[edit.span.end..]
+        )
+    }
+
+    // ── StyleSuggestion / UnreachableCode ─────────────────────────────
+
+    #[test]
+    fn style_suggestion_while_true_action_rewrites_header_to_loop() {
+        let source = "fn main() {
+    while true {
+        break;
+    }
+}";
+        let start = source.find("while true").expect("while true start");
+        let end = source[start..]
+            .find(
+                "
+    }",
+            )
+            .map(|idx| start + idx + 6)
+            .expect("while block end");
+        let d = diag_with_suggestions(
+            "StyleSuggestion",
+            "`while true` can be simplified",
+            start,
+            end,
+            vec!["use `loop { ... }` instead of `while true { ... }`"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Replace `while true` with `loop`");
+        assert_eq!(
+            apply_edit(source, &actions[0].edits[0]),
+            "fn main() {
+    loop {
+        break;
+    }
+}"
+        );
+    }
+
+    #[test]
+    fn style_suggestion_without_loop_rewrite_has_no_action() {
+        let source = "type User { id: int }";
+        let d = diag(
+            "StyleSuggestion",
+            "wire `User.id`: field has `since 2` but struct has no version",
+            0,
+            source.len(),
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn unreachable_code_action_removes_dead_statement() {
+        let source = "fn main() {
+    return;
+    log(1);
+}";
+        let start = source.find("    log(1);").expect("dead statement start");
+        let end = start
+            + "    log(1);
+"
+            .len();
+        let d = diag_with_suggestions(
+            "UnreachableCode",
+            "unreachable code",
+            start,
+            end,
+            vec!["remove this code or restructure the control flow"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Remove unreachable code");
+        assert_eq!(
+            apply_edit(source, &actions[0].edits[0]),
+            "fn main() {
+    return;
+}"
+        );
     }
 
     // ── UnusedImport ─────────────────────────────────────────────────

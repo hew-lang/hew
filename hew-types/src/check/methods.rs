@@ -1830,51 +1830,9 @@ impl Checker {
                     ),
                 }
             }
-            // regex.Pattern methods
-            (Ty::Named { name, .. }, _) if name == "regex.Pattern" => match method {
-                "is_match" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Bool
-                }
-                "find" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::String
-                }
-                "replace" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    if let Some(arg) = args.get(1) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::String
-                }
-                "free" => {
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Unit
-                }
-                "clone" => {
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    Ty::Named {
-                        name: "regex.Pattern".into(),
-                        args: vec![],
-                    }
-                }
-                _ => {
-                    self.check_named_method_fallback(&resolved, method, args, span, "regex.Pattern")
-                }
-            },
+            (Ty::Named { name, .. }, _) if name == "regex.Pattern" => {
+                self.check_named_method_fallback(&resolved, method, args, span, "regex.Pattern")
+            }
             (Ty::Named { name, .. }, _) if name == "process.Child" => {
                 self.check_named_method_fallback(&resolved, method, args, span, "process.Child")
             }

@@ -386,6 +386,10 @@ unsafe impl Send for ActorPtr {}
 /// Map from actor ID → pointer for O(1) lookups by ID.
 static LIVE_ACTORS: Mutex<Option<HashMap<u64, ActorPtr>>> = Mutex::new(None);
 
+#[cfg(not(target_arch = "wasm32"))]
+static DEFERRED_ACTOR_FREE_THREADS: Mutex<Vec<std::thread::JoinHandle<()>>> =
+    Mutex::new(Vec::new());
+
 /// Register an actor in the live tracking map.
 ///
 /// # Safety
@@ -449,16 +453,34 @@ fn free_deferred_actor(deferred: DeferredActorFree) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn drain_deferred_actor_free_threads() {
+    loop {
+        let handles = {
+            let mut guard = DEFERRED_ACTOR_FREE_THREADS.lock_or_recover();
+            if guard.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *guard)
+        };
+        for handle in handles {
+            if handle.join().is_err() {
+                eprintln!("hew: warning: deferred actor free thread panicked");
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
     let deferred = DeferredActorFree(actor);
-    if std::thread::Builder::new()
+    let Ok(handle) = std::thread::Builder::new()
         .name("deferred-actor-free".into())
         .spawn(move || free_deferred_actor(deferred))
-        .is_err()
-    {
+    else {
         crate::set_last_error("hew_actor_free: failed to spawn deferred free thread");
         return -1;
-    }
+    };
+    DEFERRED_ACTOR_FREE_THREADS.lock_or_recover().push(handle);
     0
 }
 
@@ -479,6 +501,9 @@ pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
 /// Must only be called after all worker threads have stopped (native)
 /// or when no dispatch is in progress (WASM).
 pub(crate) unsafe fn cleanup_all_actors() {
+    #[cfg(not(target_arch = "wasm32"))]
+    drain_deferred_actor_free_threads();
+
     let actors = {
         let mut guard = LIVE_ACTORS.lock_or_recover();
         match guard.as_mut() {
@@ -4018,6 +4043,54 @@ mod tests {
             assert!(
                 freed,
                 "actor should be freed asynchronously after dispatch unwinds"
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_all_actors_waits_for_deferred_free_threads() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        // SAFETY: this test owns the actor and coordinates all concurrent access.
+        unsafe {
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!actor.is_null());
+
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            (*actor).terminate_called.store(true, Ordering::Release);
+            (*actor).terminate_finished.store(false, Ordering::Release);
+
+            let prev_actor = set_current_actor(actor);
+            assert_eq!(hew_actor_free(actor), 0, "self-free should defer");
+            set_current_actor(prev_actor);
+
+            let cleanup_started = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let cleanup_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let started = cleanup_started.clone();
+            let done = cleanup_done.clone();
+
+            let cleanup = std::thread::spawn(move || {
+                started.wait();
+                // SAFETY: the test synchronizes access and no scheduler work is active.
+                cleanup_all_actors();
+                done.store(true, Ordering::Release);
+            });
+
+            cleanup_started.wait();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(
+                !cleanup_done.load(Ordering::Acquire),
+                "cleanup_all_actors must wait for deferred self-free threads"
+            );
+
+            (*actor).terminate_finished.store(true, Ordering::Release);
+            cleanup.join().unwrap();
+            assert!(
+                !is_actor_live(actor),
+                "deferred free should finish before cleanup returns"
             );
         }
     }

@@ -293,7 +293,23 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
   bool useReturnGuards = isFunctionBodyBlock && returnFlag && returnSlot;
 
   const auto &stmts = block.stmts;
+  auto rejectGeneratorYieldFieldAccess = [&](const ast::Expr &yieldedExpr,
+                                             mlir::Location location) -> bool {
+    if (!std::holds_alternative<ast::ExprFieldAccess>(yieldedExpr.kind) &&
+        !exprYieldsFieldMatching(yieldedExpr, [](const ast::ExprFieldAccess &) { return true; }))
+      return false;
+    ++errorCount_;
+    emitError(location) << "yielding a field from a generator is not yet supported "
+                        << "(field-alias ownership tracking is required); "
+                        << "yield the whole value or clone the field instead";
+    return true;
+  };
   auto generateTailExpr = [&](const ast::Spanned<ast::Expr> &expr) -> mlir::Value {
+    if (auto *yieldExpr = std::get_if<ast::ExprYield>(&expr.value.kind)) {
+      if (yieldExpr->value &&
+          rejectGeneratorYieldFieldAccess((*yieldExpr->value)->value, currentLoc))
+        return nullptr;
+    }
     if (statementPosition)
       return generateDiscardedExpr(expr);
     return generateExpression(expr.value);
@@ -3567,6 +3583,20 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
 
 void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
   auto location = currentLoc;
+  auto rejectGeneratorYieldFieldAccess = [&](const ast::Expr &yieldedExpr) -> bool {
+    if (!std::holds_alternative<ast::ExprFieldAccess>(yieldedExpr.kind) &&
+        !exprYieldsFieldMatching(yieldedExpr, [](const ast::ExprFieldAccess &) { return true; }))
+      return false;
+    ++errorCount_;
+    emitError(location) << "yielding a field from a generator is not yet supported "
+                        << "(field-alias ownership tracking is required); "
+                        << "yield the whole value or clone the field instead";
+    return true;
+  };
+  if (auto *yieldExpr = std::get_if<ast::ExprYield>(&stmt.expr.value.kind)) {
+    if (yieldExpr->value && rejectGeneratorYieldFieldAccess((*yieldExpr->value)->value))
+      return;
+  }
   auto blockTailRequiresValue = [&](const ast::Block &block,
                                     const auto &exprRequiresValue) -> bool {
     if (block.trailing_expr)

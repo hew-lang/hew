@@ -5478,37 +5478,10 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
       return false;
     };
     isFieldOfDroppedParam = [&](const ast::Expr &expr) -> bool {
-      if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
-        auto *id = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind);
+      return exprYieldsFieldMatching(expr, [&](const ast::ExprFieldAccess &fieldAccess) {
+        auto *id = std::get_if<ast::ExprIdentifier>(&fieldAccess.object->value.kind);
         return id && droppedParamNames.count(id->name);
-      }
-      if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
-        return blockValueYieldsFieldOfDroppedParam(blockE->block);
-      if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
-        if (ifE->then_block && isFieldOfDroppedParam(ifE->then_block->value))
-          return true;
-        if (ifE->else_block && *ifE->else_block && isFieldOfDroppedParam((*ifE->else_block)->value))
-          return true;
-        return false;
-      }
-      if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
-        if (blockValueYieldsFieldOfDroppedParam(ifLet->body))
-          return true;
-        if (ifLet->else_body && blockValueYieldsFieldOfDroppedParam(*ifLet->else_body))
-          return true;
-        return false;
-      }
-      if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
-        for (const auto &arm : matchE->arms)
-          if (arm.body && isFieldOfDroppedParam(arm.body->value))
-            return true;
-        return false;
-      }
-      if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
-        return blockValueYieldsFieldOfDroppedParam(unsafeE->block);
-      if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
-        return blockValueYieldsFieldOfDroppedParam(scopeE->block);
-      return false;
+      });
     };
 
     // Scan value-position of the function body (trailing expr or last stmt)
@@ -6424,6 +6397,94 @@ void MLIRGen::collectVisibleBindingIdentities(const ast::Expr &expr, DropValueSe
       }
     }
   }
+}
+
+bool MLIRGen::exprYieldsFieldMatching(
+    const ast::Expr &expr,
+    const std::function<bool(const ast::ExprFieldAccess &)> &matchesField) const {
+  std::function<bool(const ast::Expr &)> isMatchingFieldExpr;
+  std::function<bool(const ast::Block &)> blockValueYieldsMatchingField;
+  std::function<bool(const ast::StmtIf &)> stmtIfValueYieldsMatchingField;
+
+  stmtIfValueYieldsMatchingField = [&](const ast::StmtIf &ifStmt) -> bool {
+    if (blockValueYieldsMatchingField(ifStmt.then_block))
+      return true;
+    if (ifStmt.else_block) {
+      if (ifStmt.else_block->block && blockValueYieldsMatchingField(*ifStmt.else_block->block))
+        return true;
+      if (ifStmt.else_block->if_stmt) {
+        if (auto *nested = std::get_if<ast::StmtIf>(&ifStmt.else_block->if_stmt->value.kind))
+          if (stmtIfValueYieldsMatchingField(*nested))
+            return true;
+        if (auto *nestedIfLet =
+                std::get_if<ast::StmtIfLet>(&ifStmt.else_block->if_stmt->value.kind)) {
+          if (blockValueYieldsMatchingField(nestedIfLet->body))
+            return true;
+          if (nestedIfLet->else_body && blockValueYieldsMatchingField(*nestedIfLet->else_body))
+            return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  blockValueYieldsMatchingField = [&](const ast::Block &blk) -> bool {
+    if (blk.trailing_expr)
+      return isMatchingFieldExpr(blk.trailing_expr->value);
+    if (!blk.stmts.empty()) {
+      const auto &last = blk.stmts.back()->value;
+      if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind))
+        return isMatchingFieldExpr(exprStmt->expr.value);
+      if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind))
+        return stmtIfValueYieldsMatchingField(*ifStmt);
+      if (auto *ifLetStmt = std::get_if<ast::StmtIfLet>(&last.kind)) {
+        if (blockValueYieldsMatchingField(ifLetStmt->body))
+          return true;
+        if (ifLetStmt->else_body && blockValueYieldsMatchingField(*ifLetStmt->else_body))
+          return true;
+      }
+      if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
+        for (const auto &arm : matchStmt->arms)
+          if (arm.body && isMatchingFieldExpr(arm.body->value))
+            return true;
+      }
+    }
+    return false;
+  };
+
+  isMatchingFieldExpr = [&](const ast::Expr &candidate) -> bool {
+    if (auto *fa = std::get_if<ast::ExprFieldAccess>(&candidate.kind))
+      return matchesField(*fa);
+    if (auto *blockE = std::get_if<ast::ExprBlock>(&candidate.kind))
+      return blockValueYieldsMatchingField(blockE->block);
+    if (auto *ifE = std::get_if<ast::ExprIf>(&candidate.kind)) {
+      if (ifE->then_block && isMatchingFieldExpr(ifE->then_block->value))
+        return true;
+      if (ifE->else_block && *ifE->else_block && isMatchingFieldExpr((*ifE->else_block)->value))
+        return true;
+      return false;
+    }
+    if (auto *ifLet = std::get_if<ast::ExprIfLet>(&candidate.kind)) {
+      if (blockValueYieldsMatchingField(ifLet->body))
+        return true;
+      if (ifLet->else_body && blockValueYieldsMatchingField(*ifLet->else_body))
+        return true;
+      return false;
+    }
+    if (auto *matchE = std::get_if<ast::ExprMatch>(&candidate.kind)) {
+      for (const auto &arm : matchE->arms)
+        if (arm.body && isMatchingFieldExpr(arm.body->value))
+          return true;
+      return false;
+    }
+    if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&candidate.kind))
+      return blockValueYieldsMatchingField(unsafeE->block);
+    if (auto *scopeE = std::get_if<ast::ExprScope>(&candidate.kind))
+      return blockValueYieldsMatchingField(scopeE->block);
+    return false;
+  };
+
+  return isMatchingFieldExpr(expr);
 }
 
 void MLIRGen::emitDropsWithExclusion(const std::vector<DropEntry> &scope, size_t relDepth) {

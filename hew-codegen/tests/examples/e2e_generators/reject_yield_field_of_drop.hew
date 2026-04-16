@@ -1,0 +1,40 @@
+// Reject test: yielding a field of a drop-registered value from a generator.
+// Without field-alias tracking, yielding `wrapper.item` would move one Token
+// out to the caller while the generator still emits the scope-exit drop for
+// `wrapper` on resume, causing unsound ownership.
+
+type Token {
+    id: int;
+}
+
+impl Drop for Token {
+    fn drop(t: Token) {
+        println(t.id);
+    }
+}
+
+type Wrapper {
+    item: Token;
+    spare: Token;
+}
+
+impl Drop for Wrapper {
+    fn drop(w: Wrapper) {
+        println(w.spare.id);
+    }
+}
+
+gen fn tokens() -> Token {
+    let wrapper = Wrapper {
+        item: Token { id: 1 },
+        spare: Token { id: 2 },
+    };
+    yield wrapper.item;  // rejected: partial-move yield from drop-registered owner
+}
+
+fn main() -> int {
+    let g = tokens();
+    let item = g.next();
+    println(item.id);
+    return 0;
+}

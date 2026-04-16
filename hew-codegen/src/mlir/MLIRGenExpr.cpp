@@ -292,7 +292,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
     if (currentCoroPromisePtr) {
       // Coroutine-based generator: store value to promise ptr and call suspend marker
       if (yield->value.has_value() && *yield->value) {
+        auto prevInsideGeneratorYieldValue = insideGeneratorYieldValue;
+        insideGeneratorYieldValue = true;
         auto yieldVal = generateExpression((*yield->value)->value);
+        insideGeneratorYieldValue = prevInsideGeneratorYieldValue;
         if (yieldVal) {
           auto yieldLocation = currentLoc;
           auto ptrTy = mlir::LLVM::LLVMPointerType::get(&context);
@@ -315,7 +318,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
     if (currentGenCtx) {
       // Thread-based generator: call hew_gen_yield(ctx, &val, sizeof(val))
       if (yield->value.has_value() && *yield->value) {
+        auto prevInsideGeneratorYieldValue = insideGeneratorYieldValue;
+        insideGeneratorYieldValue = true;
         auto yieldVal = generateExpression((*yield->value)->value);
+        insideGeneratorYieldValue = prevInsideGeneratorYieldValue;
         if (yieldVal) {
           auto yieldLocation = currentLoc;
           auto ptrTy = mlir::LLVM::LLVMPointerType::get(&context);
@@ -365,6 +371,13 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
 
   if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
     auto location = currentLoc;
+    if (insideGeneratorYieldValue) {
+      ++errorCount_;
+      emitError(location) << "yielding a field from a generator is not yet supported "
+                          << "(field-alias ownership tracking is required); "
+                          << "yield the whole value or clone the field instead";
+      return nullptr;
+    }
     auto operandVal = generateExpression(fa->object->value);
     if (!operandVal)
       return nullptr;

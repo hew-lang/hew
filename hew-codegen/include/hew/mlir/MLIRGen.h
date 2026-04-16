@@ -938,6 +938,7 @@ private:
   std::set<std::string> funcLevelEarlyReturnExcludeResolvedNames;
   // dropScopes.size() at the point where the current function body starts.
   size_t funcLevelDropScopeBase = 0;
+  bool insideGeneratorYieldValue = false;
   /// Pending parameter drops: populated before generateBlock, drained at
   /// the start of the function-level drop scope.  Each entry is
   /// (paramName, dropFuncName, isUserDrop).
@@ -967,6 +968,9 @@ private:
   bool isFunctionDropExcluded(const DropEntry &entry, const DropValueSet &excludeValues) const;
   void collectVisibleBindingIdentities(const ast::Expr &expr, DropValueSet &out,
                                        std::set<std::string> *resolvedNames = nullptr);
+  bool exprYieldsFieldMatching(
+      const ast::Expr &expr,
+      const std::function<bool(const ast::ExprFieldAccess &)> &matchesField) const;
   /// Emit drops for a scope, excluding variables that match the
   /// resolved function-level exclusion identities (with a legacy name-based
   /// fallback for entries that predate identity capture).

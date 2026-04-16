@@ -232,9 +232,7 @@ impl Xorshift64 {
 /// printing a diagnostic — scheduler init failure is unrecoverable.
 #[no_mangle]
 pub extern "C" fn hew_sched_init() -> c_int {
-    let default_count = thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(4);
+    let default_count = thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
 
     let worker_count = match std::env::var("HEW_WORKERS") {
         Ok(val) => match val.parse::<usize>() {

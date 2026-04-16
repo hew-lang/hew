@@ -796,7 +796,7 @@ fn typecheck_generic_call_with_explicit_type_args() {
         .iter()
         .filter(|e| !matches!(e.kind, TypeErrorKind::BorrowedParamReturn))
         .collect();
-    assert!(unexpected.is_empty(), "unexpected errors: {unexpected:?}",);
+    assert!(unexpected.is_empty(), "unexpected errors: {unexpected:?}");
 }
 
 #[test]
@@ -825,7 +825,7 @@ fn typecheck_generic_call_with_inferred_type_args() {
         .iter()
         .filter(|e| !matches!(e.kind, TypeErrorKind::BorrowedParamReturn))
         .collect();
-    assert!(unexpected.is_empty(), "unexpected errors: {unexpected:?}",);
+    assert!(unexpected.is_empty(), "unexpected errors: {unexpected:?}");
     assert!(
         output
             .call_type_args

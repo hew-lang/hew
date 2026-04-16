@@ -371,7 +371,7 @@ fn write_variant_handler(
                 .iter()
                 .find(|&&(e, v, _)| e == enum_name && v == variant_name)
             {
-                let _ = writeln!(out, "  if (name == \"{variant_name}\") fail(\"{msg}\");",);
+                let _ = writeln!(out, "  if (name == \"{variant_name}\") fail(\"{msg}\");");
             } else {
                 let _ = writeln!(
                     out,
@@ -933,10 +933,8 @@ fn collect_rust_type_deps(
     deps: &mut HashSet<String>,
 ) {
     match ty {
-        RustType::Named(name) => {
-            if known_types.contains(name) {
-                deps.insert(name.clone());
-            }
+        RustType::Named(name) if known_types.contains(name) => {
+            deps.insert(name.clone());
         }
         RustType::Vec(inner)
         | RustType::Option(inner)

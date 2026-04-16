@@ -205,7 +205,7 @@ fn budget_exhaustion_stops_supervisor() {
             // After the 3rd crash, the budget is exhausted.
             if round == 2 {
                 // Poll briefly for the supervisor to stop.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
                 loop {
                     if hew_supervisor_is_running(sup) == 0 {
                         break;

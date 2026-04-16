@@ -1,5 +1,6 @@
 //! Application state for the TUI observer.
 
+use std::cmp::Reverse;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -840,12 +841,12 @@ impl App {
         match self.sort_column {
             SortColumn::Id => self.actors.sort_by_key(|a| a.id),
             SortColumn::State => self.actors.sort_by(|a, b| a.state.cmp(&b.state)),
-            SortColumn::Messages => self.actors.sort_by(|a, b| b.msgs.cmp(&a.msgs)),
+            SortColumn::Messages => self.actors.sort_by_key(|actor| Reverse(actor.msgs)),
             SortColumn::MailboxDepth => {
-                self.actors.sort_by(|a, b| b.mbox_depth.cmp(&a.mbox_depth));
+                self.actors.sort_by_key(|actor| Reverse(actor.mbox_depth));
             }
             SortColumn::ProcessingTime => {
-                self.actors.sort_by(|a, b| b.time_ns.cmp(&a.time_ns));
+                self.actors.sort_by_key(|actor| Reverse(actor.time_ns));
             }
         }
     }

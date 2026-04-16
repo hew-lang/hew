@@ -124,8 +124,8 @@ pub extern "C" fn hew_datetime_last_error() -> *mut c_char {
 ///
 /// No preconditions — pure computation.
 #[no_mangle]
-pub unsafe extern "C" fn hew_datetime_year(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.year())
+pub unsafe extern "C" fn hew_datetime_year(epoch_ms: i64) -> i64 {
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.year()))
 }
 
 /// Extract the month (1–12) from epoch milliseconds. Returns -1 if out of range.
@@ -133,13 +133,9 @@ pub unsafe extern "C" fn hew_datetime_year(epoch_ms: i64) -> i32 {
 /// # Safety
 ///
 /// No preconditions — pure computation.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "month is 1..=12, always fits in i32"
-)]
 #[no_mangle]
-pub unsafe extern "C" fn hew_datetime_month(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.month() as i32)
+pub unsafe extern "C" fn hew_datetime_month(epoch_ms: i64) -> i64 {
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.month()))
 }
 
 /// Extract the day (1–31) from epoch milliseconds. Returns -1 if out of range.
@@ -147,13 +143,9 @@ pub unsafe extern "C" fn hew_datetime_month(epoch_ms: i64) -> i32 {
 /// # Safety
 ///
 /// No preconditions — pure computation.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "day is 1..=31, always fits in i32"
-)]
 #[no_mangle]
-pub unsafe extern "C" fn hew_datetime_day(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.day() as i32)
+pub unsafe extern "C" fn hew_datetime_day(epoch_ms: i64) -> i64 {
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.day()))
 }
 
 /// Extract the hour (0–23) from epoch milliseconds. Returns -1 if out of range.
@@ -161,13 +153,9 @@ pub unsafe extern "C" fn hew_datetime_day(epoch_ms: i64) -> i32 {
 /// # Safety
 ///
 /// No preconditions — pure computation.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "hour is 0..=23, always fits in i32"
-)]
 #[no_mangle]
-pub unsafe extern "C" fn hew_datetime_hour(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.hour() as i32)
+pub unsafe extern "C" fn hew_datetime_hour(epoch_ms: i64) -> i64 {
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.hour()))
 }
 
 /// Extract the minute (0–59) from epoch milliseconds. Returns -1 if out of range.
@@ -175,13 +163,9 @@ pub unsafe extern "C" fn hew_datetime_hour(epoch_ms: i64) -> i32 {
 /// # Safety
 ///
 /// No preconditions — pure computation.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "minute is 0..=59, always fits in i32"
-)]
 #[no_mangle]
-pub unsafe extern "C" fn hew_datetime_minute(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.minute() as i32)
+pub unsafe extern "C" fn hew_datetime_minute(epoch_ms: i64) -> i64 {
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.minute()))
 }
 
 /// Extract the second (0–59) from epoch milliseconds. Returns -1 if out of range.
@@ -189,13 +173,9 @@ pub unsafe extern "C" fn hew_datetime_minute(epoch_ms: i64) -> i32 {
 /// # Safety
 ///
 /// No preconditions — pure computation.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "second is 0..=59, always fits in i32"
-)]
 #[no_mangle]
-pub unsafe extern "C" fn hew_datetime_second(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.second() as i32)
+pub unsafe extern "C" fn hew_datetime_second(epoch_ms: i64) -> i64 {
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| i64::from(dt.second()))
 }
 
 /// Return the day of the week (0=Mon, 6=Sun) from epoch milliseconds.
@@ -205,15 +185,17 @@ pub unsafe extern "C" fn hew_datetime_second(epoch_ms: i64) -> i32 {
 ///
 /// No preconditions — pure computation.
 #[no_mangle]
-pub unsafe extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| match dt.weekday() {
-        Weekday::Mon => 0,
-        Weekday::Tue => 1,
-        Weekday::Wed => 2,
-        Weekday::Thu => 3,
-        Weekday::Fri => 4,
-        Weekday::Sat => 5,
-        Weekday::Sun => 6,
+pub unsafe extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i64 {
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| {
+        i64::from(match dt.weekday() {
+            Weekday::Mon => 0,
+            Weekday::Tue => 1,
+            Weekday::Wed => 2,
+            Weekday::Thu => 3,
+            Weekday::Fri => 4,
+            Weekday::Sat => 5,
+            Weekday::Sun => 6,
+        })
     })
 }
 

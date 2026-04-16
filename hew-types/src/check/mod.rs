@@ -280,9 +280,14 @@ impl Checker {
         let (cycle_capable, cycles) = crate::cycle::detect_actor_ref_cycles(&output.type_defs);
         for cycle_actors in &cycles {
             let desc = cycle_actors.join(" -> ");
+            let span = cycle_actors
+                .iter()
+                .filter_map(|name| self.type_def_spans.get(name).cloned())
+                .min_by_key(|span| span.start)
+                .unwrap_or(0..0);
             output
                 .warnings
-                .push(TypeError::actor_ref_cycle(0..0, &desc));
+                .push(TypeError::actor_ref_cycle(span, &desc));
         }
         output.cycle_capable_actors = cycle_capable;
 

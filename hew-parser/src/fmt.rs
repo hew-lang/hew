@@ -1530,6 +1530,23 @@ impl<'a> Formatter<'a> {
                             self.format_else_block(eb);
                         }
                     }
+                    Stmt::IfLet {
+                        pattern,
+                        expr,
+                        body,
+                        else_body,
+                    } => {
+                        self.write("if let ");
+                        self.format_pattern(&pattern.0);
+                        self.write(" = ");
+                        self.format_expr(&expr.0);
+                        self.write(" ");
+                        self.format_block(body, self.source.len());
+                        if let Some(else_block) = else_body {
+                            self.write(" else ");
+                            self.format_block(else_block, self.source.len());
+                        }
+                    }
                     _ => {
                         // Shouldn't happen for well-formed ASTs, but handle gracefully.
                         self.format_stmt(&if_stmt.0);

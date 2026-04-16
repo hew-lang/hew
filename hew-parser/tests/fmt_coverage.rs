@@ -131,18 +131,16 @@ fn fmt_if_else() {
 
 #[test]
 fn fmt_if_else_if_chain() {
-    let src = r"fn check(x: i32) {
-    if x > 10 {
-        println(1);
-    } else if x > 0 {
-        println(2);
-    } else {
-        println(3);
-    }
-}";
-    let out = roundtrip(src);
-    assert!(out.contains("} else if x > 0 {"), "output: {out}");
-    assert!(out.contains("} else {"), "output: {out}");
+    exact_roundtrip(
+        "fn check(x: i32) {\n    if x > 10 {\n        println(1);\n    } else if x > 0 {\n        println(2);\n    } else {\n        println(3);\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_if_else_if_let_chain() {
+    exact_roundtrip(
+        "fn check(maybe: Option<i32>, x: i32) {\n    if x > 10 {\n        println(1);\n    } else if let Some(y) = maybe {\n        println(y);\n    } else {\n        println(3);\n    }\n}\n",
+    );
 }
 
 #[test]

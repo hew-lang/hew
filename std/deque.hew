@@ -28,21 +28,21 @@ type Deque {}
 
 /// Methods available on a `Deque`.
 trait DequeMethods {
-    fn push_front(dq: Deque, value: i64);
-    fn push_back(dq: Deque, value: i64);
-    fn pop_front(dq: Deque) -> i64;
-    fn pop_back(dq: Deque) -> i64;
-    fn len(dq: Deque) -> i64;
+    fn push_front(dq: Deque, value: int);
+    fn push_back(dq: Deque, value: int);
+    fn pop_front(dq: Deque) -> int;
+    fn pop_back(dq: Deque) -> int;
+    fn len(dq: Deque) -> int;
     fn is_empty(dq: Deque) -> bool;
     fn free(dq: Deque);
 }
 
 impl DequeMethods for Deque {
-    fn push_front(dq: Deque, value: i64) { unsafe { hew_deque_push_front(dq, value) }; }
-    fn push_back(dq: Deque, value: i64) { unsafe { hew_deque_push_back(dq, value) }; }
-    fn pop_front(dq: Deque) -> i64 { unsafe { hew_deque_pop_front(dq) } }
-    fn pop_back(dq: Deque) -> i64 { unsafe { hew_deque_pop_back(dq) } }
-    fn len(dq: Deque) -> i64 { unsafe { hew_deque_len(dq) } }
+    fn push_front(dq: Deque, value: int) { unsafe { hew_deque_push_front(dq, value as i64) }; }
+    fn push_back(dq: Deque, value: int) { unsafe { hew_deque_push_back(dq, value as i64) }; }
+    fn pop_front(dq: Deque) -> int { unsafe { hew_deque_pop_front(dq) } }
+    fn pop_back(dq: Deque) -> int { unsafe { hew_deque_pop_back(dq) } }
+    fn len(dq: Deque) -> int { unsafe { hew_deque_len(dq) } }
     fn is_empty(dq: Deque) -> bool { unsafe { hew_deque_is_empty(dq) } }
     fn free(dq: Deque) { unsafe { hew_deque_free(dq) }; }
 }

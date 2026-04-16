@@ -485,13 +485,15 @@ impl<'a> Formatter<'a> {
         }
         self.write(" {\n");
         self.indent += 1;
-        for item in &decl.items {
+        for (i, item) in decl.items.iter().enumerate() {
             match item {
                 TraitItem::Method(m) => {
                     if self.has_comments() {
                         let pos = self
                             .find_keyword_after(&format!("fn {}", m.name), self.prev_source_pos);
                         self.flush_comments_before(pos);
+                    } else if i > 0 {
+                        self.newline();
                     }
                     self.format_trait_method(m);
                 }
@@ -504,6 +506,8 @@ impl<'a> Formatter<'a> {
                         let pos =
                             self.find_keyword_after(&format!("type {name}"), self.prev_source_pos);
                         self.flush_comments_before(pos);
+                    } else if i > 0 {
+                        self.newline();
                     }
                     self.write_indent();
                     self.write("type ");
@@ -1141,10 +1145,9 @@ impl<'a> Formatter<'a> {
                 is_mutable,
                 pointee,
             } => {
+                self.write("*");
                 if *is_mutable {
-                    self.write("*mut ");
-                } else {
-                    self.write("*const ");
+                    self.write("var ");
                 }
                 self.format_type_expr(&pointee.0);
             }

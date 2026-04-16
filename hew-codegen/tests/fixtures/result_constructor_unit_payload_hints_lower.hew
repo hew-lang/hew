@@ -1,0 +1,13 @@
+fn ok_unit() -> Result<(), int> {
+    Ok(())
+}
+
+fn err_unit() -> Result<int, ()> {
+    Err(())
+}
+
+fn main() -> int {
+    let _ = ok_unit();
+    let _ = err_unit();
+    0
+}

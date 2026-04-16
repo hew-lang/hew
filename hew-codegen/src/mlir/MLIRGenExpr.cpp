@@ -1974,9 +1974,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
             argVal = hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{});
           }
         }
-        if (!argVal) {
-          argVal = generateExpression(argExpr.value, expectedInnerType);
-        }
+        if (!argVal)
+          argVal = generateExpression(argExpr.value);
         if (!argVal)
           return nullptr;
         if (!optType)
@@ -2019,9 +2018,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
             argVal = hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{});
           }
         }
-        if (!argVal) {
-          argVal = generateExpression(argExpr.value, expectedOkType);
-        }
+        if (!argVal)
+          argVal = generateExpression(argExpr.value);
         if (!argVal)
           return nullptr;
         if (!resultType) {
@@ -2060,9 +2058,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
             argVal = hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{});
           }
         }
-        if (!argVal) {
-          argVal = generateExpression(argExpr.value, expectedErrType);
-        }
+        if (!argVal)
+          argVal = generateExpression(argExpr.value);
         if (!argVal)
           return nullptr;
         if (!resultType) {

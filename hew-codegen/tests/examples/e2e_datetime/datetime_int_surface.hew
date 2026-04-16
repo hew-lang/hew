@@ -1,0 +1,26 @@
+import std::time::datetime;
+
+fn takes_int(n: int) -> int {
+    n + 1
+}
+
+fn main() {
+    let now_ms = datetime.now_ms();
+    println(takes_int(now_ms) > now_ms);
+
+    let parsed = datetime.parse("2025-01-10 00:00:00", "%Y-%m-%d %H:%M:%S");
+    println(takes_int(parsed) > parsed);
+    println(datetime.format(parsed + 86_400_000, "%Y-%m-%d"));
+
+    let plus_two = datetime.add_days(parsed, 2);
+    println(takes_int(plus_two) > plus_two);
+
+    let day_after = datetime.add_days(parsed, 1);
+    let diff = datetime.diff_secs(day_after, parsed);
+    println(takes_int(diff) - diff);
+
+    match datetime.try_parse("2025-01-10 00:00:00", "%Y-%m-%d %H:%M:%S") {
+        Ok(epoch_ms) => println(takes_int(epoch_ms) > epoch_ms),
+        Err(err) => println(err),
+    }
+}

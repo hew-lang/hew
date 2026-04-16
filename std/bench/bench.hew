@@ -22,11 +22,11 @@ import std::time::datetime;
 /// A single benchmark result containing timing statistics.
 pub type BenchResult {
     name: String;
-    iterations: i64;
-    avg_ns: i64;
-    min_ns: i64;
-    max_ns: i64;
-    total_ns: i64;
+    iterations: int;
+    avg_ns: int;
+    min_ns: int;
+    max_ns: int;
+    total_ns: int;
 }
 
 /// A collection of benchmark results.
@@ -52,7 +52,7 @@ trait SuiteMethods {
     /// Executes `f` for `iterations` times after a warmup phase
     /// (10% of iterations, minimum 1). Records min, max, avg, and total
     /// timing in nanoseconds.
-    fn add(suite: Suite, name: String, iterations: i64, f: fn());
+    fn add(suite: Suite, name: String, iterations: int, f: fn());
 
     /// Print results as a human-readable table.
     fn report(suite: Suite);
@@ -63,23 +63,23 @@ trait SuiteMethods {
 
 impl SuiteMethods for Suite {
     /// Run a benchmark and record the result.
-    fn add(suite: Suite, name: String, iterations: i64, f: fn()) {
+    fn add(suite: Suite, name: String, iterations: int, f: fn()) {
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;
         if warmup < 1 {
             warmup = 1;
         }
-        var wi: i64 = 0;
+        var wi: int = 0;
         while wi < warmup {
             f();
             wi = wi + 1;
         }
 
         // Measure
-        var min_ns: i64 = 9223372036854775807;
-        var max_ns: i64 = 0;
-        var total_ns: i64 = 0;
-        var i: i64 = 0;
+        var min_ns: int = 9223372036854775807;
+        var max_ns: int = 0;
+        var total_ns: int = 0;
+        var i: int = 0;
         while i < iterations {
             let start = datetime.now_nanos();
             f();
@@ -142,7 +142,7 @@ impl SuiteMethods for Suite {
 // ── Time formatting helpers ───────────────────────────────────────────
 
 /// Format a nanosecond duration as a human-readable string with appropriate units.
-fn format_time(ns: i64) -> String {
+fn format_time(ns: int) -> String {
     if ns < 1000 {
         f"{ns} ns"
     } else if ns < 1000000 {
@@ -164,7 +164,7 @@ fn format_time(ns: i64) -> String {
 }
 
 /// Format an average nanosecond duration as an operations-per-second string.
-fn format_ops(avg_ns: i64) -> String {
+fn format_ops(avg_ns: int) -> String {
     if avg_ns <= 0 {
         "inf ops/sec"
     } else if avg_ns < 1000 {
@@ -186,7 +186,7 @@ fn format_ops(avg_ns: i64) -> String {
 }
 
 /// Pad a number to two digits with a leading zero if needed.
-fn pad_two(n: i64) -> String {
+fn pad_two(n: int) -> String {
     if n < 10 {
         f"0{n}"
     } else {

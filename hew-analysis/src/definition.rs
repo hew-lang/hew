@@ -2,6 +2,7 @@
 
 use hew_parser::ast::{Block, FnDecl, Item, Param, Pattern, Span, Stmt, TraitItem, TypeBodyItem};
 use hew_parser::ParseResult;
+use hew_types::{Ty, TypeCheckOutput};
 
 use crate::OffsetSpan;
 
@@ -137,6 +138,26 @@ pub fn find_param_definition(
         }
     }
     None
+}
+
+/// Find the definition site of a struct field accessed at `offset`, such as the
+/// `x` in `p.x`.
+#[must_use]
+pub fn find_field_definition(
+    source: &str,
+    parse_result: &ParseResult,
+    type_output: &TypeCheckOutput,
+    offset: usize,
+) -> Option<OffsetSpan> {
+    let (field_name, field_span) = crate::util::simple_word_at_offset(source, offset)?;
+    let receiver_end = find_field_receiver_end(source, field_span.start)?;
+    let receiver_ty = crate::method_lookup::find_receiver_type(type_output, receiver_end)?;
+    let receiver_type_name = receiver_ty.type_name()?;
+    let resolved_type_name = type_output
+        .type_defs
+        .keys()
+        .find(|name| Ty::names_match_qualified(name, receiver_type_name))?;
+    find_type_field_definition(source, parse_result, resolved_type_name, &field_name)
 }
 
 fn find_local_in_item(source: &str, item: &Item, word: &str, offset: usize) -> Option<OffsetSpan> {
@@ -411,6 +432,51 @@ fn param_name_span(param: &Param) -> OffsetSpan {
     OffsetSpan { start, end }
 }
 
+fn find_field_receiver_end(source: &str, field_start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut dot_pos = field_start;
+    while dot_pos > 0 && bytes[dot_pos - 1].is_ascii_whitespace() {
+        dot_pos -= 1;
+    }
+    (dot_pos > 0 && bytes[dot_pos - 1] == b'.').then_some(dot_pos - 1)
+}
+
+fn find_type_field_definition(
+    source: &str,
+    parse_result: &ParseResult,
+    type_name: &str,
+    field_name: &str,
+) -> Option<OffsetSpan> {
+    for (item, item_span) in &parse_result.program.items {
+        let Item::TypeDecl(type_decl) = item else {
+            continue;
+        };
+        if !Ty::names_match_qualified(type_name, &type_decl.name) {
+            continue;
+        }
+        let mut search_from = item_span.start;
+        for body_item in &type_decl.body {
+            match body_item {
+                TypeBodyItem::Field { name, ty, .. } => {
+                    let span = crate::util::find_name_span(source, search_from, name);
+                    if name == field_name {
+                        return Some(span);
+                    }
+                    search_from = ty.1.end.max(span.end);
+                }
+                TypeBodyItem::Variant(variant) => {
+                    search_from =
+                        crate::util::find_name_span(source, search_from, &variant.name).end;
+                }
+                TypeBodyItem::Method(method) => {
+                    search_from = search_from.max(method.decl_span.end);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn block_contains_offset(block: &Block, offset: usize) -> bool {
     let start = block
         .stmts
@@ -513,6 +579,39 @@ mod tests {
         let method_start = source.rfind("fn foo").expect("method should exist") + 3;
         assert_eq!(result.start, method_start);
         assert_eq!(&source[result.start..result.end], "foo");
+    }
+
+    #[test]
+    fn definition_finds_struct_field_from_field_access() {
+        let source =
+            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+        let pr = parse(source);
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&pr.program);
+        let offset = source.rfind("p.x").expect("field access should exist") + 2;
+
+        let result =
+            find_field_definition(source, &pr, &type_output, offset).expect("should find field");
+        let expected_start = source
+            .find("x: i32")
+            .expect("field declaration should exist");
+        assert_eq!(result.start, expected_start);
+        assert_eq!(&source[result.start..result.end], "x");
+    }
+
+    #[test]
+    fn definition_ignores_struct_init_field_names() {
+        let source = "type Point { x: i32 }\nfn main() { Point { x: 1 } }";
+        let pr = parse(source);
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&pr.program);
+        let offset = source
+            .rfind("x: 1")
+            .expect("struct init field should exist");
+
+        assert!(find_field_definition(source, &pr, &type_output, offset).is_none());
     }
 
     #[test]

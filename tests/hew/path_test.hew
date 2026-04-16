@@ -1,0 +1,97 @@
+//! Tests for the std::path pure helper functions.
+
+import std::path;
+import std::testing;
+
+// ── combine ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_combine_avoids_double_slash_when_left_has_trailing_slash() {
+    testing.assert_eq_str(path.combine("/a/", "b"), "/a/b");
+}
+
+#[test]
+fn test_combine_inserts_separator_when_left_has_no_trailing_slash() {
+    testing.assert_eq_str(path.combine("/a", "b"), "/a/b");
+}
+
+#[test]
+fn test_combine_returns_absolute_right_hand_side_unchanged() {
+    testing.assert_eq_str(path.combine("/a", "/b"), "/b");
+}
+
+#[test]
+fn test_combine_returns_empty_string_when_both_inputs_are_empty() {
+    testing.assert_eq_str(path.combine("", ""), "");
+}
+
+// ── dirname ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_dirname_returns_parent_for_simple_file_path() {
+    testing.assert_eq_str(path.dirname("/home/user/file.txt"), "/home/user");
+}
+
+#[test]
+fn test_dirname_returns_root_for_root_file() {
+    testing.assert_eq_str(path.dirname("/file"), "/");
+}
+
+#[test]
+fn test_dirname_returns_empty_string_when_no_slash_exists() {
+    testing.assert_eq_str(path.dirname("file.txt"), "");
+}
+
+#[test]
+fn test_dirname_strips_trailing_slash_before_split() {
+    testing.assert_eq_str(path.dirname("/home/user/"), "/home");
+}
+
+// ── basename ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_basename_returns_final_component_for_standard_path() {
+    testing.assert_eq_str(path.basename("/home/user/file.txt"), "file.txt");
+}
+
+#[test]
+fn test_basename_strips_trailing_slash() {
+    testing.assert_eq_str(path.basename("/home/user/"), "user");
+}
+
+#[test]
+fn test_basename_returns_entire_string_when_no_slash_exists() {
+    testing.assert_eq_str(path.basename("file.txt"), "file.txt");
+}
+
+#[test]
+fn test_basename_returns_empty_string_for_root() {
+    testing.assert_eq_str(path.basename("/"), "");
+}
+
+// ── extension ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_extension_returns_standard_extension() {
+    testing.assert_eq_str(path.extension("photo.jpg"), "jpg");
+}
+
+#[test]
+fn test_extension_uses_last_dot_for_multi_dot_names() {
+    testing.assert_eq_str(path.extension("archive.tar.gz"), "gz");
+}
+
+#[test]
+fn test_extension_returns_empty_string_when_no_dot_exists() {
+    testing.assert_eq_str(path.extension("Makefile"), "");
+}
+
+#[test]
+fn test_extension_returns_empty_string_for_leading_dot_only() {
+    testing.assert_eq_str(path.extension(".gitignore"), "");
+}
+
+#[test]
+fn test_extension_uses_basename_for_full_path() {
+    testing.assert_eq_str(path.extension("/home/user/file.txt"), "txt");
+}

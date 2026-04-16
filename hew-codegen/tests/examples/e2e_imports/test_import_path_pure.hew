@@ -1,0 +1,10 @@
+import std::path;
+
+fn main() {
+    println(path.combine("/a", "b"));
+    println(path.combine("/a/", "b"));
+    println(path.dirname("/home/user/file.txt"));
+    println(path.basename("/home/user/file.txt"));
+    println(path.extension("photo.jpg"));
+    println(path.extension("Makefile"));
+}

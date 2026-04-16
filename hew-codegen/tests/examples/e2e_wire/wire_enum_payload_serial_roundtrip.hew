@@ -1,6 +1,5 @@
 // Test: wire enum with unit, tuple, and struct single-payload variants.
 // JSON and YAML round-trips use externally-tagged format.
-// WASM-TODO: wire enum payload JSON/YAML — JSON/YAML serial not yet on WASM path
 #[json(camelCase)]
 wire enum SharedReading {
     SharedCount(i32);

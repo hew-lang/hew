@@ -278,9 +278,10 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
     // `main`) are visible and libraries can satisfy its undefined references.
     cmd.arg(object_path);
 
-    // Link the WASM runtime (hew-runtime compiled for wasm32-wasip1).
-    for rt_lib in find_wasm_runtime_libs(target) {
-        cmd.arg(&rt_lib);
+    // Link focused WASM support archives. JSON/YAML archives come before the
+    // runtime so wasm-ld can resolve their runtime references in one pass.
+    for lib in find_wasm_link_libs(target) {
+        cmd.arg(&lib);
     }
 
     // Link WASI libc from Rust's sysroot to provide malloc, free, etc.
@@ -308,7 +309,13 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
     Ok(())
 }
 
-fn find_wasm_runtime_libs(target: &str) -> Vec<String> {
+const WASM_LINK_ARCHIVES: [&str; 3] = [
+    "libhew_std_encoding_json.a",
+    "libhew_std_encoding_yaml.a",
+    "libhew_runtime.a",
+];
+
+fn find_wasm_link_libs(target: &str) -> Vec<String> {
     let Ok(exe) = std::env::current_exe() else {
         return Vec::new();
     };
@@ -321,26 +328,26 @@ fn find_wasm_runtime_libs(target: &str) -> Vec<String> {
         target
     };
 
-    // libhew_runtime.a compiled for wasm32-wasip1
-    let candidates = [
-        exe_dir.join(format!(
-            "../../target/{rust_target}/release/libhew_runtime.a"
-        )),
-        exe_dir.join(format!("../../target/{rust_target}/debug/libhew_runtime.a")),
-        exe_dir.join(format!("../lib/{rust_target}/libhew_runtime.a")),
-    ];
+    WASM_LINK_ARCHIVES
+        .into_iter()
+        .filter_map(|name| find_optional_hew_lib(exe_dir, name, rust_target))
+        .collect()
+}
 
-    for c in &candidates {
-        if c.exists() {
-            return vec![c
-                .canonicalize()
-                .unwrap_or_else(|_| c.clone())
-                .display()
-                .to_string()];
+fn find_optional_hew_lib(exe_dir: &std::path::Path, name: &str, triple: &str) -> Option<String> {
+    for candidate in hew_lib_candidates(exe_dir, name, triple) {
+        if candidate.exists() {
+            return Some(
+                candidate
+                    .canonicalize()
+                    .unwrap_or(candidate)
+                    .display()
+                    .to_string(),
+            );
         }
     }
 
-    Vec::new()
+    None
 }
 
 /// Locate `libc.a` from Rust's WASI sysroot so `malloc`/`free`/etc. resolve.
@@ -842,6 +849,18 @@ mod tests {
             .expect("same-dir host fallback candidate");
         assert!(cross_release_index < host_same_dir_index);
         assert!(cross_debug_index < host_same_dir_index);
+    }
+
+    #[test]
+    fn wasm_link_archives_keep_wire_support_libs_before_runtime() {
+        assert_eq!(
+            WASM_LINK_ARCHIVES,
+            [
+                "libhew_std_encoding_json.a",
+                "libhew_std_encoding_yaml.a",
+                "libhew_runtime.a",
+            ]
+        );
     }
 
     // ── output-path sanitisation (extracted from link_executable) ─────

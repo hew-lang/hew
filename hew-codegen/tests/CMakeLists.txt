@@ -1256,6 +1256,8 @@ add_wasm_file_test(indirect_list              e2e_indirect_enum    indirect_list
 add_wasm_file_test(indirect_option_tree       e2e_indirect_enum    indirect_option_tree)
 
 # Strings (extended)
+add_wasm_file_test(string_clone               e2e_strings          string_clone)
+add_wasm_file_test(string_identity_concat     e2e_strings          string_identity_concat)
 add_wasm_file_test(string_lines               e2e_strings          string_lines)
 add_wasm_file_test(string_predicates          e2e_strings          string_predicates)
 add_wasm_file_test(string_ordering            e2e_strings  string_ordering)

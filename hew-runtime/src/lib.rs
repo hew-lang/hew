@@ -414,7 +414,6 @@ pub mod hew_node;
 pub mod supervisor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transport;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod wire;
 
 #[cfg(not(target_arch = "wasm32"))]

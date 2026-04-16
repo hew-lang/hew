@@ -1,0 +1,33 @@
+import std::string;
+
+fn main() {
+    println(string.from_int(9223372036854775807));
+    println(string.to_int("9223372036854775807"));
+    println(string.to_int("99abc"));
+
+    match string.try_to_int("42") {
+        Ok(n) => println(n),
+        Err(_) => println(-1),
+    }
+
+    match string.try_to_int("42x") {
+        Ok(_) => println("unexpected"),
+        Err(e) => println(e),
+    }
+
+    match string.try_to_int("-9223372036854775808") {
+        Ok(n) => println(n),
+        Err(_) => println(-1),
+    }
+
+    match string.try_to_int("9223372036854775808") {
+        Ok(_) => println("unexpected"),
+        Err(e) => println(e),
+    }
+
+    println(string.from_char(65));
+    println(string.repeat("ab", 3));
+    println(string.pad_left("7", 4, "0"));
+    println(string.pad_right("hi", 5, "."));
+    println(string.count("abcabc", "bc"));
+}

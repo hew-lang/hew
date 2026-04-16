@@ -121,31 +121,15 @@ fn normalize_synthetic_channel_handle_expr_type(ty: &Ty) -> Ty {
     }
 }
 
-fn ty_references_tracked_inference_var(ty: &Ty, tracked_vars: &HashSet<TypeVar>) -> bool {
-    let mut unresolved = HashSet::new();
-    collect_unresolved_inference_vars(ty, &mut unresolved);
-    !unresolved.is_disjoint(tracked_vars)
+fn fn_sig_has_inference_var(sig: &FnSig) -> bool {
+    sig.params.iter().any(Ty::has_inference_var) || sig.return_type.has_inference_var()
 }
 
-fn fn_sig_references_tracked_inference_var(sig: &FnSig, tracked_vars: &HashSet<TypeVar>) -> bool {
-    sig.params
-        .iter()
-        .any(|ty| ty_references_tracked_inference_var(ty, tracked_vars))
-        || ty_references_tracked_inference_var(&sig.return_type, tracked_vars)
-}
-
-fn variant_def_references_tracked_inference_var(
-    variant: &VariantDef,
-    tracked_vars: &HashSet<TypeVar>,
-) -> bool {
+fn variant_def_has_inference_var(variant: &VariantDef) -> bool {
     match variant {
         VariantDef::Unit => false,
-        VariantDef::Tuple(fields) => fields
-            .iter()
-            .any(|ty| ty_references_tracked_inference_var(ty, tracked_vars)),
-        VariantDef::Struct(fields) => fields
-            .iter()
-            .any(|(_, ty)| ty_references_tracked_inference_var(ty, tracked_vars)),
+        VariantDef::Tuple(fields) => fields.iter().any(Ty::has_inference_var),
+        VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| ty.has_inference_var()),
     }
 }
 
@@ -165,18 +149,12 @@ fn type_def_shape_contains_error_type(type_def: &TypeDef) -> bool {
             .any(variant_def_contains_error_type)
 }
 
-fn type_def_shape_references_tracked_inference_var(
-    type_def: &TypeDef,
-    tracked_vars: &HashSet<TypeVar>,
-) -> bool {
-    type_def
-        .fields
-        .values()
-        .any(|ty| ty_references_tracked_inference_var(ty, tracked_vars))
+fn type_def_shape_has_inference_var(type_def: &TypeDef) -> bool {
+    type_def.fields.values().any(Ty::has_inference_var)
         || type_def
             .variants
             .values()
-            .any(|variant| variant_def_references_tracked_inference_var(variant, tracked_vars))
+            .any(variant_def_has_inference_var)
 }
 
 #[derive(Clone, Copy)]
@@ -240,20 +218,20 @@ impl Checker {
         self.validate_expr_output_contract(expr_types, &covered_inference_vars);
 
         type_defs.retain(|_, type_def| {
-            if type_def_shape_references_tracked_inference_var(type_def, &covered_inference_vars)
+            if type_def_shape_has_inference_var(type_def)
                 || type_def_shape_contains_error_type(type_def)
             {
                 return false;
             }
             type_def.methods.retain(|_, sig| {
-                !fn_sig_references_tracked_inference_var(sig, &covered_inference_vars)
+                !fn_sig_has_inference_var(sig)
                     && !signature_contains_error_type(&sig.params, &sig.return_type)
             });
             true
         });
 
         fn_sigs.retain(|_, sig| {
-            !fn_sig_references_tracked_inference_var(sig, &covered_inference_vars)
+            !fn_sig_has_inference_var(sig)
                 && !signature_contains_error_type(&sig.params, &sig.return_type)
         });
         Self::validate_call_type_args_output_contract(call_type_args, expr_types);
@@ -949,6 +927,150 @@ mod tests {
         assert!(
             !fn_sigs.contains_key("error_return_fn"),
             "signature with Ty::Error as return type must be pruned"
+        );
+    }
+
+    #[test]
+    fn validate_checker_output_contract_prunes_fn_sigs_with_untracked_ty_var() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let leaked_param_var = TypeVar::fresh();
+        let leaked_return_var = TypeVar::fresh();
+
+        let mut fn_sigs = HashMap::from([
+            (
+                "good_fn".to_string(),
+                FnSig {
+                    params: vec![Ty::I32],
+                    return_type: Ty::Bool,
+                    ..FnSig::default()
+                },
+            ),
+            (
+                "leaked_param_fn".to_string(),
+                FnSig {
+                    params: vec![Ty::normalize_named(
+                        "Sender".to_string(),
+                        vec![Ty::Var(leaked_param_var)],
+                    )],
+                    return_type: Ty::Unit,
+                    ..FnSig::default()
+                },
+            ),
+            (
+                "leaked_return_fn".to_string(),
+                FnSig {
+                    params: vec![Ty::I32],
+                    return_type: Ty::normalize_named(
+                        "Receiver".to_string(),
+                        vec![Ty::Var(leaked_return_var)],
+                    ),
+                    ..FnSig::default()
+                },
+            ),
+        ]);
+
+        let mut expr_types = HashMap::new();
+        let mut type_defs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            fn_sigs.contains_key("good_fn"),
+            "clean signature must survive the contract check"
+        );
+        assert!(
+            !fn_sigs.contains_key("leaked_param_fn"),
+            "signature with an untracked Ty::Var in params must be pruned"
+        );
+        assert!(
+            !fn_sigs.contains_key("leaked_return_fn"),
+            "signature with an untracked Ty::Var in return type must be pruned"
+        );
+    }
+
+    #[test]
+    fn validate_checker_output_contract_prunes_type_defs_with_untracked_ty_var() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let leaked_field_var = TypeVar::fresh();
+        let leaked_variant_var = TypeVar::fresh();
+
+        let mut type_defs = HashMap::from([
+            (
+                "Good".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Struct,
+                    name: "Good".to_string(),
+                    type_params: vec![],
+                    fields: HashMap::from([("value".to_string(), Ty::I32)]),
+                    variants: HashMap::new(),
+                    methods: HashMap::new(),
+                    doc_comment: None,
+                    is_indirect: false,
+                },
+            ),
+            (
+                "LeakedField".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Struct,
+                    name: "LeakedField".to_string(),
+                    type_params: vec![],
+                    fields: HashMap::from([(
+                        "tx".to_string(),
+                        Ty::normalize_named("Sender".to_string(), vec![Ty::Var(leaked_field_var)]),
+                    )]),
+                    variants: HashMap::new(),
+                    methods: HashMap::new(),
+                    doc_comment: None,
+                    is_indirect: false,
+                },
+            ),
+            (
+                "LeakedVariant".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Enum,
+                    name: "LeakedVariant".to_string(),
+                    type_params: vec![],
+                    fields: HashMap::new(),
+                    variants: HashMap::from([(
+                        "Recv".to_string(),
+                        VariantDef::Tuple(vec![Ty::normalize_named(
+                            "Receiver".to_string(),
+                            vec![Ty::Var(leaked_variant_var)],
+                        )]),
+                    )]),
+                    methods: HashMap::new(),
+                    doc_comment: None,
+                    is_indirect: false,
+                },
+            ),
+        ]);
+
+        let mut expr_types = HashMap::new();
+        let mut fn_sigs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        assert!(
+            type_defs.contains_key("Good"),
+            "concrete type definitions must survive the contract check"
+        );
+        assert!(
+            !type_defs.contains_key("LeakedField"),
+            "type definitions with untracked Ty::Var fields must be pruned"
+        );
+        assert!(
+            !type_defs.contains_key("LeakedVariant"),
+            "type definitions with untracked Ty::Var variants must be pruned"
         );
     }
 

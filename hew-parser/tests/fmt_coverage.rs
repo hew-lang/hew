@@ -242,6 +242,32 @@ fn fmt_continue_statement() {
     assert!(out.contains("continue;"), "output: {out}");
 }
 
+#[test]
+fn fmt_labeled_loop_roundtrip() {
+    exact_roundtrip("fn main() {\n    @outer: loop {\n        break @outer;\n    }\n}\n");
+}
+
+#[test]
+fn fmt_labeled_while_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    @counter: while x > 0 {\n        x = x - 1;\n        if x == 3 {\n            continue @counter;\n        }\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_labeled_for_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    @rows: for i in 0 .. n {\n        for j in 0 .. m {\n            if cond {\n                break @rows;\n            }\n        }\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_labeled_while_let_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    @scan: while let Some(x) = iter.next() {\n        if x == 0 {\n            break @scan;\n        }\n    }\n}\n",
+    );
+}
+
 // -----------------------------------------------------------------------
 // Match expressions
 // -----------------------------------------------------------------------
@@ -278,6 +304,13 @@ fn name(c: Colour) -> i32 {
 }";
     let out = roundtrip(src);
     assert!(out.contains("Colour::Red => 1,"), "output: {out}");
+}
+
+#[test]
+fn fmt_struct_pattern_in_match_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    match p {\n        Point { x, y } => println(x),\n        _ => println(0),\n    }\n}\n",
+    );
 }
 
 #[test]
@@ -619,6 +652,11 @@ fn fmt_import_named() {
         out.contains("import std::{println, print};"),
         "output: {out}"
     );
+}
+
+#[test]
+fn fmt_import_alias_roundtrip() {
+    exact_roundtrip("import std::net::{http as h, websocket as ws};\n");
 }
 
 #[test]
@@ -1066,6 +1104,11 @@ fn fmt_byte_string_literal_escapes() {
 }
 
 #[test]
+fn fmt_bytes_array_roundtrip() {
+    exact_roundtrip("fn main() {\n    let data = bytes [0x48, 0x65, 0x77];\n}\n");
+}
+
+#[test]
 fn fmt_regex_literal_escapes_delimiters() {
     let mut parsed = parse(r#"fn main() { let rx = re"ok"; }"#);
     assert!(
@@ -1239,6 +1282,16 @@ fn fmt_spawn_lambda_actor_roundtrip() {
 }
 
 #[test]
+fn fmt_move_lambda_roundtrip() {
+    exact_roundtrip("fn main() {\n    let f = move (x: i32) -> i32 => x + 1;\n}\n");
+}
+
+#[test]
+fn fmt_spawn_move_lambda_actor_roundtrip() {
+    exact_roundtrip("fn main() {\n    let worker = spawn move (x: int) => x + 1;\n}\n");
+}
+
+#[test]
 fn fmt_postfix_try_roundtrip() {
     exact_roundtrip("fn main() {\n    let value = result?;\n}\n");
 }
@@ -1272,6 +1325,11 @@ fn fmt_while_let_roundtrip() {
     exact_roundtrip(
         "fn main() {\n    while let Some(x) = iter.next() {\n        println(x);\n    }\n}\n",
     );
+}
+
+#[test]
+fn fmt_unsafe_block_roundtrip() {
+    exact_roundtrip("fn main() {\n    unsafe {\n        do_thing();\n    };\n}\n");
 }
 
 #[test]

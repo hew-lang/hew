@@ -1,0 +1,21 @@
+name: Stdlib Int-Surface Lint
+on:
+  pull_request:
+    paths:
+      - 'std/**/*.hew'
+      - 'std/*.hew'
+      - 'scripts/lint-stdlib-int-surface.sh'
+      - 'docs/stdlib-style-contract.md'
+
+jobs:
+  stdlib-int-surface:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check stdlib int surface (warn-only during migration wave)
+        run: |
+          bash scripts/lint-stdlib-int-surface.sh || true
+          # Note: || true makes this warn-only.
+          # This becomes a hard failure in the follow-up commit that flips
+          # to fail-mode once all modules are migrated.

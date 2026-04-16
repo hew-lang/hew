@@ -24,6 +24,12 @@ fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_arg
         }
         sig.return_type = sig.return_type.substitute_named_param(type_param, type_arg);
     }
+
+    let substituted_params: HashSet<_> = type_params.iter().cloned().collect();
+    sig.type_params
+        .retain(|type_param| !substituted_params.contains(type_param));
+    sig.type_param_bounds
+        .retain(|type_param, _| !substituted_params.contains(type_param));
     sig
 }
 

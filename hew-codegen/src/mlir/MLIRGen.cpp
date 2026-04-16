@@ -6239,9 +6239,9 @@ mlir::func::FuncOp MLIRGen::specializeGenericLambda(const std::string &varName,
   return funcOp;
 }
 
-mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(const std::string &baseTypeName,
-                                                        const std::vector<std::string> &typeArgs,
-                                                        const std::string &methodName) {
+mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(
+    const std::string &baseTypeName, const std::vector<std::string> &implTypeArgs,
+    const std::vector<std::string> &methodTypeArgs, const std::string &methodName) {
   auto implIt = genericImplMethods.find(baseTypeName);
   if (implIt == genericImplMethods.end())
     return nullptr;
@@ -6250,14 +6250,10 @@ mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(const std::string &baseT
 
   // Build the monomorphized type name (e.g. "Box_int")
   std::string mangledTypeName = baseTypeName;
-  for (const auto &ta : typeArgs)
+  for (const auto &ta : implTypeArgs)
     mangledTypeName += "_" + ta;
 
   std::string mangledMethod = mangleName(currentModulePath, mangledTypeName, methodName);
-
-  // Already specialized?
-  if (specializedFunctions.count(mangledMethod))
-    return module.lookupSymbol<mlir::func::FuncOp>(mangledMethod);
 
   // Find the method in the generic impl
   const ast::FnDecl *fn = nullptr;
@@ -6274,11 +6270,26 @@ mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(const std::string &baseT
     return nullptr;
   }
 
-  if (typeArgs.size() != implInfo.typeParams->size()) {
+  const size_t methodTypeParamCount = fn->type_params ? fn->type_params->size() : 0;
+  if (methodTypeParamCount != 0)
+    mangledMethod = mangleGenericName(mangledMethod, methodTypeArgs);
+
+  // Already specialized?
+  if (specializedFunctions.count(mangledMethod))
+    return module.lookupSymbol<mlir::func::FuncOp>(mangledMethod);
+
+  if (implTypeArgs.size() != implInfo.typeParams->size()) {
     ++errorCount_;
     emitError(builder.getUnknownLoc())
         << "generic impl for '" << baseTypeName << "' expects " << implInfo.typeParams->size()
-        << " type arguments, got " << typeArgs.size();
+        << " impl type arguments, got " << implTypeArgs.size();
+    return nullptr;
+  }
+  if (methodTypeArgs.size() != methodTypeParamCount) {
+    ++errorCount_;
+    emitError(builder.getUnknownLoc())
+        << "generic impl method '" << methodName << "' expects " << methodTypeParamCount
+        << " method type argument(s), got " << methodTypeArgs.size();
     return nullptr;
   }
 
@@ -6286,7 +6297,11 @@ mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(const std::string &baseT
   auto prevSubstitutions = std::move(typeParamSubstitutions);
   typeParamSubstitutions.clear();
   for (size_t i = 0; i < implInfo.typeParams->size(); ++i)
-    typeParamSubstitutions[(*implInfo.typeParams)[i].name] = typeArgs[i];
+    typeParamSubstitutions[(*implInfo.typeParams)[i].name] = implTypeArgs[i];
+  if (fn->type_params) {
+    for (size_t i = 0; i < fn->type_params->size(); ++i)
+      typeParamSubstitutions[(*fn->type_params)[i].name] = methodTypeArgs[i];
+  }
   // Also map Self → monomorphized type name
   typeParamSubstitutions["Self"] = mangledTypeName;
 
@@ -6327,6 +6342,165 @@ std::optional<std::string> MLIRGen::resolveTypeArgMangledName(const ast::TypeExp
   // up as a struct/enum/builtin.  Return nullopt so callers can abort
   // specialization before installing poisoned typeParamSubstitutions.
   return std::nullopt;
+}
+
+std::optional<std::vector<std::string>>
+MLIRGen::inferGenericImplMethodTypeArgs(const ast::FnDecl &method, const ast::ExprMethodCall &call,
+                                        const ast::Span &exprSpan) {
+  if (!method.type_params || method.type_params->empty())
+    return std::vector<std::string>{};
+
+  std::unordered_set<std::string> methodTypeParams;
+  for (const auto &typeParam : *method.type_params)
+    methodTypeParams.insert(typeParam.name);
+
+  std::unordered_map<std::string, std::string> substitutions;
+  auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+  auto collectSubstitutions = [&](const auto &self, const ast::TypeExpr &formal,
+                                  const ast::TypeExpr &actual) -> bool {
+    const ast::TypeExpr *resolvedFormal = resolveAliasedTypeExpr(formal, resolveAliasExpr);
+    const ast::TypeExpr *resolvedActual = resolveAliasedTypeExpr(actual, resolveAliasExpr);
+
+    if (auto *formalNamed = std::get_if<ast::TypeNamed>(&resolvedFormal->kind)) {
+      const bool isDirectMethodTypeParam =
+          methodTypeParams.count(formalNamed->name) > 0 &&
+          (!formalNamed->type_args || formalNamed->type_args->empty());
+      if (isDirectMethodTypeParam) {
+        auto mangled = resolveTypeArgMangledName(*resolvedActual);
+        if (!mangled)
+          return false;
+        auto [it, inserted] = substitutions.emplace(formalNamed->name, *mangled);
+        return inserted || it->second == *mangled;
+      }
+
+      auto *actualNamed = std::get_if<ast::TypeNamed>(&resolvedActual->kind);
+      if (!actualNamed)
+        return true;
+      if (canonicalResolvedTypeName(formalNamed->name) !=
+          canonicalResolvedTypeName(actualNamed->name)) {
+        return true;
+      }
+
+      const size_t formalArity = formalNamed->type_args ? formalNamed->type_args->size() : 0;
+      const size_t actualArity = actualNamed->type_args ? actualNamed->type_args->size() : 0;
+      if (formalArity != actualArity)
+        return true;
+      for (size_t i = 0; i < formalArity; ++i) {
+        if (!self(self, (*formalNamed->type_args)[i].value, (*actualNamed->type_args)[i].value))
+          return false;
+      }
+      return true;
+    }
+
+    if (auto *formalFn = std::get_if<ast::TypeFunction>(&resolvedFormal->kind)) {
+      auto *actualFn = std::get_if<ast::TypeFunction>(&resolvedActual->kind);
+      if (!actualFn || formalFn->params.size() != actualFn->params.size())
+        return true;
+      for (size_t i = 0; i < formalFn->params.size(); ++i) {
+        if (!self(self, formalFn->params[i].value, actualFn->params[i].value))
+          return false;
+      }
+      return self(self, formalFn->return_type->value, actualFn->return_type->value);
+    }
+
+    if (auto *formalTuple = std::get_if<ast::TypeTuple>(&resolvedFormal->kind)) {
+      auto *actualTuple = std::get_if<ast::TypeTuple>(&resolvedActual->kind);
+      if (!actualTuple || formalTuple->elements.size() != actualTuple->elements.size())
+        return true;
+      for (size_t i = 0; i < formalTuple->elements.size(); ++i) {
+        if (!self(self, formalTuple->elements[i].value, actualTuple->elements[i].value))
+          return false;
+      }
+      return true;
+    }
+
+    if (auto *formalArray = std::get_if<ast::TypeArray>(&resolvedFormal->kind)) {
+      auto *actualArray = std::get_if<ast::TypeArray>(&resolvedActual->kind);
+      if (!actualArray || formalArray->size != actualArray->size)
+        return true;
+      return self(self, formalArray->element->value, actualArray->element->value);
+    }
+
+    if (auto *formalSlice = std::get_if<ast::TypeSlice>(&resolvedFormal->kind)) {
+      auto *actualSlice = std::get_if<ast::TypeSlice>(&resolvedActual->kind);
+      if (!actualSlice)
+        return true;
+      return self(self, formalSlice->inner->value, actualSlice->inner->value);
+    }
+
+    if (auto *formalPointer = std::get_if<ast::TypePointer>(&resolvedFormal->kind)) {
+      auto *actualPointer = std::get_if<ast::TypePointer>(&resolvedActual->kind);
+      if (!actualPointer || formalPointer->is_mutable != actualPointer->is_mutable)
+        return true;
+      return self(self, formalPointer->pointee->value, actualPointer->pointee->value);
+    }
+
+    if (auto *formalOption = std::get_if<ast::TypeOption>(&resolvedFormal->kind)) {
+      auto *actualOption = std::get_if<ast::TypeOption>(&resolvedActual->kind);
+      if (!actualOption)
+        return true;
+      return self(self, formalOption->inner->value, actualOption->inner->value);
+    }
+
+    if (auto *formalResult = std::get_if<ast::TypeResult>(&resolvedFormal->kind)) {
+      auto *actualResult = std::get_if<ast::TypeResult>(&resolvedActual->kind);
+      if (!actualResult)
+        return true;
+      return self(self, formalResult->ok->value, actualResult->ok->value) &&
+             self(self, formalResult->err->value, actualResult->err->value);
+    }
+
+    return true;
+  };
+
+  if (method.params.size() != call.args.size() + 1) {
+    ++errorCount_;
+    emitError(currentLoc) << "generic impl method '" << method.name
+                          << "' receiver/argument arity mismatch during specialization";
+    return std::nullopt;
+  }
+
+  for (size_t i = 0; i < call.args.size(); ++i) {
+    const auto *actualType =
+        requireResolvedTypeOf(ast::callArgExpr(call.args[i]).span,
+                              "generic impl method argument type inference", currentLoc);
+    if (!actualType)
+      return std::nullopt;
+    if (!collectSubstitutions(collectSubstitutions, method.params[i + 1].ty.value, *actualType)) {
+      ++errorCount_;
+      emitError(currentLoc) << "generic impl method '" << method.name
+                            << "' requires monomorphizable method type arguments";
+      return std::nullopt;
+    }
+  }
+
+  if (method.return_type) {
+    const auto *actualReturnType =
+        requireResolvedTypeOf(exprSpan, "generic impl method return type inference", currentLoc);
+    if (!actualReturnType)
+      return std::nullopt;
+    if (!collectSubstitutions(collectSubstitutions, method.return_type->value, *actualReturnType)) {
+      ++errorCount_;
+      emitError(currentLoc) << "generic impl method '" << method.name
+                            << "' requires monomorphizable method return type arguments";
+      return std::nullopt;
+    }
+  }
+
+  std::vector<std::string> inferredTypeArgs;
+  inferredTypeArgs.reserve(method.type_params->size());
+  for (const auto &typeParam : *method.type_params) {
+    auto it = substitutions.find(typeParam.name);
+    if (it == substitutions.end()) {
+      ++errorCount_;
+      emitError(currentLoc) << "generic impl method '" << method.name
+                            << "' missing inferred type argument for '" << typeParam.name << "'";
+      return std::nullopt;
+    }
+    inferredTypeArgs.push_back(it->second);
+  }
+
+  return inferredTypeArgs;
 }
 
 // ── Drop tracking (RAII) ─────────────────────────────────────────

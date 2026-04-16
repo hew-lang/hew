@@ -2032,12 +2032,23 @@ impl Checker {
                 _,
             ) => {
                 if let Some(sig) = self.lookup_named_method_sig(name, type_args, method) {
-                    self.check_arity(args, sig.params.len(), &format!("method '{method}'"), span);
+                    let (freshened_params, freshened_ret, resolved_type_args) =
+                        self.instantiate_fn_sig_for_call(&sig, None, span);
+                    self.check_arity(
+                        args,
+                        freshened_params.len(),
+                        &format!("method '{method}'"),
+                        span,
+                    );
                     for (i, arg) in args.iter().enumerate() {
-                        if let Some(param_ty) = sig.params.get(i) {
+                        if let Some(param_ty) = freshened_params.get(i) {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, param_ty);
                         }
+                    }
+                    self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
+                    if !sig.type_params.is_empty() {
+                        self.record_concrete_call_type_args(span, &resolved_type_args);
                     }
                     self.record_method_call_receiver_kind(
                         span,
@@ -2046,7 +2057,7 @@ impl Checker {
                         },
                     );
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    return sig.return_type;
+                    return freshened_ret;
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
                 // When the receiver is a generic type parameter (e.g. `T` in

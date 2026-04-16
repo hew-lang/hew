@@ -5386,8 +5386,22 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     if (!callee && structType) {
       auto originIt = structTypeOrigin.find(resolvedTypeName);
       if (originIt != structTypeOrigin.end()) {
-        const auto &[baseName, typeArgs] = originIt->second;
-        callee = specializeGenericImplMethod(baseName, typeArgs, methodName);
+        const auto &[baseName, implTypeArgs] = originIt->second;
+        std::vector<std::string> methodTypeArgs;
+        if (auto implIt = genericImplMethods.find(baseName); implIt != genericImplMethods.end()) {
+          for (const auto *candidate : implIt->second.methods) {
+            if (candidate->name != methodName)
+              continue;
+            if (candidate->type_params && !candidate->type_params->empty()) {
+              auto inferred = inferGenericImplMethodTypeArgs(*candidate, mc, exprSpan);
+              if (!inferred)
+                return nullptr;
+              methodTypeArgs = std::move(*inferred);
+            }
+            break;
+          }
+        }
+        callee = specializeGenericImplMethod(baseName, implTypeArgs, methodTypeArgs, methodName);
       }
     }
     if (!callee) {

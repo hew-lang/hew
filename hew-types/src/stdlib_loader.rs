@@ -456,6 +456,7 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
         }
         // Handle blocks or unsafe blocks that wrap a call
         Expr::Block(block) | Expr::Unsafe(block) => extract_call_target(block),
+        Expr::Cast { expr, .. } => call_target_from_expr(&expr.0),
         _ => None,
     }
 }
@@ -731,7 +732,7 @@ mod tests {
             .expect("process.Child.wait should be extracted");
         assert_eq!(wait.1, "hew_process_wait");
         assert_eq!(wait.2, Vec::<Ty>::new());
-        assert_eq!(wait.3, Ty::I32);
+        assert_eq!(wait.3, Ty::I64);
 
         let kill = info
             .handle_methods
@@ -740,7 +741,7 @@ mod tests {
             .expect("process.Child.kill should be extracted");
         assert_eq!(kill.1, "hew_process_kill");
         assert_eq!(kill.2, Vec::<Ty>::new());
-        assert_eq!(kill.3, Ty::I32);
+        assert_eq!(kill.3, Ty::I64);
     }
 
     #[test]

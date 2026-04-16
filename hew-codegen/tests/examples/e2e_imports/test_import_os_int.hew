@@ -1,0 +1,17 @@
+import std::os;
+import std::string;
+
+fn main() {
+    let argc = os.args_count();
+    let program = os.args(argc - argc);
+    if argc >= 1 && program.len() > 0 {
+        println("args api ok");
+    }
+
+    println(string.from_int(argc - argc));
+
+    let pid = os.pid();
+    if pid > 0 {
+        println(string.from_int(pid - pid + 2));
+    }
+}

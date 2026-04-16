@@ -68,20 +68,20 @@ Actors expose message handlers using `receive fn`. Named actor `receive fn` meth
 
 ```hew
 actor Counter {
-    var count: i32 = 0;
+    var count: int = 0;
 
     // Fire-and-forget: no return type, caller does not await
-    receive fn increment(n: i32) {
+    receive fn increment(n: int) {
         count += n;
     }
 
     // Request-response: has return type, caller must await
-    receive fn get() -> i32 {
+    receive fn get() -> int {
         count
     }
 
     // Internal method - not accessible to other actors
-    fn validate(n: i32) -> bool {
+    fn validate(n: int) -> bool {
         n >= 0
     }
 }
@@ -110,7 +110,7 @@ For lambda actors and explicit message sending, the `<-` operator provides a con
 
 ```hew
 // Lambda actor send
-let worker = spawn (msg: i32) => { println(msg * 2); };
+let worker = spawn (msg: int) => { println(msg * 2); };
 worker <- 42;                    // fire-and-forget
 
 // The <- operator enqueues the message (fire-and-forget)
@@ -182,16 +182,16 @@ Lambda actors provide lightweight, inline actor definitions using lambda syntax:
 
 ```hew
 // Basic lambda actor
-let worker = spawn (msg: i32) => {
+let worker = spawn (msg: int) => {
     println(msg * 2);
 };
 
 // With return type for request-response
-let calc = spawn (x: i32) -> i32 => { x * x };
+let calc = spawn (x: int) -> int => { x * x };
 
 // With state capture (move semantics)
 let factor = 2;
-let multiplier = spawn move (x: i32) -> i32 => {
+let multiplier = spawn move (x: int) -> int => {
     x * factor
 };
 ```
@@ -218,8 +218,8 @@ Lambda actors return `ActorRef<Actor<M>>` for fire-and-forget or `ActorRef<Actor
 let counter: ActorRef<Counter> = spawn Counter(0);
 
 // Lambda actor spawn returns ActorRef<Actor<M>> or ActorRef<Actor<M, R>>
-let worker: ActorRef<Actor<i32>> = spawn (msg: i32) => { println(msg); };
-let calc: ActorRef<Actor<i32, i32>> = spawn (x: i32) -> i32 => { x * x };
+let worker: ActorRef<Actor<int>> = spawn (msg: int) => { println(msg); };
+let calc: ActorRef<Actor<int, int>> = spawn (x: int) -> int => { x * x };
 ```
 
 **Capture semantics:**
@@ -245,7 +245,7 @@ Lambda actors spawned within a `scope` block have their **lifetime** managed by 
 
 ```hew
 scope {
-    let worker = spawn (x: i32) => { ... };
+    let worker = spawn (x: int) => { ... };
     worker <- 1;
 }  // worker stopped when scope exits
 ```
@@ -314,7 +314,7 @@ A function can be marked `pure` to guarantee it is free of observable side effec
 The compiler statically verifies purity at type-check time.
 
 ```hew
-pure fn add(a: i32, b: i32) -> i32 {
+pure fn add(a: int, b: int) -> int {
     a + b
 }
 ```
@@ -335,7 +335,7 @@ trait Math {
 }
 
 actor Calculator {
-    pure receive fn add(a: i32, b: i32) -> i32 {
+    pure receive fn add(a: int, b: int) -> int {
         a + b
     }
 }
@@ -486,8 +486,8 @@ For type (struct) fields:
 
 ```hew
 type Point {
-    x: i32;      // immutable field
-    y: i32;      // immutable field
+    x: int;      // immutable field
+    y: int;      // immutable field
 }
 
 var p = Point { x: 0, y: 0 };
@@ -512,7 +512,7 @@ Actor fields require a `let` or `var` prefix and use semicolons as terminators:
 
 ```hew
 actor Counter {
-    var count: i32 = 0;     // mutable field with default
+    var count: int = 0;     // mutable field with default
     let name: String;        // immutable field, set by init
 }
 ```
@@ -611,7 +611,7 @@ This is enforced at compile time: any captured value in a `spawn` expression mus
 
 ```hew
 actor Example {
-    var data: Vec<i32> = Vec::new();
+    var data: Vec<int> = Vec::new();
 
     receive fn demo() {
         // Multiple mutable references - ALLOWED (single-threaded)
@@ -637,7 +637,7 @@ actor Example {
 
 ```hew
 actor Example {
-    var data: Vec<i32> = Vec::new();
+    var data: Vec<int> = Vec::new();
 
     receive fn bad_examples(other: ActorRef<Other>) {
         // Sending without move - ERROR (implicit move makes source invalid)
@@ -651,7 +651,7 @@ actor Example {
 
         // Capturing non-Send value - ERROR
         let local_handle: RawPointer = get_handle();
-        let worker = spawn move (x: i32) => {
+        let worker = spawn move (x: int) => {
             use(local_handle);  // compile error: RawPointer is not Send
         };
     }
@@ -683,7 +683,7 @@ Hew uses a file-based module system inspired by Rust:
 
 pub type Connection {
     address: String;       // public fields via pub keyword on type
-    internal_state: i32;   // fields are named, terminated with semicolons
+    internal_state: int;   // fields are named, terminated with semicolons
 }
 
 pub fn connect(addr: String) -> Result<Connection, Error> {
@@ -936,7 +936,7 @@ Actors do not use receivers at all. Actor handler methods access fields by their
 
 ```hew
 actor Counter {
-    var count: i32 = 0;
+    var count: int = 0;
     receive fn increment() {
         count += 1;  // bare field access — actor persists after handler returns
     }
@@ -984,9 +984,9 @@ Hew distinguishes three cases of variable shadowing:
 
   ```hew
   actor Example {
-      var count: i32 = 0;
+      var count: int = 0;
 
-      receive fn update(count: i32) {
+      receive fn update(count: int) {
           // compile error: variable `count` shadows a binding in an outer scope
       }
   }

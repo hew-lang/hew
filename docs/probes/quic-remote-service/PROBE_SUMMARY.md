@@ -114,11 +114,10 @@ The `std::net::quic` module provides everything this archived round-trip probe n
 - Both endpoints can independently manage their send/receive directions
 - No head-of-line blocking: streams are independent on a single connection
 
-#### ⚠️ Zero-Value Error Handling is Limited
-- When connection/stream operations fail, they return zero-valued structs (default-initialized types)
-- Cannot directly test `if conn as i64 == 0` because the type system won't allow casting struct types to i64
-- **Workaround:** Remove explicit error checks; rely on subsequent operations to fail gracefully or use the `observe()` methods to check status
-- This is acceptable for a minimal probe but would need refinement for production services
+#### ✅ Result-Based QUIC Error Handling is Available
+- Stream send/finish operations and connection disconnect now return `Result<(), String>`
+- The checked-in probe uses small `assert_ok(...)` helpers so failures surface the underlying QUIC error string immediately
+- Connection and stream handle creation still use the existing public constructors plus `observe()` / `last_error()` for diagnostics
 
 #### ✅ Public String Helpers Remove Manual Byte Plumbing
 - The checked-in probe uses `stream.send_string()` and `stream.recv_string()` for UTF-8 payloads

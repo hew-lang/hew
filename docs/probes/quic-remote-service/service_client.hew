@@ -16,6 +16,13 @@
 import std::net::quic;
 import std::os;
 
+fn assert_ok(result: Result<(), String>) {
+    match result {
+        Ok(_) => {},
+        Err(err) => panic(err),
+    }
+}
+
 fn service_port() -> String {
     var port = "4433";
     if os.has_env("HEW_QUIC_SERVICE_PORT") {
@@ -51,15 +58,11 @@ fn main() {
     
     // Send a message to the server.
     let msg = "Hello from client";
-    let result = stream.send_string(msg);
-    if result != 0 {
-        println("[client] failed to send message");
-    } else {
-        println("[client] sent message");
-    }
+    assert_ok(stream.send_string(msg));
+    println("[client] sent message");
     
     // Signal end of send (but we can still receive).
-    stream.finish();
+    assert_ok(stream.finish());
     
     // Receive response from server, then drain to EOF before close.
     let resp_msg = stream.recv_string();
@@ -74,7 +77,7 @@ fn main() {
     closed.free();
     
     // Clean shutdown of connection.
-    conn.disconnect();
+    assert_ok(conn.disconnect());
     
     // Clean shutdown of endpoint.
     ep.close();

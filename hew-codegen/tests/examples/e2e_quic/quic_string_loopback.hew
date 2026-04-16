@@ -5,6 +5,13 @@ import std::net::quic;
 // text surface so callers do not need to reach for raw FFI or manual
 // bytes conversion.
 
+fn assert_ok(result: Result<(), String>) {
+    match result {
+        Ok(_) => {},
+        Err(err) => panic(err),
+    }
+}
+
 fn main() {
     let server = quic.new_server("127.0.0.1:0");
     let server_endpoint = server.observe();
@@ -24,9 +31,9 @@ fn main() {
 
             // Receive as string, echo it back.
             let msg = stream.recv_string();
-            assert_eq(stream.send_string(msg), 0);
-            assert_eq(stream.finish(), 0);
-            assert_eq(stream.close(), 0);
+            assert_ok(stream.send_string(msg));
+            assert_ok(stream.finish());
+            stream.close();
 
             // Wait for stream-closed then peer-disconnected before tearing
             // down.  Calling conn.disconnect() too early races delivery.
@@ -38,7 +45,7 @@ fn main() {
             assert_eq(ev2.kind(), 1);
             ev2.free();
 
-            assert_eq(conn.disconnect(), 0);
+            assert_ok(conn.disconnect());
             server.close();
         };
 
@@ -53,7 +60,7 @@ fn main() {
         assert_eq(opened.kind(), 2);
         opened.free();
 
-        assert_eq(stream.send_string("hello string quic"), 0);
+        assert_ok(stream.send_string("hello string quic"));
         // Receive the echo from the server and print it to produce the
         // expected output line.  The assertion guards correctness; if it
         // fails the test fails before reaching println.
@@ -61,18 +68,18 @@ fn main() {
         assert_eq(reply, "hello string quic");
         println(reply);
 
-        assert_eq(stream.finish(), 0);
+        assert_ok(stream.finish());
         // Drain to EOF before close so the server's STREAM_FIN has been
         // delivered and we do not race the connection teardown.
         let eof = stream.recv();
         assert_eq(eof.len(), 0);
 
-        assert_eq(stream.close(), 0);
+        stream.close();
         let closed = conn.on_event();
         assert_eq(closed.kind(), 3);
         closed.free();
 
-        assert_eq(conn.disconnect(), 0);
+        assert_ok(conn.disconnect());
         client.close();
     }
 }

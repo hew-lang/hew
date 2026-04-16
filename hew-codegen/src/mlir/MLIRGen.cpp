@@ -6628,7 +6628,7 @@ std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
     return "hew_hashset_free";
   if (typeName == "Rc")
     return "hew_rc_drop";
-  if (typeName == "String" || typeName == "string" || typeName == "str")
+  if (canonicalPrimitiveTypeName(typeName) == "string")
     return "hew_string_drop";
   auto dropIt = userDropFuncs.find(typeName);
   if (dropIt != userDropFuncs.end())
@@ -6710,7 +6710,7 @@ void MLIRGen::maybeRegisterBorrowedFieldReturn(const ast::FnDecl &fn, llvm::Stri
   if (!retNamed)
     return;
   auto returnTypeName = resolveTypeAlias(retNamed->name);
-  if (returnTypeName != "String" && returnTypeName != "string" && returnTypeName != "str")
+  if (canonicalPrimitiveTypeName(returnTypeName) != "string")
     return;
 
   const ast::Expr *returnedExpr = nullptr;

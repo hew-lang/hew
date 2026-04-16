@@ -10879,6 +10879,48 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: `let s: str = "hello"` keeps the string drop registration path live.
+// ============================================================================
+static void test_str_annotated_let_registers_string_drop() {
+  TEST(str_annotated_let_registers_string_drop);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  auto module = generateMLIR(ctx, R"(
+fn str_annotated_let() -> int {
+    let s: str = "hello";
+    0
+}
+
+fn main() -> int {
+    str_annotated_let()
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for str-annotated let");
+    return;
+  }
+
+  auto fn = lookupFuncBySuffix(module, "str_annotated_let");
+  if (!fn) {
+    FAIL("str_annotated_let function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countDropOpsByDropFn(fn, "hew_string_drop", false) < 1) {
+    FAIL("str-annotated let should emit hew_string_drop");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: StmtIfLet as last statement in a function body yielding a field of an
 //       owned (callee-dropped) parameter is rejected fail-closed.
 //       (regression: blockValueYieldsFieldOfDroppedParam must walk StmtIfLet
@@ -11430,6 +11472,7 @@ int main() {
   test_match_arm_unknown_constructor_fails_closed();
   test_json_nested_scope_free_guard_slot_populated();
   test_wildcard_let_droppable_temporary_is_materialized();
+  test_str_annotated_let_registers_string_drop();
   test_iflet_stmt_wildcard_pattern_lowers();
   test_iflet_stmt_identifier_pattern_lowers();
   test_iflet_expr_wildcard_pattern_lowers();

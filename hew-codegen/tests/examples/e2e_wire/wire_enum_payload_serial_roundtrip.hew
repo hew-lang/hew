@@ -1,0 +1,49 @@
+// Test: wire enum with unit, tuple, and struct single-payload variants.
+// JSON and YAML round-trips use externally-tagged format.
+// WASM-TODO: wire enum payload JSON/YAML — JSON/YAML serial not yet on WASM path
+#[json(camelCase)]
+wire enum SharedReading {
+    SharedCount(i32);
+    SharedDelta(i32);
+}
+
+#[json(camelCase)]
+wire enum WireEvent {
+    Idle;
+    Count(i32);
+    Note { value: String };
+}
+
+fn main() {
+    let shared = SharedCount(7);
+    let shared_json = shared.to_json();
+    println(shared_json);
+    println(SharedReading.from_json(shared_json).to_json());
+    let shared_yaml = shared.to_yaml();
+    print(shared_yaml);
+    print(SharedReading.from_yaml(shared_yaml).to_yaml());
+
+    let idle = Idle;
+    let idle_json = idle.to_json();
+    println(idle_json);
+    println(WireEvent.from_json(idle_json).to_json());
+    let idle_yaml = idle.to_yaml();
+    print(idle_yaml);
+    print(WireEvent.from_yaml(idle_yaml).to_yaml());
+
+    let count = Count(42);
+    let count_json = count.to_json();
+    println(count_json);
+    println(WireEvent.from_json(count_json).to_json());
+    let count_yaml = count.to_yaml();
+    print(count_yaml);
+    print(WireEvent.from_yaml(count_yaml).to_yaml());
+
+    let note = Note { value: "urgent" };
+    let note_json = note.to_json();
+    println(note_json);
+    println(WireEvent.from_json(note_json).to_json());
+    let note_yaml = note.to_yaml();
+    print(note_yaml);
+    print(WireEvent.from_yaml(note_yaml).to_yaml());
+}

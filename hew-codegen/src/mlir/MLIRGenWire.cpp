@@ -8,11 +8,13 @@
 //   - Foo_from_json(!llvm.ptr) -> struct   (parses JSON string)
 //   - Foo_to_yaml(fields...) -> !llvm.ptr  (returns malloc'd YAML string)
 //   - Foo_from_yaml(!llvm.ptr) -> struct   (parses YAML string)
-// Each unit-only `wire enum Foo { ... }` produces:
+// Each supported `wire enum Foo { ... }` produces:
 //   - Foo_to_json(enum) -> !llvm.ptr
 //   - Foo_from_json(!llvm.ptr) -> enum
 //   - Foo_to_yaml(enum) -> !llvm.ptr
 //   - Foo_from_yaml(!llvm.ptr) -> enum
+// Supported payload enum variants are limited to unit variants plus single-field
+// primitive tuple/struct variants.
 //
 // For non-wire structs with all-primitive fields (see generateStructEncodeWrappers):
 //   - Foo_to_json(struct) -> !llvm.ptr
@@ -523,6 +525,7 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     info.name = decl.name;
 
     bool hasPayloads = false;
+    auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
     unsigned varIdx = 0;
     for (const auto &variant : decl.variants) {
       EnumVariantInfo vi;
@@ -532,11 +535,13 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
       // Convert variant payload types to MLIR types
       if (auto *tuple = std::get_if<ast::VariantDecl::VariantTuple>(&variant.kind)) {
         for (const auto &ty : tuple->fields) {
-          vi.payloadTypes.push_back(convertType(ty.value));
+          auto tyName = typeExprToTypeName(ty.value, resolveAliasExpr);
+          vi.payloadTypes.push_back(resolveWireFieldType(builder, tyName, structTypes));
         }
       } else if (auto *strct = std::get_if<ast::VariantDecl::VariantStruct>(&variant.kind)) {
         for (const auto &field : strct->fields) {
-          vi.payloadTypes.push_back(convertType(field.ty.value));
+          auto tyName = typeExprToTypeName(field.ty.value, resolveAliasExpr);
+          vi.payloadTypes.push_back(resolveWireFieldType(builder, tyName, structTypes));
           vi.fieldNames.push_back(field.name);
         }
       }
@@ -611,31 +616,29 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     }
     enumTypes[enumName] = std::move(info);
 
-    // JSON/YAML enum helpers are currently specified for unit-only wire enums.
-    // Payload-bearing enum serial helpers remain a future extension.
-    if (!enumTypes[enumName].hasPayloads) {
-      generateWireToSerial(decl, "json", decl.json_case,
+    // JSON/YAML enum helpers are generated for unit enums and the supported
+    // payload-bearing subset (single-field primitive variants).
+    generateWireToSerial(decl, "json", decl.json_case,
+                         [](const ast::WireFieldDecl &) -> const std::optional<std::string> & {
+                           static const std::optional<std::string> none;
+                           return none;
+                         });
+    generateWireFromSerial(decl, "json", decl.json_case,
                            [](const ast::WireFieldDecl &) -> const std::optional<std::string> & {
                              static const std::optional<std::string> none;
                              return none;
                            });
-      generateWireFromSerial(decl, "json", decl.json_case,
-                             [](const ast::WireFieldDecl &) -> const std::optional<std::string> & {
-                               static const std::optional<std::string> none;
-                               return none;
-                             });
-      generateWireToSerial(decl, "yaml", decl.yaml_case,
+    generateWireToSerial(decl, "yaml", decl.yaml_case,
+                         [](const ast::WireFieldDecl &) -> const std::optional<std::string> & {
+                           static const std::optional<std::string> none;
+                           return none;
+                         });
+    generateWireFromSerial(decl, "yaml", decl.yaml_case,
                            [](const ast::WireFieldDecl &) -> const std::optional<std::string> & {
                              static const std::optional<std::string> none;
                              return none;
                            });
-      generateWireFromSerial(decl, "yaml", decl.yaml_case,
-                             [](const ast::WireFieldDecl &) -> const std::optional<std::string> & {
-                               static const std::optional<std::string> none;
-                               return none;
-                             });
-      generateWireMethodWrappers(decl);
-    }
+    generateWireMethodWrappers(decl);
 
     return;
   }
@@ -1215,10 +1218,120 @@ void MLIRGen::generateWireToSerial(
 
   if (decl.kind == ast::WireDeclKind::Enum) {
     auto enumIt = enumTypes.find(declName);
-    if (enumIt == enumTypes.end() || enumIt->second.hasPayloads)
+    if (enumIt == enumTypes.end())
       return;
 
-    auto enumType = enumIt->second.mlirType;
+    const auto &enumInfo = enumIt->second;
+    auto enumType = enumInfo.mlirType;
+
+    if (!enumInfo.hasPayloads) {
+      auto savedIP = builder.saveInsertionPoint();
+      builder.setInsertionPointToEnd(module.getBody());
+      std::string fnName = declName + "_to_" + format.str();
+      if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(fnName))
+        existing.erase();
+      auto fn = mlir::func::FuncOp::create(
+          builder, location, fnName, mlir::FunctionType::get(&context, {enumType}, {ptrType}));
+      auto *entry = fn.addEntryBlock();
+      builder.setInsertionPointToStart(entry);
+
+      std::string rtParse = "hew_" + format.str() + "_parse";
+      std::string rtStringify = "hew_" + format.str() + "_stringify";
+      std::string rtFree = "hew_" + format.str() + "_free";
+
+      auto emitVariantString = [&](llvm::StringRef variantName) -> mlir::Value {
+        auto quotedPtr = wireStringPtr(location, wireEnumQuotedScalar(variantName));
+        auto parsed = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                 mlir::SymbolRefAttr::get(&context, rtParse),
+                                                 mlir::ValueRange{quotedPtr})
+                          .getResult();
+        auto result = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                 mlir::SymbolRefAttr::get(&context, rtStringify),
+                                                 mlir::ValueRange{parsed})
+                          .getResult();
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{parsed});
+        return result;
+      };
+
+      std::function<mlir::Value(size_t)> emitDispatch = [&](size_t index) -> mlir::Value {
+        if (index >= decl.variants.size()) {
+          auto msgPtr = wireStringPtr(location, wireEnumToSerialErrorMessage(format, declName));
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
+                                     mlir::ValueRange{msgPtr});
+          return mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+        }
+
+        auto isMatch = mlir::arith::CmpIOp::create(
+            builder, location, mlir::arith::CmpIPredicate::eq, entry->getArgument(0),
+            createIntConstant(builder, location, enumType, static_cast<int64_t>(index)));
+        auto ifOp = mlir::scf::IfOp::create(builder, location, ptrType, isMatch, /*hasElse=*/true);
+
+        builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+        auto thenValue =
+            emitVariantString(wireEnumVariantName(decl.variants[index].name, namingCase));
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenValue});
+
+        builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+        auto elseValue = emitDispatch(index + 1);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseValue});
+
+        builder.setInsertionPointAfter(ifOp);
+        return ifOp.getResult(0);
+      };
+
+      auto result = emitDispatch(0);
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{result});
+      builder.restoreInsertionPoint(savedIP);
+      return;
+    }
+
+    auto emitUnsupportedVariantError = [&](const ast::VariantDecl &variant,
+                                           llvm::StringRef reason) {
+      ++errorCount_;
+      emitError(location) << "wire enum '" << decl.name << "' variant '" << variant.name
+                          << "' only supports JSON/YAML helpers for single-field primitive payloads"
+                          << " (" << reason << ")";
+    };
+    auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+    std::vector<std::string> payloadTyNames(decl.variants.size());
+    for (size_t i = 0; i < decl.variants.size(); ++i) {
+      const auto &variantInfo = enumInfo.variants[i];
+      if (variantInfo.payloadTypes.empty())
+        continue;
+      if (variantInfo.payloadTypes.size() != 1 || variantInfo.payloadPositions.size() != 1) {
+        emitUnsupportedVariantError(decl.variants[i], "unsupported payload arity");
+        return;
+      }
+
+      std::string payloadTyName;
+      if (auto *tuple = std::get_if<ast::VariantDecl::VariantTuple>(&decl.variants[i].kind)) {
+        if (tuple->fields.size() != 1) {
+          emitUnsupportedVariantError(decl.variants[i], "unsupported tuple payload arity");
+          return;
+        }
+        payloadTyName = typeExprToTypeName(tuple->fields.front().value, resolveAliasExpr);
+      } else if (auto *strct =
+                     std::get_if<ast::VariantDecl::VariantStruct>(&decl.variants[i].kind)) {
+        if (strct->fields.size() != 1) {
+          emitUnsupportedVariantError(decl.variants[i], "unsupported struct payload arity");
+          return;
+        }
+        payloadTyName = typeExprToTypeName(strct->fields.front().ty.value, resolveAliasExpr);
+      } else {
+        emitUnsupportedVariantError(decl.variants[i], "unexpected unit payload metadata");
+        return;
+      }
+
+      if (!isWirePrimitiveType(payloadTyName)) {
+        emitUnsupportedVariantError(decl.variants[i], "unsupported non-primitive payload type");
+        return;
+      }
+      payloadTyNames[i] = std::move(payloadTyName);
+    }
+
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
     std::string fnName = declName + "_to_" + format.str();
@@ -1229,25 +1342,17 @@ void MLIRGen::generateWireToSerial(
     auto *entry = fn.addEntryBlock();
     builder.setInsertionPointToStart(entry);
 
-    std::string rtParse = "hew_" + format.str() + "_parse";
+    std::string rtNew = "hew_" + format.str() + "_object_new";
+    std::string rtSetBool = "hew_" + format.str() + "_object_set_bool";
+    std::string rtSetFloat = "hew_" + format.str() + "_object_set_float";
+    std::string rtSetString = "hew_" + format.str() + "_object_set_string";
+    std::string rtSetBytes = "hew_" + format.str() + "_object_set_bytes";
+    std::string rtSetInt = "hew_" + format.str() + "_object_set_int";
+    std::string rtSetNull = "hew_" + format.str() + "_object_set_null";
     std::string rtStringify = "hew_" + format.str() + "_stringify";
     std::string rtFree = "hew_" + format.str() + "_free";
-
-    auto emitVariantString = [&](llvm::StringRef variantName) -> mlir::Value {
-      auto quotedPtr = wireStringPtr(location, wireEnumQuotedScalar(variantName));
-      auto parsed = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                               mlir::SymbolRefAttr::get(&context, rtParse),
-                                               mlir::ValueRange{quotedPtr})
-                        .getResult();
-      auto result = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                               mlir::SymbolRefAttr::get(&context, rtStringify),
-                                               mlir::ValueRange{parsed})
-                        .getResult();
-      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                                 mlir::SymbolRefAttr::get(&context, rtFree),
-                                 mlir::ValueRange{parsed});
-      return result;
-    };
+    auto tag = hew::EnumExtractTagOp::create(builder, location, i32Type, entry->getArgument(0))
+                   .getResult();
 
     std::function<mlir::Value(size_t)> emitDispatch = [&](size_t index) -> mlir::Value {
       if (index >= decl.variants.size()) {
@@ -1259,13 +1364,75 @@ void MLIRGen::generateWireToSerial(
       }
 
       auto isMatch = mlir::arith::CmpIOp::create(
-          builder, location, mlir::arith::CmpIPredicate::eq, entry->getArgument(0),
-          createIntConstant(builder, location, enumType, static_cast<int64_t>(index)));
+          builder, location, mlir::arith::CmpIPredicate::eq, tag,
+          createIntConstant(builder, location, i32Type, static_cast<int64_t>(index)));
       auto ifOp = mlir::scf::IfOp::create(builder, location, ptrType, isMatch, /*hasElse=*/true);
 
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-      auto thenValue =
-          emitVariantString(wireEnumVariantName(decl.variants[index].name, namingCase));
+      auto variantName = wireEnumVariantName(decl.variants[index].name, namingCase);
+      const auto &variantInfo = enumInfo.variants[index];
+      auto objPtr =
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                     mlir::SymbolRefAttr::get(&context, rtNew), mlir::ValueRange{})
+              .getResult();
+      auto keyPtr = wireStringPtr(location, variantName);
+      if (variantInfo.payloadTypes.empty()) {
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtSetNull),
+                                   mlir::ValueRange{objPtr, keyPtr});
+      } else {
+        auto payload = hew::EnumExtractPayloadOp::create(
+                           builder, location, variantInfo.payloadTypes[0], entry->getArgument(0),
+                           variantInfo.payloadPositions[0])
+                           .getResult();
+        auto jkind = jsonKindOf(payloadTyNames[index]);
+        if (jkind == WireJsonKind::Bool) {
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, rtSetBool),
+                                     mlir::ValueRange{objPtr, keyPtr, payload});
+        } else if (jkind == WireJsonKind::Float32) {
+          auto f64v = mlir::arith::ExtFOp::create(builder, location, f64Type, payload);
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, rtSetFloat),
+                                     mlir::ValueRange{objPtr, keyPtr, f64v});
+        } else if (jkind == WireJsonKind::Float64) {
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, rtSetFloat),
+                                     mlir::ValueRange{objPtr, keyPtr, payload});
+        } else if (jkind == WireJsonKind::String) {
+          auto payloadPtr = payload;
+          if (payloadPtr.getType() != ptrType)
+            payloadPtr = hew::BitcastOp::create(builder, location, ptrType, payloadPtr).getResult();
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, rtSetString),
+                                     mlir::ValueRange{objPtr, keyPtr, payloadPtr});
+        } else if (jkind == WireJsonKind::Bytes) {
+          auto payloadPtr = payload;
+          if (payloadPtr.getType() != ptrType)
+            payloadPtr = hew::BitcastOp::create(builder, location, ptrType, payloadPtr).getResult();
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, rtSetBytes),
+                                     mlir::ValueRange{objPtr, keyPtr, payloadPtr});
+        } else {
+          mlir::Value v64 = payload;
+          if (payload.getType() == i32Type) {
+            if (isUnsignedWireType(payloadTyNames[index]))
+              v64 = mlir::arith::ExtUIOp::create(builder, location, i64Type, payload);
+            else
+              v64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, payload);
+          }
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, rtSetInt),
+                                     mlir::ValueRange{objPtr, keyPtr, v64});
+        }
+      }
+      auto thenValue = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                  mlir::SymbolRefAttr::get(&context, rtStringify),
+                                                  mlir::ValueRange{objPtr})
+                           .getResult();
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtFree),
+                                 mlir::ValueRange{objPtr});
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenValue});
 
       builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
@@ -1433,10 +1600,155 @@ void MLIRGen::generateWireFromSerial(
 
   if (decl.kind == ast::WireDeclKind::Enum) {
     auto enumIt = enumTypes.find(declName);
-    if (enumIt == enumTypes.end() || enumIt->second.hasPayloads)
+    if (enumIt == enumTypes.end())
       return;
 
-    auto enumType = enumIt->second.mlirType;
+    const auto &enumInfo = enumIt->second;
+    auto enumType = enumInfo.mlirType;
+
+    if (!enumInfo.hasPayloads) {
+      auto savedIP = builder.saveInsertionPoint();
+      builder.setInsertionPointToEnd(module.getBody());
+      std::string fnName = declName + "_from_" + format.str();
+      if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(fnName))
+        existing.erase();
+      auto fn = mlir::func::FuncOp::create(
+          builder, location, fnName, mlir::FunctionType::get(&context, {ptrType}, {enumType}));
+      auto *entry = fn.addEntryBlock();
+      builder.setInsertionPointToStart(entry);
+
+      std::string rtParse = "hew_" + format.str() + "_parse";
+      std::string rtGetString = "hew_" + format.str() + "_get_string";
+      std::string rtStringFree = "hew_" + format.str() + "_string_free";
+      std::string rtFree = "hew_" + format.str() + "_free";
+
+      auto strcmpType = mlir::FunctionType::get(&context, {ptrType, ptrType}, {i32Type});
+      getOrCreateExternFunc("strcmp", strcmpType);
+
+      auto parsed = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                               mlir::SymbolRefAttr::get(&context, rtParse),
+                                               mlir::ValueRange{entry->getArgument(0)})
+                        .getResult();
+      auto variantName = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                    mlir::SymbolRefAttr::get(&context, rtGetString),
+                                                    mlir::ValueRange{parsed})
+                             .getResult();
+
+      auto emitDecodePanic = [&](bool freeVariantString) {
+        if (freeVariantString) {
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, rtStringFree),
+                                     mlir::ValueRange{variantName});
+        }
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{parsed});
+        auto msgPtr = wireStringPtr(location, wireEnumFromSerialErrorMessage(format, declName));
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
+                                   mlir::ValueRange{msgPtr});
+      };
+
+      std::function<mlir::Value(size_t)> emitDispatch = [&](size_t index) -> mlir::Value {
+        if (index >= decl.variants.size()) {
+          emitDecodePanic(/*freeVariantString=*/true);
+          return createIntConstant(builder, location, enumType, 0);
+        }
+
+        auto expectedPtr =
+            wireStringPtr(location, wireEnumVariantName(decl.variants[index].name, namingCase));
+        auto cmp = mlir::func::CallOp::create(builder, location, "strcmp", mlir::TypeRange{i32Type},
+                                              mlir::ValueRange{variantName, expectedPtr})
+                       .getResult(0);
+        auto isMatch =
+            mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, cmp,
+                                        createIntConstant(builder, location, i32Type, 0));
+        auto ifOp = mlir::scf::IfOp::create(builder, location, enumType, isMatch, /*hasElse=*/true);
+
+        builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+        auto thenValue =
+            createIntConstant(builder, location, enumType, static_cast<int64_t>(index));
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenValue});
+
+        builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+        auto elseValue = emitDispatch(index + 1);
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseValue});
+
+        builder.setInsertionPointAfter(ifOp);
+        return ifOp.getResult(0);
+      };
+
+      auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+      auto hasString = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                                  variantName, nullPtr);
+      auto decodeIf =
+          mlir::scf::IfOp::create(builder, location, enumType, hasString, /*hasElse=*/true);
+
+      builder.setInsertionPointToStart(&decodeIf.getThenRegion().front());
+      auto decoded = emitDispatch(0);
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{decoded});
+
+      builder.setInsertionPointToStart(&decodeIf.getElseRegion().front());
+      emitDecodePanic(/*freeVariantString=*/false);
+      mlir::scf::YieldOp::create(
+          builder, location, mlir::ValueRange{createIntConstant(builder, location, enumType, 0)});
+
+      builder.setInsertionPointAfter(decodeIf);
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtStringFree),
+                                 mlir::ValueRange{variantName});
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtFree),
+                                 mlir::ValueRange{parsed});
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{decodeIf.getResult(0)});
+      builder.restoreInsertionPoint(savedIP);
+      return;
+    }
+
+    auto emitUnsupportedVariantError = [&](const ast::VariantDecl &variant,
+                                           llvm::StringRef reason) {
+      ++errorCount_;
+      emitError(location) << "wire enum '" << decl.name << "' variant '" << variant.name
+                          << "' only supports JSON/YAML helpers for single-field primitive payloads"
+                          << " (" << reason << ")";
+    };
+    auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+    std::vector<std::string> payloadTyNames(decl.variants.size());
+    for (size_t i = 0; i < decl.variants.size(); ++i) {
+      const auto &variantInfo = enumInfo.variants[i];
+      if (variantInfo.payloadTypes.empty())
+        continue;
+      if (variantInfo.payloadTypes.size() != 1 || variantInfo.payloadPositions.size() != 1) {
+        emitUnsupportedVariantError(decl.variants[i], "unsupported payload arity");
+        return;
+      }
+
+      std::string payloadTyName;
+      if (auto *tuple = std::get_if<ast::VariantDecl::VariantTuple>(&decl.variants[i].kind)) {
+        if (tuple->fields.size() != 1) {
+          emitUnsupportedVariantError(decl.variants[i], "unsupported tuple payload arity");
+          return;
+        }
+        payloadTyName = typeExprToTypeName(tuple->fields.front().value, resolveAliasExpr);
+      } else if (auto *strct =
+                     std::get_if<ast::VariantDecl::VariantStruct>(&decl.variants[i].kind)) {
+        if (strct->fields.size() != 1) {
+          emitUnsupportedVariantError(decl.variants[i], "unsupported struct payload arity");
+          return;
+        }
+        payloadTyName = typeExprToTypeName(strct->fields.front().ty.value, resolveAliasExpr);
+      } else {
+        emitUnsupportedVariantError(decl.variants[i], "unexpected unit payload metadata");
+        return;
+      }
+
+      if (!isWirePrimitiveType(payloadTyName)) {
+        emitUnsupportedVariantError(decl.variants[i], "unsupported non-primitive payload type");
+        return;
+      }
+      payloadTyNames[i] = std::move(payloadTyName);
+    }
+
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
     std::string fnName = declName + "_from_" + format.str();
@@ -1450,29 +1762,25 @@ void MLIRGen::generateWireFromSerial(
     std::string rtParse = "hew_" + format.str() + "_parse";
     std::string rtGetString = "hew_" + format.str() + "_get_string";
     std::string rtStringFree = "hew_" + format.str() + "_string_free";
+    std::string rtGetField = "hew_" + format.str() + "_get_field";
+    std::string rtGetBool = "hew_" + format.str() + "_get_bool";
+    std::string rtGetFloat = "hew_" + format.str() + "_get_float";
+    std::string rtGetBytes = "hew_" + format.str() + "_get_bytes";
+    std::string rtGetInt = "hew_" + format.str() + "_get_int";
     std::string rtFree = "hew_" + format.str() + "_free";
-
-    auto strcmpType = mlir::FunctionType::get(&context, {ptrType, ptrType}, {i32Type});
-    getOrCreateExternFunc("strcmp", strcmpType);
 
     auto parsed = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
                                              mlir::SymbolRefAttr::get(&context, rtParse),
                                              mlir::ValueRange{entry->getArgument(0)})
                       .getResult();
-    auto variantName = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
-                                                  mlir::SymbolRefAttr::get(&context, rtGetString),
-                                                  mlir::ValueRange{parsed})
-                           .getResult();
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
 
-    auto emitDecodePanic = [&](bool freeVariantString) {
-      if (freeVariantString) {
+    auto emitDecodePanic = [&](bool freeParsed) {
+      if (freeParsed) {
         hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                                   mlir::SymbolRefAttr::get(&context, rtStringFree),
-                                   mlir::ValueRange{variantName});
+                                   mlir::SymbolRefAttr::get(&context, rtFree),
+                                   mlir::ValueRange{parsed});
       }
-      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                                 mlir::SymbolRefAttr::get(&context, rtFree),
-                                 mlir::ValueRange{parsed});
       auto msgPtr = wireStringPtr(location, wireEnumFromSerialErrorMessage(format, declName));
       hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                  mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
@@ -1481,22 +1789,105 @@ void MLIRGen::generateWireFromSerial(
 
     std::function<mlir::Value(size_t)> emitDispatch = [&](size_t index) -> mlir::Value {
       if (index >= decl.variants.size()) {
-        emitDecodePanic(/*freeVariantString=*/true);
-        return createIntConstant(builder, location, enumType, 0);
+        emitDecodePanic(/*freeParsed=*/true);
+        return mlir::LLVM::UndefOp::create(builder, location, enumType).getResult();
       }
 
-      auto expectedPtr =
-          wireStringPtr(location, wireEnumVariantName(decl.variants[index].name, namingCase));
-      auto cmp = mlir::func::CallOp::create(builder, location, "strcmp", mlir::TypeRange{i32Type},
-                                            mlir::ValueRange{variantName, expectedPtr})
-                     .getResult(0);
-      auto isMatch =
-          mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, cmp,
-                                      createIntConstant(builder, location, i32Type, 0));
+      auto variantName = wireEnumVariantName(decl.variants[index].name, namingCase);
+      auto keyPtr = wireStringPtr(location, variantName);
+      auto fieldJval = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                  mlir::SymbolRefAttr::get(&context, rtGetField),
+                                                  mlir::ValueRange{parsed, keyPtr})
+                           .getResult();
+      auto isMatch = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                                fieldJval, nullPtr);
       auto ifOp = mlir::scf::IfOp::create(builder, location, enumType, isMatch, /*hasElse=*/true);
 
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-      auto thenValue = createIntConstant(builder, location, enumType, static_cast<int64_t>(index));
+      const auto &variantInfo = enumInfo.variants[index];
+      mlir::Value thenValue;
+      if (!variantInfo.payloadTypes.empty()) {
+        mlir::Value decoded;
+        auto jkind = jsonKindOf(payloadTyNames[index]);
+        if (jkind == WireJsonKind::Bool) {
+          decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                               mlir::SymbolRefAttr::get(&context, rtGetBool),
+                                               mlir::ValueRange{fieldJval})
+                        .getResult();
+        } else if (jkind == WireJsonKind::Float32) {
+          auto f64v = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
+                                                 mlir::SymbolRefAttr::get(&context, rtGetFloat),
+                                                 mlir::ValueRange{fieldJval})
+                          .getResult();
+          decoded = mlir::arith::TruncFOp::create(builder, location, builder.getF32Type(), f64v);
+        } else if (jkind == WireJsonKind::Float64) {
+          decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
+                                               mlir::SymbolRefAttr::get(&context, rtGetFloat),
+                                               mlir::ValueRange{fieldJval})
+                        .getResult();
+        } else if (jkind == WireJsonKind::String) {
+          decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                               mlir::SymbolRefAttr::get(&context, rtGetString),
+                                               mlir::ValueRange{fieldJval})
+                        .getResult();
+          if (variantInfo.payloadTypes[0] != ptrType)
+            decoded =
+                hew::BitcastOp::create(builder, location, variantInfo.payloadTypes[0], decoded)
+                    .getResult();
+        } else if (jkind == WireJsonKind::Bytes) {
+          decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                               mlir::SymbolRefAttr::get(&context, rtGetBytes),
+                                               mlir::ValueRange{fieldJval})
+                        .getResult();
+          if (variantInfo.payloadTypes[0] != ptrType)
+            decoded =
+                hew::BitcastOp::create(builder, location, variantInfo.payloadTypes[0], decoded)
+                    .getResult();
+        } else {
+          auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
+                                                   mlir::SymbolRefAttr::get(&context, rtGetInt),
+                                                   mlir::ValueRange{fieldJval})
+                            .getResult();
+          if (auto bounds = wireFromSerialIntegerBounds(payloadTyNames[index])) {
+            auto minVal = createIntConstant(builder, location, i64Type, bounds->min);
+            auto maxVal = createIntConstant(builder, location, i64Type, bounds->max);
+            auto belowMin = mlir::arith::CmpIOp::create(
+                builder, location, mlir::arith::CmpIPredicate::slt, rawI64, minVal);
+            auto aboveMax = mlir::arith::CmpIOp::create(
+                builder, location, mlir::arith::CmpIPredicate::sgt, rawI64, maxVal);
+            auto outOfRange = mlir::arith::OrIOp::create(builder, location, belowMin, aboveMax);
+            auto outOfRangeIf =
+                mlir::scf::IfOp::create(builder, location, outOfRange, /*hasElse=*/false);
+            builder.setInsertionPointToStart(&outOfRangeIf.getThenRegion().front());
+            auto msgPtr =
+                wireStringPtr(location, wireFromSerialIntegerDecodeErrorMessage(
+                                            format, variantName, payloadTyNames[index], *bounds));
+            hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                       mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
+                                       mlir::ValueRange{msgPtr});
+            builder.setInsertionPointAfter(outOfRangeIf);
+          }
+          auto fieldType = wireTypeToMLIR(builder, payloadTyNames[index]);
+          decoded =
+              (fieldType == i32Type)
+                  ? mlir::arith::TruncIOp::create(builder, location, i32Type, rawI64).getResult()
+                  : rawI64;
+        }
+
+        thenValue = hew::EnumConstructOp::create(
+            builder, location, enumType, static_cast<uint32_t>(index), llvm::StringRef(decl.name),
+            mlir::ValueRange{decoded}, builder.getI64ArrayAttr({variantInfo.payloadPositions[0]}));
+      } else {
+        thenValue = hew::EnumConstructOp::create(
+            builder, location, enumType, static_cast<uint32_t>(index), llvm::StringRef(decl.name),
+            mlir::ValueRange{}, mlir::ArrayAttr{});
+      }
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtFree),
+                                 mlir::ValueRange{fieldJval});
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtFree),
+                                 mlir::ValueRange{parsed});
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenValue});
 
       builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
@@ -1507,28 +1898,21 @@ void MLIRGen::generateWireFromSerial(
       return ifOp.getResult(0);
     };
 
-    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    auto hasString = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
-                                                variantName, nullPtr);
+    auto hasParsed = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                                parsed, nullPtr);
     auto decodeIf =
-        mlir::scf::IfOp::create(builder, location, enumType, hasString, /*hasElse=*/true);
-
+        mlir::scf::IfOp::create(builder, location, enumType, hasParsed, /*hasElse=*/true);
     builder.setInsertionPointToStart(&decodeIf.getThenRegion().front());
     auto decoded = emitDispatch(0);
     mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{decoded});
 
     builder.setInsertionPointToStart(&decodeIf.getElseRegion().front());
-    emitDecodePanic(/*freeVariantString=*/false);
-    mlir::scf::YieldOp::create(builder, location,
-                               mlir::ValueRange{createIntConstant(builder, location, enumType, 0)});
+    emitDecodePanic(/*freeParsed=*/false);
+    mlir::scf::YieldOp::create(
+        builder, location,
+        mlir::ValueRange{mlir::LLVM::UndefOp::create(builder, location, enumType).getResult()});
 
     builder.setInsertionPointAfter(decodeIf);
-    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                               mlir::SymbolRefAttr::get(&context, rtStringFree),
-                               mlir::ValueRange{variantName});
-    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
-                               mlir::SymbolRefAttr::get(&context, rtFree),
-                               mlir::ValueRange{parsed});
     mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{decodeIf.getResult(0)});
     builder.restoreInsertionPoint(savedIP);
     return;
@@ -1711,7 +2095,7 @@ void MLIRGen::generateWireFromSerial(
 //   Wire structs:
 //     Instance methods (encode, to_json, to_yaml): extract fields, delegate
 //     Static methods (decode, from_json, from_yaml): pass-through delegate
-//   Unit wire enums:
+//   Supported wire enums:
 //     Instance methods (to_json, to_yaml): pass-through delegate
 //     Static methods (from_json, from_yaml): pass-through delegate
 //
@@ -1775,7 +2159,7 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
 
   if (decl.kind == ast::WireDeclKind::Enum) {
     auto enumIt = enumTypes.find(declName);
-    if (enumIt == enumTypes.end() || enumIt->second.hasPayloads)
+    if (enumIt == enumTypes.end())
       return;
     auto enumType = enumIt->second.mlirType;
     generatePassThroughInstanceWrapper("to_json", declName + "_to_json", enumType, ptrType);

@@ -7809,13 +7809,16 @@ fn main() -> int {
     return;
   }
 
+  bool sawIntField = false;
   bool sawBigField = false;
   bool sawTextField = false;
   bool sawUnexpectedField = false;
 
   module.walk([&](hew::EnumExtractPayloadOp op) {
     auto fieldIdx = static_cast<int64_t>(op.getFieldIndex());
-    if (fieldIdx == 2) {
+    if (fieldIdx == 1) {
+      sawIntField = true;
+    } else if (fieldIdx == 2) {
       sawBigField = true;
     } else if (fieldIdx == 3) {
       sawTextField = true;
@@ -7824,7 +7827,7 @@ fn main() -> int {
     }
   });
 
-  if (!sawBigField || !sawTextField) {
+  if (!sawIntField || !sawBigField || !sawTextField) {
     FAIL("missing mixed-payload match extraction slots");
     module.getOperation()->destroy();
     return;

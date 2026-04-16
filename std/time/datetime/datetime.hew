@@ -73,38 +73,38 @@ pub fn try_parse(s: String, fmt: String) -> Result<int, String> {
 }
 
 /// Extract the year component from an epoch-millisecond timestamp.
-pub fn year(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_year(epoch_ms) }
+pub fn year(epoch_ms: int) -> int {
+    unsafe { hew_datetime_year(epoch_ms as i64) }
 }
 
 /// Extract the month (1–12) from an epoch-millisecond timestamp.
-pub fn month(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_month(epoch_ms) }
+pub fn month(epoch_ms: int) -> int {
+    unsafe { hew_datetime_month(epoch_ms as i64) }
 }
 
 /// Extract the day of the month (1–31) from an epoch-millisecond timestamp.
-pub fn day(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_day(epoch_ms) }
+pub fn day(epoch_ms: int) -> int {
+    unsafe { hew_datetime_day(epoch_ms as i64) }
 }
 
 /// Extract the hour (0–23) from an epoch-millisecond timestamp.
-pub fn hour(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_hour(epoch_ms) }
+pub fn hour(epoch_ms: int) -> int {
+    unsafe { hew_datetime_hour(epoch_ms as i64) }
 }
 
 /// Extract the minute (0–59) from an epoch-millisecond timestamp.
-pub fn minute(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_minute(epoch_ms) }
+pub fn minute(epoch_ms: int) -> int {
+    unsafe { hew_datetime_minute(epoch_ms as i64) }
 }
 
 /// Extract the second (0–59) from an epoch-millisecond timestamp.
-pub fn second(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_second(epoch_ms) }
+pub fn second(epoch_ms: int) -> int {
+    unsafe { hew_datetime_second(epoch_ms as i64) }
 }
 
 /// Return the day of the week (0 = Monday, 6 = Sunday).
-pub fn weekday(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_weekday(epoch_ms) }
+pub fn weekday(epoch_ms: int) -> int {
+    unsafe { hew_datetime_weekday(epoch_ms as i64) }
 }
 
 /// Add a number of days to an epoch-millisecond timestamp.

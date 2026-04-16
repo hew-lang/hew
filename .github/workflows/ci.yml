@@ -256,9 +256,16 @@ jobs:
 
       - name: Install wasmtime
         if: env.RUN_CODE_PATH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+          WASMTIME_TAG="$(gh release view --repo bytecodealliance/wasmtime --json tagName --jq .tagName)"
+          WASMTIME_DIR="wasmtime-${WASMTIME_TAG}-x86_64-linux"
+          gh release download "$WASMTIME_TAG" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
+          tar -xJf "${WASMTIME_DIR}.tar.xz"
+          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run curated playground WASI runtime preflight
         if: env.RUN_CODE_PATH == 'true'

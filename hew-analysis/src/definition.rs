@@ -1,6 +1,6 @@
 //! Go-to-definition analysis: find the definition site of an identifier in the AST.
 
-use hew_parser::ast::{Item, TraitItem, TypeBodyItem};
+use hew_parser::ast::{Block, FnDecl, Item, Param, Pattern, Span, Stmt, TraitItem, TypeBodyItem};
 use hew_parser::ParseResult;
 
 use crate::OffsetSpan;
@@ -106,6 +106,304 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
     None
 }
 
+/// Find the definition site of a local `let`/`var` binding that is in scope at
+/// `offset`.
+#[must_use]
+pub fn find_local_binding_definition(
+    source: &str,
+    parse_result: &ParseResult,
+    word: &str,
+    offset: usize,
+) -> Option<OffsetSpan> {
+    for (item, _) in &parse_result.program.items {
+        if let Some(span) = find_local_in_item(source, item, word, offset) {
+            return Some(span);
+        }
+    }
+    None
+}
+
+/// Find the definition site of a function or method parameter whose binding is
+/// in scope at `offset`.
+#[must_use]
+pub fn find_param_definition(
+    parse_result: &ParseResult,
+    word: &str,
+    offset: usize,
+) -> Option<OffsetSpan> {
+    for (item, _) in &parse_result.program.items {
+        if let Some(span) = find_param_in_item(item, word, offset) {
+            return Some(span);
+        }
+    }
+    None
+}
+
+fn find_local_in_item(source: &str, item: &Item, word: &str, offset: usize) -> Option<OffsetSpan> {
+    match item {
+        Item::Function(function) => find_local_in_block(source, &function.body, word, offset),
+        Item::Actor(actor) => {
+            if let Some(init) = &actor.init {
+                if let Some(span) = find_local_in_block(source, &init.body, word, offset) {
+                    return Some(span);
+                }
+            }
+            if let Some(term) = &actor.terminate {
+                if let Some(span) = find_local_in_block(source, &term.body, word, offset) {
+                    return Some(span);
+                }
+            }
+            for recv in &actor.receive_fns {
+                if let Some(span) = find_local_in_block(source, &recv.body, word, offset) {
+                    return Some(span);
+                }
+            }
+            for method in &actor.methods {
+                if let Some(span) = find_local_in_block(source, &method.body, word, offset) {
+                    return Some(span);
+                }
+            }
+            None
+        }
+        Item::TypeDecl(type_decl) => {
+            for body_item in &type_decl.body {
+                if let TypeBodyItem::Method(method) = body_item {
+                    if let Some(span) = find_local_in_block(source, &method.body, word, offset) {
+                        return Some(span);
+                    }
+                }
+            }
+            None
+        }
+        Item::Impl(impl_decl) => {
+            for method in &impl_decl.methods {
+                if let Some(span) = find_local_in_block(source, &method.body, word, offset) {
+                    return Some(span);
+                }
+            }
+            None
+        }
+        Item::Trait(trait_decl) => {
+            for trait_item in &trait_decl.items {
+                if let TraitItem::Method(method) = trait_item {
+                    if let Some(body) = &method.body {
+                        if let Some(span) = find_local_in_block(source, body, word, offset) {
+                            return Some(span);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn find_local_in_block(
+    source: &str,
+    block: &Block,
+    word: &str,
+    offset: usize,
+) -> Option<OffsetSpan> {
+    let mut found = None;
+    for (stmt, stmt_span) in &block.stmts {
+        if stmt_span.start > offset {
+            break;
+        }
+        if let Some(span) = find_local_in_stmt(source, stmt, stmt_span, word, offset) {
+            found = Some(span);
+        }
+    }
+    found
+}
+
+fn find_local_in_stmt(
+    source: &str,
+    stmt: &Stmt,
+    stmt_span: &Span,
+    word: &str,
+    offset: usize,
+) -> Option<OffsetSpan> {
+    match stmt {
+        Stmt::Let { pattern, .. } => find_binding_definition(source, pattern, word, offset),
+        Stmt::Var { name, .. } => {
+            if name == word {
+                Some(crate::util::find_name_span(source, stmt_span.start, word))
+            } else {
+                None
+            }
+        }
+        Stmt::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            let mut found = None;
+            if block_contains_offset(then_block, offset) {
+                found = find_local_in_block(source, then_block, word, offset);
+            }
+            if let Some(else_block) = else_block {
+                if let Some(if_stmt) = &else_block.if_stmt {
+                    if span_contains_offset(&if_stmt.1, offset) {
+                        found = find_local_in_stmt(source, &if_stmt.0, &if_stmt.1, word, offset);
+                    }
+                } else if let Some(block) = &else_block.block {
+                    if block_contains_offset(block, offset) {
+                        found = find_local_in_block(source, block, word, offset);
+                    }
+                }
+            }
+            found
+        }
+        Stmt::IfLet {
+            body, else_body, ..
+        } => {
+            if block_contains_offset(body, offset) {
+                return find_local_in_block(source, body, word, offset);
+            }
+            else_body.as_ref().and_then(|block| {
+                block_contains_offset(block, offset)
+                    .then(|| find_local_in_block(source, block, word, offset))
+                    .flatten()
+            })
+        }
+        Stmt::For { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::WhileLet { body, .. } => block_contains_offset(body, offset)
+            .then(|| find_local_in_block(source, body, word, offset))
+            .flatten(),
+        _ => None,
+    }
+}
+
+fn find_binding_definition(
+    source: &str,
+    pattern: &(Pattern, Span),
+    word: &str,
+    offset: usize,
+) -> Option<OffsetSpan> {
+    if pattern.1.start > offset {
+        return None;
+    }
+    match &pattern.0 {
+        Pattern::Identifier(name) => {
+            if name == word {
+                Some(crate::util::find_name_span(source, pattern.1.start, word))
+            } else {
+                None
+            }
+        }
+        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
+            .iter()
+            .find_map(|pattern| find_binding_definition(source, pattern, word, offset)),
+        Pattern::Struct { fields, .. } => fields.iter().find_map(|field| {
+            field
+                .pattern
+                .as_ref()
+                .and_then(|pattern| find_binding_definition(source, pattern, word, offset))
+        }),
+        Pattern::Or(left, right) => find_binding_definition(source, left, word, offset)
+            .or_else(|| find_binding_definition(source, right, word, offset)),
+        Pattern::Wildcard | Pattern::Literal(_) => None,
+    }
+}
+
+fn find_param_in_item(item: &Item, word: &str, offset: usize) -> Option<OffsetSpan> {
+    match item {
+        Item::Function(function) => {
+            find_param_in_decl(&function.fn_span, &function.params, word, offset)
+        }
+        Item::Actor(actor) => {
+            for recv in &actor.receive_fns {
+                if let Some(span) = find_param_in_decl(&recv.span, &recv.params, word, offset) {
+                    return Some(span);
+                }
+            }
+            for method in &actor.methods {
+                if let Some(span) = find_param_in_method(method, word, offset) {
+                    return Some(span);
+                }
+            }
+            None
+        }
+        Item::TypeDecl(type_decl) => {
+            for body_item in &type_decl.body {
+                if let TypeBodyItem::Method(method) = body_item {
+                    if let Some(span) = find_param_in_method(method, word, offset) {
+                        return Some(span);
+                    }
+                }
+            }
+            None
+        }
+        Item::Impl(impl_decl) => {
+            for method in &impl_decl.methods {
+                if let Some(span) = find_param_in_method(method, word, offset) {
+                    return Some(span);
+                }
+            }
+            None
+        }
+        Item::Trait(trait_decl) => {
+            for trait_item in &trait_decl.items {
+                if let TraitItem::Method(method) = trait_item {
+                    if let Some(span) =
+                        find_param_in_decl(&method.span, &method.params, word, offset)
+                    {
+                        return Some(span);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn find_param_in_method(method: &FnDecl, word: &str, offset: usize) -> Option<OffsetSpan> {
+    find_param_in_decl(&method.fn_span, &method.params, word, offset)
+}
+
+fn find_param_in_decl(
+    decl_span: &Span,
+    params: &[Param],
+    word: &str,
+    offset: usize,
+) -> Option<OffsetSpan> {
+    if !span_contains_offset(decl_span, offset) {
+        return None;
+    }
+    params
+        .iter()
+        .find(|param| param.name == word)
+        .map(param_name_span)
+}
+
+fn param_name_span(param: &Param) -> OffsetSpan {
+    let end = param.ty.1.start.saturating_sub(2);
+    let start = end.saturating_sub(param.name.len());
+    OffsetSpan { start, end }
+}
+
+fn block_contains_offset(block: &Block, offset: usize) -> bool {
+    let start = block
+        .stmts
+        .first()
+        .map(|(_, span)| span.start)
+        .or_else(|| block.trailing_expr.as_ref().map(|expr| expr.1.start));
+    let end = block
+        .trailing_expr
+        .as_ref()
+        .map(|expr| expr.1.end)
+        .or_else(|| block.stmts.last().map(|(_, span)| span.end));
+    matches!((start, end), (Some(start), Some(end)) if start <= offset && offset <= end)
+}
+
+fn span_contains_offset(span: &Span, offset: usize) -> bool {
+    span.is_empty() || (span.start <= offset && offset <= span.end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +488,59 @@ mod tests {
         let method_start = source.rfind("fn foo").expect("method should exist") + 3;
         assert_eq!(result.start, method_start);
         assert_eq!(&source[result.start..result.end], "foo");
+    }
+
+    #[test]
+    fn definition_finds_local_let_binding() {
+        let source = "fn main() { let x = 1; let _ = x + 2; }";
+        let pr = parse(source);
+        let offset = source.find("x + 2").expect("usage should exist");
+        let result = find_local_binding_definition(source, &pr, "x", offset)
+            .expect("should find let binding");
+        let binding_offset = source.find("let x").expect("binding should exist") + 4;
+        assert_eq!(result.start, binding_offset);
+        assert_eq!(&source[result.start..result.end], "x");
+    }
+
+    #[test]
+    fn definition_finds_local_var_binding() {
+        let source = "fn main() { var count = 0; count = count + 1; }";
+        let pr = parse(source);
+        let offset = source.rfind("count").expect("usage should exist");
+        let result = find_local_binding_definition(source, &pr, "count", offset)
+            .expect("should find var binding");
+        let binding_offset = source.find("var count").expect("binding should exist") + 4;
+        assert_eq!(result.start, binding_offset);
+        assert_eq!(&source[result.start..result.end], "count");
+    }
+
+    #[test]
+    fn definition_finds_shadowing_local_binding() {
+        let source = "fn main() { let x = 1; let x = 2; x + 1; }";
+        let pr = parse(source);
+        let offset = source.rfind("x + 1").expect("usage should exist");
+        let result = find_local_binding_definition(source, &pr, "x", offset)
+            .expect("should find inner binding");
+        let binding_offset = source.rfind("let x").expect("inner binding should exist") + 4;
+        assert_eq!(result.start, binding_offset);
+    }
+
+    #[test]
+    fn definition_finds_function_param() {
+        let source = "fn add(x: i32, y: i32) -> i32 { x + y }";
+        let pr = parse(source);
+        let offset = source.find("x + y").expect("usage should exist");
+        let result = find_param_definition(&pr, "x", offset).expect("should find parameter");
+        let param_offset = source.find("x: i32").expect("param should exist");
+        assert_eq!(result.start, param_offset);
+        assert_eq!(&source[result.start..result.end], "x");
+    }
+
+    #[test]
+    fn definition_param_does_not_leak_across_functions() {
+        let source = "fn a(x: i32) -> i32 { x }\nfn b() -> i32 { 1 }";
+        let pr = parse(source);
+        let offset = source.rfind("1 }").expect("usage should exist");
+        assert!(find_param_definition(&pr, "x", offset).is_none());
     }
 }

@@ -283,8 +283,8 @@ impl Checker {
             let resolved = self.subst.resolve(&site.ty);
             collect_unresolved_inference_vars(&resolved, &mut covered_inference_vars);
         }
-        for poly_vars in self.lambda_poly_type_var_map.values() {
-            for (_, poly_var) in poly_vars {
+        for sig in self.lambda_poly_sig_map.values() {
+            for poly_var in &sig.type_vars {
                 let resolved_poly = self.subst.resolve(&Ty::Var(*poly_var));
                 collect_unresolved_inference_vars(&resolved_poly, &mut covered_inference_vars);
             }

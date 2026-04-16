@@ -413,6 +413,12 @@ pub struct FnSig {
     pub doc_comment: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct GenericLambdaSig {
+    pub(super) call_sig: FnSig,
+    pub(super) type_vars: Vec<TypeVar>,
+}
+
 impl Default for FnSig {
     fn default() -> Self {
         Self {
@@ -600,14 +606,14 @@ pub struct Checker {
     /// Builtin `Ok`/`Err` constructor calls whose output type may need
     /// checked-output fallback when one side remains unconstrained.
     pub(super) builtin_result_output_type_args: HashMap<SpanKey, (Ty, Ty)>,
-    /// Maps a let-bound name to the (`TypeParam` name, `TypeVar`) pairs created
-    /// when that name was bound to a generic lambda expression.  Used to
-    /// populate `call_type_args` when the lambda is called later.
-    pub(super) lambda_poly_type_var_map: HashMap<String, Vec<(String, TypeVar)>>,
+    /// Maps a let-binding's definition span to the generic lambda call
+    /// signature captured when that binding was type-checked. Used to freshen
+    /// type variables per call site and populate `call_type_args`.
+    pub(super) lambda_poly_sig_map: HashMap<SpanKey, GenericLambdaSig>,
     /// Scratch field: set by `check_lambda` when it processes a generic lambda
-    /// (one with non-empty `type_params`).  Consumed immediately in the
-    /// enclosing `Stmt::Let` handler to populate `lambda_poly_type_var_map`.
-    pub(super) last_lambda_generic_vars: Option<Vec<(String, TypeVar)>>,
+    /// (one with non-empty `type_params`). Consumed immediately in the
+    /// enclosing `Stmt::Let` handler to populate `lambda_poly_sig_map`.
+    pub(super) last_lambda_generic_sig: Option<GenericLambdaSig>,
     /// Range bounds whose element type is deferred until surrounding inference
     /// settles. Each entry is (span, element-TypeVar, literal-value-if-any).
     /// Processed in `apply_deferred_range_bound_types` after all inference and
@@ -702,8 +708,8 @@ impl Checker {
             const_values: HashMap::new(),
             call_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),
-            lambda_poly_type_var_map: HashMap::new(),
-            last_lambda_generic_vars: None,
+            lambda_poly_sig_map: HashMap::new(),
+            last_lambda_generic_sig: None,
             deferred_range_bounds: Vec::new(),
         }
     }

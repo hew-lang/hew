@@ -1,0 +1,9 @@
+fn main() {
+    let id = <T>(x: T) -> T => x;
+
+    let number: int = id(42);
+    let flag: bool = id(true);
+
+    println(number);
+    println(flag);
+}

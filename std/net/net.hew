@@ -117,12 +117,20 @@ type Connection {}
 trait ListenerMethods {
     /// Block until a client connects and return the new `Connection`.
     fn accept(ln: Listener) -> Connection;
+
+    /// Close the listener and release the listening socket.
+    fn close(ln: Listener) -> i32;
 }
 
 impl ListenerMethods for Listener {
     /// Block until a client connects and return the new `Connection`.
     fn accept(ln: Listener) -> Connection {
         unsafe { hew_tcp_accept(ln) }
+    }
+
+    /// Close the listener and release the listening socket.
+    fn close(ln: Listener) -> i32 {
+        unsafe { hew_tcp_close(ln) }
     }
 }
 

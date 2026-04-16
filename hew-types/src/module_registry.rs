@@ -550,6 +550,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_handle_method_sig_returns_listener_close_and_request_free() {
+        let mut reg = registry();
+        reg.load("std::net").unwrap();
+        reg.load("std::net::http").unwrap();
+
+        let listener_close = reg
+            .resolve_handle_method_sig("net.Listener", "close")
+            .expect("net.Listener.close should resolve");
+        assert_eq!(listener_close.0, "hew_tcp_close");
+        assert_eq!(listener_close.1, Vec::<crate::ty::Ty>::new());
+        assert_eq!(listener_close.2, crate::ty::Ty::I32);
+
+        let request_free = reg
+            .resolve_handle_method_sig("http.Request", "free")
+            .expect("http.Request.free should resolve");
+        assert_eq!(request_free.0, "hew_http_request_free");
+        assert_eq!(request_free.1, Vec::<crate::ty::Ty>::new());
+        assert_eq!(request_free.2, crate::ty::Ty::Unit);
+    }
+
+    #[test]
     fn qualify_handle_type_works() {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();

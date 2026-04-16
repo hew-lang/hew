@@ -140,6 +140,10 @@ impl RequestMethods for Request {
     fn respond_stream(req: Request, status: i32, content_type: String) -> Sink<String> {
         unsafe { hew_http_respond_stream(req, status, content_type) }
     }
+    /// Release the underlying request resources.
+    fn free(req: Request) {
+        unsafe { hew_http_request_free(req) };
+    }
 }
 
 impl Drop for Request {

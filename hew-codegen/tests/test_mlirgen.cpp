@@ -5526,6 +5526,43 @@ fn broken_log() {
   PASS();
 }
 
+static void test_log_unknown_method_fails_closed() {
+  TEST(log_unknown_method_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::misc::log;
+
+fn broken_log() {
+    log.info("ready");
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_log");
+  if (!fn) {
+    FAIL("broken_log function not found");
+    return;
+  }
+
+  if (!rewriteFunctionMethodCall(*fn, "info", "mystery_level")) {
+    FAIL("failed to rewrite log method for unknown-dispatch test");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(program, "unknown log method: mystery_level",
+                                             "expected MLIR generation failure for unknown log "
+                                             "method",
+                                             "expected unknown log method diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
 // ============================================================================
 // Test: println_int missing expr_type metadata fails closed
 // ============================================================================
@@ -10954,6 +10991,79 @@ fn main() -> i64 {
   PASS();
 }
 
+static void test_vec_unknown_method_dispatch_fails_closed() {
+  TEST(vec_unknown_method_dispatch_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_vec() -> int {
+    let v: Vec<int> = Vec::new();
+    v.len()
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_vec");
+  if (!fn) {
+    FAIL("broken_vec function not found");
+    return;
+  }
+
+  if (!rewriteFunctionMethodCall(*fn, "len", "mystery_vec")) {
+    FAIL("failed to rewrite Vec method for unknown-dispatch test");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(program,
+                                             "unknown method 'mystery_vec' on collection type '",
+                                             "expected codegen to fail for unknown Vec method "
+                                             "dispatch",
+                                             "expected unknown Vec method dispatch diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_hashmap_unknown_method_dispatch_fails_closed() {
+  TEST(hashmap_unknown_method_dispatch_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn broken_map() -> int {
+    let m: HashMap<String, int> = HashMap::new();
+    m.len()
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "broken_map");
+  if (!fn) {
+    FAIL("broken_map function not found");
+    return;
+  }
+
+  if (!rewriteFunctionMethodCall(*fn, "len", "mystery_map")) {
+    FAIL("failed to rewrite HashMap method for unknown-dispatch test");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(
+          program, "unknown method 'mystery_map' on collection type '",
+          "expected codegen to fail for unknown HashMap method dispatch",
+          "expected unknown HashMap method dispatch diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
 // ============================================================================
 // Test: unsigned division missing expr_types entry fails closed
 // (covers the "binary signedness decision" path distinct from widening/comparison)
@@ -12748,6 +12858,8 @@ int main() {
   test_assignment_missing_target_kind_fails_closed();
   test_assignment_missing_target_shape_fails_closed();
   test_hashset_method_missing_lowering_fact_fails_closed();
+  test_vec_unknown_method_dispatch_fails_closed();
+  test_hashmap_unknown_method_dispatch_fails_closed();
   test_unsigned_division_missing_expr_type_fails_closed();
   test_statement_style_match_arm_block_tail_match_fails_closed();
   test_statement_style_match_arm_statement_only_if_tail_lowers();
@@ -12796,6 +12908,7 @@ int main() {
   test_log_first_arg_missing_expr_type_fails_closed();
   test_log_named_arg_unsigned_sets_is_unsigned_attr();
   test_log_named_arg_missing_expr_type_fails_closed();
+  test_log_unknown_method_fails_closed();
   test_println_int_missing_expr_type_fails_closed();
   test_int_to_string_missing_expr_type_fails_closed();
   test_scope_await_inline_launch_uses_resolved_task_type();

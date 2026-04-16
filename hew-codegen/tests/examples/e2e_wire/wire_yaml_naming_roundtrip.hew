@@ -1,0 +1,20 @@
+// Test: YAML round-trip with camelCase naming — encode, decode, then re-encode.
+// Both YAML outputs must be identical.
+#[yaml(camelCase)]
+wire type MetricYaml {
+    user_id: i32 @1;
+    event_type: i32 @2;
+}
+
+extern "C" {
+    fn MetricYaml_to_yaml(user_id: i32, event_type: i32) -> String;
+    fn MetricYaml_from_yaml(yaml: String) -> MetricYaml;
+}
+
+fn main() {
+    let yaml1 = unsafe { MetricYaml_to_yaml(7, 9) };
+    print(yaml1);
+    let metric = unsafe { MetricYaml_from_yaml(yaml1) };
+    let yaml2 = unsafe { MetricYaml_to_yaml(metric.user_id, metric.event_type) };
+    print(yaml2);
+}

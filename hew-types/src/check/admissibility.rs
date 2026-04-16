@@ -952,6 +952,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_expr_output_contract_reports_and_prunes_ty_var_leak() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let leaked_span = SpanKey { start: 10, end: 20 };
+        let leaked_var = TypeVar::fresh();
+        let mut expr_types = HashMap::from([(leaked_span.clone(), Ty::Var(leaked_var))]);
+
+        checker.validate_expr_output_contract(&mut expr_types, &HashSet::new());
+
+        assert!(
+            expr_types.is_empty(),
+            "unresolved Ty::Var must be pruned from checker output: {expr_types:?}"
+        );
+        let inference_failed: Vec<_> = checker
+            .errors
+            .iter()
+            .filter(|error| error.kind == TypeErrorKind::InferenceFailed)
+            .collect();
+        assert_eq!(
+            inference_failed.len(),
+            1,
+            "expected a single InferenceFailed diagnostic for the leaked expr type: {:?}",
+            checker.errors
+        );
+        assert_eq!(inference_failed[0].span.start, leaked_span.start);
+        assert_eq!(inference_failed[0].span.end, leaked_span.end);
+    }
+
     /// `validate_method_call_receiver_kinds_output_contract` retains entries
     /// for types that exist in the resolved `type_defs` map and prunes those
     /// that do not.

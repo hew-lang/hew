@@ -1790,6 +1790,7 @@ impl Checker {
                 },
                 doc_comment: None,
                 decl_span: span.clone(),
+                fn_span: 0..0,
             },
         );
     }

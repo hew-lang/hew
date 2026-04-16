@@ -155,6 +155,7 @@ impl Checker {
                         body: body.clone(),
                         doc_comment: None,
                         decl_span: 0..0,
+                        fn_span: 0..0,
                     };
                     let qualified = format!("{}::{}", td.name, method.name);
                     self.check_function_as(&fn_decl, &qualified);

@@ -650,6 +650,9 @@ pub struct FnDecl {
     /// for impl methods instead of inheriting the enclosing impl-block span.
     #[serde(default)]
     pub decl_span: Span,
+    /// Byte span from the `fn` keyword through the byte after the closing `}`.
+    #[serde(default)]
+    pub fn_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -808,6 +811,9 @@ pub struct TraitMethod {
     pub return_type: Option<Spanned<TypeExpr>>,
     pub where_clause: Option<WhereClause>,
     pub body: Option<Block>,
+    /// Byte span from the `fn` keyword through the byte after the closing `}` or `;`.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

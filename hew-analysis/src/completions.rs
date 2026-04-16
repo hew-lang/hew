@@ -175,6 +175,10 @@ fn try_spawn_completions(
 }
 
 /// Collect local variable names from function/actor bodies that are in scope at `offset`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "AST scope walk intentionally keeps all item-local cases in one place"
+)]
 fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> Vec<CompletionItem> {
     let mut locals = Vec::new();
 
@@ -206,21 +210,15 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     collect_locals_from_block(&term.body, offset, &mut locals);
                 }
                 for recv in &a.receive_fns {
-                    for p in &recv.params {
-                        locals.push(local_completion(&p.name));
+                    if span_contains_offset(&recv.span, offset) {
+                        for p in &recv.params {
+                            locals.push(local_completion(&p.name));
+                        }
+                        collect_locals_from_block(&recv.body, offset, &mut locals);
                     }
-                    collect_locals_from_block(&recv.body, offset, &mut locals);
                 }
                 for method in &a.methods {
-                    for p in &method.params {
-                        locals.push(local_completion(&p.name));
-                    }
-                    collect_locals_from_block(&method.body, offset, &mut locals);
-                }
-            }
-            Item::TypeDecl(td) => {
-                for body_item in &td.body {
-                    if let TypeBodyItem::Method(method) = body_item {
+                    if span_contains_offset(&method.fn_span, offset) {
                         for p in &method.params {
                             locals.push(local_completion(&p.name));
                         }
@@ -228,26 +226,38 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     }
                 }
             }
-            Item::Impl(i) => {
-                for method in &i.methods {
-                    for p in &method.params {
-                        locals.push(local_completion(&p.name));
-                    }
-                    collect_locals_from_block(&method.body, offset, &mut locals);
-                }
-            }
-            Item::Trait(t) => {
-                // TODO: params are pushed for every method in the trait; without per-method
-                // body spans we cannot determine which method contains the cursor, so params
-                // from sibling methods leak into completions. The same over-approximation
-                // exists for Item::Actor and Item::Impl above.
-                for trait_item in &t.items {
-                    if let TraitItem::Method(method) = trait_item {
-                        if let Some(body) = &method.body {
+            Item::TypeDecl(td) => {
+                for body_item in &td.body {
+                    if let TypeBodyItem::Method(method) = body_item {
+                        if span_contains_offset(&method.fn_span, offset) {
                             for p in &method.params {
                                 locals.push(local_completion(&p.name));
                             }
-                            collect_locals_from_block(body, offset, &mut locals);
+                            collect_locals_from_block(&method.body, offset, &mut locals);
+                        }
+                    }
+                }
+            }
+            Item::Impl(i) => {
+                for method in &i.methods {
+                    if span_contains_offset(&method.fn_span, offset) {
+                        for p in &method.params {
+                            locals.push(local_completion(&p.name));
+                        }
+                        collect_locals_from_block(&method.body, offset, &mut locals);
+                    }
+                }
+            }
+            Item::Trait(t) => {
+                for trait_item in &t.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        if span_contains_offset(&method.span, offset) {
+                            for p in &method.params {
+                                locals.push(local_completion(&p.name));
+                            }
+                            if let Some(body) = &method.body {
+                                collect_locals_from_block(body, offset, &mut locals);
+                            }
                         }
                     }
                 }
@@ -794,5 +804,90 @@ mod tests {
         );
 
         assert!(labels.iter().any(|label| label == "receiver_local"));
+    }
+
+    #[test]
+    fn sibling_impl_method_params_do_not_leak() {
+        let labels = labels_at_cursor(
+            r"type Box {
+    fn a(x: i32) {}
+}
+
+impl Box {
+    fn a(x: i32) {}
+    fn b(y: i32) {
+        /*cursor*/
+        y
+    }
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "y"));
+        assert!(!labels.iter().any(|label| label == "x"));
+    }
+
+    #[test]
+    fn own_impl_method_params_are_suggested() {
+        let labels = labels_at_cursor(
+            r"type Box {}
+
+impl Box {
+    fn a(x: i32) {}
+    fn b(y: i32) {
+        /*cursor*/
+        y
+    }
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "y"));
+    }
+
+    #[test]
+    fn sibling_actor_method_params_do_not_leak() {
+        let labels = labels_at_cursor(
+            r"actor Worker {
+    fn a(x: i32) {}
+    fn b(y: i32) {
+        /*cursor*/
+        y
+    }
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "y"));
+        assert!(!labels.iter().any(|label| label == "x"));
+    }
+
+    #[test]
+    fn sibling_receive_fn_params_do_not_leak() {
+        let labels = labels_at_cursor(
+            r"actor Worker {
+    receive fn a(x: i32) {}
+    receive fn b(y: i32) {
+        /*cursor*/
+        y
+    }
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "y"));
+        assert!(!labels.iter().any(|label| label == "x"));
+    }
+
+    #[test]
+    fn sibling_trait_method_params_do_not_leak() {
+        let labels = labels_at_cursor(
+            r"trait Greeter {
+    fn a(x: i32) {}
+    fn b(y: i32) {
+        /*cursor*/
+        y
+    }
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "y"));
+        assert!(!labels.iter().any(|label| label == "x"));
     }
 }

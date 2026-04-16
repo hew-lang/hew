@@ -688,6 +688,7 @@ fn test_yield_outside_generator() {
         body,
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
     let program = Program {
         module_graph: None,
@@ -947,6 +948,7 @@ fn test_actor_stream_annotation_is_stream_alias() {
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
 
     let program = Program {
@@ -3193,6 +3195,7 @@ fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>) -> FnDecl 
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     }
 }
 
@@ -3221,6 +3224,7 @@ fn make_priv_fn(name: &str) -> FnDecl {
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     }
 }
 
@@ -4094,6 +4098,7 @@ fn import_trait_from_module_glob() {
             return_type: None,
             where_clause: None,
             body: None,
+            span: 0..0,
         })],
         doc_comment: None,
     };
@@ -4133,6 +4138,7 @@ fn import_private_trait_not_registered() {
             return_type: None,
             where_clause: None,
             body: None,
+            span: 0..0,
         })],
         doc_comment: None,
     };
@@ -4253,6 +4259,7 @@ fn test_file_import_private_items_not_visible() {
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     });
 
     let private_const = Item::Const(ConstDecl {
@@ -6069,6 +6076,7 @@ fn make_checker_with_trait(
                 return_type: None,
                 where_clause: None,
                 body: None,
+                span: 0..0,
             })
         })
         .collect();
@@ -7289,6 +7297,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 return_type: None,
                 where_clause: None,
                 body: None,
+                span: 0..0,
             }),
         ],
         doc_comment: None,
@@ -7325,6 +7334,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             return_type: None,
             where_clause: None,
             body: None,
+            span: 0..0,
         })],
         doc_comment: None,
     };
@@ -7375,6 +7385,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             return_type: None,
             where_clause: None,
             body: None,
+            span: 0..0,
         })],
         doc_comment: None,
     };
@@ -7409,6 +7420,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             return_type: None,
             where_clause: None,
             body: None,
+            span: 0..0,
         })],
         doc_comment: None,
     };
@@ -7473,6 +7485,7 @@ mod non_root_module_inference_scope {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
         Module {
             id: mod_id.clone(),
@@ -7611,6 +7624,7 @@ mod non_root_module_inference_scope {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
 
         let root_id = ModuleId::root();
@@ -7664,6 +7678,7 @@ mod non_root_module_inference_scope {
                 },
                 doc_comment: None,
                 decl_span: 0..0,
+                fn_span: 0..0,
             };
             (Item::Function(fd), span_start..span_start + 30)
         };
@@ -7746,6 +7761,7 @@ mod non_root_module_inference_scope {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
 
         let non_root = Module {
@@ -7811,6 +7827,7 @@ mod non_root_module_inference_scope {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
 
         let non_root = Module {
@@ -7942,6 +7959,7 @@ mod non_root_module_inference_scope {
                     stmts: vec![],
                     trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
                 }),
+                span: 0..0,
             })],
             doc_comment: None,
         };
@@ -7982,6 +8000,7 @@ mod non_root_module_inference_scope {
                     stmts: vec![],
                     trailing_expr: Some(Box::new((Expr::Identifier("None".to_string()), 20..24))),
                 }),
+                span: 0..0,
             })],
             doc_comment: None,
         };
@@ -8039,6 +8058,7 @@ mod non_root_module_inference_scope {
                     stmts: vec![],
                     trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
                 }),
+                span: 0..0,
             })],
             doc_comment: None,
         };
@@ -8257,6 +8277,7 @@ mod non_root_module_inference_scope {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
 
         let non_root = Module {
@@ -8356,6 +8377,7 @@ fn module_graph_body_type_error_is_reported() {
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(bad_fn), 0..10)]);
@@ -8403,6 +8425,7 @@ fn module_graph_body_infer_return_resolves_without_error() {
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(inferred_fn), 0..10)]);
@@ -8463,6 +8486,7 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
 
     let program = make_program_with_module_graph(vec![(Item::Function(ok_fn), 0..30)]);
@@ -8594,6 +8618,7 @@ fn module_graph_body_private_local_type_is_available() {
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
 
     let program = make_program_with_module_graph(vec![
@@ -8642,6 +8667,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
 
     let ok_fn = FnDecl {
@@ -8669,6 +8695,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
 
     let helper_string = FnDecl {
@@ -8691,6 +8718,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
 
     let root_id = ModuleId::root();
@@ -8800,6 +8828,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         },
         doc_comment: None,
         decl_span: 0..0,
+        fn_span: 0..0,
     };
     let extern_string = ExternBlock {
         abi: "C".to_string(),
@@ -8925,6 +8954,7 @@ mod module_body_diagnostic_envelope {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
         (Item::Function(fn_decl), 0..20)
     }
@@ -8982,6 +9012,7 @@ mod module_body_diagnostic_envelope {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
         let program = Program {
             module_graph: None,
@@ -9034,6 +9065,7 @@ mod module_body_diagnostic_envelope {
                 },
                 doc_comment: None,
                 decl_span: 0..0,
+                fn_span: 0..0,
             };
             (Item::Function(fd), 0..20)
         };
@@ -9145,6 +9177,7 @@ mod module_body_diagnostic_envelope {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
 
         let program =
@@ -9200,6 +9233,7 @@ mod module_body_diagnostic_envelope {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
 
         let program =
@@ -9344,6 +9378,7 @@ mod warning_source_attribution {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         }
     }
 
@@ -9369,6 +9404,7 @@ mod warning_source_attribution {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
         let root_id = ModuleId::root();
         let module_id = ModuleId::new(vec![module_name.to_string()]);
@@ -9726,6 +9762,7 @@ mod warning_source_attribution {
             },
             doc_comment: None,
             decl_span: 0..0,
+            fn_span: 0..0,
         };
 
         // caller() body: `fakemod.helper()` expressed as a MethodCall statement.
@@ -9757,6 +9794,7 @@ mod warning_source_attribution {
             },
             doc_comment: None,
             decl_span: 150..200,
+            fn_span: 0..0,
         };
 
         // Import of fakemod in mod_a must carry resolved_items that include

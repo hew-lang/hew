@@ -1027,37 +1027,43 @@ impl<'src> Parser<'src> {
         attrs: Vec<Attribute>,
         doc_comment: &Option<String>,
     ) -> Option<Item> {
-        let (is_async, is_gen) = match self.peek() {
+        let (fn_start, is_async, is_gen) = match self.peek() {
             Some(Token::Fn) => {
+                let fn_start = self.peek_span().start;
                 self.advance();
-                (false, false)
+                (fn_start, false, false)
             }
             Some(Token::Async) => {
                 self.advance();
                 if self.eat(&Token::Gen) {
+                    let fn_start = self.peek_span().start;
                     if !self.eat(&Token::Fn) {
                         self.error("expected 'fn' after 'async gen'".to_string());
                         return None;
                     }
-                    (true, true)
-                } else if self.eat(&Token::Fn) {
-                    (true, false)
+                    (fn_start, true, true)
                 } else {
-                    self.error("expected 'fn' or 'gen fn' after 'async'".to_string());
-                    return None;
+                    let fn_start = self.peek_span().start;
+                    if self.eat(&Token::Fn) {
+                        (fn_start, true, false)
+                    } else {
+                        self.error("expected 'fn' or 'gen fn' after 'async'".to_string());
+                        return None;
+                    }
                 }
             }
             Some(Token::Gen) => {
                 self.advance();
+                let fn_start = self.peek_span().start;
                 if !self.eat(&Token::Fn) {
                     self.error("expected 'fn' after 'gen'".to_string());
                     return None;
                 }
-                (false, true)
+                (fn_start, false, true)
             }
             _ => unreachable!("parse_fn_with_modifiers called without fn/async/gen"),
         };
-        let mut f = self.parse_function(is_async, is_gen, vis, is_pure, attrs)?;
+        let mut f = self.parse_function(fn_start, is_async, is_gen, vis, is_pure, attrs)?;
         f.doc_comment.clone_from(doc_comment);
         Some(Item::Function(f))
     }
@@ -1302,6 +1308,7 @@ impl<'src> Parser<'src> {
 
     fn parse_function(
         &mut self,
+        fn_start: usize,
         is_async: bool,
         is_gen: bool,
         visibility: Visibility,
@@ -1325,6 +1332,7 @@ impl<'src> Parser<'src> {
         let where_clause = self.parse_opt_where_clause()?;
 
         let body = self.parse_block()?;
+        let fn_end = self.peek_span().start;
 
         Some(FnDecl {
             attributes,
@@ -1340,6 +1348,7 @@ impl<'src> Parser<'src> {
             body,
             doc_comment: None,
             decl_span: decl_start..decl_end,
+            fn_span: fn_start..fn_end,
         })
     }
 
@@ -1440,9 +1449,11 @@ impl<'src> Parser<'src> {
                 let attributes = self.parse_attributes();
 
                 if self.peek() == Some(&Token::Fn) {
+                    let fn_start = self.peek_span().start;
                     self.advance();
                     // Attributes on methods are passed to parse_function
                     Some(TypeBodyItem::Method(self.parse_function(
+                        fn_start,
                         false,
                         false,
                         Visibility::Private,
@@ -1543,6 +1554,7 @@ impl<'src> Parser<'src> {
         let is_pure = self.eat(&Token::Pure);
         match self.peek() {
             Some(Token::Fn) => {
+                let fn_start = self.peek_span().start;
                 self.advance();
                 let name = self.expect_ident()?;
                 let type_params = self.parse_opt_type_params()?;
@@ -1560,6 +1572,7 @@ impl<'src> Parser<'src> {
                     self.expect(&Token::Semicolon)?;
                     None
                 };
+                let fn_end = self.peek_span().start;
 
                 Some(TraitItem::Method(TraitMethod {
                     name,
@@ -1569,6 +1582,7 @@ impl<'src> Parser<'src> {
                     return_type,
                     where_clause,
                     body,
+                    span: fn_start..fn_end,
                 }))
             }
             Some(Token::Type) => {
@@ -1645,10 +1659,16 @@ impl<'src> Parser<'src> {
                     type_aliases.push(ImplTypeAlias { name, ty });
                 }
                 Some(Token::Fn) => {
+                    let fn_start = self.peek_span().start;
                     self.advance();
-                    if let Some(mut method) =
-                        self.parse_function(false, false, Visibility::Private, is_pure, Vec::new())
-                    {
+                    if let Some(mut method) = self.parse_function(
+                        fn_start,
+                        false,
+                        false,
+                        Visibility::Private,
+                        is_pure,
+                        Vec::new(),
+                    ) {
                         if let Some(doc) = doc_comment {
                             method.doc_comment = Some(doc);
                         }
@@ -1773,10 +1793,16 @@ impl<'src> Parser<'src> {
                         attributes: attrs,
                     });
                 } else if self.peek() == Some(&Token::Fn) {
+                    let fn_start = self.peek_span().start;
                     self.advance();
-                    if let Some(method) =
-                        self.parse_function(false, false, Visibility::Private, is_pure, Vec::new())
-                    {
+                    if let Some(method) = self.parse_function(
+                        fn_start,
+                        false,
+                        false,
+                        Visibility::Private,
+                        is_pure,
+                        Vec::new(),
+                    ) {
                         methods.push(method);
                     }
                 } else {
@@ -1787,10 +1813,16 @@ impl<'src> Parser<'src> {
                 if !attrs.is_empty() {
                     self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
                 }
+                let fn_start = self.peek_span().start;
                 self.advance();
-                if let Some(method) =
-                    self.parse_function(false, false, Visibility::Private, false, Vec::new())
-                {
+                if let Some(method) = self.parse_function(
+                    fn_start,
+                    false,
+                    false,
+                    Visibility::Private,
+                    false,
+                    Vec::new(),
+                ) {
                     methods.push(method);
                 }
             } else if self.peek() == Some(&Token::Let) {

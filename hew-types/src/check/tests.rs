@@ -4704,6 +4704,36 @@ fn test_wire_since_without_version_warns() {
         "warning should mention missing version: {}",
         checker.warnings[0].message
     );
+    assert_eq!(checker.warnings[0].span, 0..0);
+}
+
+#[test]
+fn test_wire_since_without_version_uses_registered_decl_span() {
+    use hew_parser::ast::{WireFieldMeta, WireMetadata};
+    let wire = WireMetadata {
+        field_meta: vec![WireFieldMeta {
+            field_name: "added_field".to_string(),
+            field_number: 2,
+            is_optional: false,
+            is_deprecated: false,
+            is_repeated: false,
+            json_name: None,
+            yaml_name: None,
+            since: Some(2),
+        }],
+        reserved_numbers: vec![],
+        json_case: None,
+        yaml_case: None,
+        version: None,
+        min_version: None,
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.register_type_namespace_name("TestMsg", &(10..50));
+    checker.validate_wire_version_constraints("TestMsg", &wire);
+
+    assert_eq!(checker.warnings.len(), 1);
+    assert_eq!(checker.warnings[0].span, 10..50);
 }
 
 #[test]
@@ -4740,6 +4770,62 @@ fn test_wire_since_with_version_no_extra_warning() {
         !since_without_version,
         "should not warn about missing version"
     );
+}
+
+#[test]
+fn empty_fn_body_return_mismatch_uses_decl_span() {
+    let source = "fn greet() -> string {}";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let expected_span = match &result.program.items[0].0 {
+        hew_parser::ast::Item::Function(fd) => fd.decl_span.clone(),
+        item => panic!("expected function item, got {item:?}"),
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let mismatch = output
+        .errors
+        .iter()
+        .find(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. }))
+        .unwrap_or_else(|| panic!("expected mismatch error, got {:?}", output.errors));
+
+    assert_eq!(mismatch.span, expected_span);
+}
+
+#[test]
+fn empty_receive_fn_body_return_mismatch_uses_decl_span() {
+    let source = r"
+actor Greeter {
+    receive fn greet() -> string {}
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let expected_span = match &result.program.items[0].0 {
+        hew_parser::ast::Item::Actor(actor) => actor.receive_fns[0].span.clone(),
+        item => panic!("expected actor item, got {item:?}"),
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    let mismatch = output
+        .errors
+        .iter()
+        .find(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. }))
+        .unwrap_or_else(|| panic!("expected mismatch error, got {:?}", output.errors));
+
+    assert_eq!(mismatch.span, expected_span);
 }
 
 #[test]

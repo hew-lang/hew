@@ -23,6 +23,22 @@ fn run_fmt(args: &[&str], input: &str) -> Output {
 }
 
 #[test]
+fn fmt_no_args_exits_one_with_usage_message() {
+    let output = Command::new(hew_binary()).args(["fmt"]).output().unwrap();
+
+    assert!(!output.status.success(), "expected non-zero exit");
+    assert!(
+        output.stdout.is_empty(),
+        "expected no stdout, got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Usage: hew fmt"), "stderr: {stderr}");
+    assert!(stderr.contains("--stdin | <file.hew>"), "stderr: {stderr}");
+}
+
+#[test]
 fn fmt_stdin_writes_formatted_source_to_stdout() {
     let input = "fn main() { let x = 1; }\n";
     let output = run_fmt(&["fmt", "--stdin"], input);

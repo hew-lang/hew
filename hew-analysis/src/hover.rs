@@ -860,11 +860,7 @@ pub fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String 
 /// Format a function signature in a markdown code block for hover display.
 #[must_use]
 pub fn format_fn_signature(name: &str, sig: &FnSig) -> String {
-    let params: Vec<String> = sig
-        .params
-        .iter()
-        .map(|ty| ty.user_facing().to_string())
-        .collect();
+    let params = format_fn_hover_params(sig);
     let code = format!("```hew\n{}\n```", format_fn_sig_line(name, &params, sig));
     if let Some(doc) = &sig.doc_comment {
         format!("{doc}\n\n---\n\n{code}")
@@ -876,12 +872,19 @@ pub fn format_fn_signature(name: &str, sig: &FnSig) -> String {
 /// Format a function signature as a single inline line (for embedding in type hover).
 #[must_use]
 pub fn format_fn_signature_inline(name: &str, sig: &FnSig) -> String {
-    let params: Vec<String> = sig
-        .params
-        .iter()
-        .map(|ty| ty.user_facing().to_string())
-        .collect();
+    let params = format_fn_hover_params(sig);
     format_fn_sig_line(name, &params, sig)
+}
+
+fn format_fn_hover_params(sig: &FnSig) -> Vec<String> {
+    sig.params
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| match sig.param_names.get(index) {
+            Some(name) if !name.is_empty() => format!("{name}: {}", ty.user_facing()),
+            _ => ty.user_facing().to_string(),
+        })
+        .collect()
 }
 
 /// Format a type definition for hover display.
@@ -1024,7 +1027,7 @@ mod tests {
         let sig = make_fn_sig(vec!["n"], vec![Ty::I32], Ty::I32);
         let text = format_fn_signature("factorial", &sig);
         assert!(text.contains("```hew"));
-        assert!(text.contains("fn factorial("));
+        assert!(text.contains("fn factorial(n: i32)"));
     }
 
     #[test]
@@ -1114,9 +1117,16 @@ mod tests {
         assert!(result.is_some(), "should find hover for add");
         let hr = result.unwrap();
         assert!(
-            hr.contents.contains("fn add("),
+            hr.contents.contains("fn add(x: i32, y: i32)"),
             "should show function signature"
         );
+    }
+
+    #[test]
+    fn format_fn_signature_inline_includes_param_names() {
+        let sig = make_fn_sig(vec!["value"], vec![Ty::String], Ty::Bool);
+        let text = format_fn_signature_inline("validate", &sig);
+        assert_eq!(text, "fn validate(value: String) -> bool");
     }
 
     #[test]

@@ -1015,7 +1015,7 @@ mod tests {
         ChildSpec, FnDecl, IntRadix, Literal, MachineDecl, MachineEvent, MachineState,
         MachineTransition, NamingCase, Program, RestartPolicy, SupervisorDecl, SupervisorStrategy,
         TypeAliasDecl, TypeDecl, TypeDeclKind, VariantDecl, VariantKind, Visibility, WireDecl,
-        WireDeclKind, WireFieldDecl,
+        WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
     };
     use std::collections::HashSet;
 
@@ -1103,6 +1103,69 @@ mod tests {
                     variants: vec![],
                     json_case,
                     yaml_case,
+                }),
+                0..40,
+            )],
+            module_doc: None,
+            module_graph: None,
+        }
+    }
+
+    fn wire_field_meta(
+        field_name: &str,
+        field_number: u32,
+        is_optional: bool,
+        json_name: Option<&str>,
+        yaml_name: Option<&str>,
+        since: Option<u32>,
+    ) -> WireFieldMeta {
+        WireFieldMeta {
+            field_name: field_name.into(),
+            field_number,
+            is_optional,
+            is_deprecated: false,
+            is_repeated: false,
+            json_name: json_name.map(Into::into),
+            yaml_name: yaml_name.map(Into::into),
+            since,
+        }
+    }
+
+    fn type_decl_with_wire_program(
+        json_case: Option<NamingCase>,
+        yaml_case: Option<NamingCase>,
+        field_meta: Vec<WireFieldMeta>,
+    ) -> Program {
+        Program {
+            items: vec![(
+                Item::TypeDecl(TypeDecl {
+                    visibility: Visibility::Private,
+                    kind: TypeDeclKind::Struct,
+                    name: "Envelope".into(),
+                    type_params: None,
+                    where_clause: None,
+                    body: vec![
+                        TypeBodyItem::Field {
+                            name: "request_id".into(),
+                            ty: named_type("i32"),
+                            attributes: vec![],
+                        },
+                        TypeBodyItem::Field {
+                            name: "payload_body".into(),
+                            ty: named_type("String"),
+                            attributes: vec![],
+                        },
+                    ],
+                    doc_comment: None,
+                    wire: Some(WireMetadata {
+                        field_meta,
+                        reserved_numbers: vec![],
+                        json_case,
+                        yaml_case,
+                        version: Some(3),
+                        min_version: Some(1),
+                    }),
+                    is_indirect: false,
                 }),
                 0..40,
             )],
@@ -2818,6 +2881,32 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_type_decl_wire_metadata_with_yaml_naming() {
+        round_trip_program(&type_decl_with_wire_program(
+            Some(NamingCase::CamelCase),
+            Some(NamingCase::KebabCase),
+            vec![
+                wire_field_meta(
+                    "request_id",
+                    1,
+                    false,
+                    Some("requestId"),
+                    Some("request-id"),
+                    Some(2),
+                ),
+                wire_field_meta(
+                    "payload_body",
+                    2,
+                    true,
+                    Some("payloadBody"),
+                    Some("payload-body"),
+                    Some(3),
+                ),
+            ],
+        ));
+    }
+
+    #[test]
     fn wire_decl_yaml_case_serializes_correct_variant_name() {
         for (yaml_case, expected) in [
             (NamingCase::SnakeCase, "SnakeCase"),
@@ -2864,6 +2953,68 @@ mod tests {
                 "yaml_name should serialize with its explicit wire key"
             );
         }
+    }
+
+    #[test]
+    fn type_decl_wire_metadata_yaml_naming_serializes_with_wire_keys() {
+        let value = serialize_to_value(
+            &type_decl_with_wire_program(
+                Some(NamingCase::CamelCase),
+                Some(NamingCase::SnakeCase),
+                vec![
+                    wire_field_meta(
+                        "request_id",
+                        1,
+                        false,
+                        Some("requestId"),
+                        Some("request_id"),
+                        Some(2),
+                    ),
+                    wire_field_meta(
+                        "payload_body",
+                        2,
+                        true,
+                        Some("payloadBody"),
+                        Some("payload_body"),
+                        Some(3),
+                    ),
+                ],
+            ),
+            vec![],
+        );
+        let items = value
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .expect("items should be present on the wire");
+        let type_decl = items[0][0]
+            .get("TypeDecl")
+            .expect("first item should be a TypeDecl");
+        let wire = type_decl
+            .get("wire")
+            .expect("wire metadata should serialize on TypeDecl");
+        assert_eq!(
+            wire.get("yaml_case").and_then(serde_json::Value::as_str),
+            Some("SnakeCase"),
+            "yaml_case should serialize on TypeDecl wire metadata"
+        );
+        let field_meta = wire
+            .get("field_meta")
+            .and_then(serde_json::Value::as_array)
+            .expect("wire field metadata should be present");
+        assert_eq!(
+            field_meta[0]
+                .get("yaml_name")
+                .and_then(serde_json::Value::as_str),
+            Some("request_id"),
+            "yaml_name should serialize with its explicit wire key on TypeDecl metadata"
+        );
+        assert_eq!(
+            field_meta[1]
+                .get("yaml_name")
+                .and_then(serde_json::Value::as_str),
+            Some("payload_body"),
+            "second yaml_name should serialize with its explicit wire key on TypeDecl metadata"
+        );
     }
 
     #[test]

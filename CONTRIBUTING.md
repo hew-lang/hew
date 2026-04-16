@@ -41,6 +41,7 @@ Key boundary checks most contributors encounter:
 - **Rust:** Follow standard `rustfmt` conventions. Run `cargo clippy --workspace` before submitting.
 - **C++:** LLVM style (see `hew-codegen/.clang-format`). Use C++20 features where appropriate.
 - **Commit messages:** Use imperative mood ("Add feature" not "Added feature"). Keep the first line under 72 characters.
+- **Stdlib `int` surface:** Every `pub fn` parameter and return type in `std/**/*.hew` must use `int`, not `i32`/`i64`. Width-specific types are only allowed inside `extern "C" { ... }` blocks or on lines marked `// INTERNAL-ABI: <reason>`. See [`docs/stdlib-style-contract.md`](docs/stdlib-style-contract.md) for the full contract and examples. The rule is enforced by `scripts/lint-stdlib-int-surface.sh` and the `stdlib-lint` CI workflow.
 
 ## Formatting
 

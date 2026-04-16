@@ -66,6 +66,10 @@ pub fn hover(
         }
     }
 
+    if let Some(result) = hover_field_at_offset(source, parse_result, type_output, offset) {
+        return Some(result);
+    }
+
     // Fall back to narrowest expression type that covers this offset.
     let mut best: Option<(&SpanKey, &Ty)> = None;
     for (span_key, ty) in &type_output.expr_types {
@@ -135,6 +139,87 @@ fn hover_binding_at_offset(
         }
     }
     None
+}
+
+fn hover_field_at_offset(
+    source: &str,
+    parse_result: &ParseResult,
+    type_output: &TypeCheckOutput,
+    offset: usize,
+) -> Option<HoverResult> {
+    hover_field_declaration_at_offset(source, parse_result, type_output, offset)
+        .or_else(|| hover_field_access_at_offset(source, type_output, offset))
+}
+
+fn hover_field_declaration_at_offset(
+    source: &str,
+    parse_result: &ParseResult,
+    type_output: &TypeCheckOutput,
+    offset: usize,
+) -> Option<HoverResult> {
+    for (item, item_span) in &parse_result.program.items {
+        let Item::TypeDecl(type_decl) = item else {
+            continue;
+        };
+        let mut search_from = item_span.start;
+        for body_item in &type_decl.body {
+            match body_item {
+                TypeBodyItem::Field { name, ty, .. } => {
+                    let span = crate::util::find_name_span(source, search_from, name);
+                    if span.start <= offset && offset < span.end {
+                        let ty_text = method_resolution::lookup_type_def(
+                            &type_output.type_defs,
+                            &type_decl.name,
+                        )
+                        .and_then(|type_def| {
+                            type_def
+                                .fields
+                                .get(name)
+                                .map(|ty| ty.user_facing().to_string())
+                        })
+                        .unwrap_or_else(|| format_type_expr_hover(&ty.0));
+                        return Some(field_hover_result(name, &ty_text, span));
+                    }
+                    search_from = ty.1.end.max(span.end);
+                }
+                TypeBodyItem::Variant(variant) => {
+                    search_from =
+                        crate::util::find_name_span(source, search_from, &variant.name).end;
+                }
+                TypeBodyItem::Method(method) => {
+                    search_from = search_from.max(method.decl_span.end);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn hover_field_access_at_offset(
+    source: &str,
+    type_output: &TypeCheckOutput,
+    offset: usize,
+) -> Option<HoverResult> {
+    let (field_name, field_span) = crate::util::simple_word_at_offset(source, offset)?;
+    let receiver_end = crate::definition::find_field_receiver_end(source, field_span.start)?;
+    let receiver_ty = crate::method_lookup::find_receiver_type(type_output, receiver_end)?;
+    let receiver_type_name = receiver_ty.type_name()?;
+    let type_def = type_output.type_defs.iter().find_map(|(name, type_def)| {
+        Ty::names_match_qualified(name, receiver_type_name).then_some(type_def)
+    })?;
+    let field_ty = type_def.fields.get(&field_name)?;
+    Some(field_hover_result(
+        &field_name,
+        &field_ty.user_facing().to_string(),
+        field_span,
+    ))
+}
+
+fn field_hover_result(name: &str, ty_text: &str, span: OffsetSpan) -> HoverResult {
+    HoverResult {
+        contents: format!("```hew\n(field) {name}: {ty_text}\n```"),
+        span: Some(span),
+    }
 }
 
 fn hover_binding_in_item(
@@ -1239,6 +1324,44 @@ mod tests {
         assert!(result.is_some(), "should find hover for Point");
         let hr = result.unwrap();
         assert!(hr.contents.contains("type Point"));
+    }
+
+    #[test]
+    fn hover_shows_struct_field_declaration_type() {
+        let source =
+            "type Point {\n    x: i32;\n    y: i32;\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("x: i32").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert_eq!(result.contents, "```hew\n(field) x: i32\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + 1
+            })
+        );
+    }
+
+    #[test]
+    fn hover_shows_struct_field_access_type() {
+        let source =
+            "type Point {\n    x: i32;\n    y: i32;\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.rfind("p.x").unwrap() + 2;
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert_eq!(result.contents, "```hew\n(field) x: i32\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + 1
+            })
+        );
     }
 
     #[test]

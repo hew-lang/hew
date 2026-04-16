@@ -80,9 +80,20 @@ pub fn rename(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cmp::Reverse;
 
     fn parse(source: &str) -> hew_parser::ParseResult {
         hew_parser::parse(source)
+    }
+
+    fn apply_edits(source: &str, edits: &[RenameEdit]) -> String {
+        let mut updated = source.to_string();
+        let mut ordered: Vec<_> = edits.iter().collect();
+        ordered.sort_by_key(|edit| Reverse(edit.span.start));
+        for edit in ordered {
+            updated.replace_range(edit.span.start..edit.span.end, &edit.new_text);
+        }
+        updated
     }
 
     #[test]
@@ -162,5 +173,40 @@ mod tests {
         assert!(result.is_some(), "prepare_rename should return a span");
         let span = result.unwrap();
         assert_eq!(&source[span.start..span.end], "x");
+    }
+
+    #[test]
+    fn rename_struct_field_updates_declaration_and_accesses() {
+        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let pr = parse(source);
+        let offset = source.find("p.x").unwrap() + 2;
+        let edits = rename(source, &pr, offset, "z").expect("should rename struct field");
+
+        assert_eq!(
+            edits.len(),
+            5,
+            "should rename declaration, both struct init fields, and both accesses"
+        );
+        assert!(edits.iter().all(|edit| edit.new_text == "z"));
+
+        let decl_start = source.find("x: i32").unwrap();
+        assert!(edits.iter().any(|edit| edit.span.start == decl_start));
+
+        let access_edits = edits
+            .iter()
+            .filter(|edit| source.as_bytes()[edit.span.start - 1] == b'.')
+            .count();
+        let init_edits = edits
+            .iter()
+            .filter(|edit| source[edit.span.end..].trim_start().starts_with(':'))
+            .count();
+        assert_eq!(access_edits, 2);
+        assert_eq!(init_edits, 3);
+
+        let renamed = apply_edits(source, &edits);
+        assert!(renamed.contains("type Point { z: i32; y: i32 }"));
+        assert!(renamed.contains("Point { z: 1, y: 2 }"));
+        assert!(renamed.contains("Point { z: 3, y: 4 }"));
+        assert!(renamed.contains("p.z + q.z"));
     }
 }

@@ -918,7 +918,7 @@ mod tests {
         assert!(params.is_empty(), "setup() takes no parameters");
         assert_eq!(*ret, Ty::Unit, "setup() returns Unit");
 
-        // `pub fn set_level(level: i32)` takes one i32 param
+        // `pub fn set_level(level: i64)` takes one i64 param
         let set_level = info
             .wrapper_fns
             .iter()
@@ -929,7 +929,7 @@ mod tests {
         );
         let (_, params, _) = set_level.unwrap();
         assert_eq!(params.len(), 1);
-        assert_eq!(params[0], Ty::I32);
+        assert_eq!(params[0], Ty::I64);
     }
 
     #[test]

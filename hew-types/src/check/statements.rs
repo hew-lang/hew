@@ -277,11 +277,11 @@ impl Checker {
                 };
                 // Consume the scratch field unconditionally so stale state
                 // never accumulates across statements.  Only register the
-                // pairs in lambda_poly_type_var_map when the binding value is
+                // generic call signature in lambda_poly_sig_map when the binding value is
                 // *directly* a generic lambda expression — indirect nesting
                 // (a generic lambda buried inside a call argument, etc.) must
                 // not be treated as a let-bound generic lambda.
-                let generic_vars = self.last_lambda_generic_vars.take();
+                let generic_sig = self.last_lambda_generic_sig.take();
                 let value_is_direct_generic_lambda = value.as_ref().is_some_and(|(val, _)| {
                     matches!(
                         val,
@@ -336,8 +336,9 @@ impl Checker {
                     // AND the let value is itself (not just contains) a generic
                     // lambda expression.
                     if value_is_direct_generic_lambda {
-                        if let Some(gvars) = generic_vars {
-                            self.lambda_poly_type_var_map.insert(name.clone(), gvars);
+                        if let Some(sig) = generic_sig {
+                            self.lambda_poly_sig_map
+                                .insert(SpanKey::from(&pattern.1), sig);
                         }
                     }
                     // Track let-bound numeric literals for later coercion at use

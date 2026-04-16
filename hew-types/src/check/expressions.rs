@@ -1,4 +1,5 @@
 use super::coerce::{cast_is_valid, common_integer_type, common_numeric_type};
+use super::types::GenericLambdaSig;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -9,6 +10,81 @@ type DangerousRcBinding = (String, String);
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
 
 impl Checker {
+    fn lambda_generic_schema_ty(ty: &Ty, generic_param_names: &HashMap<u32, String>) -> Ty {
+        match ty {
+            Ty::Var(v) => generic_param_names.get(&v.0).map_or_else(
+                || ty.clone(),
+                |name| Ty::Named {
+                    name: name.clone(),
+                    args: vec![],
+                },
+            ),
+            Ty::Named { name, args } => Ty::Named {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
+                    .collect(),
+            },
+            Ty::Tuple(ts) => Ty::Tuple(
+                ts.iter()
+                    .map(|elem| Self::lambda_generic_schema_ty(elem, generic_param_names))
+                    .collect(),
+            ),
+            Ty::Array(inner, n) => Ty::Array(
+                Box::new(Self::lambda_generic_schema_ty(inner, generic_param_names)),
+                *n,
+            ),
+            Ty::Slice(inner) => Ty::Slice(Box::new(Self::lambda_generic_schema_ty(
+                inner,
+                generic_param_names,
+            ))),
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => Ty::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(Self::lambda_generic_schema_ty(pointee, generic_param_names)),
+            },
+            Ty::Function { params, ret } => Ty::Function {
+                params: params
+                    .iter()
+                    .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
+                    .collect(),
+                ret: Box::new(Self::lambda_generic_schema_ty(ret, generic_param_names)),
+            },
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => Ty::Closure {
+                params: params
+                    .iter()
+                    .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
+                    .collect(),
+                ret: Box::new(Self::lambda_generic_schema_ty(ret, generic_param_names)),
+                captures: captures
+                    .iter()
+                    .map(|capture| Self::lambda_generic_schema_ty(capture, generic_param_names))
+                    .collect(),
+            },
+            Ty::TraitObject { traits } => Ty::TraitObject {
+                traits: traits
+                    .iter()
+                    .map(|bound| crate::ty::TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            _ => ty.clone(),
+        }
+    }
+
     /// Synthesize: infer the type of an expression (bottom-up).
     pub(super) fn synthesize(&mut self, expr: &Expr, span: &Span) -> Ty {
         // Grow the stack on demand so deeply-nested expressions (e.g. 1000+
@@ -2398,23 +2474,21 @@ impl Checker {
         // nested context.  We unconditionally reset first so that re-entrant
         // calls (e.g., a generic lambda inside a function argument) cannot
         // bleed their type-var pairs out to an unrelated enclosing Stmt::Let.
-        self.last_lambda_generic_vars = None;
+        self.last_lambda_generic_sig = None;
 
         let mut generic_bindings = std::collections::HashMap::new();
-        let mut generic_var_pairs: Vec<(String, TypeVar)> = Vec::new();
+        let mut generic_param_names = HashMap::new();
+        let mut generic_type_vars = Vec::new();
         if let Some(tps) = type_params {
             for tp in tps {
                 let tv = TypeVar::fresh();
                 generic_bindings.insert(tp.name.clone(), Ty::Var(tv));
-                generic_var_pairs.push((tp.name.clone(), tv));
+                generic_param_names.insert(tv.0, tp.name.clone());
+                generic_type_vars.push(tv);
             }
         }
         if !generic_bindings.is_empty() {
             self.generic_ctx.push(generic_bindings);
-            // Signal to the immediately-enclosing Stmt::Let that this lambda
-            // is generic.  The field is cleared at entry above, so it is only
-            // non-None when check_lambda is the *direct* synthesized value.
-            self.last_lambda_generic_vars = Some(generic_var_pairs);
         }
 
         self.env.push_scope();
@@ -2505,6 +2579,35 @@ impl Checker {
 
         if let Some(tps) = type_params {
             if !tps.is_empty() {
+                let type_param_bounds = tps
+                    .iter()
+                    .filter_map(|tp| {
+                        if tp.bounds.is_empty() {
+                            None
+                        } else {
+                            Some((
+                                tp.name.clone(),
+                                tp.bounds.iter().map(|bound| bound.name.clone()).collect(),
+                            ))
+                        }
+                    })
+                    .collect();
+                self.last_lambda_generic_sig = Some(GenericLambdaSig {
+                    call_sig: FnSig {
+                        type_params: tps.iter().map(|tp| tp.name.clone()).collect(),
+                        type_param_bounds,
+                        param_names: params.iter().map(|param| param.name.clone()).collect(),
+                        params: param_tys
+                            .iter()
+                            .map(|param| {
+                                Self::lambda_generic_schema_ty(param, &generic_param_names)
+                            })
+                            .collect(),
+                        return_type: Self::lambda_generic_schema_ty(&ret_ty, &generic_param_names),
+                        ..FnSig::default()
+                    },
+                    type_vars: generic_type_vars,
+                });
                 self.generic_ctx.pop();
             }
         }

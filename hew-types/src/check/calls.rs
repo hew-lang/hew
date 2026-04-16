@@ -576,19 +576,72 @@ impl Checker {
 
         // Then check if it's a variable with a function type (e.g., lambda parameters)
         if let Some(binding) = self.env.lookup(&func_name) {
+            if let Some(sig) = binding
+                .def_span
+                .as_ref()
+                .and_then(|def_span| self.lambda_poly_sig_map.get(&SpanKey::from(def_span)))
+                .cloned()
+            {
+                let (freshened_params, freshened_ret, resolved_type_args) =
+                    self.instantiate_fn_sig_for_call(&sig.call_sig, type_args, span);
+
+                let positional_count = args.iter().take_while(|arg| arg.name().is_none()).count();
+                let positional_args = &args[..positional_count];
+                let named_args = &args[positional_count..];
+
+                if args.len() != freshened_params.len() {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "this function takes {} argument(s) but {} were supplied",
+                            freshened_params.len(),
+                            args.len()
+                        ),
+                    );
+                }
+
+                for (i, arg) in positional_args.iter().enumerate() {
+                    if let Some(param_ty) = freshened_params.get(i) {
+                        let (expr, sp) = arg.expr();
+                        self.check_against(expr, sp, param_ty);
+                    }
+                }
+
+                for arg in named_args {
+                    if let Some(name) = arg.name() {
+                        if let Some(idx) = sig
+                            .call_sig
+                            .param_names
+                            .iter()
+                            .position(|param| param == name)
+                        {
+                            if let Some(param_ty) = freshened_params.get(idx) {
+                                let (expr, sp) = arg.expr();
+                                self.check_against(expr, sp, param_ty);
+                            }
+                        } else {
+                            let (_, sp) = arg.expr();
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                sp,
+                                format!("unknown named argument `{name}`"),
+                            );
+                        }
+                    }
+                }
+
+                self.enforce_type_param_bounds(&sig.call_sig, &resolved_type_args, span);
+
+                if type_args.is_none() && !sig.call_sig.type_params.is_empty() {
+                    self.record_concrete_call_type_args(span, &resolved_type_args);
+                }
+
+                return freshened_ret;
+            }
+
             let func_ty = binding.ty.clone();
             let ret = self.check_call_with_type(&func_ty, args, span);
-            // If this variable was bound to a generic lambda, extract the now-
-            // resolved concrete types for each type parameter and record them
-            // in call_type_args so the enricher can fill in the type_args field
-            // before the AST is serialised for the codegen.
-            if let Some(poly_vars) = self.lambda_poly_type_var_map.get(&func_name).cloned() {
-                if type_args.is_none() {
-                    let inferred_type_args: Vec<Ty> =
-                        poly_vars.iter().map(|(_, tv)| Ty::Var(*tv)).collect();
-                    self.record_concrete_call_type_args(span, &inferred_type_args);
-                }
-            }
             return ret;
         }
 

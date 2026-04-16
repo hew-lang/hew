@@ -1324,6 +1324,31 @@ fn fmt_trait_multi_item_blank_lines_roundtrip() {
 }
 
 #[test]
+fn fmt_trait_multi_item_blank_lines_canonicalize_with_comments() {
+    let src = concat!(
+        "// Formatter should not suppress trait spacing.\n",
+        "trait Describable {\n",
+        "    fn describe() -> i32 {\n",
+        "        42\n",
+        "    }\n",
+        "    fn reset();\n",
+        "}\n"
+    );
+    let expected = concat!(
+        "// Formatter should not suppress trait spacing.\n",
+        "trait Describable {\n",
+        "    fn describe() -> i32 {\n",
+        "        42\n",
+        "    }\n",
+        "\n",
+        "    fn reset();\n",
+        "}\n"
+    );
+
+    assert_eq!(roundtrip(src), expected);
+}
+
+#[test]
 fn fmt_contextual_keywords_as_identifiers_roundtrip() {
     exact_roundtrip(
         "fn test_contextual_keywords_as_identifiers() {\n    let wire = 5;\n    let event = \"hello\";\n    let state = true;\n    let join = 42;\n    let after = 0;\n}\n",

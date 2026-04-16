@@ -190,18 +190,22 @@ impl<'a> Formatter<'a> {
             .map_or(self.source.len(), |off| from + off)
     }
 
+    fn flush_comments_and_separate(&mut self, pos: usize, needs_blank_line: bool) {
+        let had_comments = self.next_comment;
+        self.flush_comments_before(pos);
+        let flushed_comments = self.next_comment > had_comments;
+        if needs_blank_line && !flushed_comments && !self.output.ends_with("\n\n") {
+            self.newline();
+        }
+    }
+
     // ------------------------------------------------------------------
     // Program
     // ------------------------------------------------------------------
 
     fn format_program(&mut self, program: &Program) {
         for (i, item) in program.items.iter().enumerate() {
-            let had_comments = self.next_comment;
-            self.flush_comments_before(item.1.start);
-            let flushed_comments = self.next_comment > had_comments;
-            if i > 0 && !flushed_comments && !self.output.ends_with("\n\n") {
-                self.newline();
-            }
+            self.flush_comments_and_separate(item.1.start, i > 0);
             self.prev_source_pos = item.1.start;
             self.format_item(&item.0, item.1.end);
             // Only advance if format_item didn't already advance past the item
@@ -488,13 +492,12 @@ impl<'a> Formatter<'a> {
         for (i, item) in decl.items.iter().enumerate() {
             match item {
                 TraitItem::Method(m) => {
-                    if self.has_comments() {
-                        let pos = self
-                            .find_keyword_after(&format!("fn {}", m.name), self.prev_source_pos);
-                        self.flush_comments_before(pos);
-                    } else if i > 0 {
-                        self.newline();
-                    }
+                    let pos = if self.has_comments() {
+                        self.find_keyword_after(&format!("fn {}", m.name), self.prev_source_pos)
+                    } else {
+                        usize::MAX
+                    };
+                    self.flush_comments_and_separate(pos, i > 0);
                     self.format_trait_method(m);
                 }
                 TraitItem::AssociatedType {
@@ -502,13 +505,12 @@ impl<'a> Formatter<'a> {
                     bounds,
                     default,
                 } => {
-                    if self.has_comments() {
-                        let pos =
-                            self.find_keyword_after(&format!("type {name}"), self.prev_source_pos);
-                        self.flush_comments_before(pos);
-                    } else if i > 0 {
-                        self.newline();
-                    }
+                    let pos = if self.has_comments() {
+                        self.find_keyword_after(&format!("type {name}"), self.prev_source_pos)
+                    } else {
+                        usize::MAX
+                    };
+                    self.flush_comments_and_separate(pos, i > 0);
                     self.write_indent();
                     self.write("type ");
                     self.write(name);

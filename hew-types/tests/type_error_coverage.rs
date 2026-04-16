@@ -152,6 +152,35 @@ fn test_non_exhaustive_option_match() {
         .expect("expected NonExhaustiveMatch error for Option");
     assert_eq!(err.severity, Severity::Error);
     assert_eq!(err.message, "non-exhaustive match: missing None");
+    assert_eq!(err.suggestions, vec!["None"]);
+}
+
+#[test]
+fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
+    let output = typecheck(
+        r"
+        enum Packet {
+            Empty;
+            Value(int);
+            Named { count: int };
+        }
+
+        fn label(packet: Packet) -> int {
+            match packet {
+                Empty => 0,
+            }
+        }
+    ",
+    );
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::NonExhaustiveMatch)
+        .expect("expected NonExhaustiveMatch error for Packet");
+    assert_eq!(
+        err.suggestions,
+        vec!["Named { .. }".to_string(), "Value(_)".to_string()]
+    );
 }
 
 #[test]

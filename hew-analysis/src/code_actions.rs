@@ -118,6 +118,21 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
                 });
             }
 
+            Some("NonExhaustiveMatch") => {
+                let missing_arms: Vec<_> = diag
+                    .suggestions
+                    .iter()
+                    .filter(|suggestion| !suggestion.is_empty())
+                    .cloned()
+                    .collect();
+                if let Some(edit) = add_missing_match_arms(source, diag.span, &missing_arms) {
+                    actions.push(CodeAction {
+                        title: "Add missing match arms".to_string(),
+                        edits: vec![edit],
+                    });
+                }
+            }
+
             // All other diagnostic kinds have no mechanical fix available.
             _ => {}
         }
@@ -227,6 +242,79 @@ fn prefix_with_underscore(source: &str, diag_span: OffsetSpan, name: &str) -> Op
         },
         new_text: format!("_{name}"),
     })
+}
+
+fn add_missing_match_arms(
+    source: &str,
+    diag_span: OffsetSpan,
+    missing_arms: &[String],
+) -> Option<RenameEdit> {
+    if missing_arms.is_empty() {
+        return None;
+    }
+
+    let region = source.get(diag_span.start..diag_span.end)?;
+    let open_rel = region.find('{')?;
+    let close_rel = region.rfind('}')?;
+    if open_rel >= close_rel {
+        return None;
+    }
+
+    let insert_at = diag_span.start + close_rel;
+    let body = &region[open_rel + 1..close_rel];
+    let insert_text = if body.contains('\n') {
+        let closing_indent = line_indent_at(source, insert_at);
+        let inner_indent =
+            match_body_indent(body).unwrap_or_else(|| format!("{closing_indent}    "));
+        let mut text = String::new();
+        for arm in missing_arms {
+            if !text.is_empty() || !body.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&inner_indent);
+            text.push_str(arm);
+            text.push_str(" => {},");
+        }
+        text.push('\n');
+        text.push_str(&closing_indent);
+        text
+    } else {
+        format!(" {} ", inline_missing_match_arms(missing_arms))
+    };
+
+    Some(RenameEdit {
+        span: OffsetSpan {
+            start: insert_at,
+            end: insert_at,
+        },
+        new_text: insert_text,
+    })
+}
+
+fn inline_missing_match_arms(missing_arms: &[String]) -> String {
+    missing_arms
+        .iter()
+        .map(|arm| format!("{arm} => {{}},"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn line_indent_at(source: &str, offset: usize) -> String {
+    let line_start = source[..offset].rfind('\n').map_or(0, |idx| idx + 1);
+    source[line_start..offset]
+        .chars()
+        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .collect()
+}
+
+fn match_body_indent(body: &str) -> Option<String> {
+    body.lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.chars()
+                .take_while(|ch| matches!(ch, ' ' | '\t'))
+                .collect()
+        })
 }
 
 #[cfg(test)]
@@ -547,6 +635,51 @@ mod tests {
         assert_eq!(actions[0].edits[0].span, OffsetSpan { start: 0, end: 15 });
     }
 
+    #[test]
+    fn non_exhaustive_match_action_adds_missing_arms_multiline() {
+        let source =
+            "fn label(opt: Option<int>) -> int {\n    match opt {\n        None => 0,\n    }\n}\n";
+        let match_start = source.find("match").unwrap();
+        let span = OffsetSpan {
+            start: match_start,
+            end: match_start + source[match_start..].find("\n    }\n").unwrap() + 6,
+        };
+        let d = diag_with_suggestions(
+            "NonExhaustiveMatch",
+            "non-exhaustive match: missing Some",
+            span.start,
+            span.end,
+            vec!["Some(_)"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Add missing match arms");
+        assert_eq!(
+            actions[0].edits[0].new_text,
+            "\n        Some(_) => {},\n    "
+        );
+    }
+
+    #[test]
+    fn non_exhaustive_match_action_adds_missing_arms_inline() {
+        let source = "fn label(opt: Option<int>) -> int { match opt { None => 0, } }";
+        let match_start = source.find("match").unwrap();
+        let span = OffsetSpan {
+            start: match_start,
+            end: match_start + source[match_start..].find(", }").unwrap() + 3,
+        };
+        let d = diag_with_suggestions(
+            "NonExhaustiveMatch",
+            "non-exhaustive match: missing Some",
+            span.start,
+            span.end,
+            vec!["Some(_)"],
+        );
+        let actions = build_code_actions(source, &[d]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].edits[0].new_text, " Some(_) => {}, ");
+    }
+
     // ── Group-E: no mechanical fix ───────────────────────────────────
 
     #[test]
@@ -556,7 +689,6 @@ mod tests {
             "Mismatch",
             "ArityMismatch",
             "InferenceFailed",
-            "NonExhaustiveMatch",
             "ReturnTypeMismatch",
             "UseAfterMove",
             "BlockingCallInReceiveFn",

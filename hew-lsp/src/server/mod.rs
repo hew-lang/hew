@@ -28,6 +28,8 @@ use self::convert::analysis_symbol_kind_to_lsp;
 use self::workspace::has_test_attribute;
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use dashmap::DashMap;
 #[cfg(test)]
@@ -44,6 +46,7 @@ use hew_types::error::TypeErrorKind;
 #[cfg(test)]
 use hew_types::Checker;
 use hew_types::TypeCheckOutput;
+use serde_json::{json, Value};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
@@ -55,15 +58,15 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeKind,
-    FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
-    Location, MarkupContent, MarkupKind, MessageType, OneOf, Position, PrepareRenameResponse,
-    Range, ReferenceParams, RenameParams, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions,
-    WorkspaceEdit,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
+    ExecuteCommandParams, FoldingRange, FoldingRangeKind, FoldingRangeParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
+    MessageType, OneOf, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
 };
 #[cfg(test)]
 use tower_lsp::lsp_types::{
@@ -99,6 +102,7 @@ const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
     SemanticTokenModifier::READONLY,    // bit 1
     SemanticTokenModifier::ASYNC,       // bit 2
 ];
+const RUN_TEST_COMMAND: &str = "hew.runTest";
 
 fn modifier_bit(m: &SemanticTokenModifier) -> u32 {
     TOKEN_MODIFIERS
@@ -150,6 +154,136 @@ fn offset_range_to_lsp(source: &str, lo: &[usize], start: usize, end: usize) -> 
     }
 }
 
+fn build_server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
+            ..Default::default()
+        }),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: SemanticTokensLegend {
+                    token_types: TOKEN_TYPES.to_vec(),
+                    token_modifiers: TOKEN_MODIFIERS.to_vec(),
+                },
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                range: None,
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+            },
+        )),
+        call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
+        code_lens_provider: Some(CodeLensOptions {
+            resolve_provider: Some(false),
+        }),
+        execute_command_provider: Some(ExecuteCommandOptions {
+            commands: vec![RUN_TEST_COMMAND.to_string()],
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
+        document_link_provider: Some(DocumentLinkOptions {
+            resolve_provider: Some(false),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }),
+        references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(tower_lsp::lsp_types::RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
+        inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
+            InlayHintOptions {
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+                resolve_provider: None,
+            },
+        ))),
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+            retrigger_characters: None,
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        }),
+        code_action_provider: Some(tower_lsp::lsp_types::CodeActionProviderCapability::Options(
+            tower_lsp::lsp_types::CodeActionOptions {
+                code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                ..Default::default()
+            },
+        )),
+        folding_range_provider: Some(
+            tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true),
+        ),
+        ..Default::default()
+    }
+}
+
+fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(folders) = &params.workspace_folders {
+        for folder in folders {
+            if let Ok(path) = folder.uri.to_file_path() {
+                roots.push(path);
+            }
+        }
+    }
+    if roots.is_empty() {
+        if let Some(root_uri) = &params.root_uri {
+            if let Ok(path) = root_uri.to_file_path() {
+                roots.push(path);
+            }
+        }
+    }
+    #[expect(deprecated, reason = "LSP root_path is a fallback for older clients")]
+    if roots.is_empty() {
+        if let Some(root_path) = &params.root_path {
+            roots.push(PathBuf::from(root_path));
+        }
+    }
+    roots
+}
+
+fn extract_run_test_name(arguments: &[Value]) -> Option<String> {
+    let first = arguments.first()?;
+    match first {
+        Value::String(name) if !name.is_empty() => Some(name.clone()),
+        Value::Object(map) => map
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+fn hew_cli_executable() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_hew") {
+        return PathBuf::from(path);
+    }
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_hew") {
+        return PathBuf::from(path);
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        let candidate = current_exe.with_file_name(format!("hew{}", std::env::consts::EXE_SUFFIX));
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from(format!("hew{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn build_run_test_invocation(test_name: &str, workspace_root: &Path) -> (PathBuf, Vec<String>) {
+    (
+        hew_cli_executable(),
+        vec![
+            "test".to_string(),
+            "--no-color".to_string(),
+            "--filter".to_string(),
+            test_name.to_string(),
+            workspace_root.display().to_string(),
+        ],
+    )
+}
+
 // ── Server ───────────────────────────────────────────────────────────
 
 /// Hew language server providing IDE features via LSP.
@@ -157,6 +291,7 @@ fn offset_range_to_lsp(source: &str, lo: &[usize], start: usize, end: usize) -> 
 pub struct HewLanguageServer {
     client: Client,
     documents: DashMap<Url, DocumentState>,
+    workspace_roots: RwLock<Vec<PathBuf>>,
 }
 
 impl HewLanguageServer {
@@ -166,7 +301,23 @@ impl HewLanguageServer {
         Self {
             client,
             documents: DashMap::new(),
+            workspace_roots: RwLock::new(Vec::new()),
         }
+    }
+
+    fn workspace_root(&self) -> Option<PathBuf> {
+        if let Ok(roots) = self.workspace_roots.read() {
+            if let Some(root) = roots.first() {
+                return Some(root.clone());
+            }
+        }
+        self.documents.iter().find_map(|entry| {
+            entry
+                .key()
+                .to_file_path()
+                .ok()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+        })
     }
 
     /// Re-lex, re-parse, and re-typecheck the document and any open importers,
@@ -180,69 +331,83 @@ impl HewLanguageServer {
                 .await;
         }
     }
+
+    async fn run_test_command(&self, test_name: &str) -> Result<Option<Value>> {
+        let Some(workspace_root) = self.workspace_root() else {
+            self.client
+                .show_message(
+                    MessageType::ERROR,
+                    "Cannot run Hew test: no workspace root is available.",
+                )
+                .await;
+            return Ok(None);
+        };
+
+        let (program, args) = build_run_test_invocation(test_name, &workspace_root);
+        self.client
+            .show_message(
+                MessageType::INFO,
+                format!("Running Hew test `{test_name}`..."),
+            )
+            .await;
+
+        match tokio::process::Command::new(&program)
+            .args(&args)
+            .current_dir(&workspace_root)
+            .output()
+            .await
+        {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                if !stdout.is_empty() {
+                    self.client.show_message(MessageType::INFO, stdout).await;
+                }
+                if !stderr.is_empty() {
+                    let level = if output.status.success() {
+                        MessageType::INFO
+                    } else {
+                        MessageType::ERROR
+                    };
+                    self.client.show_message(level, stderr).await;
+                }
+                let level = if output.status.success() {
+                    MessageType::INFO
+                } else {
+                    MessageType::ERROR
+                };
+                self.client
+                    .show_message(level, format!("Hew test `{test_name}` finished."))
+                    .await;
+                Ok(Some(json!({
+                    "command": RUN_TEST_COMMAND,
+                    "success": output.status.success(),
+                    "test": test_name,
+                })))
+            }
+            Err(error) => {
+                self.client
+                    .show_message(
+                        MessageType::ERROR,
+                        format!(
+                            "Failed to start `{}` for test `{test_name}`: {error}",
+                            program.display()
+                        ),
+                    )
+                    .await;
+                Ok(None)
+            }
+        }
+    }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for HewLanguageServer {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
-        let capabilities = ServerCapabilities {
-            text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
-            completion_provider: Some(CompletionOptions {
-                trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
-                ..Default::default()
-            }),
-            hover_provider: Some(HoverProviderCapability::Simple(true)),
-            definition_provider: Some(OneOf::Left(true)),
-            document_symbol_provider: Some(OneOf::Left(true)),
-            semantic_tokens_provider: Some(
-                SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
-                    legend: SemanticTokensLegend {
-                        token_types: TOKEN_TYPES.to_vec(),
-                        token_modifiers: TOKEN_MODIFIERS.to_vec(),
-                    },
-                    full: Some(SemanticTokensFullOptions::Bool(true)),
-                    range: None,
-                    work_done_progress_options: WorkDoneProgressOptions::default(),
-                }),
-            ),
-            call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
-            code_lens_provider: Some(CodeLensOptions {
-                resolve_provider: Some(false),
-            }),
-            workspace_symbol_provider: Some(OneOf::Left(true)),
-            document_link_provider: Some(DocumentLinkOptions {
-                resolve_provider: Some(false),
-                work_done_progress_options: WorkDoneProgressOptions::default(),
-            }),
-            references_provider: Some(OneOf::Left(true)),
-            rename_provider: Some(OneOf::Right(tower_lsp::lsp_types::RenameOptions {
-                prepare_provider: Some(true),
-                work_done_progress_options: WorkDoneProgressOptions::default(),
-            })),
-            inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
-                InlayHintOptions {
-                    work_done_progress_options: WorkDoneProgressOptions::default(),
-                    resolve_provider: None,
-                },
-            ))),
-            signature_help_provider: Some(SignatureHelpOptions {
-                trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
-                retrigger_characters: None,
-                work_done_progress_options: WorkDoneProgressOptions::default(),
-            }),
-            code_action_provider: Some(
-                tower_lsp::lsp_types::CodeActionProviderCapability::Options(
-                    tower_lsp::lsp_types::CodeActionOptions {
-                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
-                        ..Default::default()
-                    },
-                ),
-            ),
-            folding_range_provider: Some(
-                tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true),
-            ),
-            ..Default::default()
-        };
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        if let Ok(mut roots) = self.workspace_roots.write() {
+            *roots = extract_workspace_roots(&params);
+        }
+        let capabilities = build_server_capabilities();
 
         // lsp-types 0.94.1 doesn't have typeHierarchyProvider in ServerCapabilities,
         // but the LSP 3.17 protocol requires it for clients to discover the feature.
@@ -818,6 +983,32 @@ impl LanguageServer for HewLanguageServer {
             }
         }
         Ok(non_empty(lsp_actions))
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
+        match params.command.as_str() {
+            RUN_TEST_COMMAND => {
+                let Some(test_name) = extract_run_test_name(&params.arguments) else {
+                    self.client
+                        .show_message(
+                            MessageType::ERROR,
+                            "Cannot run Hew test: missing test name argument.",
+                        )
+                        .await;
+                    return Ok(None);
+                };
+                self.run_test_command(&test_name).await
+            }
+            other => {
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("Unsupported command `{other}`"),
+                    )
+                    .await;
+                Ok(None)
+            }
+        }
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
@@ -1993,6 +2184,45 @@ impl Worker {
         );
     }
 
+    #[test]
+    fn initialize_advertises_run_test_execute_command() {
+        let capabilities = build_server_capabilities();
+        let commands = capabilities
+            .execute_command_provider
+            .expect("execute command support should be advertised")
+            .commands;
+        assert_eq!(commands, vec![RUN_TEST_COMMAND.to_string()]);
+    }
+
+    #[test]
+    fn extract_run_test_name_accepts_legacy_and_object_args() {
+        assert_eq!(
+            extract_run_test_name(&[Value::String("test_add".to_string())]),
+            Some("test_add".to_string())
+        );
+        assert_eq!(
+            extract_run_test_name(&[json!({ "name": "test_subtract" })]),
+            Some("test_subtract".to_string())
+        );
+    }
+
+    #[test]
+    fn build_run_test_invocation_uses_cli_test_runner() {
+        let root = Path::new("workspace-root");
+        let (program, args) = build_run_test_invocation("test_add", root);
+        assert!(program.ends_with(Path::new(&format!("hew{}", std::env::consts::EXE_SUFFIX))));
+        assert_eq!(
+            args,
+            vec![
+                "test".to_string(),
+                "--no-color".to_string(),
+                "--filter".to_string(),
+                "test_add".to_string(),
+                "workspace-root".to_string(),
+            ]
+        );
+    }
+
     // ── Workspace symbol tests ──────────────────────────────────────
 
     #[test]
@@ -2575,6 +2805,53 @@ impl Worker {
                 "expected code actions for undefined variable with suggestions"
             );
         }
+    }
+
+    #[test]
+    fn code_actions_for_non_exhaustive_match() {
+        use hew_analysis::code_actions::{build_code_actions, DiagnosticInfo};
+        let source = r#"
+            enum Colour { Red; Blue; }
+            fn label(colour: Colour) -> string {
+                match colour {
+                    Red => "red",
+                }
+            }
+        "#;
+        let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        let diag = build_diagnostics(&uri, source, &lo, &parse_result, Some(&type_output))
+            .into_iter()
+            .find(|diag| {
+                diag.data
+                    .as_ref()
+                    .and_then(|data| data.get("kind"))
+                    .and_then(Value::as_str)
+                    == Some("NonExhaustiveMatch")
+            })
+            .expect("expected non-exhaustive match diagnostic");
+        let suggestions = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("suggestions"))
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+            .unwrap_or_default();
+        let info = DiagnosticInfo {
+            kind: Some("NonExhaustiveMatch".to_string()),
+            message: diag.message.clone(),
+            span: hew_analysis::OffsetSpan {
+                start: position_to_offset(source, &lo, diag.range.start),
+                end: position_to_offset(source, &lo, diag.range.end),
+            },
+            suggestions,
+        };
+        let actions = build_code_actions(source, &[info]);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Add missing match arms");
+        assert!(actions[0].edits[0].new_text.contains("Blue => {},"));
     }
 
     // ── has_test_attribute tests ─────────────────────────────────────

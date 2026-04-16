@@ -46,7 +46,11 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
             }
             for method in &a.methods {
                 if method.name == word {
-                    return Some(crate::util::find_name_span(source, span.start, word));
+                    return Some(crate::util::find_name_span(
+                        source,
+                        method.decl_span.start,
+                        word,
+                    ));
                 }
             }
         }
@@ -59,7 +63,7 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
                     TypeBodyItem::Method(m) if m.name == word => {
-                        return Some(crate::util::find_name_span(source, span.start, word));
+                        return Some(crate::util::find_name_span(source, m.decl_span.start, word));
                     }
                     _ => {}
                 }
@@ -166,5 +170,25 @@ mod tests {
         let pr = parse(source);
         let result = find_definition(source, &pr, "Foo").expect("should find Foo");
         assert_eq!(&source[result.start..result.end], "Foo");
+    }
+
+    #[test]
+    fn definition_actor_method_uses_decl_span() {
+        let source = "actor Counter { receive fn ping(foo: i32) { foo } fn foo() {} }";
+        let pr = parse(source);
+        let result = find_definition(source, &pr, "foo").expect("should find actor method");
+        let method_start = source.rfind("fn foo").expect("method should exist") + 3;
+        assert_eq!(result.start, method_start);
+        assert_eq!(&source[result.start..result.end], "foo");
+    }
+
+    #[test]
+    fn definition_type_method_uses_decl_span() {
+        let source = "type Counter { value: i32 fn foo(value: i32) -> i32 { value } }";
+        let pr = parse(source);
+        let result = find_definition(source, &pr, "foo").expect("should find type method");
+        let method_start = source.rfind("fn foo").expect("method should exist") + 3;
+        assert_eq!(result.start, method_start);
+        assert_eq!(&source[result.start..result.end], "foo");
     }
 }

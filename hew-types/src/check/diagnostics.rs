@@ -317,15 +317,29 @@ impl Checker {
 
         match scrutinee_ty {
             Ty::Named { name, .. } if name == "Option" => {
-                let missing = Self::missing_constructor_variants(arms, "Some", "None");
+                let missing: Vec<String> = Self::missing_constructor_variants(arms, "Some", "None")
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
                 if !missing.is_empty() {
-                    self.error_non_exhaustive(span, &format!("missing {}", missing.join(", ")));
+                    self.error_non_exhaustive(span, &missing, |name| match name {
+                        "Some" => "Some(_)".to_string(),
+                        "None" => "None".to_string(),
+                        _ => name.to_string(),
+                    });
                 }
             }
             Ty::Named { name, .. } if name == "Result" => {
-                let missing = Self::missing_constructor_variants(arms, "Ok", "Err");
+                let missing: Vec<String> = Self::missing_constructor_variants(arms, "Ok", "Err")
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
                 if !missing.is_empty() {
-                    self.error_non_exhaustive(span, &format!("missing {}", missing.join(", ")));
+                    self.error_non_exhaustive(span, &missing, |name| match name {
+                        "Ok" => "Ok(_)".to_string(),
+                        "Err" => "Err(_)".to_string(),
+                        _ => name.to_string(),
+                    });
                 }
             }
             Ty::Named { name, .. } => {
@@ -363,11 +377,15 @@ impl Checker {
                             .filter(|v| !covered.contains(*v))
                             .collect();
                         if !missing.is_empty() {
-                            let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
-                            self.error_non_exhaustive(
-                                span,
-                                &format!("missing {}", names.join(", ")),
-                            );
+                            let mut missing_names: Vec<_> =
+                                missing.iter().map(|name| (*name).clone()).collect();
+                            missing_names.sort();
+                            self.error_non_exhaustive(span, &missing_names, |variant_name| {
+                                td.variants.get(variant_name).map_or_else(
+                                    || variant_name.to_string(),
+                                    |variant| missing_arm_pattern(variant_name, variant),
+                                )
+                            });
                         }
                     }
                 }
@@ -396,13 +414,13 @@ impl Checker {
                 if !has_binding_identifier {
                     let mut missing = Vec::new();
                     if !has_true {
-                        missing.push("true");
+                        missing.push("true".to_string());
                     }
                     if !has_false {
-                        missing.push("false");
+                        missing.push("false".to_string());
                     }
                     if !missing.is_empty() {
-                        self.error_non_exhaustive(span, &format!("missing {}", missing.join(", ")));
+                        self.error_non_exhaustive(span, &missing, std::string::ToString::to_string);
                     }
                 }
             }
@@ -432,12 +450,28 @@ impl Checker {
     /// Emit a hard error for genuinely non-exhaustive enum-like matches (Option, Result,
     /// user enums, machines, bool).  These are fail-closed: missing variants are a
     /// correctness issue, not just a style suggestion.
-    pub(super) fn error_non_exhaustive(&mut self, span: &Span, detail: &str) {
-        self.errors.push(TypeError::non_exhaustive_match_detail(
+    pub(super) fn error_non_exhaustive<F>(
+        &mut self,
+        span: &Span,
+        missing: &[String],
+        suggestion_pattern: F,
+    ) where
+        F: Fn(&str) -> String,
+    {
+        let detail = if missing.is_empty() {
+            "missing some patterns".to_string()
+        } else {
+            format!("missing {}", missing.join(", "))
+        };
+        let mut error = TypeError::non_exhaustive_match_detail(
             span.clone(),
             crate::error::Severity::Error,
             detail,
-        ));
+        );
+        for variant in missing {
+            error = error.with_suggestion(suggestion_pattern(variant));
+        }
+        self.errors.push(error);
     }
 
     /// Emit a soft warning for scalar / open-ended types where adding a wildcard `_`
@@ -541,5 +575,18 @@ impl Checker {
             ),
         );
         true
+    }
+}
+
+fn missing_arm_pattern(variant_name: &str, variant: &VariantDef) -> String {
+    match variant {
+        VariantDef::Unit => variant_name.to_string(),
+        VariantDef::Tuple(fields) => {
+            let wildcards = std::iter::repeat_n("_", fields.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{variant_name}({wildcards})")
+        }
+        VariantDef::Struct(_) => format!("{variant_name} {{ .. }}"),
     }
 }

@@ -70,6 +70,9 @@ pub fn combine(a: String, b: String) -> String {
     if b.starts_with("/") {
         return b;
     }
+    if a == "" {
+        return b;
+    }
     if a.ends_with("/") {
         return a + b;
     }
@@ -164,7 +167,7 @@ fn strip_trailing_slash(p: String) -> String {
 }
 
 /// Return the index of the last `/` in `s`, or `-1` if none.
-fn last_slash_pos(s: String) -> i32 {
+fn last_slash_pos(s: String) -> int {
     let first = s.find("/");
     if first < 0 {
         return -1;
@@ -175,16 +178,16 @@ fn last_slash_pos(s: String) -> i32 {
         let rest = s.slice(search_from, s.len());
         let next = rest.find("/");
         if next < 0 {
-            return last as i32;
+            return last;
         }
         last = search_from + next;
         search_from = last + 1;
     }
-    last as i32
+    last
 }
 
 /// Return the index of the last `.` in `s`, or `-1` if none.
-fn last_dot_pos(s: String) -> i32 {
+fn last_dot_pos(s: String) -> int {
     let first = s.find(".");
     if first < 0 {
         return -1;
@@ -195,12 +198,12 @@ fn last_dot_pos(s: String) -> i32 {
         let rest = s.slice(search_from, s.len());
         let next = rest.find(".");
         if next < 0 {
-            return last as i32;
+            return last;
         }
         last = search_from + next;
         search_from = last + 1;
     }
-    last as i32
+    last
 }
 
 // ── FFI bindings (filesystem operations only) ────────────────────────

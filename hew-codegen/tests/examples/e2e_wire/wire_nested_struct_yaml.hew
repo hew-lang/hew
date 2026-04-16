@@ -1,0 +1,26 @@
+// Test: nested wire struct YAML round-trip.
+// Proves nested YAML encode → decode → encode is byte-identical.
+#[wire]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+#[wire]
+struct Segment {
+    start: Point,
+    end: Point,
+}
+
+fn main() {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 3, y: 4 };
+    let seg = Segment { start: p1, end: p2 };
+
+    let yaml1 = seg.to_yaml();
+    print(yaml1);
+
+    let seg2 = Segment.from_yaml(yaml1);
+    let yaml2 = seg2.to_yaml();
+    print(yaml2);
+}

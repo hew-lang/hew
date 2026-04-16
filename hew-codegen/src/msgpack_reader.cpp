@@ -576,6 +576,9 @@ static ast::TraitMethod parseTraitMethod(const msgpack::object &obj) {
   const auto *body = mapGet(obj, "body");
   if (body && !isNil(*body))
     result.body = parseBlock(*body);
+  const auto *span_ = mapGet(obj, "span");
+  if (span_ && !isNil(*span_))
+    result.span = parseSpan(*span_);
   return result;
 }
 
@@ -934,6 +937,9 @@ static ast::FnDecl parseFnDecl(const msgpack::object &obj) {
   const auto *decl_span_ = mapGet(obj, "decl_span");
   if (decl_span_ && !isNil(*decl_span_))
     result.decl_span = parseSpan(*decl_span_);
+  const auto *fn_span_ = mapGet(obj, "fn_span");
+  if (fn_span_ && !isNil(*fn_span_))
+    result.fn_span = parseSpan(*fn_span_);
   return result;
 }
 

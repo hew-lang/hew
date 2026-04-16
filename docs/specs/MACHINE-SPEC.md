@@ -749,11 +749,14 @@ The following features are explicitly deferred to future versions:
 
 1. **Mealy outputs** — transitions producing output values alongside new state: `on Event: S1 -> S2 / OutputType { ... }`.
 2. **Hierarchical states** — states containing sub-machines.
-3. **Guard conditions** — `on Event: S1 -> S2 when (condition) { ... }`.
-4. **Entry/exit hooks** — `enter S1 { ... }`, `exit S1 { ... }`.
-5. **History states** — returning to a previously active sub-state.
-6. **Timeout events** — compiler-generated events triggered by elapsed time.
-7. **Visualization** — generating state diagrams from machine declarations.
+3. **Entry/exit hooks** — `enter S1 { ... }`, `exit S1 { ... }`.
+4. **History states** — returning to a previously active sub-state.
+5. **Timeout events** — compiler-generated events triggered by elapsed time.
+
+Guard conditions are shipping in v0.2.0 (see §1.1 and §3.11.4 of `HEW-SPEC.md`).
+Visualization is also shipping via the CLI: `hew machine diagram` emits Mermaid
+by default and `hew machine diagram --dot` emits Graphviz DOT from machine
+source declarations.
 
 ---
 

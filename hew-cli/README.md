@@ -19,6 +19,10 @@ hew eval --json "expr"            # Evaluate and emit a machine-readable JSON ru
 hew test file.hew                 # Run tests
 hew wire check file.hew --against baseline.hew
                                   # Validate wire compatibility
+hew machine list file.hew         # List machines with states/events/transition counts
+hew machine diagram file.hew      # Emit Mermaid state diagram to stdout
+hew machine diagram file.hew --dot
+                                  # Emit Graphviz DOT to stdout
 hew fmt file.hew                  # Format source file in-place
 hew fmt --stdin < file.hew       # Format source from stdin to stdout
 hew fmt --check file.hew         # Check formatting (CI mode)
@@ -224,6 +228,27 @@ ensure all modules appear in the output.
 
 For `hew doc` failure modes and troubleshooting steps, see
 [`../docs/troubleshooting.md`](../docs/troubleshooting.md).
+
+## Machine tools
+
+`hew machine` inspects `machine` declarations in a `.hew` file without building
+or running the program.
+
+```sh
+hew machine list state_machine.hew         # List each machine, its states/events, and transition count
+hew machine diagram state_machine.hew      # Emit a Mermaid `stateDiagram-v2` diagram to stdout
+hew machine diagram state_machine.hew --dot
+                                           # Emit Graphviz DOT to stdout instead
+```
+
+`hew machine list` prints one summary block per machine, including state names,
+event names, the transition count, and whether a default wildcard transition
+keeps unhandled events in the current state.
+
+`hew machine diagram` emits a diagram for every machine in the file. Mermaid is
+the default output. `--dot` switches the output to Graphviz DOT. When a
+transition has a `when` guard, the diagram label is annotated with `[guard]`.
+If the file has no machine declarations, `hew machine diagram` exits non-zero.
 
 ## Scaffolding a new project
 

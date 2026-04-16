@@ -893,6 +893,13 @@ static bool eraseExprTypeEntryForSpan(hew::ast::Program &program, const hew::ast
   return program.expr_types.size() != oldSize;
 }
 
+static void appendExprTypeEntry(hew::ast::Program &program, const hew::ast::Span &span,
+                                llvm::StringRef typeName) {
+  hew::ast::TypeExpr typeExpr;
+  typeExpr.kind = hew::ast::TypeNamed{typeName.str(), std::nullopt};
+  program.expr_types.push_back({span.start, span.end, {std::move(typeExpr), span}});
+}
+
 static bool hasTrueUnsignedAttr(mlir::Operation *op) {
   return op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
          op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
@@ -1216,6 +1223,7 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
   using namespace hew::ast;
 
   uint64_t nextSpan = 900000000000ULL;
+  std::vector<Span> printArgSpans;
   auto mkSpan = [&]() -> Span {
     auto start = nextSpan;
     nextSpan += 8;
@@ -1241,7 +1249,9 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
     ExprCall call;
     call.function = mkExpr(ExprIdentifier{"println"});
     call.type_args = std::nullopt;
-    call.args.push_back(CallArgPositional{mkInt(1)});
+    auto arg = mkInt(1);
+    printArgSpans.push_back(arg->span);
+    call.args.push_back(CallArgPositional{std::move(arg)});
     call.is_tail_call = false;
     return mkExpr(std::move(call));
   };
@@ -1282,6 +1292,8 @@ static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
 
   Program program;
   program.items.push_back({std::move(item), mkSpan()});
+  for (const auto &span : printArgSpans)
+    appendExprTypeEntry(program, span, "int");
   return program;
 }
 
@@ -1289,6 +1301,7 @@ static hew::ast::Program makeDiscardedScopeBadTailProgram() {
   using namespace hew::ast;
 
   uint64_t nextSpan = 910000000000ULL;
+  std::vector<Span> printArgSpans;
   auto mkSpan = [&]() -> Span {
     auto start = nextSpan;
     nextSpan += 8;
@@ -1314,7 +1327,9 @@ static hew::ast::Program makeDiscardedScopeBadTailProgram() {
     ExprCall call;
     call.function = mkExpr(ExprIdentifier{"println"});
     call.type_args = std::nullopt;
-    call.args.push_back(CallArgPositional{mkInt(1)});
+    auto arg = mkInt(1);
+    printArgSpans.push_back(arg->span);
+    call.args.push_back(CallArgPositional{std::move(arg)});
     call.is_tail_call = false;
     return mkExpr(std::move(call));
   };
@@ -1352,6 +1367,8 @@ static hew::ast::Program makeDiscardedScopeBadTailProgram() {
 
   Program program;
   program.items.push_back({std::move(item), mkSpan()});
+  for (const auto &span : printArgSpans)
+    appendExprTypeEntry(program, span, "int");
   return program;
 }
 
@@ -1365,6 +1382,7 @@ static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPar
   using namespace hew::ast;
 
   uint64_t nextSpan = 920000000000ULL;
+  std::vector<Span> printArgSpans;
   auto mkSpan = [&]() -> Span {
     auto start = nextSpan;
     nextSpan += 8;
@@ -1395,7 +1413,9 @@ static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPar
     ExprCall call;
     call.function = mkExpr(ExprIdentifier{"println"});
     call.type_args = std::nullopt;
-    call.args.push_back(CallArgPositional{mkInt(1)});
+    auto arg = mkInt(1);
+    printArgSpans.push_back(arg->span);
+    call.args.push_back(CallArgPositional{std::move(arg)});
     call.is_tail_call = false;
     return mkExpr(std::move(call));
   };
@@ -1452,6 +1472,8 @@ static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPar
 
   Program program;
   program.items.push_back({std::move(item), mkSpan()});
+  for (const auto &span : printArgSpans)
+    appendExprTypeEntry(program, span, "int");
   return program;
 }
 
@@ -1466,6 +1488,7 @@ makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind kind)
   using namespace hew::ast;
 
   uint64_t nextSpan = 900000001000ULL;
+  std::vector<Span> printArgSpans;
   auto mkSpan = [&]() -> Span {
     auto start = nextSpan;
     nextSpan += 8;
@@ -1510,7 +1533,9 @@ makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind kind)
     ExprCall call;
     call.function = mkExpr(ExprIdentifier{"println"});
     call.type_args = std::nullopt;
-    call.args.push_back(CallArgPositional{mkInt(value)});
+    auto arg = mkInt(value);
+    printArgSpans.push_back(arg->span);
+    call.args.push_back(CallArgPositional{std::move(arg)});
     call.is_tail_call = false;
     return mkExpr(std::move(call));
   };
@@ -1589,6 +1614,8 @@ makeStatementStyleMatchArmBadBodyProgram(StatementStyleMatchArmBadBodyKind kind)
 
   Program program;
   program.items.push_back({std::move(item), mkSpan()});
+  for (const auto &span : printArgSpans)
+    appendExprTypeEntry(program, span, "int");
   return program;
 }
 

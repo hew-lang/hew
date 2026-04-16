@@ -1,8 +1,8 @@
 // Simple struct
 
 type Point {
-    x: i32;
-    y: i32;
+    x: int;
+    y: int;
 }
 
 fn main() {

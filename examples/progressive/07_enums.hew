@@ -12,7 +12,7 @@ enum Status {
     Pending;
 }
 
-fn colour_to_int(c: Colour) -> i64 {
+fn colour_to_int(c: Colour) -> int {
     match c {
         Red => 1,
         Green => 2,
@@ -20,7 +20,7 @@ fn colour_to_int(c: Colour) -> i64 {
     }
 }
 
-fn status_to_int(s: Status) -> i64 {
+fn status_to_int(s: Status) -> int {
     match s {
         Active => 100,
         Inactive => 200,

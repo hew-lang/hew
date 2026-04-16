@@ -1091,6 +1091,47 @@ static std::optional<hew::ast::Span> findFunctionMethodCallSpan(const hew::ast::
   return std::nullopt;
 }
 
+static std::optional<hew::ast::Span>
+findCallArgSpanInStmt(const hew::ast::Stmt &stmt, const std::string &calleeName, size_t argIndex) {
+  auto argSpanForExpr =
+      [&](const hew::ast::Spanned<hew::ast::Expr> &expr) -> std::optional<hew::ast::Span> {
+    auto *call = std::get_if<hew::ast::ExprCall>(&expr.value.kind);
+    if (!call || !call->function)
+      return std::nullopt;
+    auto *callee = std::get_if<hew::ast::ExprIdentifier>(&call->function->value.kind);
+    if (!callee || callee->name != calleeName || argIndex >= call->args.size())
+      return std::nullopt;
+    return hew::ast::callArgExpr(call->args[argIndex]).span;
+  };
+
+  if (auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt.kind))
+    return retStmt->value ? argSpanForExpr(*retStmt->value) : std::nullopt;
+
+  if (auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt.kind))
+    return argSpanForExpr(exprStmt->expr);
+
+  return std::nullopt;
+}
+
+static std::optional<hew::ast::Span> findFunctionCallArgSpan(const hew::ast::FnDecl &fn,
+                                                             const std::string &calleeName,
+                                                             size_t argIndex) {
+  for (const auto &stmt : fn.body.stmts)
+    if (auto span = findCallArgSpanInStmt(stmt->value, calleeName, argIndex))
+      return span;
+
+  if (fn.body.trailing_expr) {
+    auto *call = std::get_if<hew::ast::ExprCall>(&fn.body.trailing_expr->value.kind);
+    if (call && call->function) {
+      auto *callee = std::get_if<hew::ast::ExprIdentifier>(&call->function->value.kind);
+      if (callee && callee->name == calleeName && argIndex < call->args.size())
+        return hew::ast::callArgExpr(call->args[argIndex]).span;
+    }
+  }
+
+  return std::nullopt;
+}
+
 static hew::ast::Program makeDiscardedBlockLikeBadTailProgram(bool useUnsafe) {
   using namespace hew::ast;
 
@@ -4698,6 +4739,120 @@ fn broken_unsigned_cmp() -> bool {
 
   if (stderrText.find("module verification failed") != std::string::npos) {
     FAIL("unexpected downstream verifier failure for missing expr_types");
+    return;
+  }
+
+  PASS();
+}
+
+static void test_unsigned_call_arg_widening_uses_zero_extension() {
+  TEST(unsigned_call_arg_widening_uses_zero_extension);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn widen(x: u16) -> u16 {
+    x
+}
+
+fn main() -> u16 {
+    let value: u8 = 255;
+    widen(value)
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found for unsigned call arg test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool foundUnsignedCast = false;
+  bool foundSignedCast = false;
+  mainFn.walk([&](hew::CastOp cast) {
+    auto *castOp = cast.getOperation();
+    if (castOp->getNumOperands() != 1)
+      return;
+
+    auto srcType = mlir::dyn_cast<mlir::IntegerType>(castOp->getOperand(0).getType());
+    auto dstType = mlir::dyn_cast<mlir::IntegerType>(cast.getResult().getType());
+    if (!srcType || !dstType || srcType.getWidth() != 8 || dstType.getWidth() != 16)
+      return;
+
+    bool isUnsigned = castOp->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
+                      castOp->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
+    foundUnsignedCast |= isUnsigned;
+    foundSignedCast |= !isUnsigned;
+  });
+
+  if (!foundUnsignedCast || foundSignedCast) {
+    FAIL("expected unsigned call argument widening to carry is_unsigned on hew.cast");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+static void test_unsigned_call_arg_missing_expr_type_fails_closed() {
+  TEST(unsigned_call_arg_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn widen(x: u16) -> u16 {
+    x
+}
+
+fn main() -> u16 {
+    let value: u8 = 255;
+    widen(value)
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn) {
+    FAIL("main function not found for unsigned call arg negative test");
+    return;
+  }
+
+  auto argSpan = findFunctionCallArgSpan(*mainFn, "widen", 0);
+  if (!argSpan || !eraseExprTypeEntryForSpan(program, *argSpan)) {
+    FAIL("failed to remove expr_types entry for widened call argument");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when unsigned call argument metadata is missing");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for function call argument signedness") ==
+      std::string::npos) {
+    FAIL("expected unsigned call argument fail-closed diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for missing call argument metadata");
     return;
   }
 
@@ -9144,6 +9299,114 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: non-structural lambda actor .send() still lowers with resolved metadata.
+// ============================================================================
+
+static void test_nonstructural_actor_send_uses_resolved_metadata() {
+  TEST(nonstructural_actor_send_uses_resolved_metadata);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+fn main() {
+    ({
+        let printer = spawn (x: int) => {
+            println(x);
+        };
+        printer
+    }).send(42);
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed for non-structural actor send");
+    return;
+  }
+
+  auto mainFn = lookupFuncBySuffix(module, "main");
+  if (!mainFn) {
+    FAIL("main function not found for non-structural actor send");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool hasMsg0Send = false;
+  mainFn.walk([&](hew::ActorSendOp send) {
+    if (send.getMsgType() == 0)
+      hasMsg0Send = true;
+  });
+  if (!hasMsg0Send) {
+    FAIL("expected non-structural lambda actor send to lower to message id 0");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: missing expr_types on non-structural actor .send() receivers fails
+// closed instead of routing to message id 0.
+// ============================================================================
+
+static void test_nonstructural_actor_send_missing_expr_type_fails_closed() {
+  TEST(nonstructural_actor_send_missing_expr_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() {
+    ({
+        let printer = spawn (x: int) => {
+            println(x);
+        };
+        printer
+    }).send(42);
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run non-structural actor send negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn) {
+    FAIL("main function not found for non-structural actor send negative test");
+    return;
+  }
+
+  auto receiverSpan = findFunctionMethodReceiverSpan(*mainFn, "send");
+  if (!receiverSpan || !eraseExprTypeEntryForSpan(program, *receiverSpan)) {
+    FAIL("failed to remove non-structural actor send receiver expr_types entry");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for non-structural actor send without receiver metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("missing expr_types entry for actor send receiver") == std::string::npos) {
+    FAIL("expected missing expr_types diagnostic for non-structural actor send");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for non-structural actor send metadata");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: actor dispatch requires a resolved receiver type annotation.
 //
 // When the receiver's expr_types entry is removed, the actorVarTypes
@@ -9218,6 +9481,84 @@ fn main() {}
 // method_call_receiver_kinds. If that entry is removed, codegen must fail
 // closed instead of re-discovering trait dispatch structurally.
 // ============================================================================
+
+static void test_trait_dispatch_uses_mlir_trait_object_type_without_receiver_expr_type() {
+  TEST(trait_dispatch_uses_mlir_trait_object_type_without_receiver_expr_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+trait Greeter {
+    fn greet(s: Self) -> String;
+}
+
+type Bot {
+    name: String;
+}
+
+impl Greeter for Bot {
+    fn greet(s: Bot) -> String {
+        "hello"
+    }
+}
+
+fn use_greeter(g: dyn Greeter) -> String {
+    return g.greet();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run trait dispatch positive test");
+    return;
+  }
+
+  auto *useGreeter = findFunctionDecl(program, "use_greeter");
+  if (!useGreeter) {
+    FAIL("failed to find use_greeter function for trait dispatch positive test");
+    return;
+  }
+
+  auto receiverSpan = findFunctionMethodReceiverSpan(*useGreeter, "greet");
+  if (!receiverSpan || !eraseExprTypeEntryForSpan(program, *receiverSpan)) {
+    FAIL("failed to remove trait receiver expr_types entry");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (!module) {
+    FAIL("expected codegen to succeed for trait dispatch without receiver expr_types metadata");
+    return;
+  }
+
+  if (!stderrText.empty()) {
+    FAIL("expected no diagnostics for trait dispatch backed by MLIR trait object type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto useGreeterFn = lookupFuncBySuffix(module, "use_greeter");
+  if (!useGreeterFn) {
+    FAIL("use_greeter function not found for trait dispatch positive test");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool hasTraitDispatch = false;
+  useGreeterFn.walk([&](hew::TraitDispatchOp) { hasTraitDispatch = true; });
+  if (!hasTraitDispatch) {
+    FAIL("expected trait dispatch to lower through hew.trait_dispatch");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
 
 static void test_trait_dispatch_requires_receiver_kind() {
   TEST(trait_dispatch_requires_receiver_kind);
@@ -11349,6 +11690,8 @@ int main() {
   test_option_result_match_expr_missing_result_type_fails_closed();
   test_unsigned_binary_ops_use_unsigned_lowering();
   test_unsigned_binary_expr_missing_expr_type_fails_closed();
+  test_unsigned_call_arg_widening_uses_zero_extension();
+  test_unsigned_call_arg_missing_expr_type_fails_closed();
   test_println_int_missing_expr_type_fails_closed();
   test_int_to_string_missing_expr_type_fails_closed();
   test_scope_await_inline_launch_uses_resolved_task_type();
@@ -11409,7 +11752,10 @@ int main() {
   test_rc_method_dispatch_requires_resolved_type();
   test_handle_dispatch_uses_receiver_kind_metadata();
   test_handle_dispatch_requires_receiver_kind();
+  test_nonstructural_actor_send_uses_resolved_metadata();
+  test_nonstructural_actor_send_missing_expr_type_fails_closed();
   test_actor_dispatch_requires_resolved_type();
+  test_trait_dispatch_uses_mlir_trait_object_type_without_receiver_expr_type();
   test_trait_dispatch_requires_receiver_kind();
   test_named_type_dispatch_requires_receiver_kind();
   test_generic_handle_impl_dispatch_requires_receiver_kind();

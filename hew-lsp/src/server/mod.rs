@@ -17,7 +17,9 @@ use self::navigation::{
     build_document_links, build_prepare_rename_response, build_reference_locations,
     build_workspace_edit, collect_import_items, find_cross_file_definition, find_definition_in_ast,
 };
-use self::workspace::{build_code_lenses, collect_workspace_symbols};
+#[cfg(test)]
+use self::workspace::collect_workspace_symbols;
+use self::workspace::{build_code_lenses, collect_project_workspace_symbols};
 
 // Items additionally needed by the test module (only compiled in test builds).
 #[cfg(test)]
@@ -839,19 +841,11 @@ impl LanguageServer for HewLanguageServer {
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
-        let query = &params.query;
-        let mut symbols = Vec::new();
-        for entry in &self.documents {
-            let uri = entry.key().clone();
-            let doc = entry.value();
-            symbols.extend(collect_workspace_symbols(
-                &uri,
-                &doc.source,
-                &doc.line_offsets,
-                &doc.parse_result,
-                query,
-            ));
-        }
+        let roots = self
+            .workspace_roots
+            .read()
+            .map_or_else(|_| Vec::new(), |roots| roots.clone());
+        let symbols = collect_project_workspace_symbols(&self.documents, &roots, &params.query);
         Ok(non_empty(symbols))
     }
 
@@ -1065,6 +1059,35 @@ fn resolve_local_or_param_definition(
 mod tests {
     use super::*;
     use hew_analysis::CompletionKind;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(".test-artifacts")
+                .join(format!("{label}-{}-{unique}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn semantic_token_data(source: &str, tokens: &[SemanticToken]) -> Vec<(String, u32, u32)> {
         let lo = compute_line_offsets(source);
@@ -2348,7 +2371,8 @@ impl Worker {
         );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let symbols = collect_workspace_symbols(&uri, source, &lo, &parse_result, "");
+        let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
+        let symbols = collect_workspace_symbols(&uri, source, &lo, &analysis_symbols, "");
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"compute"),
@@ -2370,7 +2394,8 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let symbols = collect_workspace_symbols(&uri, source, &lo, &parse_result, "comp");
+        let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
+        let symbols = collect_workspace_symbols(&uri, source, &lo, &analysis_symbols, "comp");
         assert_eq!(symbols.len(), 1, "query 'comp' should match only compute");
         assert_eq!(symbols[0].name, "compute");
     }
@@ -2381,7 +2406,8 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let symbols = collect_workspace_symbols(&uri, source, &lo, &parse_result, "compute");
+        let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
+        let symbols = collect_workspace_symbols(&uri, source, &lo, &analysis_symbols, "compute");
         assert_eq!(symbols.len(), 1, "case-insensitive match should work");
     }
 
@@ -2391,7 +2417,8 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let symbols = collect_workspace_symbols(&uri, source, &lo, &parse_result, "");
+        let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
+        let symbols = collect_workspace_symbols(&uri, source, &lo, &analysis_symbols, "");
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"Counter"),
@@ -2412,7 +2439,8 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let symbols = collect_workspace_symbols(&uri, source, &lo, &parse_result, "");
+        let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
+        let symbols = collect_workspace_symbols(&uri, source, &lo, &analysis_symbols, "");
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"Drawable"),
@@ -2420,6 +2448,64 @@ impl Worker {
         );
         let trait_sym = symbols.iter().find(|s| s.name == "Drawable").unwrap();
         assert_eq!(trait_sym.kind, SymbolKind::INTERFACE);
+    }
+
+    #[test]
+    fn workspace_symbols_include_fields_states_and_events() {
+        let source = r"type Point {
+    x: i32;
+}
+
+machine Traffic {
+    event Start;
+    state Idle;
+    on Start: Idle -> Idle;
+}";
+        let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
+        let symbols = collect_workspace_symbols(&uri, source, &lo, &analysis_symbols, "");
+
+        let field = symbols.iter().find(|symbol| symbol.name == "x").unwrap();
+        assert_eq!(field.kind, SymbolKind::FIELD);
+        assert_eq!(field.container_name.as_deref(), Some("Point"));
+
+        let event = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Start")
+            .unwrap();
+        assert_eq!(event.kind, SymbolKind::EVENT);
+        assert_eq!(event.container_name.as_deref(), Some("Traffic"));
+
+        let state = symbols.iter().find(|symbol| symbol.name == "Idle").unwrap();
+        assert_eq!(state.kind, SymbolKind::ENUM_MEMBER);
+        assert_eq!(state.container_name.as_deref(), Some("Traffic"));
+    }
+
+    #[test]
+    fn workspace_symbols_scan_workspace_roots() {
+        let test_dir = TestDir::new("workspace-symbols");
+        let root = test_dir.path();
+        let nested = root.join("pkg");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            root.join("main.hew"),
+            "fn open_buffer() -> i32 { 0 }\nconst ROOT: i32 = 1;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            nested.join("worker.hew"),
+            "fn hidden_worker() -> i32 { 0 }\n",
+        )
+        .unwrap();
+
+        let documents = DashMap::new();
+        let symbols =
+            collect_project_workspace_symbols(&documents, &[root.to_path_buf()], "hidden");
+
+        assert_eq!(symbols.len(), 1, "should find unopened workspace file");
+        assert_eq!(symbols[0].name, "hidden_worker");
     }
 
     // ── Diagnostic data tests ───────────────────────────────────────
@@ -2748,9 +2834,64 @@ impl Worker {
         let children = point_sym.children.as_ref().unwrap();
         let child_names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
         assert!(
-            child_names.contains(&"x") || child_names.contains(&"distance"),
-            "children should include fields or methods, got: {child_names:?}"
+            child_names.contains(&"x") && child_names.contains(&"distance"),
+            "children should include fields and methods, got: {child_names:?}"
         );
+    }
+
+    #[test]
+    fn document_symbols_use_child_definition_ranges() {
+        let source = r"type Point {
+    x: i32;
+}
+
+machine Traffic {
+    event Start;
+    state Idle;
+    on Start: Idle -> Idle;
+}";
+        let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
+        let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
+        let symbols: Vec<DocumentSymbol> = analysis_symbols
+            .into_iter()
+            .map(|symbol| symbol_info_to_doc_symbol(source, &lo, symbol))
+            .collect();
+
+        let point = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Point")
+            .unwrap();
+        let field = point
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|symbol| symbol.name == "x")
+            .unwrap();
+        assert_eq!(field.kind, SymbolKind::FIELD);
+        assert_eq!(field.selection_range.start.line, 1);
+        assert_eq!(field.selection_range.start.character, 4);
+
+        let machine = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Traffic")
+            .unwrap();
+        let children = machine.children.as_ref().unwrap();
+        let event = children
+            .iter()
+            .find(|symbol| symbol.name == "Start")
+            .unwrap();
+        let state = children
+            .iter()
+            .find(|symbol| symbol.name == "Idle")
+            .unwrap();
+        assert_eq!(event.kind, SymbolKind::EVENT);
+        assert_eq!(event.selection_range.start.line, 5);
+        assert_eq!(event.selection_range.start.character, 10);
+        assert_eq!(state.kind, SymbolKind::ENUM_MEMBER);
+        assert_eq!(state.selection_range.start.line, 6);
+        assert_eq!(state.selection_range.start.character, 10);
     }
 
     // ── Inlay hint tests ────────────────────────────────────────────

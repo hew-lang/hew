@@ -12,6 +12,7 @@ pub mod error;
 pub mod lowering_facts;
 pub mod method_resolution;
 pub mod module_registry;
+pub mod resolved_ty;
 pub mod stdlib;
 pub mod stdlib_loader;
 pub mod traits;
@@ -23,4 +24,5 @@ pub use error::TypeError;
 pub use lowering_facts::{
     DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,
 };
+pub use resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy};
 pub use ty::{TraitObjectBound, Ty};

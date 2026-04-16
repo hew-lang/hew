@@ -9,7 +9,7 @@ use hew_parser::ParseResult;
 use hew_types::builtin_names::{builtin_named_type, BuiltinNamedType};
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
 use hew_types::method_resolution;
-use hew_types::{Ty, TypeCheckOutput, VariantDef};
+use hew_types::{ResolvedTy, Ty, TypeCheckOutput, VariantDef};
 
 use crate::{HoverResult, OffsetSpan};
 
@@ -88,19 +88,7 @@ pub fn hover(
 
     best.map(|(span_key, ty)| {
         let snippet = &source[span_key.start..span_key.end];
-        let value = if let Ty::Function { params, ret } = ty {
-            let param_list: Vec<String> = params
-                .iter()
-                .map(|ty| ty.user_facing().to_string())
-                .collect();
-            format!(
-                "```hew\nfn {snippet}({}) -> {}\n```",
-                param_list.join(", "),
-                ret.user_facing()
-            )
-        } else {
-            format!("```hew\n{snippet}: {}\n```", ty.user_facing())
-        };
+        let value = render_expr_hover(snippet, ty);
         HoverResult {
             contents: value,
             span: Some(OffsetSpan {
@@ -109,6 +97,37 @@ pub fn hover(
             }),
         }
     })
+}
+
+/// Convert a checker-boundary [`Ty`] into the rendered hover form via
+/// [`ResolvedTy`], defaulting any numeric-literal kinds first.
+///
+/// Returns `None` if the type carries checker-internal state
+/// (`Ty::Var`, `Ty::Error`) that the boundary converter rejects. Callers
+/// decide what to render in that case; today they fall back to the
+/// best-effort `Ty::user_facing` rendering to preserve historical hover
+/// output for error-recovery paths.
+fn resolved_hover_display(ty: &Ty) -> Option<String> {
+    ResolvedTy::from_ty(&ty.materialize_literal_defaults())
+        .ok()
+        .map(|resolved| resolved.user_facing().to_string())
+}
+
+fn render_expr_hover(snippet: &str, ty: &Ty) -> String {
+    if let Ty::Function { params, ret } = ty {
+        let param_list: Vec<String> = params.iter().map(fn_component_display).collect();
+        let ret_text = fn_component_display(ret);
+        return format!(
+            "```hew\nfn {snippet}({}) -> {ret_text}\n```",
+            param_list.join(", ")
+        );
+    }
+    let body = resolved_hover_display(ty).unwrap_or_else(|| ty.user_facing().to_string());
+    format!("```hew\n{snippet}: {body}\n```")
+}
+
+fn fn_component_display(ty: &Ty) -> String {
+    resolved_hover_display(ty).unwrap_or_else(|| ty.user_facing().to_string())
 }
 
 fn hover_param_at_offset(
@@ -1601,6 +1620,63 @@ mod tests {
                 start: offset,
                 end: offset + "flag".len()
             })
+        );
+    }
+
+    /// Regression: the expr-types fallback hover path crosses the
+    /// checker boundary through `ResolvedTy::from_ty`. Int-literal kinds
+    /// must be defaulted on the way through — rendering `<int literal>`
+    /// (the internal-form spelling) would prove the boundary was
+    /// bypassed.
+    #[test]
+    fn hover_expr_fallback_renders_through_resolved_ty_boundary() {
+        use hew_types::resolved_ty::ResolvedTy;
+
+        let source = "fn main() {\n    let x = 42;\n}";
+        let pr = hew_parser::parse(source);
+        let x_offset = source.find("let x").unwrap() + 4;
+        let mut expr_types = HashMap::new();
+        expr_types.insert(
+            SpanKey {
+                start: x_offset,
+                end: x_offset + 1,
+            },
+            Ty::IntLiteral,
+        );
+        let tc = TypeCheckOutput {
+            expr_types,
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
+        };
+        let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
+        // Goes through ResolvedTy::from_ty(materialize_literal_defaults)
+        // which produces ResolvedTy::I64, whose user-facing form is
+        // "int" — the same as a concrete i64 at the boundary. If the
+        // boundary were bypassed we would render "<int literal>".
+        assert!(
+            result.contents.contains("int"),
+            "expected boundary-defaulted rendering, got {}",
+            result.contents
+        );
+        assert!(!result.contents.contains("literal"));
+
+        // And byte-equal to ResolvedTy::user_facing directly, which is
+        // the authoritative rendering at the boundary.
+        let expected_body = ResolvedTy::I64.user_facing().to_string();
+        assert!(
+            result.contents.contains(&expected_body),
+            "hover body should equal ResolvedTy rendering {expected_body}, got {}",
+            result.contents
         );
     }
 }

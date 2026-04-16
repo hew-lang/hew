@@ -324,6 +324,9 @@ private:
   // ── Pattern helpers (shared by match and if-let) ──────────────────
   /// Resolve the struct field index for an enum variant payload.
   int64_t resolvePayloadFieldIndex(llvm::StringRef variantName, size_t payloadOrdinal) const;
+  /// Resolve struct pattern metadata for either a raw or monomorphized struct name.
+  const StructTypeInfo *resolveStructPatternTypeInfo(llvm::StringRef patternName,
+                                                     mlir::Type valueType) const;
   /// Bind tuple pattern elements to variables recursively.
   void bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleValue,
                               mlir::Location location);

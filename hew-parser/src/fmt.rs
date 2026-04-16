@@ -1733,7 +1733,7 @@ impl<'a> Formatter<'a> {
                     self.write("| ");
                 }
                 let prev_binding = self.scope_binding.clone();
-                self.scope_binding = binding.clone();
+                self.scope_binding.clone_from(binding);
                 self.format_block(body, self.source.len());
                 self.scope_binding = prev_binding;
             }

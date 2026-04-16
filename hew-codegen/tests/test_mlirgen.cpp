@@ -9625,8 +9625,15 @@ fn main() {}
 
 // ============================================================================
 
-static void test_named_type_dispatch_requires_receiver_kind() {
-  TEST(named_type_dispatch_requires_receiver_kind);
+// Test: post-admissibility NamedTypeInstance pruning must surface as an
+// explicit codegen error, not a silent fallback dispatch.
+//
+// The checker-output contract prunes NamedTypeInstance entries when their
+// `type_name` no longer exists in type_defs. By erasing the serialized
+// receiver-kind entry here, we model the exact post-prune artifact that
+// codegen receives.
+static void test_named_type_dispatch_pruned_receiver_kind_fails_closed() {
+  TEST(named_type_dispatch_pruned_receiver_kind_fails_closed);
 
   hew::ast::Program program;
   if (!loadProgramFromSource(R"(
@@ -9647,19 +9654,19 @@ fn use_widget(w: Widget) -> i64 {
 fn main() {}
   )",
                              program)) {
-    FAIL("hew CLI unavailable; cannot run named-type dispatch negative test");
+    FAIL("hew CLI unavailable; cannot run named-type prune negative test");
     return;
   }
 
   auto *useWidget = findFunctionDecl(program, "use_widget");
   if (!useWidget) {
-    FAIL("failed to find use_widget function for named-type dispatch negative test");
+    FAIL("failed to find use_widget function for named-type prune negative test");
     return;
   }
 
   auto methodCallSpan = findFunctionMethodCallSpan(*useWidget, "value_plus_one");
   if (!methodCallSpan || !eraseMethodCallReceiverKindEntryForSpan(program, *methodCallSpan)) {
-    FAIL("failed to remove named-type method_call_receiver_kinds entry");
+    FAIL("failed to remove pruned named-type method_call_receiver_kinds entry");
     return;
   }
 
@@ -9670,14 +9677,14 @@ fn main() {}
   auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
 
   if (module) {
-    FAIL("expected codegen to fail for named-type dispatch without receiver-kind metadata");
+    FAIL("expected codegen to fail for pruned named-type receiver-kind metadata");
     module.getOperation()->destroy();
     return;
   }
 
   if (stderrText.find("missing method_call_receiver_kinds entry for named-type method call") ==
       std::string::npos) {
-    FAIL("expected missing method_call_receiver_kinds diagnostic for named-type dispatch");
+    FAIL("expected missing method_call_receiver_kinds diagnostic for pruned named-type dispatch");
     return;
   }
 
@@ -11799,7 +11806,7 @@ int main() {
   test_actor_dispatch_requires_resolved_type();
   test_trait_dispatch_uses_mlir_trait_object_type_without_receiver_expr_type();
   test_trait_dispatch_requires_receiver_kind();
-  test_named_type_dispatch_requires_receiver_kind();
+  test_named_type_dispatch_pruned_receiver_kind_fails_closed();
   test_generic_handle_impl_dispatch_requires_receiver_kind();
   test_remote_actor_alias_ask_is_recognized();
   test_remote_actor_alias_call_receiver_is_recognized();

@@ -1732,8 +1732,15 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 #[cfg(test)]
 mod tests {
     use super::{
-        check_file, check_program, compile_file, load_dependencies, load_lockfile,
-        load_package_name, parse_source, FrontendOptions,
+        check_file, check_program, compile_file, enrich_program_ast, load_dependencies,
+        load_lockfile, load_package_name, parse_source, FrontendDiagnosticKind, FrontendOptions,
+    };
+    use hew_parser::ast::{Item, Stmt};
+    use hew_serialize::TypeExprConversionKind;
+    use hew_types::{
+        check::{SpanKey, TypeCheckOutput},
+        module_registry::ModuleRegistry,
+        Ty,
     };
     use std::fs::{self, File};
     use std::io::Write;
@@ -2074,6 +2081,60 @@ mod tests {
             err.message.contains("type error"),
             "expected type-error message, got: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn enrich_program_ast_fails_closed_on_ty_error_expr_type() {
+        let source = "fn main() { let x = 1; }\n";
+        let mut program = parse_source(source, "main.hew").expect("source should parse");
+        let initializer_span = match &program.items[0].0 {
+            Item::Function(function) => match &function.body.stmts[0].0 {
+                Stmt::Let {
+                    value: Some((_, span)),
+                    ..
+                } => span.clone(),
+                other => panic!("expected leading let statement, got {other:?}"),
+            },
+            other => panic!("expected root function item, got {other:?}"),
+        };
+        let tco = TypeCheckOutput {
+            expr_types: std::collections::HashMap::from([(
+                SpanKey::from(&initializer_span),
+                Ty::Error,
+            )]),
+            method_call_receiver_kinds: std::collections::HashMap::new(),
+            lowering_facts: std::collections::HashMap::new(),
+            method_call_rewrites: std::collections::HashMap::new(),
+            assign_target_kinds: std::collections::HashMap::new(),
+            assign_target_shapes: std::collections::HashMap::new(),
+            errors: Vec::new(),
+            warnings: Vec::new(),
+            type_defs: std::collections::HashMap::new(),
+            fn_sigs: std::collections::HashMap::new(),
+            cycle_capable_actors: std::collections::HashSet::new(),
+            user_modules: std::collections::HashSet::new(),
+            call_type_args: std::collections::HashMap::new(),
+        };
+
+        let err = enrich_program_ast(
+            &mut program,
+            Some(&tco),
+            &ModuleRegistry::new(vec![]),
+            source,
+            "main.hew",
+        )
+        .expect_err("Ty::Error expr_types entry should fail closed during enrichment");
+
+        assert_eq!(err.message, "inferred type serialization failed");
+        assert!(
+            err.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::InferredType { error, fatal }
+                    if *fatal && error.kind() == TypeExprConversionKind::ErrorSentinel
+            )),
+            "expected fatal ErrorSentinel diagnostic, got: {:?}",
+            err.diagnostics
         );
     }
 

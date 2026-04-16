@@ -34,6 +34,8 @@ struct LinkShard {
     /// Maps `actor_id` to Vec of actors linked to that actor.
     /// Using usize instead of *mut `HewActor` for thread safety.
     links: HashMap<u64, Vec<LinkedActorEntry>>,
+    /// Tracks actors whose terminal EXIT propagation has already completed.
+    terminal_exits: HashMap<u64, i32>,
 }
 
 /// Global sharded link table.
@@ -43,6 +45,7 @@ static LINK_TABLE: LazyLock<[RwLock<LinkShard>; LINK_SHARDS]> = LazyLock::new(||
     std::array::from_fn(|_| {
         RwLock::new(LinkShard {
             links: HashMap::new(),
+            terminal_exits: HashMap::new(),
         })
     })
 });
@@ -76,10 +79,55 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
 
     let id_a = actor_a.id;
     let id_b = actor_b.id;
+    let shard_index_a = get_shard_index(id_a);
+    let shard_index_b = get_shard_index(id_b);
 
-    // Add bidirectional links: A -> B and B -> A
-    add_link(id_a, id_b, b);
-    add_link(id_b, id_a, a);
+    let (a_terminal_reason, b_terminal_reason) = match shard_index_a.cmp(&shard_index_b) {
+        std::cmp::Ordering::Equal => {
+            let mut shard = LINK_TABLE[shard_index_a].write_or_recover();
+            let a_terminal_reason = terminal_exit_reason(&shard, id_a, actor_a);
+            let b_terminal_reason = terminal_exit_reason(&shard, id_b, actor_b);
+
+            if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                add_link_locked(&mut shard, id_a, id_b, b);
+                add_link_locked(&mut shard, id_b, id_a, a);
+            }
+
+            (a_terminal_reason, b_terminal_reason)
+        }
+        std::cmp::Ordering::Less => {
+            let mut shard_a = LINK_TABLE[shard_index_a].write_or_recover();
+            let mut shard_b = LINK_TABLE[shard_index_b].write_or_recover();
+            let a_terminal_reason = terminal_exit_reason(&shard_a, id_a, actor_a);
+            let b_terminal_reason = terminal_exit_reason(&shard_b, id_b, actor_b);
+
+            if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                add_link_locked(&mut shard_a, id_a, id_b, b);
+                add_link_locked(&mut shard_b, id_b, id_a, a);
+            }
+
+            (a_terminal_reason, b_terminal_reason)
+        }
+        std::cmp::Ordering::Greater => {
+            let mut shard_b = LINK_TABLE[shard_index_b].write_or_recover();
+            let mut shard_a = LINK_TABLE[shard_index_a].write_or_recover();
+            let a_terminal_reason = terminal_exit_reason(&shard_a, id_a, actor_a);
+            let b_terminal_reason = terminal_exit_reason(&shard_b, id_b, actor_b);
+
+            if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                add_link_locked(&mut shard_a, id_a, id_b, b);
+                add_link_locked(&mut shard_b, id_b, id_a, a);
+            }
+
+            (a_terminal_reason, b_terminal_reason)
+        }
+    };
+
+    if let (Some(reason), None) = (a_terminal_reason, b_terminal_reason) {
+        send_exit_signal(id_b, b, id_a, reason);
+    } else if let (None, Some(reason)) = (a_terminal_reason, b_terminal_reason) {
+        send_exit_signal(id_a, a, id_b, reason);
+    }
 }
 
 /// Remove a bidirectional link between two actors.
@@ -106,11 +154,7 @@ pub unsafe extern "C" fn hew_actor_unlink(a: *mut HewActor, b: *mut HewActor) {
     remove_link(id_b, a);
 }
 
-/// Add a unidirectional link: `from_id` -> `to_actor`.
-fn add_link(from_id: u64, to_actor_id: u64, to_actor: *mut HewActor) {
-    let shard_index = get_shard_index(from_id);
-    let mut shard = LINK_TABLE[shard_index].write_or_recover();
-
+fn add_link_locked(shard: &mut LinkShard, from_id: u64, to_actor_id: u64, to_actor: *mut HewActor) {
     shard
         .links
         .entry(from_id)
@@ -119,6 +163,76 @@ fn add_link(from_id: u64, to_actor_id: u64, to_actor: *mut HewActor) {
             linked_actor_id: to_actor_id,
             linked_actor: to_actor as usize,
         });
+}
+
+fn terminal_exit_reason(shard: &LinkShard, actor_id: u64, actor: &HewActor) -> Option<i32> {
+    if let Some(&reason) = shard.terminal_exits.get(&actor_id) {
+        return Some(reason);
+    }
+
+    let actor_state = actor.actor_state.load(std::sync::atomic::Ordering::Acquire);
+    if actor_state == HewActorState::Stopped as i32 || actor_state == HewActorState::Crashed as i32
+    {
+        Some(actor.error_code.load(std::sync::atomic::Ordering::Acquire))
+    } else {
+        None
+    }
+}
+
+fn send_exit_signal(
+    linked_actor_id: u64,
+    linked_actor: *mut HewActor,
+    crashed_actor_id: u64,
+    reason: i32,
+) {
+    if linked_actor.is_null() {
+        return;
+    }
+
+    crate::actor::with_live_actor_by_id(linked_actor_id, linked_actor, |linked_actor_ref| {
+        let mailbox = linked_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
+        if !mailbox.is_null() {
+            let exit_data = ExitMessage {
+                crashed_actor_id,
+                reason,
+            };
+
+            let data_ptr = (&raw const exit_data).cast::<c_void>();
+            let data_size = std::mem::size_of::<ExitMessage>();
+
+            // SAFETY: LIVE_ACTORS keeps the linked actor and mailbox live.
+            unsafe {
+                mailbox::hew_mailbox_send_sys(
+                    mailbox,
+                    SYS_MSG_EXIT,
+                    data_ptr.cast_mut(),
+                    data_size,
+                );
+            }
+
+            if linked_actor_ref
+                .actor_state
+                .compare_exchange(
+                    HewActorState::Idle as i32,
+                    HewActorState::Runnable as i32,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                linked_actor_ref
+                    .idle_count
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+                linked_actor_ref
+                    .hibernating
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+                crate::scheduler::sched_enqueue(linked_actor);
+            }
+        }
+
+        #[cfg(test)]
+        run_propagate_exit_hook();
+    });
 }
 
 /// Remove a unidirectional link: `from_id` -/-> `to_actor`.
@@ -147,7 +261,9 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
     // Take all linked actors for this actor ID to prevent re-entrancy.
     let linked_actors = {
         let mut shard = LINK_TABLE[shard_index].write_or_recover();
-        shard.links.remove(&actor_id).unwrap_or_default()
+        let linked_actors = shard.links.remove(&actor_id).unwrap_or_default();
+        shard.terminal_exits.insert(actor_id, reason);
+        linked_actors
     };
 
     // Send EXIT messages to all linked actors.
@@ -157,64 +273,11 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
         }
 
         let linked_actor = linked_actor_entry.linked_actor as *mut HewActor;
+        let linked_id = linked_actor_entry.linked_actor_id;
 
-        crate::actor::with_live_actor_by_id(
-            linked_actor_entry.linked_actor_id,
-            linked_actor,
-            |linked_actor_ref| {
-                let linked_id = linked_actor_ref.id;
-
-                // Remove the reverse link: linked_actor -/-> crashing_actor
-                remove_link_by_target(linked_id, actor_id);
-
-                // Send EXIT system message with reason code.
-                let mailbox = linked_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
-                if !mailbox.is_null() {
-                    // Prepare EXIT message data: { crashed_actor_id: u64, reason: i32 }
-                    let exit_data = ExitMessage {
-                        crashed_actor_id: actor_id,
-                        reason,
-                    };
-
-                    let data_ptr = (&raw const exit_data).cast::<c_void>();
-                    let data_size = std::mem::size_of::<ExitMessage>();
-
-                    // SAFETY: LIVE_ACTORS keeps the linked actor and mailbox live.
-                    unsafe {
-                        mailbox::hew_mailbox_send_sys(
-                            mailbox,
-                            SYS_MSG_EXIT,
-                            data_ptr.cast_mut(),
-                            data_size,
-                        );
-                    }
-
-                    // Wake the linked actor so it processes the EXIT message.
-                    // Without this, an idle actor would never see the system message.
-                    if linked_actor_ref
-                        .actor_state
-                        .compare_exchange(
-                            HewActorState::Idle as i32,
-                            HewActorState::Runnable as i32,
-                            std::sync::atomic::Ordering::AcqRel,
-                            std::sync::atomic::Ordering::Acquire,
-                        )
-                        .is_ok()
-                    {
-                        linked_actor_ref
-                            .idle_count
-                            .store(0, std::sync::atomic::Ordering::Relaxed);
-                        linked_actor_ref
-                            .hibernating
-                            .store(0, std::sync::atomic::Ordering::Relaxed);
-                        crate::scheduler::sched_enqueue(linked_actor);
-                    }
-                }
-
-                #[cfg(test)]
-                run_propagate_exit_hook();
-            },
-        );
+        // Remove the reverse link: linked_actor -/-> crashing_actor
+        remove_link_by_target(linked_id, actor_id);
+        send_exit_signal(linked_id, linked_actor, actor_id, reason);
     }
 }
 
@@ -295,6 +358,7 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, actor_addr: *mut HewActo
     let own_shard = get_shard_index(actor_id);
     {
         let mut shard = LINK_TABLE[own_shard].write_or_recover();
+        shard.terminal_exits.remove(&actor_id);
         shard.links.remove(&actor_id);
     }
 
@@ -549,6 +613,49 @@ mod tests {
         let ptr = (&raw const actor).cast_mut();
         remove_all_links_for_actor(30_300, ptr);
         assert!(!has_links_for_actor(30_300, ptr));
+    }
+
+    #[test]
+    fn late_link_to_terminal_actor_skips_stale_entries_and_cleans_tombstone() {
+        let mut survivor = create_test_actor(30_400);
+        let mut terminal = create_test_actor(30_401);
+        let survivor_ptr = &raw mut survivor;
+        let terminal_ptr = &raw mut terminal;
+
+        terminal.actor_state.store(
+            HewActorState::Crashed as i32,
+            std::sync::atomic::Ordering::Release,
+        );
+        terminal
+            .error_code
+            .store(77, std::sync::atomic::Ordering::Release);
+        propagate_exit_to_links(30_401, 77);
+
+        // SAFETY: Both are valid stack-allocated test actors.
+        unsafe { hew_actor_link(survivor_ptr, terminal_ptr) };
+
+        assert!(
+            !has_links_for_actor(30_400, survivor_ptr),
+            "late link should not create survivor-side stale entries"
+        );
+        assert!(
+            !has_links_for_actor(30_401, terminal_ptr),
+            "late link should not recreate terminal-side stale entries"
+        );
+
+        let terminal_shard = get_shard_index(30_401);
+        {
+            let shard = LINK_TABLE[terminal_shard].read_or_recover();
+            assert_eq!(shard.terminal_exits.get(&30_401), Some(&77));
+        }
+
+        remove_all_links_for_actor(30_401, terminal_ptr);
+
+        let shard = LINK_TABLE[terminal_shard].read_or_recover();
+        assert!(
+            !shard.terminal_exits.contains_key(&30_401),
+            "actor cleanup must clear terminal EXIT tombstones"
+        );
     }
 
     #[test]

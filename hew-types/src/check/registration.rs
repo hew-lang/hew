@@ -692,8 +692,7 @@ impl Checker {
     /// Register codec methods for a wire type.
     ///
     /// - Wire structs expose binary + JSON/YAML helpers.
-    /// - Unit-only wire enums expose JSON/YAML helpers.
-    /// - Payload-bearing wire enums do not currently expose helper methods.
+    /// - Wire enums expose JSON/YAML helpers.
     pub(super) fn register_wire_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
             name: type_name.to_string(),
@@ -710,6 +709,12 @@ impl Checker {
                 .variants
                 .values()
                 .all(|variant| matches!(variant, VariantDef::Unit));
+        let is_payload_wire_enum = type_def.kind == TypeDefKind::Enum
+            && type_def
+                .variants
+                .values()
+                .any(|variant| !matches!(variant, VariantDef::Unit));
+        let is_serial_wire_enum = is_unit_wire_enum || is_payload_wire_enum;
 
         let instance_methods = if is_wire_struct {
             vec![
@@ -717,7 +722,7 @@ impl Checker {
                 ("to_json", vec![], Ty::String),
                 ("to_yaml", vec![], Ty::String),
             ]
-        } else if is_unit_wire_enum {
+        } else if is_serial_wire_enum {
             vec![
                 ("to_json", vec![], Ty::String),
                 ("to_yaml", vec![], Ty::String),
@@ -746,7 +751,7 @@ impl Checker {
                 ("from_json", vec![Ty::String], self_ty.clone()),
                 ("from_yaml", vec![Ty::String], self_ty),
             ]
-        } else if is_unit_wire_enum {
+        } else if is_serial_wire_enum {
             vec![
                 ("from_json", vec![Ty::String], self_ty.clone()),
                 ("from_yaml", vec![Ty::String], self_ty),

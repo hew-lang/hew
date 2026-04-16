@@ -5,6 +5,24 @@
 use super::*;
 
 impl Checker {
+    fn bind_struct_field_placeholders(
+        &mut self,
+        fields: &[hew_parser::ast::PatternField],
+        ty: &Ty,
+        is_mutable: bool,
+        span: &Span,
+    ) {
+        for pf in fields {
+            if let Some((pat, ps)) = &pf.pattern {
+                self.bind_pattern(pat, ty, is_mutable, ps);
+            } else {
+                self.check_shadowing(&pf.name, span);
+                self.env
+                    .define_with_span(pf.name.clone(), ty.clone(), is_mutable, span.clone());
+            }
+        }
+    }
+
     /// Pattern binding
     #[expect(
         clippy::too_many_lines,
@@ -156,19 +174,20 @@ impl Checker {
                         }
                     }
                 } else if matches!(ty, Ty::Var(_) | Ty::Error) {
-                    for pf in fields {
-                        if let Some((pat, ps)) = &pf.pattern {
-                            self.bind_pattern(pat, ty, is_mutable, ps);
-                        } else {
-                            self.check_shadowing(&pf.name, span);
-                            self.env.define_with_span(
-                                pf.name.clone(),
-                                ty.clone(),
-                                is_mutable,
-                                span.clone(),
-                            );
-                        }
-                    }
+                    self.bind_struct_field_placeholders(fields, ty, is_mutable, span);
+                } else {
+                    let expected = ty.user_facing().to_string();
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: expected.clone(),
+                            actual: name.clone(),
+                        },
+                        span,
+                        format!(
+                            "struct pattern `{name}` cannot match non-struct type `{expected}`"
+                        ),
+                    );
+                    self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                 }
             }
             Pattern::Tuple(pats) => match ty {
@@ -193,7 +212,20 @@ impl Checker {
                         self.bind_pattern(&p.0, &Ty::Error, is_mutable, &p.1);
                     }
                 }
-                _ => {}
+                _ => {
+                    let expected = ty.user_facing().to_string();
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: expected.clone(),
+                            actual: "tuple".to_string(),
+                        },
+                        span,
+                        format!("tuple pattern cannot match non-tuple type `{expected}`"),
+                    );
+                    for p in pats {
+                        self.bind_pattern(&p.0, &Ty::Error, is_mutable, &p.1);
+                    }
+                }
             },
             Pattern::Or(a, b) => {
                 // Both branches should bind the same names with compatible types.

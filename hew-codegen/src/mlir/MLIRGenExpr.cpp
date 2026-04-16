@@ -3196,6 +3196,13 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
     return hew::ClosureCreateOp::create(builder, location, closureTy, fnPtr, clonedEnv);
   };
 
+  auto fieldNeedsUnsignedCoercion = [&](const StructFieldInfo &field) -> bool {
+    if (field.typeExprStr.empty())
+      return false;
+    auto typeName = resolveTypeAlias(field.typeExprStr);
+    return isBuiltinUnsignedIntegerName(typeName) || typeName == "char" || typeName == "bool";
+  };
+
   for (const auto &[fieldInitName, fieldInitVal] : si.fields) {
     bool found = false;
     for (const auto &field : info.fields) {
@@ -3206,7 +3213,7 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si, const ast
         // Struct init from an existing closure owner must retain an
         // independent env reference; otherwise both bindings drop the same env.
         val = cloneRetainedClosureField(field, val, fieldInitVal->value);
-        val = coerceType(val, field.type, location);
+        val = coerceType(val, field.type, location, fieldNeedsUnsignedCoercion(field));
         fieldValues[field.index] = val;
         found = true;
         break;

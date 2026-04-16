@@ -1,0 +1,6 @@
+MaxSize: 100
+MinCount: 5
+FIRST_NAME: Alice
+AGE: 30
+start-time: 5000
+is-done: 0

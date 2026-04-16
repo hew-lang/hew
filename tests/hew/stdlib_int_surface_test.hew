@@ -1,0 +1,13 @@
+//! Proofs that stdlib public surfaces accept and return `int` end-to-end.
+//! One assertion per migrated module — extended in each migration commit.
+
+import std::channel::channel;
+import std::testing;
+
+#[test]
+fn test_channel_new_accepts_int_capacity() {
+    let capacity: int = 16;
+    let (tx, rx) = channel.new(capacity);
+    tx.close();
+    rx.close();
+}

@@ -314,6 +314,13 @@ fn fmt_struct_pattern_in_match_roundtrip() {
 }
 
 #[test]
+fn fmt_struct_pattern_field_rename_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    match e {\n        Ev { x: Some(v), y } => println(v),\n        _ => println(0),\n    }\n}\n",
+    );
+}
+
+#[test]
 fn fmt_match_with_guard() {
     let src = r"fn classify(x: i32) -> i32 {
     match x {
@@ -563,6 +570,13 @@ fn fmt_actor_pure_method_without_preamble() {
     );
 }
 
+#[test]
+fn fmt_this_expr_roundtrip() {
+    exact_roundtrip(
+        "actor Counter {\n    receive fn current() {\n        let me = this;\n    }\n}\n",
+    );
+}
+
 // -----------------------------------------------------------------------
 // Closures / lambdas
 // -----------------------------------------------------------------------
@@ -695,6 +709,51 @@ fn fmt_compound_assignment() {
     assert!(out.contains("x += 10;"), "output: {out}");
 }
 
+#[test]
+fn fmt_compound_subtract_roundtrip() {
+    exact_roundtrip("fn main() {\n    var x = 10;\n    x -= 1;\n}\n");
+}
+
+#[test]
+fn fmt_compound_multiply_roundtrip() {
+    exact_roundtrip("fn main() {\n    var x = 10;\n    x *= 2;\n}\n");
+}
+
+#[test]
+fn fmt_compound_divide_roundtrip() {
+    exact_roundtrip("fn main() {\n    var x = 10;\n    x /= 2;\n}\n");
+}
+
+#[test]
+fn fmt_compound_modulo_roundtrip() {
+    exact_roundtrip("fn main() {\n    var x = 10;\n    x %= 3;\n}\n");
+}
+
+#[test]
+fn fmt_compound_bitand_roundtrip() {
+    exact_roundtrip("fn main() {\n    var x = 10;\n    x &= 0xFF;\n}\n");
+}
+
+#[test]
+fn fmt_compound_bitor_roundtrip() {
+    exact_roundtrip("fn main() {\n    var x = 10;\n    x |= 1;\n}\n");
+}
+
+#[test]
+fn fmt_compound_bitxor_roundtrip() {
+    exact_roundtrip("fn main() {\n    var x = 10;\n    x ^= mask;\n}\n");
+}
+
+#[test]
+fn fmt_compound_shl_roundtrip() {
+    exact_roundtrip("fn main() {\n    var x = 10;\n    x <<= 2;\n}\n");
+}
+
+#[test]
+fn fmt_compound_shr_roundtrip() {
+    exact_roundtrip("fn main() {\n    var x = 10;\n    x >>= 1;\n}\n");
+}
+
 // -----------------------------------------------------------------------
 // Binary / unary operators
 // -----------------------------------------------------------------------
@@ -712,6 +771,41 @@ fn fmt_comparison_operators() {
     let src = "fn main() { let r = x >= 0 && x < 100; }";
     let out = roundtrip(src);
     assert!(out.contains("x >= 0 && x < 100"), "output: {out}");
+}
+
+#[test]
+fn fmt_regex_match_roundtrip() {
+    exact_roundtrip("fn main() {\n    let ok = s =~ re\"pat\";\n}\n");
+}
+
+#[test]
+fn fmt_regex_not_match_roundtrip() {
+    exact_roundtrip("fn main() {\n    let no = s !~ re\"pat\";\n}\n");
+}
+
+#[test]
+fn fmt_bitwise_and_roundtrip() {
+    exact_roundtrip("fn main() {\n    let r = a & b;\n}\n");
+}
+
+#[test]
+fn fmt_bitwise_or_roundtrip() {
+    exact_roundtrip("fn main() {\n    let r = a | b;\n}\n");
+}
+
+#[test]
+fn fmt_bitwise_xor_roundtrip() {
+    exact_roundtrip("fn main() {\n    let r = a ^ b;\n}\n");
+}
+
+#[test]
+fn fmt_shift_left_roundtrip() {
+    exact_roundtrip("fn main() {\n    let r = a << 2;\n}\n");
+}
+
+#[test]
+fn fmt_shift_right_roundtrip() {
+    exact_roundtrip("fn main() {\n    let r = a >> 1;\n}\n");
 }
 
 // -----------------------------------------------------------------------
@@ -747,6 +841,13 @@ fn main() {
     assert!(out.contains("Point(x: 1, y: 2)"), "output: {out}");
 }
 
+#[test]
+fn fmt_struct_init_brace_form_roundtrip() {
+    exact_roundtrip(
+        "type Point {\n    x: i32;\n    y: i32;\n}\n\nfn main() {\n    let p = Point { x: 1, y: 2 };\n}\n",
+    );
+}
+
 // -----------------------------------------------------------------------
 // Index expressions
 // -----------------------------------------------------------------------
@@ -767,6 +868,11 @@ fn fmt_range_expression() {
     let src = "fn main() { for i in 0 .. 10 { println(i); } }";
     let out = roundtrip(src);
     assert!(out.contains("0 .. 10"), "output: {out}");
+}
+
+#[test]
+fn fmt_inclusive_range_roundtrip() {
+    exact_roundtrip("fn main() {\n    for i in 0 ..= 9 {\n        println(i);\n    }\n}\n");
 }
 
 // -----------------------------------------------------------------------

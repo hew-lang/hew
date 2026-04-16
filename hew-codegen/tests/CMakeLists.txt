@@ -1333,6 +1333,12 @@ add_wasm_file_test(large_vec                  e2e_memory           large_vec_lif
 add_wasm_file_test(closure_capture            e2e_memory           closure_capture_safety)
 add_wasm_file_test(deep_recursion             e2e_memory           deep_recursion)
 add_wasm_file_test(actor_str_owner            e2e_memory           actor_field_string_ownership)
+add_wasm_file_test(rc_basic                   e2e_memory           rc_basic)
+add_wasm_file_test(rc_scope_drop              e2e_memory           rc_scope_drop)
+add_wasm_file_test(rc_rebind                  e2e_memory           rc_rebind)
+add_wasm_file_test(rc_outlive                 e2e_memory           rc_outlive)
+add_wasm_file_test(rc_string                  e2e_memory           rc_string)
+add_wasm_file_test(rc_pass_to_fn              e2e_memory           rc_pass_to_fn)
 
 # Temp materialization
 add_wasm_file_test(borrowed_string_return     e2e_temp_materialization borrowed_string_return)

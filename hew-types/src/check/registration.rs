@@ -837,6 +837,7 @@ impl Checker {
     ) {
         use crate::error::Severity;
 
+        let decl_span = self.type_def_spans.get(type_name).cloned().unwrap_or(0..0);
         let version = wire.version;
         let min_version = wire.min_version;
 
@@ -846,7 +847,7 @@ impl Checker {
                 self.errors.push(TypeError {
                     severity: Severity::Error,
                     kind: TypeErrorKind::InvalidOperation,
-                    span: 0..0,
+                    span: decl_span.clone(),
                     message: format!(
                         "wire `{type_name}`: min_version ({min_v}) cannot exceed version ({v})"
                     ),
@@ -865,7 +866,7 @@ impl Checker {
                     self.warnings.push(TypeError {
                         severity: Severity::Warning,
                         kind: TypeErrorKind::StyleSuggestion,
-                        span: 0..0,
+                        span: decl_span.clone(),
                         message: format!(
                             "wire `{type_name}.{}`: field has `since {since}` but struct \
                              has no #[wire(version = N)] attribute",
@@ -883,7 +884,7 @@ impl Checker {
                         self.errors.push(TypeError {
                             severity: Severity::Error,
                             kind: TypeErrorKind::InvalidOperation,
-                            span: 0..0,
+                            span: decl_span.clone(),
                             message: format!(
                                 "wire `{type_name}.{}`: since ({since}) cannot exceed \
                                  schema version ({v})",
@@ -903,7 +904,7 @@ impl Checker {
                     self.warnings.push(TypeError {
                         severity: Severity::Warning,
                         kind: TypeErrorKind::StyleSuggestion,
-                        span: 0..0,
+                        span: decl_span.clone(),
                         message: format!(
                             "wire `{type_name}.{}`: non-optional field has no `since` annotation \
                              (schema version is {v})",

@@ -109,7 +109,10 @@ impl Checker {
             self.expect_type(
                 &expected_ret,
                 &actual,
-                &(fd.body.stmts.last().map_or(0..0, |(_, s)| s.clone())),
+                &(fd.body
+                    .stmts
+                    .last()
+                    .map_or(fd.decl_span.clone(), |(_, s)| s.clone())),
             );
         }
 
@@ -456,7 +459,10 @@ impl Checker {
             self.expect_type(
                 &expected_ret,
                 &actual,
-                &(rf.body.stmts.last().map_or(0..0, |(_, s)| s.clone())),
+                &(rf.body
+                    .stmts
+                    .last()
+                    .map_or(rf.span.clone(), |(_, s)| s.clone())),
             );
         }
 

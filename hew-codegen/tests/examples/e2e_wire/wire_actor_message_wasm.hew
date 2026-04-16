@@ -1,0 +1,21 @@
+// WASM parity test: wire-encoded actor messages should drain deterministically
+// via an await-based mailbox barrier instead of sleep-based timing.
+#[wire]
+struct Ping {
+    seq: i32,
+}
+
+actor PingPong {
+    receive fn handle(msg: Ping) {
+        println(msg.to_json());
+    }
+}
+
+fn main() {
+    let a = spawn PingPong;
+    a.handle(Ping { seq: 42 });
+    a.handle(Ping { seq: 99 });
+    close(a);
+    await a;
+    println("done");
+}

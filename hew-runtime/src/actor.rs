@@ -1247,7 +1247,9 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
 }
 
 // ── Send ────────────────────────────────────────────────────────────────
-// Send functions use native mailbox/scheduler. WASM sends go through bridge.
+// Standard send functions use the native mailbox/scheduler. WASM standard
+// sends go through bridge lowering; wire sends also expose a direct runtime
+// entrypoint so encoded actor messages can use the same deterministic path.
 
 /// Send a message to an actor (fire-and-forget).
 ///
@@ -1294,6 +1296,59 @@ pub unsafe extern "C" fn hew_actor_send_wire(
     let data = unsafe { crate::vec::hwvec_to_u8(bytes) };
     // SAFETY: actor is valid, data slice is valid.
     unsafe { actor_send_internal(actor, msg_type, data.as_ptr() as *mut c_void, data.len()) };
+    // SAFETY: bytes was allocated by hew_vec and is no longer needed.
+    unsafe { crate::vec::hew_vec_free(bytes) };
+}
+
+/// Send a wire-encoded message to an actor on wasm32.
+///
+/// Extracts raw bytes from the `HewVec` (bytes type), deep-copies them into the
+/// cooperative mailbox, wakes the target actor when delivery succeeds, and
+/// frees the temporary `HewVec` in all cases.
+///
+/// # Safety
+///
+/// - `actor` must be a valid pointer returned by a spawn function.
+/// - `bytes` must be a valid `HewVec*` (bytes type) or null.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_wire(
+    actor: *mut HewActor,
+    msg_type: i32,
+    bytes: *mut crate::vec::HewVec,
+) {
+    if bytes.is_null() {
+        return;
+    }
+
+    if actor.is_null() {
+        // SAFETY: bytes was allocated by hew_vec and must be released on early return.
+        unsafe { crate::vec::hew_vec_free(bytes) };
+        return;
+    }
+
+    // SAFETY: bytes is a valid HewVec. Extract raw byte data before freeing it.
+    let data = unsafe { crate::vec::hwvec_to_u8(bytes) };
+    let data_ptr = if data.is_empty() {
+        ptr::null_mut()
+    } else {
+        data.as_ptr().cast_mut().cast()
+    };
+
+    // SAFETY: actor is valid and owns a wasm mailbox for its lifetime.
+    let result = unsafe {
+        crate::mailbox_wasm::hew_mailbox_send(
+            (*actor).mailbox.cast(),
+            msg_type,
+            data_ptr,
+            data.len(),
+        )
+    };
+    if result == HewError::Ok as i32 {
+        // SAFETY: actor is valid and delivery succeeded, so the scheduler may run it.
+        unsafe { wake_wasm_actor(actor) };
+    }
+
     // SAFETY: bytes was allocated by hew_vec and is no longer needed.
     unsafe { crate::vec::hew_vec_free(bytes) };
 }

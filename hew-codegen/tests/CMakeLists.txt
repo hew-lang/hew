@@ -733,6 +733,7 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_memory/rc_pass_to_fn"
   "e2e_concurrency/channel_for_await_typed_receiver_param"
   "e2e_actors/actor_periodic_timer"
+  "e2e_wire/wire_actor_message_wasm"
 )
 
 file(GLOB _E2E_CATEGORIES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/examples
@@ -1423,6 +1424,7 @@ add_wasm_file_test(wire_nested_struct_yaml    e2e_wire             wire_nested_s
 add_wasm_file_test(wire_yaml_naming_roundtrip e2e_wire             wire_yaml_naming_roundtrip)
 add_wasm_file_test(wire_enum_payload_serial_roundtrip e2e_wire      wire_enum_payload_serial_roundtrip)
 add_wasm_file_test(wire_enum_method_serial    e2e_wire             wire_enum_method_serial)
+add_wasm_file_test(wire_actor_message_wasm    e2e_wire             wire_actor_message_wasm)
 
 # Semver, fmt, csv (pure Hew implementations)
 add_wasm_file_test(semver_test                e2e_semver           semver_test)

@@ -1705,14 +1705,18 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
 /// valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
-    // Read the current node pointer (hew_node_stop will clear CURRENT_NODE).
+    // Claim CURRENT_NODE under the write lock so exactly one caller owns the
+    // stop/free sequence.
     let ptr = {
-        let guard = CURRENT_NODE.read_or_recover();
-        *guard as *mut HewNode
+        let mut guard = CURRENT_NODE.write_or_recover();
+        let ptr = *guard as *mut HewNode;
+        if ptr.is_null() {
+            return -1;
+        }
+        *guard = 0;
+        REPLY_TABLE.fail_all();
+        ptr
     };
-    if ptr.is_null() {
-        return -1;
-    }
     // SAFETY: ptr is non-null and was created by hew_node_api_start.
     unsafe { hew_node_stop(ptr) };
     // SAFETY: ptr is valid; the node has been stopped.
@@ -2058,6 +2062,45 @@ mod tests {
                 NODE_STATE_STOPPED
             );
         }
+    }
+
+    #[test]
+    fn concurrent_api_shutdown_claims_current_node_once() {
+        let _guard = crate::runtime_test_guard();
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this test.
+        unsafe { assert_eq!(hew_node_api_start(bind_addr.as_ptr()), 0) };
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    // SAFETY: the API owns the current node pointer installed above.
+                    unsafe { hew_node_api_shutdown() }
+                })
+            })
+            .collect();
+
+        barrier.wait();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("shutdown thread should not panic"))
+            .collect();
+
+        assert_eq!(
+            results.iter().filter(|&&rc| rc == 0).count(),
+            1,
+            "exactly one shutdown caller must claim ownership"
+        );
+        assert_eq!(
+            results.iter().filter(|&&rc| rc == -1).count(),
+            1,
+            "the losing shutdown caller must observe that no node remains"
+        );
+        assert_eq!(*CURRENT_NODE.read_or_recover(), 0);
     }
 
     #[test]

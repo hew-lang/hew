@@ -869,10 +869,18 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     auto bufPtr = mlir::LLVM::AllocaOp::create(builder, location, ptrType, builder.getI8Type(),
                                                createIntConstant(builder, location, i64Type, 32));
 
-    // Initialize buffer for reading from existing data
+    // Initialize buffer for reading from existing data.
+    // The outer wrapper widens hew_wire_buf_len() to i64 for the public decode
+    // signature, so narrow back to the native runtime width before calling the
+    // runtime entry point on wasm32.
+    mlir::Value dataSizeNative = dataSize;
+    if (nativeSizeType != i64Type) {
+      dataSizeNative =
+          mlir::arith::TruncIOp::create(builder, location, nativeSizeType, dataSize).getResult();
+    }
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                mlir::SymbolRefAttr::get(&context, "hew_wire_buf_init_read"),
-                               mlir::ValueRange{bufPtr, dataPtr, dataSize});
+                               mlir::ValueRange{bufPtr, dataPtr, dataSizeNative});
 
     // Allocate per-field storage initialized with defaults.
     // We use individual allocas so the loop body can store decoded values.

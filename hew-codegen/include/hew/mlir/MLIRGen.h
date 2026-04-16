@@ -277,7 +277,8 @@ private:
                                                        const ast::Span &exprSpan);
   mlir::Value generateLogCall(const ast::ExprMethodCall &mc);
   mlir::Value generateLogEmit(const std::vector<ast::CallArg> &args, int levelInt);
-  mlir::Value generateTupleExpr(const ast::ExprTuple &expr);
+  mlir::Value generateTupleExpr(const ast::ExprTuple &expr,
+                                std::optional<mlir::Type> typeHint = {});
   mlir::Value generateArrayExpr(const ast::ExprArray &expr,
                                 std::optional<mlir::Type> typeHint = std::nullopt);
   mlir::Value generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit, const ast::Span &exprSpan,

@@ -421,38 +421,60 @@ static bool allSelectAddsReturnI32(mlir::Operation *op) {
 
 // ---------------------------------------------------------------------------
 // Helper: parse source -> TypedProgram msgpack (via hew CLI).
-// Writes source to a temp file, invokes `hew build --emit-msgpack -o`, then
+// Writes source to a repo-local scratch file, invokes `hew build --emit-msgpack -o`, then
 // deserializes the msgpack payload with the production reader.
 // ---------------------------------------------------------------------------
-static bool loadProgramFromSource(const std::string &source, hew::ast::Program &program) {
-  // Write source to a temp file
-  std::string tmpPath = (std::filesystem::temp_directory_path() /
-                         ("test_mlirgen_" + std::to_string(getpid()) + ".hew"))
-                            .string();
-  {
-    std::ofstream tmp(tmpPath);
-    if (!tmp) {
-      printf("  Failed to write temp file %s\n", tmpPath.c_str());
-      return false;
+static std::filesystem::path testMlirgenScratchDir() {
+  static std::filesystem::path scratchDir = [] {
+    auto dir = std::filesystem::current_path();
+    while (!dir.empty()) {
+      if (std::filesystem::exists(dir / "Cargo.toml") && std::filesystem::exists(dir / "std"))
+        return dir;
+      auto parent = dir.parent_path();
+      if (parent == dir)
+        break;
+      dir = parent;
     }
-    tmp << source;
-  }
+    return std::filesystem::path(findHewCli()).parent_path().parent_path().parent_path();
+  }();
+  return scratchDir;
+}
 
-  std::string astPath = (std::filesystem::temp_directory_path() /
-                         ("test_mlirgen_" + std::to_string(getpid()) + ".msgpack"))
-                            .string();
+static std::string testMlirgenHewCli() {
+#ifdef _WIN32
+  constexpr const char *hewName = "hew.exe";
+#else
+  constexpr const char *hewName = "hew";
+#endif
+  static std::string hewCli = [hewName] {
+    auto root = testMlirgenScratchDir();
+    for (auto candidate : {root / "target/debug" / hewName, root / "target/release" / hewName}) {
+      if (std::filesystem::exists(candidate))
+        return std::filesystem::canonical(candidate).string();
+    }
+    return findHewCli();
+  }();
+  return hewCli;
+}
+
+static bool loadProgramFromFile(const std::filesystem::path &sourcePath,
+                                hew::ast::Program &program) {
+  // Write source to a repo-local scratch file so `hew build` keeps the same
+  // project-root/stdlib context as normal repository invocations.
+  std::string astPath =
+      (testMlirgenScratchDir() / ("test_mlirgen_" + std::to_string(getpid()) + ".msgpack"))
+          .string();
 
   // Invoke hew build --emit-msgpack -o <file>
-  static std::string hewCli = findHewCli();
+  static std::string hewCli = testMlirgenHewCli();
 #ifdef _WIN32
-  std::string cmd = "\"\"" + hewCli + "\" build \"" + tmpPath + "\" -o \"" + astPath +
+  std::string cmd = "\"\"" + hewCli + "\" build \"" + sourcePath.string() + "\" -o \"" + astPath +
                     "\" --emit-msgpack 2>NUL\"";
 #else
-  std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" -o \"" + astPath +
+  std::string cmd = "\"" + hewCli + "\" build \"" + sourcePath.string() + "\" -o \"" + astPath +
                     "\" --emit-msgpack 2>/dev/null";
 #endif
   int rc = std::system(cmd.c_str());
-  std::filesystem::remove(tmpPath);
   if (std::filesystem::exists(astPath)) {
     std::ifstream astFile(astPath, std::ios::binary);
     std::vector<uint8_t> astData(std::istreambuf_iterator<char>(astFile), {});
@@ -487,6 +509,23 @@ static bool loadProgramFromSource(const std::string &source, hew::ast::Program &
   return false;
 }
 
+static bool loadProgramFromSource(const std::string &source, hew::ast::Program &program) {
+  std::filesystem::path tmpPath =
+      testMlirgenScratchDir() / ("test_mlirgen_" + std::to_string(getpid()) + ".hew");
+  {
+    std::ofstream tmp(tmpPath);
+    if (!tmp) {
+      printf("  Failed to write temp file %s\n", tmpPath.string().c_str());
+      return false;
+    }
+    tmp << source;
+  }
+
+  bool ok = loadProgramFromFile(tmpPath, program);
+  std::filesystem::remove(tmpPath);
+  return ok;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: lower a TypedProgram to MLIR.
 // ---------------------------------------------------------------------------
@@ -511,6 +550,15 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
                                    bool dumpIR = false) {
   hew::ast::Program program;
   if (!loadProgramFromSource(source, program))
+    return {};
+  return generateMLIR(ctx, program, dumpIR);
+}
+
+static mlir::ModuleOp generateMLIRFromFile(mlir::MLIRContext &ctx,
+                                           const std::filesystem::path &sourcePath,
+                                           bool dumpIR = false) {
+  hew::ast::Program program;
+  if (!loadProgramFromFile(sourcePath, program))
     return {};
   return generateMLIR(ctx, program, dumpIR);
 }
@@ -1070,6 +1118,35 @@ static std::optional<hew::ast::Span> restoreReturnedHandleMethodCall(hew::ast::F
     retStmt->value->value.kind = std::move(methodCall);
     return receiverSpan;
   }
+
+  for (auto &stmt : fn.body.stmts) {
+    auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt->value.kind);
+    if (!exprStmt)
+      continue;
+
+    auto *callExpr = std::get_if<hew::ast::ExprCall>(&exprStmt->expr.value.kind);
+    if (!callExpr || !callExpr->function)
+      continue;
+
+    auto *calleeIdent = std::get_if<hew::ast::ExprIdentifier>(&callExpr->function->value.kind);
+    if (!calleeIdent || calleeIdent->name != callee)
+      continue;
+
+    if (callExpr->args.size() != 1)
+      continue;
+
+    auto *receiverArg = std::get_if<hew::ast::CallArgPositional>(&callExpr->args.front());
+    if (!receiverArg || !receiverArg->expr)
+      continue;
+
+    auto receiverSpan = receiverArg->expr->span;
+    hew::ast::ExprMethodCall methodCall;
+    methodCall.receiver = std::move(receiverArg->expr);
+    methodCall.method = methodName.str();
+    exprStmt->expr.value.kind = std::move(methodCall);
+    return receiverSpan;
+  }
+
   return std::nullopt;
 }
 
@@ -1086,6 +1163,19 @@ static hew::ast::Span *findMutableReturnedMethodReceiverSpan(hew::ast::FnDecl &f
 
     return &methodCall->receiver->span;
   }
+
+  for (auto &stmt : fn.body.stmts) {
+    auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt->value.kind);
+    if (!exprStmt)
+      continue;
+
+    auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&exprStmt->expr.value.kind);
+    if (!methodCall || methodCall->method != methodName)
+      continue;
+
+    return &methodCall->receiver->span;
+  }
+
   return nullptr;
 }
 
@@ -3910,6 +4000,52 @@ fn main() -> int {
 
   if (!okTypeIsU32I64 || !errTypeIsU32I64) {
     FAIL("expected direct Ok/Err hints to preserve Result<u32, i64> types");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Result constructors preserve unit payload hints
+// ============================================================================
+static void test_result_constructor_unit_payload_hints_lower() {
+  TEST(result_constructor_unit_payload_hints_lower);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIRFromFile(
+      ctx, testMlirgenScratchDir() /
+               "hew-codegen/tests/fixtures/result_constructor_unit_payload_hints_lower.hew");
+
+  if (!module) {
+    FAIL("MLIR generation failed for unit Result constructor hints");
+    return;
+  }
+
+  bool okUsesUnitPayload = false;
+  bool errUsesUnitPayload = false;
+  module.walk([&](hew::EnumConstructOp op) {
+    if (op.getEnumName() != "__Result")
+      return;
+    auto resultType = mlir::dyn_cast<hew::ResultEnumType>(op.getType());
+    if (!resultType)
+      return;
+    if (op.getVariantIndex() == 0) {
+      if (auto okType = mlir::dyn_cast<hew::HewTupleType>(resultType.getOkType()))
+        okUsesUnitPayload |=
+            okType.getElementTypes().empty() && resultType.getErrType().isInteger(64);
+    } else if (op.getVariantIndex() == 1) {
+      if (auto errType = mlir::dyn_cast<hew::HewTupleType>(resultType.getErrType()))
+        errUsesUnitPayload |=
+            errType.getElementTypes().empty() && resultType.getOkType().isInteger(64);
+    }
+  });
+
+  if (!okUsesUnitPayload || !errUsesUnitPayload) {
+    FAIL("expected Result constructor hints to preserve unit payload types");
     module.getOperation()->destroy();
     return;
   }
@@ -9998,8 +10134,8 @@ fn open() -> Conn {
     net.connect("127.0.0.1:1")
 }
 
-fn main() -> int {
-    open().close()
+fn main() {
+    open().close();
 }
   )");
 
@@ -10578,9 +10714,9 @@ extern "C" {
     fn fake_conn() -> net.Connection;
 }
 
-fn use_conn() -> int {
+fn use_conn() {
     let conn: net.Connection = unsafe { fake_conn() };
-    return conn.close();
+    conn.close();
 }
 
 fn main() {}
@@ -10664,9 +10800,9 @@ extern "C" {
     fn fake_conn() -> net.Connection;
 }
 
-fn use_conn() -> int {
+fn use_conn() {
     let conn: net.Connection = unsafe { fake_conn() };
-    return conn.close();
+    conn.close();
 }
 
 fn main() {}
@@ -13588,6 +13724,7 @@ int main() {
   test_array_repeat_missing_expr_type_fails_closed();
   test_nested_vec_new_does_not_capture_outer_array_hint();
   test_direct_constructor_type_hints_lower_builtins();
+  test_result_constructor_unit_payload_hints_lower();
   test_nested_none_does_not_inherit_outer_constructor_hints();
   test_none_without_type_context_fails_closed();
   test_match_arm_direct_none_uses_match_result_type_hint();

@@ -256,7 +256,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
   if (auto *mc = std::get_if<ast::ExprMethodCall>(&expr.kind))
     return generateMethodCall(*mc, expr.span);
   if (auto *tup = std::get_if<ast::ExprTuple>(&expr.kind))
-    return generateTupleExpr(*tup);
+    return generateTupleExpr(*tup, typeHint);
   if (auto *arr = std::get_if<ast::ExprArray>(&expr.kind))
     return generateArrayExpr(*arr, typeHint);
   if (auto *mapLit = std::get_if<ast::ExprMapLiteral>(&expr.kind))
@@ -1961,10 +1961,23 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
           emitError(location) << "Some() expects exactly one argument";
           return nullptr;
         }
-        auto argVal = generateExpression(ast::callArgExpr(call.args[0]).value);
+        mlir::Type optType = resolveOptionConstructorType(typeHint, exprSpan);
+        mlir::Type expectedInnerType = nullptr;
+        if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(optType))
+          expectedInnerType = optionType.getInnerType();
+        const auto &argExpr = ast::callArgExpr(call.args[0]);
+        mlir::Value argVal = nullptr;
+        if (auto *tupleArg = std::get_if<ast::ExprTuple>(&argExpr.value.kind);
+            tupleArg && tupleArg->elements.empty() && expectedInnerType) {
+          if (auto tupleType = mlir::dyn_cast<hew::HewTupleType>(expectedInnerType);
+              tupleType && tupleType.getElementTypes().empty()) {
+            argVal = hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{});
+          }
+        }
+        if (!argVal)
+          argVal = generateExpression(argExpr.value);
         if (!argVal)
           return nullptr;
-        mlir::Type optType = resolveOptionConstructorType(typeHint, exprSpan);
         if (!optType)
           optType = hew::OptionEnumType::get(&context, argVal.getType());
         if (auto optionType = mlir::dyn_cast<hew::OptionEnumType>(optType);
@@ -1987,15 +2000,28 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
           emitError(location) << "Ok() expects exactly one argument";
           return nullptr;
         }
-        auto argVal = generateExpression(ast::callArgExpr(call.args[0]).value);
-        if (!argVal)
-          return nullptr;
         // Fall back to the checker-resolved expr type (covers statement-position
         // composites like `Ok(Some(7))` where no declaration context is present).
         // This path is checked after context types because convertType of an
         // unqualified handle name (e.g. "Value" from a module scope) produces
         // the LLVM struct representation rather than the hew.handle form.
         mlir::Type resultType = resolveResultConstructorType(typeHint, exprSpan);
+        mlir::Type expectedOkType = nullptr;
+        if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType))
+          expectedOkType = resultEnumType.getOkType();
+        const auto &argExpr = ast::callArgExpr(call.args[0]);
+        mlir::Value argVal = nullptr;
+        if (auto *tupleArg = std::get_if<ast::ExprTuple>(&argExpr.value.kind);
+            tupleArg && tupleArg->elements.empty() && expectedOkType) {
+          if (auto tupleType = mlir::dyn_cast<hew::HewTupleType>(expectedOkType);
+              tupleType && tupleType.getElementTypes().empty()) {
+            argVal = hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{});
+          }
+        }
+        if (!argVal)
+          argVal = generateExpression(argExpr.value);
+        if (!argVal)
+          return nullptr;
         if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, argVal.getType(), builder.getI32Type());
         }
@@ -2019,10 +2045,23 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
           emitError(location) << "Err() expects exactly one argument";
           return nullptr;
         }
-        auto argVal = generateExpression(ast::callArgExpr(call.args[0]).value);
+        mlir::Type resultType = resolveResultConstructorType(typeHint, exprSpan);
+        mlir::Type expectedErrType = nullptr;
+        if (auto resultEnumType = mlir::dyn_cast<hew::ResultEnumType>(resultType))
+          expectedErrType = resultEnumType.getErrType();
+        const auto &argExpr = ast::callArgExpr(call.args[0]);
+        mlir::Value argVal = nullptr;
+        if (auto *tupleArg = std::get_if<ast::ExprTuple>(&argExpr.value.kind);
+            tupleArg && tupleArg->elements.empty() && expectedErrType) {
+          if (auto tupleType = mlir::dyn_cast<hew::HewTupleType>(expectedErrType);
+              tupleType && tupleType.getElementTypes().empty()) {
+            argVal = hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{});
+          }
+        }
+        if (!argVal)
+          argVal = generateExpression(argExpr.value);
         if (!argVal)
           return nullptr;
-        mlir::Type resultType = resolveResultConstructorType(typeHint, exprSpan);
         if (!resultType) {
           resultType = hew::ResultEnumType::get(&context, builder.getI32Type(), argVal.getType());
         }
@@ -5595,10 +5634,15 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
 // Tuple expression
 // ============================================================================
 
-mlir::Value MLIRGen::generateTupleExpr(const ast::ExprTuple &tup) {
+mlir::Value MLIRGen::generateTupleExpr(const ast::ExprTuple &tup,
+                                       std::optional<mlir::Type> typeHint) {
   auto location = currentLoc;
 
   if (tup.elements.empty()) {
+    if (auto tupleType = mlir::dyn_cast_or_null<hew::HewTupleType>(typeHint.value_or(mlir::Type{}));
+        tupleType && tupleType.getElementTypes().empty()) {
+      return hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{});
+    }
     return nullptr;
   }
 

@@ -876,8 +876,14 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
 
   // Option<T> → !hew.option<T>
   if (auto *option = std::get_if<ast::TypeOption>(&type.kind)) {
-    auto innerType =
-        convertTypeOrError(option->inner->value, "cannot resolve inner type for Option", errorLoc);
+    mlir::Type innerType;
+    if (auto *innerTuple = std::get_if<ast::TypeTuple>(&option->inner->value.kind);
+        innerTuple && innerTuple->elements.empty()) {
+      innerType = hew::HewTupleType::get(&context, {});
+    } else {
+      innerType = convertTypeOrError(option->inner->value, "cannot resolve inner type for Option",
+                                     errorLoc);
+    }
     if (!innerType)
       return mlir::NoneType::get(&context);
     return hew::OptionEnumType::get(&context, innerType);
@@ -885,11 +891,24 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type, std::optional<mlir::L
 
   // Result<T, E> → !hew.result<T, E>
   if (auto *result = std::get_if<ast::TypeResult>(&type.kind)) {
-    auto okType =
-        convertTypeOrError(result->ok->value, "cannot resolve ok type for Result", errorLoc);
-    auto errType = okType ? convertTypeOrError(result->err->value,
-                                               "cannot resolve err type for Result", errorLoc)
-                          : nullptr;
+    mlir::Type okType;
+    if (auto *okTuple = std::get_if<ast::TypeTuple>(&result->ok->value.kind);
+        okTuple && okTuple->elements.empty()) {
+      okType = hew::HewTupleType::get(&context, {});
+    } else {
+      okType = convertTypeOrError(result->ok->value, "cannot resolve ok type for Result", errorLoc);
+    }
+
+    mlir::Type errType;
+    if (okType) {
+      if (auto *errTuple = std::get_if<ast::TypeTuple>(&result->err->value.kind);
+          errTuple && errTuple->elements.empty()) {
+        errType = hew::HewTupleType::get(&context, {});
+      } else {
+        errType =
+            convertTypeOrError(result->err->value, "cannot resolve err type for Result", errorLoc);
+      }
+    }
     if (!okType || !errType)
       return mlir::NoneType::get(&context);
     return hew::ResultEnumType::get(&context, okType, errType);

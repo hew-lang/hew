@@ -34,6 +34,30 @@ fn test_decode_truncates_at_decoded_nul() {
 }
 
 #[test]
+fn test_port_returns_none_when_absent() {
+    let parsed = url.parse("http://localhost/path");
+    let port = parsed.port();
+    parsed.free();
+
+    match port {
+        Some(value) => panic(f"expected None, got Some({value})"),
+        None => {},
+    }
+}
+
+#[test]
+fn test_port_returns_some_when_explicit() {
+    let parsed = url.parse("http://localhost:8080/path");
+    let port = parsed.port();
+    parsed.free();
+
+    match port {
+        Some(value) => testing.assert_eq(value, 8080),
+        None => panic("expected Some(8080), got None"),
+    }
+}
+
+#[test]
 fn test_encode_query_skips_invalid_lines_and_uses_first_equals() {
     testing.assert_eq_str(
         url.encode_query("name=hello world\nskip-me\na=b=c"),

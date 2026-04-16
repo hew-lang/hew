@@ -11,7 +11,10 @@
 //! fn main() {
 //!     let u = url.parse("https://example.com:8080/path?key=val#frag");
 //!     println(u.host());
-//!     println(u.port());
+//!     match u.port() {
+//!         Some(port) => println(port),
+//!         None => println("no port"),
+//!     }
 //!     u.free();
 //! }
 //! ```
@@ -32,8 +35,8 @@ trait UrlMethods {
     /// Return the host name.
     fn host(u: Url) -> String;
 
-    /// Return the port number, or -1 if not specified.
-    fn port(u: Url) -> i32;
+    /// Return the explicit port number, if specified.
+    fn port(u: Url) -> Option<int>;
 
     /// Return the path component.
     fn path(u: Url) -> String;
@@ -59,8 +62,15 @@ impl UrlMethods for Url {
     fn scheme(u: Url) -> String { unsafe { hew_url_scheme(u) } }
     /// Return the host name.
     fn host(u: Url) -> String { unsafe { hew_url_host(u) } }
-    /// Return the port number, or -1 if not specified.
-    fn port(u: Url) -> i32 { unsafe { hew_url_port(u) } }
+    /// Return the explicit port number, if specified.
+    fn port(u: Url) -> Option<int> {
+        let port: i32 = unsafe { hew_url_port(u) };
+        if port < 0 {
+            None
+        } else {
+            Some(port as int)
+        }
+    }
     /// Return the path component.
     fn path(u: Url) -> String { unsafe { hew_url_path(u) } }
     /// Return the query string (without the leading `?`).

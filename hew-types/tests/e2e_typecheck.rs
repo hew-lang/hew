@@ -310,7 +310,7 @@ fn method_call_receiver_kinds_record_handle_dispatch() {
         r"
 import std::net;
 
-fn close_conn(conn: net.Connection) -> int {
+fn close_conn(conn: net.Connection) {
     conn.close()
 }
 ",
@@ -1675,7 +1675,7 @@ fn net_listener_close_resolves_via_fallback() {
         r"
         import std::net;
 
-        fn close_listener(listener: net.Listener) -> int {
+        fn close_listener(listener: net.Listener) {
             listener.close()
         }
         ",

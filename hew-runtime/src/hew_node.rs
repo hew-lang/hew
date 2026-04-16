@@ -3366,6 +3366,87 @@ mod tests {
     }
 
     #[test]
+    fn two_node_inbound_mailbox_full_reports_mailbox_full() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: node1_bind is a valid C string for the duration of this test.
+        let node1 = unsafe { TestNode::new(326, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+
+        // SAFETY: node1 was just allocated and remains valid until teardown.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(327);
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(327);
+        let opts = crate::actor::HewActorOpts {
+            init_state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox_capacity: 1,
+            overflow: crate::internal::types::HewOverflowPolicy::DropNew as i32,
+            coalesce_key_fn: None,
+            coalesce_fallback: 0,
+            budget: 0,
+        };
+        // SAFETY: opts points to a valid HewActorOpts for the duration of this call.
+        let actor = unsafe { crate::actor::hew_actor_spawn_opts(&raw const opts) };
+        crate::pid::hew_pid_set_local_node(326);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_pid = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 327);
+
+        // SAFETY: actor is valid; mailbox pointer is valid for the actor lifetime.
+        let mailbox = unsafe { (*actor).mailbox.cast::<crate::mailbox::HewMailbox>() };
+        // SAFETY: mailbox is a valid bounded mailbox pointer; the null payload is intentional.
+        let pre_fill = unsafe { crate::mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            pre_fill, 0,
+            "pre-fill into empty bounded mailbox must succeed"
+        );
+
+        let connect_addr = CString::new(format!("327@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until teardown.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: this is a remote void ask; null payload/size are valid.
+        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let err = hew_node_ask_take_last_error();
+
+        assert!(
+            reply_ptr.is_null(),
+            "full-mailbox remote ask must return null"
+        );
+        assert_eq!(
+            err,
+            AskError::MailboxFull as i32,
+            "full-mailbox remote ask must propagate MailboxFull, not WorkerAtCapacity or ActorStopped"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and remain valid here.
+        unsafe {
+            crate::actor::hew_actor_stop(actor);
+            let _ = crate::actor::hew_actor_free(actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
     fn two_node_worker_limit_still_reports_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();

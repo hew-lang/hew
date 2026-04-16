@@ -852,6 +852,36 @@ fn fmt_shift_right_roundtrip() {
     exact_roundtrip("fn main() {\n    let r = a >> 1;\n}\n");
 }
 
+#[test]
+fn fmt_logical_not_roundtrip() {
+    exact_roundtrip("fn main() {\n    let ok = !flag;\n}\n");
+}
+
+#[test]
+fn fmt_negate_roundtrip() {
+    exact_roundtrip("fn main() {\n    let n = -x;\n}\n");
+}
+
+#[test]
+fn fmt_bitnot_roundtrip() {
+    exact_roundtrip("fn main() {\n    let m = ~mask;\n}\n");
+}
+
+#[test]
+fn fmt_unary_not_paren_wrapping_roundtrip() {
+    exact_roundtrip("fn main() {\n    let r = !(a && b);\n}\n");
+}
+
+#[test]
+fn fmt_unary_negate_paren_wrapping_roundtrip() {
+    exact_roundtrip("fn main() {\n    let r = -(a + b);\n}\n");
+}
+
+#[test]
+fn fmt_unary_bitnot_paren_wrapping_roundtrip() {
+    exact_roundtrip("fn main() {\n    let r = ~(a | b);\n}\n");
+}
+
 // -----------------------------------------------------------------------
 // Array / tuple / map literals
 // -----------------------------------------------------------------------
@@ -1073,6 +1103,11 @@ fn fmt_defer_statement() {
     let src = "fn main() { defer cleanup(); }";
     let out = roundtrip(src);
     assert!(out.contains("defer cleanup();"), "output: {out}");
+}
+
+#[test]
+fn fmt_defer_block_roundtrip() {
+    exact_roundtrip("fn main() {\n    defer {\n        cleanup();\n    }\n}\n");
 }
 
 // -----------------------------------------------------------------------
@@ -1358,6 +1393,11 @@ fn fmt_receive_gen() {
     exact_roundtrip(
         "actor NumberStream {\n    receive gen fn numbers() -> i32 {\n        yield 1;\n    }\n}\n",
     );
+}
+
+#[test]
+fn fmt_yield_bare_roundtrip() {
+    exact_roundtrip("gen fn tick() -> i32 {\n    yield;\n}\n");
 }
 
 // -----------------------------------------------------------------------

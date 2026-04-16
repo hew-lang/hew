@@ -2266,6 +2266,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn enrich_program_ast_skips_non_root_module_string_binding_types() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root_input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"helper.hew\";\nfn main() {}\n",
+        );
+        write_source(
+            dir.path(),
+            "helper.hew",
+            "fn helper() -> String { let value = \"ok\"; value }\n",
+        );
+
+        let source = fs::read_to_string(&root_input).expect("read root source");
+        let options = FrontendOptions {
+            project_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let mut program = parse_source(&source, &root_input).expect("source should parse");
+        let project =
+            project_context_for_program(&source, &options).expect("project context should load");
+        let mut resolve_diagnostics = Vec::new();
+
+        resolve_imports_internal(
+            &mut program,
+            &source,
+            &root_input,
+            &project,
+            &options,
+            &mut resolve_diagnostics,
+        )
+        .expect("imports should resolve");
+
+        let (typecheck, _) =
+            typecheck_program_with_diagnostics(&program, &source, &root_input, &options)
+                .expect("typecheck should succeed");
+
+        enrich_program_ast(
+            &mut program,
+            typecheck.tco.as_ref(),
+            &typecheck.module_registry,
+            &source,
+            &root_input,
+        )
+        .expect("enrichment should succeed");
+
+        let module_graph = program
+            .module_graph
+            .as_ref()
+            .expect("resolved program should have module graph");
+        let helper_module = module_graph
+            .modules
+            .iter()
+            .find_map(|(id, module)| (*id != module_graph.root).then_some(module))
+            .expect("expected non-root helper module");
+
+        let helper_function = helper_module
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Function(function) if function.name == "helper" => Some(function),
+                _ => None,
+            })
+            .expect("expected helper function in non-root module");
+
+        let inferred_binding = match &helper_function.body.stmts[0].0 {
+            Stmt::Let { ty, .. } => ty,
+            other => panic!("expected helper body to start with let binding, got {other:?}"),
+        };
+        assert!(
+            inferred_binding.is_none(),
+            "ownership-sensitive non-root module let binding should keep stmt.ty unset"
+        );
+    }
+
     // Unreachable code after a return statement generates a type Warning.
     const SOURCE_WITH_WARNING: &str = "fn main() { return; let _x: i32 = 1; }\n";
 

@@ -220,6 +220,53 @@ fn is_internal_generator_handle_type(ty: &Ty) -> bool {
     }
 }
 
+fn ty_has_ownership_sensitive_bindings(
+    ty: &Ty,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) -> bool {
+    match ty {
+        Ty::String | Ty::Bytes => true,
+        Ty::Named { name, args } => {
+            matches!(name.as_str(), "String" | "string" | "bytes")
+                || registry.is_drop_type(name)
+                || registry.is_handle_type(name)
+                || registry.qualify_handle_type(name).is_some()
+                || args
+                    .iter()
+                    .any(|arg| ty_has_ownership_sensitive_bindings(arg, registry))
+        }
+        Ty::Tuple(elems) => elems
+            .iter()
+            .any(|elem| ty_has_ownership_sensitive_bindings(elem, registry)),
+        Ty::Array(elem, _) | Ty::Slice(elem) => ty_has_ownership_sensitive_bindings(elem, registry),
+        Ty::Duration
+        | Ty::Pointer { .. }
+        | Ty::Function { .. }
+        | Ty::TraitObject { .. }
+        | Ty::Unit
+        | Ty::Never
+        | Ty::Bool
+        | Ty::Char
+        | Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::F32
+        | Ty::F64
+        | Ty::IntLiteral
+        | Ty::FloatLiteral
+        | Ty::Var(_)
+        | Ty::Error => false,
+        Ty::Closure { captures, .. } => captures
+            .iter()
+            .any(|capture| ty_has_ownership_sensitive_bindings(capture, registry)),
+    }
+}
+
 fn require_converted(
     ty: &Ty,
     context: impl Into<String>,
@@ -688,7 +735,7 @@ pub fn enrich_program(
         if let Item::Import(import_decl) = &*item {
             import_paths.push(import_decl.path.join("::"));
         }
-        enrich_item_with_diagnostics(item, tco, &mut diagnostics, registry)?;
+        enrich_item_with_diagnostics(item, tco, &mut diagnostics, registry, true)?;
     }
     normalize_all_types(program, registry);
     synthesize_stdlib_externs_from_imports(program, &import_paths, registry)?;
@@ -712,7 +759,7 @@ pub fn enrich_items(
 ) -> Result<EnrichProgramDiagnostics, TypeExprConversionError> {
     let mut diagnostics = Vec::new();
     for (item, _span) in items.iter_mut() {
-        enrich_item_with_diagnostics(item, tco, &mut diagnostics, registry)?;
+        enrich_item_with_diagnostics(item, tco, &mut diagnostics, registry, false)?;
     }
     normalize_items_types(items, registry);
     Ok(EnrichProgramDiagnostics { diagnostics })
@@ -1376,23 +1423,47 @@ fn normalize_expr_types_inner(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "item enrichment touches each top-level item kind and threads one policy flag"
+)]
 fn enrich_item_with_diagnostics(
     item: &mut Item,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
     registry: &hew_types::module_registry::ModuleRegistry,
+    allow_method_call_rewrite: bool,
 ) -> Result<(), TypeExprConversionError> {
     match item {
         Item::Function(fn_decl) => {
             let fn_sig_name = fn_decl.name.clone();
-            enrich_fn_decl_with_diagnostics(fn_decl, &fn_sig_name, tco, diagnostics, registry)?;
+            enrich_fn_decl_with_diagnostics(
+                fn_decl,
+                &fn_sig_name,
+                tco,
+                diagnostics,
+                registry,
+                allow_method_call_rewrite,
+            )?;
         }
         Item::Actor(actor) => {
-            enrich_actor_with_diagnostics(actor, tco, diagnostics, registry)?;
+            enrich_actor_with_diagnostics(
+                actor,
+                tco,
+                diagnostics,
+                registry,
+                allow_method_call_rewrite,
+            )?;
         }
         Item::Machine(machine) => {
             for transition in &mut machine.transitions {
-                enrich_expr_with_diagnostics(&mut transition.body, tco, diagnostics, registry)?;
+                enrich_expr_with_diagnostics(
+                    &mut transition.body,
+                    tco,
+                    diagnostics,
+                    registry,
+                    allow_method_call_rewrite,
+                )?;
             }
         }
         Item::Impl(impl_decl) => {
@@ -1405,17 +1476,36 @@ fn enrich_item_with_diagnostics(
                     || method.name.clone(),
                     |type_name| format!("{type_name}::{}", method.name),
                 );
-                enrich_fn_decl_with_diagnostics(method, &fn_sig_name, tco, diagnostics, registry)?;
+                enrich_fn_decl_with_diagnostics(
+                    method,
+                    &fn_sig_name,
+                    tco,
+                    diagnostics,
+                    registry,
+                    allow_method_call_rewrite,
+                )?;
             }
         }
         Item::Const(const_decl) => {
-            enrich_expr_with_diagnostics(&mut const_decl.value, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(
+                &mut const_decl.value,
+                tco,
+                diagnostics,
+                registry,
+                allow_method_call_rewrite,
+            )?;
         }
         Item::Trait(trait_decl) => {
             for trait_item in &mut trait_decl.items {
                 if let hew_parser::ast::TraitItem::Method(method) = trait_item {
                     if let Some(ref mut body) = method.body {
-                        enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
+                        enrich_block_with_diagnostics(
+                            body,
+                            tco,
+                            diagnostics,
+                            registry,
+                            allow_method_call_rewrite,
+                        )?;
                     }
                     let method_name = method.name.clone();
                     let fn_sig_name = format!("{}::{}", trait_decl.name, method_name);
@@ -1439,14 +1529,27 @@ fn enrich_item_with_diagnostics(
             for body_item in &mut td.body {
                 if let hew_parser::ast::TypeBodyItem::Method(m) = body_item {
                     let fn_sig_name = format!("{}::{}", td.name, m.name);
-                    enrich_fn_decl_with_diagnostics(m, &fn_sig_name, tco, diagnostics, registry)?;
+                    enrich_fn_decl_with_diagnostics(
+                        m,
+                        &fn_sig_name,
+                        tco,
+                        diagnostics,
+                        registry,
+                        allow_method_call_rewrite,
+                    )?;
                 }
             }
         }
         Item::Supervisor(sup) => {
             for child in &mut sup.children {
                 for arg in &mut child.args {
-                    enrich_expr_with_diagnostics(arg, tco, diagnostics, registry)?;
+                    enrich_expr_with_diagnostics(
+                        arg,
+                        tco,
+                        diagnostics,
+                        registry,
+                        allow_method_call_rewrite,
+                    )?;
                 }
             }
         }
@@ -1461,8 +1564,15 @@ fn enrich_fn_decl_with_diagnostics(
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
     registry: &hew_types::module_registry::ModuleRegistry,
+    allow_method_call_rewrite: bool,
 ) -> Result<(), TypeExprConversionError> {
-    enrich_block_with_diagnostics(&mut fn_decl.body, tco, diagnostics, registry)?;
+    enrich_block_with_diagnostics(
+        &mut fn_decl.body,
+        tco,
+        diagnostics,
+        registry,
+        allow_method_call_rewrite,
+    )?;
     let fn_name = fn_decl.name.clone();
     let trailing_expr_span = fn_decl.body.trailing_expr.as_ref().map(|expr| &expr.1);
     enrich_function_like_return_type_with_diagnostics(
@@ -1482,19 +1592,45 @@ fn enrich_actor_with_diagnostics(
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
     registry: &hew_types::module_registry::ModuleRegistry,
+    allow_method_call_rewrite: bool,
 ) -> Result<(), TypeExprConversionError> {
     if let Some(ref mut init) = actor.init {
-        enrich_block_with_diagnostics(&mut init.body, tco, diagnostics, registry)?;
+        enrich_block_with_diagnostics(
+            &mut init.body,
+            tco,
+            diagnostics,
+            registry,
+            allow_method_call_rewrite,
+        )?;
     }
     if let Some(ref mut term) = actor.terminate {
-        enrich_block_with_diagnostics(&mut term.body, tco, diagnostics, registry)?;
+        enrich_block_with_diagnostics(
+            &mut term.body,
+            tco,
+            diagnostics,
+            registry,
+            allow_method_call_rewrite,
+        )?;
     }
     for recv in &mut actor.receive_fns {
-        enrich_block_with_diagnostics(&mut recv.body, tco, diagnostics, registry)?;
+        enrich_block_with_diagnostics(
+            &mut recv.body,
+            tco,
+            diagnostics,
+            registry,
+            allow_method_call_rewrite,
+        )?;
     }
     for method in &mut actor.methods {
         let fn_sig_name = format!("{}::{}", actor.name, method.name);
-        enrich_fn_decl_with_diagnostics(method, &fn_sig_name, tco, diagnostics, registry)?;
+        enrich_fn_decl_with_diagnostics(
+            method,
+            &fn_sig_name,
+            tco,
+            diagnostics,
+            registry,
+            allow_method_call_rewrite,
+        )?;
     }
     Ok(())
 }
@@ -1504,12 +1640,13 @@ fn enrich_block_with_diagnostics(
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
     registry: &hew_types::module_registry::ModuleRegistry,
+    allow_method_call_rewrite: bool,
 ) -> Result<(), TypeExprConversionError> {
     for (stmt, _span) in &mut block.stmts {
-        enrich_stmt_with_diagnostics(stmt, tco, diagnostics, registry)?;
+        enrich_stmt_with_diagnostics(stmt, tco, diagnostics, registry, allow_method_call_rewrite)?;
     }
     if let Some(ref mut expr) = block.trailing_expr {
-        enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
+        enrich_expr_with_diagnostics(expr, tco, diagnostics, registry, allow_method_call_rewrite)?;
     }
     Ok(())
 }
@@ -1524,6 +1661,8 @@ fn infer_binding_type(
     value: Option<&Spanned<Expr>>,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
+    allow_owning_binding_types: bool,
     context: impl Into<String>,
 ) {
     let explicit_infer_span = match &*ty {
@@ -1542,6 +1681,17 @@ fn infer_binding_type(
                 .expr_types
                 .get(&value_key)
                 .is_some_and(is_internal_generator_handle_type)
+            {
+                if explicit_infer_span.is_some() {
+                    *ty = None;
+                }
+                return;
+            }
+            if !allow_owning_binding_types
+                && tco
+                    .expr_types
+                    .get(&value_key)
+                    .is_some_and(|ty| ty_has_ownership_sensitive_bindings(ty, registry))
             {
                 if explicit_infer_span.is_some() {
                     *ty = None;
@@ -1598,6 +1748,7 @@ fn enrich_stmt_with_diagnostics(
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
     registry: &hew_types::module_registry::ModuleRegistry,
+    allow_method_call_rewrite: bool,
 ) -> Result<(), TypeExprConversionError> {
     match stmt {
         Stmt::Let { ty, value, .. } => {
@@ -1606,10 +1757,18 @@ fn enrich_stmt_with_diagnostics(
                 value.as_ref(),
                 tco,
                 diagnostics,
+                registry,
+                allow_method_call_rewrite,
                 "let binding type inferred from initializer",
             );
             if let Some(ref mut val) = value {
-                enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
+                enrich_expr_with_diagnostics(
+                    val,
+                    tco,
+                    diagnostics,
+                    registry,
+                    allow_method_call_rewrite,
+                )?;
             }
         }
         Stmt::Var { name, ty, value } => {
@@ -1618,10 +1777,18 @@ fn enrich_stmt_with_diagnostics(
                 value.as_ref(),
                 tco,
                 diagnostics,
+                registry,
+                allow_method_call_rewrite,
                 format!("var `{name}` type inferred from initializer"),
             );
             if let Some(ref mut val) = value {
-                enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
+                enrich_expr_with_diagnostics(
+                    val,
+                    tco,
+                    diagnostics,
+                    registry,
+                    allow_method_call_rewrite,
+                )?;
             }
         }
         _ => {
@@ -1631,6 +1798,7 @@ fn enrich_stmt_with_diagnostics(
                     tco,
                     diagnostics,
                     registry,
+                    allow_method_call_rewrite,
                 },
             );
         }
@@ -1838,9 +2006,16 @@ fn enrich_expr_with_diagnostics(
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
     registry: &hew_types::module_registry::ModuleRegistry,
+    allow_method_call_rewrite: bool,
 ) -> Result<(), TypeExprConversionError> {
     stacker::maybe_grow(32 * 1024, 2 * 1024 * 1024, || {
-        enrich_expr_with_diagnostics_inner(expr, tco, diagnostics, registry)
+        enrich_expr_with_diagnostics_inner(
+            expr,
+            tco,
+            diagnostics,
+            registry,
+            allow_method_call_rewrite,
+        )
     })
 }
 
@@ -1848,50 +2023,96 @@ struct EnrichVisitor<'a> {
     tco: &'a TypeCheckOutput,
     diagnostics: &'a mut Vec<TypeExprConversionError>,
     registry: &'a hew_types::module_registry::ModuleRegistry,
+    allow_method_call_rewrite: bool,
 }
 
 impl AstVisitor for EnrichVisitor<'_> {
     fn visit_expr(&mut self, e: &mut Spanned<Expr>) {
-        if let Err(err) = enrich_expr_with_diagnostics(e, self.tco, self.diagnostics, self.registry)
-        {
+        if let Err(err) = enrich_expr_with_diagnostics(
+            e,
+            self.tco,
+            self.diagnostics,
+            self.registry,
+            self.allow_method_call_rewrite,
+        ) {
             self.diagnostics.push(err);
         }
     }
     fn visit_block(&mut self, b: &mut Block) {
-        if let Err(err) =
-            enrich_block_with_diagnostics(b, self.tco, self.diagnostics, self.registry)
-        {
+        if let Err(err) = enrich_block_with_diagnostics(
+            b,
+            self.tco,
+            self.diagnostics,
+            self.registry,
+            self.allow_method_call_rewrite,
+        ) {
             self.diagnostics.push(err);
         }
     }
     fn visit_stmt(&mut self, s: &mut Stmt) {
-        if let Err(err) = enrich_stmt_with_diagnostics(s, self.tco, self.diagnostics, self.registry)
-        {
+        if let Err(err) = enrich_stmt_with_diagnostics(
+            s,
+            self.tco,
+            self.diagnostics,
+            self.registry,
+            self.allow_method_call_rewrite,
+        ) {
             self.diagnostics.push(err);
         }
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "expression enrichment handles many AST forms plus rewrite policy threading"
+)]
 fn enrich_expr_with_diagnostics_inner(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
     registry: &hew_types::module_registry::ModuleRegistry,
+    allow_method_call_rewrite: bool,
 ) -> Result<(), TypeExprConversionError> {
     let expr_span_key = SpanKey::from(&expr.1);
     match &mut expr.0 {
         Expr::MethodCall { receiver, args, .. } => {
-            enrich_expr_with_diagnostics(receiver, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(
+                receiver,
+                tco,
+                diagnostics,
+                registry,
+                allow_method_call_rewrite,
+            )?;
             for arg in args.iter_mut() {
-                enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
+                enrich_expr_with_diagnostics(
+                    arg.expr_mut(),
+                    tco,
+                    diagnostics,
+                    registry,
+                    allow_method_call_rewrite,
+                )?;
             }
-            enrich_method_call(expr, tco, registry, diagnostics);
+            if allow_method_call_rewrite {
+                enrich_method_call(expr, tco, registry, diagnostics);
+            }
             hydrate_inferred_call_type_args(expr, tco, diagnostics);
         }
         Expr::Call { function, args, .. } => {
-            enrich_expr_with_diagnostics(function, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(
+                function,
+                tco,
+                diagnostics,
+                registry,
+                allow_method_call_rewrite,
+            )?;
             for arg in args.iter_mut() {
-                enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
+                enrich_expr_with_diagnostics(
+                    arg.expr_mut(),
+                    tco,
+                    diagnostics,
+                    registry,
+                    allow_method_call_rewrite,
+                )?;
             }
 
             // Fill in inferred type arguments for generic calls that omit
@@ -1926,10 +2147,22 @@ fn enrich_expr_with_diagnostics_inner(
                     }
                 }
             }
-            enrich_expr_with_diagnostics(body, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(
+                body,
+                tco,
+                diagnostics,
+                registry,
+                allow_method_call_rewrite,
+            )?;
         }
         Expr::Cast { expr: inner, .. } => {
-            enrich_expr_with_diagnostics(inner, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(
+                inner,
+                tco,
+                diagnostics,
+                registry,
+                allow_method_call_rewrite,
+            )?;
         }
         _ => {
             walk_expr_children(
@@ -1938,6 +2171,7 @@ fn enrich_expr_with_diagnostics_inner(
                     tco,
                     diagnostics,
                     registry,
+                    allow_method_call_rewrite,
                 },
             );
         }
@@ -1952,7 +2186,7 @@ fn enrich_expr(
 ) -> Result<(), TypeExprConversionError> {
     let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
     let mut diagnostics = Vec::new();
-    enrich_expr_with_diagnostics(expr, tco, &mut diagnostics, &registry)
+    enrich_expr_with_diagnostics(expr, tco, &mut diagnostics, &registry, true)
 }
 
 /// Test-only wrapper that extracts import paths from `program.items` and
@@ -3796,7 +4030,7 @@ mod tests {
         );
 
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert!(
             diagnostics.is_empty(),
@@ -3839,7 +4073,7 @@ mod tests {
         );
 
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {diagnostics:?}"
@@ -3931,7 +4165,7 @@ mod tests {
         );
 
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {diagnostics:?}"
@@ -3980,7 +4214,7 @@ mod tests {
         );
 
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {diagnostics:?}"
@@ -4028,7 +4262,7 @@ mod tests {
         );
 
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {diagnostics:?}"
@@ -4062,7 +4296,7 @@ mod tests {
         );
 
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {diagnostics:?}"
@@ -4103,7 +4337,7 @@ mod tests {
         );
 
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
         assert!(
             diagnostics.is_empty(),
             "unexpected diagnostics: {diagnostics:?}"
@@ -4144,6 +4378,7 @@ mod tests {
             &tco,
             &mut diagnostics,
             &hew_types::module_registry::ModuleRegistry::new(vec![]),
+            true,
         )
         .unwrap();
         assert!(
@@ -4190,6 +4425,7 @@ mod tests {
             &tco,
             &mut diagnostics,
             &hew_types::module_registry::ModuleRegistry::new(vec![]),
+            true,
         )
         .unwrap();
         assert!(
@@ -4231,6 +4467,7 @@ mod tests {
             &tco,
             &mut diagnostics,
             &hew_types::module_registry::ModuleRegistry::new(vec![]),
+            true,
         )
         .unwrap();
         assert!(
@@ -4274,6 +4511,7 @@ mod tests {
             &tco,
             &mut diagnostics,
             &hew_types::module_registry::ModuleRegistry::new(vec![]),
+            true,
         )
         .unwrap();
 
@@ -4371,6 +4609,7 @@ mod tests {
             &tco,
             &mut diagnostics,
             &hew_types::module_registry::ModuleRegistry::new(vec![]),
+            true,
         )
         .unwrap();
 
@@ -4508,7 +4747,7 @@ mod tests {
             0..20,
         );
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert!(
             diagnostics.is_empty(),
@@ -4544,7 +4783,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "nonexistent_method");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert_eq!(
             diagnostics.len(),
@@ -4577,7 +4816,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "unknown_sink_op");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
         assert_eq!(
@@ -4598,7 +4837,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("tx", 2, "bogus");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
         assert_eq!(
@@ -4619,7 +4858,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("rx", 2, "no_such_method");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
         assert_eq!(
@@ -4642,7 +4881,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "next");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert!(
             diagnostics.is_empty(),
@@ -4666,7 +4905,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "next");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
         assert_eq!(
@@ -4696,7 +4935,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "map");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert!(
             diagnostics.is_empty(),
@@ -4709,8 +4948,14 @@ mod tests {
 
         let mut expr_filter = make_method_call_expr("s", 2, "filter");
         let mut diagnostics_filter = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr_filter, &tco, &mut diagnostics_filter, &registry)
-            .unwrap();
+        enrich_expr_with_diagnostics(
+            &mut expr_filter,
+            &tco,
+            &mut diagnostics_filter,
+            &registry,
+            true,
+        )
+        .unwrap();
 
         assert!(
             diagnostics_filter.is_empty(),
@@ -4723,7 +4968,7 @@ mod tests {
 
         let mut expr_take = make_method_call_expr("s", 2, "take");
         let mut diagnostics_take = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr_take, &tco, &mut diagnostics_take, &registry)
+        enrich_expr_with_diagnostics(&mut expr_take, &tco, &mut diagnostics_take, &registry, true)
             .unwrap();
 
         assert!(
@@ -4748,7 +4993,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "decode");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
         assert_eq!(
@@ -4777,7 +5022,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "encode");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
         assert_eq!(
@@ -4806,7 +5051,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("s", 2, "write");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert_eq!(diagnostics.len(), 1, "expected one diagnostic");
         assert_eq!(
@@ -4836,7 +5081,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("tx", 2, "send");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert!(
             diagnostics.is_empty(),
@@ -4853,7 +5098,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut expr = make_method_call_expr("obj", 3, "whatever");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert!(
             diagnostics.is_empty(),
@@ -4874,7 +5119,7 @@ mod tests {
         );
         let mut expr = make_method_call_expr("ep", 2, "nonexistent_quic_method");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert_eq!(
             diagnostics.len(),
@@ -4901,7 +5146,7 @@ mod tests {
         );
         let mut expr = make_method_call_expr("obj", 3, "some_method");
         let mut diagnostics = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry, true).unwrap();
 
         assert!(
             diagnostics.is_empty(),
@@ -4953,7 +5198,7 @@ mod tests {
         record_runtime_method_call_rewrite(&mut tco_ok, "hew_stream_next");
         let mut expr_ok = make_method_call_expr("s", 2, "next");
         let mut diag_ok = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr_ok, &tco_ok, &mut diag_ok, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr_ok, &tco_ok, &mut diag_ok, &registry, true).unwrap();
         assert!(
             diag_ok.is_empty(),
             "qualified-name stream.next() must emit no diagnostic"
@@ -4966,7 +5211,7 @@ mod tests {
         // Unknown method → MethodCallRewriteFailed (NOT silently skipped).
         let mut expr_bad = make_method_call_expr("s", 2, "bogus_method");
         let mut diag_bad = Vec::new();
-        enrich_expr_with_diagnostics(&mut expr_bad, &tco, &mut diag_bad, &registry).unwrap();
+        enrich_expr_with_diagnostics(&mut expr_bad, &tco, &mut diag_bad, &registry, true).unwrap();
         assert_eq!(
             diag_bad.len(),
             1,

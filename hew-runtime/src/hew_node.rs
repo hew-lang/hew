@@ -360,11 +360,43 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
     }
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AskRejectionReasonCode {
+    WorkerAtCapacity = AskError::WorkerAtCapacity as u8,
+    ActorStopped = AskError::ActorStopped as u8,
+    MailboxFull = AskError::MailboxFull as u8,
+    OrphanedAsk = AskError::OrphanedAsk as u8,
+    NoRunnableWork = AskError::NoRunnableWork as u8,
+}
+
+impl AskRejectionReasonCode {
+    fn encode(reason: AskError) -> Option<u8> {
+        let code = match reason {
+            AskError::WorkerAtCapacity => Self::WorkerAtCapacity,
+            AskError::ActorStopped => Self::ActorStopped,
+            AskError::MailboxFull => Self::MailboxFull,
+            AskError::OrphanedAsk => Self::OrphanedAsk,
+            AskError::NoRunnableWork => Self::NoRunnableWork,
+            _ => return None,
+        };
+        Some(code as u8)
+    }
+
+    fn decode(reason_payload: &[u8]) -> AskError {
+        match reason_payload.first().copied() {
+            Some(x) if x == Self::WorkerAtCapacity as u8 => AskError::WorkerAtCapacity,
+            Some(x) if x == Self::ActorStopped as u8 => AskError::ActorStopped,
+            Some(x) if x == Self::MailboxFull as u8 => AskError::MailboxFull,
+            Some(x) if x == Self::OrphanedAsk as u8 => AskError::OrphanedAsk,
+            Some(x) if x == Self::NoRunnableWork as u8 => AskError::NoRunnableWork,
+            _ => AskError::WorkerAtCapacity,
+        }
+    }
+}
+
 fn decode_rejection_reason(reason_payload: &[u8]) -> AskError {
-    reason_payload
-        .first()
-        .and_then(|&code| ask_error_from_code(i32::from(code)))
-        .unwrap_or(AskError::WorkerAtCapacity)
+    AskRejectionReasonCode::decode(reason_payload)
 }
 
 /// Fail a pending remote ask identified by `request_id` with the remote rejection reason.
@@ -805,8 +837,8 @@ fn send_rejection_reply(
         return;
     }
 
-    let mut reason_payload = [u8::try_from(reason as i32)
-        .expect("AskError discriminants must fit in a single rejection-reason byte")];
+    let mut reason_payload = [AskRejectionReasonCode::encode(reason)
+        .expect("remote ask rejection reason must use a supported rejection-reason code")];
     // Encode the rejection envelope: request_id identifies the pending ask;
     // source_node_id = 0 marks it as a reply; msg_type = HEW_REPLY_REJECT_MSG_TYPE
     // distinguishes it from a normal (possibly void) success reply.
@@ -2722,6 +2754,49 @@ mod tests {
         assert_eq!(outcome.status, ReplyStatus::Failed);
         assert_eq!(outcome.ask_error, AskError::WorkerAtCapacity);
         assert!(outcome.data.is_empty());
+    }
+
+    #[test]
+    fn rejection_reason_codes_round_trip_supported_remote_failures() {
+        for ask_error in [
+            AskError::WorkerAtCapacity,
+            AskError::ActorStopped,
+            AskError::MailboxFull,
+            AskError::OrphanedAsk,
+            AskError::NoRunnableWork,
+        ] {
+            let payload = [AskRejectionReasonCode::encode(ask_error)
+                .expect("supported remote ask failure must encode to a wire code")];
+            assert_eq!(
+                decode_rejection_reason(&payload),
+                ask_error,
+                "encoded rejection reason must round-trip through the wire payload"
+            );
+        }
+    }
+
+    #[test]
+    fn rejection_reason_codes_reject_non_remote_failures() {
+        for ask_error in [
+            AskError::None,
+            AskError::NodeNotRunning,
+            AskError::RoutingFailed,
+            AskError::EncodeFailed,
+            AskError::SendFailed,
+            AskError::Timeout,
+            AskError::ConnectionDropped,
+            AskError::PayloadSizeMismatch,
+        ] {
+            assert!(
+                AskRejectionReasonCode::encode(ask_error).is_none(),
+                "{ask_error:?} must not be emitted as a remote rejection-reason code"
+            );
+        }
+        assert_eq!(
+            decode_rejection_reason(&[AskError::Timeout as u8]),
+            AskError::WorkerAtCapacity,
+            "unknown rejection-reason bytes must fail closed to WorkerAtCapacity"
+        );
     }
 
     #[test]

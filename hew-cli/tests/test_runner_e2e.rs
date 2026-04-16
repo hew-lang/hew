@@ -190,6 +190,91 @@ fn should_panic_test_fails_when_it_does_not_panic() {
 }
 
 #[test]
+fn no_test_files_in_directory_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write_file(dir.path(), "notes/readme.txt", "not a Hew test\n");
+
+    let output = Command::new(hew_binary())
+        .arg("test")
+        .arg(".")
+        .arg("--no-color")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        output.stdout.is_empty(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No test files found."), "stderr: {stderr}");
+}
+
+#[test]
+fn no_test_functions_found_exits_zero() {
+    let output = run_suite(
+        &[("helpers_test.hew", "fn helper() -> int {\n    42\n}\n")],
+        &["--no-color"],
+    );
+
+    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        output.stdout.is_empty(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No test functions found."),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn multi_path_invocation_aggregates_results() {
+    require_codegen();
+
+    let dir = tempfile::tempdir().unwrap();
+    write_file(
+        dir.path(),
+        "suite_a/alpha_test.hew",
+        "#[test]\nfn alpha() {\n    assert(true);\n}\n",
+    );
+    write_file(
+        dir.path(),
+        "suite_b/beta_test.hew",
+        "#[test]\nfn beta() {\n    assert(true);\n}\n",
+    );
+
+    let output = Command::new(hew_binary())
+        .arg("test")
+        .arg("suite_a")
+        .arg("suite_b")
+        .arg("--no-color")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(0));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("running 2 tests"), "stdout: {stdout}");
+    assert!(stdout.contains("test alpha ... ok"), "stdout: {stdout}");
+    assert!(stdout.contains("test beta ... ok"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("2 passed; 0 failed; 0 ignored"),
+        "stdout: {stdout}"
+    );
+}
+
+#[test]
 fn parse_errors_fail_the_suite() {
     let output = run_suite(
         &[(

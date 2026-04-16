@@ -1364,7 +1364,6 @@ pub unsafe extern "C" fn hew_vec_reverse_i32(v: *mut HewVec) {
 /// # Safety
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` with i32 element size.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
     cabi_guard!(v.is_null(), Vec::new());
     // SAFETY: caller guarantees v is a valid HewVec.
@@ -1385,7 +1384,6 @@ pub(crate) unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
 /// # Safety
 ///
 /// None — all memory is managed by the runtime allocator.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
     // SAFETY: hew_vec_new allocates a valid HewVec.
     let v = unsafe { hew_vec_new() };

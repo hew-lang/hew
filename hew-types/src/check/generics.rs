@@ -688,7 +688,16 @@ impl Checker {
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
             let param_names: Vec<String> =
                 m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
+            let type_params = m
+                .type_params
+                .as_ref()
+                .map(|params| params.iter().map(|tp| tp.name.clone()).collect())
+                .unwrap_or_default();
+            let type_param_bounds =
+                self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());
             return Some(FnSig {
+                type_params,
+                type_param_bounds,
                 param_names,
                 params,
                 return_type,

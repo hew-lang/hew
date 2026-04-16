@@ -1228,6 +1228,7 @@ add_wasm_file_test(generic_trait_bound_dispatch e2e_generics generic_trait_bound
 add_wasm_file_test(generic_impl_method        e2e_impl      generic_impl_method)
 add_wasm_file_test(generic_impl_multi         e2e_impl      generic_impl_multi)
 add_wasm_file_test(per_method_type_param      e2e_impl      per_method_type_param)
+add_wasm_file_test(trait_method_type_param    e2e_impl      trait_method_type_param)
 
 # Traits (extended)
 add_wasm_file_test(trait_default_override     e2e_traits              trait_default_override)

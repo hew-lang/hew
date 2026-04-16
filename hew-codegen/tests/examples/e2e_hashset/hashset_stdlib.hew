@@ -5,40 +5,49 @@ fn main() {
 
     // empty set
     println(s.is_empty());
-    println(s.len());
+    let len0: int = s.len();
+    println(len0);
 
     // insert integers
-    let added = s.insert_int(10);
+    let ten: int = 10;
+    let twenty: int = 20;
+    let thirty: int = 30;
+    let missing: int = 99;
+    let added = s.insert_int(ten);
     println(added);
-    let dup = s.insert_int(10);
+    let dup = s.insert_int(ten);
     println(dup);
-    s.insert_int(20);
-    s.insert_int(30);
-    println(s.len());
+    s.insert_int(twenty);
+    s.insert_int(thirty);
+    let len3: int = s.len();
+    println(len3);
 
     // contains
-    println(s.contains_int(10));
-    println(s.contains_int(99));
+    println(s.contains_int(ten));
+    println(s.contains_int(missing));
 
     // remove
-    let removed = s.remove_int(20);
+    let removed = s.remove_int(twenty);
     println(removed);
-    let removed2 = s.remove_int(20);
+    let removed2 = s.remove_int(twenty);
     println(removed2);
-    println(s.len());
+    let len2: int = s.len();
+    println(len2);
 
     // insert strings
     let s2 = hashset.new();
     s2.insert_string("hello");
     s2.insert_string("world");
-    println(s2.len());
+    let string_len: int = s2.len();
+    println(string_len);
     println(s2.contains_string("hello"));
     println(s2.contains_string("missing"));
 
     // clear
     s2.clear();
     println(s2.is_empty());
-    println(s2.len());
+    let cleared_len: int = s2.len();
+    println(cleared_len);
 
     s.free();
     s2.free();

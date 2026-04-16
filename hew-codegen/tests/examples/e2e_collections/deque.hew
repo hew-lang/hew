@@ -48,14 +48,14 @@ fn test_push_front_pop_back() -> int {
 fn test_len_and_is_empty() -> int {
     let dq = deque.new();
     let empty_at_start = dq.is_empty();
-    let len0 = dq.len();
+    let len0: int = dq.len();
     dq.push_back(100);
     dq.push_back(200);
     dq.push_back(300);
-    let len3 = dq.len();
+    let len3: int = dq.len();
     let not_empty = dq.is_empty();
     dq.pop_front();
-    let len2 = dq.len();
+    let len2: int = dq.len();
     dq.free();
     if empty_at_start {
         if len0 == 0 {
@@ -101,7 +101,7 @@ fn test_mixed_operations() -> int {
 fn test_fifo_queue() -> int {
     // Use deque as a FIFO queue: push_back, pop_front
     let dq = deque.new();
-    var i: i64 = 0;
+    var i: int = 0;
     while i < 5 {
         dq.push_back(i * 10);
         i = i + 1;

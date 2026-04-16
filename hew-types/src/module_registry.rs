@@ -539,14 +539,14 @@ mod tests {
             .expect("process.Child.wait should resolve");
         assert_eq!(sig.0, "hew_process_wait");
         assert_eq!(sig.1, Vec::<crate::ty::Ty>::new());
-        assert_eq!(sig.2, crate::ty::Ty::I32);
+        assert_eq!(sig.2, crate::ty::Ty::I64);
 
         let short_sig = reg
             .resolve_handle_method_sig("Child", "kill")
             .expect("short handle name should resolve");
         assert_eq!(short_sig.0, "hew_process_kill");
         assert_eq!(short_sig.1, Vec::<crate::ty::Ty>::new());
-        assert_eq!(short_sig.2, crate::ty::Ty::I32);
+        assert_eq!(short_sig.2, crate::ty::Ty::I64);
     }
 
     #[test]

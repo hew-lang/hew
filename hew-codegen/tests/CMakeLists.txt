@@ -822,12 +822,13 @@ set_tests_properties(
 # ── Native-only stdlib import E2E tests ───────────────────────────────────────
 # std::os exposes native-only FFI, so keep the int-surface regression test off
 # the wasm list and pin HEW_STD to the worktree copy.
-add_e2e_file_test(e2e_imports_test_import_os_int e2e_imports test_import_os_int)
-set_tests_properties(
-  e2e_imports_test_import_os_int
-  PROPERTIES
-    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std"
-)
+if(TEST e2e_imports_test_import_os_int)
+  set_tests_properties(
+    e2e_imports_test_import_os_int
+    PROPERTIES
+      ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std"
+  )
+endif()
 
 # ── Rc<T> E2E tests ───────────────────────────────────────────────────────────
 # Five tests covering the user-facing Rc surface.  Explicitly listed here so

@@ -1,11 +1,11 @@
 //! Tests for std::string helpers.
-
 import std::string;
+
 import std::testing;
 
 fn assert_string_vec_eq(actual: Vec<String>, expected: Vec<String>) {
     testing.assert_eq(actual.len(), expected.len());
-    for i in 0..expected.len() {
+    for i in 0 .. expected.len() {
         testing.assert_eq_str(actual.get(i), expected.get(i));
     }
 }
@@ -106,26 +106,14 @@ fn test_try_to_int_accepts_i64_bounds() {
 
 #[test]
 fn test_try_to_int_rejects_overflow() {
-    assert_int_result_err(
-        string.try_to_int("9223372036854775808"),
-        "string.try_to_int: integer out of range",
-    );
-    assert_int_result_err(
-        string.try_to_int("-9223372036854775809"),
-        "string.try_to_int: integer out of range",
-    );
+    assert_int_result_err(string.try_to_int("9223372036854775808"), "string.try_to_int: integer out of range");
+    assert_int_result_err(string.try_to_int("-9223372036854775809"), "string.try_to_int: integer out of range");
 }
 
 #[test]
 fn test_try_to_int_rejects_sign_only_and_partial_parse_inputs() {
-    assert_int_result_err(
-        string.try_to_int("-"),
-        "string.try_to_int: invalid integer literal",
-    );
-    assert_int_result_err(
-        string.try_to_int("12x"),
-        "string.try_to_int: invalid integer literal",
-    );
+    assert_int_result_err(string.try_to_int("-"), "string.try_to_int: invalid integer literal");
+    assert_int_result_err(string.try_to_int("12x"), "string.try_to_int: invalid integer literal");
 }
 
 #[test]
@@ -133,6 +121,13 @@ fn test_to_float_parses_decimal_and_scientific_literals() {
     testing.assert_true(string.to_float("3.125") == 3.125);
     testing.assert_true(string.to_float("1.25e3") == 1250.0);
     testing.assert_true(string.to_float("-2E-2") == -0.02);
+}
+
+#[test]
+fn test_to_float_accepts_leading_and_trailing_decimal_forms() {
+    testing.assert_true(string.to_float(".5") == 0.5);
+    testing.assert_true(string.to_float("1.") == 1.0);
+    testing.assert_true(string.to_float("+.75") == 0.75);
 }
 
 #[test]
@@ -149,19 +144,18 @@ fn test_try_to_float_accepts_decimal_and_scientific_literals() {
 }
 
 #[test]
+fn test_try_to_float_round_trips_from_float_output() {
+    let positive = string.from_float(3.5);
+    let negative = string.from_float(-0.25);
+    assert_float_result_eq(string.try_to_float(positive), 3.5);
+    assert_float_result_eq(string.try_to_float(negative), -0.25);
+}
+
+#[test]
 fn test_try_to_float_rejects_invalid_literals() {
-    assert_float_result_err(
-        string.try_to_float("1.2.3"),
-        "string.try_to_float: invalid float literal",
-    );
-    assert_float_result_err(
-        string.try_to_float("9e2ms"),
-        "string.try_to_float: invalid float literal",
-    );
-    assert_float_result_err(
-        string.try_to_float("-"),
-        "string.try_to_float: invalid float literal",
-    );
+    assert_float_result_err(string.try_to_float("1.2.3"), "string.try_to_float: invalid float literal");
+    assert_float_result_err(string.try_to_float("9e2ms"), "string.try_to_float: invalid float literal");
+    assert_float_result_err(string.try_to_float("-"), "string.try_to_float: invalid float literal");
 }
 
 #[test]
@@ -235,7 +229,6 @@ fn test_lines_returns_single_empty_line_for_empty_input() {
 fn test_join_handles_empty_and_single_element_inputs() {
     let empty: Vec<String> = Vec::new();
     testing.assert_eq_str(string.join(empty, ","), "");
-
     let single: Vec<String> = Vec::new();
     single.push("solo");
     testing.assert_eq_str(string.join(single, ","), "solo");

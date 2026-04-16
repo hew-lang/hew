@@ -787,10 +787,10 @@ impl Checker {
                 }
             }
             Stmt::WhileLet {
+                label,
                 pattern,
                 expr,
                 body,
-                ..
             } => {
                 let scr_ty = self.synthesize(&expr.0, &expr.1);
                 if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
@@ -798,9 +798,15 @@ impl Checker {
                 }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                if let Some(lbl) = label {
+                    self.loop_labels.push(lbl.clone());
+                }
                 self.loop_depth += 1;
                 self.check_block(body, None);
                 self.loop_depth -= 1;
+                if label.is_some() {
+                    self.loop_labels.pop();
+                }
                 self.env.pop_scope();
             }
             Stmt::Break { label, value } => {

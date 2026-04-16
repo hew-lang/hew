@@ -5,8 +5,11 @@ import subprocess
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from collections import Counter, defaultdict
+
+FUZZ_WORKDIR_PREFIX = "hew-fuzz-grammar."
 
 
 def find_fuzz_dir():
@@ -14,7 +17,9 @@ def find_fuzz_dir():
     import glob
 
     dirs = sorted(
-        glob.glob("/tmp/hew-fuzz-grammar.*"), key=os.path.getmtime, reverse=True
+        glob.glob(os.path.join(tempfile.gettempdir(), f"{FUZZ_WORKDIR_PREFIX}*")),
+        key=os.path.getmtime,
+        reverse=True,
     )
     if not dirs:
         print("No fuzz directory found. Run scripts/fuzz/grammar.py -k first.")

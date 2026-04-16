@@ -91,9 +91,17 @@ COMPILE_FAIL=0
 TOTAL=0
 LEAK_DETAILS=""
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/lib/timeout.sh
+source "${SCRIPT_DIR}/../lib/timeout.sh"
+
+extract_definitely_lost_bytes() {
+    sed -nE 's/.*definitely lost:[[:space:]]*([0-9][0-9,]*) bytes.*/\1/p' | head -1 | tr -d ','
+}
+
 check_one() {
     local src="$1" label="$2"
-    local name out result definite
+    local name out result definite run_status
 
     name=$(basename "$src" .hew)
 
@@ -114,8 +122,23 @@ check_one() {
 
     TOTAL=$((TOTAL + 1))
 
-    result=$(timeout --kill-after=5 "$TIMEOUT" valgrind --leak-check=full --show-leak-kinds=definite \
-        "$out" 2>&1 || true)
+    if result=$(run_with_timeout "$TIMEOUT" valgrind --leak-check=full --show-leak-kinds=definite \
+        "$out" 2>&1); then
+        run_status=0
+    else
+        run_status=$?
+    fi
+
+    if [ "$run_status" -ne 0 ]; then
+        FAIL=$((FAIL + 1))
+        LEAK_DETAILS="${LEAK_DETAILS}ERROR  ${label}  (valgrind exited ${run_status})\n"
+        if [ "$VERBOSE" -eq 1 ]; then
+            echo "ERROR  $label  (valgrind exited $run_status)"
+            echo "$result" | head -10
+            echo ""
+        fi
+        return
+    fi
 
     # No heap usage at all
     if echo "$result" | grep -q "no leaks are possible"; then
@@ -130,10 +153,20 @@ check_one() {
     fi
 
     # Parse "definitely lost: N bytes in M blocks"
-    definite=$(echo "$result" | grep "definitely lost:" |
-        grep -oP '\d[\d,]*(?= bytes)' | tr -d ',' || true)
+    definite=$(echo "$result" | extract_definitely_lost_bytes || true)
 
-    if [ -z "$definite" ] || [ "$definite" = "0" ]; then
+    if [ -z "$definite" ]; then
+        FAIL=$((FAIL + 1))
+        LEAK_DETAILS="${LEAK_DETAILS}ERROR  ${label}  (could not parse definite leak summary)\n"
+        if [ "$VERBOSE" -eq 1 ]; then
+            echo "ERROR  $label  (could not parse definite leak summary)"
+            echo "$result" | grep -E "definitely lost|LEAK SUMMARY|Invalid|at 0x" | head -10 || true
+            echo ""
+        fi
+        return
+    fi
+
+    if [ "$definite" = "0" ]; then
         PASS=$((PASS + 1))
         return
     fi
@@ -143,7 +176,7 @@ check_one() {
 
     if [ "$VERBOSE" -eq 1 ]; then
         echo "LEAK  $label  ($definite bytes definitely lost)"
-        echo "$result" | grep -E "definitely lost|Invalid|at 0x" | head -10
+        echo "$result" | grep -E "definitely lost|Invalid|at 0x" | head -10 || true
         echo ""
     fi
 }
@@ -195,13 +228,13 @@ done
 echo "=== Valgrind Sweep Results ==="
 echo "Tested:        $TOTAL programs"
 echo "Pass:          $PASS"
-echo "Leaks:         $FAIL"
+echo "Failures:      $FAIL"
 echo "Compile fail:  $COMPILE_FAIL"
 echo "Skipped:       $SKIP"
 echo ""
 
 if [ "$FAIL" -gt 0 ]; then
-    echo "=== Leaking Programs ==="
+    echo "=== Failing Programs ==="
     echo -e "$LEAK_DETAILS"
     exit 1
 else

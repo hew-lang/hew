@@ -4979,6 +4979,61 @@ actor Greeter {
 }
 
 #[test]
+fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
+    let source = concat!(
+        "actor Alpha {\n",
+        "    let beta: ActorRef<Beta>;\n",
+        "}\n",
+        "actor Beta {\n",
+        "    let alpha: ActorRef<Alpha>;\n",
+        "}\n",
+        "fn main() {}\n",
+    );
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let expected_span = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, span)| match item {
+            Item::Actor(actor) if actor.name == "Alpha" => Some(span.clone()),
+            _ => None,
+        })
+        .expect("expected Alpha actor item");
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "actor cycle warning should not introduce type errors: {:?}",
+        output.errors
+    );
+
+    let warning = output
+        .warnings
+        .iter()
+        .find(|warning| warning.kind == TypeErrorKind::ActorRefCycle)
+        .unwrap_or_else(|| panic!("expected ActorRefCycle warning, got {:?}", output.warnings));
+    let actor_decl_start = source
+        .find("actor Alpha")
+        .expect("expected Alpha declaration text");
+    let actor_name_end = actor_decl_start + "actor Alpha".len();
+
+    assert_ne!(warning.span, 0..0);
+    assert_eq!(warning.span, expected_span);
+    assert!(
+        warning.span.start <= actor_decl_start && actor_name_end <= warning.span.end,
+        "warning span should cover the first actor declaration, got {:?}",
+        warning.span
+    );
+}
+
+#[test]
 fn typecheck_await_actor_ref_returns_unit() {
     let output = check_source(
         r#"

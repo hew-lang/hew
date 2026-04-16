@@ -1,5 +1,8 @@
 //! Hover analysis: produce rich hover information for identifiers and expressions.
 
+use std::collections::HashMap;
+
+use hew_parser::ast::{FnDecl, Item, Param, Span, TraitItem, TypeBodyItem, TypeExpr};
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
 use hew_types::method_resolution;
 use hew_types::{Ty, TypeCheckOutput, VariantDef};
@@ -13,12 +16,13 @@ use crate::{HoverResult, OffsetSpan};
 #[must_use]
 pub fn hover(
     source: &str,
-    _parse_result: &hew_parser::ParseResult,
+    parse_result: &hew_parser::ParseResult,
     type_output: Option<&TypeCheckOutput>,
     offset: usize,
 ) -> Option<HoverResult> {
     // Find the word under the cursor for function/type lookup.
     let word = crate::util::word_at_offset(source, offset);
+    let simple_word = crate::util::simple_word_at_offset(source, offset);
 
     let type_output = type_output?;
 
@@ -41,6 +45,14 @@ pub fn hover(
                 contents: hover_text,
                 span: None,
             });
+        }
+    }
+
+    if let Some((word, word_span)) = &simple_word {
+        if let Some(result) =
+            hover_param_at_offset(parse_result, &type_output.fn_sigs, word, *word_span, offset)
+        {
+            return Some(result);
         }
     }
 
@@ -83,6 +95,179 @@ pub fn hover(
             }),
         }
     })
+}
+
+fn hover_param_at_offset(
+    parse_result: &hew_parser::ParseResult,
+    fn_sigs: &HashMap<String, FnSig>,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    for (item, _) in &parse_result.program.items {
+        if let Some(result) = hover_param_in_item(item, fn_sigs, word, word_span, offset) {
+            return Some(result);
+        }
+    }
+    None
+}
+
+fn hover_param_in_item(
+    item: &Item,
+    fn_sigs: &HashMap<String, FnSig>,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    match item {
+        Item::Function(function) => hover_param_in_decl(
+            &function.fn_span,
+            &function.params,
+            fn_sigs.get(function.name.as_str()),
+            word,
+            word_span,
+            offset,
+        ),
+        Item::Actor(actor) => {
+            for recv in &actor.receive_fns {
+                let key = format!("{}::{}", actor.name, recv.name);
+                if let Some(result) = hover_param_in_decl(
+                    &recv.span,
+                    &recv.params,
+                    fn_sigs.get(key.as_str()),
+                    word,
+                    word_span,
+                    offset,
+                ) {
+                    return Some(result);
+                }
+            }
+            for method in &actor.methods {
+                let key = format!("{}::{}", actor.name, method.name);
+                if let Some(result) = hover_param_in_method(
+                    method,
+                    fn_sigs.get(key.as_str()),
+                    word,
+                    word_span,
+                    offset,
+                ) {
+                    return Some(result);
+                }
+            }
+            None
+        }
+        Item::TypeDecl(type_decl) => {
+            for body_item in &type_decl.body {
+                if let TypeBodyItem::Method(method) = body_item {
+                    let key = format!("{}::{}", type_decl.name, method.name);
+                    if let Some(result) = hover_param_in_method(
+                        method,
+                        fn_sigs.get(key.as_str()),
+                        word,
+                        word_span,
+                        offset,
+                    ) {
+                        return Some(result);
+                    }
+                }
+            }
+            None
+        }
+        Item::Impl(impl_decl) => {
+            let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+                return None;
+            };
+            for method in &impl_decl.methods {
+                let key = format!("{name}::{}", method.name);
+                if let Some(result) = hover_param_in_method(
+                    method,
+                    fn_sigs.get(key.as_str()),
+                    word,
+                    word_span,
+                    offset,
+                ) {
+                    return Some(result);
+                }
+            }
+            None
+        }
+        Item::Trait(trait_decl) => {
+            for trait_item in &trait_decl.items {
+                if let TraitItem::Method(method) = trait_item {
+                    let key = format!("{}::{}", trait_decl.name, method.name);
+                    if let Some(result) = hover_param_in_decl(
+                        &method.span,
+                        &method.params,
+                        fn_sigs.get(key.as_str()),
+                        word,
+                        word_span,
+                        offset,
+                    ) {
+                        return Some(result);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn hover_param_in_method(
+    method: &FnDecl,
+    sig: Option<&FnSig>,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    hover_param_in_decl(
+        &method.fn_span,
+        &method.params,
+        sig,
+        word,
+        word_span,
+        offset,
+    )
+}
+
+fn hover_param_in_decl(
+    decl_span: &Span,
+    params: &[Param],
+    sig: Option<&FnSig>,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    if !span_contains_offset(decl_span, offset) {
+        return None;
+    }
+
+    let sig = sig?;
+    let param = params
+        .iter()
+        .find(|param| is_param_name_span(param, word, word_span))?;
+    let ty = sig
+        .param_names
+        .iter()
+        .zip(&sig.params)
+        .find_map(|(param_name, ty)| (param_name == &param.name).then_some(ty))?;
+
+    Some(HoverResult {
+        contents: format!("```hew\n{word}: {}\n```", ty.user_facing()),
+        span: Some(word_span),
+    })
+}
+
+fn is_param_name_span(param: &Param, word: &str, word_span: OffsetSpan) -> bool {
+    if param.name != word || word_span.end > param.ty.1.start {
+        return false;
+    }
+
+    param.ty.1.start > word_span.end && param.ty.1.start.saturating_sub(word_span.end) <= 4
+}
+
+fn span_contains_offset(span: &Span, offset: usize) -> bool {
+    span.is_empty() || (span.start <= offset && offset <= span.end)
 }
 
 /// Format a bare function signature line: `[pure] [async] fn name(params)[-> ret]`.
@@ -193,7 +378,8 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    use hew_types::module_registry::ModuleRegistry;
+    use std::collections::HashSet;
 
     fn make_fn_sig(param_names: Vec<&str>, params: Vec<Ty>, ret: Ty) -> FnSig {
         FnSig {
@@ -222,6 +408,12 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
         }
+    }
+
+    fn type_check(pr: &hew_parser::ParseResult) -> TypeCheckOutput {
+        let registry = ModuleRegistry::new(vec![]);
+        let mut checker = hew_types::Checker::new(registry);
+        checker.check_program(&pr.program)
     }
 
     #[test]
@@ -354,6 +546,73 @@ mod tests {
             hr.contents.contains("fn add("),
             "should show function signature"
         );
+    }
+
+    #[test]
+    fn hover_shows_top_level_fn_param_type() {
+        let source = "fn add(x: i32, y: i32) -> i32 {\n    x + y\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("x: i32").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+
+        assert_eq!(result.contents, "```hew\nx: i32\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + 1
+            })
+        );
+    }
+
+    #[test]
+    fn hover_shows_actor_receive_param_type() {
+        let source = "actor Worker {\n    receive fn handle(msg: string) {\n        msg\n    }\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("msg: string").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+
+        assert_eq!(result.contents, "```hew\nmsg: String\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + 3
+            })
+        );
+    }
+
+    #[test]
+    fn hover_shows_method_param_type() {
+        let source =
+            "type Counter {\n    fn bump(counter: Counter, n: i32) -> i32 {\n        n\n    }\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("n: i32").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+
+        assert_eq!(result.contents, "```hew\nn: i32\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + 1
+            })
+        );
+    }
+
+    #[test]
+    fn hover_param_does_not_shadow_fn_sig_lookup() {
+        let source = "fn add(x: i32, y: i32) -> i32 {\n    x + y\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("add").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+
+        assert!(result.contents.contains("fn add("));
+        assert!(result.span.is_none());
     }
 
     #[test]

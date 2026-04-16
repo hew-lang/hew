@@ -5,7 +5,8 @@
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
 use crate::method_resolution::{
-    lookup_builtin_method_sig, lookup_named_method_sig as shared_lookup_named_method_sig,
+    collect_method_sigs_for_receiver, lookup_builtin_method_sig,
+    lookup_named_method_sig as shared_lookup_named_method_sig,
 };
 
 impl Checker {
@@ -614,12 +615,22 @@ impl Checker {
             let (expr, sp) = arg.expr();
             self.synthesize(expr, sp);
         }
-        self.report_error(
+        self.report_error_with_suggestions(
             TypeErrorKind::UndefinedMethod,
             span,
             format!("no method `{method_name}` on {type_display_name}"),
+            self.similar_methods(receiver_ty, method_name),
         );
         Ty::Error
+    }
+
+    fn similar_methods(&self, receiver_ty: &Ty, method_name: &str) -> Vec<String> {
+        crate::error::find_similar(
+            method_name,
+            collect_method_sigs_for_receiver(&self.type_defs, &self.fn_sigs, receiver_ty)
+                .iter()
+                .map(|(name, _)| name.as_str()),
+        )
     }
 
     #[expect(
@@ -655,10 +666,11 @@ impl Checker {
                 let (expr, sp) = arg.expr();
                 self.synthesize(expr, sp);
             }
-            self.report_error(
+            self.report_error_with_suggestions(
                 TypeErrorKind::UndefinedMethod,
                 span,
                 format!("no method `{method}` on `Stream<{}>`", inner.user_facing()),
+                self.similar_methods(&receiver_ty, method),
             );
             return Ty::Error;
         };
@@ -754,10 +766,11 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                self.report_error(
+                self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedMethod,
                     span,
                     format!("no method `{method}` on `Stream<{}>`", inner.user_facing()),
+                    self.similar_methods(&receiver_ty, method),
                 );
                 Ty::Error
             }
@@ -1680,10 +1693,11 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.synthesize(expr, sp);
                     }
-                    self.report_error(
+                    self.report_error_with_suggestions(
                         TypeErrorKind::UndefinedMethod,
                         span,
                         format!("no method `{method}` on `{}`", resolved.user_facing()),
+                        self.similar_methods(resolved, method),
                     );
                     Ty::Error
                 }
@@ -1806,10 +1820,11 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.synthesize(expr, sp);
                         }
-                        self.report_error(
+                        self.report_error_with_suggestions(
                             TypeErrorKind::UndefinedMethod,
                             span,
                             format!("no method `{method}` on `{}`", resolved.user_facing()),
+                            self.similar_methods(&receiver_ty, method),
                         );
                         Ty::Error
                     }
@@ -2106,10 +2121,11 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                self.report_error(
+                self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedMethod,
                     span,
                     format!("no method `{method}` on `{}`", resolved.user_facing()),
+                    self.similar_methods(&resolved, method),
                 );
                 Ty::Error
             }

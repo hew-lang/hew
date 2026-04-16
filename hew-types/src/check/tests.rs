@@ -2578,6 +2578,42 @@ fn suggest_similar_field() {
 }
 
 #[test]
+fn suggest_similar_method() {
+    let (errors, _) = parse_and_check(concat!(
+        "type Counter {}\n",
+        "impl Counter { fn length(c: Counter) -> int { 0 } }\n",
+        "fn main() { let c = Counter {}; c.lenght(); }\n",
+    ));
+    let err = errors
+        .iter()
+        .find(|e| e.message.contains("lenght"))
+        .expect("expected error for misspelled method");
+    assert!(
+        err.suggestions.iter().any(|s| s.contains("length")),
+        "should suggest 'length', got: {:?}",
+        err.suggestions
+    );
+}
+
+#[test]
+fn no_suggest_method_when_too_different() {
+    let (errors, _) = parse_and_check(concat!(
+        "type Counter {}\n",
+        "impl Counter { fn length(c: Counter) -> int { 0 } }\n",
+        "fn main() { let c = Counter {}; c.zzzzz(); }\n",
+    ));
+    let err = errors
+        .iter()
+        .find(|e| e.message.contains("zzzzz"))
+        .expect("expected error for undefined method");
+    assert!(
+        err.suggestions.is_empty() || !err.suggestions.iter().any(|s| s.contains("length")),
+        "should not suggest distant method names, got: {:?}",
+        err.suggestions
+    );
+}
+
+#[test]
 fn no_suggest_when_too_different() {
     let (errors, _) = parse_and_check("fn main() { let alpha = 1; println(zzzzz); }");
     let err = errors

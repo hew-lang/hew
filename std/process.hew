@@ -36,7 +36,7 @@ type Child {}
 
 /// Captured output from a completed command.
 pub type CommandOutput {
-    exit_code: i32;
+    exit_code: int;
     stdout: String;
     stderr: String;
 }
@@ -52,19 +52,19 @@ trait ChildMethods {
     /// Block until the child process exits and return its exit code.
     ///
     /// Returns 0 for success, non-zero for failure.
-    fn wait(child: Child) -> i32;
+    fn wait(child: Child) -> int;
 
     /// Terminate the child process.
     ///
     /// Returns 0 on success, non-zero on error.
-    fn kill(child: Child) -> i32;
+    fn kill(child: Child) -> int;
 }
 
 impl ChildMethods for Child {
     /// Block until the child process exits and return its exit code.
-    fn wait(child: Child) -> i32 { unsafe { hew_process_wait(child) } }
+    fn wait(child: Child) -> int { unsafe { hew_process_wait(child) as int } }
     /// Terminate the child process.
-    fn kill(child: Child) -> i32 { unsafe { hew_process_kill(child) } }
+    fn kill(child: Child) -> int { unsafe { hew_process_kill(child) as int } }
 }
 
 fn empty_output() -> CommandOutput {
@@ -110,7 +110,7 @@ fn last_process_error(default_message: String) -> ProcessError {
 fn take_command_output(result: ProcessResultHandle) -> CommandOutput {
     unsafe {
         let output = CommandOutput {
-            exit_code: hew_process_result_exit_code(result),
+            exit_code: hew_process_result_exit_code(result) as int,
             stdout: hew_process_result_stdout(result),
             stderr: hew_process_result_stderr(result),
         };
@@ -199,7 +199,7 @@ pub fn run_argv(command: String, args: Vec<String>) -> CommandOutput {
 pub fn try_run_args(
     command: String,
     args: String,
-    arg_count: i32,
+    arg_count: int,
 ) -> Result<CommandOutput, ProcessError> {
     if arg_count < 0 {
         return Err(ProcessError::InvalidArguments(
@@ -220,7 +220,7 @@ pub fn try_run_args(
 /// Legacy compatibility wrapper for `run_args(command, args, arg_count)`.
 ///
 /// Prefer `run_argv(command, Vec<String>)` for safe argument passing.
-pub fn run_args(command: String, args: String, arg_count: i32) -> String {
+pub fn run_args(command: String, args: String, arg_count: int) -> String {
     match try_run_args(command, args, arg_count) {
         Ok(output) => output.stdout,
         Err(err) => {

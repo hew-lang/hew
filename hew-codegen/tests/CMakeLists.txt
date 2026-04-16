@@ -717,6 +717,11 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_hashset/hashset_no_double_eval"
   "e2e_multi_dyn/multi_dyn"
   "e2e_trait_bounds/trait_bounds"
+  # Datetime tests are kept explicit below so their HEW_STD wiring is visible.
+  "e2e_datetime/datetime_arithmetic"
+  "e2e_datetime/datetime_basic"
+  "e2e_datetime/datetime_compare"
+  "e2e_datetime/datetime_parse"
   # Rc<T> tests — explicitly registered in the Rc block below to keep them
   # visible in code review; excluded here to prevent double-registration.
   "e2e_memory/rc_basic"
@@ -796,6 +801,23 @@ endif()
 add_e2e_file_test_sorted(scheduler_rr        e2e_concurrency scheduler_round_robin)
 add_e2e_file_test_sorted(scope_structured    e2e_concurrency scope_structured)
 add_e2e_file_test_sorted(hashmap_forin       e2e_hashmap_forin hashmap_forin)
+
+# ── Datetime E2E tests ────────────────────────────────────────────────────────
+# Keep these explicit so focused std/time/datetime changes can pin HEW_STD to
+# the worktree copy. WASM remains unregistered: datetime still depends on
+# native-only imports under wasm32-wasi on current main.
+add_e2e_file_test(e2e_datetime_datetime_basic       e2e_datetime datetime_basic)
+add_e2e_file_test(e2e_datetime_datetime_arithmetic  e2e_datetime datetime_arithmetic)
+add_e2e_file_test(e2e_datetime_datetime_compare     e2e_datetime datetime_compare)
+add_e2e_file_test(e2e_datetime_datetime_parse       e2e_datetime datetime_parse)
+set_tests_properties(
+  e2e_datetime_datetime_basic
+  e2e_datetime_datetime_arithmetic
+  e2e_datetime_datetime_compare
+  e2e_datetime_datetime_parse
+  PROPERTIES
+    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std"
+)
 
 # ── Rc<T> E2E tests ───────────────────────────────────────────────────────────
 # Five tests covering the user-facing Rc surface.  Explicitly listed here so

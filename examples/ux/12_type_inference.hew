@@ -1,12 +1,12 @@
 // Can the compiler infer types?
 
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: int, b: int) -> int {
     a + b
 }
 
 fn main() {
-    let x = 10;         // infer i32?
-    let y = 20;         // infer i32?
-    let result = add(x, y);  // infer i32?
+    let x = 10;         // infer int
+    let y = 20;         // infer int
+    let result = add(x, y);  // infer int
     println(result);
 }

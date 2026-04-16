@@ -1,14 +1,14 @@
 // Lambda functions
 
-fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+fn apply(f: fn(int) -> int, x: int) -> int {
     f(x)
 }
 
-fn double_fn(n: i32) -> i32 {
+fn double_fn(n: int) -> int {
     n * 2
 }
 
-fn triple_fn(n: i32) -> i32 {
+fn triple_fn(n: int) -> int {
     n * 3
 }
 

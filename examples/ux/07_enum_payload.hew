@@ -1,11 +1,11 @@
 // Enum with payload
 
 enum Maybe {
-    Just(i32);
+    Just(int);
     Nothing;
 }
 
-fn unwrap_or(m: Maybe, fallback: i32) -> i32 {
+fn unwrap_or(m: Maybe, fallback: int) -> int {
     match m {
         Just(x) => x,
         Nothing => fallback,

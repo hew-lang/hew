@@ -1100,16 +1100,25 @@ fn reader_loop(
                         if envelope.msg_type == crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE
                             && supports_ask_rejection(peer_feature_flags)
                         {
+                            let reason_payload =
+                                if envelope.payload_size > 0 && !envelope.payload.is_null() {
+                                    std::slice::from_raw_parts(
+                                        envelope.payload,
+                                        envelope.payload_size as usize,
+                                    )
+                                } else {
+                                    &[]
+                                };
                             // Rejection reply: the remote node hit its inbound
-                            // ask worker limit.  Mark the pending ask as failed
-                            // so the originating caller gets WorkerAtCapacity
-                            // for both void and non-void asks.
+                            // ask path and sent an encoded AskError reason.
+                            // Mark the pending ask as failed so the originating
+                            // caller gets the precise remote rejection reason.
                             //
                             // The `supports_ask_rejection` guard ensures that
                             // old nodes (which never send this sentinel) cannot
                             // accidentally trigger this path even if they happen
                             // to send a message with msg_type = 65535.
-                            crate::hew_node::fail_remote_reply(envelope.request_id);
+                            crate::hew_node::fail_remote_reply(envelope.request_id, reason_payload);
                         } else {
                             let reply_payload =
                                 if envelope.payload_size > 0 && !envelope.payload.is_null() {

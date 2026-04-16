@@ -301,9 +301,9 @@ impl ReplyRoutingTable {
     }
 
     /// Fail a single pending reply by request ID. Returns `true` if the
-    /// request was found.  Used for inband rejection signals from the remote
-    /// node (worker-limit exceeded).
-    fn fail(&self, request_id: u64) -> bool {
+    /// request was found. Used for in-band rejection signals from the remote
+    /// node.
+    fn fail(&self, request_id: u64, ask_error: AskError) -> bool {
         let entry = {
             let mut map = self
                 .pending
@@ -312,7 +312,7 @@ impl ReplyRoutingTable {
             map.remove(&request_id)
         };
         if let Some(pending) = entry {
-            Self::fail_pending_with_reason(&pending, AskError::WorkerAtCapacity);
+            Self::fail_pending_with_reason(&pending, ask_error);
             true
         } else {
             false
@@ -341,16 +341,39 @@ pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
     REPLY_TABLE.complete(request_id, payload.to_vec())
 }
 
-/// Fail a pending remote ask identified by `request_id` with [`AskError::WorkerAtCapacity`].
+fn ask_error_from_code(code: i32) -> Option<AskError> {
+    match code {
+        x if x == AskError::None as i32 => Some(AskError::None),
+        x if x == AskError::NodeNotRunning as i32 => Some(AskError::NodeNotRunning),
+        x if x == AskError::RoutingFailed as i32 => Some(AskError::RoutingFailed),
+        x if x == AskError::EncodeFailed as i32 => Some(AskError::EncodeFailed),
+        x if x == AskError::SendFailed as i32 => Some(AskError::SendFailed),
+        x if x == AskError::Timeout as i32 => Some(AskError::Timeout),
+        x if x == AskError::ConnectionDropped as i32 => Some(AskError::ConnectionDropped),
+        x if x == AskError::PayloadSizeMismatch as i32 => Some(AskError::PayloadSizeMismatch),
+        x if x == AskError::WorkerAtCapacity as i32 => Some(AskError::WorkerAtCapacity),
+        x if x == AskError::ActorStopped as i32 => Some(AskError::ActorStopped),
+        x if x == AskError::MailboxFull as i32 => Some(AskError::MailboxFull),
+        x if x == AskError::OrphanedAsk as i32 => Some(AskError::OrphanedAsk),
+        x if x == AskError::NoRunnableWork as i32 => Some(AskError::NoRunnableWork),
+        _ => None,
+    }
+}
+
+fn decode_rejection_reason(reason_payload: &[u8]) -> AskError {
+    reason_payload
+        .first()
+        .and_then(|&code| ask_error_from_code(i32::from(code)))
+        .unwrap_or(AskError::WorkerAtCapacity)
+}
+
+/// Fail a pending remote ask identified by `request_id` with the remote rejection reason.
 ///
 /// Called by the reader thread when a **rejection** reply envelope arrives
 /// (one with [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type` field).
-/// Sets [`ReplyStatus::Failed`] with `ask_error = WorkerAtCapacity` so the
-/// originating `hew_node_api_ask` caller returns the precise discriminant —
-/// fail-closed for both void and non-void asks, and distinguishable from a
-/// genuine connection drop.
-pub(crate) fn fail_remote_reply(request_id: u64) -> bool {
-    REPLY_TABLE.fail(request_id)
+/// Empty payloads from older peers still default to `WorkerAtCapacity`.
+pub(crate) fn fail_remote_reply(request_id: u64, reason_payload: &[u8]) -> bool {
+    REPLY_TABLE.fail(request_id, decode_rejection_reason(reason_payload))
 }
 
 pub(crate) fn fail_remote_replies_for_connection(conn_mgr: *const HewConnMgr, conn_id: c_int) {
@@ -598,7 +621,13 @@ unsafe extern "C" fn node_inbound_router(
                 // SAFETY: conn_mgr is live for the duration of the inbound router call.
                 let shutdown = unsafe { connection::hew_connmgr_shutdown_flag(conn_mgr) };
                 if let Some(shutdown) = shutdown {
-                    send_rejection_reply(source_node_id, request_id, conn_mgr, shutdown.as_ref());
+                    send_rejection_reply(
+                        source_node_id,
+                        request_id,
+                        AskError::WorkerAtCapacity,
+                        conn_mgr,
+                        shutdown.as_ref(),
+                    );
                 }
             }
             return;
@@ -695,12 +724,20 @@ fn handle_inbound_ask(
     let reply_data: Vec<u8> = if reply_ptr.is_null() {
         let ask_err = crate::actor::actor_ask_take_last_error_raw();
         if ask_err != AskError::None as i32 {
-            send_rejection_reply(
-                source_node_id,
-                request_id,
-                conn_mgr.0,
-                shutdown_started.as_ref(),
-            );
+            // SAFETY: conn_mgr is live for the duration of the inbound ask handler.
+            let peer_flags = unsafe {
+                connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id)
+            };
+            if connection::supports_ask_rejection(peer_flags) {
+                let ask_error = ask_error_from_code(ask_err).unwrap_or(AskError::ActorStopped);
+                send_rejection_reply(
+                    source_node_id,
+                    request_id,
+                    ask_error,
+                    conn_mgr.0,
+                    shutdown_started.as_ref(),
+                );
+            }
             return;
         }
         Vec::new()
@@ -738,14 +775,14 @@ fn handle_inbound_ask(
 /// Send a **rejection** reply envelope back to the source node.
 ///
 /// Rejection replies carry [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type`
-/// field and an empty payload. The connection reader on the receiving node
-/// recognises the sentinel and calls [`fail_remote_reply`] instead of
-/// [`complete_remote_reply`], so the originating `hew_node_api_ask` caller
-/// receives [`AskError::WorkerAtCapacity`] regardless of whether the ask
-/// was void or non-void.
+/// field plus a 1-byte [`AskError`] reason payload. The connection reader on
+/// the receiving node recognises the sentinel and calls
+/// [`fail_remote_reply`] instead of [`complete_remote_reply`], preserving the
+/// remote rejection reason for the originating `hew_node_api_ask` caller.
 fn send_rejection_reply(
     target_node_id: u16,
     request_id: u64,
+    reason: AskError,
     conn_mgr: *mut connection::HewConnMgr,
     shutdown_started: &AtomicBool,
 ) {
@@ -768,6 +805,8 @@ fn send_rejection_reply(
         return;
     }
 
+    let mut reason_payload = [u8::try_from(reason as i32)
+        .expect("AskError discriminants must fit in a single rejection-reason byte")];
     // Encode the rejection envelope: request_id identifies the pending ask;
     // source_node_id = 0 marks it as a reply; msg_type = HEW_REPLY_REJECT_MSG_TYPE
     // distinguishes it from a normal (possibly void) success reply.
@@ -775,8 +814,8 @@ fn send_rejection_reply(
         target_actor_id: 0,
         source_actor_id: 0,
         msg_type: HEW_REPLY_REJECT_MSG_TYPE,
-        payload_size: 0,
-        payload: std::ptr::null_mut(),
+        payload_size: 1,
+        payload: reason_payload.as_mut_ptr(),
         request_id,
         source_node_id: 0,
     };
@@ -2641,6 +2680,46 @@ mod tests {
     }
 
     #[test]
+    fn reply_table_fail_with_reason_propagates_correct_ask_error() {
+        let _guard = crate::runtime_test_guard();
+
+        let (id, pending) = REPLY_TABLE.register(ConnectionKey {
+            conn_mgr: 90,
+            conn_id: 13,
+        });
+        assert!(REPLY_TABLE.fail(id, AskError::OrphanedAsk));
+
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outcome = guard.as_ref().expect("reply outcome should be set");
+        assert_eq!(outcome.status, ReplyStatus::Failed);
+        assert_eq!(outcome.ask_error, AskError::OrphanedAsk);
+        assert!(outcome.data.is_empty());
+    }
+
+    #[test]
+    fn fail_remote_reply_empty_payload_defaults_to_worker_at_capacity() {
+        let _guard = crate::runtime_test_guard();
+
+        let (id, pending) = REPLY_TABLE.register(ConnectionKey {
+            conn_mgr: 91,
+            conn_id: 14,
+        });
+        assert!(fail_remote_reply(id, &[]));
+
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let outcome = guard.as_ref().expect("reply outcome should be set");
+        assert_eq!(outcome.status, ReplyStatus::Failed);
+        assert_eq!(outcome.ask_error, AskError::WorkerAtCapacity);
+        assert!(outcome.data.is_empty());
+    }
+
+    #[test]
     fn reply_table_fail_all_wakes_waiter() {
         let table = Arc::new(ReplyRoutingTable::new());
         let (_id, pending) = table.register(ConnectionKey {
@@ -3159,7 +3238,7 @@ mod tests {
     }
 
     #[test]
-    fn two_node_inbound_orphaned_ask_fails_closed() {
+    fn two_node_inbound_orphaned_ask_reports_orphaned() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
@@ -3208,8 +3287,8 @@ mod tests {
         );
         assert_eq!(
             err,
-            AskError::WorkerAtCapacity as i32,
-            "orphaned inbound ask must fail closed through the rejection path"
+            AskError::OrphanedAsk as i32,
+            "orphaned inbound ask must preserve the remote orphaned reason"
         );
 
         // SAFETY: actor and nodes were allocated in this test and remain valid here.
@@ -3222,7 +3301,7 @@ mod tests {
     }
 
     #[test]
-    fn two_node_inbound_actor_stopped_fails_closed() {
+    fn two_node_inbound_actor_stopped_reports_actor_stopped() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
 
@@ -3273,8 +3352,72 @@ mod tests {
         );
         assert_eq!(
             err,
+            AskError::ActorStopped as i32,
+            "stopped inbound actor ask must preserve the remote actor-stopped reason"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and remain valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn two_node_worker_limit_still_reports_worker_at_capacity() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: node1_bind is a valid C string for the duration of this test.
+        let node1 = unsafe { TestNode::new(319, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+
+        // SAFETY: node1 was just allocated and remains valid until teardown.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(320);
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(320);
+        // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
+        let actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        crate::pid::hew_pid_set_local_node(319);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_pid = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 320);
+
+        let connect_addr = CString::new(format!("320@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until teardown.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
+        // SAFETY: this is a remote void ask; null payload/size are valid.
+        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let err = hew_node_ask_take_last_error();
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+
+        assert!(
+            reply_ptr.is_null(),
+            "worker-limit rejection must not return the void-success sentinel"
+        );
+        assert_eq!(
+            err,
             AskError::WorkerAtCapacity as i32,
-            "stopped inbound actor ask must fail closed through the rejection path"
+            "worker-limit rejection must keep reporting WorkerAtCapacity"
         );
 
         // SAFETY: actor and nodes were allocated in this test and remain valid here.

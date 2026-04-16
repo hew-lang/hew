@@ -1180,6 +1180,59 @@ static std::optional<hew::ast::Span> findFunctionCallArgSpan(const hew::ast::FnD
   return std::nullopt;
 }
 
+static bool rewriteFunctionMethodCall(hew::ast::FnDecl &fn, llvm::StringRef fromMethod,
+                                      llvm::StringRef toMethod,
+                                      std::optional<size_t> newArgCount = std::nullopt) {
+  auto rewriteExpr = [&](hew::ast::Spanned<hew::ast::Expr> &expr) -> bool {
+    auto *methodCall = std::get_if<hew::ast::ExprMethodCall>(&expr.value.kind);
+    if (!methodCall || methodCall->method != fromMethod)
+      return false;
+    if (newArgCount && *newArgCount > methodCall->args.size())
+      return false;
+    methodCall->method = toMethod.str();
+    if (newArgCount)
+      methodCall->args.resize(*newArgCount);
+    return true;
+  };
+
+  for (auto &stmt : fn.body.stmts) {
+    if (auto *retStmt = std::get_if<hew::ast::StmtReturn>(&stmt->value.kind);
+        retStmt && retStmt->value && rewriteExpr(*retStmt->value)) {
+      return true;
+    }
+    if (auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt->value.kind);
+        exprStmt && rewriteExpr(exprStmt->expr)) {
+      return true;
+    }
+  }
+
+  return fn.body.trailing_expr && rewriteExpr(*fn.body.trailing_expr);
+}
+
+static bool expectProgramFailClosedWithDiagnostic(hew::ast::Program &program,
+                                                  llvm::StringRef diagnostic,
+                                                  const char *expectedFailureMessage,
+                                                  const char *missingDiagnosticMessage) {
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL(expectedFailureMessage);
+    module.getOperation()->destroy();
+    return false;
+  }
+
+  if (stderrText.find(diagnostic.str()) == std::string::npos) {
+    FAIL(missingDiagnosticMessage);
+    return false;
+  }
+
+  return true;
+}
+
 static bool rewriteLogCallToUnsignedFirstArg(hew::ast::FnDecl &fn, llvm::StringRef directCallee,
                                              llvm::StringRef methodName) {
   auto rewriteExpr = [&](hew::ast::Spanned<hew::ast::Expr> &expr) {
@@ -10383,6 +10436,307 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: math/random module dispatch arity and unknown-name guards fail closed.
+// ============================================================================
+
+static void test_math_pow_wrong_arity_fails_closed() {
+  TEST(math_pow_wrong_arity_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    math.pow(2.0, 3.0)
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run math.pow arity negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "pow", "pow", 1)) {
+    FAIL("failed to rewrite math.pow call to one argument");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(
+          program, "math.pow requires 2 arguments",
+          "expected codegen to fail for math.pow with one argument",
+          "expected math.pow arity diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_math_max_wrong_arity_fails_closed() {
+  TEST(math_max_wrong_arity_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    math.max(2.0, 3.0)
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run math.max arity negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "max", "max", 1)) {
+    FAIL("failed to rewrite math.max call to one argument");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(
+          program, "math.max requires 2 arguments",
+          "expected codegen to fail for math.max with one argument",
+          "expected math.max arity diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_math_max_f_wrong_arity_fails_closed() {
+  TEST(math_max_f_wrong_arity_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    math.max_f(2.0, 3.0)
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run math.max_f arity negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "max_f", "max_f", 1)) {
+    FAIL("failed to rewrite math.max_f call to one argument");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(
+          program, "math.max_f requires 2 arguments",
+          "expected codegen to fail for math.max_f with one argument",
+          "expected math.max_f arity diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_math_min_wrong_arity_fails_closed() {
+  TEST(math_min_wrong_arity_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    math.min(2.0, 3.0)
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run math.min arity negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "min", "min", 1)) {
+    FAIL("failed to rewrite math.min call to one argument");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(
+          program, "math.min requires 2 arguments",
+          "expected codegen to fail for math.min with one argument",
+          "expected math.min arity diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_math_min_f_wrong_arity_fails_closed() {
+  TEST(math_min_f_wrong_arity_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    math.min_f(2.0, 3.0)
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run math.min_f arity negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "min_f", "min_f", 1)) {
+    FAIL("failed to rewrite math.min_f call to one argument");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(
+          program, "math.min_f requires 2 arguments",
+          "expected codegen to fail for math.min_f with one argument",
+          "expected math.min_f arity diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_math_clamp_wrong_arity_fails_closed() {
+  TEST(math_clamp_wrong_arity_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    math.clamp_f(5.0, 1.0, 9.0)
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run math.clamp arity negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "clamp_f", "clamp", 2)) {
+    FAIL("failed to rewrite math.clamp_f call into two-argument math.clamp");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(
+          program, "math.clamp requires 3 arguments",
+          "expected codegen to fail for math.clamp with two arguments",
+          "expected math.clamp arity diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_math_clamp_f_wrong_arity_fails_closed() {
+  TEST(math_clamp_f_wrong_arity_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    math.clamp_f(5.0, 1.0, 9.0)
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run math.clamp_f arity negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "clamp_f", "clamp_f", 2)) {
+    FAIL("failed to rewrite math.clamp_f call to two arguments");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(
+          program, "math.clamp_f requires 3 arguments",
+          "expected codegen to fail for math.clamp_f with two arguments",
+          "expected math.clamp_f arity diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_unknown_math_constant_fails_closed() {
+  TEST(unknown_math_constant_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    math.pi()
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run unknown math constant negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "pi", "tau")) {
+    FAIL("failed to rewrite math.pi into unknown math constant");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(program, "unknown math constant: math.tau",
+                                             "expected codegen to fail for unknown math constant",
+                                             "expected unknown math constant diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_unknown_math_function_fails_closed() {
+  TEST(unknown_math_function_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    math.sqrt(4.0)
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run unknown math function negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "sqrt", "mystery")) {
+    FAIL("failed to rewrite math.sqrt into unknown math function");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(program, "unknown math function: math.mystery",
+                                             "expected codegen to fail for unknown math function",
+                                             "expected unknown math function diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+static void test_unknown_random_function_fails_closed() {
+  TEST(unknown_random_function_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+fn main() -> f64 {
+    random.random()
+}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run unknown random function negative test");
+    return;
+  }
+
+  auto *mainFn = findFunctionDecl(program, "main");
+  if (!mainFn || !rewriteFunctionMethodCall(*mainFn, "random", "mystery")) {
+    FAIL("failed to rewrite random.random into unknown random function");
+    return;
+  }
+
+  if (!expectProgramFailClosedWithDiagnostic(program, "unknown random function: random.mystery",
+                                             "expected codegen to fail for unknown random function",
+                                             "expected unknown random function diagnostic")) {
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: generic handle-backed impl dispatch requires receiver-kind metadata.
 //
 // Before this fix, json.Value method calls bypassed the authority table and
@@ -12509,6 +12863,16 @@ int main() {
   test_trait_dispatch_requires_receiver_kind();
   test_named_type_dispatch_pruned_receiver_kind_fails_closed();
   test_named_type_method_dispatch_missing_expr_type_fails_closed();
+  test_math_pow_wrong_arity_fails_closed();
+  test_math_max_wrong_arity_fails_closed();
+  test_math_max_f_wrong_arity_fails_closed();
+  test_math_min_wrong_arity_fails_closed();
+  test_math_min_f_wrong_arity_fails_closed();
+  test_math_clamp_wrong_arity_fails_closed();
+  test_math_clamp_f_wrong_arity_fails_closed();
+  test_unknown_math_constant_fails_closed();
+  test_unknown_math_function_fails_closed();
+  test_unknown_random_function_fails_closed();
   test_generic_handle_impl_dispatch_requires_receiver_kind();
   test_remote_actor_alias_ask_is_recognized();
   test_remote_actor_alias_call_receiver_is_recognized();

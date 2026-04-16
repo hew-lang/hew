@@ -7,7 +7,7 @@
 #     bin/hew              — compiler driver (Rust, embeds MLIR/LLVM backend)
 #     bin/adze             — package manager (Rust)
 #     lib/libhew.a         — combined library: runtime + all stdlib packages
-#     lib/wasm32-wasip1/libhew_runtime.a — WASM runtime (if built)
+#     lib/wasm32-wasip1/*.a — WASM runtime + focused wire stdlib archives
 #     std/*.hew            — standard library stubs
 #
 # Each entry under build/ is a symlink into the real Cargo/CMake output dirs,
@@ -23,7 +23,7 @@
 #   make codegen      — C++ MLIR test infrastructure (unit tests + E2E harness)
 #   make runtime      — just libhew_runtime.a
 #   make stdlib       — all stdlib packages + combine into libhew.a
-#   make wasm-runtime — WASM runtime (requires: rustup target add wasm32-wasip1)
+#   make wasm-runtime — WASM runtime + wire JSON/YAML archives
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
 #   make playground-manifest       — regenerate examples/playground/manifest.json
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
@@ -150,9 +150,11 @@ runtime:
 stdlib:
 	cargo build -p hew-lib
 
-# Build the WASM runtime (requires wasm32-wasip1 target: rustup target add wasm32-wasip1)
+# Build the WASM runtime + focused wire JSON/YAML archives
 wasm-runtime:
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+	cargo build -p hew-std-encoding-json --target wasm32-wasip1
+	cargo build -p hew-std-encoding-yaml --target wasm32-wasip1
 
 # Build the hew-wasm browser analysis-only module (requires: cargo install wasm-pack)
 wasm:
@@ -303,12 +305,14 @@ assemble: | hew adze runtime stdlib
 	@ln -sfn ../../$(DEBUG_DIR)/adze               $(BUILD_DIR)/bin/adze
 	@# Combined Hew library (runtime + all stdlib packages)
 	@ln -sfn ../../$(DEBUG_DIR)/libhew.a           $(BUILD_DIR)/lib/libhew.a
-	@# WASM runtime (symlink if built)
-	@if [ -f $(WASM_DEBUG_DIR)/libhew_runtime.a ]; then \
-		mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
-		ln -sfn ../../../$(WASM_DEBUG_DIR)/libhew_runtime.a \
-			$(BUILD_DIR)/lib/wasm32-wasip1/libhew_runtime.a; \
-	fi
+	@# WASM runtime + focused wire stdlib archives (symlink if built)
+	@for lib in libhew_runtime.a libhew_std_encoding_json.a libhew_std_encoding_yaml.a; do \
+		if [ -f $(WASM_DEBUG_DIR)/$$lib ]; then \
+			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
+			ln -sfn ../../../$(WASM_DEBUG_DIR)/$$lib \
+				$(BUILD_DIR)/lib/wasm32-wasip1/$$lib; \
+		fi; \
+	done
 	@# Native per-triple lib symlinks — mirrors the wasm32-wasip1 pattern,
 	@# keeps the host lib under lib/<triple>/ on Linux and Darwin, and lets
 	@# Darwin same-OS cross-arch linking pick up prebuilt libhew.a slices.
@@ -351,6 +355,8 @@ release:
 	$(RELEASE_ENV) cargo build -p adze-cli --release
 	$(RELEASE_ENV) cargo build -p hew-lib --release
 	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+	$(RELEASE_ENV) cargo build -p hew-std-encoding-json --target wasm32-wasip1 --release
+	$(RELEASE_ENV) cargo build -p hew-std-encoding-yaml --target wasm32-wasip1 --release
 	$(MAKE) assemble-release
 
 # Validate release builds on all supported platforms before tagging.
@@ -367,11 +373,13 @@ assemble-release:
 	@ln -sfn ../../$(RELEASE_DIR)/adze             $(BUILD_DIR)/bin/adze
 	@# Combined Hew library (runtime + all stdlib packages)
 	@ln -sfn ../../$(RELEASE_DIR)/libhew.a         $(BUILD_DIR)/lib/libhew.a
-	@if [ -f $(WASM_RELEASE_DIR)/libhew_runtime.a ]; then \
-		mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
-		ln -sfn ../../../$(WASM_RELEASE_DIR)/libhew_runtime.a \
-			$(BUILD_DIR)/lib/wasm32-wasip1/libhew_runtime.a; \
-	fi
+	@for lib in libhew_runtime.a libhew_std_encoding_json.a libhew_std_encoding_yaml.a; do \
+		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
+			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
+			ln -sfn ../../../$(WASM_RELEASE_DIR)/$$lib \
+				$(BUILD_DIR)/lib/wasm32-wasip1/$$lib; \
+		fi; \
+	done
 	@# Native per-triple lib symlinks — mirrors the wasm32-wasip1 pattern.
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
@@ -656,11 +664,13 @@ install: install-check
 	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
 	install -m 755 $(RELEASE_DIR)/adze               $(DESTDIR)$(PREFIX)/bin/adze
 	install -m 644 $(RELEASE_DIR)/libhew.a           $(DESTDIR)$(PREFIX)/lib/libhew.a
-	@if [ -f $(WASM_RELEASE_DIR)/libhew_runtime.a ]; then \
-		install -d $(DESTDIR)$(PREFIX)/lib/wasm32-wasip1; \
-		install -m 644 $(WASM_RELEASE_DIR)/libhew_runtime.a \
-			$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1/libhew_runtime.a; \
-	fi
+	@for lib in libhew_runtime.a libhew_std_encoding_json.a libhew_std_encoding_yaml.a; do \
+		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
+			install -d $(DESTDIR)$(PREFIX)/lib/wasm32-wasip1; \
+			install -m 644 $(WASM_RELEASE_DIR)/$$lib \
+				$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1/$$lib; \
+		fi; \
+	done
 	@# Native per-triple lib subtree — mirrors assemble-release and gives
 	@# find_hew_lib() its preferred lib/<triple>/libhew.a probe path.
 	@for triple in $(NATIVE_LIB_TRIPLES); do \

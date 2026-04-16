@@ -640,6 +640,11 @@ pub(crate) fn supports_ask_rejection(flags: u32) -> bool {
     flags & HEW_FEATURE_SUPPORTS_ASK_REJECTION != 0
 }
 
+fn is_ask_rejection_reply(msg_type: i32, peer_feature_flags: u32) -> bool {
+    msg_type == crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE
+        && supports_ask_rejection(peer_feature_flags)
+}
+
 fn local_schema_hash() -> u32 {
     fn fnv1a32_update(mut hash: u32, bytes: &[u8]) -> u32 {
         for &byte in bytes {
@@ -1097,9 +1102,7 @@ fn reader_loop(
                     // deposited directly into the reply routing table, bypassing
                     // the normal inbound router.
                     if envelope.request_id > 0 && envelope.source_node_id == 0 {
-                        if envelope.msg_type == crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE
-                            && supports_ask_rejection(peer_feature_flags)
-                        {
+                        if is_ask_rejection_reply(envelope.msg_type, peer_feature_flags) {
                             let reason_payload =
                                 if envelope.payload_size > 0 && !envelope.payload.is_null() {
                                     std::slice::from_raw_parts(
@@ -2196,6 +2199,22 @@ mod tests {
         assert_eq!(stop.load(Ordering::Relaxed), 0);
         stop.store(1, Ordering::Relaxed);
         assert_eq!(actor.reader_stop.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn ask_rejection_reply_requires_negotiated_feature_flag() {
+        assert!(is_ask_rejection_reply(
+            crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE,
+            HEW_FEATURE_SUPPORTS_ASK_REJECTION
+        ));
+        assert!(
+            !is_ask_rejection_reply(crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE, 0),
+            "sentinel replies from peers without the feature bit must stay on the normal reply path"
+        );
+        assert!(
+            !is_ask_rejection_reply(0, HEW_FEATURE_SUPPORTS_ASK_REJECTION),
+            "normal replies must not be reclassified as rejections"
+        );
     }
 
     /// Defense-in-depth: `ConnectionActor::drop` must close the transport

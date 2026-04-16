@@ -15,6 +15,7 @@
 //! curl http://localhost:6060/debug/pprof/profile
 //! ```
 
+use std::cmp::Reverse;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -173,7 +174,7 @@ pub fn generate_heap_profile() -> Vec<u8> {
 
     // Function ID and Location ID start at 1 (0 is reserved).
     let runtime_fn_id = 1_u64;
-    let mut next_id = 2_u64;
+    let next_id = 2_u64;
 
     // Runtime global allocation entry.
     let runtime_name = strings.intern("[runtime]");
@@ -190,10 +191,7 @@ pub fn generate_heap_profile() -> Vec<u8> {
     );
 
     // Per-actor entries.
-    for actor in &actors {
-        let fn_id = next_id;
-        next_id += 1;
-
+    for (fn_id, actor) in (next_id..).zip(&actors) {
         let name = format!("Actor#{} (pid={})", actor.id, actor.pid);
         let name_idx = strings.intern(&name);
         let file_idx = strings.intern("hew-program");
@@ -229,8 +227,7 @@ pub fn generate_heap_profile() -> Vec<u8> {
     )]
     let time_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos() as i64);
     encode_int64(&mut buf, 9, time_nanos);
 
     // period_type (field 11): space/bytes.
@@ -332,7 +329,7 @@ pub fn generate_flat_profile() -> String {
 
     // Sort actors by processing time (descending).
     let mut sorted: Vec<_> = actors.iter().collect();
-    sorted.sort_by(|a, b| b.processing_time_ns.cmp(&a.processing_time_ns));
+    sorted.sort_by_key(|actor| Reverse(actor.processing_time_ns));
 
     let mut cumulative_ms = 0.0_f64;
 

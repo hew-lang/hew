@@ -73,10 +73,6 @@ pub(super) fn has_test_attribute(attrs: &[Attribute]) -> bool {
     deprecated,
     reason = "SymbolInformation::deprecated field is deprecated in lsp-types"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "exhaustive match over all Item variants for workspace symbols"
-)]
 pub(super) fn collect_workspace_symbols(
     uri: &Url,
     source: &str,
@@ -88,20 +84,20 @@ pub(super) fn collect_workspace_symbols(
     let query_lower = query.to_lowercase();
     for (item, item_span) in &parse_result.program.items {
         match item {
-            Item::Function(f) => {
-                if query.is_empty() || f.name.to_lowercase().contains(&query_lower) {
-                    symbols.push(SymbolInformation {
-                        name: f.name.clone(),
-                        kind: SymbolKind::FUNCTION,
-                        tags: None,
-                        deprecated: None,
-                        location: Location {
-                            uri: uri.clone(),
-                            range: span_to_range(source, lo, item_span),
-                        },
-                        container_name: None,
-                    });
-                }
+            Item::Function(f)
+                if query.is_empty() || f.name.to_lowercase().contains(&query_lower) =>
+            {
+                symbols.push(SymbolInformation {
+                    name: f.name.clone(),
+                    kind: SymbolKind::FUNCTION,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: uri.clone(),
+                        range: span_to_range(source, lo, item_span),
+                    },
+                    container_name: None,
+                });
             }
             Item::Actor(a) => {
                 if query.is_empty() || a.name.to_lowercase().contains(&query_lower) {
@@ -138,50 +134,46 @@ pub(super) fn collect_workspace_symbols(
                     }
                 }
             }
-            Item::TypeDecl(t) => {
-                if query.is_empty() || t.name.to_lowercase().contains(&query_lower) {
-                    symbols.push(SymbolInformation {
-                        name: t.name.clone(),
-                        kind: SymbolKind::STRUCT,
-                        tags: None,
-                        deprecated: None,
-                        location: Location {
-                            uri: uri.clone(),
-                            range: span_to_range(source, lo, item_span),
-                        },
-                        container_name: None,
-                    });
-                }
+            Item::TypeDecl(t)
+                if query.is_empty() || t.name.to_lowercase().contains(&query_lower) =>
+            {
+                symbols.push(SymbolInformation {
+                    name: t.name.clone(),
+                    kind: SymbolKind::STRUCT,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: uri.clone(),
+                        range: span_to_range(source, lo, item_span),
+                    },
+                    container_name: None,
+                });
             }
-            Item::Const(c) => {
-                if query.is_empty() || c.name.to_lowercase().contains(&query_lower) {
-                    symbols.push(SymbolInformation {
-                        name: c.name.clone(),
-                        kind: SymbolKind::CONSTANT,
-                        tags: None,
-                        deprecated: None,
-                        location: Location {
-                            uri: uri.clone(),
-                            range: span_to_range(source, lo, item_span),
-                        },
-                        container_name: None,
-                    });
-                }
+            Item::Const(c) if query.is_empty() || c.name.to_lowercase().contains(&query_lower) => {
+                symbols.push(SymbolInformation {
+                    name: c.name.clone(),
+                    kind: SymbolKind::CONSTANT,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: uri.clone(),
+                        range: span_to_range(source, lo, item_span),
+                    },
+                    container_name: None,
+                });
             }
-            Item::Trait(t) => {
-                if query.is_empty() || t.name.to_lowercase().contains(&query_lower) {
-                    symbols.push(SymbolInformation {
-                        name: t.name.clone(),
-                        kind: SymbolKind::INTERFACE,
-                        tags: None,
-                        deprecated: None,
-                        location: Location {
-                            uri: uri.clone(),
-                            range: span_to_range(source, lo, item_span),
-                        },
-                        container_name: None,
-                    });
-                }
+            Item::Trait(t) if query.is_empty() || t.name.to_lowercase().contains(&query_lower) => {
+                symbols.push(SymbolInformation {
+                    name: t.name.clone(),
+                    kind: SymbolKind::INTERFACE,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: uri.clone(),
+                        range: span_to_range(source, lo, item_span),
+                    },
+                    container_name: None,
+                });
             }
             _ => {}
         }

@@ -1529,6 +1529,123 @@ fn wasm_tcp_networking_surface_rejected_before_codegen() {
 }
 
 #[test]
+fn http_request_body_encoding_arg_checked_via_fallback() {
+    let output = typecheck_inline(
+        r"
+        import std::net::http;
+
+        fn inspect(req: http.Request) {
+            req.body(42);
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            &error.kind,
+            TypeErrorKind::Mismatch { expected, .. } if expected == "String"
+        )),
+        "expected http.Request::body encoding arg to be checked via fallback, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn net_listener_close_resolves_via_fallback() {
+    let output = typecheck_inline(
+        r"
+        import std::net;
+
+        fn close_listener(listener: net.Listener) -> int {
+            listener.close()
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected net.Listener::close to resolve cleanly via fallback, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_tcp_listener_close"
+        )),
+        "expected net.Listener::close fallback rewrite, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn http_request_free_resolves_via_fallback() {
+    let output = typecheck_inline(
+        r"
+        import std::net::http;
+
+        fn release(req: http.Request) {
+            req.free();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected http.Request::free to resolve cleanly via fallback, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+                if c_symbol == "hew_http_request_free"
+        )),
+        "expected http.Request::free fallback rewrite, got: {:?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn http_request_unknown_method_is_undefined() {
+    let output = typecheck_inline(
+        r"
+        import std::net::http;
+
+        fn inspect(req: http.Request) {
+            req.nonexistent();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
+        "expected http.Request unknown method to report UndefinedMethod, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn net_connection_write_arg_type_checked() {
+    let output = typecheck_inline(
+        r#"
+        import std::net;
+
+        fn send(conn: net.Connection) {
+            conn.write("wrong_type");
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            &error.kind,
+            TypeErrorKind::Mismatch { expected, .. } if expected == "bytes"
+        )),
+        "expected net.Connection::write arg to be checked via fallback, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn wasm_process_execution_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"

@@ -225,6 +225,20 @@ impl Checker {
         });
     }
 
+    pub(super) fn warn_if_blocking_handle_method(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        span: &Span,
+    ) {
+        if matches!(
+            (type_name, method),
+            ("http.Server" | "net.Listener", "accept") | ("net.Connection", "read")
+        ) {
+            self.warn_if_blocking_in_receive_fn(&format!("{type_name}::{method}"), span);
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "call checking covers many builtin and method signatures"

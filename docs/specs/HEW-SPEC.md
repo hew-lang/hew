@@ -1554,7 +1554,7 @@ Hew employs **bidirectional type inference** to minimize explicit type annotatio
 The `-> _` annotation requests that the compiler infer the return type from the checked function body. When a trailing expression is present, that expression supplies the return type; otherwise Hew uses the checker-resolved signature for that body. This also applies to trait default methods with bodies. If the checker cannot resolve a concrete return type where one is required, `-> _` is rejected. This is distinct from omitting `->` entirely, which means the function returns void (unit):
 
 ```hew
-fn add(a: i32, b: i32) -> _ { a + b }  // inferred: -> i32
+fn add(a: int, b: int) -> _ { a + b }  // inferred: -> int
 fn greet(name: string) -> _ { "hello {name}" }  // inferred: -> string
 fn noop() { }  // no -> at all: returns void
 ```
@@ -1564,17 +1564,17 @@ fn noop() { }  // no -> at all: returns void
 **Lambda inference examples:**
 
 ```hew
-fn apply(f: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 { f(a, b) }
+fn apply(f: fn(int, int) -> int, a: int, b: int) -> int { f(a, b) }
 
-// Lambda parameters infer i32 from apply's signature
-let sum = apply((x, y) => x + y, 3, 4);      // x: i32, y: i32 inferred
+// Lambda parameters infer int from apply's signature
+let sum = apply((x, y) => x + y, 3, 4);      // x: int, y: int inferred
 let product = apply((x, y) => x * y, 3, 4);  // types flow from apply's signature
 
 // Method chaining with inference
 numbers
-    .filter((x) => x > 0)           // x: i32 inferred from Vec<i32>
-    .map((x) => x * 2)              // x: i32, result: i32
-    .reduce((a, b) => a + b)        // a: i32, b: i32 from reduce signature
+    .filter((x) => x > 0)           // x: int inferred from Vec<int>
+    .map((x) => x * 2)              // x: int, result: int
+    .reduce((a, b) => a + b)        // a: int, b: int from reduce signature
 ```
 
 **Lambda syntax:**
@@ -1591,8 +1591,8 @@ let sum = numbers.reduce((a, b) => a + b);
 ```hew
 fn map<T, U>(items: Vec<T>, transform: fn(T) -> U) -> Vec<U> { /* ... */ }
 
-// T=i32, U=String inferred from usage
-let strings = map([1, 2, 3], (x) => x.to_string());  // x: i32 inferred
+// T=int, U=String inferred from usage
+let strings = map([1, 2, 3], (x) => x.to_string());  // x: int inferred
 ```
 
 **Actor message type inference:**
@@ -1601,17 +1601,17 @@ Actor message handlers provide rich typing context:
 
 ```hew
 actor Calculator {
-    var result: i32 = 0;
+    var result: int = 0;
 
     // receive fn signature provides context for message arguments
-    receive fn apply_operation(op: fn(i32, i32) -> i32, value: i32) {
+    receive fn apply_operation(op: fn(int, int) -> int, value: int) {
         result = op(result, value);
     }
 }
 
 let calc = spawn Calculator();
 // Lambda types inferred from receive fn signature
-calc.apply_operation((a, b) => a + b, 10);  // a: i32, b: i32 inferred
+calc.apply_operation((a, b) => a + b, 10);  // a: int, b: int inferred
 calc.apply_operation((a, b) => a * b, 5);   // also inferred
 ```
 
@@ -1624,7 +1624,7 @@ For standalone generic lambdas, explicit bounds are required:
 let generic_add = <T: Add>(x: T, y: T) => x + y;
 
 // Can then be called with different types
-generic_add(1, 2);        // i32
+generic_add(1, 2);        // int
 generic_add(1.0, 2.0);    // f64
 ```
 
@@ -1635,10 +1635,10 @@ generic_add(1.0, 2.0);    // f64
 let f = (x, y) => x + y;  // No context to determine x, y types
 
 // Solution 1: Annotate the variable
-let f: fn(i32, i32) -> i32 = (x, y) => x + y;
+let f: fn(int, int) -> int = (x, y) => x + y;
 
 // Solution 2: Annotate parameters
-let f = (x: i32, y: i32) => x + y;
+let f = (x: int, y: int) => x + y;
 ```
 
 **Constraint solving for complex bounds:**
@@ -1654,7 +1654,7 @@ where
 }
 
 // All constraints automatically verified:
-// - i32: Send ✓, Clone ✓, Display ✓
+// - int: Send ✓, Clone ✓, Display ✓
 let results = process([1, 2, 3], (x) => {
     print(f"Processing: {x}");  // Display bound allows this
     x * 2
@@ -1674,12 +1674,12 @@ error[E0282]: type annotations needed for lambda parameters
    |
 help: consider annotating the lambda variable type
    |
-5  |     let f: fn(i32, i32) -> i32 = (x, y) => x + y;
+5  |     let f: fn(int, int) -> int = (x, y) => x + y;
    |            ++++++++++++++++++
    |
 help: or annotate the lambda parameters directly
    |
-5  |     let f = (x: i32, y: i32) => x + y;
+5  |     let f = (x: int, y: int) => x + y;
    |                +++     +++
 ```
 

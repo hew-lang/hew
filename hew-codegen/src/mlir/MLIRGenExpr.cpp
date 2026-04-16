@@ -3268,8 +3268,12 @@ mlir::Value MLIRGen::generateLogCall(const ast::ExprMethodCall &mc) {
     std::string callee;
     if (method == "setup" || method == "setup_level" || method == "set_level")
       callee = "hew_log_set_level";
+    else if (method == "set_format")
+      callee = "hew_log_set_format";
     else if (method == "get_level" || method == "is_enabled")
       callee = "hew_log_get_level";
+    else if (method == "get_format")
+      callee = "hew_log_get_format";
     else {
       ++errorCount_;
       emitError(location) << "unknown log method: " << method;
@@ -3290,12 +3294,18 @@ mlir::Value MLIRGen::generateLogCall(const ast::ExprMethodCall &mc) {
       argVals.push_back(infoLevel);
     }
 
+    if (method == "setup" || method == "setup_level" || method == "set_level" ||
+        method == "set_format") {
+      for (auto &arg : argVals)
+        arg = coerceType(arg, i32Type, location);
+    }
+
     // Determine argument types for the extern declaration.
     llvm::SmallVector<mlir::Type, 4> argTypes;
     for (auto v : argVals)
       argTypes.push_back(v.getType());
 
-    bool hasResult = (method == "get_level" || method == "is_enabled");
+    bool hasResult = (method == "get_level" || method == "get_format" || method == "is_enabled");
     auto funcType = hasResult ? mlir::FunctionType::get(&context, argTypes, {i32Type})
                               : mlir::FunctionType::get(&context, argTypes, {});
     getOrCreateExternFunc(callee, funcType);
@@ -3304,6 +3314,8 @@ mlir::Value MLIRGen::generateLogCall(const ast::ExprMethodCall &mc) {
     if (hasResult) {
       auto op = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type}, calleeAttr,
                                            argVals);
+      if (method == "get_level" || method == "get_format")
+        return coerceType(op.getResult(), builder.getI64Type(), location);
       return op.getResult();
     }
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{}, calleeAttr, argVals);

@@ -136,3 +136,123 @@ fn missing_path_exits_non_zero() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("path not found"));
 }
+
+#[test]
+fn junit_passing_suite_emits_xml_on_stdout() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "passing_junit_test.hew",
+            "#[test]\nfn ok() {\n    assert(true);\n}\n",
+        )],
+        &["--format", "junit"],
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        output.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("<testsuites"), "stdout: {stdout}");
+    assert!(stdout.contains("<testsuite"), "stdout: {stdout}");
+    assert!(
+        stdout.contains(r#"<testcase name="ok""#),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("</testsuites>"), "stdout: {stdout}");
+}
+
+#[test]
+fn junit_failing_suite_emits_failure_element_and_exits_one() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "failing_junit_test.hew",
+            "#[test]\nfn bad() {\n    panic(\"boom\");\n}\n",
+        )],
+        &["--format", "junit"],
+    );
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(r#"<testcase name="bad""#),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("<failure message="), "stdout: {stdout}");
+    assert!(stdout.contains("boom"), "stdout: {stdout}");
+}
+
+#[test]
+fn junit_ignored_suite_emits_skipped_element() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "ignored_junit_test.hew",
+            "#[test]\n#[ignore]\nfn skip_me() {\n    assert(false);\n}\n",
+        )],
+        &["--format", "junit"],
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(output.status.code(), Some(0));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r#"<testcase name="skip_me""#),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("<skipped/>"), "stdout: {stdout}");
+}
+
+#[test]
+fn filter_with_no_matching_tests_exits_zero_and_reports_zero_tests() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "filter_target_test.hew",
+            "#[test]\nfn alpha() {\n    assert(true);\n}\n",
+        )],
+        &["--no-color", "--filter", "this_pattern_matches_nothing"],
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(output.status.code(), Some(0));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("running 0 tests"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("0 passed; 0 failed; 0 ignored"),
+        "stdout: {stdout}"
+    );
+}

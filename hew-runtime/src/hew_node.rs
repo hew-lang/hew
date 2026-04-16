@@ -1869,7 +1869,12 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
 }
 
 /// Default timeout for remote ask operations (5 seconds).
+#[cfg(not(test))]
 const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
+
+/// Short timeout for test isolation.
+#[cfg(test)]
+const REMOTE_ASK_TIMEOUT_MS: u64 = 250;
 
 /// Perform a blocking ask against a PID, handling local and remote actors.
 ///
@@ -3568,6 +3573,75 @@ mod tests {
         // SAFETY: the actor and nodes were allocated in this test and are still valid here.
         unsafe {
             let _ = crate::actor::hew_actor_free(empty_reply_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn two_node_remote_ask_timeout_reports_timeout() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node1 = unsafe { TestNode::new(328, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+
+        // SAFETY: node1 comes from TestNode::new and is valid for start-up here.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(329);
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(329);
+        // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
+        let silent_actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(blocked_ask_probe_dispatch))
+        };
+        crate::pid::hew_pid_set_local_node(328);
+        assert!(!silent_actor.is_null(), "silent actor spawn failed");
+        // SAFETY: the actor was just spawned successfully and remains valid here.
+        let actor_pid = unsafe { (*silent_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 329);
+
+        let connect_addr = CString::new(format!("329@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and the connect address are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until the end of the test.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        let ask_start = std::time::Instant::now();
+        // SAFETY: the actor pid and null payload are valid for this remote ask probe.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
+        };
+        let err = hew_node_ask_take_last_error();
+
+        assert!(reply_ptr.is_null(), "timed-out remote ask must return null");
+        assert_eq!(
+            err,
+            AskError::Timeout as i32,
+            "remote ask that receives no reply must report Timeout"
+        );
+        assert!(
+            ask_start.elapsed() < Duration::from_millis(REMOTE_ASK_TIMEOUT_MS * 3),
+            "ask should complete near the timeout deadline, not block indefinitely"
+        );
+
+        // SAFETY: the actor and nodes were allocated in this test and remain valid here.
+        unsafe {
+            crate::actor::hew_actor_stop(silent_actor);
+            let _ = crate::actor::hew_actor_free(silent_actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }

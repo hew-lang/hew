@@ -5,9 +5,13 @@ Language Server Protocol implementation for Hew.
 Core IDE features for Hew source files include:
 
 - Real-time diagnostics (parse errors, type errors)
-- Go-to-definition
+- Go-to-definition, including struct field accesses at use sites
 - Hover information
 - Document symbols
+- Completions
+- Workspace symbols
+- Inlay hints
+- Code actions / quick-fixes
 
 ## Usage
 

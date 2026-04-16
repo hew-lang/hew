@@ -836,6 +836,7 @@ struct ActorInit {
 /// An actor's `terminate { ... }` block, run when the actor is stopped.
 /// Has no parameters — actor fields are in scope.
 struct ActorTerminate {
+  std::vector<Attribute> attributes;
   Block body;
 };
 

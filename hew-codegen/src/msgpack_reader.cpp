@@ -313,6 +313,9 @@ static ast::ActorInit parseActorInit(const msgpack::object &obj) {
 
 static ast::ActorTerminate parseActorTerminate(const msgpack::object &obj) {
   ast::ActorTerminate result;
+  const auto *attributes_ = mapGet(obj, "attributes");
+  if (attributes_ && !isNil(*attributes_))
+    result.attributes = parseVec<ast::Attribute>(*attributes_, parseAttribute);
   result.body = parseBlock(mapReq(obj, "body"));
   return result;
 }

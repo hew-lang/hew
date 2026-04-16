@@ -1066,6 +1066,51 @@ mod tests {
         )
     }
 
+    fn wire_field(
+        name: &str,
+        ty: &str,
+        field_number: u32,
+        json_name: Option<&str>,
+        yaml_name: Option<&str>,
+        since: Option<u32>,
+    ) -> WireFieldDecl {
+        WireFieldDecl {
+            name: name.into(),
+            ty: ty.into(),
+            field_number,
+            is_optional: false,
+            is_repeated: false,
+            is_reserved: false,
+            is_deprecated: false,
+            json_name: json_name.map(Into::into),
+            yaml_name: yaml_name.map(Into::into),
+            since,
+        }
+    }
+
+    fn wire_program(
+        json_case: Option<NamingCase>,
+        yaml_case: Option<NamingCase>,
+        fields: Vec<WireFieldDecl>,
+    ) -> Program {
+        Program {
+            items: vec![(
+                Item::Wire(WireDecl {
+                    visibility: Visibility::Private,
+                    kind: WireDeclKind::Struct,
+                    name: "Envelope".into(),
+                    fields,
+                    variants: vec![],
+                    json_case,
+                    yaml_case,
+                }),
+                0..40,
+            )],
+            module_doc: None,
+            module_graph: None,
+        }
+    }
+
     /// Round-trip: serialize → deserialize should produce an identical AST.
     #[test]
     fn round_trip_simple_program() {
@@ -2744,47 +2789,103 @@ mod tests {
 
     #[test]
     fn round_trip_wire_decl() {
-        round_trip_program(&Program {
-            items: vec![(
-                Item::Wire(WireDecl {
-                    visibility: Visibility::Private,
-                    kind: WireDeclKind::Struct,
-                    name: "Envelope".into(),
-                    fields: vec![
-                        WireFieldDecl {
-                            name: "id".into(),
-                            ty: "i32".into(),
-                            field_number: 1,
-                            is_optional: false,
-                            is_repeated: false,
-                            is_reserved: false,
-                            is_deprecated: false,
-                            json_name: None,
-                            yaml_name: None,
-                            since: None,
-                        },
-                        WireFieldDecl {
-                            name: "payload".into(),
-                            ty: "String".into(),
-                            field_number: 2,
-                            is_optional: true,
-                            is_repeated: false,
-                            is_reserved: false,
-                            is_deprecated: false,
-                            json_name: Some("body".into()),
-                            yaml_name: None,
-                            since: Some(2),
-                        },
-                    ],
-                    variants: vec![],
-                    json_case: Some(NamingCase::CamelCase),
-                    yaml_case: None,
-                }),
-                0..40,
-            )],
-            module_doc: None,
-            module_graph: None,
-        });
+        round_trip_program(&wire_program(
+            Some(NamingCase::CamelCase),
+            None,
+            vec![
+                wire_field("id", "i32", 1, None, None, None),
+                WireFieldDecl {
+                    is_optional: true,
+                    ..wire_field("payload", "String", 2, Some("body"), None, Some(2))
+                },
+            ],
+        ));
+    }
+
+    #[test]
+    fn round_trip_wire_decl_with_yaml_case() {
+        round_trip_program(&wire_program(
+            Some(NamingCase::CamelCase),
+            Some(NamingCase::SnakeCase),
+            vec![
+                wire_field("requestId", "i32", 1, None, Some("request_id"), None),
+                WireFieldDecl {
+                    is_optional: true,
+                    ..wire_field("payloadBody", "String", 2, Some("body"), None, Some(2))
+                },
+            ],
+        ));
+    }
+
+    #[test]
+    fn wire_decl_yaml_case_serializes_correct_variant_name() {
+        for (yaml_case, expected) in [
+            (NamingCase::SnakeCase, "SnakeCase"),
+            (NamingCase::KebabCase, "KebabCase"),
+        ] {
+            let value = serialize_to_value(
+                &wire_program(
+                    Some(NamingCase::CamelCase),
+                    Some(yaml_case),
+                    vec![wire_field(
+                        "requestId",
+                        "i32",
+                        1,
+                        None,
+                        Some("custom_key"),
+                        None,
+                    )],
+                ),
+                vec![],
+            );
+            let items = value
+                .get("items")
+                .and_then(serde_json::Value::as_array)
+                .expect("items should be present on the wire");
+            let wire_decl = items[0][0]
+                .get("Wire")
+                .expect("first item should be a Wire decl");
+            assert_eq!(
+                wire_decl
+                    .get("yaml_case")
+                    .and_then(serde_json::Value::as_str),
+                Some(expected),
+                "yaml_case should serialize as {expected}"
+            );
+            let fields = wire_decl
+                .get("fields")
+                .and_then(serde_json::Value::as_array)
+                .expect("wire fields should be present");
+            assert_eq!(
+                fields[0]
+                    .get("yaml_name")
+                    .and_then(serde_json::Value::as_str),
+                Some("custom_key"),
+                "yaml_name should serialize with its explicit wire key"
+            );
+        }
+    }
+
+    #[test]
+    fn wire_decl_non_camel_json_naming_case_round_trip() {
+        for json_case in [
+            NamingCase::PascalCase,
+            NamingCase::SnakeCase,
+            NamingCase::ScreamingSnake,
+            NamingCase::KebabCase,
+        ] {
+            round_trip_program(&wire_program(
+                Some(json_case),
+                None,
+                vec![
+                    wire_field("id", "i32", 1, None, None, None),
+                    WireFieldDecl {
+                        is_optional: true,
+                        ..wire_field("payload", "String", 2, Some("body"), None, Some(2))
+                    },
+                ],
+            ));
+        }
     }
 
     #[test]

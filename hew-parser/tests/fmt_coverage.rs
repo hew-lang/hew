@@ -1148,14 +1148,16 @@ fn bar() {
 
 #[test]
 fn fmt_generator_function() {
-    let src = r"gen fn counting(n: i32) -> i32 {
-    for i in 0..n {
-        yield i;
-    }
-}";
-    let out = roundtrip(src);
-    assert!(out.contains("gen fn counting"), "output: {out}");
-    assert!(out.contains("yield i;"), "output: {out}");
+    exact_roundtrip(
+        "gen fn counting(n: i32) -> i32 {\n    for i in 0 .. n {\n        yield i;\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_receive_gen() {
+    exact_roundtrip(
+        "actor NumberStream {\n    receive gen fn numbers() -> i32 {\n        yield 1;\n    }\n}\n",
+    );
 }
 
 // -----------------------------------------------------------------------

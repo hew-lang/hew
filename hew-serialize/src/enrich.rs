@@ -1528,6 +1528,12 @@ fn infer_binding_type(
             match lookup_inferred_type(tco, &val.1, context.clone()) {
                 Ok(Some(inferred)) => *ty = Some(inferred),
                 Ok(None) => {
+                    // Implicit bindings should not reach this on well-typed
+                    // programs: a successful RHS already has an expr_types
+                    // entry, so lookup_inferred_type should have returned
+                    // Some(...). Keep the explicit `_` survivor diagnostic for
+                    // the placeholder-annotation path, where serialization can
+                    // still reject the resolved type.
                     if let Some(ref infer_span) = explicit_infer_span {
                         diagnostics.push(explicit_infer_survivor_diagnostic(
                             infer_span,

@@ -1742,15 +1742,15 @@ impl<'src> Parser<'src> {
                 let body = self.parse_block()?;
                 init = Some(ActorInit { params, body });
             } else if self.peek() == Some(&Token::Terminate) {
-                if !attrs.is_empty() {
-                    self.error("attributes are not supported on terminate blocks".to_string());
-                }
                 if terminate.is_some() {
                     self.error("duplicate terminate block in actor".to_string());
                 }
                 self.advance();
                 let body = self.parse_block()?;
-                terminate = Some(ActorTerminate { body });
+                terminate = Some(ActorTerminate {
+                    attributes: attrs,
+                    body,
+                });
             } else if self.peek() == Some(&Token::Pure) || self.peek() == Some(&Token::Receive) {
                 let is_pure = self.eat(&Token::Pure);
                 if self.peek() == Some(&Token::Receive) {
@@ -5636,6 +5636,30 @@ mod tests {
         if let Item::Actor(a) = &result.program.items[0].0 {
             assert!(a.fields.is_empty());
             assert!(a.receive_fns.is_empty());
+        } else {
+            panic!("expected actor");
+        }
+    }
+
+    #[test]
+    fn parse_actor_terminate_and_receive_attributes() {
+        let source = r"actor Worker {
+    #[cleanup]
+    terminate { shutdown(); }
+
+    #[every(50ms)]
+    receive fn tick() { work(); }
+}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        if let Item::Actor(actor) = &result.program.items[0].0 {
+            let terminate = actor.terminate.as_ref().expect("expected terminate block");
+            assert_eq!(terminate.attributes.len(), 1);
+            assert_eq!(terminate.attributes[0].name, "cleanup");
+
+            assert_eq!(actor.receive_fns.len(), 1);
+            assert_eq!(actor.receive_fns[0].attributes.len(), 1);
+            assert_eq!(actor.receive_fns[0].attributes[0].name, "every");
         } else {
             panic!("expected actor");
         }

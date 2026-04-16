@@ -1041,6 +1041,9 @@ pub struct ActorInit {
 /// Has no parameters — actor fields are in scope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActorTerminate {
+    /// Attributes on the terminate block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<Attribute>,
     pub body: Block,
 }
 

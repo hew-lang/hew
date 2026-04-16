@@ -782,7 +782,10 @@ impl<'a> Formatter<'a> {
         }
 
         if let Some(terminate) = &decl.terminate {
-            if has_body_item {
+            if self.has_comments() {
+                let pos = self.find_keyword_after("terminate", self.prev_source_pos);
+                self.flush_comments_before(pos);
+            } else if has_body_item {
                 self.newline();
             }
             self.format_actor_terminate(terminate, span_end);
@@ -960,6 +963,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_actor_terminate(&mut self, terminate: &ActorTerminate, scope_end: usize) {
+        self.format_attributes(&terminate.attributes);
         self.write_indent();
         self.write("terminate ");
         self.format_block(&terminate.body, scope_end);

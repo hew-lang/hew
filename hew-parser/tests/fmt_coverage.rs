@@ -510,6 +510,13 @@ fn fmt_actor_terminate_roundtrip() {
 }
 
 #[test]
+fn fmt_actor_terminate_and_receive_attributes_roundtrip() {
+    exact_roundtrip(
+        "actor Worker {\n    #[cleanup]\n    terminate {\n        shutdown();\n    }\n\n    #[every(50ms)]\n    receive fn tick() {\n        work();\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+#[test]
 fn fmt_actor_pure_method_without_preamble() {
     let src = r"actor Counter {
     pure fn current() -> i32 {

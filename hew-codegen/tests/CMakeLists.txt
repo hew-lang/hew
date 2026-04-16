@@ -721,6 +721,7 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_datetime/datetime_arithmetic"
   "e2e_datetime/datetime_basic"
   "e2e_datetime/datetime_compare"
+  "e2e_datetime/datetime_int_surface"
   "e2e_datetime/datetime_parse"
   # Rc<T> tests — explicitly registered in the Rc block below to keep them
   # visible in code review; excluded here to prevent double-registration.
@@ -809,11 +810,13 @@ add_e2e_file_test_sorted(hashmap_forin       e2e_hashmap_forin hashmap_forin)
 add_e2e_file_test(e2e_datetime_datetime_basic       e2e_datetime datetime_basic)
 add_e2e_file_test(e2e_datetime_datetime_arithmetic  e2e_datetime datetime_arithmetic)
 add_e2e_file_test(e2e_datetime_datetime_compare     e2e_datetime datetime_compare)
+add_e2e_file_test(e2e_datetime_datetime_int_surface e2e_datetime datetime_int_surface)
 add_e2e_file_test(e2e_datetime_datetime_parse       e2e_datetime datetime_parse)
 set_tests_properties(
   e2e_datetime_datetime_basic
   e2e_datetime_datetime_arithmetic
   e2e_datetime_datetime_compare
+  e2e_datetime_datetime_int_surface
   e2e_datetime_datetime_parse
   PROPERTIES
     ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std"

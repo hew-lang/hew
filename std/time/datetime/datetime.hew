@@ -19,12 +19,12 @@
 //! ```
 
 /// Return the current time as milliseconds since the Unix epoch.
-pub fn now_ms() -> i64 {
-    unsafe { hew_datetime_now_ms() }
+pub fn now_ms() -> int {
+    unsafe { hew_datetime_now_ms() as int }
 }
 
 /// Return the current time as seconds since the Unix epoch.
-pub fn now_secs() -> i64 {
+pub fn now_secs() -> int {
     now_ms() / 1000
 }
 
@@ -35,8 +35,8 @@ pub fn now_secs() -> i64 {
 /// ```
 /// let s = datetime.format(now, "%Y-%m-%d");
 /// ```
-pub fn format(epoch_ms: i64, fmt: String) -> String {
-    unsafe { hew_datetime_format(epoch_ms, fmt) }
+pub fn format(epoch_ms: int, fmt: String) -> String {
+    unsafe { hew_datetime_format(epoch_ms as i64, fmt) }
 }
 
 fn parse_error_message() -> String {
@@ -46,9 +46,9 @@ fn parse_error_message() -> String {
 /// Parse a datetime string using the given format and return epoch milliseconds.
 ///
 /// Panics if the input does not match the format. Use `try_parse` for a
-/// structured `Result<i64, String>` failure surface.
+/// structured `Result<int, String>` failure surface.
 ///
-pub fn parse(s: String, fmt: String) -> i64 {
+pub fn parse(s: String, fmt: String) -> int {
     match try_parse(s, fmt) {
         Ok(epoch_ms) => epoch_ms,
         Err(err) => {
@@ -62,8 +62,8 @@ pub fn parse(s: String, fmt: String) -> i64 {
 /// milliseconds.
 ///
 /// Returns `Err(String)` with the native parser message when parsing fails.
-pub fn try_parse(s: String, fmt: String) -> Result<i64, String> {
-    let epoch_ms = unsafe { hew_datetime_parse(s, fmt) };
+pub fn try_parse(s: String, fmt: String) -> Result<int, String> {
+    let epoch_ms = unsafe { hew_datetime_parse(s, fmt) as int };
     let err = parse_error_message();
     if err.len() == 0 {
         Ok(epoch_ms)
@@ -73,52 +73,52 @@ pub fn try_parse(s: String, fmt: String) -> Result<i64, String> {
 }
 
 /// Extract the year component from an epoch-millisecond timestamp.
-pub fn year(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_year(epoch_ms) }
+pub fn year(epoch_ms: int) -> int {
+    unsafe { hew_datetime_year(epoch_ms as i64) }
 }
 
 /// Extract the month (1–12) from an epoch-millisecond timestamp.
-pub fn month(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_month(epoch_ms) }
+pub fn month(epoch_ms: int) -> int {
+    unsafe { hew_datetime_month(epoch_ms as i64) }
 }
 
 /// Extract the day of the month (1–31) from an epoch-millisecond timestamp.
-pub fn day(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_day(epoch_ms) }
+pub fn day(epoch_ms: int) -> int {
+    unsafe { hew_datetime_day(epoch_ms as i64) }
 }
 
 /// Extract the hour (0–23) from an epoch-millisecond timestamp.
-pub fn hour(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_hour(epoch_ms) }
+pub fn hour(epoch_ms: int) -> int {
+    unsafe { hew_datetime_hour(epoch_ms as i64) }
 }
 
 /// Extract the minute (0–59) from an epoch-millisecond timestamp.
-pub fn minute(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_minute(epoch_ms) }
+pub fn minute(epoch_ms: int) -> int {
+    unsafe { hew_datetime_minute(epoch_ms as i64) }
 }
 
 /// Extract the second (0–59) from an epoch-millisecond timestamp.
-pub fn second(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_second(epoch_ms) }
+pub fn second(epoch_ms: int) -> int {
+    unsafe { hew_datetime_second(epoch_ms as i64) }
 }
 
 /// Return the day of the week (0 = Monday, 6 = Sunday).
-pub fn weekday(epoch_ms: i64) -> int {
-    unsafe { hew_datetime_weekday(epoch_ms) }
+pub fn weekday(epoch_ms: int) -> int {
+    unsafe { hew_datetime_weekday(epoch_ms as i64) }
 }
 
 /// Add a number of days to an epoch-millisecond timestamp.
-pub fn add_days(epoch_ms: i64, days: int) -> i64 {
-    epoch_ms + (days as i64) * 86_400_000
+pub fn add_days(epoch_ms: int, days: int) -> int {
+    epoch_ms + days * 86_400_000
 }
 
 /// Add a number of hours to an epoch-millisecond timestamp.
-pub fn add_hours(epoch_ms: i64, hours: int) -> i64 {
-    epoch_ms + (hours as i64) * 3_600_000
+pub fn add_hours(epoch_ms: int, hours: int) -> int {
+    epoch_ms + hours * 3_600_000
 }
 
 /// Return the difference in seconds between two epoch-millisecond timestamps.
-pub fn diff_secs(a: i64, b: i64) -> i64 {
+pub fn diff_secs(a: int, b: int) -> int {
     (a - b) / 1000
 }
 
@@ -130,7 +130,7 @@ pub fn diff_secs(a: i64, b: i64) -> i64 {
 /// let iso = datetime.to_iso8601(datetime.now_ms());
 /// // e.g. "2025-07-10T14:30:00Z"
 /// ```
-pub fn to_iso8601(epoch_ms: i64) -> String {
+pub fn to_iso8601(epoch_ms: int) -> String {
     format(epoch_ms, "%Y-%m-%dT%H:%M:%SZ")
 }
 
@@ -138,8 +138,8 @@ pub fn to_iso8601(epoch_ms: i64) -> String {
 ///
 /// Uses a monotonic clock not affected by wall-clock adjustments,
 /// suitable for high-resolution benchmarking and timing measurements.
-pub fn now_nanos() -> i64 {
-    unsafe { hew_datetime_now_nanos() }
+pub fn now_nanos() -> int {
+    unsafe { hew_datetime_now_nanos() as int }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

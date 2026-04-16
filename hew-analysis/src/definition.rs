@@ -56,10 +56,13 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
             }
         }
 
-        // Search inside TypeDecl for variants and methods.
+        // Search inside TypeDecl for fields, variants, and methods.
         if let Item::TypeDecl(td) = item {
             for body_item in &td.body {
                 match body_item {
+                    TypeBodyItem::Field { name, .. } if name == word => {
+                        return Some(crate::util::find_name_span(source, span.start, word));
+                    }
                     TypeBodyItem::Variant(v) if v.name == word => {
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
@@ -432,7 +435,7 @@ fn param_name_span(param: &Param) -> OffsetSpan {
     OffsetSpan { start, end }
 }
 
-fn find_field_receiver_end(source: &str, field_start: usize) -> Option<usize> {
+pub(crate) fn find_field_receiver_end(source: &str, field_start: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut dot_pos = field_start;
     while dot_pos > 0 && bytes[dot_pos - 1].is_ascii_whitespace() {
@@ -593,6 +596,18 @@ mod tests {
 
         let result =
             find_field_definition(source, &pr, &type_output, offset).expect("should find field");
+        let expected_start = source
+            .find("x: i32")
+            .expect("field declaration should exist");
+        assert_eq!(result.start, expected_start);
+        assert_eq!(&source[result.start..result.end], "x");
+    }
+
+    #[test]
+    fn definition_finds_struct_field_declaration() {
+        let source = "type Point { x: i32; y: i32 }";
+        let pr = parse(source);
+        let result = find_definition(source, &pr, "x").expect("should find field declaration");
         let expected_start = source
             .find("x: i32")
             .expect("field declaration should exist");

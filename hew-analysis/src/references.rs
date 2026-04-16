@@ -90,6 +90,15 @@ pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
                 return true;
             }
         }
+        if let Item::TypeDecl(td) = item {
+            if td
+                .body
+                .iter()
+                .any(|body_item| matches!(body_item, TypeBodyItem::Field { name: field_name, .. } if field_name == name))
+            {
+                return true;
+            }
+        }
         false
     })
 }
@@ -107,7 +116,7 @@ fn find_all_references_raw(
 
     let mut spans = Vec::new();
     for (item, _span) in &parse_result.program.items {
-        collect_refs_in_item(item, &name, &mut spans);
+        collect_refs_in_item(source, item, &name, &mut spans);
     }
 
     // For top-level names (functions, actors, types, receive handlers, fields),
@@ -863,107 +872,107 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
     }
 }
 
-fn collect_refs_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
+fn collect_refs_in_item(source: &str, item: &Item, name: &str, spans: &mut Vec<Span>) {
     match item {
         Item::Function(f) => {
-            collect_refs_in_block(&f.body, name, spans);
+            collect_refs_in_block(source, &f.body, name, spans);
         }
         Item::Actor(a) => {
             if let Some(init) = &a.init {
-                collect_refs_in_block(&init.body, name, spans);
+                collect_refs_in_block(source, &init.body, name, spans);
             }
             if let Some(term) = &a.terminate {
-                collect_refs_in_block(&term.body, name, spans);
+                collect_refs_in_block(source, &term.body, name, spans);
             }
             for recv in &a.receive_fns {
-                collect_refs_in_block(&recv.body, name, spans);
+                collect_refs_in_block(source, &recv.body, name, spans);
             }
             for method in &a.methods {
-                collect_refs_in_block(&method.body, name, spans);
+                collect_refs_in_block(source, &method.body, name, spans);
             }
         }
         Item::TypeDecl(td) => {
             for body_item in &td.body {
                 if let TypeBodyItem::Method(m) = body_item {
-                    collect_refs_in_block(&m.body, name, spans);
+                    collect_refs_in_block(source, &m.body, name, spans);
                 }
             }
         }
         Item::Impl(i) => {
             for method in &i.methods {
-                collect_refs_in_block(&method.body, name, spans);
+                collect_refs_in_block(source, &method.body, name, spans);
             }
         }
         Item::Trait(t) => {
             for trait_item in &t.items {
                 if let TraitItem::Method(m) = trait_item {
                     if let Some(body) = &m.body {
-                        collect_refs_in_block(body, name, spans);
+                        collect_refs_in_block(source, body, name, spans);
                     }
                 }
             }
         }
         Item::Const(c) => {
-            collect_refs_in_expr(&c.value.0, &c.value.1, name, spans);
+            collect_refs_in_expr(source, &c.value.0, &c.value.1, name, spans);
         }
         Item::Supervisor(s) => {
             for child in &s.children {
                 for arg in &child.args {
-                    collect_refs_in_expr(&arg.0, &arg.1, name, spans);
+                    collect_refs_in_expr(source, &arg.0, &arg.1, name, spans);
                 }
             }
         }
         Item::Machine(m) => {
             for transition in &m.transitions {
                 if let Some(guard) = &transition.guard {
-                    collect_refs_in_expr(&guard.0, &guard.1, name, spans);
+                    collect_refs_in_expr(source, &guard.0, &guard.1, name, spans);
                 }
-                collect_refs_in_expr(&transition.body.0, &transition.body.1, name, spans);
+                collect_refs_in_expr(source, &transition.body.0, &transition.body.1, name, spans);
             }
         }
         Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
     }
 }
 
-fn collect_refs_in_block(block: &Block, name: &str, spans: &mut Vec<Span>) {
+fn collect_refs_in_block(source: &str, block: &Block, name: &str, spans: &mut Vec<Span>) {
     for (stmt, _span) in &block.stmts {
-        collect_refs_in_stmt(stmt, name, spans);
+        collect_refs_in_stmt(source, stmt, name, spans);
     }
     if let Some(trailing) = &block.trailing_expr {
-        collect_refs_in_expr(&trailing.0, &trailing.1, name, spans);
+        collect_refs_in_expr(source, &trailing.0, &trailing.1, name, spans);
     }
 }
 
-fn collect_refs_in_stmt(stmt: &Stmt, name: &str, spans: &mut Vec<Span>) {
+fn collect_refs_in_stmt(source: &str, stmt: &Stmt, name: &str, spans: &mut Vec<Span>) {
     match stmt {
         Stmt::Let { pattern, value, .. } => {
             collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
             if let Some(val) = value {
-                collect_refs_in_expr(&val.0, &val.1, name, spans);
+                collect_refs_in_expr(source, &val.0, &val.1, name, spans);
             }
         }
         Stmt::Var { value, .. } => {
             if let Some(val) = value {
-                collect_refs_in_expr(&val.0, &val.1, name, spans);
+                collect_refs_in_expr(source, &val.0, &val.1, name, spans);
             }
         }
         Stmt::Assign { target, value, .. } => {
-            collect_refs_in_expr(&target.0, &target.1, name, spans);
-            collect_refs_in_expr(&value.0, &value.1, name, spans);
+            collect_refs_in_expr(source, &target.0, &target.1, name, spans);
+            collect_refs_in_expr(source, &value.0, &value.1, name, spans);
         }
         Stmt::If {
             condition,
             then_block,
             else_block,
         } => {
-            collect_refs_in_expr(&condition.0, &condition.1, name, spans);
-            collect_refs_in_block(then_block, name, spans);
+            collect_refs_in_expr(source, &condition.0, &condition.1, name, spans);
+            collect_refs_in_block(source, then_block, name, spans);
             if let Some(eb) = else_block {
                 if let Some(if_stmt) = &eb.if_stmt {
-                    collect_refs_in_stmt(&if_stmt.0, name, spans);
+                    collect_refs_in_stmt(source, &if_stmt.0, name, spans);
                 }
                 if let Some(block) = &eb.block {
-                    collect_refs_in_block(block, name, spans);
+                    collect_refs_in_block(source, block, name, spans);
                 }
             }
         }
@@ -974,30 +983,30 @@ fn collect_refs_in_stmt(stmt: &Stmt, name: &str, spans: &mut Vec<Span>) {
             else_body,
         } => {
             collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
-            collect_refs_in_expr(&expr.0, &expr.1, name, spans);
-            collect_refs_in_block(body, name, spans);
+            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
+            collect_refs_in_block(source, body, name, spans);
             if let Some(block) = else_body {
-                collect_refs_in_block(block, name, spans);
+                collect_refs_in_block(source, block, name, spans);
             }
         }
         Stmt::Match { scrutinee, arms } => {
-            collect_refs_in_expr(&scrutinee.0, &scrutinee.1, name, spans);
+            collect_refs_in_expr(source, &scrutinee.0, &scrutinee.1, name, spans);
             for arm in arms {
                 collect_refs_in_pattern(&arm.pattern.0, &arm.pattern.1, name, spans);
                 if let Some(guard) = &arm.guard {
-                    collect_refs_in_expr(&guard.0, &guard.1, name, spans);
+                    collect_refs_in_expr(source, &guard.0, &guard.1, name, spans);
                 }
-                collect_refs_in_expr(&arm.body.0, &arm.body.1, name, spans);
+                collect_refs_in_expr(source, &arm.body.0, &arm.body.1, name, spans);
             }
         }
         Stmt::Loop { body, .. } => {
-            collect_refs_in_block(body, name, spans);
+            collect_refs_in_block(source, body, name, spans);
         }
         Stmt::While {
             condition, body, ..
         } => {
-            collect_refs_in_expr(&condition.0, &condition.1, name, spans);
-            collect_refs_in_block(body, name, spans);
+            collect_refs_in_expr(source, &condition.0, &condition.1, name, spans);
+            collect_refs_in_block(source, body, name, spans);
         }
         Stmt::WhileLet {
             pattern,
@@ -1006,8 +1015,8 @@ fn collect_refs_in_stmt(stmt: &Stmt, name: &str, spans: &mut Vec<Span>) {
             ..
         } => {
             collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
-            collect_refs_in_expr(&expr.0, &expr.1, name, spans);
-            collect_refs_in_block(body, name, spans);
+            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
+            collect_refs_in_block(source, body, name, spans);
         }
         Stmt::For {
             pattern,
@@ -1016,20 +1025,20 @@ fn collect_refs_in_stmt(stmt: &Stmt, name: &str, spans: &mut Vec<Span>) {
             ..
         } => {
             collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
-            collect_refs_in_expr(&iterable.0, &iterable.1, name, spans);
-            collect_refs_in_block(body, name, spans);
+            collect_refs_in_expr(source, &iterable.0, &iterable.1, name, spans);
+            collect_refs_in_block(source, body, name, spans);
         }
         Stmt::Return(Some(val)) => {
-            collect_refs_in_expr(&val.0, &val.1, name, spans);
+            collect_refs_in_expr(source, &val.0, &val.1, name, spans);
         }
         Stmt::Defer(expr) => {
-            collect_refs_in_expr(&expr.0, &expr.1, name, spans);
+            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
         }
         Stmt::Expression(expr) => {
-            collect_refs_in_expr(&expr.0, &expr.1, name, spans);
+            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
         }
         Stmt::Break { value: Some(v), .. } => {
-            collect_refs_in_expr(&v.0, &v.1, name, spans);
+            collect_refs_in_expr(source, &v.0, &v.1, name, spans);
         }
         Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
     }
@@ -1039,68 +1048,71 @@ fn collect_refs_in_stmt(stmt: &Stmt, name: &str, spans: &mut Vec<Span>) {
     clippy::too_many_lines,
     reason = "match arms over all Expr variants is clearest as one function"
 )]
-fn collect_refs_in_expr(expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Span>) {
+fn collect_refs_in_expr(source: &str, expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Span>) {
     match expr {
         Expr::Identifier(ident) if ident == name => {
             spans.push(span.clone());
         }
         Expr::Binary { left, right, .. } => {
-            collect_refs_in_expr(&left.0, &left.1, name, spans);
-            collect_refs_in_expr(&right.0, &right.1, name, spans);
+            collect_refs_in_expr(source, &left.0, &left.1, name, spans);
+            collect_refs_in_expr(source, &right.0, &right.1, name, spans);
         }
         Expr::Unary { operand, .. } => {
-            collect_refs_in_expr(&operand.0, &operand.1, name, spans);
+            collect_refs_in_expr(source, &operand.0, &operand.1, name, spans);
         }
         Expr::Call { function, args, .. } => {
-            collect_refs_in_expr(&function.0, &function.1, name, spans);
+            collect_refs_in_expr(source, &function.0, &function.1, name, spans);
             for arg in args {
                 let e = arg.expr();
-                collect_refs_in_expr(&e.0, &e.1, name, spans);
+                collect_refs_in_expr(source, &e.0, &e.1, name, spans);
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
-            collect_refs_in_expr(&receiver.0, &receiver.1, name, spans);
+            collect_refs_in_expr(source, &receiver.0, &receiver.1, name, spans);
             for arg in args {
                 let e = arg.expr();
-                collect_refs_in_expr(&e.0, &e.1, name, spans);
+                collect_refs_in_expr(source, &e.0, &e.1, name, spans);
             }
         }
-        Expr::FieldAccess { object, .. } => {
-            collect_refs_in_expr(&object.0, &object.1, name, spans);
+        Expr::FieldAccess { object, field } => {
+            collect_refs_in_expr(source, &object.0, &object.1, name, spans);
+            if field == name {
+                spans.push(field_access_name_span(source, span, field));
+            }
         }
         Expr::Index { object, index } => {
-            collect_refs_in_expr(&object.0, &object.1, name, spans);
-            collect_refs_in_expr(&index.0, &index.1, name, spans);
+            collect_refs_in_expr(source, &object.0, &object.1, name, spans);
+            collect_refs_in_expr(source, &index.0, &index.1, name, spans);
         }
         Expr::StructInit { fields, .. } => {
             for (_, val) in fields {
-                collect_refs_in_expr(&val.0, &val.1, name, spans);
+                collect_refs_in_expr(source, &val.0, &val.1, name, spans);
             }
         }
         Expr::Spawn { target, args } => {
-            collect_refs_in_expr(&target.0, &target.1, name, spans);
+            collect_refs_in_expr(source, &target.0, &target.1, name, spans);
             for (_, val) in args {
-                collect_refs_in_expr(&val.0, &val.1, name, spans);
+                collect_refs_in_expr(source, &val.0, &val.1, name, spans);
             }
         }
         Expr::Block(block)
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
         | Expr::ScopeSpawn(block) => {
-            collect_refs_in_block(block, name, spans);
+            collect_refs_in_block(source, block, name, spans);
         }
         Expr::Scope { body, .. } => {
-            collect_refs_in_block(body, name, spans);
+            collect_refs_in_block(source, body, name, spans);
         }
         Expr::If {
             condition,
             then_block,
             else_block,
         } => {
-            collect_refs_in_expr(&condition.0, &condition.1, name, spans);
-            collect_refs_in_expr(&then_block.0, &then_block.1, name, spans);
+            collect_refs_in_expr(source, &condition.0, &condition.1, name, spans);
+            collect_refs_in_expr(source, &then_block.0, &then_block.1, name, spans);
             if let Some(eb) = else_block {
-                collect_refs_in_expr(&eb.0, &eb.1, name, spans);
+                collect_refs_in_expr(source, &eb.0, &eb.1, name, spans);
             }
         }
         Expr::IfLet {
@@ -1110,77 +1122,77 @@ fn collect_refs_in_expr(expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Sp
             else_body,
         } => {
             collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
-            collect_refs_in_expr(&expr.0, &expr.1, name, spans);
-            collect_refs_in_block(body, name, spans);
+            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
+            collect_refs_in_block(source, body, name, spans);
             if let Some(block) = else_body {
-                collect_refs_in_block(block, name, spans);
+                collect_refs_in_block(source, block, name, spans);
             }
         }
         Expr::Match { scrutinee, arms } => {
-            collect_refs_in_expr(&scrutinee.0, &scrutinee.1, name, spans);
+            collect_refs_in_expr(source, &scrutinee.0, &scrutinee.1, name, spans);
             for arm in arms {
                 collect_refs_in_pattern(&arm.pattern.0, &arm.pattern.1, name, spans);
                 if let Some(guard) = &arm.guard {
-                    collect_refs_in_expr(&guard.0, &guard.1, name, spans);
+                    collect_refs_in_expr(source, &guard.0, &guard.1, name, spans);
                 }
-                collect_refs_in_expr(&arm.body.0, &arm.body.1, name, spans);
+                collect_refs_in_expr(source, &arm.body.0, &arm.body.1, name, spans);
             }
         }
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-            collect_refs_in_expr(&body.0, &body.1, name, spans);
+            collect_refs_in_expr(source, &body.0, &body.1, name, spans);
         }
         Expr::ArrayRepeat { value, count } => {
-            collect_refs_in_expr(&value.0, &value.1, name, spans);
-            collect_refs_in_expr(&count.0, &count.1, name, spans);
+            collect_refs_in_expr(source, &value.0, &value.1, name, spans);
+            collect_refs_in_expr(source, &count.0, &count.1, name, spans);
         }
         Expr::MapLiteral { entries } => {
             for (k, v) in entries {
-                collect_refs_in_expr(&k.0, &k.1, name, spans);
-                collect_refs_in_expr(&v.0, &v.1, name, spans);
+                collect_refs_in_expr(source, &k.0, &k.1, name, spans);
+                collect_refs_in_expr(source, &v.0, &v.1, name, spans);
             }
         }
         Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) => {
             for elem in elems {
-                collect_refs_in_expr(&elem.0, &elem.1, name, spans);
+                collect_refs_in_expr(source, &elem.0, &elem.1, name, spans);
             }
         }
         Expr::Send { target, message } => {
-            collect_refs_in_expr(&target.0, &target.1, name, spans);
-            collect_refs_in_expr(&message.0, &message.1, name, spans);
+            collect_refs_in_expr(source, &target.0, &target.1, name, spans);
+            collect_refs_in_expr(source, &message.0, &message.1, name, spans);
         }
         Expr::Select { arms, timeout } => {
             for arm in arms {
                 collect_refs_in_pattern(&arm.binding.0, &arm.binding.1, name, spans);
-                collect_refs_in_expr(&arm.source.0, &arm.source.1, name, spans);
-                collect_refs_in_expr(&arm.body.0, &arm.body.1, name, spans);
+                collect_refs_in_expr(source, &arm.source.0, &arm.source.1, name, spans);
+                collect_refs_in_expr(source, &arm.body.0, &arm.body.1, name, spans);
             }
             if let Some(to) = timeout {
-                collect_refs_in_expr(&to.duration.0, &to.duration.1, name, spans);
-                collect_refs_in_expr(&to.body.0, &to.body.1, name, spans);
+                collect_refs_in_expr(source, &to.duration.0, &to.duration.1, name, spans);
+                collect_refs_in_expr(source, &to.body.0, &to.body.1, name, spans);
             }
         }
         Expr::Timeout { expr: e, duration } => {
-            collect_refs_in_expr(&e.0, &e.1, name, spans);
-            collect_refs_in_expr(&duration.0, &duration.1, name, spans);
+            collect_refs_in_expr(source, &e.0, &e.1, name, spans);
+            collect_refs_in_expr(source, &duration.0, &duration.1, name, spans);
         }
         Expr::Await(inner)
         | Expr::PostfixTry(inner)
         | Expr::Yield(Some(inner))
         | Expr::Cast { expr: inner, .. } => {
-            collect_refs_in_expr(&inner.0, &inner.1, name, spans);
+            collect_refs_in_expr(source, &inner.0, &inner.1, name, spans);
         }
         Expr::Range { start, end, .. } => {
             if let Some(s) = start {
-                collect_refs_in_expr(&s.0, &s.1, name, spans);
+                collect_refs_in_expr(source, &s.0, &s.1, name, spans);
             }
             if let Some(e) = end {
-                collect_refs_in_expr(&e.0, &e.1, name, spans);
+                collect_refs_in_expr(source, &e.0, &e.1, name, spans);
             }
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
                 if let StringPart::Expr(e) = part {
-                    collect_refs_in_expr(&e.0, &e.1, name, spans);
+                    collect_refs_in_expr(source, &e.0, &e.1, name, spans);
                 }
             }
         }
@@ -1210,6 +1222,18 @@ fn collect_refs_in_pattern(pattern: &Pattern, span: &Span, name: &str, spans: &m
             collect_refs_in_pattern(&right.0, &right.1, name, spans);
         }
         _ => {}
+    }
+}
+
+fn field_access_name_span(source: &str, span: &Span, field: &str) -> Span {
+    let bytes = source.as_bytes();
+    let mut end = span.end;
+    while end > span.start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    Span {
+        start: end.saturating_sub(field.len()),
+        end,
     }
 }
 
@@ -1647,6 +1671,42 @@ mod tests {
                 "outer `x` refs should not cross into the inner `let x` at {inner_let_x_offset}: found span at {}",
                 span.start
             );
+        }
+    }
+
+    #[test]
+    fn find_refs_struct_field_from_declaration() {
+        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let pr = parse(source);
+        let offset = source
+            .find("x: i32")
+            .expect("field declaration should exist");
+        let result =
+            find_all_references(source, &pr, offset).expect("should find field references");
+        let (name, spans) = result;
+        assert_eq!(name, "x");
+
+        assert_eq!(spans.len(), 2);
+        for span in spans {
+            assert_eq!(&source[span.start..span.end], "x");
+            assert_eq!(source.as_bytes()[span.start - 1], b'.');
+        }
+    }
+
+    #[test]
+    fn find_refs_struct_field_from_access() {
+        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let pr = parse(source);
+        let offset = source.find("p.x").expect("field access should exist") + 2;
+        let result =
+            find_all_references(source, &pr, offset).expect("should find field references");
+        let (name, spans) = result;
+        assert_eq!(name, "x");
+
+        assert_eq!(spans.len(), 2);
+        for span in spans {
+            assert_eq!(&source[span.start..span.end], "x");
+            assert_eq!(source.as_bytes()[span.start - 1], b'.');
         }
     }
 }

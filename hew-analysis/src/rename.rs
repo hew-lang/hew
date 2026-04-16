@@ -163,4 +163,31 @@ mod tests {
         let span = result.unwrap();
         assert_eq!(&source[span.start..span.end], "x");
     }
+
+    #[test]
+    fn rename_struct_field_updates_declaration_and_accesses() {
+        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let pr = parse(source);
+        let offset = source.find("p.x").unwrap() + 2;
+        let edits = rename(source, &pr, offset, "z").expect("should rename struct field");
+
+        assert_eq!(
+            edits.len(),
+            3,
+            "should rename declaration and both accesses"
+        );
+        assert!(edits.iter().all(|edit| edit.new_text == "z"));
+
+        let decl_start = source.find("x: i32").unwrap();
+        assert!(edits.iter().any(|edit| edit.span.start == decl_start));
+        let access_edits: Vec<_> = edits
+            .iter()
+            .filter(|edit| edit.span.start != decl_start)
+            .collect();
+        assert_eq!(access_edits.len(), 2);
+        for edit in access_edits {
+            assert_eq!(&source[edit.span.start..edit.span.end], "x");
+            assert_eq!(source.as_bytes()[edit.span.start - 1], b'.');
+        }
+    }
 }

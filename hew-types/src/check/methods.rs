@@ -504,6 +504,14 @@ impl Checker {
         }
     }
 
+    fn stream_receiver_element_kind(ty: &Ty) -> &'static str {
+        match ty {
+            Ty::String => "string",
+            Ty::Bytes => "bytes",
+            _ => "",
+        }
+    }
+
     pub(super) fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
         let dot = name.find('.')?;
         if self.modules.contains(&name[..dot]) {
@@ -732,6 +740,13 @@ impl Checker {
                     }
                 }
                 self.record_deferred_method_call_rewrite(span);
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::StreamInstance {
+                        element_kind: Self::stream_receiver_element_kind(&resolved_inner)
+                            .to_string(),
+                    },
+                );
                 sig.return_type
             }
             _ => {
@@ -2239,6 +2254,23 @@ mod tests {
                 args: vec![],
             }),
             None
+        );
+    }
+
+    #[test]
+    fn stream_receiver_element_kind_stays_canonical() {
+        assert_eq!(Checker::stream_receiver_element_kind(&Ty::String), "string");
+        assert_eq!(Checker::stream_receiver_element_kind(&Ty::Bytes), "bytes");
+        assert_eq!(
+            Checker::stream_receiver_element_kind(&Ty::Named {
+                name: "String".into(),
+                args: vec![],
+            }),
+            ""
+        );
+        assert_eq!(
+            Checker::stream_receiver_element_kind(&Ty::Var(TypeVar::fresh())),
+            ""
         );
     }
 

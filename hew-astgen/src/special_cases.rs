@@ -192,6 +192,12 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
     entry.kind = std::move(data);
     return entry;
   }
+  if (kind == "stream_instance") {
+    ast::MethodCallReceiverKindStreamInstance data;
+    data.element_kind = getString(mapReq(obj, "element_kind"));
+    entry.kind = std::move(data);
+    return entry;
+  }
   fail("unknown method_call_receiver_kinds kind '" + kind + "'");
 }"#
 }
@@ -1385,8 +1391,10 @@ mod tests {
         assert!(src.contains("named_type_instance"));
         assert!(src.contains("handle_instance"));
         assert!(src.contains("trait_object"));
+        assert!(src.contains("stream_instance"));
         assert!(src.contains("type_name"));
         assert!(src.contains("trait_name"));
+        assert!(src.contains("element_kind"));
     }
 
     #[test]

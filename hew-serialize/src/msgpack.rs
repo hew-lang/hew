@@ -46,6 +46,7 @@ pub enum MethodCallReceiverKindData {
     NamedTypeInstance { type_name: String },
     HandleInstance { type_name: String },
     TraitObject { trait_name: String },
+    StreamInstance { element_kind: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -960,6 +961,11 @@ pub fn build_method_call_receiver_kind_entries(
                             trait_name: trait_name.clone(),
                         }
                     }
+                    CheckedMethodCallReceiverKind::StreamInstance { element_kind } => {
+                        MethodCallReceiverKindData::StreamInstance {
+                            element_kind: element_kind.clone(),
+                        }
+                    }
                 },
             });
         }
@@ -993,6 +999,11 @@ pub fn build_method_call_receiver_kind_entries(
                     CheckedMethodCallReceiverKind::TraitObject { trait_name } => {
                         MethodCallReceiverKindData::TraitObject {
                             trait_name: trait_name.clone(),
+                        }
+                    }
+                    CheckedMethodCallReceiverKind::StreamInstance { element_kind } => {
+                        MethodCallReceiverKindData::StreamInstance {
+                            element_kind: element_kind.clone(),
                         }
                     }
                 },
@@ -1476,6 +1487,23 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("Widget")
         );
+    }
+
+    #[test]
+    fn method_call_receiver_kind_stream_instance_roundtrips() {
+        for element_kind in ["string", "bytes", ""] {
+            let entry = MethodCallReceiverKindEntry {
+                start: 10,
+                end: 20,
+                kind: MethodCallReceiverKindData::StreamInstance {
+                    element_kind: element_kind.to_string(),
+                },
+            };
+            let bytes = rmp_serde::to_vec_named(&entry).expect("entry should serialize");
+            let restored: MethodCallReceiverKindEntry =
+                rmp_serde::from_slice(&bytes).expect("entry should deserialize");
+            assert_eq!(restored, entry);
+        }
     }
 
     #[test]
@@ -2062,6 +2090,92 @@ mod tests {
             entries[0].kind,
             MethodCallReceiverKindData::HandleInstance {
                 type_name: "net.Connection".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn build_method_call_receiver_kind_entries_emit_stream_instance_for_deferred_stream_calls() {
+        use hew_parser::ast::{CallArg, Expr, FnDecl, Literal, Visibility};
+        use hew_types::check::{MethodCallRewrite, SpanKey, TypeCheckOutput};
+
+        let call_span = 10..28;
+        let program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    is_pure: false,
+                    visibility: Visibility::Private,
+                    name: "use_stream".to_string(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((
+                            Expr::MethodCall {
+                                receiver: Box::new((Expr::Identifier("stream".into()), 10..16)),
+                                method: "take".into(),
+                                args: vec![CallArg::Positional((
+                                    Expr::Literal(Literal::Integer {
+                                        value: 1,
+                                        radix: IntRadix::Decimal,
+                                    }),
+                                    22..23,
+                                ))],
+                            },
+                            call_span.clone(),
+                        ))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                    fn_span: 0..0,
+                }),
+                0..30,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let tco = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::from([(
+                SpanKey {
+                    start: call_span.start,
+                    end: call_span.end,
+                },
+                CheckedMethodCallReceiverKind::StreamInstance {
+                    element_kind: "bytes".to_string(),
+                },
+            )]),
+            lowering_facts: HashMap::new(),
+            method_call_rewrites: HashMap::from([(
+                SpanKey {
+                    start: call_span.start,
+                    end: call_span.end,
+                },
+                MethodCallRewrite::DeferToLowering,
+            )]),
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+        };
+
+        let entries = build_method_call_receiver_kind_entries(&program, &tco);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].kind,
+            MethodCallReceiverKindData::StreamInstance {
+                element_kind: "bytes".to_string()
             }
         );
     }

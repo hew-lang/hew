@@ -425,6 +425,9 @@ impl Checker {
                 MethodCallReceiverKind::TraitObject { trait_name } => {
                     known_trait_names.contains(trait_name)
                 }
+                MethodCallReceiverKind::StreamInstance { element_kind } => {
+                    matches!(element_kind.as_str(), "" | "string" | "bytes")
+                }
             });
     }
 

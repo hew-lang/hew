@@ -429,7 +429,7 @@ static void test_method_call_receiver_kinds_roundtrip() {
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
-  pk.pack_array(3);
+  pk.pack_array(4);
 
   pk.pack_map(4);
   pk.pack(std::string("start"));
@@ -461,6 +461,16 @@ static void test_method_call_receiver_kinds_roundtrip() {
   pk.pack(std::string("type_name"));
   pk.pack(std::string("net.Connection"));
 
+  pk.pack_map(4);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(70));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(80));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("stream_instance"));
+  pk.pack(std::string("element_kind"));
+  pk.pack(std::string("bytes"));
+
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_shapes"));
@@ -476,8 +486,8 @@ static void test_method_call_receiver_kinds_roundtrip() {
 
   try {
     auto prog = hew::parseMsgpackAST(data.data(), data.size());
-    if (prog.method_call_receiver_kinds.size() != 3) {
-      FAIL("expected three method_call_receiver_kinds entries");
+    if (prog.method_call_receiver_kinds.size() != 4) {
+      FAIL("expected four method_call_receiver_kinds entries");
       return;
     }
     auto *named = std::get_if<hew::ast::MethodCallReceiverKindNamedTypeInstance>(
@@ -496,6 +506,12 @@ static void test_method_call_receiver_kinds_roundtrip() {
         &prog.method_call_receiver_kinds[2].kind);
     if (!handle || handle->type_name != "net.Connection") {
       FAIL("handle receiver kind not parsed correctly");
+      return;
+    }
+    auto *stream = std::get_if<hew::ast::MethodCallReceiverKindStreamInstance>(
+        &prog.method_call_receiver_kinds[3].kind);
+    if (!stream || stream->element_kind != "bytes") {
+      FAIL("stream receiver kind not parsed correctly");
       return;
     }
   } catch (const std::exception &e) {

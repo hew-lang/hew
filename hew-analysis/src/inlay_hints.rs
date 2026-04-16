@@ -1,10 +1,11 @@
 //! Analysis module for inlay hints.
 //!
 //! Produces inlay hints (type annotations for unannotated `let`/`var` bindings
-//! and lambda return types) using byte offsets rather than LSP positions.
+//! plus inferred lambda/function/method return types) using byte offsets rather
+//! than LSP positions.
 
 use hew_parser::ast::{
-    Block, CallArg, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
+    Block, CallArg, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem, TypeExpr,
 };
 use hew_parser::ParseResult;
 use hew_types::check::{FnSig, SpanKey};
@@ -27,6 +28,10 @@ pub fn build_inlay_hints(
     hints
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive item traversal keeps hint coverage explicit"
+)]
 fn collect_inlay_hints_from_item(
     source: &str,
     item: &Item,
@@ -35,7 +40,19 @@ fn collect_inlay_hints_from_item(
 ) {
     match item {
         Item::Const(c) => collect_inlay_hints_from_expr(source, &c.value.0, tc, hints),
-        Item::Function(f) => collect_inlay_hints_from_block(source, &f.body, tc, hints),
+        Item::Function(f) => {
+            push_named_return_type_hint(
+                source,
+                &f.fn_span,
+                f.return_type.is_none(),
+                tc.fn_sigs
+                    .get(f.name.as_str())
+                    .cloned()
+                    .or_else(|| find_fallback_fn_sig(&f.name, tc)),
+                hints,
+            );
+            collect_inlay_hints_from_block(source, &f.body, tc, hints);
+        }
         Item::Actor(a) => {
             if let Some(init) = &a.init {
                 collect_inlay_hints_from_block(source, &init.body, tc, hints);
@@ -47,18 +64,50 @@ fn collect_inlay_hints_from_item(
                 collect_inlay_hints_from_block(source, &recv.body, tc, hints);
             }
             for method in &a.methods {
+                push_named_return_type_hint(
+                    source,
+                    &method.fn_span,
+                    method.return_type.is_none(),
+                    tc.fn_sigs
+                        .get(format!("{}::{}", a.name, method.name).as_str())
+                        .cloned(),
+                    hints,
+                );
                 collect_inlay_hints_from_block(source, &method.body, tc, hints);
             }
         }
         Item::TypeDecl(td) => {
             for body_item in &td.body {
                 if let TypeBodyItem::Method(method) = body_item {
+                    push_named_return_type_hint(
+                        source,
+                        &method.fn_span,
+                        method.return_type.is_none(),
+                        tc.fn_sigs
+                            .get(format!("{}::{}", td.name, method.name).as_str())
+                            .cloned(),
+                        hints,
+                    );
                     collect_inlay_hints_from_block(source, &method.body, tc, hints);
                 }
             }
         }
         Item::Impl(i) => {
             for method in &i.methods {
+                let sig = match &i.target_type.0 {
+                    TypeExpr::Named { name, .. } => tc
+                        .fn_sigs
+                        .get(format!("{name}::{}", method.name).as_str())
+                        .cloned(),
+                    _ => None,
+                };
+                push_named_return_type_hint(
+                    source,
+                    &method.fn_span,
+                    method.return_type.is_none(),
+                    sig,
+                    hints,
+                );
                 collect_inlay_hints_from_block(source, &method.body, tc, hints);
             }
         }
@@ -66,6 +115,15 @@ fn collect_inlay_hints_from_item(
             for trait_item in &t.items {
                 if let TraitItem::Method(method) = trait_item {
                     if let Some(body) = &method.body {
+                        push_named_return_type_hint(
+                            source,
+                            &method.span,
+                            method.return_type.is_none(),
+                            tc.fn_sigs
+                                .get(format!("{}::{}", t.name, method.name).as_str())
+                                .cloned(),
+                            hints,
+                        );
                         collect_inlay_hints_from_block(source, body, tc, hints);
                     }
                 }
@@ -88,6 +146,37 @@ fn collect_inlay_hints_from_item(
         }
         _ => {}
     }
+}
+
+fn push_named_return_type_hint(
+    source: &str,
+    fn_span: &Span,
+    needs_hint: bool,
+    sig: Option<FnSig>,
+    hints: &mut Vec<InlayHint>,
+) {
+    if !needs_hint {
+        return;
+    }
+    let Some(offset) = find_named_return_hint_offset(source, fn_span) else {
+        return;
+    };
+    let Some(sig) = sig else {
+        return;
+    };
+    hints.push(InlayHint {
+        offset,
+        label: format!("-> {} ", sig.return_type.user_facing()),
+        kind: InlayHintKind::Type,
+        padding_left: true,
+    });
+}
+
+fn find_named_return_hint_offset(source: &str, fn_span: &Span) -> Option<usize> {
+    source
+        .get(fn_span.start..fn_span.end)?
+        .find('{')
+        .map(|body_start| fn_span.start + body_start)
 }
 
 fn collect_inlay_hints_from_block(
@@ -572,10 +661,25 @@ mod tests {
         }
     }
 
-    fn lambda_hint_labels(hints: &[InlayHint]) -> Vec<&str> {
+    fn return_hint_labels_at_offsets<'a>(
+        hints: &'a [InlayHint],
+        offsets: &[usize],
+    ) -> Vec<&'a str> {
         hints
             .iter()
-            .filter(|hint| hint.kind == InlayHintKind::Type && hint.label.starts_with("-> "))
+            .filter(|hint| {
+                hint.kind == InlayHintKind::Type
+                    && hint.label.starts_with("-> ")
+                    && offsets.contains(&hint.offset)
+            })
+            .map(|hint| hint.label.as_str())
+            .collect()
+    }
+
+    fn binding_type_hint_labels(hints: &[InlayHint]) -> Vec<&str> {
+        hints
+            .iter()
+            .filter(|hint| hint.kind == InlayHintKind::Type && hint.label.starts_with(": "))
             .map(|hint| hint.label.as_str())
             .collect()
     }
@@ -668,10 +772,7 @@ fn main() {
         let pr = parse(source);
         let tc = type_check(&pr);
         let hints = build_inlay_hints(source, &pr, &tc);
-        let type_hints: Vec<_> = hints
-            .iter()
-            .filter(|h| h.kind == InlayHintKind::Type)
-            .collect();
+        let type_hints = binding_type_hint_labels(&hints);
         // Assertions outside the guard — test fails if expr_types is empty
         assert!(
             !tc.expr_types.is_empty(),
@@ -682,9 +783,9 @@ fn main() {
             "should produce type hint for unannotated let binding"
         );
         assert!(
-            type_hints[0].label.starts_with(": "),
+            type_hints[0].starts_with(": "),
             "type hint should start with ': ', got: {}",
-            type_hints[0].label
+            type_hints[0]
         );
     }
 
@@ -695,10 +796,7 @@ fn main() {
         let tc = type_check(&pr);
         let hints = build_inlay_hints(source, &pr, &tc);
         // Annotated bindings should not get type hints
-        let type_hints: Vec<_> = hints
-            .iter()
-            .filter(|h| h.kind == InlayHintKind::Type)
-            .collect();
+        let type_hints = binding_type_hint_labels(&hints);
         assert!(
             type_hints.is_empty(),
             "annotated let binding should not get a type hint"
@@ -721,12 +819,9 @@ fn main() {
             {
                 let tc = make_tc_with_expr_type(val.1.start, val.1.end, Ty::I64);
                 let hints = build_inlay_hints(source, &pr, &tc);
-                let type_hints: Vec<_> = hints
-                    .iter()
-                    .filter(|h| h.kind == InlayHintKind::Type)
-                    .collect();
+                let type_hints = binding_type_hint_labels(&hints);
                 assert!(!type_hints.is_empty(), "var binding should get a type hint");
-                assert_eq!(type_hints[0].label, ": int");
+                assert_eq!(type_hints[0], ": int");
             } else {
                 panic!("expected var statement with value");
             }
@@ -749,15 +844,12 @@ fn main() {
             {
                 let tc = make_tc_with_expr_type(val.1.start, val.1.end, Ty::String);
                 let hints = build_inlay_hints(source, &pr, &tc);
-                let type_hints: Vec<_> = hints
-                    .iter()
-                    .filter(|h| h.kind == InlayHintKind::Type)
-                    .collect();
+                let type_hints = binding_type_hint_labels(&hints);
                 assert!(
                     !type_hints.is_empty(),
                     "unannotated let should get type hint"
                 );
-                assert!(type_hints[0].label.contains("String"));
+                assert!(type_hints[0].contains("String"));
             } else {
                 panic!("expected let statement with value");
             }
@@ -787,7 +879,7 @@ fn main() {
 
         let tc = make_tc_with_expr_type(lambda_body.1.start, lambda_body.1.end, Ty::I32);
         let hints = build_inlay_hints(source, &pr, &tc);
-        let lambda_hints = lambda_hint_labels(&hints);
+        let lambda_hints = return_hint_labels_at_offsets(&hints, &[lambda_body.1.start]);
 
         assert_eq!(
             lambda_hints,
@@ -825,7 +917,7 @@ fn main() {
 
         let tc = make_tc_with_expr_type(lambda_body.1.start, lambda_body.1.end, Ty::I32);
         let hints = build_inlay_hints(source, &pr, &tc);
-        let lambda_hints = lambda_hint_labels(&hints);
+        let lambda_hints = return_hint_labels_at_offsets(&hints, &[lambda_body.1.start]);
 
         assert_eq!(
             lambda_hints,
@@ -864,12 +956,82 @@ fn main() {
 
         let tc = make_tc_with_expr_type(lambda_body.1.start, lambda_body.1.end, Ty::I32);
         let hints = build_inlay_hints(source, &pr, &tc);
-        let lambda_hints = lambda_hint_labels(&hints);
+        let lambda_hints = return_hint_labels_at_offsets(&hints, &[lambda_body.1.start]);
 
         assert_eq!(
             lambda_hints,
             vec!["-> i32 "],
             "lambda in a block trailing expression should get a return-type hint"
+        );
+    }
+
+    #[test]
+    fn function_without_return_annotation_gets_return_hint() {
+        let source = "fn answer() { 42 }\nfn main() -> int { answer(); 0 }";
+        let pr = parse(source);
+        let tc = type_check(&pr);
+        let answer_fn = match &pr.program.items[0].0 {
+            Item::Function(function) => function,
+            other => panic!("expected function item, got {other:?}"),
+        };
+
+        let hints = build_inlay_hints(source, &pr, &tc);
+        let answer_hint_offset = find_named_return_hint_offset(source, &answer_fn.fn_span)
+            .expect("answer function body should have an opening brace");
+        let answer_hints = return_hint_labels_at_offsets(&hints, &[answer_hint_offset]);
+        let expected = format!("-> {} ", tc.fn_sigs["answer"].return_type.user_facing());
+
+        assert_eq!(
+            answer_hints,
+            vec![expected.as_str()],
+            "function without an explicit return type should get a return hint"
+        );
+    }
+
+    #[test]
+    fn impl_method_without_return_annotation_gets_return_hint() {
+        let source = r"
+type Counter { value: int }
+
+impl Counter {
+    fn doubled(counter: Counter) { counter.value * 2 }
+}
+
+fn main() -> int { 0 }
+";
+        let pr = parse(source);
+        let tc = type_check(&pr);
+        let method = match &pr.program.items[1].0 {
+            Item::Impl(imp) => &imp.methods[0],
+            other => panic!("expected impl item, got {other:?}"),
+        };
+
+        let hints = build_inlay_hints(source, &pr, &tc);
+        let method_hint_offset = find_named_return_hint_offset(source, &method.fn_span)
+            .expect("impl method body should have an opening brace");
+        let method_hints = return_hint_labels_at_offsets(&hints, &[method_hint_offset]);
+        let expected = format!(
+            "-> {} ",
+            tc.fn_sigs["Counter::doubled"].return_type.user_facing()
+        );
+
+        assert_eq!(
+            method_hints,
+            vec![expected.as_str()],
+            "impl method without an explicit return type should get a return hint"
+        );
+    }
+
+    #[test]
+    fn explicit_named_return_type_does_not_get_hint() {
+        let source = "fn answer() -> int { 42 }";
+        let pr = parse(source);
+        let tc = type_check(&pr);
+        let hints = build_inlay_hints(source, &pr, &tc);
+
+        assert!(
+            hints.iter().all(|hint| !hint.label.starts_with("-> ")),
+            "explicitly annotated functions should not get return-type hints"
         );
     }
 }

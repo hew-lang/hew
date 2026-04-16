@@ -1680,6 +1680,66 @@ fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
 }
 
 #[test]
+fn typecheck_error_scrutinee_struct_pattern_no_undefined_variable_cascade() {
+    let (errors, _) = parse_and_check(concat!(
+        "type Point { x: int, y: int }\n",
+        "fn main() {\n",
+        "    let _value = match missing {\n",
+        "        Point { x, y } => x + y,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedVariable))
+            .count(),
+        1,
+        "expected only the errored scrutinee to report UndefinedVariable: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_error_scrutinee_struct_variant_pattern_no_cascade() {
+    let (errors, _) = parse_and_check(concat!(
+        "enum Shape { Move { x: int } }\n",
+        "fn main() {\n",
+        "    let _value = match missing {\n",
+        "        Shape::Move { x } => x,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedVariable))
+            .count(),
+        1,
+        "expected only the errored scrutinee to report UndefinedVariable: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_error_scrutinee_struct_pattern_with_subpattern_no_cascade() {
+    let (errors, _) = parse_and_check(concat!(
+        "type Point { x: int }\n",
+        "fn main() {\n",
+        "    let _value = match missing {\n",
+        "        Point { x: inner_x } => inner_x,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedVariable))
+            .count(),
+        1,
+        "expected only the errored scrutinee to report UndefinedVariable: {errors:?}"
+    );
+}
+
+#[test]
 fn typecheck_bool_scrutinee_constructor_pattern_errors() {
     let (errors, warnings) = parse_and_check(concat!(
         "fn main() {\n",

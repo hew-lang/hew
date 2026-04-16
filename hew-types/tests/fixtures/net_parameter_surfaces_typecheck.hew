@@ -1,0 +1,50 @@
+import std::net;
+import std::net::quic;
+import std::net::smtp;
+import std::net::tls;
+import std::net::websocket;
+
+fn main() {
+    let tls_port: int = 443;
+    let tls_size: int = 4096;
+    let tls_stream: tls.TlsStream = tls.connect("example.com", tls_port);
+    let _tls_chunk: bytes = tls.read(tls_stream, tls_size);
+
+    let smtp_port: int = 587;
+    let _smtp_conn: smtp.Conn = smtp.connect("smtp.example.com", smtp_port, "user", "pass");
+    let _smtp_tls_conn: smtp.Conn = smtp.connect_tls("smtp.example.com", 465, "user", "pass");
+    let _smtp_send_status: i32 = smtp.send(
+        "smtp.example.com",
+        smtp_port,
+        "user",
+        "pass",
+        "from@example.com",
+        "to@example.com",
+        "subject",
+        "body",
+    );
+    let _smtp_send_html_status: i32 = smtp.send_html(
+        "smtp.example.com",
+        smtp_port,
+        "user",
+        "pass",
+        "from@example.com",
+        "to@example.com",
+        "subject",
+        "<p>body</p>",
+    );
+
+    let ws_server: websocket.Server = websocket.listen("127.0.0.1:0");
+    let ws_port: int = ws_server.port();
+
+    let timeout_ms: int = 1500;
+    let conn: net.Connection = net.connect_timeout("127.0.0.1:8080", 1, 500000);
+    let _read_timeout_status: i32 = conn.set_read_timeout(timeout_ms);
+    let _write_timeout_status: i32 = conn.set_write_timeout(timeout_ms);
+
+    let quic_conn: quic.QUICConnection = quic.new_client().connect("127.0.0.1:4433", "localhost");
+    let quic_obs: quic.QUICConnectionObservation = quic_conn.observe();
+    let quic_rtt: int = quic_obs.rtt_ms;
+
+    println(ws_port + quic_rtt);
+}

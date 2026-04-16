@@ -1,0 +1,49 @@
+import std::net;
+import std::net::quic;
+import std::net::smtp;
+import std::net::tls;
+
+fn _prove_int_surface() {
+    let tls_port: int = 443;
+    let tls_size: int = 4096;
+    let tls_stream: tls.TlsStream = tls.connect("example.com", tls_port);
+    let _tls_chunk: bytes = tls.read(tls_stream, tls_size);
+
+    let smtp_port: int = 587;
+    let _smtp_conn: smtp.Conn = smtp.connect("smtp.example.com", smtp_port, "user", "pass");
+    let _smtp_tls_conn: smtp.Conn = smtp.connect_tls("smtp.example.com", 465, "user", "pass");
+    let _smtp_send_status: i32 = smtp.send(
+        "smtp.example.com",
+        smtp_port,
+        "user",
+        "pass",
+        "from@example.com",
+        "to@example.com",
+        "subject",
+        "body",
+    );
+    let _smtp_send_html_status: i32 = smtp.send_html(
+        "smtp.example.com",
+        smtp_port,
+        "user",
+        "pass",
+        "from@example.com",
+        "to@example.com",
+        "subject",
+        "<p>body</p>",
+    );
+
+    let timeout_sec: int = 1;
+    let timeout_usec: int = 500000;
+    let _net_conn: net.Connection = net.connect_timeout("127.0.0.1:8080", timeout_sec, timeout_usec);
+
+    let quic_conn: quic.QUICConnection = quic.new_client().connect("127.0.0.1:4433", "localhost");
+    let quic_obs: quic.QUICConnectionObservation = quic_conn.observe();
+    let quic_rtt: int = quic_obs.rtt_ms;
+
+    println(tls_port + tls_size + smtp_port + timeout_sec + timeout_usec + quic_rtt);
+}
+
+fn main() {
+    println("ok");
+}

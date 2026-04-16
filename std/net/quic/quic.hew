@@ -116,7 +116,7 @@ pub type QUICConnectionObservation {
     peer_addr: String;
     opened_streams: i64;
     accepted_streams: i64;
-    rtt_ms: i32;
+    rtt_ms: int;
     bytes_sent: i64;
     bytes_received: i64;
     closed: bool;
@@ -384,7 +384,7 @@ pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
         peer_addr: unsafe { hew_quic_conn_peer_addr(conn) },
         opened_streams: unsafe { hew_quic_conn_opened_streams(conn) },
         accepted_streams: unsafe { hew_quic_conn_accepted_streams(conn) },
-        rtt_ms: unsafe { hew_quic_conn_rtt_ms(conn) },
+        rtt_ms: unsafe { hew_quic_conn_rtt_ms(conn) as int },
         bytes_sent: unsafe { hew_quic_conn_bytes_sent(conn) },
         bytes_received: unsafe { hew_quic_conn_bytes_received(conn) },
         closed: unsafe { hew_quic_conn_is_closed(conn) },

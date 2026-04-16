@@ -129,6 +129,7 @@ pub enum MethodCallReceiverKind {
     NamedTypeInstance { type_name: String },
     HandleInstance { type_name: String },
     TraitObject { trait_name: String },
+    StreamInstance { element_kind: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

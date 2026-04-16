@@ -4106,7 +4106,15 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   // MLIRGen-local tracked stream metadata when bytes-vs-string ABI selection
   // would otherwise depend on missing resolvedTypeOf entries.
   if (mlir::isa<mlir::LLVM::LLVMPointerType>(receiverType)) {
-    auto streamInfo = resolveStreamHandleInfo(mc.receiver->value);
+    std::optional<StreamHandleInfo> streamInfo;
+    if (const auto *receiverKind = methodCallReceiverKindOf(exprSpan)) {
+      if (const auto *streamReceiver =
+              std::get_if<ast::MethodCallReceiverKindStreamInstance>(&receiverKind->kind)) {
+        streamInfo = StreamHandleInfo{"Stream", streamReceiver->element_kind};
+      }
+    }
+    if (!streamInfo)
+      streamInfo = resolveStreamHandleInfo(mc.receiver->value);
     bool isStream = streamInfo && streamInfo->kind == "Stream";
     if (isStream) {
       auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
@@ -5507,11 +5515,11 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
       consumeCloneTemp();
       return r;
     }
-    if (auto *trait = std::get_if<ast::MethodCallReceiverKindTraitObject>(&receiverKind->kind))
+    if (std::get_if<ast::MethodCallReceiverKindStreamInstance>(&receiverKind->kind)) {
+      // Stream map/filter/take dispatch is handled in generateBuiltinMethodCall below.
+    } else if (auto *trait =
+                   std::get_if<ast::MethodCallReceiverKindTraitObject>(&receiverKind->kind))
       return generateTraitObjectDispatch(trait->trait_name);
-    ++errorCount_;
-    emitError(location) << "unsupported method_call_receiver_kinds variant";
-    return nullptr;
   }
 
   if (auto traitObjType = mlir::dyn_cast<hew::HewTraitObjectType>(receiverType)) {

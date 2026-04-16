@@ -1041,6 +1041,7 @@ impl LanguageServer for HewLanguageServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hew_analysis::CompletionKind;
 
     fn semantic_token_data(source: &str, tokens: &[SemanticToken]) -> Vec<(String, u32, u32)> {
         let lo = compute_line_offsets(source);
@@ -1426,6 +1427,49 @@ mod tests {
             "expected Stream<String> detail for next(), got: {:?}",
             next_item.detail
         );
+    }
+
+    #[test]
+    fn completions_enum_variant_after_double_colon() {
+        let source = "enum Color { Blue; Point { x: i32, y: i32 }; Rgb(u8, u8, u8); }\nfn main() { let color = Color::Blue; }";
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:?}",
+            type_output.errors
+        );
+
+        let doc = DocumentState {
+            source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
+            parse_result,
+            type_output: Some(type_output),
+            diagnostics_by_uri: HashMap::new(),
+        };
+        let offset = source.find("Color::Blue").unwrap() + "Color::".len();
+        let items = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, vec!["Blue", "Point", "Rgb"]);
+
+        let point_item = items
+            .iter()
+            .find(|item| item.label == "Point")
+            .expect("Point completion should exist");
+        assert_eq!(point_item.kind, CompletionKind::Constant);
+        assert_eq!(point_item.detail.as_deref(), Some("{ x: i32, y: i32 }"));
     }
 
     #[test]

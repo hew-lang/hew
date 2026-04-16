@@ -1010,7 +1010,12 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
 
           builder.setInsertionPointToStart(&nestedIf.getThenRegion().front());
           auto innerDataPtr = mlir::LLVM::LoadOp::create(builder, location, ptrType, scratchPtr);
-          auto innerLen = mlir::LLVM::LoadOp::create(builder, location, nativeSizeType, scratchLen);
+          auto innerLenNative =
+              mlir::LLVM::LoadOp::create(builder, location, nativeSizeType, scratchLen);
+          mlir::Value innerLen = innerLenNative;
+          if (nativeSizeType != i64Type) {
+            innerLen = mlir::arith::ExtUIOp::create(builder, location, i64Type, innerLenNative);
+          }
           auto innerDecFn = module.lookupSymbol<mlir::func::FuncOp>(field.ty + "_decode");
           auto innerStruct = mlir::func::CallOp::create(builder, location, innerDecFn,
                                                         mlir::ValueRange{innerDataPtr, innerLen})
@@ -2109,6 +2114,8 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
 
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto i64Type = builder.getI64Type();
+  auto nativeSizeType = sizeType();
   const auto &declName = decl.name;
 
   auto generatePassThroughInstanceWrapper = [&](llvm::StringRef methodName,
@@ -2169,7 +2176,6 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
     return;
   }
 
-  auto i64Type = builder.getI64Type();
   auto structType = structTypes.at(declName).mlirType;
 
   // Collect field types for extraction
@@ -2269,10 +2275,15 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
                                    mlir::SymbolRefAttr::get(&context, "hew_wire_buf_data"),
                                    mlir::ValueRange{wireBuf})
             .getResult();
-    auto bufLen = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
-                                             mlir::SymbolRefAttr::get(&context, "hew_wire_buf_len"),
-                                             mlir::ValueRange{wireBuf})
-                      .getResult();
+    auto bufLenNative =
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{nativeSizeType},
+                                   mlir::SymbolRefAttr::get(&context, "hew_wire_buf_len"),
+                                   mlir::ValueRange{wireBuf})
+            .getResult();
+    mlir::Value bufLen = bufLenNative;
+    if (nativeSizeType != i64Type) {
+      bufLen = mlir::arith::ExtUIOp::create(builder, location, i64Type, bufLenNative);
+    }
 
     // Call Foo_decode(ptr, len) → struct
     auto decodeCallee = module.lookupSymbol<mlir::func::FuncOp>(declName + "_decode");

@@ -4497,13 +4497,23 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
   if (typeName.empty())
     return;
 
-  // Generic impl: defer method generation until concrete instantiation.
-  if (decl.type_params && !decl.type_params->empty()) {
-    GenericImplInfo info;
-    info.typeParams = &*decl.type_params;
-    for (const auto &method : decl.methods)
-      info.methods.push_back(&method);
-    genericImplMethods[typeName] = std::move(info);
+  const bool hasImplTypeParams = decl.type_params && !decl.type_params->empty();
+  const bool hasGenericMethods = llvm::any_of(decl.methods, [](const ast::FnDecl &method) {
+    return method.type_params && !method.type_params->empty();
+  });
+
+  // Generic impls and nongeneric impls with per-method type params both defer
+  // those methods until concrete instantiation.
+  if (hasImplTypeParams || hasGenericMethods) {
+    auto &info = genericImplMethods[typeName];
+    if (hasImplTypeParams)
+      info.typeParams = &*decl.type_params;
+    for (const auto &method : decl.methods) {
+      if (hasImplTypeParams || (method.type_params && !method.type_params->empty()))
+        info.methods.push_back(&method);
+    }
+  }
+  if (hasImplTypeParams) {
     return;
   }
 

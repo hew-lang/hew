@@ -3883,10 +3883,10 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
         return;
       field.type = toLLVMStorageType(field.semanticType);
       field.index = idx++;
-      // Preserve original type expression for collection dispatch
-      // (e.g., Vec<BenchResult> → "Vec<BenchResult>" so struct field
-      // accesses can trigger Vec method dispatch)
-      field.typeExprStr = typeExprToCollectionString(
+      // Preserve the resolved type expression for struct-field dispatch and
+      // coercion helpers (e.g., Vec<BenchResult> method dispatch, u32/bool
+      // field widening decisions during codegen).
+      field.typeExprStr = resolvedTypeExprString(
           fieldItem->ty.value, [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); });
       fieldTypes.push_back(field.type);
       info.fields.push_back(std::move(field));

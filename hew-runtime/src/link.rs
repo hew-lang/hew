@@ -20,11 +20,20 @@ use crate::util::RwLockExt;
 const LINK_SHARDS: usize = 16;
 
 /// Entry in the link table mapping `actor_id` -> linked actors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LinkedActorEntry {
+    /// Actor ID for O(1) liveness lookup in propagation paths.
+    linked_actor_id: u64,
+    /// Linked actor address retained for pointer confirmation.
+    linked_actor: usize,
+}
+
+/// Entry in the link table mapping `actor_id` -> linked actors.
 #[derive(Debug)]
 struct LinkShard {
     /// Maps `actor_id` to Vec of actors linked to that actor.
     /// Using usize instead of *mut `HewActor` for thread safety.
-    links: HashMap<u64, Vec<usize>>,
+    links: HashMap<u64, Vec<LinkedActorEntry>>,
 }
 
 /// Global sharded link table.
@@ -69,8 +78,8 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
     let id_b = actor_b.id;
 
     // Add bidirectional links: A -> B and B -> A
-    add_link(id_a, b);
-    add_link(id_b, a);
+    add_link(id_a, id_b, b);
+    add_link(id_b, id_a, a);
 }
 
 /// Remove a bidirectional link between two actors.
@@ -98,7 +107,7 @@ pub unsafe extern "C" fn hew_actor_unlink(a: *mut HewActor, b: *mut HewActor) {
 }
 
 /// Add a unidirectional link: `from_id` -> `to_actor`.
-fn add_link(from_id: u64, to_actor: *mut HewActor) {
+fn add_link(from_id: u64, to_actor_id: u64, to_actor: *mut HewActor) {
     let shard_index = get_shard_index(from_id);
     let mut shard = LINK_TABLE[shard_index].write_or_recover();
 
@@ -106,7 +115,10 @@ fn add_link(from_id: u64, to_actor: *mut HewActor) {
         .links
         .entry(from_id)
         .or_default()
-        .push(to_actor as usize);
+        .push(LinkedActorEntry {
+            linked_actor_id: to_actor_id,
+            linked_actor: to_actor as usize,
+        });
 }
 
 /// Remove a unidirectional link: `from_id` -/-> `to_actor`.
@@ -116,7 +128,7 @@ fn remove_link(from_id: u64, to_actor: *mut HewActor) {
 
     if let Some(linked_actors) = shard.links.get_mut(&from_id) {
         let target_addr = to_actor as usize;
-        linked_actors.retain(|&actor_addr| actor_addr != target_addr);
+        linked_actors.retain(|entry| entry.linked_actor != target_addr);
         if linked_actors.is_empty() {
             shard.links.remove(&from_id);
         }
@@ -139,66 +151,70 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
     };
 
     // Send EXIT messages to all linked actors.
-    for &linked_actor_addr in &linked_actors {
-        if linked_actor_addr == 0 {
+    for linked_actor_entry in linked_actors {
+        if linked_actor_entry.linked_actor == 0 {
             continue;
         }
 
-        let linked_actor = linked_actor_addr as *mut HewActor;
+        let linked_actor = linked_actor_entry.linked_actor as *mut HewActor;
 
-        crate::actor::with_live_actor(linked_actor, |linked_actor_ref| {
-            let linked_id = linked_actor_ref.id;
+        crate::actor::with_live_actor_by_id(
+            linked_actor_entry.linked_actor_id,
+            linked_actor,
+            |linked_actor_ref| {
+                let linked_id = linked_actor_ref.id;
 
-            // Remove the reverse link: linked_actor -/-> crashing_actor
-            remove_link_by_target(linked_id, actor_id);
+                // Remove the reverse link: linked_actor -/-> crashing_actor
+                remove_link_by_target(linked_id, actor_id);
 
-            // Send EXIT system message with reason code.
-            let mailbox = linked_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
-            if !mailbox.is_null() {
-                // Prepare EXIT message data: { crashed_actor_id: u64, reason: i32 }
-                let exit_data = ExitMessage {
-                    crashed_actor_id: actor_id,
-                    reason,
-                };
+                // Send EXIT system message with reason code.
+                let mailbox = linked_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
+                if !mailbox.is_null() {
+                    // Prepare EXIT message data: { crashed_actor_id: u64, reason: i32 }
+                    let exit_data = ExitMessage {
+                        crashed_actor_id: actor_id,
+                        reason,
+                    };
 
-                let data_ptr = (&raw const exit_data).cast::<c_void>();
-                let data_size = std::mem::size_of::<ExitMessage>();
+                    let data_ptr = (&raw const exit_data).cast::<c_void>();
+                    let data_size = std::mem::size_of::<ExitMessage>();
 
-                // SAFETY: LIVE_ACTORS keeps the linked actor and mailbox live.
-                unsafe {
-                    mailbox::hew_mailbox_send_sys(
-                        mailbox,
-                        SYS_MSG_EXIT,
-                        data_ptr.cast_mut(),
-                        data_size,
-                    );
+                    // SAFETY: LIVE_ACTORS keeps the linked actor and mailbox live.
+                    unsafe {
+                        mailbox::hew_mailbox_send_sys(
+                            mailbox,
+                            SYS_MSG_EXIT,
+                            data_ptr.cast_mut(),
+                            data_size,
+                        );
+                    }
+
+                    // Wake the linked actor so it processes the EXIT message.
+                    // Without this, an idle actor would never see the system message.
+                    if linked_actor_ref
+                        .actor_state
+                        .compare_exchange(
+                            HewActorState::Idle as i32,
+                            HewActorState::Runnable as i32,
+                            std::sync::atomic::Ordering::AcqRel,
+                            std::sync::atomic::Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        linked_actor_ref
+                            .idle_count
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
+                        linked_actor_ref
+                            .hibernating
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
+                        crate::scheduler::sched_enqueue(linked_actor);
+                    }
                 }
 
-                // Wake the linked actor so it processes the EXIT message.
-                // Without this, an idle actor would never see the system message.
-                if linked_actor_ref
-                    .actor_state
-                    .compare_exchange(
-                        HewActorState::Idle as i32,
-                        HewActorState::Runnable as i32,
-                        std::sync::atomic::Ordering::AcqRel,
-                        std::sync::atomic::Ordering::Acquire,
-                    )
-                    .is_ok()
-                {
-                    linked_actor_ref
-                        .idle_count
-                        .store(0, std::sync::atomic::Ordering::Relaxed);
-                    linked_actor_ref
-                        .hibernating
-                        .store(0, std::sync::atomic::Ordering::Relaxed);
-                    crate::scheduler::sched_enqueue(linked_actor);
-                }
-            }
-
-            #[cfg(test)]
-            run_propagate_exit_hook();
-        });
+                #[cfg(test)]
+                run_propagate_exit_hook();
+            },
+        );
     }
 }
 
@@ -254,14 +270,11 @@ fn remove_link_by_target(from_id: u64, target_id: u64) {
     let mut shard = LINK_TABLE[shard_index].write_or_recover();
 
     if let Some(linked_actors) = shard.links.get_mut(&from_id) {
-        linked_actors.retain(|&actor_addr| {
-            if actor_addr == 0 {
+        linked_actors.retain(|entry| {
+            if entry.linked_actor == 0 {
                 return false;
             }
-            let actor = actor_addr as *mut HewActor;
-            // SAFETY: actor was stored from a valid HewActor pointer.
-            let actor_ref = unsafe { &*actor };
-            actor_ref.id != target_id
+            entry.linked_actor_id != target_id
         });
 
         if linked_actors.is_empty() {
@@ -291,7 +304,7 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, actor_addr: *mut HewActo
     for shard_rw in LINK_TABLE.iter() {
         let mut shard = shard_rw.write_or_recover();
         shard.links.retain(|_id, linked_actors| {
-            linked_actors.retain(|&addr| addr != actor_usize);
+            linked_actors.retain(|entry| entry.linked_actor != actor_usize);
             !linked_actors.is_empty()
         });
     }
@@ -322,7 +335,7 @@ pub(crate) fn has_links_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> b
     for shard_rw in LINK_TABLE.iter() {
         let shard = shard_rw.read_or_recover();
         for linked in shard.links.values() {
-            if linked.contains(&actor_usize) {
+            if linked.iter().any(|entry| entry.linked_actor == actor_usize) {
                 return true;
             }
         }
@@ -398,14 +411,20 @@ mod tests {
             assert!(table_a
                 .links
                 .get(&100)
-                .is_some_and(|v| v.contains(&(b_ptr as usize))));
+                .is_some_and(|v| v.contains(&LinkedActorEntry {
+                    linked_actor_id: 200,
+                    linked_actor: b_ptr as usize,
+                })));
         }
         {
             let table_b = LINK_TABLE[shard_b].read_or_recover();
             assert!(table_b
                 .links
                 .get(&200)
-                .is_some_and(|v| v.contains(&(a_ptr as usize))));
+                .is_some_and(|v| v.contains(&LinkedActorEntry {
+                    linked_actor_id: 100,
+                    linked_actor: a_ptr as usize,
+                })));
         }
 
         // Remove link
@@ -420,14 +439,14 @@ mod tests {
             assert!(!table_a
                 .links
                 .get(&100)
-                .is_some_and(|v| v.contains(&(b_ptr as usize))));
+                .is_some_and(|v| v.iter().any(|entry| entry.linked_actor == b_ptr as usize)));
         }
         {
             let table_b = LINK_TABLE[shard_b].read_or_recover();
             assert!(!table_b
                 .links
                 .get(&200)
-                .is_some_and(|v| v.contains(&(a_ptr as usize))));
+                .is_some_and(|v| v.iter().any(|entry| entry.linked_actor == a_ptr as usize)));
         }
     }
 
@@ -514,7 +533,11 @@ mod tests {
         let table_b = LINK_TABLE[shard_b].read_or_recover();
         let b_links = table_b.links.get(&30_200);
         assert!(
-            b_links.is_none() || !b_links.unwrap().contains(&(a_ptr as usize)),
+            b_links.is_none()
+                || !b_links
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.linked_actor == a_ptr as usize),
             "actor B's link list should no longer reference actor A"
         );
     }

@@ -29,6 +29,8 @@ struct MonitorEntry {
     /// Actor that is monitoring (will receive DOWN message).
     /// Using usize instead of *mut `HewActor` for thread safety.
     monitoring_actor: usize,
+    /// Actor ID for O(1) liveness lookup in notification paths.
+    monitoring_actor_id: u64,
     /// Unique reference ID for this monitor (for demonitor).
     ref_id: u64,
 }
@@ -77,7 +79,7 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
     }
 
     // SAFETY: Caller guarantees both pointers are valid.
-    let _watcher_ref = unsafe { &*watcher };
+    let watcher_ref = unsafe { &*watcher };
     // SAFETY: Caller guarantees both pointers are valid.
     let target_ref = unsafe { &*target };
 
@@ -88,6 +90,7 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
 
     let monitor_entry = MonitorEntry {
         monitoring_actor: watcher as usize,
+        monitoring_actor_id: watcher_ref.id,
         ref_id,
     };
 
@@ -162,54 +165,58 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
 
         let monitoring_actor = monitoring_actor_addr as *mut HewActor;
 
-        crate::actor::with_live_actor(monitoring_actor, |monitoring_actor_ref| {
-            let mailbox = monitoring_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
+        crate::actor::with_live_actor_by_id(
+            monitor.monitoring_actor_id,
+            monitoring_actor,
+            |monitoring_actor_ref| {
+                let mailbox = monitoring_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
 
-            if !mailbox.is_null() {
-                // Prepare DOWN message data: { monitored_actor_id: u64, ref_id: u64, reason: i32 }
-                let down_data = DownMessage {
-                    monitored_actor_id: actor_id,
-                    ref_id: monitor.ref_id,
-                    reason,
-                };
+                if !mailbox.is_null() {
+                    // Prepare DOWN message data: { monitored_actor_id: u64, ref_id: u64, reason: i32 }
+                    let down_data = DownMessage {
+                        monitored_actor_id: actor_id,
+                        ref_id: monitor.ref_id,
+                        reason,
+                    };
 
-                let data_ptr = (&raw const down_data).cast::<c_void>();
-                let data_size = std::mem::size_of::<DownMessage>();
+                    let data_ptr = (&raw const down_data).cast::<c_void>();
+                    let data_size = std::mem::size_of::<DownMessage>();
 
-                // SAFETY: LIVE_ACTORS keeps the monitoring actor and mailbox live.
-                unsafe {
-                    mailbox::hew_mailbox_send_sys(
-                        mailbox,
-                        SYS_MSG_DOWN,
-                        data_ptr.cast_mut(),
-                        data_size,
-                    );
+                    // SAFETY: LIVE_ACTORS keeps the monitoring actor and mailbox live.
+                    unsafe {
+                        mailbox::hew_mailbox_send_sys(
+                            mailbox,
+                            SYS_MSG_DOWN,
+                            data_ptr.cast_mut(),
+                            data_size,
+                        );
+                    }
+
+                    // Wake the monitoring actor so it processes the DOWN message.
+                    if monitoring_actor_ref
+                        .actor_state
+                        .compare_exchange(
+                            HewActorState::Idle as i32,
+                            HewActorState::Runnable as i32,
+                            std::sync::atomic::Ordering::AcqRel,
+                            std::sync::atomic::Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        monitoring_actor_ref
+                            .idle_count
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
+                        monitoring_actor_ref
+                            .hibernating
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
+                        crate::scheduler::sched_enqueue(monitoring_actor);
+                    }
                 }
 
-                // Wake the monitoring actor so it processes the DOWN message.
-                if monitoring_actor_ref
-                    .actor_state
-                    .compare_exchange(
-                        HewActorState::Idle as i32,
-                        HewActorState::Runnable as i32,
-                        std::sync::atomic::Ordering::AcqRel,
-                        std::sync::atomic::Ordering::Acquire,
-                    )
-                    .is_ok()
-                {
-                    monitoring_actor_ref
-                        .idle_count
-                        .store(0, std::sync::atomic::Ordering::Relaxed);
-                    monitoring_actor_ref
-                        .hibernating
-                        .store(0, std::sync::atomic::Ordering::Relaxed);
-                    crate::scheduler::sched_enqueue(monitoring_actor);
-                }
-            }
-
-            #[cfg(test)]
-            run_notify_monitors_hook();
-        });
+                #[cfg(test)]
+                run_notify_monitors_hook();
+            },
+        );
     }
 }
 
@@ -411,6 +418,7 @@ mod tests {
             let our_monitor = monitors.iter().find(|m| m.ref_id == ref_id);
             assert!(our_monitor.is_some(), "our monitor entry should exist");
             assert_eq!(our_monitor.unwrap().monitoring_actor, watcher_ptr as usize);
+            assert_eq!(our_monitor.unwrap().monitoring_actor_id, watcher_id);
 
             assert!(shard.ref_to_monitor.contains_key(&ref_id));
         }

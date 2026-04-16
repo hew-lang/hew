@@ -31,6 +31,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+FUZZ_WORKDIR_PREFIX = "hew-fuzz-grammar."
+
 
 def find_repo_root() -> Path:
     """Walk up from the script to find the repo root (contains Cargo.toml)."""
@@ -236,7 +238,7 @@ def main() -> None:
     hew = Path(args.hew)
     check_deps(hew, grammar)
 
-    workdir = Path(tempfile.mkdtemp(prefix="hew-fuzz-grammar."))
+    workdir = Path(tempfile.mkdtemp(prefix=FUZZ_WORKDIR_PREFIX))
 
     print("=== Hew Grammar Fuzzer ===")
     print(f"Grammar:  {grammar}")

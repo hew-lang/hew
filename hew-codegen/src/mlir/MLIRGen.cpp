@@ -1713,8 +1713,19 @@ void MLIRGen::generateImport(const ast::ImportDecl &decl) {
 
 mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
                                          const std::vector<ast::CallArg> &args,
-                                         mlir::Location location, mlir::Type typeHint) {
+                                         mlir::Location location, const ast::Span &exprSpan,
+                                         mlir::Type typeHint) {
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto resolveBuiltinTypeHint = [&](auto &&matches) -> mlir::Type {
+    if (typeHint && matches(typeHint))
+      return typeHint;
+    if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+      auto resolvedMlirType = convertType(*resolvedType);
+      if (resolvedMlirType && matches(resolvedMlirType))
+        return resolvedMlirType;
+    }
+    return {};
+  };
 
   // println_str / print_str: takes a string (ptr), prints it
   if (name == "println_str" || name == "print_str") {
@@ -2017,11 +2028,9 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       auto bytesType = hew::VecType::get(&context, builder.getI32Type());
       return hew::VecNewOp::create(builder, location, bytesType).getResult();
     }
-    // Use the declared type passed in as typeHint (from the enclosing let/var)
-    mlir::Type vecType;
-    if (typeHint && mlir::isa<hew::VecType>(typeHint)) {
-      vecType = typeHint;
-    } else {
+    mlir::Type vecType =
+        resolveBuiltinTypeHint([](mlir::Type type) { return mlir::isa<hew::VecType>(type); });
+    if (!vecType) {
       ++errorCount_;
       emitError(location) << "cannot determine element type for Vec; add explicit type annotation";
       return nullptr;
@@ -2031,10 +2040,9 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // HashMap::new() -> !hew.hashmap<K,V>
   if (name == "HashMap::new") {
-    mlir::Type hmType;
-    if (typeHint && mlir::isa<hew::HashMapType>(typeHint)) {
-      hmType = typeHint;
-    } else {
+    mlir::Type hmType =
+        resolveBuiltinTypeHint([](mlir::Type type) { return mlir::isa<hew::HashMapType>(type); });
+    if (!hmType) {
       ++errorCount_;
       emitError(location)
           << "cannot determine key/value types for HashMap; add explicit type annotation";
@@ -2045,10 +2053,9 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // HashSet::new() -> !hew.handle<"HashSet">
   if (name == "HashSet::new") {
-    mlir::Type setType;
-    if (typeHint && mlir::isa<hew::HandleType>(typeHint)) {
-      setType = typeHint;
-    } else {
+    mlir::Type setType =
+        resolveBuiltinTypeHint([](mlir::Type type) { return mlir::isa<hew::HandleType>(type); });
+    if (!setType) {
       ++errorCount_;
       emitError(location)
           << "cannot determine element type for HashSet; add explicit type annotation";

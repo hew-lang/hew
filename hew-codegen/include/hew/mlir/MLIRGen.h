@@ -446,7 +446,8 @@ private:
   /// Check if a name is a builtin function and handle it.
   /// typeHint carries the local hint for a direct builtin constructor call.
   mlir::Value generateBuiltinCall(const std::string &name, const std::vector<ast::CallArg> &args,
-                                  mlir::Location location, mlir::Type typeHint = {});
+                                  mlir::Location location, const ast::Span &exprSpan,
+                                  mlir::Type typeHint = {});
   mlir::Type resolveOptionConstructorType(std::optional<mlir::Type> typeHint,
                                           const ast::Span &exprSpan);
   mlir::Type resolveResultConstructorType(std::optional<mlir::Type> typeHint,

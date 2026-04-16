@@ -693,6 +693,16 @@ fn handle_inbound_ask(
 
     // Build the reply payload from the returned data.
     let reply_data: Vec<u8> = if reply_ptr.is_null() {
+        let ask_err = crate::actor::actor_ask_take_last_error_raw();
+        if ask_err != AskError::None as i32 {
+            send_rejection_reply(
+                source_node_id,
+                request_id,
+                conn_mgr.0,
+                shutdown_started.as_ref(),
+            );
+            return;
+        }
         Vec::new()
     } else {
         // The reply is a malloc'd buffer. We need to determine its size.
@@ -2981,6 +2991,15 @@ mod tests {
         unsafe { crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0) };
     }
 
+    unsafe extern "C" fn orphaned_void_ask_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        crate::actor::hew_actor_self_stop();
+    }
+
     unsafe extern "C" fn blocked_ask_probe_dispatch(
         _state: *mut c_void,
         _msg_type: i32,
@@ -3133,6 +3152,134 @@ mod tests {
         // SAFETY: actor and nodes were allocated in this test and are valid.
         unsafe {
             let _ = crate::actor::hew_actor_free(echo_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn two_node_inbound_orphaned_ask_fails_closed() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: node1_bind is a valid C string for the duration of this test.
+        let node1 = unsafe { TestNode::new(315, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+
+        // SAFETY: node1 was just allocated and remains valid until teardown.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(316);
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(316);
+        // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
+        let actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(orphaned_void_ask_dispatch))
+        };
+        crate::pid::hew_pid_set_local_node(315);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_pid = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 316);
+
+        let connect_addr = CString::new(format!("316@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until teardown.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: this is a remote void ask; null payload/size are valid.
+        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let err = hew_node_ask_take_last_error();
+
+        assert!(
+            reply_ptr.is_null(),
+            "orphaned inbound void ask must not return the void-success sentinel"
+        );
+        assert_eq!(
+            err,
+            AskError::WorkerAtCapacity as i32,
+            "orphaned inbound ask must fail closed through the rejection path"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and remain valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn two_node_inbound_actor_stopped_fails_closed() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: node1_bind is a valid C string for the duration of this test.
+        let node1 = unsafe { TestNode::new(317, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+
+        // SAFETY: node1 was just allocated and remains valid until teardown.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(318);
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(318);
+        // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
+        let actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        crate::pid::hew_pid_set_local_node(317);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_pid = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 318);
+
+        let connect_addr = CString::new(format!("318@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until teardown.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: actor was spawned above and remains valid while stopped here.
+        unsafe { crate::actor::hew_actor_stop(actor) };
+
+        // SAFETY: this is a remote void ask; null payload/size are valid.
+        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let err = hew_node_ask_take_last_error();
+
+        assert!(
+            reply_ptr.is_null(),
+            "inbound ask to a stopped actor must not return the void-success sentinel"
+        );
+        assert_eq!(
+            err,
+            AskError::WorkerAtCapacity as i32,
+            "stopped inbound actor ask must fail closed through the rejection path"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and remain valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }

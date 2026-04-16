@@ -1366,9 +1366,13 @@ add_wasm_file_test(import_string_ops          e2e_imports          test_import_s
 add_wasm_file_test(import_vec_index_of        e2e_imports          test_import_vec_index_of)
 add_wasm_file_test(import_path_pure           e2e_imports          test_import_path_pure)
 
-# Wire (subset that compiles without json/yaml FFI)
+# Wire (binary + bounded JSON/YAML parity slice)
 add_wasm_file_test(wire_basic                 e2e_wire             wire_basic)
 add_wasm_file_test(wire_encode_decode         e2e_wire             wire_encode_decode)
+add_wasm_file_test(wire_json_roundtrip        e2e_wire             wire_json_roundtrip)
+add_wasm_file_test(wire_yaml_roundtrip        e2e_wire             wire_yaml_roundtrip)
+add_wasm_file_test(wire_yaml_naming_roundtrip e2e_wire             wire_yaml_naming_roundtrip)
+add_wasm_file_test(wire_enum_payload_serial_roundtrip e2e_wire      wire_enum_payload_serial_roundtrip)
 
 # Semver, fmt, csv (pure Hew implementations)
 add_wasm_file_test(semver_test                e2e_semver           semver_test)

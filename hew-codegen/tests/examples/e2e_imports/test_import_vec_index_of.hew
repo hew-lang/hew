@@ -1,0 +1,120 @@
+import std::vec;
+
+fn print_option_int(value: Option<int>) {
+    match value {
+        Some(n) => println(n),
+        None => println("none"),
+    }
+}
+
+fn print_option_f64(value: Option<f64>) {
+    match value {
+        Some(n) => println(n),
+        None => println("none"),
+    }
+}
+
+fn print_option_str(value: Option<String>) {
+    match value {
+        Some(s) => println(s),
+        None => println("none"),
+    }
+}
+
+fn main() {
+    println("=== vec.index_of_i32 ===");
+    let v_i32: Vec<i32> = Vec::new();
+    v_i32.push(4);
+    v_i32.push(2);
+    v_i32.push(4);
+    v_i32.push(8);
+    println(vec.index_of_i32(v_i32, 4));
+    println(vec.index_of_i32(v_i32, 8));
+    println(vec.index_of_i32(v_i32, 9));
+
+    println("=== vec.index_of_i64 ===");
+    let v_i64: Vec<i64> = Vec::new();
+    v_i64.push(100);
+    v_i64.push(200);
+    v_i64.push(300);
+    println(vec.index_of_i64(v_i64, 200));
+    println(vec.index_of_i64(v_i64, 999));
+
+    println("=== vec.index_of_f64 ===");
+    let v_f64: Vec<f64> = Vec::new();
+    v_f64.push(1.5);
+    v_f64.push(2.5);
+    v_f64.push(3.5);
+    println(vec.index_of_f64(v_f64, 2.5));
+    println(vec.index_of_f64(v_f64, 9.9));
+
+    println("=== vec.index_of_str ===");
+    let v_str: Vec<String> = Vec::new();
+    v_str.push("alpha");
+    v_str.push("beta");
+    v_str.push("gamma");
+    println(vec.index_of_str(v_str, "beta"));
+    println(vec.index_of_str(v_str, "missing"));
+
+    println("=== vec.first_last_i64 ===");
+    let first_last_i64: Vec<i64> = Vec::new();
+    first_last_i64.push(10);
+    first_last_i64.push(20);
+    first_last_i64.push(30);
+    print_option_int(vec.first_i64(first_last_i64));
+    print_option_int(vec.last_i64(first_last_i64));
+    let empty_i64: Vec<i64> = Vec::new();
+    print_option_int(vec.first_i64(empty_i64));
+    print_option_int(vec.last_i64(empty_i64));
+
+    println("=== vec.first_last_f64 ===");
+    let first_last_f64: Vec<f64> = Vec::new();
+    first_last_f64.push(1.5);
+    first_last_f64.push(2.5);
+    first_last_f64.push(3.5);
+    print_option_f64(vec.first_f64(first_last_f64));
+    print_option_f64(vec.last_f64(first_last_f64));
+    let empty_f64: Vec<f64> = Vec::new();
+    print_option_f64(vec.first_f64(empty_f64));
+    print_option_f64(vec.last_f64(empty_f64));
+
+    println("=== vec.first_last_str ===");
+    let first_last_str: Vec<String> = Vec::new();
+    first_last_str.push("alpha");
+    first_last_str.push("beta");
+    first_last_str.push("gamma");
+    print_option_str(vec.first_str(first_last_str));
+    print_option_str(vec.last_str(first_last_str));
+    let empty_str: Vec<String> = Vec::new();
+    print_option_str(vec.first_str(empty_str));
+    print_option_str(vec.last_str(empty_str));
+
+    println("=== vec.min_max_i32 ===");
+    let min_max_i32: Vec<i32> = Vec::new();
+    min_max_i32.push(7);
+    min_max_i32.push(-5);
+    min_max_i32.push(9);
+    min_max_i32.push(0);
+    println(vec.min_i32(min_max_i32));
+    println(vec.max_i32(min_max_i32));
+    let single_i32: Vec<i32> = Vec::new();
+    single_i32.push(42);
+    println(vec.min_i32(single_i32));
+    println(vec.max_i32(single_i32));
+
+    println("=== vec.min_max_i64 ===");
+    let min_max_i64: Vec<i64> = Vec::new();
+    min_max_i64.push(500);
+    min_max_i64.push(-200);
+    min_max_i64.push(75);
+    println(vec.min_i64(min_max_i64));
+    println(vec.max_i64(min_max_i64));
+
+    println("=== vec.min_max_f64 ===");
+    let min_max_f64: Vec<f64> = Vec::new();
+    min_max_f64.push(9.75);
+    min_max_f64.push(-2.25);
+    min_max_f64.push(3.5);
+    println(vec.min_f64(min_max_f64));
+    println(vec.max_f64(min_max_f64));
+}

@@ -1,0 +1,39 @@
+=== vec.index_of_i32 ===
+0
+3
+-1
+=== vec.index_of_i64 ===
+1
+-1
+=== vec.index_of_f64 ===
+1
+-1
+=== vec.index_of_str ===
+1
+-1
+=== vec.first_last_i64 ===
+10
+30
+none
+none
+=== vec.first_last_f64 ===
+1.5
+3.5
+none
+none
+=== vec.first_last_str ===
+alpha
+gamma
+none
+none
+=== vec.min_max_i32 ===
+-5
+9
+42
+42
+=== vec.min_max_i64 ===
+-200
+500
+=== vec.min_max_f64 ===
+-2.25
+9.75

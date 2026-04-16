@@ -256,10 +256,14 @@ fn find_local_in_stmt(
             found
         }
         Stmt::IfLet {
-            body, else_body, ..
+            pattern,
+            body,
+            else_body,
+            ..
         } => {
             if block_contains_offset(body, offset) {
-                return find_local_in_block(source, body, word, offset);
+                return find_binding_definition(source, pattern, word, offset)
+                    .or_else(|| find_local_in_block(source, body, word, offset));
             }
             else_body.as_ref().and_then(|block| {
                 block_contains_offset(block, offset)
@@ -267,12 +271,33 @@ fn find_local_in_stmt(
                     .flatten()
             })
         }
-        Stmt::For { body, .. }
-        | Stmt::Loop { body, .. }
-        | Stmt::While { body, .. }
-        | Stmt::WhileLet { body, .. } => block_contains_offset(body, offset)
+        Stmt::For { pattern, body, .. } => block_contains_offset(body, offset)
+            .then(|| {
+                find_binding_definition(source, pattern, word, offset)
+                    .or_else(|| find_local_in_block(source, body, word, offset))
+            })
+            .flatten(),
+        Stmt::Loop { body, .. } | Stmt::While { body, .. } => block_contains_offset(body, offset)
             .then(|| find_local_in_block(source, body, word, offset))
             .flatten(),
+        Stmt::WhileLet { pattern, body, .. } => block_contains_offset(body, offset)
+            .then(|| {
+                find_binding_definition(source, pattern, word, offset)
+                    .or_else(|| find_local_in_block(source, body, word, offset))
+            })
+            .flatten(),
+        Stmt::Match { arms, .. } => arms.iter().find_map(|arm| {
+            let in_arm_scope = arm
+                .guard
+                .as_ref()
+                .is_some_and(|(_, guard_span)| span_contains_offset(guard_span, offset))
+                || span_contains_offset(&arm.body.1, offset);
+            if in_arm_scope {
+                find_binding_definition(source, &arm.pattern, word, offset)
+            } else {
+                None
+            }
+        }),
         _ => None,
     }
 }
@@ -523,6 +548,54 @@ mod tests {
             .expect("should find inner binding");
         let binding_offset = source.rfind("let x").expect("inner binding should exist") + 4;
         assert_eq!(result.start, binding_offset);
+    }
+
+    #[test]
+    fn definition_finds_for_pattern_binding() {
+        let source = "fn main() { for item in [1, 2] { item } }";
+        let pr = parse(source);
+        let offset = source.rfind("item").expect("usage should exist");
+        let result = find_local_binding_definition(source, &pr, "item", offset)
+            .expect("should find for pattern binding");
+        let binding_offset = source.find("item in").expect("binding should exist");
+        assert_eq!(result.start, binding_offset);
+        assert_eq!(&source[result.start..result.end], "item");
+    }
+
+    #[test]
+    fn definition_finds_while_let_pattern_binding() {
+        let source = "fn pair() -> (bool, int) { (true, 1) }\nfn main() { while let (flag, _) = pair() { flag } }";
+        let pr = parse(source);
+        let offset = source.rfind("flag").expect("usage should exist");
+        let result = find_local_binding_definition(source, &pr, "flag", offset)
+            .expect("should find while-let pattern binding");
+        let binding_offset = source.find("flag, _").expect("binding should exist");
+        assert_eq!(result.start, binding_offset);
+        assert_eq!(&source[result.start..result.end], "flag");
+    }
+
+    #[test]
+    fn definition_finds_if_let_pattern_binding() {
+        let source = "fn pair() -> (bool, int) { (true, 1) }\nfn main() { if let (flag, _) = pair() { flag } }";
+        let pr = parse(source);
+        let offset = source.rfind("flag").expect("usage should exist");
+        let result = find_local_binding_definition(source, &pr, "flag", offset)
+            .expect("should find if-let pattern binding");
+        let binding_offset = source.find("flag, _").expect("binding should exist");
+        assert_eq!(result.start, binding_offset);
+        assert_eq!(&source[result.start..result.end], "flag");
+    }
+
+    #[test]
+    fn definition_finds_match_arm_pattern_binding() {
+        let source = "fn pair() -> (bool, int) { (true, 1) }\nfn main() { match pair() { (flag, _) => flag, } }";
+        let pr = parse(source);
+        let offset = source.rfind("flag").expect("usage should exist");
+        let result = find_local_binding_definition(source, &pr, "flag", offset)
+            .expect("should find match-arm pattern binding");
+        let binding_offset = source.find("flag, _").expect("binding should exist");
+        assert_eq!(result.start, binding_offset);
+        assert_eq!(&source[result.start..result.end], "flag");
     }
 
     #[test]

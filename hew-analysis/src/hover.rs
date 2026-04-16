@@ -6,6 +6,7 @@ use hew_parser::ast::{
     Block, FnDecl, Item, Param, Pattern, Span, Stmt, TraitBound, TraitItem, TypeBodyItem, TypeExpr,
 };
 use hew_parser::ParseResult;
+use hew_types::builtin_names::{builtin_named_type, BuiltinNamedType};
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
 use hew_types::method_resolution;
 use hew_types::{Ty, TypeCheckOutput, VariantDef};
@@ -330,8 +331,24 @@ fn hover_binding_in_stmt(
             })
         }
         Stmt::IfLet {
-            body, else_body, ..
+            pattern,
+            expr,
+            body,
+            else_body,
+            ..
         } => {
+            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) {
+                if let Some(result) = hover_pattern_binding(
+                    pattern,
+                    source_ty,
+                    &type_output.type_defs,
+                    word,
+                    word_span,
+                    offset,
+                ) {
+                    return Some(result);
+                }
+            }
             if let Some(result) = hover_binding_in_block(body, type_output, word, word_span, offset)
             {
                 return Some(result);
@@ -340,13 +357,132 @@ fn hover_binding_in_stmt(
                 hover_binding_in_block(block, type_output, word, word_span, offset)
             })
         }
-        Stmt::For { body, .. }
-        | Stmt::Loop { body, .. }
-        | Stmt::While { body, .. }
-        | Stmt::WhileLet { body, .. } => {
+        Stmt::For {
+            pattern,
+            iterable,
+            body,
+            ..
+        } => {
+            if let Some(result) = type_output
+                .expr_types
+                .get(&SpanKey::from(&iterable.1))
+                .and_then(iterable_element_type)
+                .and_then(|elem_ty| {
+                    hover_pattern_binding(
+                        pattern,
+                        &elem_ty,
+                        &type_output.type_defs,
+                        word,
+                        word_span,
+                        offset,
+                    )
+                })
+            {
+                return Some(result);
+            }
             hover_binding_in_block(body, type_output, word, word_span, offset)
         }
+        Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
+            hover_binding_in_block(body, type_output, word, word_span, offset)
+        }
+        Stmt::WhileLet {
+            pattern,
+            expr,
+            body,
+            ..
+        } => {
+            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) {
+                if let Some(result) = hover_pattern_binding(
+                    pattern,
+                    source_ty,
+                    &type_output.type_defs,
+                    word,
+                    word_span,
+                    offset,
+                ) {
+                    return Some(result);
+                }
+            }
+            hover_binding_in_block(body, type_output, word, word_span, offset)
+        }
+        Stmt::Match { scrutinee, arms } => type_output
+            .expr_types
+            .get(&SpanKey::from(&scrutinee.1))
+            .and_then(|scrutinee_ty| {
+                arms.iter().find_map(|arm| {
+                    hover_pattern_binding(
+                        &arm.pattern,
+                        scrutinee_ty,
+                        &type_output.type_defs,
+                        word,
+                        word_span,
+                        offset,
+                    )
+                })
+            }),
         _ => None,
+    }
+}
+
+fn hover_pattern_binding(
+    pattern: &(Pattern, Span),
+    source_ty: &Ty,
+    type_defs: &HashMap<String, TypeDef>,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    let binding_ty = find_pattern_binding_type(pattern, source_ty, type_defs, word, offset)?;
+    Some(HoverResult {
+        contents: format!("```hew\n{word}: {}\n```", binding_ty.user_facing()),
+        span: Some(word_span),
+    })
+}
+
+fn find_pattern_binding_type(
+    pattern: &(Pattern, Span),
+    source_ty: &Ty,
+    type_defs: &HashMap<String, TypeDef>,
+    word: &str,
+    offset: usize,
+) -> Option<Ty> {
+    if !span_contains_offset(&pattern.1, offset) {
+        return None;
+    }
+    match &pattern.0 {
+        Pattern::Identifier(name) => (name == word).then(|| source_ty.clone()),
+        Pattern::Constructor { name, patterns } => {
+            constructor_payload_tys(source_ty, name, type_defs).and_then(|payload_tys| {
+                patterns
+                    .iter()
+                    .zip(payload_tys.iter())
+                    .find_map(|(pattern, payload_ty)| {
+                        find_pattern_binding_type(pattern, payload_ty, type_defs, word, offset)
+                    })
+            })
+        }
+        Pattern::Struct { name, fields } => fields.iter().find_map(|field| {
+            let field_ty = struct_pattern_field_ty(source_ty, name, &field.name, type_defs)?;
+            field.pattern.as_ref().and_then(|pattern| {
+                find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+            })
+        }),
+        Pattern::Tuple(patterns) => {
+            let Ty::Tuple(elem_tys) = source_ty else {
+                return None;
+            };
+            patterns
+                .iter()
+                .zip(elem_tys.iter())
+                .find_map(|(pattern, elem_ty)| {
+                    find_pattern_binding_type(pattern, elem_ty, type_defs, word, offset)
+                })
+        }
+        Pattern::Or(left, right) => {
+            find_pattern_binding_type(left, source_ty, type_defs, word, offset)
+                .or_else(|| find_pattern_binding_type(right, source_ty, type_defs, word, offset))
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
 
@@ -369,6 +505,83 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }
         Pattern::Wildcard | Pattern::Literal(_) => None,
+    }
+}
+
+fn constructor_payload_tys(
+    source_ty: &Ty,
+    pattern_name: &str,
+    type_defs: &HashMap<String, TypeDef>,
+) -> Option<Vec<Ty>> {
+    let Ty::Named { name, args } = source_ty else {
+        return None;
+    };
+    let type_def = method_resolution::lookup_type_def(type_defs, name)?;
+    let short_name = pattern_name.rsplit("::").next().unwrap_or(pattern_name);
+    let VariantDef::Tuple(payload_tys) = type_def.variants.get(short_name)? else {
+        return None;
+    };
+    Some(apply_type_args(payload_tys, &type_def.type_params, args))
+}
+
+fn struct_pattern_field_ty(
+    source_ty: &Ty,
+    pattern_name: &str,
+    field_name: &str,
+    type_defs: &HashMap<String, TypeDef>,
+) -> Option<Ty> {
+    let Ty::Named { name, args } = source_ty else {
+        return None;
+    };
+    let type_def = method_resolution::lookup_type_def(type_defs, name)?;
+    let short_name = pattern_name.rsplit("::").next().unwrap_or(pattern_name);
+    if let Some(VariantDef::Struct(fields)) = type_def.variants.get(short_name) {
+        let field_ty = fields
+            .iter()
+            .find_map(|(name, ty)| (name == field_name).then(|| ty.clone()))?;
+        return Some(apply_type_args_to_ty(
+            &field_ty,
+            &type_def.type_params,
+            args,
+        ));
+    }
+    let field_ty = type_def.fields.get(field_name)?;
+    Some(apply_type_args_to_ty(field_ty, &type_def.type_params, args))
+}
+
+fn apply_type_args(payload_tys: &[Ty], type_params: &[String], type_args: &[Ty]) -> Vec<Ty> {
+    payload_tys
+        .iter()
+        .map(|ty| apply_type_args_to_ty(ty, type_params, type_args))
+        .collect()
+}
+
+fn apply_type_args_to_ty(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
+    type_params
+        .iter()
+        .zip(type_args.iter())
+        .fold(ty.clone(), |acc, (param, arg)| {
+            acc.substitute_named_param(param, arg)
+        })
+}
+
+fn iterable_element_type(iterable_ty: &Ty) -> Option<Ty> {
+    match iterable_ty {
+        Ty::Array(inner, _) | Ty::Slice(inner) => Some((**inner).clone()),
+        Ty::Named { name, args } if name == "Range" && args.len() == 1 => args.first().cloned(),
+        Ty::Named { name, args }
+            if builtin_named_type(name) == Some(BuiltinNamedType::Stream)
+                || builtin_named_type(name) == Some(BuiltinNamedType::Receiver)
+                || (name == "Generator" && !args.is_empty())
+                || (name == "AsyncGenerator" && args.len() == 1)
+                || name == "Vec" =>
+        {
+            args.first().cloned()
+        }
+        Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
+            Some(Ty::Tuple(vec![args[0].clone(), args[1].clone()]))
+        }
+        _ => None,
     }
 }
 
@@ -1181,5 +1394,80 @@ mod tests {
             })
         );
         assert_ne!(result.span.unwrap().start, let_offset);
+    }
+
+    #[test]
+    fn hover_shows_for_pattern_binding_type() {
+        let source = "fn main() {\n    for item in [1, 2] {\n        item\n    }\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("item in").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert_eq!(result.contents, "```hew\nitem: int\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + "item".len()
+            })
+        );
+    }
+
+    #[test]
+    fn hover_shows_while_let_pattern_binding_type() {
+        let source =
+            "fn pair() -> (bool, int) { (true, 1) }\nfn main() {\n    while let (flag, _) = pair() {\n        flag\n    }\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("flag, _").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert_eq!(result.contents, "```hew\nflag: bool\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + "flag".len()
+            })
+        );
+    }
+
+    #[test]
+    fn hover_shows_if_let_pattern_binding_type() {
+        let source =
+            "fn pair() -> (bool, int) { (true, 1) }\nfn main() {\n    if let (flag, _) = pair() {\n        flag\n    }\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("flag, _").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert_eq!(result.contents, "```hew\nflag: bool\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + "flag".len()
+            })
+        );
+    }
+
+    #[test]
+    fn hover_shows_match_arm_pattern_binding_type() {
+        let source =
+            "fn pair() -> (bool, int) { (true, 1) }\nfn main() {\n    match pair() {\n        (flag, _) => flag,\n    }\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("flag, _").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert_eq!(result.contents, "```hew\nflag: bool\n```");
+        assert_eq!(
+            result.span,
+            Some(OffsetSpan {
+                start: offset,
+                end: offset + "flag".len()
+            })
+        );
     }
 }

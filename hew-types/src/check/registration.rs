@@ -204,15 +204,16 @@ impl Checker {
         self.modules.insert("math".to_string());
         // Single-argument math functions: f64 → f64
         for name in &[
-            "exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "abs", "tanh", "log2", "log10",
-            "exp2",
+            "exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "abs", "abs_f", "tanh", "log2",
+            "log10", "exp2",
         ] {
             self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64], Ty::F64);
         }
         // Two-argument math functions: (f64, f64) → f64
-        for name in &["pow", "max", "min"] {
+        for name in &["pow", "max", "min", "max_f", "min_f"] {
             self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64, Ty::F64], Ty::F64);
         }
+        self.register_builtin_fn("math.clamp_f", vec![Ty::F64, Ty::F64, Ty::F64], Ty::F64);
         // Constants (zero-argument): () → f64
         for name in &["pi", "e"] {
             self.register_builtin_fn(&format!("math.{name}"), vec![], Ty::F64);

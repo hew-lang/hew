@@ -1670,6 +1670,23 @@ fn wasm_process_execution_surface_rejected_before_codegen() {
 }
 
 #[test]
+fn builtin_string_to_int_typechecks_as_int() {
+    let output = typecheck_inline(
+        r#"
+        fn parse() -> int {
+            let value: int = string_to_int("9223372036854775807");
+            value
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn process_child_methods_typecheck_and_preserve_rewrite_path() {
     let output = typecheck_inline(
         r"

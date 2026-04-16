@@ -1,0 +1,251 @@
+//! Tests for std::string helpers.
+
+import std::string;
+import std::testing;
+
+fn assert_string_vec_eq(actual: Vec<String>, expected: Vec<String>) {
+    testing.assert_eq(actual.len(), expected.len());
+    for i in 0..expected.len() {
+        testing.assert_eq_str(actual.get(i), expected.get(i));
+    }
+}
+
+fn assert_int_result_eq(actual: Result<int, String>, expected: int) {
+    match actual {
+        Ok(value) => testing.assert_eq(value, expected),
+        Err(message) => {
+            panic(message);
+            testing.assert_eq(0, expected);
+        },
+    }
+}
+
+fn assert_int_result_string_eq(actual: Result<int, String>, expected: String) {
+    match actual {
+        Ok(value) => testing.assert_eq_str(string.from_int(value), expected),
+        Err(message) => {
+            panic(message);
+            testing.assert_eq_str("", expected);
+        },
+    }
+}
+
+fn assert_int_result_err(actual: Result<int, String>, expected: String) {
+    match actual {
+        Ok(value) => {
+            panic(f"expected Err(\"{expected}\"), got Ok({value})");
+            testing.assert_eq(value, 0);
+        },
+        Err(message) => testing.assert_eq_str(message, expected),
+    }
+}
+
+fn assert_float_result_eq(actual: Result<f64, String>, expected: f64) {
+    match actual {
+        Ok(value) => testing.assert_true(value == expected),
+        Err(message) => {
+            panic(message);
+            testing.assert_true(expected == 0.0);
+        },
+    }
+}
+
+fn assert_float_result_err(actual: Result<f64, String>, expected: String) {
+    match actual {
+        Ok(value) => {
+            panic(f"expected Err(\"{expected}\"), got Ok({value})");
+            testing.assert_true(value == 0.0);
+        },
+        Err(message) => testing.assert_eq_str(message, expected),
+    }
+}
+
+#[test]
+fn test_from_int_formats_positive_and_negative_values() {
+    testing.assert_eq_str(string.from_int(42), "42");
+    testing.assert_eq_str(string.from_int(-7), "-7");
+}
+
+#[test]
+fn test_from_float_formats_decimal_values() {
+    testing.assert_eq_str(string.from_float(3.5), "3.5");
+    testing.assert_eq_str(string.from_float(-0.25), "-0.25");
+}
+
+#[test]
+fn test_from_bool_formats_boolean_values() {
+    testing.assert_eq_str(string.from_bool(true), "true");
+    testing.assert_eq_str(string.from_bool(false), "false");
+}
+
+#[test]
+fn test_from_char_formats_single_character_strings() {
+    testing.assert_eq_str(string.from_char(65), "A");
+    testing.assert_eq_str(string.from_char(10), "\n");
+}
+
+#[test]
+fn test_to_int_parses_signed_decimal_strings() {
+    testing.assert_eq(string.to_int("12345"), 12345);
+    testing.assert_eq(string.to_int("-19"), -19);
+    testing.assert_eq(string.to_int("+8"), 8);
+}
+
+#[test]
+fn test_to_int_returns_zero_for_invalid_and_partial_inputs() {
+    testing.assert_eq(string.to_int(""), 0);
+    testing.assert_eq(string.to_int("+"), 0);
+    testing.assert_eq(string.to_int("42abc"), 0);
+}
+
+#[test]
+fn test_try_to_int_accepts_i64_bounds() {
+    assert_int_result_eq(string.try_to_int("9223372036854775807"), 9223372036854775807);
+    assert_int_result_string_eq(string.try_to_int("-9223372036854775808"), "-9223372036854775808");
+}
+
+#[test]
+fn test_try_to_int_rejects_overflow() {
+    assert_int_result_err(
+        string.try_to_int("9223372036854775808"),
+        "string.try_to_int: integer out of range",
+    );
+    assert_int_result_err(
+        string.try_to_int("-9223372036854775809"),
+        "string.try_to_int: integer out of range",
+    );
+}
+
+#[test]
+fn test_try_to_int_rejects_sign_only_and_partial_parse_inputs() {
+    assert_int_result_err(
+        string.try_to_int("-"),
+        "string.try_to_int: invalid integer literal",
+    );
+    assert_int_result_err(
+        string.try_to_int("12x"),
+        "string.try_to_int: invalid integer literal",
+    );
+}
+
+#[test]
+fn test_to_float_parses_decimal_and_scientific_literals() {
+    testing.assert_true(string.to_float("3.125") == 3.125);
+    testing.assert_true(string.to_float("1.25e3") == 1250.0);
+    testing.assert_true(string.to_float("-2E-2") == -0.02);
+}
+
+#[test]
+fn test_to_float_returns_zero_for_invalid_literals() {
+    testing.assert_true(string.to_float("4.5x") == 0.0);
+    testing.assert_true(string.to_float("+") == 0.0);
+}
+
+#[test]
+fn test_try_to_float_accepts_decimal_and_scientific_literals() {
+    assert_float_result_eq(string.try_to_float("0.5"), 0.5);
+    assert_float_result_eq(string.try_to_float("6e2"), 600.0);
+    assert_float_result_eq(string.try_to_float("7E-1"), 0.7);
+}
+
+#[test]
+fn test_try_to_float_rejects_invalid_literals() {
+    assert_float_result_err(
+        string.try_to_float("1.2.3"),
+        "string.try_to_float: invalid float literal",
+    );
+    assert_float_result_err(
+        string.try_to_float("9e2ms"),
+        "string.try_to_float: invalid float literal",
+    );
+    assert_float_result_err(
+        string.try_to_float("-"),
+        "string.try_to_float: invalid float literal",
+    );
+}
+
+#[test]
+fn test_pad_left_adds_padding_until_width() {
+    testing.assert_eq_str(string.pad_left("7", 3, "0"), "007");
+    testing.assert_eq_str(string.pad_left("hello", 3, "0"), "hello");
+}
+
+#[test]
+fn test_pad_right_adds_padding_until_width() {
+    testing.assert_eq_str(string.pad_right("7", 3, "0"), "700");
+    testing.assert_eq_str(string.pad_right("hello", 3, "0"), "hello");
+}
+
+#[test]
+fn test_is_numeric_requires_only_ascii_digits() {
+    testing.assert_true(string.is_numeric("012345"));
+    testing.assert_false(string.is_numeric("12a3"));
+    testing.assert_false(string.is_numeric(""));
+    testing.assert_false(string.is_numeric("-12"));
+}
+
+#[test]
+fn test_count_counts_non_overlapping_occurrences() {
+    testing.assert_eq(string.count("aaaa", "aa"), 2);
+    testing.assert_eq(string.count("banana", "na"), 2);
+    testing.assert_eq(string.count("hello", ""), 0);
+}
+
+#[test]
+fn test_split_splits_and_keeps_trailing_empty_segment() {
+    let expected: Vec<String> = Vec::new();
+    expected.push("a");
+    expected.push("b");
+    expected.push("");
+    assert_string_vec_eq(string.split("a,b,", ","), expected);
+}
+
+#[test]
+fn test_split_empty_separator_returns_original_string() {
+    let expected: Vec<String> = Vec::new();
+    expected.push("abc");
+    assert_string_vec_eq(string.split("abc", ""), expected);
+}
+
+#[test]
+fn test_lines_splits_lf_and_preserves_trailing_empty_line() {
+    let expected: Vec<String> = Vec::new();
+    expected.push("alpha");
+    expected.push("beta");
+    expected.push("");
+    assert_string_vec_eq(string.lines("alpha\nbeta\n"), expected);
+}
+
+#[test]
+fn test_lines_normalizes_crlf_sequences() {
+    let expected: Vec<String> = Vec::new();
+    expected.push("alpha");
+    expected.push("beta");
+    assert_string_vec_eq(string.lines("alpha\r\nbeta"), expected);
+}
+
+#[test]
+fn test_lines_returns_single_empty_line_for_empty_input() {
+    let expected: Vec<String> = Vec::new();
+    expected.push("");
+    assert_string_vec_eq(string.lines(""), expected);
+}
+
+#[test]
+fn test_join_handles_empty_and_single_element_inputs() {
+    let empty: Vec<String> = Vec::new();
+    testing.assert_eq_str(string.join(empty, ","), "");
+
+    let single: Vec<String> = Vec::new();
+    single.push("solo");
+    testing.assert_eq_str(string.join(single, ","), "solo");
+}
+
+#[test]
+fn test_join_inserts_separator_between_elements() {
+    let parts: Vec<String> = Vec::new();
+    parts.push("red");
+    parts.push("green");
+    parts.push("blue");
+    testing.assert_eq_str(string.join(parts, "|"), "red|green|blue");
+}

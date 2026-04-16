@@ -448,17 +448,17 @@ fn string_to_int_strict_semantics() {
         let sign_only = cstr("-");
         assert_eq!(hew_string_to_int(sign_only.as_ptr()), 0);
 
-        let max = cstr("2147483647");
-        assert_eq!(hew_string_to_int(max.as_ptr()), i32::MAX);
+        let max = cstr("9223372036854775807");
+        assert_eq!(hew_string_to_int(max.as_ptr()), i64::MAX);
 
-        let min = cstr("-2147483648");
-        assert_eq!(hew_string_to_int(min.as_ptr()), i32::MIN);
+        let min = cstr("-9223372036854775808");
+        assert_eq!(hew_string_to_int(min.as_ptr()), i64::MIN);
 
-        let wrapped_zero = cstr("4294967296");
-        assert_eq!(hew_string_to_int(wrapped_zero.as_ptr()), 0);
+        let overflow = cstr("9223372036854775808");
+        assert_eq!(hew_string_to_int(overflow.as_ptr()), 0);
 
-        let wrapped_negative = cstr("2147483648");
-        assert_eq!(hew_string_to_int(wrapped_negative.as_ptr()), i32::MIN);
+        let underflow = cstr("-9223372036854775809");
+        assert_eq!(hew_string_to_int(underflow.as_ptr()), 0);
     }
 }
 

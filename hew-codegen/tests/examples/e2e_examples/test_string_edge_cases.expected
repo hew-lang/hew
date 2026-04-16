@@ -9,6 +9,6 @@ PASS: string_trim
 PASS: string_replace
 PASS: int_string_roundtrip
 PASS: string_to_int_strict_parse
-PASS: string_to_int_wraps
+PASS: string_to_int_bounds
 
 Passed: 11/11

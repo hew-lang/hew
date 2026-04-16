@@ -2679,7 +2679,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
         .getResult();
   }
 
-  // string_to_int(s) -> i32
+  // string_to_int(s) -> int
   if (name == "string_to_int") {
     if (args.empty()) {
       ++errorCount_;
@@ -2690,7 +2690,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!s)
       return nullptr;
     materializeTemporary(s, ast::callArgExpr(args[0]).value);
-    return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
+    return hew::StringMethodOp::create(builder, location, builder.getI64Type(),
                                        builder.getStringAttr("to_int"), s, mlir::ValueRange{})
         .getResult();
   }

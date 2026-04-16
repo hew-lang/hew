@@ -1,0 +1,17 @@
+pub fn lookup_map_value() -> int {
+    let m = HashMap::new();
+    m.insert("a", 7);
+    m.insert("b", 9);
+    match m.get("b") {
+        Some(v) => v,
+        None => 0,
+    }
+}
+
+pub fn make_set_len() -> int {
+    let s = HashSet::new();
+    s.insert(1);
+    s.insert(2);
+    s.insert(2);
+    s.len()
+}

@@ -1,0 +1,6 @@
+import "collection_constructor_fallback_mapsets_lib.hew";
+
+fn main() {
+    println(lookup_map_value());
+    println(make_set_len());
+}

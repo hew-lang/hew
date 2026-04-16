@@ -1,0 +1,6 @@
+pub fn make_vec_len() -> int {
+    let v = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.len()
+}

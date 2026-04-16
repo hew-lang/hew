@@ -1942,7 +1942,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
                                                    "Node::lookup",
                                                    "to_float"};
     if (builtinNames.contains(calleeName)) {
-      return generateBuiltinCall(calleeName, call.args, location, typeHint.value_or(mlir::Type{}));
+      return generateBuiltinCall(calleeName, call.args, location, exprSpan,
+                                 typeHint.value_or(mlir::Type{}));
     }
   }
 

@@ -1,0 +1,5 @@
+import "collection_constructor_fallback_lib.hew";
+
+fn main() {
+    println(make_vec_len());
+}

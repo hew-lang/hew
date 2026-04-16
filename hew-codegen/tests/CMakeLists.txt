@@ -1164,6 +1164,12 @@ add_wasm_file_test(module_actor           e2e_modules          module_actor)
 add_wasm_file_test(module_alias           e2e_modules          module_alias)
 add_wasm_file_test(module_basic           e2e_modules          module_basic)
 add_wasm_file_test(module_chain           e2e_modules          module_chain)
+add_wasm_file_test(module_collection_constructor_fallback
+                                             e2e_modules
+                                             module_collection_constructor_fallback)
+add_wasm_file_test(module_collection_constructor_fallback_mapsets
+                                             e2e_modules
+                                             module_collection_constructor_fallback_mapsets)
 add_wasm_file_test(module_consts          e2e_modules          module_consts)
 add_wasm_file_test(module_diamond         e2e_modules          module_diamond)
 add_wasm_file_test(module_drop_import     e2e_modules          module_drop_import)

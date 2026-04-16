@@ -117,8 +117,7 @@ impl Checker {
                                 } else {
                                     let known: Vec<&str> =
                                         variant_fields.iter().map(|(n, _)| n.as_str()).collect();
-                                    let similar =
-                                        crate::error::find_similar(&pf.name, known.into_iter());
+                                    let similar = crate::error::find_similar(&pf.name, known);
                                     self.report_error_with_suggestions(
                                         TypeErrorKind::UndefinedField,
                                         span,

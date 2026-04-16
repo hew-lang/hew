@@ -1155,14 +1155,16 @@ fn bar() {
 
 #[test]
 fn fmt_generator_function() {
-    let src = r"gen fn counting(n: i32) -> i32 {
-    for i in 0..n {
-        yield i;
-    }
-}";
-    let out = roundtrip(src);
-    assert!(out.contains("gen fn counting"), "output: {out}");
-    assert!(out.contains("yield i;"), "output: {out}");
+    exact_roundtrip(
+        "gen fn counting(n: i32) -> i32 {\n    for i in 0 .. n {\n        yield i;\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_receive_gen() {
+    exact_roundtrip(
+        "actor NumberStream {\n    receive gen fn numbers() -> i32 {\n        yield 1;\n    }\n}\n",
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -1205,6 +1207,25 @@ fn fmt_scope_spawn_roundtrip() {
 #[test]
 fn fmt_scope_cancel_roundtrip() {
     exact_roundtrip("fn main() {\n    scope |s| {\n        s.cancel();\n    };\n}\n");
+}
+
+#[test]
+fn fmt_scope_launch_non_default_binding() {
+    exact_roundtrip(
+        "fn main() {\n    scope |handle| {\n        let task = handle.launch {\n            1\n        };\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_scope_spawn_non_default_binding() {
+    exact_roundtrip(
+        "fn main() {\n    scope |handle| {\n        handle.spawn {\n            println(1);\n        };\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_scope_cancel_non_default_binding() {
+    exact_roundtrip("fn main() {\n    scope |handle| {\n        handle.cancel();\n    };\n}\n");
 }
 
 #[test]
@@ -1273,6 +1294,41 @@ fn fmt_machine_decl_roundtrip() {
 }
 
 #[test]
+fn fmt_machine_state_with_fields_roundtrip() {
+    exact_roundtrip(
+        "machine Bucket {\n    state Full { tokens: Int; }\n    state Empty;\n\n    event Drain;\n\n    on Drain: Full -> Empty;\n    on Drain: Empty -> Empty;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_event_with_payload_roundtrip() {
+    exact_roundtrip(
+        "machine Bank {\n    state Open;\n\n    event Deposit { amount: Int; }\n\n    on Deposit: Open -> Open;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_transition_with_guard_implicit_body_roundtrip() {
+    exact_roundtrip(
+        "machine Gate {\n    state Locked;\n    state Open;\n\n    event Try;\n\n    on Try: Locked -> Locked when flag;\n    on Try: Locked -> Open;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_transition_with_guard_and_body_roundtrip() {
+    exact_roundtrip(
+        "machine Counter {\n    state Active { n: Int; }\n\n    event Inc;\n\n    on Inc: Active -> Active when active {\n        Active { n: active.n + 1 }\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_default_clause_roundtrip() {
+    exact_roundtrip(
+        "machine Safe {\n    state On;\n    state Off;\n\n    event Toggle;\n\n    on Toggle: On -> Off;\n\n    default { state }\n}\n",
+    );
+}
+
+#[test]
 fn fmt_supervisor_decl_roundtrip() {
     exact_roundtrip(
         "supervisor Pool {\n    strategy: one_for_one;\n    max_restarts: 5;\n    window: 30;\n\n    child worker: Worker(1);\n}\n",
@@ -1328,6 +1384,31 @@ fn fmt_trait_multi_item_blank_lines_roundtrip() {
     exact_roundtrip(
         "trait Describable {\n    fn describe() -> i32 {\n        42\n    }\n\n    fn reset();\n}\n",
     );
+}
+
+#[test]
+fn fmt_trait_multi_item_blank_lines_canonicalize_with_comments() {
+    let src = concat!(
+        "// Formatter should not suppress trait spacing.\n",
+        "trait Describable {\n",
+        "    fn describe() -> i32 {\n",
+        "        42\n",
+        "    }\n",
+        "    fn reset();\n",
+        "}\n"
+    );
+    let expected = concat!(
+        "// Formatter should not suppress trait spacing.\n",
+        "trait Describable {\n",
+        "    fn describe() -> i32 {\n",
+        "        42\n",
+        "    }\n",
+        "\n",
+        "    fn reset();\n",
+        "}\n"
+    );
+
+    assert_eq!(roundtrip(src), expected);
 }
 
 #[test]

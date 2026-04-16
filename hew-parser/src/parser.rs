@@ -240,7 +240,7 @@ fn parse_string_parts(
             } else if !expr_text.is_empty() {
                 let mut sub_parser = Parser::new(expr_text);
                 let parsed = sub_parser.parse_expr();
-                errors.extend(sub_parser.errors.into_iter());
+                errors.extend(sub_parser.errors);
                 if let Some((expr, sub_span)) = parsed {
                     let adjusted_start = inner_offset + expr_start_byte + sub_span.start;
                     let adjusted_end = inner_offset + expr_start_byte + sub_span.end;
@@ -726,31 +726,19 @@ impl<'src> Parser<'src> {
                         "since" => {
                             modifiers.since = self.parse_wire_since_modifier();
                         }
-                        "json" => {
-                            if self.eat(&Token::LeftParen) {
-                                if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek()
-                                {
-                                    modifiers.json_name = Some(unquote_str(s).to_string());
-                                    self.advance();
-                                }
-                                let _ = self.expect(&Token::RightParen);
-                            } else {
-                                self.restore_pos(saved);
-                                break;
+                        "json" if self.eat(&Token::LeftParen) => {
+                            if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
+                                modifiers.json_name = Some(unquote_str(s).to_string());
+                                self.advance();
                             }
+                            let _ = self.expect(&Token::RightParen);
                         }
-                        "yaml" => {
-                            if self.eat(&Token::LeftParen) {
-                                if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek()
-                                {
-                                    modifiers.yaml_name = Some(unquote_str(s).to_string());
-                                    self.advance();
-                                }
-                                let _ = self.expect(&Token::RightParen);
-                            } else {
-                                self.restore_pos(saved);
-                                break;
+                        "yaml" if self.eat(&Token::LeftParen) => {
+                            if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
+                                modifiers.yaml_name = Some(unquote_str(s).to_string());
+                                self.advance();
                             }
+                            let _ = self.expect(&Token::RightParen);
                         }
                         _ => {
                             self.restore_pos(saved);

@@ -112,15 +112,19 @@ accepted value is 1 second.
 | Command | Description |
 |---|---|
 | `:help`, `:h` | Show available commands |
+| `:session`, `:show` | Summarize remembered session state |
+| `:items` | List remembered top-level items |
+| `:bindings` | List persistent `let`/`var` bindings |
 | `:quit`, `:q` | Exit the REPL |
-| `:clear` | Reset the session — drops all accumulated definitions and bindings |
+| `:clear`, `:reset` | Reset the session — drops all accumulated definitions and bindings |
 | `:type <expr>` | Show the inferred type of an expression without running it |
 | `:load <file>` | Load a `.hew` file's top-level items into the session |
 
-`:clear` is a hard session reset: every item and binding accumulated since
-the REPL started (or since the last `:clear`) is discarded. Names that were
-defined before `:clear` are no longer in scope and can be safely redefined
-after it. The REPL prints `Session cleared.` to confirm the reset.
+`:clear` / `:reset` is a hard session reset: every item and binding
+accumulated since the REPL started (or since the last `:clear` / `:reset`) is
+discarded. Names that were defined before `:clear` / `:reset` are no longer in
+scope and can be safely redefined after it. The REPL prints `Session cleared.`
+to confirm the reset.
 
 ### JSON run contract (`--json`)
 

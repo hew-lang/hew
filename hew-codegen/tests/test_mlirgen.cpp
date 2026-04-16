@@ -5907,6 +5907,178 @@ fn drain(rx: channel.Receiver<String>) {
 }
 
 // ============================================================================
+// Test: for await on Receiver<T> with unsupported concrete element type fails
+//       closed
+// ============================================================================
+static void test_for_await_receiver_unsupported_elem_type_fails_closed() {
+  TEST(for_await_receiver_unsupported_elem_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::channel::channel;
+
+fn drain(rx: channel.Receiver<String>) {
+    for await msg in rx {
+        println(msg);
+    }
+    rx.close();
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "drain");
+  if (!fn) {
+    FAIL("drain function not found");
+    return;
+  }
+
+  auto *forStmt = findFirstForStmt(*fn);
+  if (!forStmt) {
+    FAIL("expected for-await statement inside drain");
+    return;
+  }
+
+  if (fn->params.empty()) {
+    FAIL("drain function has no parameters");
+    return;
+  }
+  auto *rxNamed = std::get_if<hew::ast::TypeNamed>(&fn->params[0].ty.value.kind);
+  if (!rxNamed || !rxNamed->type_args || rxNamed->type_args->empty()) {
+    FAIL("rx parameter does not have a qualified Receiver type with type arg");
+    return;
+  }
+
+  hew::ast::TypeNamed unsupportedElemType;
+  unsupportedElemType.name = "f64";
+  unsupportedElemType.type_args = std::nullopt;
+  (*rxNamed->type_args)[0].value.kind = std::move(unsupportedElemType);
+
+  eraseExprTypeEntryForSpan(program, forStmt->iterable.span);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure when Receiver<T> has unsupported element type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("is currently only supported for String and int") == std::string::npos) {
+    FAIL("expected Receiver<f64> unsupported-element-type diagnostic");
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for Receiver<f64>");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: for await on cross-actor generator with unknown actor type fails closed
+// ============================================================================
+static void test_for_await_cross_actor_unknown_actor_type_fails_closed() {
+  TEST(for_await_cross_actor_unknown_actor_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+actor StreamActor {
+    receive gen fn stream_items() -> int {
+        yield 1;
+    }
+}
+
+actor Driver {
+    receive fn watch(peer: ActorRef<StreamActor>) {
+        for await item in peer.stream_items() {
+            println(item);
+        }
+    }
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("failed to load typed program for cross-actor for-await fail-closed test");
+    return;
+  }
+
+  auto rewriteDriverPeerType = [](auto &items) -> bool {
+    auto driverIt = std::find_if(items.begin(), items.end(), [](auto &item) {
+      auto *actorDecl = std::get_if<hew::ast::ActorDecl>(&item.value.kind);
+      return actorDecl && actorDecl->name == "Driver";
+    });
+    if (driverIt == items.end())
+      return false;
+
+    auto *driverDecl = std::get_if<hew::ast::ActorDecl>(&driverIt->value.kind);
+    if (!driverDecl || driverDecl->receive_fns.empty() || driverDecl->receive_fns[0].params.empty())
+      return false;
+
+    auto *peerRef =
+        std::get_if<hew::ast::TypeNamed>(&driverDecl->receive_fns[0].params[0].ty.value.kind);
+    if (!peerRef || !peerRef->type_args || peerRef->type_args->empty())
+      return false;
+
+    hew::ast::TypeNamed ghostActorType;
+    ghostActorType.name = "Ghost";
+    ghostActorType.type_args = std::nullopt;
+    (*peerRef->type_args)[0].value.kind = std::move(ghostActorType);
+    return true;
+  };
+
+  if (!rewriteDriverPeerType(program.items)) {
+    FAIL("failed to rewrite Driver.watch peer parameter type in program items");
+    return;
+  }
+  if (program.module_graph) {
+    auto moduleIt = program.module_graph->modules.find(program.module_graph->root);
+    if (moduleIt != program.module_graph->modules.end() &&
+        !rewriteDriverPeerType(moduleIt->second.items)) {
+      FAIL("failed to rewrite Driver.watch peer parameter type in module graph");
+      return;
+    }
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for cross-actor for-await unknown actor type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag = "for await: unknown actor type 'Ghost'";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL(("expected cross-actor for-await unknown-actor-type diagnostic; got: " + stderrText)
+             .c_str());
+    return;
+  }
+
+  if (stderrText.find("module verification failed") != std::string::npos) {
+    FAIL("unexpected downstream verifier failure for cross-actor for-await unknown actor type");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: bytes-stream let/var fallback preserves bytes ABI without expr_types
 // ============================================================================
 static void test_for_await_bytes_stream_binding_fallback_uses_bytes_abi() {
@@ -13014,6 +13186,8 @@ int main() {
   test_whilelet_stmt_unsupported_pattern_fails_closed();
   test_param_drop_stmt_if_let_value_position_fails_closed();
   test_param_drop_shadow_label_inner_break_not_attributed();
+  test_for_await_receiver_unsupported_elem_type_fails_closed();
+  test_for_await_cross_actor_unknown_actor_type_fails_closed();
   test_spawn_unknown_actor_type_fails_closed();
   test_supervisor_invalid_window_fails_closed();
   test_iflet_stmt_unknown_constructor_fails_closed();

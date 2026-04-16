@@ -1310,6 +1310,7 @@ add_wasm_file_test(option_stdlib              e2e_option_stdlib    option_stdlib
 
 # Stdlib imports (string-only, no FS/IO/OS)
 add_wasm_file_test(import_string              e2e_imports          test_import_string)
+add_wasm_file_test(import_string_numeric_int  e2e_imports          test_import_string_numeric_int)
 add_wasm_file_test(import_string_ops          e2e_imports          test_import_string_ops)
 
 # Wire (subset that compiles without json/yaml FFI)

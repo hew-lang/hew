@@ -129,9 +129,9 @@ pub fn parse(s: String) -> Version {
     let minor_str = rest.slice(0, second_dot);
     let patch_str = rest.slice(second_dot + 1, rest.len());
 
-    let major = string.to_int(major_str);
-    let minor = string.to_int(minor_str);
-    let patch = string.to_int(patch_str);
+    let major = string.to_int(major_str) as i32;
+    let minor = string.to_int(minor_str) as i32;
+    let patch = string.to_int(patch_str) as i32;
 
     Version {
         pre_release: pre,

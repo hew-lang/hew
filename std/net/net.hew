@@ -277,7 +277,7 @@ pub fn connect_timeout(addr: String, timeout_sec: i32, timeout_usec: i32) -> Con
         } else {
             host = addr.slice(0, colon);
         }
-        port = string.to_int(addr.slice(colon + 1, addr.len()));
+        port = string.to_int(addr.slice(colon + 1, addr.len())) as i32;
     }
     let millis_per_second: i32 = 1000;
     let micros_per_millisecond: i32 = 1000;

@@ -1,0 +1,12 @@
+9223372036854775807
+9223372036854775807
+0
+42
+string.try_to_int: invalid integer literal
+-9223372036854775808
+string.try_to_int: integer out of range
+A
+ababab
+0007
+hi...
+2

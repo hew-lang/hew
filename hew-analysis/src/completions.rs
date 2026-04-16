@@ -453,37 +453,29 @@ fn collect_locals_from_stmt(
         Stmt::Var { name, .. } => {
             locals.push(local_completion(name));
         }
-        Stmt::For { pattern, body, .. } => {
-            if in_stmt_scope {
-                collect_pattern_names(&pattern.0, locals);
-                collect_locals_from_block(body, offset, locals);
-            }
+        Stmt::For { pattern, body, .. } if in_stmt_scope => {
+            collect_pattern_names(&pattern.0, locals);
+            collect_locals_from_block(body, offset, locals);
         }
-        Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
-            if in_stmt_scope {
-                collect_locals_from_block(body, offset, locals);
-            }
+        Stmt::Loop { body, .. } | Stmt::While { body, .. } if in_stmt_scope => {
+            collect_locals_from_block(body, offset, locals);
         }
-        Stmt::WhileLet { pattern, body, .. } => {
-            if in_stmt_scope {
-                collect_pattern_names(&pattern.0, locals);
-                collect_locals_from_block(body, offset, locals);
-            }
+        Stmt::WhileLet { pattern, body, .. } if in_stmt_scope => {
+            collect_pattern_names(&pattern.0, locals);
+            collect_locals_from_block(body, offset, locals);
         }
         Stmt::If {
             then_block,
             else_block,
             ..
-        } => {
-            if in_stmt_scope {
-                collect_locals_from_block(then_block, offset, locals);
-                if let Some(eb) = else_block {
-                    if let Some(if_stmt) = &eb.if_stmt {
-                        collect_locals_from_stmt(&if_stmt.0, &if_stmt.1, offset, locals);
-                    }
-                    if let Some(block) = &eb.block {
-                        collect_locals_from_block(block, offset, locals);
-                    }
+        } if in_stmt_scope => {
+            collect_locals_from_block(then_block, offset, locals);
+            if let Some(eb) = else_block {
+                if let Some(if_stmt) = &eb.if_stmt {
+                    collect_locals_from_stmt(&if_stmt.0, &if_stmt.1, offset, locals);
+                }
+                if let Some(block) = &eb.block {
+                    collect_locals_from_block(block, offset, locals);
                 }
             }
         }
@@ -492,22 +484,18 @@ fn collect_locals_from_stmt(
             body,
             else_body,
             ..
-        } => {
-            if in_stmt_scope {
-                collect_pattern_names(&pattern.0, locals);
-                collect_locals_from_block(body, offset, locals);
-                if let Some(block) = else_body {
-                    collect_locals_from_block(block, offset, locals);
-                }
+        } if in_stmt_scope => {
+            collect_pattern_names(&pattern.0, locals);
+            collect_locals_from_block(body, offset, locals);
+            if let Some(block) = else_body {
+                collect_locals_from_block(block, offset, locals);
             }
         }
-        Stmt::Match { arms, .. } => {
-            if in_stmt_scope {
-                for arm in arms {
-                    if span_contains_offset(&arm.body.1, offset) {
-                        collect_pattern_names(&arm.pattern.0, locals);
-                        collect_locals_from_expr(&arm.body.0, offset, locals);
-                    }
+        Stmt::Match { arms, .. } if in_stmt_scope => {
+            for arm in arms {
+                if span_contains_offset(&arm.body.1, offset) {
+                    collect_pattern_names(&arm.pattern.0, locals);
+                    collect_locals_from_expr(&arm.body.0, offset, locals);
                 }
             }
         }

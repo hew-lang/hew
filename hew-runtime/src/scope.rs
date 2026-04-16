@@ -225,7 +225,7 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
         while unsafe { mailbox::hew_mailbox_has_messages(mb) } != 0 {
             // SAFETY: Lock is held.
             unsafe { mutex_unlock(&raw mut s.lock) };
-            std::thread::sleep(std::time::Duration::from_micros(1000));
+            std::thread::sleep(std::time::Duration::from_millis(1));
             // SAFETY: Lock was initialised.
             unsafe { mutex_lock(&raw mut s.lock) };
         }

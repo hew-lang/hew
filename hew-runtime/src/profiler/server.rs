@@ -105,11 +105,11 @@ pub fn run_unix(socket_path: &Path, ctx: Arc<ProfilerContext>) {
         if let Err(e) =
             std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
         {
-            eprintln!("[hew-pprof] failed to set socket permissions: {e}",);
+            eprintln!("[hew-pprof] failed to set socket permissions: {e}");
             return;
         }
 
-        eprintln!("[hew-pprof] listening on unix:{}", socket_path.display(),);
+        eprintln!("[hew-pprof] listening on unix:{}", socket_path.display());
 
         serve_loop(Listener::Unix(listener), ctx).await;
     });

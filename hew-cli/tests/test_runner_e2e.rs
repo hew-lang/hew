@@ -90,6 +90,106 @@ fn mixed_suite_reports_each_test_and_exits_non_zero() {
 }
 
 #[test]
+fn ignored_test_is_skipped_and_counted() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "ignored_test.hew",
+            "#[test]\n#[ignore]\nfn skipped() {\n    panic(\"ignored tests should not run\");\n}\n",
+        )],
+        &["--no-color"],
+    );
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test skipped ... ignored"));
+    assert!(stdout.contains("0 passed; 0 failed; 1 ignored"));
+}
+
+#[test]
+fn include_ignored_flag_runs_skipped_tests() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "ignored_test.hew",
+            "#[test]\n#[ignore]\nfn skipped() {\n    panic(\"ignored test ran\");\n}\n",
+        )],
+        &["--no-color", "--include-ignored"],
+    );
+
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test skipped ... FAILED"));
+    assert!(stdout.contains("ignored test ran"));
+    assert!(stdout.contains("0 passed; 1 failed; 0 ignored"));
+}
+
+#[test]
+fn filter_narrows_to_matching_tests() {
+    require_codegen();
+
+    let output = run_suite(
+        &[
+            (
+                "alpha_test.hew",
+                "#[test]\nfn keeps_me() {\n    assert(true);\n}\n",
+            ),
+            (
+                "beta_test.hew",
+                "#[test]\nfn skip_me() {\n    panic(\"filtered test should not run\");\n}\n",
+            ),
+        ],
+        &["--no-color", "--filter", "keeps"],
+    );
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("running 1 tests"));
+    assert!(stdout.contains("test keeps_me ... ok"));
+    assert!(!stdout.contains("skip_me"));
+    assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+}
+
+#[test]
+fn should_panic_test_passes_when_it_panics() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "should_panic_test.hew",
+            "#[test]\n#[should_panic]\nfn expected_panic() {\n    panic(\"boom\");\n}\n",
+        )],
+        &["--no-color"],
+    );
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test expected_panic ... ok"));
+    assert!(stdout.contains("1 passed; 0 failed; 0 ignored"));
+}
+
+#[test]
+fn should_panic_test_fails_when_it_does_not_panic() {
+    require_codegen();
+
+    let output = run_suite(
+        &[(
+            "should_panic_test.hew",
+            "#[test]\n#[should_panic]\nfn expected_panic() {\n    assert(true);\n}\n",
+        )],
+        &["--no-color"],
+    );
+
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("test expected_panic ... FAILED"));
+    assert!(stdout.contains("expected test to panic, but it completed successfully"));
+    assert!(stdout.contains("0 passed; 1 failed; 0 ignored"));
+}
+
+#[test]
 fn parse_errors_fail_the_suite() {
     let output = run_suite(
         &[(

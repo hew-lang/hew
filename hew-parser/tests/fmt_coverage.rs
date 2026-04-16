@@ -481,6 +481,13 @@ fn fmt_actor_receive_without_preamble() {
 }
 
 #[test]
+fn fmt_receive_fn_every_attr_roundtrip() {
+    roundtrip(
+        "actor Ticker {\n    let count: int;\n\n    #[every(50ms)]\n    receive fn tick() {\n        count = count + 1;\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+#[test]
 fn fmt_actor_with_mailbox() {
     let src = r"actor Worker {
     let id: i32;
@@ -493,6 +500,13 @@ fn fmt_actor_with_mailbox() {
 }";
     let out = roundtrip(src);
     assert!(out.contains("mailbox 16;"), "output: {out}");
+}
+
+#[test]
+fn fmt_actor_terminate_roundtrip() {
+    roundtrip(
+        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    terminate {\n        println(f\"[{label}] shutting down\");\n    }\n}\n\nfn main() {\n}\n",
+    );
 }
 
 #[test]

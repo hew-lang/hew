@@ -4,14 +4,14 @@ use std::fmt::Write as _;
 use std::ops::Range;
 
 use crate::ast::{
-    ActorDecl, ActorInit, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, CompoundAssignOp,
-    ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl,
-    ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl, MatchArm, NamingCase,
-    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RestartPolicy, SelectArm,
-    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
-    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireDecl,
-    WireDeclKind, WireFieldDecl, WireMetadata,
+    ActorDecl, ActorInit, ActorTerminate, Attribute, AttributeArg, BinaryOp, Block, CallArg,
+    ChildSpec, CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl,
+    FnDecl, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
+    MatchArm, NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
+    RestartPolicy, SelectArm, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
+    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
+    WhereClause, WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -705,6 +705,7 @@ impl<'a> Formatter<'a> {
         self.write(";\n");
     }
 
+    #[expect(clippy::too_many_lines, reason = "actor formatting has many sections")]
     fn format_actor(&mut self, decl: &ActorDecl, span_end: usize) {
         self.write_indent();
         self.write_visibility(decl.visibility);
@@ -773,6 +774,14 @@ impl<'a> Formatter<'a> {
                 self.newline();
             }
             self.format_actor_init(init, span_end);
+            has_body_item = true;
+        }
+
+        if let Some(terminate) = &decl.terminate {
+            if has_body_item {
+                self.newline();
+            }
+            self.format_actor_terminate(terminate, span_end);
             has_body_item = true;
         }
 
@@ -946,7 +955,42 @@ impl<'a> Formatter<'a> {
         self.newline();
     }
 
+    fn format_actor_terminate(&mut self, terminate: &ActorTerminate, scope_end: usize) {
+        self.write_indent();
+        self.write("terminate ");
+        self.format_block(&terminate.body, scope_end);
+        self.newline();
+    }
+
+    fn format_attributes(&mut self, attrs: &[Attribute]) {
+        for attr in attrs {
+            self.write_indent();
+            self.write("#[");
+            self.write(&attr.name);
+            if !attr.args.is_empty() {
+                self.write("(");
+                for (i, arg) in attr.args.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    match arg {
+                        AttributeArg::Positional(s) => self.write(s),
+                        AttributeArg::KeyValue { key, value } => {
+                            self.write(key);
+                            self.write(" = ");
+                            self.write(value);
+                        }
+                        AttributeArg::Duration(ns) => self.write(&format_duration_ns(*ns)),
+                    }
+                }
+                self.write(")");
+            }
+            self.write("]\n");
+        }
+    }
+
     fn format_receive_fn(&mut self, recv: &ReceiveFnDecl, scope_end: usize) {
+        self.format_attributes(&recv.attributes);
         self.write_indent();
         if recv.is_pure {
             self.write("pure ");
@@ -1032,32 +1076,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_fn(&mut self, decl: &FnDecl, span_end: usize) {
-        for attr in &decl.attributes {
-            self.write_indent();
-            self.write("#[");
-            self.write(&attr.name);
-            if !attr.args.is_empty() {
-                self.write("(");
-                for (i, arg) in attr.args.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    match arg {
-                        AttributeArg::Positional(s) => self.write(s),
-                        AttributeArg::KeyValue { key, value } => {
-                            self.write(key);
-                            self.write(" = ");
-                            self.write(value);
-                        }
-                        AttributeArg::Duration(ns) => {
-                            self.write(&format_duration_ns(*ns));
-                        }
-                    }
-                }
-                self.write(")");
-            }
-            self.write("]\n");
-        }
+        self.format_attributes(&decl.attributes);
         self.write_indent();
         self.write_visibility(decl.visibility);
         if decl.is_pure {

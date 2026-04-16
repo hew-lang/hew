@@ -3516,6 +3516,100 @@ mod tests {
     }
 
     #[test]
+    fn two_node_pre_rejection_peer_gets_timeout_not_wrong_error() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: node1_bind is a valid C string for the duration of this test.
+        let node1 = unsafe { TestNode::new(330, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+
+        // SAFETY: node1 was just allocated and remains valid until teardown.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(331);
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(331);
+        // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
+        let actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        crate::pid::hew_pid_set_local_node(330);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_pid = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 331);
+
+        let connect_addr = CString::new(format!("331@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until teardown.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: node2 conn_mgr is live for the duration of this test.
+        let peer_flags = unsafe {
+            connection::hew_connmgr_feature_flags_for_node((*node2.as_ptr()).conn_mgr, 330)
+        };
+        assert!(
+            connection::supports_ask_rejection(peer_flags),
+            "handshake should record ask-rejection support before we simulate the old peer"
+        );
+        // SAFETY: node2 conn_mgr is live; this mutates only test state.
+        unsafe {
+            connection::hew_connmgr_force_peer_flags_for_node(
+                (*node2.as_ptr()).conn_mgr,
+                330,
+                peer_flags & !connection::HEW_FEATURE_SUPPORTS_ASK_REJECTION,
+            );
+        }
+        // SAFETY: node2 conn_mgr remains live while the nodes are running in this scope.
+        let stripped_flags = unsafe {
+            connection::hew_connmgr_feature_flags_for_node((*node2.as_ptr()).conn_mgr, 330)
+        };
+        assert!(
+            !connection::supports_ask_rejection(stripped_flags),
+            "test setup must strip ask-rejection support from node2's view of node1"
+        );
+
+        let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
+        let ask_start = std::time::Instant::now();
+        // SAFETY: this is a remote void ask; null payload/size are valid.
+        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let err = hew_node_ask_take_last_error();
+        INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
+
+        assert!(
+            reply_ptr.is_null(),
+            "pre-rejection peer fallback must return null instead of a void-success sentinel"
+        );
+        assert_eq!(
+            err,
+            AskError::Timeout as i32,
+            "pre-rejection peer fallback must time out instead of returning WorkerAtCapacity"
+        );
+        assert!(
+            ask_start.elapsed() < Duration::from_millis(REMOTE_ASK_TIMEOUT_MS * 3),
+            "fallback ask should resolve near the timeout deadline, not block indefinitely"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and remain valid here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
     fn two_node_remote_nonvoid_empty_reply_returns_null() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();

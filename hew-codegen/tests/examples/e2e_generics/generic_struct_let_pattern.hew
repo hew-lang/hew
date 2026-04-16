@@ -1,0 +1,15 @@
+type Pair<T> {
+    first: T;
+    second: T;
+}
+
+fn make_pair<T>(first: T, second: T) -> Pair<T> {
+    Pair { first: first, second: second }
+}
+
+fn main() {
+    let generic_pair = make_pair<int>(10, 20);
+    let Pair { first, second } = generic_pair;
+    println(first);
+    println(second);
+}

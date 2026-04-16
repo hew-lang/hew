@@ -58,6 +58,31 @@ int64_t MLIRGen::resolvePayloadFieldIndex(llvm::StringRef variantName,
   return 1 + static_cast<int64_t>(payloadOrdinal);
 }
 
+const StructTypeInfo *MLIRGen::resolveStructPatternTypeInfo(llvm::StringRef patternName,
+                                                            mlir::Type valueType) const {
+  auto rawIt = structTypes.find(patternName.str());
+  if (rawIt != structTypes.end())
+    return &rawIt->second;
+
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(valueType);
+  if (!structTy || !structTy.isIdentified())
+    return nullptr;
+
+  auto mangledName = structTy.getName().str();
+  auto mangledIt = structTypes.find(mangledName);
+  if (mangledIt == structTypes.end())
+    return nullptr;
+
+  if (mangledName == patternName)
+    return &mangledIt->second;
+
+  auto originIt = structTypeOrigin.find(mangledName);
+  if (originIt != structTypeOrigin.end() && originIt->second.first == patternName)
+    return &mangledIt->second;
+
+  return nullptr;
+}
+
 void MLIRGen::bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleValue,
                                      mlir::Location location) {
   for (size_t i = 0; i < tp.elements.size(); ++i) {
@@ -365,19 +390,21 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       }
       return;
     }
-    auto structIt = structTypes.find(spName);
-    if (structIt != structTypes.end()) {
-      const auto &info = structIt->second;
-      for (const auto &pf : sp.fields) {
-        for (const auto &fi : info.fields) {
-          if (fi.name == pf.name) {
-            auto fieldVal = hew::FieldGetOp::create(
-                builder, location,
-                mlir::cast<mlir::LLVM::LLVMStructType>(scrutinee.getType()).getBody()[fi.index],
-                scrutinee, builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
-            declareVariable(pf.name, fieldVal);
-            break;
-          }
+    auto *info = resolveStructPatternTypeInfo(spName, scrutinee.getType());
+    if (!info) {
+      ++errorCount_;
+      emitError(location) << "unknown struct type '" << spName << "' in match pattern";
+      return;
+    }
+    for (const auto &pf : sp.fields) {
+      for (const auto &fi : info->fields) {
+        if (fi.name == pf.name) {
+          auto fieldVal = hew::FieldGetOp::create(
+              builder, location,
+              mlir::cast<mlir::LLVM::LLVMStructType>(scrutinee.getType()).getBody()[fi.index],
+              scrutinee, builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
+          declareVariable(pf.name, fieldVal);
+          break;
         }
       }
     }

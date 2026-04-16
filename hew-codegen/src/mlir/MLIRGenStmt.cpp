@@ -595,11 +595,10 @@ void MLIRGen::bindLetSubPattern(const ast::Pattern &pattern, mlir::Value value,
       bindLetSubPattern(tuplePat->elements[i]->value, elemVal, location);
     }
   } else if (auto *structPat = std::get_if<ast::PatStruct>(&pattern.kind)) {
-    auto structIt = structTypes.find(structPat->name);
-    if (structIt != structTypes.end()) {
-      const auto &info = structIt->second;
+    auto *info = resolveStructPatternTypeInfo(structPat->name, value.getType());
+    if (info) {
       for (const auto &pf : structPat->fields) {
-        for (const auto &fi : info.fields) {
+        for (const auto &fi : info->fields) {
           if (fi.name == pf.name) {
             auto fieldVal = hew::FieldGetOp::create(
                 builder, location,

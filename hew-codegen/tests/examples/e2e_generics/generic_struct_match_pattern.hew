@@ -1,0 +1,26 @@
+type Pair<T> {
+    first: T;
+    second: T;
+}
+
+fn make_pair<T>(first: T, second: T) -> Pair<T> {
+    Pair { first: first, second: second }
+}
+
+fn add_pair(first: int, second: int) -> int {
+    first + second
+}
+
+fn main() {
+    let first = -1;
+    let second = -2;
+    let generic_pair = make_pair<int>(30, 40);
+
+    let sum = match generic_pair {
+        Pair { first, second } => add_pair(first, second),
+    };
+
+    println(sum);
+    println(first);
+    println(second);
+}

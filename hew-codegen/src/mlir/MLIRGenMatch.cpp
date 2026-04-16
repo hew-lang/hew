@@ -113,6 +113,86 @@ void MLIRGen::bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleV
   }
 }
 
+void MLIRGen::bindStructPatternFields(const ast::PatStruct &sp, mlir::Value scrutinee,
+                                      mlir::Location location) {
+  auto registerBoundValue = [&](llvm::StringRef name, mlir::Value boundValue) {
+    declareVariable(name.str(), boundValue);
+    auto drop = dropFuncForMLIRType(boundValue.getType());
+    if (!drop.empty()) {
+      bool isUser = false;
+      if (auto st = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(boundValue.getType()))
+        isUser = st.isIdentified() && userDropFuncs.count(st.getName().str());
+      registerDroppable(name.str(), drop, isUser);
+    }
+  };
+
+  const auto &patternName = sp.name;
+  auto variantIt = variantLookup.find(patternName);
+  if (variantIt != variantLookup.end()) {
+    const auto &enumName = variantIt->second.first;
+    auto enumIt = enumTypes.find(enumName);
+    if (enumIt == enumTypes.end())
+      return;
+
+    const EnumVariantInfo *variantInfo = nullptr;
+    for (const auto &variant : enumIt->second.variants) {
+      if (variant.index == variantIt->second.second) {
+        variantInfo = &variant;
+        break;
+      }
+    }
+    if (!variantInfo || !isEnumLikeType(scrutinee.getType()))
+      return;
+
+    for (const auto &field : sp.fields) {
+      auto fieldIt =
+          std::find(variantInfo->fieldNames.begin(), variantInfo->fieldNames.end(), field.name);
+      if (fieldIt == variantInfo->fieldNames.end())
+        continue;
+
+      size_t ordinal = static_cast<size_t>(fieldIt - variantInfo->fieldNames.begin());
+      int64_t fieldIdx = resolvePayloadFieldIndex(patternName, ordinal);
+      auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
+      auto payloadVal =
+          hew::EnumExtractPayloadOp::create(builder, location, fieldTy, scrutinee, fieldIdx);
+      if (field.pattern) {
+        bindLetSubPattern(field.pattern->value, payloadVal, location);
+      } else {
+        registerBoundValue(field.name, payloadVal);
+      }
+    }
+    return;
+  }
+
+  const auto *info = resolveStructPatternTypeInfo(patternName, scrutinee.getType());
+  if (!info) {
+    ++errorCount_;
+    emitError(location) << "unknown struct type '" << patternName << "' in match pattern";
+    return;
+  }
+
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(scrutinee.getType());
+  if (!structTy)
+    return;
+
+  for (const auto &field : sp.fields) {
+    for (const auto &fieldInfo : info->fields) {
+      if (fieldInfo.name != field.name)
+        continue;
+
+      auto fieldVal = hew::FieldGetOp::create(
+          builder, location, structTy.getBody()[fieldInfo.index], scrutinee,
+          builder.getStringAttr(fieldInfo.name), static_cast<int64_t>(fieldInfo.index));
+      if (field.pattern) {
+        bindLetSubPattern(field.pattern->value, fieldVal, location);
+      } else {
+        registerBoundValue(field.name, fieldVal);
+      }
+      break;
+    }
+  }
+}
+
 void MLIRGen::bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::Value scrutinee,
                                          mlir::Location location) {
   if (!isEnumLikeType(scrutinee.getType()))
@@ -351,65 +431,6 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   bool isStructPattern = (structPatPtr != nullptr);
   bool isStructVariantPattern = isStructPattern && variantLookup.count(structPatPtr->name) > 0;
 
-  auto bindStructPatternFields = [&](const ast::PatStruct &sp) {
-    const auto &spName = sp.name;
-    auto varIt = variantLookup.find(spName);
-    if (varIt != variantLookup.end()) {
-      const auto &enumName = varIt->second.first;
-      auto enumIt = enumTypes.find(enumName);
-      if (enumIt != enumTypes.end()) {
-        const EnumVariantInfo *vi = nullptr;
-        for (const auto &v : enumIt->second.variants) {
-          if (v.index == varIt->second.second) {
-            vi = &v;
-            break;
-          }
-        }
-        if (vi) {
-          for (const auto &pf : sp.fields) {
-            auto fieldIt = std::find(vi->fieldNames.begin(), vi->fieldNames.end(), pf.name);
-            if (fieldIt == vi->fieldNames.end())
-              continue;
-            size_t ordinal = static_cast<size_t>(fieldIt - vi->fieldNames.begin());
-            if (isEnumLikeType(scrutinee.getType())) {
-              int64_t fieldIdx = resolvePayloadFieldIndex(spName, ordinal);
-              auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-              auto payloadVal = hew::EnumExtractPayloadOp::create(builder, location, fieldTy,
-                                                                  scrutinee, fieldIdx);
-              declareVariable(pf.name, payloadVal);
-              auto drop = dropFuncForMLIRType(payloadVal.getType());
-              if (!drop.empty()) {
-                bool isUser = false;
-                if (auto st = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(payloadVal.getType()))
-                  isUser = st.isIdentified() && userDropFuncs.count(st.getName().str());
-                registerDroppable(pf.name, drop, isUser);
-              }
-            }
-          }
-        }
-      }
-      return;
-    }
-    auto *info = resolveStructPatternTypeInfo(spName, scrutinee.getType());
-    if (!info) {
-      ++errorCount_;
-      emitError(location) << "unknown struct type '" << spName << "' in match pattern";
-      return;
-    }
-    for (const auto &pf : sp.fields) {
-      for (const auto &fi : info->fields) {
-        if (fi.name == pf.name) {
-          auto fieldVal = hew::FieldGetOp::create(
-              builder, location,
-              mlir::cast<mlir::LLVM::LLVMStructType>(scrutinee.getType()).getBody()[fi.index],
-              scrutinee, builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
-          declareVariable(pf.name, fieldVal);
-          break;
-        }
-      }
-    }
-  };
-
   auto blockTailRequiresValue = [&](const ast::Block &block,
                                     const auto &exprRequiresValue) -> bool {
     if (block.trailing_expr)
@@ -493,7 +514,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
 
       // If this is a struct pattern, bind fields as variables
       if (auto *sp = std::get_if<ast::PatStruct>(&aPat.kind)) {
-        bindStructPatternFields(*sp);
+        bindStructPatternFields(*sp, scrutinee, location);
       }
 
       // If this is a tuple pattern, bind elements as variables
@@ -790,7 +811,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       {
         SymbolTableScopeT guardScope(symbolTable);
         MutableTableScopeT guardMutScope(mutableVars);
-        bindStructPatternFields(*structPatPtr);
+        bindStructPatternFields(*structPatPtr, scrutinee, location);
         auto guardCond = generateExpression(arm.guard->value);
         if (!guardCond) {
           ++errorCount_;
@@ -819,7 +840,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   if (isStructPattern && arm.guard) {
     SymbolTableScopeT guardScope(symbolTable);
     MutableTableScopeT guardMutScope(mutableVars);
-    bindStructPatternFields(*structPatPtr);
+    bindStructPatternFields(*structPatPtr, scrutinee, location);
     auto guardCond = generateExpression(arm.guard->value);
     if (!guardCond)
       return nullptr;

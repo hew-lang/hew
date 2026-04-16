@@ -1,0 +1,17 @@
+enum Step {
+    Data { value: int };
+    Done;
+}
+
+fn main() -> int {
+    var step = Data { value: 2 };
+    while let Data { value } = step {
+        println(value);
+        if value > 0 {
+            step = Data { value: value - 1 };
+        } else {
+            step = Done;
+        }
+    }
+    return 0;
+}

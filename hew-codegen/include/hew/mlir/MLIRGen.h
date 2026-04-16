@@ -330,6 +330,9 @@ private:
   /// Bind tuple pattern elements to variables recursively.
   void bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleValue,
                               mlir::Location location);
+  /// Bind struct pattern fields to variables recursively.
+  void bindStructPatternFields(const ast::PatStruct &sp, mlir::Value scrutinee,
+                               mlir::Location location);
   /// Bind constructor sub-pattern variables by extracting enum payloads.
   void bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::Value scrutinee,
                                   mlir::Location location);

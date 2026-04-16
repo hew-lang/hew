@@ -1,0 +1,9 @@
+fn main() -> int {
+    let pair: (int, int) = (10, 32);
+    if let (left, right) = pair {
+        println(left + right);
+    } else {
+        println(0);
+    }
+    return 0;
+}

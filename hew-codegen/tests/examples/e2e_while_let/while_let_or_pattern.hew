@@ -1,0 +1,20 @@
+enum State {
+    Start;
+    Continue;
+    Stop;
+}
+
+fn main() -> int {
+    var state = Start;
+    var count = 0;
+    while let Start | Continue = state {
+        println(count);
+        count = count + 1;
+        if count == 1 {
+            state = Continue;
+        } else {
+            state = Stop;
+        }
+    }
+    return 0;
+}

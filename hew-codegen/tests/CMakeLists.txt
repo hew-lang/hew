@@ -604,6 +604,7 @@ add_e2e_reject_test(labeled_shadow_loop_break_return  e2e_param_drops reject_lab
 add_e2e_reject_test(if_let_trailing_return_field      e2e_param_drops reject_if_let_trailing_return_field      "returning a field of an owned parameter")
 add_e2e_reject_test(else_if_let_trailing_return_field e2e_param_drops reject_else_if_let_trailing_return_field "returning a field of an owned parameter")
 add_e2e_reject_test(if_let_trailing_call_arg_field    e2e_param_drops reject_if_let_trailing_call_arg_field    "passing a struct field to a function that takes ownership")
+add_e2e_reject_test(generator_yield_field_of_drop     e2e_generators  reject_yield_field_of_drop                "yielding a field from a generator")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
@@ -1394,6 +1395,7 @@ add_wasm_file_test(actor_periodic_timer       e2e_actors       actor_periodic_ti
 add_wasm_file_test(actor_ask_ownership_unregister  e2e_actor_drop   actor_ask_ownership_unregister)
 add_wasm_file_test(actor_ask_hashset_drop          e2e_actor_drop   actor_ask_hashset_drop)
 add_wasm_file_test(actor_ask_vec_string_drop       e2e_actor_drop   actor_ask_vec_string_drop)
+add_wasm_file_test(actor_receive_compound_return   e2e_actor_drop   actor_receive_compound_return)
 add_wasm_file_test(actor_receive_hashset_drop      e2e_actor_drop   actor_receive_hashset_drop)
 add_wasm_file_test(actor_send_named_drop           e2e_actor_drop   actor_send_named_drop)
 add_wasm_file_test(actor_send_vec_drop             e2e_actor_drop   actor_send_vec_drop)

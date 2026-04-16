@@ -1,0 +1,22 @@
+[package]
+name = "hew-wirecodec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unified wire-type codec plan for the Hew compiler (msgpack/JSON/YAML)"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "codec", "msgpack", "serialization", "wire"]
+categories = ["compilers", "encoding"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+hew-parser = { path = "../hew-parser" }
+hew-types = { path = "../hew-types" }
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+
+[dev-dependencies]
+serde_json = "1"

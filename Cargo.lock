@@ -1907,6 +1907,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-wirecodec"
+version = "0.3.0"
+dependencies = [
+ "hew-parser",
+ "hew-types",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

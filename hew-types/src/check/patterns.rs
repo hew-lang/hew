@@ -155,6 +155,20 @@ impl Checker {
                             }
                         }
                     }
+                } else if matches!(ty, Ty::Var(_) | Ty::Error) {
+                    for pf in fields {
+                        if let Some((pat, ps)) = &pf.pattern {
+                            self.bind_pattern(pat, ty, is_mutable, ps);
+                        } else {
+                            self.check_shadowing(&pf.name, span);
+                            self.env.define_with_span(
+                                pf.name.clone(),
+                                ty.clone(),
+                                is_mutable,
+                                span.clone(),
+                            );
+                        }
+                    }
                 }
             }
             Pattern::Tuple(pats) => match ty {

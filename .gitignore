@@ -18,6 +18,7 @@ build/
 dist/
 
 # Worktrees
+.worktree/
 .worktrees/
 worktrees/
 

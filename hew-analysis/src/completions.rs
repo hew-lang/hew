@@ -6,8 +6,8 @@ use hew_parser::ast::{
     Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem, TypeBodyItem,
     TypeDeclKind,
 };
-use hew_types::check::FnSig;
-use hew_types::{method_resolution, TypeCheckOutput};
+use hew_types::check::{FnSig, TypeDefKind};
+use hew_types::{method_resolution, TypeCheckOutput, VariantDef};
 
 use crate::hover::format_fn_signature_inline;
 use crate::method_lookup::{
@@ -36,6 +36,10 @@ pub fn complete(
     }
 
     if let Some(items) = try_struct_init_completions(source, type_output, offset) {
+        return items;
+    }
+
+    if let Some(items) = try_enum_variant_completions(source, type_output, offset) {
         return items;
     }
 
@@ -157,28 +161,7 @@ fn try_struct_init_completions(
         }
     };
 
-    let mut name_end = brace_pos;
-    while name_end > 0 && bytes[name_end - 1].is_ascii_whitespace() {
-        name_end -= 1;
-    }
-    if name_end == 0 {
-        return None;
-    }
-
-    let mut name_start = name_end;
-    while name_start > 0
-        && (bytes[name_start - 1].is_ascii_alphanumeric() || bytes[name_start - 1] == b'_')
-    {
-        name_start -= 1;
-    }
-    if name_start == name_end {
-        return None;
-    }
-
-    let type_name = std::str::from_utf8(&bytes[name_start..name_end]).ok()?;
-    if !type_name.starts_with(|c: char| c.is_uppercase()) {
-        return None;
-    }
+    let type_name = extract_type_name_before(source, brace_pos)?;
 
     let tc = type_output?;
     let type_def = method_resolution::lookup_type_def(&tc.type_defs, type_name)?;
@@ -201,6 +184,91 @@ fn try_struct_init_completions(
     items.sort_by(|a, b| a.label.cmp(&b.label));
 
     Some(items)
+}
+
+fn try_enum_variant_completions(
+    source: &str,
+    type_output: Option<&TypeCheckOutput>,
+    offset: usize,
+) -> Option<Vec<CompletionItem>> {
+    let bytes = source.as_bytes();
+    let mut colon_pos = offset;
+    while colon_pos > 0 && bytes[colon_pos - 1].is_ascii_whitespace() {
+        colon_pos -= 1;
+    }
+    if colon_pos < 2 || &bytes[colon_pos - 2..colon_pos] != b"::" {
+        return None;
+    }
+
+    let type_name = extract_type_name_before(source, colon_pos - 2)?;
+    let tc = type_output?;
+    let type_def = method_resolution::lookup_type_def(&tc.type_defs, type_name)?;
+    if type_def.kind != TypeDefKind::Enum {
+        return None;
+    }
+
+    let mut items: Vec<_> = type_def
+        .variants
+        .iter()
+        .map(|(variant_name, variant_def)| CompletionItem {
+            label: variant_name.clone(),
+            kind: CompletionKind::Constant,
+            detail: variant_completion_detail(variant_def),
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+
+    Some(items)
+}
+
+fn extract_type_name_before(source: &str, mut name_end: usize) -> Option<&str> {
+    let bytes = source.as_bytes();
+    while name_end > 0 && bytes[name_end - 1].is_ascii_whitespace() {
+        name_end -= 1;
+    }
+    if name_end == 0 {
+        return None;
+    }
+
+    let mut name_start = name_end;
+    while name_start > 0
+        && (bytes[name_start - 1].is_ascii_alphanumeric() || bytes[name_start - 1] == b'_')
+    {
+        name_start -= 1;
+    }
+    if name_start == name_end {
+        return None;
+    }
+
+    let type_name = std::str::from_utf8(&bytes[name_start..name_end]).ok()?;
+    type_name
+        .starts_with(|c: char| c.is_uppercase())
+        .then_some(type_name)
+}
+
+fn variant_completion_detail(variant_def: &VariantDef) -> Option<String> {
+    match variant_def {
+        VariantDef::Unit => None,
+        VariantDef::Tuple(types) => Some(format!(
+            "({})",
+            types
+                .iter()
+                .map(|ty| ty.user_facing().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        VariantDef::Struct(fields) => Some(format!(
+            "{{ {} }}",
+            fields
+                .iter()
+                .map(|(name, ty)| format!("{name}: {}", ty.user_facing()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 /// If the cursor is right after `spawn `, offer only actor and supervisor names.
@@ -978,6 +1046,104 @@ fn example() {
 
         assert!(labels.iter().any(|label| label == "fn"));
         assert!(labels.iter().any(|label| label == "Color"));
+    }
+
+    #[test]
+    fn enum_variant_completions_offer_all_variants() {
+        let source = r"enum Color {
+    Blue;
+    Point { x: i32, y: i32 };
+    Rgb(u8, u8, u8);
+}
+
+fn example() {
+    let color = Color::/*cursor*/Blue;
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let labels: Vec<_> = items_at_cursor(source, Some(&tc))
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+
+        assert_eq!(
+            labels,
+            vec!["Blue".to_string(), "Point".to_string(), "Rgb".to_string()]
+        );
+    }
+
+    #[test]
+    fn enum_variant_completions_do_not_fire_for_struct_type() {
+        let source = r"type Point {
+    x: i32,
+}
+
+fn example() {
+    let point = Point::/*cursor*/new();
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let labels: Vec<_> = items_at_cursor(source, Some(&tc))
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+
+        assert!(labels.iter().any(|label| label == "fn"));
+        assert!(labels.iter().any(|label| label == "Point"));
+        assert!(!labels.iter().any(|label| label == "x"));
+    }
+
+    #[test]
+    fn enum_variant_completions_do_not_fire_for_unknown_type() {
+        let source = r"fn example() {
+    let value = Unknown::/*cursor*/Missing;
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let labels: Vec<_> = items_at_cursor(source, Some(&tc))
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+
+        assert!(labels.iter().any(|label| label == "fn"));
+        assert!(!labels.iter().any(|label| label == "Missing"));
+    }
+
+    #[test]
+    fn enum_variant_completions_include_payload_detail() {
+        let source = r"enum Color {
+    Blue;
+    Point { x: i32, y: i32 };
+    Rgb(u8, u8, u8);
+}
+
+fn example() {
+    let color = Color::/*cursor*/Blue;
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let items = items_at_cursor(source, Some(&tc));
+
+        assert_eq!(
+            items
+                .iter()
+                .find(|item| item.label == "Blue")
+                .unwrap()
+                .detail,
+            None
+        );
+        assert_eq!(
+            items
+                .iter()
+                .find(|item| item.label == "Point")
+                .unwrap()
+                .detail,
+            Some("{ x: i32, y: i32 }".to_string())
+        );
+        assert_eq!(
+            items
+                .iter()
+                .find(|item| item.label == "Rgb")
+                .unwrap()
+                .detail,
+            Some("(u8, u8, u8)".to_string())
+        );
     }
 
     #[test]

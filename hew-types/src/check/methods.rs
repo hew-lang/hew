@@ -2243,6 +2243,32 @@ mod tests {
     /// spurious "element type is unresolved" diagnostic even though the real error
     /// had already been reported upstream.
     #[test]
+    fn runtime_stream_element_name_stays_canonical() {
+        assert_eq!(
+            Checker::runtime_stream_element_name(&Ty::String),
+            Some("String")
+        );
+        assert_eq!(
+            Checker::runtime_stream_element_name(&Ty::Bytes),
+            Some("bytes")
+        );
+        assert_eq!(
+            Checker::runtime_stream_element_name(&Ty::Named {
+                name: "string".into(),
+                args: vec![],
+            }),
+            None
+        );
+        assert_eq!(
+            Checker::runtime_stream_element_name(&Ty::Named {
+                name: "str".into(),
+                args: vec![],
+            }),
+            None
+        );
+    }
+
+    #[test]
     fn finalize_lowering_facts_silently_drops_error_element_type() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 10..20;

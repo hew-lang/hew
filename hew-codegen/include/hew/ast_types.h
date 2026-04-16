@@ -725,6 +725,7 @@ struct TraitMethod {
   std::optional<Spanned<TypeExpr>> return_type;
   std::optional<WhereClause> where_clause;
   std::optional<Block> body;
+  std::optional<Span> span;
 };
 
 struct TraitItemMethod {
@@ -938,6 +939,7 @@ struct FnDecl {
   /// Present whenever the AST was produced by a new-enough parser build.
   /// Used by MLIRGen to emit the correct DW_AT_decl_line for impl methods.
   std::optional<Span> decl_span;
+  std::optional<Span> fn_span;
 };
 
 // ── Items ─────────────────────────────────────────────────────────────────

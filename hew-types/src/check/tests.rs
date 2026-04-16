@@ -1654,6 +1654,50 @@ fn typecheck_match_wrong_enum_variant_errors() {
 }
 
 #[test]
+fn typecheck_or_pattern_asymmetric_bindings_error() {
+    let (errors, _) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let value = (1, 2);\n",
+        "    match value {\n",
+        "        (x, _) | (_, _) => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    let err = errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch))
+        .expect("expected asymmetric or-pattern binding diagnostic");
+    assert_eq!(err.message, "or-pattern branches must bind the same names");
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("left branch binds `x`")),
+        "expected left-branch binding note, got: {err:?}"
+    );
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("right branch binds no names")),
+        "expected right-branch binding note, got: {err:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_symmetric_bindings_ok() {
+    let (errors, warnings) = parse_and_check(concat!(
+        "fn main() -> int {\n",
+        "    let value = (1, 2);\n",
+        "    match value {\n",
+        "        (x, _) | (_, x) => x,\n",
+        "        _ => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+}
+
+#[test]
 fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",

@@ -50,7 +50,7 @@ pub fn resolve_stream_method(
     method: &str,
     element_type: Option<&str>,
 ) -> Option<&'static str> {
-    let is_string = matches!(element_type, Some("String" | "string" | "str"));
+    let is_string = element_type == Some("String");
     let is_bytes = element_type == Some("bytes");
     match (stream_kind, method) {
         // Stream<T> methods — element-type-dependent
@@ -196,8 +196,12 @@ mod tests {
     fn stream_element_sensitive_methods_require_lowerable_metadata() {
         assert_eq!(resolve_stream_method(STREAM, "next", None), None);
         assert_eq!(resolve_stream_method(STREAM, "next", Some("Row")), None);
+        assert_eq!(resolve_stream_method(STREAM, "next", Some("string")), None);
+        assert_eq!(resolve_stream_method(STREAM, "next", Some("str")), None);
         assert_eq!(resolve_stream_method(SINK, "write", None), None);
         assert_eq!(resolve_stream_method(SINK, "write", Some("Row")), None);
+        assert_eq!(resolve_stream_method(SINK, "write", Some("string")), None);
+        assert_eq!(resolve_stream_method(SINK, "write", Some("str")), None);
     }
 
     // ── constants match expected string values ──────────────────────────────

@@ -1162,6 +1162,182 @@ fn checker_output_does_not_expose_unresolved_ty_var_survivors() {
 }
 
 #[test]
+fn match_over_error_scrutinee_no_arm_body_cascade() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _ = match missing() {
+                Some(x) => {
+                    let _ = x;
+                    0
+                },
+                None => 0,
+            };
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the original scrutinee error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+        "expected undefined function error for scrutinee, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::UndefinedVariable),
+        "match arm binding must not cascade into undefined-variable errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn for_over_non_iterable_no_loop_body_cascade() {
+    let output = typecheck(
+        r"
+        fn main() {
+            for item in true {
+                let _ = item;
+            }
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the non-iterable error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("not iterable")
+        ),
+        "expected non-iterable diagnostic, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::UndefinedVariable),
+        "loop element binding must not cascade into undefined-variable errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn iflet_over_error_scrutinee_no_bound_var_error() {
+    let output = typecheck(
+        r"
+        fn main() {
+            if let Some(x) = missing() {
+                let _ = x;
+            } else {}
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the original scrutinee error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+        "expected undefined function error for scrutinee, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::UndefinedVariable),
+        "if-let binding must not cascade into undefined-variable errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn or_pattern_error_scrutinee_single_error() {
+    let output = typecheck(
+        r"
+        enum Colour { Red; Green; }
+
+        fn main() {
+            let _ = match missing() {
+                Red | Green => 0,
+            };
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the original scrutinee error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+        "expected undefined function error for scrutinee, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn tuple_pattern_error_scrutinee_silent() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let _ = match missing() {
+                (left, right) => {
+                    let _ = left;
+                    let _ = right;
+                    0
+                }
+            };
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the original scrutinee error, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+        "expected undefined function error for scrutinee, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| e.kind != TypeErrorKind::UndefinedVariable),
+        "tuple pattern must not cascade into undefined-variable errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn checker_output_success_path_contains_no_unresolved_ty_var() {
     let output = typecheck(
         r"

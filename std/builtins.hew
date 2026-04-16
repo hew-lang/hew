@@ -143,7 +143,7 @@ fn string_equals(a: String, b: String) -> bool { false }
 /// ```
 /// let s = string_from_int(42);  // "42"
 /// ```
-fn string_from_int(n: i32) -> String { "" }
+fn string_from_int(n: int) -> String { "" }
 
 /// Test whether `haystack` contains `needle`.
 fn string_contains(haystack: String, needle: String) -> bool { false }
@@ -164,7 +164,7 @@ fn substring(s: String, start: i32, end: i32) -> String { "" }
 fn string_trim(s: String) -> String { "" }
 
 /// Parse a string as an integer. Returns 0 on failure.
-fn string_to_int(s: String) -> i32 { 0 as i32 }
+fn string_to_int(s: String) -> int { 0 }
 
 /// Find the first occurrence of `needle` in `haystack`.
 ///

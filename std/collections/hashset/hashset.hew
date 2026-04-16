@@ -1,7 +1,7 @@
 //! Hash set collection.
 //!
 //! An unordered collection of unique values backed by a hash map.
-//! Supports `i64` and `String` element types.
+//! Supports `int` and `String` element types.
 //!
 //! # Examples
 //!
@@ -30,7 +30,7 @@ trait HashSetMethods {
     ///
     /// Returns `true` if the value was newly inserted, `false` if
     /// already present.
-    fn insert_int(set: HashSet, value: i64) -> bool;
+    fn insert_int(set: HashSet, value: int) -> bool;
 
     /// Insert a string value into the set.
     ///
@@ -39,7 +39,7 @@ trait HashSetMethods {
     fn insert_string(set: HashSet, value: String) -> bool;
 
     /// Check whether the set contains an integer value.
-    fn contains_int(set: HashSet, value: i64) -> bool;
+    fn contains_int(set: HashSet, value: int) -> bool;
 
     /// Check whether the set contains a string value.
     fn contains_string(set: HashSet, value: String) -> bool;
@@ -47,7 +47,7 @@ trait HashSetMethods {
     /// Remove an integer value from the set.
     ///
     /// Returns `true` if the value was present and removed.
-    fn remove_int(set: HashSet, value: i64) -> bool;
+    fn remove_int(set: HashSet, value: int) -> bool;
 
     /// Remove a string value from the set.
     ///
@@ -55,7 +55,7 @@ trait HashSetMethods {
     fn remove_string(set: HashSet, value: String) -> bool;
 
     /// Return the number of elements in the set.
-    fn len(set: HashSet) -> i64;
+    fn len(set: HashSet) -> int;
 
     /// Return `true` if the set has no elements.
     fn is_empty(set: HashSet) -> bool;
@@ -68,13 +68,13 @@ trait HashSetMethods {
 }
 
 impl HashSetMethods for HashSet {
-    fn insert_int(set: HashSet, value: i64) -> bool { unsafe { hew_hashset_insert_int(set, value) } }
+    fn insert_int(set: HashSet, value: int) -> bool { unsafe { hew_hashset_insert_int(set, value as i64) } }
     fn insert_string(set: HashSet, value: String) -> bool { unsafe { hew_hashset_insert_string(set, value) } }
-    fn contains_int(set: HashSet, value: i64) -> bool { unsafe { hew_hashset_contains_int(set, value) } }
+    fn contains_int(set: HashSet, value: int) -> bool { unsafe { hew_hashset_contains_int(set, value as i64) } }
     fn contains_string(set: HashSet, value: String) -> bool { unsafe { hew_hashset_contains_string(set, value) } }
-    fn remove_int(set: HashSet, value: i64) -> bool { unsafe { hew_hashset_remove_int(set, value) } }
+    fn remove_int(set: HashSet, value: int) -> bool { unsafe { hew_hashset_remove_int(set, value as i64) } }
     fn remove_string(set: HashSet, value: String) -> bool { unsafe { hew_hashset_remove_string(set, value) } }
-    fn len(set: HashSet) -> i64 { unsafe { hew_hashset_len(set) } }
+    fn len(set: HashSet) -> int { unsafe { hew_hashset_len(set) } }
     fn is_empty(set: HashSet) -> bool { unsafe { hew_hashset_is_empty(set) } }
     fn clear(set: HashSet) { unsafe { hew_hashset_clear(set) }; }
     fn free(set: HashSet) { unsafe { hew_hashset_free(set) }; }

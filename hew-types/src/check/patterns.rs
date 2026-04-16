@@ -157,8 +157,8 @@ impl Checker {
                     }
                 }
             }
-            Pattern::Tuple(pats) => {
-                if let Ty::Tuple(tys) = ty {
+            Pattern::Tuple(pats) => match ty {
+                Ty::Tuple(tys) => {
                     if pats.len() != tys.len() {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
@@ -174,7 +174,13 @@ impl Checker {
                         self.bind_pattern(&p.0, t, is_mutable, &p.1);
                     }
                 }
-            }
+                Ty::Var(_) | Ty::Error => {
+                    for p in pats {
+                        self.bind_pattern(&p.0, &Ty::Error, is_mutable, &p.1);
+                    }
+                }
+                _ => {}
+            },
             Pattern::Or(a, b) => {
                 // Both branches should bind the same names with compatible types.
                 self.bind_pattern(&a.0, ty, is_mutable, &a.1);

@@ -118,9 +118,9 @@ fn test_string_replace() -> int {
 }
 
 fn test_int_string_roundtrip() -> int {
-    let s = string_from_int(42);
+    let s = string_from_int(9223372036854775807);
     let n = string_to_int(s);
-    if n == 42 {
+    if n == 9223372036854775807 {
         println("PASS: int_string_roundtrip");
         1
     } else {
@@ -158,19 +158,31 @@ fn test_string_to_int_strict_parse() -> int {
     }
 }
 
-fn test_string_to_int_wraps() -> int {
-    let wrapped_zero = string_to_int("4294967296");
-    let wrapped_negative = string_to_int("2147483648");
-    if wrapped_zero == 0 {
-        if wrapped_negative == -2147483648 {
-            println("PASS: string_to_int_wraps");
-            1
+fn test_string_to_int_bounds() -> int {
+    let max = string_to_int("9223372036854775807");
+    let min = string_to_int("-9223372036854775808");
+    let overflow = string_to_int("9223372036854775808");
+    let underflow = string_to_int("-9223372036854775809");
+    if max == 9223372036854775807 {
+        if string_from_int(min) == "-9223372036854775808" {
+            if overflow == 0 {
+                if underflow == 0 {
+                    println("PASS: string_to_int_bounds");
+                    1
+                } else {
+                    println("FAIL: string_to_int_bounds");
+                    0
+                }
+            } else {
+                println("FAIL: string_to_int_bounds");
+                0
+            }
         } else {
-            println("FAIL: string_to_int_wraps");
+            println("FAIL: string_to_int_bounds");
             0
         }
     } else {
-        println("FAIL: string_to_int_wraps");
+        println("FAIL: string_to_int_bounds");
         0
     }
 }
@@ -189,7 +201,7 @@ fn main() -> int {
     passed = passed + test_string_replace();
     passed = passed + test_int_string_roundtrip();
     passed = passed + test_string_to_int_strict_parse();
-    passed = passed + test_string_to_int_wraps();
+    passed = passed + test_string_to_int_bounds();
     println("");
     print("Passed: ");
     print(passed);

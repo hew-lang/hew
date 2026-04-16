@@ -90,6 +90,97 @@ impl Drop for InboundAskGuard {
     }
 }
 
+#[cfg(test)]
+#[derive(Default)]
+enum TestGateMode {
+    #[default]
+    Disabled,
+    Notify,
+    Blocked,
+    Released,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct TestGateState {
+    mode: TestGateMode,
+    entered: bool,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct TestGate {
+    state: Mutex<TestGateState>,
+    cond: Condvar,
+}
+
+#[cfg(test)]
+impl TestGate {
+    fn arm(&self, block_on_enter: bool) {
+        let mut state = self.state.lock_or_recover();
+        *state = TestGateState {
+            mode: if block_on_enter {
+                TestGateMode::Blocked
+            } else {
+                TestGateMode::Notify
+            },
+            entered: false,
+        };
+        self.cond.notify_all();
+    }
+
+    fn hit(&self) {
+        let mut state = self.state.lock_or_recover();
+        if matches!(state.mode, TestGateMode::Disabled) {
+            return;
+        }
+        state.entered = true;
+        self.cond.notify_all();
+        while matches!(state.mode, TestGateMode::Blocked) {
+            state = self.cond.wait_or_recover(state);
+        }
+    }
+
+    fn release(&self) {
+        let mut state = self.state.lock_or_recover();
+        if matches!(state.mode, TestGateMode::Disabled) {
+            return;
+        }
+        state.mode = TestGateMode::Released;
+        self.cond.notify_all();
+    }
+
+    fn wait_for_enter(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut state = self.state.lock_or_recover();
+        while !matches!(state.mode, TestGateMode::Disabled) && !state.entered {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, wait_result) = self.cond.wait_timeout_or_recover(state, remaining);
+            state = next;
+            if wait_result.timed_out() && !state.entered {
+                return false;
+            }
+        }
+        state.entered
+    }
+
+    fn reset(&self) {
+        let mut state = self.state.lock_or_recover();
+        *state = TestGateState::default();
+        self.cond.notify_all();
+    }
+}
+
+#[cfg(test)]
+static INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK: std::sync::LazyLock<TestGate> =
+    std::sync::LazyLock::new(TestGate::default);
+#[cfg(test)]
+static NODE_STOP_BEFORE_CONNMGR_FREE_HOOK: std::sync::LazyLock<TestGate> =
+    std::sync::LazyLock::new(TestGate::default);
+
 // ---------------------------------------------------------------------------
 // Ask-error discriminant
 // ---------------------------------------------------------------------------
@@ -756,6 +847,8 @@ fn handle_inbound_ask(
     let reply_data: Vec<u8> = if reply_ptr.is_null() {
         let ask_err = crate::actor::actor_ask_take_last_error_raw();
         if ask_err != AskError::None as i32 {
+            #[cfg(test)]
+            INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.hit();
             // SAFETY: conn_mgr is live for the duration of the inbound ask handler.
             let peer_flags = unsafe {
                 connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id)
@@ -1387,30 +1480,26 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     // serialization above prevents concurrent actor cleanup from racing this teardown.
     unsafe { unregister_local_names_for_node(node) };
 
-    // Capture the per-manager active counter before freeing conn_mgr.  We hold
-    // the Arc so the AtomicUsize remains alive for the drain below even after
-    // the manager is freed.
+    // Capture the per-manager active counter before draining. We hold the Arc
+    // so the AtomicUsize remains alive across the wait and until conn_mgr is
+    // freed.
     let inbound_active_arc = if node.conn_mgr.is_null() {
         None
     } else {
-        // SAFETY: conn_mgr is valid here (freed immediately below).
+        // SAFETY: conn_mgr is valid here and remains live until after the drain.
         unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
     };
 
-    if !node.conn_mgr.is_null() {
-        // SAFETY: valid manager pointer from hew_connmgr_new.
-        unsafe { connection::hew_connmgr_free(node.conn_mgr) };
-        node.conn_mgr = ptr::null_mut();
-    }
-    // Postcondition: drain this conn_mgr's inbound-ask workers.
+    // Postcondition: drain this conn_mgr's inbound-ask workers before freeing
+    // the manager itself.
     //
     // Every worker spawned by `node_inbound_router` holds a `SendConnMgr` raw
     // pointer for the lifetime of `handle_inbound_ask`. The workers bail safely
-    // (via the CURRENT_NODE=0 / shutdown_started=true guards), but we must not
-    // advance teardown — or let callers free the node — while any worker thread
-    // still holds that pointer.  We drain the per-manager counter (not the
-    // global INBOUND_ASK_ACTIVE) so that stopping one node in a multi-node
-    // test does not wait for workers on a different node's manager.
+    // once teardown starts because `shutdown_started=true` closes the inbound
+    // spawn gate, but we still must not free conn_mgr while any worker thread
+    // holds that pointer. We drain the per-manager counter (not the global
+    // INBOUND_ASK_ACTIVE) so that stopping one node in a multi-node test does
+    // not wait for workers on a different node's manager.
     //
     // 5-second ceiling prevents a misbehaving actor dispatch from hanging stop
     // indefinitely; in practice well-behaved nodes drain in microseconds.
@@ -1424,6 +1513,15 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
             }
             thread::sleep(POLL);
         }
+    }
+
+    if !node.conn_mgr.is_null() {
+        #[cfg(test)]
+        NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.hit();
+        // SAFETY: valid manager pointer from hew_connmgr_new; all inbound ask
+        // workers that could still hold it have drained above.
+        unsafe { connection::hew_connmgr_free(node.conn_mgr) };
+        node.conn_mgr = ptr::null_mut();
     }
 
     if !node.routing_table.is_null() {
@@ -4624,6 +4722,134 @@ mod tests {
             "node_stop took too long ({elapsed:?}); drain may have stalled"
         );
 
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
+        struct HookResetGuard;
+
+        impl Drop for HookResetGuard {
+            fn drop(&mut self) {
+                INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.release();
+                INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.reset();
+                NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.release();
+                NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.reset();
+            }
+        }
+
+        let _guard = crate::runtime_test_guard();
+        let _hook_reset = HookResetGuard;
+        crate::registry::hew_registry_clear();
+
+        INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.arm(true);
+        NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.arm(false);
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: node1_bind is a valid C string for the duration of this test.
+        let node1 = unsafe { TestNode::new(353, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+
+        // SAFETY: node1 is valid for start-up here.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(354);
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(354);
+        // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
+        let actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        crate::pid::hew_pid_set_local_node(353);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_pid = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_pid), 354);
+
+        let connect_addr = CString::new(format!("354@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until teardown.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: node2 was started above and its conn_mgr is live here.
+        let per_mgr_active =
+            unsafe { connection::hew_connmgr_inbound_ask_active((*node2.as_ptr()).conn_mgr) }
+                .expect("conn_mgr must expose inbound_ask_active");
+
+        // SAFETY: actor was spawned above and remains valid while stopped here.
+        unsafe { crate::actor::hew_actor_stop(actor) };
+
+        // SAFETY: conn_mgr is live and source_node_id identifies the connected peer.
+        unsafe {
+            node_inbound_router(
+                actor_pid,
+                1,
+                ptr::null_mut(),
+                0,
+                /*request_id=*/ 1,
+                /*source_node_id=*/ 353,
+                (*node2.as_ptr()).conn_mgr,
+            );
+        }
+
+        assert!(
+            INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.wait_for_enter(Duration::from_secs(1)),
+            "inbound ask error path never reached the feature-flags lookup hook"
+        );
+        assert_eq!(
+            per_mgr_active.load(Ordering::Acquire),
+            1,
+            "worker must remain counted while the error path is blocked"
+        );
+
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let node2_ptr = node2.as_ptr() as usize;
+        let stop_handle = thread::spawn(move || {
+            // SAFETY: node2_ptr comes from the live TestNode allocation above
+            // and remains valid until this stop thread joins.
+            let rc = unsafe { hew_node_stop(node2_ptr as *mut HewNode) };
+            stop_tx.send(rc).expect("stop result receiver dropped");
+        });
+
+        assert!(
+            !NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_for_enter(Duration::from_millis(100)),
+            "hew_node_stop must not reach conn_mgr free while an inbound-ask error worker still holds the manager"
+        );
+
+        INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.release();
+
+        assert!(
+            NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_for_enter(Duration::from_secs(1)),
+            "hew_node_stop should reach conn_mgr free after the worker drains"
+        );
+        assert_eq!(
+            stop_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("hew_node_stop did not finish after the worker drained"),
+            0,
+            "hew_node_stop should succeed once the inbound-ask worker drains"
+        );
+        stop_handle.join().expect("stop thread panicked");
+
+        assert_eq!(
+            per_mgr_active.load(Ordering::Acquire),
+            0,
+            "per-manager worker count must be zero after node_stop returns"
+        );
+
+        // SAFETY: actor and node1 remain valid until teardown here.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+        }
         crate::registry::hew_registry_clear();
     }
 }

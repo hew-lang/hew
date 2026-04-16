@@ -721,6 +721,7 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_datetime/datetime_arithmetic"
   "e2e_datetime/datetime_basic"
   "e2e_datetime/datetime_compare"
+  "e2e_datetime/datetime_int_surface"
   "e2e_datetime/datetime_parse"
   # Rc<T> tests — explicitly registered in the Rc block below to keep them
   # visible in code review; excluded here to prevent double-registration.
@@ -809,11 +810,13 @@ add_e2e_file_test_sorted(hashmap_forin       e2e_hashmap_forin hashmap_forin)
 add_e2e_file_test(e2e_datetime_datetime_basic       e2e_datetime datetime_basic)
 add_e2e_file_test(e2e_datetime_datetime_arithmetic  e2e_datetime datetime_arithmetic)
 add_e2e_file_test(e2e_datetime_datetime_compare     e2e_datetime datetime_compare)
+add_e2e_file_test(e2e_datetime_datetime_int_surface e2e_datetime datetime_int_surface)
 add_e2e_file_test(e2e_datetime_datetime_parse       e2e_datetime datetime_parse)
 set_tests_properties(
   e2e_datetime_datetime_basic
   e2e_datetime_datetime_arithmetic
   e2e_datetime_datetime_compare
+  e2e_datetime_datetime_int_surface
   e2e_datetime_datetime_parse
   PROPERTIES
     ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std"
@@ -1060,6 +1063,7 @@ add_wasm_file_test(valid_parens         e2e_algorithms valid_parentheses)
 add_wasm_file_test(enum_state_machine   e2e_data_structures enum_state_machine)
 add_wasm_file_test(hashmap_frequency    e2e_data_structures hashmap_frequency)
 add_wasm_file_test(hashset_basic        e2e_hashset         hashset_basic)
+add_wasm_file_test(hashset_free_call_len e2e_hashset        hashset_free_call_len)
 add_wasm_file_test(hashset_strings      e2e_hashset         hashset_strings)
 add_wasm_file_test(option_result        e2e_data_structures option_result_chain)
 add_wasm_file_test(queue_via_stacks     e2e_data_structures queue_via_stacks)
@@ -1225,6 +1229,7 @@ add_wasm_file_test(module_reexport        e2e_modules          module_reexport)
 add_wasm_file_test(module_spawn_qualified e2e_modules          module_spawn_qualified)
 add_wasm_file_test(module_trait_dispatch  e2e_modules          module_trait_dispatch)
 add_wasm_file_test(module_trait_inherit   e2e_modules          module_trait_inherit)
+add_wasm_file_test(module_transitive      e2e_modules          module_transitive)
 add_wasm_file_test(module_types           e2e_modules          module_types)
 
 # Control flow: while-let, if-let, for-labels, ranges
@@ -1291,6 +1296,10 @@ add_wasm_file_test(bytes_basic                e2e_bytes            bytes_basic)
 add_wasm_file_test(bytes_from                 e2e_bytes            bytes_from)
 add_wasm_file_test(bytes_literal              e2e_bytes            bytes_literal)
 
+# Encoding
+add_wasm_file_test(base64_test                e2e_base64           base64_test)
+add_wasm_file_test(hex_test                   e2e_hex              hex_test)
+
 # Vec (extended)
 add_wasm_file_test(vec_bool                   e2e_vec              vec_bool)
 add_wasm_file_test(vec_pop_tuple              e2e_vec              vec_pop_tuple)
@@ -1310,6 +1319,8 @@ add_wasm_file_test(string_ordering            e2e_strings  string_ordering)
 # Struct/enum (extended)
 add_wasm_file_test(struct_destruct            e2e_structs  struct_destruct)
 add_wasm_file_test(struct_enum                e2e_structs      struct_enum)
+add_wasm_file_test(tuple_full                 e2e_tuples       tuple)
+add_wasm_file_test(tuple_edge                 e2e_tuples       tuple_edge)
 add_wasm_file_test(nested_tuple_destruct      e2e_tuples nested_tuple_destruct)
 
 # Error handling (extended)
@@ -1365,6 +1376,8 @@ add_wasm_file_test(iter_stdlib                e2e_iter_stdlib      iter_stdlib)
 add_wasm_file_test(option_stdlib              e2e_option_stdlib    option_stdlib)
 
 # Stdlib imports (pure Hew only, no FS/IO/OS)
+add_wasm_file_test(import_multi_stdlib        e2e_imports          test_import_multi_stdlib)
+add_wasm_file_test(import_vec                 e2e_imports          test_import_vec)
 add_wasm_file_test(import_string              e2e_imports          test_import_string)
 add_wasm_file_test(import_string_numeric_int  e2e_imports          test_import_string_numeric_int)
 add_wasm_file_test(import_string_ops          e2e_imports          test_import_string_ops)
@@ -1376,6 +1389,7 @@ add_wasm_file_test(wire_basic                 e2e_wire             wire_basic)
 add_wasm_file_test(wire_encode_decode         e2e_wire             wire_encode_decode)
 add_wasm_file_test(wire_json_roundtrip        e2e_wire             wire_json_roundtrip)
 add_wasm_file_test(wire_yaml_roundtrip        e2e_wire             wire_yaml_roundtrip)
+add_wasm_file_test(wire_nested_struct_yaml    e2e_wire             wire_nested_struct_yaml)
 add_wasm_file_test(wire_yaml_naming_roundtrip e2e_wire             wire_yaml_naming_roundtrip)
 add_wasm_file_test(wire_enum_payload_serial_roundtrip e2e_wire      wire_enum_payload_serial_roundtrip)
 

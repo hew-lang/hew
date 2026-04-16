@@ -1,0 +1,32 @@
+//! Proofs for int-facing stdlib numeric APIs.
+
+import std::crypto::password;
+import std::misc::log;
+import std::testing;
+
+#[test]
+fn test_log_level_and_format_use_int_surface() {
+    let original_level: int = log.get_level();
+    let original_format: int = log.get_format();
+
+    let level: int = 4;
+    let format: int = 1;
+
+    log.set_level(level);
+    log.set_format(format);
+
+    testing.assert_eq(log.get_level(), level);
+    testing.assert_eq(log.get_format(), format);
+
+    log.set_format(original_format);
+    log.set_level(original_level);
+}
+
+#[test]
+fn test_password_hash_custom_accepts_int_cost() {
+    let cost: int = 2;
+    let hash = password.hash_custom("numeric-ergonomics", cost);
+
+    testing.assert_true(password.verify("numeric-ergonomics", hash.clone()));
+    testing.assert_false(password.verify("numeric-ergonomics-miss", hash));
+}

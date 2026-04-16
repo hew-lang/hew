@@ -1,0 +1,17 @@
+import std::bench;
+
+fn takes_int(n: int) -> int {
+    n + 1
+}
+
+fn main() {
+    let s = bench.suite("Int Surface");
+    let iterations = 2 + 3;
+    s.add("noop", iterations, () => {});
+
+    let r = s.results.get(0);
+    println(takes_int(r.iterations) - r.iterations);
+    println(r.iterations == iterations);
+    println(takes_int(r.avg_ns) > r.avg_ns);
+    println(r.total_ns >= r.max_ns);
+}

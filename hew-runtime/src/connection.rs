@@ -1957,6 +1957,34 @@ pub(crate) unsafe fn hew_connmgr_feature_flags_for_node(
     0
 }
 
+/// Overwrite the recorded feature flags for the active connection to `node_id`.
+///
+/// Test-only helper used to simulate an older peer after a normal handshake.
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer for the duration of the call.
+#[cfg(test)]
+pub(crate) unsafe fn hew_connmgr_force_peer_flags_for_node(
+    mgr: *mut HewConnMgr,
+    node_id: u16,
+    flags: u32,
+) {
+    if mgr.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `mgr` is valid.
+    let mgr_ref = unsafe { &*mgr };
+    let Ok(mut conns) = mgr_ref.connections.lock() else {
+        return;
+    };
+    for c in conns.iter_mut() {
+        if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
+            c.peer_feature_flags = flags;
+        }
+    }
+}
+
 /// Return the number of active connections.
 ///
 /// # Safety

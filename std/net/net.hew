@@ -306,6 +306,18 @@ pub fn broadcast_except(sender: Connection, message: bytes) -> i32 {
     unsafe { hew_tcp_broadcast_except(sender, message) }
 }
 
+/// Broadcast a message to all connections except the sender.
+///
+/// Used in chat-server patterns to fan out messages.
+pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<int, NetError> {
+    let n: i32 = unsafe { hew_tcp_broadcast_except(sender, message) };
+    if n < 0 {
+        Err(net_error_from_message(unsafe { hew_stream_last_error() }))
+    } else {
+        Ok(n as int)
+    }
+}
+
 // ── FFI bindings ──────────────────────────────────────────────────────
 
 extern "C" {

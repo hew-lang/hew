@@ -36,8 +36,14 @@ trait ConnMethods {
     /// Send a plain-text email. Return 0 on success.
     fn send(conn: Conn, from: String, to: String, subject: String, body: String) -> i32;
 
+    /// Send a plain-text email.
+    fn try_send(conn: Conn, from: String, to: String, subject: String, body: String) -> Result<(), String>;
+
     /// Send an HTML email. Return 0 on success.
     fn send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> i32;
+
+    /// Send an HTML email.
+    fn try_send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> Result<(), String>;
 
     /// Close the SMTP connection.
     fn close(conn: Conn);
@@ -48,9 +54,19 @@ impl ConnMethods for Conn {
     fn send(conn: Conn, from: String, to: String, subject: String, body: String) -> i32 {
         unsafe { hew_smtp_send(conn, from, to, subject, body) }
     }
+    /// Send a plain-text email.
+    fn try_send(conn: Conn, from: String, to: String, subject: String, body: String) -> Result<(), String> {
+        let n: i32 = unsafe { hew_smtp_send(conn, from, to, subject, body) };
+        if n < 0 { Err("smtp send failed") } else { Ok(()) }
+    }
     /// Send an HTML email. Return 0 on success.
     fn send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> i32 {
         unsafe { hew_smtp_send_html(conn, from, to, subject, html) }
+    }
+    /// Send an HTML email.
+    fn try_send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> Result<(), String> {
+        let n: i32 = unsafe { hew_smtp_send_html(conn, from, to, subject, html) };
+        if n < 0 { Err("smtp send_html failed") } else { Ok(()) }
     }
     /// Close the SMTP connection.
     fn close(conn: Conn) { unsafe { hew_smtp_close(conn) }; }
@@ -98,6 +114,22 @@ pub fn send(
     unsafe { hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body) }
 }
 
+/// Connect with the same STARTTLS path as `connect(...)`, send one plain-text
+/// email, and close the connection.
+pub fn try_send(
+    host: String,
+    port: int,
+    username: String,
+    password: String,
+    from: String,
+    to: String,
+    subject: String,
+    body: String,
+) -> Result<(), String> {
+    let n: i32 = unsafe { hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body) };
+    if n < 0 { Err("smtp send failed") } else { Ok(()) }
+}
+
 /// Connect with the same STARTTLS path as `connect(...)`, send one HTML email,
 /// and close the connection.
 ///
@@ -114,6 +146,22 @@ pub fn send_html(
     html: String,
 ) -> i32 {
     unsafe { hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html) }
+}
+
+/// Connect with the same STARTTLS path as `connect(...)`, send one HTML email,
+/// and close the connection.
+pub fn try_send_html(
+    host: String,
+    port: int,
+    username: String,
+    password: String,
+    from: String,
+    to: String,
+    subject: String,
+    html: String,
+) -> Result<(), String> {
+    let n: i32 = unsafe { hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html) };
+    if n < 0 { Err("smtp send_html failed") } else { Ok(()) }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────

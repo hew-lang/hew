@@ -32,6 +32,11 @@ trait TlsStreamMethods {
     /// Returns the number of bytes written, or −1 on error.
     fn write(stream: TlsStream, data: bytes) -> i32;
 
+    /// Write raw bytes to the TLS stream.
+    ///
+    /// Returns the number of bytes written, or an error message on failure.
+    fn try_write(stream: TlsStream, data: bytes) -> Result<int, String>;
+
     /// Read up to `size` bytes from the TLS stream.
     ///
     /// Returns the bytes read. Returns an empty buffer on EOF or error.
@@ -44,6 +49,10 @@ trait TlsStreamMethods {
 impl TlsStreamMethods for TlsStream {
     fn write(stream: TlsStream, data: bytes) -> i32 {
         unsafe { hew_tls_write(stream, data) }
+    }
+    fn try_write(stream: TlsStream, data: bytes) -> Result<int, String> {
+        let n: i32 = unsafe { hew_tls_write(stream, data) };
+        if n < 0 { Err("tls write failed") } else { Ok(n as int) }
     }
     fn read(stream: TlsStream, size: int) -> bytes {
         unsafe { hew_tls_read(stream, size as i32) }
@@ -74,6 +83,13 @@ pub fn connect(host: String, port: int) -> TlsStream {
 /// Returns the number of bytes written, or −1 on error.
 pub fn write(stream: TlsStream, data: bytes) -> i32 {
     unsafe { hew_tls_write(stream, data) }
+}
+
+/// Write raw bytes to a TLS stream.
+///
+/// Returns the number of bytes written, or an error message on failure.
+pub fn try_write(stream: TlsStream, data: bytes) -> Result<int, String> {
+    stream.try_write(data)
 }
 
 /// Read up to `size` bytes from a TLS stream.

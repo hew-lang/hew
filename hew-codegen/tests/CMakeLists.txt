@@ -1396,6 +1396,7 @@ add_wasm_file_test(actor_periodic_timer       e2e_actors       actor_periodic_ti
 add_wasm_file_test(actor_ask_ownership_unregister  e2e_actor_drop   actor_ask_ownership_unregister)
 add_wasm_file_test(actor_ask_hashset_drop          e2e_actor_drop   actor_ask_hashset_drop)
 add_wasm_file_test(actor_ask_vec_string_drop       e2e_actor_drop   actor_ask_vec_string_drop)
+add_wasm_file_test(actor_receive_compound_return   e2e_actor_drop   actor_receive_compound_return)
 add_wasm_file_test(actor_receive_hashset_drop      e2e_actor_drop   actor_receive_hashset_drop)
 add_wasm_file_test(actor_send_named_drop           e2e_actor_drop   actor_send_named_drop)
 add_wasm_file_test(actor_send_vec_drop             e2e_actor_drop   actor_send_vec_drop)

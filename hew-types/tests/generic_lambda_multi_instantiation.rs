@@ -146,7 +146,7 @@ fn generic_lambda_multi_instantiation_var_bound_int_and_string() {
 
 #[test]
 fn generic_lambda_multi_instantiation_with_captures() {
-    let source = r#"
+    let source = r"
         fn main() {
             let offset: int = 10;
             let flag: bool = false;
@@ -154,7 +154,7 @@ fn generic_lambda_multi_instantiation_with_captures() {
             let a = attach(42);
             let b = attach(true);
         }
-    "#;
+    ";
 
     let (program, output) = parse_and_check(source);
     let call_spans = main_call_spans(&program);

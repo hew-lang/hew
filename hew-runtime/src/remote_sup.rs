@@ -2451,7 +2451,7 @@ mod tests {
     #[test]
     fn suspect_event_does_not_overwrite_existing_timestamp() {
         let sup = bare_supervisor(100, SupervisorStrategy::OneForOne, 5_000);
-        let early = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        let early = Instant::now().checked_sub(Duration::from_mins(1)).unwrap();
         {
             let mut state = sup.quarantine_state.lock_or_recover();
             state.suspect_since = Some(early);

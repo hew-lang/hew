@@ -1,5 +1,7 @@
 //! TUI rendering for the observer.
 
+use std::cmp::Reverse;
+
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -861,8 +863,7 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
         Style::default(),
     ));
     let num_ticks = 5.min(chart_width / 8);
-    if num_ticks > 0 {
-        let tick_spacing = chart_width / num_ticks;
+    if let Some(tick_spacing) = chart_width.checked_div(num_ticks) {
         for i in 0..num_ticks {
             let x = i * tick_spacing;
             let t_ns = window_start as f64 + (x as f64 / chart_width as f64) * window_ns as f64;
@@ -1135,7 +1136,7 @@ fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_overview_top_actors(f: &mut Frame, app: &App, area: Rect) {
     let mut top: Vec<&_> = app.actors.iter().collect();
-    top.sort_by(|a, b| b.msgs.cmp(&a.msgs));
+    top.sort_by_key(|actor| Reverse(actor.msgs));
     top.truncate(5);
 
     let bars: Vec<Bar> = top

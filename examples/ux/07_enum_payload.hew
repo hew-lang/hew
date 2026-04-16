@@ -1,21 +1,18 @@
-// Enum with payload
-
-enum Maybe {
-    Just(int);
-    Nothing;
-}
-
-fn unwrap_or(m: Maybe, fallback: int) -> int {
-    match m {
-        Just(x) => x,
-        Nothing => fallback,
-    }
-}
+// Enum payload values with Option<int>
+import std::option;
 
 fn main() {
-    let val1 = Just(42);
-    let val2 = Nothing;
+    // Option<int> is the built-in "value or nothing" enum.
+    let val1: Option<int> = Some(42);
+    let val2: Option<int> = None;
 
-    println(unwrap_or(val1, 0));
-    println(unwrap_or(val2, 99));
+    // match gives you full control over each case.
+    match val1 {
+        Some(x) => println(x),
+        None => println("no value"),
+    }
+
+    // unwrap_or_int is the stdlib shortcut for a fallback value.
+    println(option.unwrap_or_int(val1, 0));
+    println(option.unwrap_or_int(val2, 99));
 }

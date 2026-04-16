@@ -1,4 +1,5 @@
 // Error handling with Result types
+import std::result;
 
 fn parse_number(s: String) -> Result<int, String> {
     if s == "42" {
@@ -9,9 +10,26 @@ fn parse_number(s: String) -> Result<int, String> {
 }
 
 fn main() {
-    let result = parse_number("42");
-    match result {
+    let parsed = parse_number("42");
+    let failed = parse_number("oops");
+
+    // match is the clearest way to handle a String error message.
+    match parsed {
         Ok(n) => println(n),
         Err(msg) => println(msg),
     }
+
+    match failed {
+        Ok(n) => println(n),
+        Err(msg) => println(msg),
+    }
+
+    // std::result also ships helpers for common Result<int, int> cases.
+    let helper_ok: Result<int, int> = Ok(42);
+    let helper_err: Result<int, int> = Err(-1);
+
+    println(result.is_ok_int(helper_ok));
+    println(result.is_err_int(helper_err));
+    println(result.unwrap_or_int(helper_ok, 0));
+    println(result.unwrap_or_int(helper_err, -1));
 }

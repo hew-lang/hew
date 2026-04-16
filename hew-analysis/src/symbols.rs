@@ -12,15 +12,11 @@ use crate::{OffsetSpan, SymbolInfo, SymbolKind};
 /// caller is responsible for converting to line/column if needed.
 #[must_use]
 pub fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<SymbolInfo> {
-    // `source` is accepted for future use (e.g. extracting doc comments) but
-    // currently unused — suppress the warning.
-    let _ = source;
-
     parse_result
         .program
         .items
         .iter()
-        .map(|(item, span)| item_to_symbol(item, OffsetSpan::from(span.clone())))
+        .map(|(item, span)| item_to_symbol(source, item, OffsetSpan::from(span.clone())))
         .collect()
 }
 
@@ -29,44 +25,97 @@ pub fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<S
     clippy::too_many_lines,
     reason = "one arm per AST variant, not meaningfully splittable"
 )]
-fn item_to_symbol(item: &Item, item_span: OffsetSpan) -> SymbolInfo {
+fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInfo {
     match item {
-        Item::Function(f) => make_symbol(&f.name, SymbolKind::Function, item_span),
+        Item::Function(f) => named_symbol(source, &f.name, SymbolKind::Function, item_span),
         Item::Actor(a) => {
-            let mut sym = make_symbol(&a.name, SymbolKind::Actor, item_span);
+            let mut sym = named_symbol(source, &a.name, SymbolKind::Actor, item_span);
             let mut children = Vec::new();
             if a.init.is_some() {
-                children.push(make_symbol("init", SymbolKind::Constructor, item_span));
+                children.push(keyword_symbol(
+                    source,
+                    "init",
+                    "init",
+                    SymbolKind::Constructor,
+                    item_span.start,
+                ));
             }
             if a.terminate.is_some() {
-                children.push(make_symbol("terminate", SymbolKind::Method, item_span));
+                children.push(keyword_symbol(
+                    source,
+                    "terminate",
+                    "terminate",
+                    SymbolKind::Method,
+                    item_span.start,
+                ));
             }
             for recv in &a.receive_fns {
                 let recv_span = if recv.span.is_empty() {
-                    item_span
+                    None
                 } else {
-                    OffsetSpan::from(recv.span.clone())
+                    Some(OffsetSpan::from(recv.span.clone()))
                 };
-                children.push(make_symbol(&recv.name, SymbolKind::Method, recv_span));
+                let recv_search_from = recv_span.map_or(item_span.start, |span| span.start);
+                children.push(child_symbol(
+                    source,
+                    &recv.name,
+                    SymbolKind::Method,
+                    recv_span,
+                    recv_search_from,
+                ));
             }
             for method in &a.methods {
-                children.push(make_symbol(&method.name, SymbolKind::Method, item_span));
+                let method_span = if method.fn_span.is_empty() {
+                    None
+                } else {
+                    Some(OffsetSpan::from(method.fn_span.clone()))
+                };
+                children.push(child_symbol(
+                    source,
+                    &method.name,
+                    SymbolKind::Method,
+                    method_span,
+                    method.decl_span.start.max(item_span.start),
+                ));
             }
+            children.sort_by_key(|child| child.selection_span.start);
             if let Some(c) = crate::util::non_empty(children) {
                 sym.children = c;
             }
             sym
         }
-        Item::Supervisor(s) => make_symbol(&s.name, SymbolKind::Supervisor, item_span),
+        Item::Supervisor(s) => named_symbol(source, &s.name, SymbolKind::Supervisor, item_span),
         Item::Trait(t) => {
-            let mut sym = make_symbol(&t.name, SymbolKind::Trait, item_span);
+            let mut sym = named_symbol(source, &t.name, SymbolKind::Trait, item_span);
+            let mut associated_type_cursor = item_span.start;
             let children: Vec<SymbolInfo> = t
                 .items
                 .iter()
                 .map(|item| match item {
-                    TraitItem::Method(m) => make_symbol(&m.name, SymbolKind::Method, item_span),
+                    TraitItem::Method(m) => {
+                        let method_span = if m.span.is_empty() {
+                            None
+                        } else {
+                            Some(OffsetSpan::from(m.span.clone()))
+                        };
+                        child_symbol(
+                            source,
+                            &m.name,
+                            SymbolKind::Method,
+                            method_span,
+                            m.span.start,
+                        )
+                    }
                     TraitItem::AssociatedType { name, .. } => {
-                        make_symbol(name, SymbolKind::TypeAlias, item_span)
+                        let symbol = keyword_symbol(
+                            source,
+                            "type",
+                            name,
+                            SymbolKind::TypeAlias,
+                            associated_type_cursor,
+                        );
+                        associated_type_cursor = symbol.selection_span.end;
+                        symbol
                     }
                 })
                 .collect();
@@ -80,35 +129,28 @@ fn item_to_symbol(item: &Item, item_span: OffsetSpan) -> SymbolInfo {
                 Some(tb) => format!("impl {} for ...", tb.name),
                 None => "impl".to_string(),
             };
-            let mut sym = make_symbol(&name, SymbolKind::Impl, item_span);
+            let mut sym = symbol_with_spans(
+                &name,
+                SymbolKind::Impl,
+                item_span,
+                crate::util::find_name_span(source, item_span.start, "impl"),
+            );
             let children: Vec<SymbolInfo> = i
                 .methods
                 .iter()
-                .map(|m| make_symbol(&m.name, SymbolKind::Method, item_span))
-                .collect();
-            if let Some(c) = crate::util::non_empty(children) {
-                sym.children = c;
-            }
-            sym
-        }
-        Item::Const(c) => make_symbol(&c.name, SymbolKind::Constant, item_span),
-        Item::TypeDecl(td) => {
-            let kind = match td.kind {
-                TypeDeclKind::Struct => SymbolKind::Type,
-                TypeDeclKind::Enum => SymbolKind::Enum,
-            };
-            let mut sym = make_symbol(&td.name, kind, item_span);
-            let children: Vec<SymbolInfo> = td
-                .body
-                .iter()
-                .filter_map(|item| match item {
-                    TypeBodyItem::Variant(v) => {
-                        Some(make_symbol(&v.name, SymbolKind::Variant, item_span))
-                    }
-                    TypeBodyItem::Method(m) => {
-                        Some(make_symbol(&m.name, SymbolKind::Method, item_span))
-                    }
-                    TypeBodyItem::Field { .. } => None,
+                .map(|m| {
+                    let method_span = if m.fn_span.is_empty() {
+                        None
+                    } else {
+                        Some(OffsetSpan::from(m.fn_span.clone()))
+                    };
+                    child_symbol(
+                        source,
+                        &m.name,
+                        SymbolKind::Method,
+                        method_span,
+                        m.decl_span.start.max(item_span.start),
+                    )
                 })
                 .collect();
             if let Some(c) = crate::util::non_empty(children) {
@@ -116,19 +158,102 @@ fn item_to_symbol(item: &Item, item_span: OffsetSpan) -> SymbolInfo {
             }
             sym
         }
-        Item::Wire(w) => make_symbol(&w.name, SymbolKind::Wire, item_span),
-        Item::Machine(m) => make_symbol(&m.name, SymbolKind::Machine, item_span),
-        Item::TypeAlias(ta) => make_symbol(&ta.name, SymbolKind::TypeAlias, item_span),
+        Item::Const(c) => named_symbol(source, &c.name, SymbolKind::Constant, item_span),
+        Item::TypeDecl(td) => {
+            let kind = match td.kind {
+                TypeDeclKind::Struct => SymbolKind::Type,
+                TypeDeclKind::Enum => SymbolKind::Enum,
+            };
+            let mut sym = named_symbol(source, &td.name, kind, item_span);
+            let mut body_cursor = sym.selection_span.end;
+            let children: Vec<SymbolInfo> = td
+                .body
+                .iter()
+                .map(|item| match item {
+                    TypeBodyItem::Variant(v) => {
+                        let symbol =
+                            child_symbol(source, &v.name, SymbolKind::Variant, None, body_cursor);
+                        body_cursor = symbol.selection_span.end;
+                        symbol
+                    }
+                    TypeBodyItem::Method(m) => {
+                        let method_span = if m.fn_span.is_empty() {
+                            None
+                        } else {
+                            Some(OffsetSpan::from(m.fn_span.clone()))
+                        };
+                        let symbol = child_symbol(
+                            source,
+                            &m.name,
+                            SymbolKind::Method,
+                            method_span,
+                            m.decl_span.start.max(item_span.start),
+                        );
+                        body_cursor = symbol.selection_span.end;
+                        symbol
+                    }
+                    TypeBodyItem::Field { name, ty, .. } => {
+                        let symbol =
+                            field_symbol(source, name, OffsetSpan::from(ty.1.clone()), body_cursor);
+                        body_cursor = symbol.selection_span.end;
+                        symbol
+                    }
+                })
+                .collect();
+            if let Some(c) = crate::util::non_empty(children) {
+                sym.children = c;
+            }
+            sym
+        }
+        Item::Wire(w) => named_symbol(source, &w.name, SymbolKind::Wire, item_span),
+        Item::Machine(m) => {
+            let mut sym = named_symbol(source, &m.name, SymbolKind::Machine, item_span);
+            let mut state_cursor = item_span.start;
+            let mut event_cursor = item_span.start;
+            let mut children: Vec<SymbolInfo> = m
+                .states
+                .iter()
+                .map(|state| {
+                    let symbol = keyword_symbol(
+                        source,
+                        "state",
+                        &state.name,
+                        SymbolKind::State,
+                        state_cursor,
+                    );
+                    state_cursor = symbol.selection_span.end;
+                    symbol
+                })
+                .collect();
+            children.extend(m.events.iter().map(|event| {
+                let symbol = keyword_symbol(
+                    source,
+                    "event",
+                    &event.name,
+                    SymbolKind::Event,
+                    event_cursor,
+                );
+                event_cursor = symbol.selection_span.end;
+                symbol
+            }));
+            children.sort_by_key(|child| child.selection_span.start);
+            if let Some(c) = crate::util::non_empty(children) {
+                sym.children = c;
+            }
+            sym
+        }
+        Item::TypeAlias(ta) => named_symbol(source, &ta.name, SymbolKind::TypeAlias, item_span),
         Item::ExternBlock(eb) => {
-            let mut sym = make_symbol(
+            let mut sym = symbol_with_spans(
                 &format!("extern \"{}\"", eb.abi),
                 SymbolKind::Module,
                 item_span,
+                crate::util::find_name_span(source, item_span.start, "extern"),
             );
             let children: Vec<SymbolInfo> = eb
                 .functions
                 .iter()
-                .map(|f| make_symbol(&f.name, SymbolKind::Function, item_span))
+                .map(|f| child_symbol(source, &f.name, SymbolKind::Function, None, item_span.start))
                 .collect();
             if let Some(c) = crate::util::non_empty(children) {
                 sym.children = c;
@@ -137,18 +262,67 @@ fn item_to_symbol(item: &Item, item_span: OffsetSpan) -> SymbolInfo {
         }
         Item::Import(i) => {
             let name = i.path.join("::");
-            make_symbol(&name, SymbolKind::Module, item_span)
+            symbol_with_spans(&name, SymbolKind::Module, item_span, item_span)
         }
     }
 }
 
-/// Create a `SymbolInfo` with the given name, kind, and span (no children).
-fn make_symbol(name: &str, kind: SymbolKind, span: OffsetSpan) -> SymbolInfo {
+fn named_symbol(source: &str, name: &str, kind: SymbolKind, span: OffsetSpan) -> SymbolInfo {
+    symbol_with_spans(
+        name,
+        kind,
+        span,
+        crate::util::find_name_span(source, span.start, name),
+    )
+}
+
+fn child_symbol(
+    source: &str,
+    name: &str,
+    kind: SymbolKind,
+    span: Option<OffsetSpan>,
+    search_from: usize,
+) -> SymbolInfo {
+    let selection_span = crate::util::find_name_span(source, search_from, name);
+    symbol_with_spans(name, kind, span.unwrap_or(selection_span), selection_span)
+}
+
+fn keyword_symbol(
+    source: &str,
+    keyword: &str,
+    name: &str,
+    kind: SymbolKind,
+    search_from: usize,
+) -> SymbolInfo {
+    let keyword_span = crate::util::find_name_span(source, search_from, keyword);
+    child_symbol(source, name, kind, None, keyword_span.end)
+}
+
+fn field_symbol(source: &str, name: &str, ty_span: OffsetSpan, search_from: usize) -> SymbolInfo {
+    let selection_span = crate::util::find_name_span(source, search_from, name);
+    symbol_with_spans(
+        name,
+        SymbolKind::Field,
+        OffsetSpan {
+            start: selection_span.start,
+            end: ty_span.end.max(selection_span.end),
+        },
+        selection_span,
+    )
+}
+
+/// Create a `SymbolInfo` with the given name, kind, and spans (no children).
+fn symbol_with_spans(
+    name: &str,
+    kind: SymbolKind,
+    span: OffsetSpan,
+    selection_span: OffsetSpan,
+) -> SymbolInfo {
     SymbolInfo {
         name: name.to_string(),
         kind,
         span,
-        selection_span: span,
+        selection_span,
         children: Vec::new(),
     }
 }
@@ -236,5 +410,72 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "alpha");
         assert_eq!(symbols[0].kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn symbols_include_fields_states_and_events() {
+        let source = r"type Point {
+    x: i32;
+    y: i32;
+    fn distance() -> i32 { 0 }
+}
+
+machine Traffic {
+    event Start;
+    state Idle;
+    on Start: Idle -> Idle;
+}";
+        let pr = parse(source);
+        let symbols = build_document_symbols(source, &pr);
+
+        let point = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Point")
+            .unwrap();
+        let field = point
+            .children
+            .iter()
+            .find(|symbol| symbol.name == "x")
+            .unwrap();
+        let method = point
+            .children
+            .iter()
+            .find(|symbol| symbol.name == "distance")
+            .unwrap();
+        assert_eq!(field.kind, SymbolKind::Field);
+        assert_eq!(method.kind, SymbolKind::Method);
+        assert_eq!(
+            &source[field.selection_span.start..field.selection_span.end],
+            "x"
+        );
+        assert_eq!(
+            &source[method.selection_span.start..method.selection_span.end],
+            "distance",
+        );
+
+        let machine = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Traffic")
+            .unwrap();
+        let event = machine
+            .children
+            .iter()
+            .find(|symbol| symbol.name == "Start")
+            .unwrap();
+        let state = machine
+            .children
+            .iter()
+            .find(|symbol| symbol.name == "Idle")
+            .unwrap();
+        assert_eq!(event.kind, SymbolKind::Event);
+        assert_eq!(state.kind, SymbolKind::State);
+        assert_eq!(
+            &source[event.selection_span.start..event.selection_span.end],
+            "Start"
+        );
+        assert_eq!(
+            &source[state.selection_span.start..state.selection_span.end],
+            "Idle"
+        );
     }
 }

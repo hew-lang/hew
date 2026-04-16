@@ -2492,9 +2492,20 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
       } else if (actualType != expectedType) {
         bool argUnsigned = false;
         if (i < call.args.size()) {
-          auto *argType = resolvedTypeOf(ast::callArgExpr(call.args[i]).span);
-          if (argType && isUnsignedTypeExpr(*argType))
-            argUnsigned = true;
+          auto argSpan = ast::callArgExpr(call.args[i]).span;
+          auto actualInt = mlir::dyn_cast<mlir::IntegerType>(actualType);
+          auto expectedInt = mlir::dyn_cast<mlir::IntegerType>(expectedType);
+          bool needsSignedness =
+              actualInt && expectedInt && actualInt.getWidth() != expectedInt.getWidth();
+          if (needsSignedness) {
+            auto *argType =
+                requireResolvedTypeOf(argSpan, "function call argument signedness", location);
+            if (!argType)
+              return nullptr;
+            argUnsigned = isUnsignedTypeExpr(*argType);
+          } else if (auto *argType = resolvedTypeOf(argSpan)) {
+            argUnsigned = isUnsignedTypeExpr(*argType);
+          }
         }
         args[i] = coerceType(args[i], expectedType, location, argUnsigned);
         if (!args[i])
@@ -5120,6 +5131,14 @@ std::optional<mlir::Value> MLIRGen::generateActorMethodCall(const ast::ExprMetho
 
     // Fallback: .send() on an untracked actor variable
     if (methodName == "send" && isPointerLikeType(receiverType)) {
+      bool structuralReceiver =
+          std::holds_alternative<ast::ExprIdentifier>(mc.receiver->value.kind) ||
+          std::holds_alternative<ast::ExprFieldAccess>(mc.receiver->value.kind);
+      if (!structuralReceiver &&
+          !requireResolvedTypeOf(mc.receiver->span, "actor send receiver", location)) {
+        return nullptr;
+      }
+
       llvm::SmallVector<mlir::Value, 4> argVals;
       for (const auto &arg : mc.args) {
         auto val = generateExpression(ast::callArgExpr(arg).value);
@@ -5396,27 +5415,27 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     return nullptr;
   }
 
-  // Trait object dispatch — requires a resolved dyn Trait type from the checker.
-  // Note: alias-to-dyn-trait is intentionally out of scope until typeExprTraitName()
-  // becomes alias-aware; see docs/plans for the dispatch-authority roadmap.
-  {
-    std::string traitName;
-    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
-      traitName = typeExprTraitName(*typeExpr);
-    if (!traitName.empty()) {
-      auto *receiverKind =
-          requireMethodCallReceiverKindOf(exprSpan, "trait object method call", location);
-      if (!receiverKind)
-        return nullptr;
-      auto *trait = std::get_if<ast::MethodCallReceiverKindTraitObject>(&receiverKind->kind);
-      if (!trait) {
-        ++errorCount_;
-        emitError(location)
-            << "unexpected method_call_receiver_kinds kind for trait object method call";
-        return nullptr;
-      }
-      return generateTraitObjectDispatch(trait->trait_name);
+  if (auto traitObjType = mlir::dyn_cast<hew::HewTraitObjectType>(receiverType)) {
+    auto *receiverKind =
+        requireMethodCallReceiverKindOf(exprSpan, "trait object method call", location);
+    if (!receiverKind)
+      return nullptr;
+    auto *trait = std::get_if<ast::MethodCallReceiverKindTraitObject>(&receiverKind->kind);
+    if (!trait) {
+      ++errorCount_;
+      emitError(location)
+          << "unexpected method_call_receiver_kinds kind for trait object method call";
+      return nullptr;
     }
+
+    auto traitName = traitObjType.getTraitName().str();
+    if (trait->trait_name != traitName) {
+      ++errorCount_;
+      emitError(location) << "trait object receiver-kind metadata '" << trait->trait_name
+                          << "' does not match MLIR trait object type '" << traitName << "'";
+      return nullptr;
+    }
+    return generateTraitObjectDispatch(traitName);
   }
 
   // Builtin methods on scalars

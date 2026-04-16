@@ -4289,11 +4289,19 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   }
 
   // --- Duration methods (inline arith ops on i64 nanosecond values) ---
-  // Duration maps to i64 at the MLIR level; use resolvedTypeOf to distinguish
-  // from plain i64 integer methods.
+  // Duration maps to i64 at the MLIR level; require the resolved receiver type
+  // when classifying duration-only method names so missing checker metadata
+  // fails closed instead of silently falling back to plain i64 handling.
   {
+    const bool isDurationMethod = method == "nanos" || method == "micros" || method == "millis" ||
+                                  method == "secs" || method == "mins" || method == "hours" ||
+                                  method == "abs" || method == "is_zero";
     bool isDuration = false;
-    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
+    if (isDurationMethod && receiverType.isInteger(64)) {
+      auto *typeExpr =
+          requireResolvedTypeOf(mc.receiver->span, "duration method call receiver", location);
+      if (!typeExpr)
+        return mlir::Value{};
       if (auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind))
         isDuration = (named->name == "duration");
     }
@@ -4399,13 +4407,20 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   }
 
   // --- Rc<T> methods ---
-  // Detect via resolvedTypeOf returning TypeNamed { name: "Rc", ... }.
-  // The MLIR type is LLVMPointerType (same as Stream/Sender) so we cannot
-  // use the MLIR type alone; we always check the type-checker annotation.
+  // Detect via the resolved receiver type when no checker-carried
+  // method_call_receiver_kinds entry will classify the call later. This keeps
+  // Rc-only dispatch fail-closed without regressing named-type/handle methods
+  // that share method names such as `clone`.
   {
+    const bool isRcMethod = method == "clone" || method == "get" || method == "strong_count";
     bool isRc = false;
     const ast::TypeNamed *rcNamed = nullptr;
-    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
+    if (isRcMethod && mlir::isa<mlir::LLVM::LLVMPointerType>(receiverType) &&
+        !methodCallReceiverKindOf(exprSpan)) {
+      auto *typeExpr =
+          requireResolvedTypeOf(mc.receiver->span, "Rc method call receiver", location);
+      if (!typeExpr)
+        return mlir::Value{};
       if (auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind)) {
         if (named->name == "Rc") {
           isRc = true;

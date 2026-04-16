@@ -12068,6 +12068,55 @@ mod iflet_whilelet_pattern_contract {
             "identifier while-let pattern must not emit InvalidOperation; got: {errors:?}",
         );
     }
+
+    #[test]
+    fn whilelet_stmt_labeled_break_is_accepted() {
+        let errors =
+            check_iflet_whilelet(r"fn foo(x: int) { @scan: while let y = x { break @scan; } }");
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.message.contains("unknown loop label")),
+            "labeled while-let break must not emit unknown loop label; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn whilelet_stmt_labeled_continue_is_accepted() {
+        let errors =
+            check_iflet_whilelet(r"fn foo(x: int) { @scan: while let y = x { continue @scan; } }");
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.message.contains("unknown loop label")),
+            "labeled while-let continue must not emit unknown loop label; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn nested_loop_can_target_outer_whilelet_label() {
+        let errors = check_iflet_whilelet(
+            r"fn foo(x: int) { @scan: while let y = x { loop { break @scan; } } }",
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.message.contains("unknown loop label")),
+            "nested loops must resolve outer while-let labels; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn whilelet_stmt_unknown_label_still_errors() {
+        let errors = check_iflet_whilelet(r"fn foo(x: int) { while let y = x { break @scan; } }");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                    && e.message.contains("unknown loop label `@scan`")),
+            "unknown while-let labels must still error; got: {errors:?}",
+        );
+    }
 }
 
 // ── for-loop iterable fail-closed regressions ──────────────────────────────

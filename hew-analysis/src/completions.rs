@@ -7,7 +7,7 @@ use hew_parser::ast::{
     TypeDeclKind,
 };
 use hew_types::check::FnSig;
-use hew_types::TypeCheckOutput;
+use hew_types::{method_resolution, TypeCheckOutput};
 
 use crate::hover::format_fn_signature_inline;
 use crate::method_lookup::{
@@ -32,6 +32,10 @@ pub fn complete(
     }
 
     if let Some(items) = try_spawn_completions(source, parse_result, offset) {
+        return items;
+    }
+
+    if let Some(items) = try_struct_init_completions(source, type_output, offset) {
         return items;
     }
 
@@ -129,6 +133,73 @@ fn try_dot_completions(
     }
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
+    Some(items)
+}
+
+fn try_struct_init_completions(
+    source: &str,
+    type_output: Option<&TypeCheckOutput>,
+    offset: usize,
+) -> Option<Vec<CompletionItem>> {
+    let bytes = source.as_bytes();
+    let mut pos = offset;
+    let mut brace_depth = 0_i32;
+    let brace_pos = loop {
+        if pos == 0 {
+            return None;
+        }
+        pos -= 1;
+        match bytes[pos] {
+            b'}' => brace_depth += 1,
+            b'{' if brace_depth > 0 => brace_depth -= 1,
+            b'{' => break pos,
+            _ => {}
+        }
+    };
+
+    let mut name_end = brace_pos;
+    while name_end > 0 && bytes[name_end - 1].is_ascii_whitespace() {
+        name_end -= 1;
+    }
+    if name_end == 0 {
+        return None;
+    }
+
+    let mut name_start = name_end;
+    while name_start > 0
+        && (bytes[name_start - 1].is_ascii_alphanumeric() || bytes[name_start - 1] == b'_')
+    {
+        name_start -= 1;
+    }
+    if name_start == name_end {
+        return None;
+    }
+
+    let type_name = std::str::from_utf8(&bytes[name_start..name_end]).ok()?;
+    if !type_name.starts_with(|c: char| c.is_uppercase()) {
+        return None;
+    }
+
+    let tc = type_output?;
+    let type_def = method_resolution::lookup_type_def(&tc.type_defs, type_name)?;
+    if type_def.fields.is_empty() {
+        return None;
+    }
+
+    let mut items: Vec<_> = type_def
+        .fields
+        .iter()
+        .map(|(field_name, field_ty)| CompletionItem {
+            label: field_name.clone(),
+            kind: CompletionKind::Field,
+            detail: Some(field_ty.user_facing().to_string()),
+            insert_text: Some(format!("{field_name}: ")),
+            insert_text_is_snippet: false,
+            sort_text: None,
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+
     Some(items)
 }
 
@@ -740,7 +811,10 @@ mod tests {
 
     const CURSOR: &str = "/*cursor*/";
 
-    fn labels_at_cursor(source_with_cursor: &str) -> Vec<String> {
+    fn items_at_cursor(
+        source_with_cursor: &str,
+        type_output: Option<&TypeCheckOutput>,
+    ) -> Vec<CompletionItem> {
         let offset = source_with_cursor
             .find(CURSOR)
             .expect("test source must contain cursor marker");
@@ -752,10 +826,26 @@ mod tests {
             parse_result.errors
         );
 
-        complete(&source, &parse_result, None, offset)
+        complete(&source, &parse_result, type_output, offset)
+    }
+
+    fn labels_at_cursor(source_with_cursor: &str) -> Vec<String> {
+        items_at_cursor(source_with_cursor, None)
             .into_iter()
             .map(|item| item.label)
             .collect()
+    }
+
+    fn type_check(source: &str) -> TypeCheckOutput {
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut checker = hew_types::Checker::new(registry);
+        checker.check_program(&parse_result.program)
     }
 
     #[test]
@@ -804,6 +894,90 @@ mod tests {
         );
 
         assert!(labels.iter().any(|label| label == "receiver_local"));
+    }
+
+    #[test]
+    fn struct_init_completions_offer_field_names() {
+        let source = r"type Point {
+    x: i32,
+    y: i32,
+}
+
+fn example() {
+    let point = Point { /*cursor*/ };
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let labels: Vec<_> = items_at_cursor(source, Some(&tc))
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+
+        assert_eq!(labels, vec!["x".to_string(), "y".to_string()]);
+    }
+
+    #[test]
+    fn struct_init_completions_include_field_type_detail() {
+        let source = r"type Point {
+    x: i32,
+}
+
+fn example() {
+    let point = Point { /*cursor*/ };
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let items = items_at_cursor(source, Some(&tc));
+
+        assert_eq!(items[0].label, "x");
+        assert_eq!(items[0].detail.as_deref(), Some("i32"));
+        assert_eq!(items[0].insert_text.as_deref(), Some("x: "));
+    }
+
+    #[test]
+    fn struct_init_completions_do_not_fire_for_block_expressions() {
+        let source = r"fn example() {
+    /*cursor*/
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let labels: Vec<_> = items_at_cursor(source, Some(&tc))
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+
+        assert!(labels.iter().any(|label| label == "fn"));
+    }
+
+    #[test]
+    fn struct_init_completions_do_not_fire_for_unknown_type() {
+        let source = r"fn example() {
+    let point = Unknown { /*cursor*/ };
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let labels: Vec<_> = items_at_cursor(source, Some(&tc))
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+
+        assert!(labels.iter().any(|label| label == "fn"));
+    }
+
+    #[test]
+    fn struct_init_completions_do_not_fire_for_enum_types() {
+        let source = r"enum Color {
+    Red;
+    Blue;
+}
+
+fn example() {
+    let color = Color { /*cursor*/ };
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let labels: Vec<_> = items_at_cursor(source, Some(&tc))
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+
+        assert!(labels.iter().any(|label| label == "fn"));
+        assert!(labels.iter().any(|label| label == "Color"));
     }
 
     #[test]

@@ -1353,6 +1353,7 @@ add_wasm_file_test(option_stdlib              e2e_option_stdlib    option_stdlib
 add_wasm_file_test(import_string              e2e_imports          test_import_string)
 add_wasm_file_test(import_string_numeric_int  e2e_imports          test_import_string_numeric_int)
 add_wasm_file_test(import_string_ops          e2e_imports          test_import_string_ops)
+add_wasm_file_test(import_vec_index_of        e2e_imports          test_import_vec_index_of)
 
 # Wire (subset that compiles without json/yaml FFI)
 add_wasm_file_test(wire_basic                 e2e_wire             wire_basic)

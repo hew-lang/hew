@@ -131,12 +131,12 @@ pub fn contains_str(v: Vec<String>, val: String) -> bool {
 /// println(vec.index_of_i32(v, 20));  // 1
 /// println(vec.index_of_i32(v, 99));  // -1
 /// ```
-pub fn index_of_i32(v: Vec<i32>, val: i32) -> i32 {
+pub fn index_of_i32(v: Vec<i32>, val: i32) -> int {
     var i = 0;
     let n = v.len();
     while i < n {
         if v.get(i) == val {
-            return i as i32;
+            return i;
         }
         i = i + 1;
     }
@@ -154,12 +154,12 @@ pub fn index_of_i32(v: Vec<i32>, val: i32) -> i32 {
 /// println(vec.index_of_i64(v, 200));  // 1
 /// println(vec.index_of_i64(v, 999));  // -1
 /// ```
-pub fn index_of_i64(v: Vec<i64>, val: i64) -> i32 {
+pub fn index_of_i64(v: Vec<i64>, val: i64) -> int {
     var i = 0;
     let n = v.len();
     while i < n {
         if v.get(i) == val {
-            return i as i32;
+            return i;
         }
         i = i + 1;
     }
@@ -178,12 +178,12 @@ pub fn index_of_i64(v: Vec<i64>, val: i64) -> i32 {
 /// println(vec.index_of_f64(v, 2.5));  // 1
 /// println(vec.index_of_f64(v, 9.9));  // -1
 /// ```
-pub fn index_of_f64(v: Vec<f64>, val: f64) -> i32 {
+pub fn index_of_f64(v: Vec<f64>, val: f64) -> int {
     var i = 0;
     let n = v.len();
     while i < n {
         if v.get(i) == val {
-            return i as i32;
+            return i;
         }
         i = i + 1;
     }
@@ -201,12 +201,12 @@ pub fn index_of_f64(v: Vec<f64>, val: f64) -> i32 {
 /// println(vec.index_of_str(v, "b"));   // 1
 /// println(vec.index_of_str(v, "z"));   // -1
 /// ```
-pub fn index_of_str(v: Vec<String>, val: String) -> i32 {
+pub fn index_of_str(v: Vec<String>, val: String) -> int {
     var i = 0;
     let n = v.len();
     while i < n {
         if v.get(i) == val {
-            return i as i32;
+            return i;
         }
         i = i + 1;
     }

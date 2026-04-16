@@ -4,6 +4,45 @@
 )]
 use super::*;
 
+fn collect_pattern_bound_names(pattern: &Pattern) -> HashSet<String> {
+    match pattern {
+        Pattern::Wildcard | Pattern::Literal(_) => HashSet::new(),
+        Pattern::Identifier(name) => {
+            let is_constructor_like =
+                name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
+            if is_constructor_like {
+                HashSet::new()
+            } else {
+                HashSet::from([name.clone()])
+            }
+        }
+        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
+            .iter()
+            .flat_map(|pattern| collect_pattern_bound_names(&pattern.0))
+            .collect(),
+        Pattern::Struct { fields, .. } => fields
+            .iter()
+            .flat_map(|field| {
+                field.pattern.as_ref().map_or_else(
+                    || HashSet::from([field.name.clone()]),
+                    |(pattern, _)| collect_pattern_bound_names(pattern),
+                )
+            })
+            .collect(),
+        Pattern::Or(left, right) => {
+            let mut names = collect_pattern_bound_names(&left.0);
+            names.extend(collect_pattern_bound_names(&right.0));
+            names
+        }
+    }
+}
+
+fn sorted_pattern_bound_names(names: &HashSet<String>) -> Vec<String> {
+    let mut names: Vec<_> = names.iter().cloned().collect();
+    names.sort();
+    names
+}
+
 impl Checker {
     fn bind_struct_field_placeholders(
         &mut self,
@@ -228,9 +267,31 @@ impl Checker {
                 }
             },
             Pattern::Or(a, b) => {
-                // Both branches should bind the same names with compatible types.
+                let left_names = collect_pattern_bound_names(&a.0);
+                let right_names = collect_pattern_bound_names(&b.0);
+                let env_before = self.env.clone();
+
                 self.bind_pattern(&a.0, ty, is_mutable, &a.1);
+                let left_env = self.env.clone();
+                self.env = env_before.clone();
                 self.bind_pattern(&b.0, ty, is_mutable, &b.1);
+
+                if left_names == right_names {
+                    self.env = left_env;
+                } else {
+                    self.env = env_before;
+                    let mut error = TypeError::or_pattern_binding_mismatch(
+                        span.clone(),
+                        a.1.clone(),
+                        &sorted_pattern_bound_names(&left_names),
+                        b.1.clone(),
+                        &sorted_pattern_bound_names(&right_names),
+                    );
+                    if let Some(module_name) = &self.current_module {
+                        error.source_module = Some(module_name.clone());
+                    }
+                    self.errors.push(error);
+                }
             }
         }
     }

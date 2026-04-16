@@ -283,6 +283,43 @@ impl TypeError {
             source_module: None,
         }
     }
+
+    /// Create an or-pattern binding symmetry error.
+    #[must_use]
+    pub fn or_pattern_binding_mismatch(
+        span: Span,
+        left_span: Span,
+        left_names: &[String],
+        right_span: Span,
+        right_names: &[String],
+    ) -> Self {
+        let describe_names = |names: &[String]| {
+            if names.is_empty() {
+                "binds no names".to_string()
+            } else {
+                let names = names
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("binds {names}")
+            }
+        };
+
+        Self::new(
+            TypeErrorKind::OrPatternBindingMismatch,
+            span,
+            "or-pattern branches must bind the same names",
+        )
+        .with_note(
+            left_span,
+            format!("left branch {}", describe_names(left_names)),
+        )
+        .with_note(
+            right_span,
+            format!("right branch {}", describe_names(right_names)),
+        )
+    }
 }
 
 impl fmt::Display for TypeError {
@@ -371,6 +408,8 @@ pub enum TypeErrorKind {
     /// such a parameter) without cloning aliases the caller's pointer,
     /// causing a double-free.  Fail-closed: always an error.
     BorrowedParamReturn,
+    /// Branches of an or-pattern bind different names.
+    OrPatternBindingMismatch,
     /// Storing `Rc<T>` (or a type that transitively contains `Rc<T>`) inside
     /// a collection (`Vec`, `HashMap`, `HashSet`).  The runtime collections do
     /// not track ownership of pointer-valued elements — `hew_vec_free` does not
@@ -419,6 +458,7 @@ impl TypeErrorKind {
             Self::UnresolvedImport => "UnresolvedImport",
             Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",
             Self::BorrowedParamReturn => "BorrowedParamReturn",
+            Self::OrPatternBindingMismatch => "OrPatternBindingMismatch",
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
         }
     }

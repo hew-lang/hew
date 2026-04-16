@@ -117,12 +117,20 @@ type Connection {}
 trait ListenerMethods {
     /// Block until a client connects and return the new `Connection`.
     fn accept(ln: Listener) -> Connection;
+
+    /// Close the listener and release the listening socket.
+    fn close(ln: Listener) -> i32;
 }
 
 impl ListenerMethods for Listener {
     /// Block until a client connects and return the new `Connection`.
     fn accept(ln: Listener) -> Connection {
         unsafe { hew_tcp_accept(ln) }
+    }
+
+    /// Close the listener and release the listening socket.
+    fn close(ln: Listener) -> i32 {
+        unsafe { hew_tcp_listener_close(ln) }
     }
 }
 
@@ -295,6 +303,7 @@ extern "C" {
     fn hew_tcp_write(conn: Connection, data: bytes);
     fn hew_bytes_to_string(data: bytes) -> String;
     fn hew_string_to_bytes(s: String) -> bytes;
+    fn hew_tcp_listener_close(listener: Listener) -> i32;
     fn hew_tcp_close(conn: Connection) -> i32;
     fn hew_tcp_set_read_timeout(conn: Connection, ms: i32) -> i32;
     fn hew_tcp_set_write_timeout(conn: Connection, ms: i32) -> i32;

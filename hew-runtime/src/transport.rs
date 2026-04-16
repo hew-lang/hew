@@ -1083,6 +1083,15 @@ pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
     -1
 }
 
+/// Close a TCP listener handle.
+///
+/// This listener-typed shim keeps the stdlib surface method type-safe while
+/// reusing the shared TCP close implementation.
+#[no_mangle]
+pub extern "C" fn hew_tcp_listener_close(listener: c_int) -> c_int {
+    hew_tcp_close(listener)
+}
+
 /// Check whether a listener handle is valid (positive).
 ///
 /// Returns `true` for positive handles, `false` for error values (≤ 0).

@@ -4992,7 +4992,7 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
       if (method == "accept")
         return rtCall("hew_tcp_accept", i32Type, argVals);
       if (method == "close")
-        return rtCall("hew_tcp_close", i32Type, argVals);
+        return rtCall("hew_tcp_listener_close", i32Type, argVals);
     }
 
     // net.Connection methods
@@ -5060,7 +5060,7 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
         if (method == "accept")
           return rtCall("hew_tcp_accept", i32Type, argVals);
         if (method == "close")
-          return rtCall("hew_tcp_close", i32Type, argVals);
+          return rtCall("hew_tcp_listener_close", i32Type, argVals);
       }
       if (handleType == "net.Connection") {
         if (method == "read")

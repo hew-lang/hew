@@ -744,6 +744,30 @@ mod tests {
     }
 
     #[test]
+    fn load_net_and_http_handle_surface_methods_include_signatures() {
+        let net_info = load_module("std::net", &test_root()).expect("should load net module");
+        let close = net_info
+            .handle_methods
+            .iter()
+            .find(|((ty, method), _, _, _)| ty == "net.Listener" && method == "close")
+            .expect("net.Listener.close should be extracted");
+        assert_eq!(close.1, "hew_tcp_listener_close");
+        assert_eq!(close.2, Vec::<Ty>::new());
+        assert_eq!(close.3, Ty::I32);
+
+        let http_info =
+            load_module("std::net::http", &test_root()).expect("should load http module");
+        let free = http_info
+            .handle_methods
+            .iter()
+            .find(|((ty, method), _, _, _)| ty == "http.Request" && method == "free")
+            .expect("http.Request.free should be extracted");
+        assert_eq!(free.1, "hew_http_request_free");
+        assert_eq!(free.2, Vec::<Ty>::new());
+        assert_eq!(free.3, Ty::Unit);
+    }
+
+    #[test]
     fn load_all_std_modules() {
         use crate::module_registry::ModuleRegistry;
 

@@ -667,16 +667,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     funcLevelDropExcludeResolvedNames.clear();
     funcLevelEarlyReturnExcludeValues.clear();
     funcLevelEarlyReturnExcludeResolvedNames.clear();
-    if (recv.body.trailing_expr) {
-      if (auto *id = std::get_if<ast::ExprIdentifier>(&recv.body.trailing_expr->value.kind))
-        funcLevelDropExcludeVars.insert({id->name, 0});
-    } else if (!recv.body.stmts.empty()) {
-      const auto &last = recv.body.stmts.back()->value;
-      if (auto *es = std::get_if<ast::StmtExpression>(&last.kind)) {
-        if (auto *id = std::get_if<ast::ExprIdentifier>(&es->expr.value.kind))
-          funcLevelDropExcludeVars.insert({id->name, 0});
-      }
-    }
+    collectExcludeVarsFromBlock(recv.body, funcLevelDropExcludeVars, 0, !resultTypes.empty());
     resolveFunctionDropExclusionCandidates();
 
     // Generate function body

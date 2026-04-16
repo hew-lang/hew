@@ -906,6 +906,12 @@ private:
   /// Mangled function/method symbols whose String result is just a borrowed
   /// alias of an owned field on a caller-owned struct parameter/receiver.
   std::unordered_set<std::string> borrowedFieldReturnCallees;
+  using ExcludeSet = std::set<std::pair<std::string, size_t>>;
+  void collectExcludeVars(const ast::Expr &expr, ExcludeSet &out, size_t depth);
+  void collectExcludeVarsFromBlock(const ast::Block &block, ExcludeSet &out, size_t depth,
+                                   bool producesValue);
+  void collectExcludeVarsFromStmtIf(const ast::StmtIf &ifStmt, ExcludeSet &out, size_t depth,
+                                    bool producesValue);
   // (name, scope-depth) pairs to exclude from drops.  The depth is relative
   // to funcLevelDropScopeBase so that a shadowed binding in an inner scope
   // is NOT confused with the same-named return variable at depth 0.

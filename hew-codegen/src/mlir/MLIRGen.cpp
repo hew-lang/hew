@@ -81,6 +81,167 @@ cloneTypeExprPtr(const std::unique_ptr<ast::Spanned<ast::TypeExpr>> &type) {
   return std::make_unique<ast::Spanned<ast::TypeExpr>>(cloneSpannedTypeExpr(*type));
 }
 
+void MLIRGen::collectExcludeVarsFromStmtIf(const ast::StmtIf &ifStmt, ExcludeSet &out, size_t depth,
+                                           bool producesValue) {
+  // StmtIf branches go through generateBlock which pushes a scope → depth+1
+  collectExcludeVarsFromBlock(ifStmt.then_block, out, depth + 1, producesValue);
+  if (!ifStmt.else_block)
+    return;
+  if (ifStmt.else_block->block)
+    collectExcludeVarsFromBlock(*ifStmt.else_block->block, out, depth + 1, producesValue);
+  if (!ifStmt.else_block->if_stmt)
+    return;
+  const auto &nested = ifStmt.else_block->if_stmt->value;
+  // else-if doesn't add a scope — stay at same depth
+  if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
+    collectExcludeVarsFromStmtIf(*nestedIf, out, depth, producesValue);
+}
+
+void MLIRGen::collectExcludeVarsFromBlock(const ast::Block &blk, ExcludeSet &out, size_t depth,
+                                          bool producesValue) {
+  if (blk.trailing_expr) {
+    collectExcludeVars(blk.trailing_expr->value, out, depth);
+  } else if (producesValue && !blk.stmts.empty()) {
+    // When the block is expected to produce a value (non-void function
+    // body, expression-position block), the last statement's expression
+    // IS the implicit return value.  Exclude its variables from drops.
+    // When the block does NOT produce a value (void/unit functions),
+    // the last statement's result is discarded — do NOT exclude.
+    const auto &last = blk.stmts.back()->value;
+    if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind)) {
+      collectExcludeVars(exprStmt->expr.value, out, depth);
+    } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind)) {
+      collectExcludeVarsFromStmtIf(*ifStmt, out, depth, true);
+    } else if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
+      for (const auto &arm : matchStmt->arms) {
+        if (arm.body)
+          collectExcludeVars(arm.body->value, out, depth);
+      }
+    }
+  }
+  // Scan ALL statements for return expressions and let/var bindings
+  // that transfer ownership. Return statements can appear anywhere in
+  // the block (not just at the end), and each one's referenced variables
+  // must be excluded from function-level drops. We recurse into nested
+  // statement forms (if/for/while/match) to catch returns in inner scopes.
+  for (const auto &stmt : blk.stmts) {
+    if (auto *retStmt = std::get_if<ast::StmtReturn>(&stmt->value.kind)) {
+      if (retStmt->value)
+        collectExcludeVars(retStmt->value->value, out, depth);
+      continue;
+    }
+    // Recurse into nested control flow to find return statements.
+    if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+      collectExcludeVarsFromBlock(ifStmt->then_block, out, depth + 1, producesValue);
+      if (ifStmt->else_block) {
+        if (ifStmt->else_block->block)
+          collectExcludeVarsFromBlock(*ifStmt->else_block->block, out, depth + 1, producesValue);
+        if (ifStmt->else_block->if_stmt) {
+          const auto &nested = ifStmt->else_block->if_stmt->value;
+          if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
+            collectExcludeVarsFromStmtIf(*nestedIf, out, depth, producesValue);
+        }
+      }
+      continue;
+    }
+    if (auto *forStmt = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+      collectExcludeVarsFromBlock(forStmt->body, out, depth + 1, producesValue);
+      continue;
+    }
+    if (auto *whileStmt = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+      collectExcludeVarsFromBlock(whileStmt->body, out, depth + 1, producesValue);
+      continue;
+    }
+    if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
+      for (const auto &arm : matchStmt->arms) {
+        if (arm.body)
+          collectExcludeVars(arm.body->value, out, depth);
+      }
+      continue;
+    }
+    // Scan let/var bindings whose RHS is a match/if/block expression.
+    const ast::Expr *rhs = nullptr;
+    if (auto *letStmt = std::get_if<ast::StmtLet>(&stmt->value.kind)) {
+      if (letStmt->value)
+        rhs = &letStmt->value->value;
+    } else if (auto *varStmt = std::get_if<ast::StmtVar>(&stmt->value.kind)) {
+      if (varStmt->value)
+        rhs = &varStmt->value->value;
+    }
+    if (!rhs)
+      continue;
+    // Only trace into match/if/block expressions whose arm results
+    // transfer ownership into the let binding.
+    if (std::get_if<ast::ExprMatch>(&rhs->kind) || std::get_if<ast::ExprIf>(&rhs->kind) ||
+        std::get_if<ast::ExprIfLet>(&rhs->kind) || std::get_if<ast::ExprBlock>(&rhs->kind)) {
+      collectExcludeVars(*rhs, out, depth);
+    }
+  }
+}
+
+void MLIRGen::collectExcludeVars(const ast::Expr &expr, ExcludeSet &out, size_t depth) {
+  if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
+    out.insert({identExpr->name, depth});
+  } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
+    for (const auto &[fieldName, fieldVal] : si->fields) {
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
+        out.insert({id->name, depth});
+    }
+  } else if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+    // ExprIf doesn't push scopes — branches stay at same depth
+    if (ifE->then_block)
+      collectExcludeVars(ifE->then_block->value, out, depth);
+    if (ifE->else_block && *ifE->else_block)
+      collectExcludeVars((*ifE->else_block)->value, out, depth);
+  } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+    // ExprIfLet bodies are blocks → generateBlock pushes scope
+    collectExcludeVarsFromBlock(ifLet->body, out, depth + 1, true);
+    if (ifLet->else_body)
+      collectExcludeVarsFromBlock(*ifLet->else_body, out, depth + 1, true);
+  } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+    // ExprMatch arms don't push scopes — stay at same depth
+    for (const auto &arm : matchE->arms) {
+      if (arm.body)
+        collectExcludeVars(arm.body->value, out, depth);
+    }
+  } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
+    // ExprBlock → generateBlock pushes scope
+    collectExcludeVarsFromBlock(blockE->block, out, depth + 1, true);
+  } else if (auto *tupleE = std::get_if<ast::ExprTuple>(&expr.kind)) {
+    for (const auto &elem : tupleE->elements)
+      collectExcludeVars(elem->value, out, depth);
+  } else if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
+    // ExprUnsafe wraps a Block — descend like ExprBlock
+    collectExcludeVarsFromBlock(unsafeE->block, out, depth + 1, true);
+  } else if (auto *callE = std::get_if<ast::ExprCall>(&expr.kind)) {
+    // Only descend into enum variant constructors (Ok, Some, Err, etc.)
+    // where argument ownership transfers to the return value.  Regular
+    // function calls borrow arguments — the return value is independent.
+    //
+    // Enum variants are simple uppercase identifiers without :: path
+    // separators.  Qualified paths like Vec::new, Node::lookup, and
+    // generated names like Metric_from_yaml are NOT constructors.
+    bool isVariantCtor = false;
+    if (auto *id = std::get_if<ast::ExprIdentifier>(&callE->function->value.kind)) {
+      const auto &name = id->name;
+      const bool isSimpleCtorName = !name.empty() && name.find("::") == std::string::npos &&
+                                    name.find('_') == std::string::npos &&
+                                    std::isupper(static_cast<unsigned char>(name[0]));
+      if (isSimpleCtorName)
+        isVariantCtor = true;
+    }
+    if (isVariantCtor) {
+      for (const auto &arg : callE->args)
+        collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
+    }
+  } else if (std::holds_alternative<ast::ExprFieldAccess>(expr.kind)) {
+    // Field-access returns (e.g. `return obj.field`) are NOT excluded from
+    // drops.  Excluding the whole owner struct leaks sibling owned fields.
+    // Instead, returning a field of a callee-dropped param is rejected at
+    // compile time (see the post-param-drop scan in generateFunction).
+  }
+}
+
 static std::vector<ast::Spanned<ast::TypeExpr>>
 cloneTypeExprList(const std::vector<ast::Spanned<ast::TypeExpr>> &types) {
   std::vector<ast::Spanned<ast::TypeExpr>> cloned;
@@ -4717,11 +4878,6 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   // of emitting an illegal func.return inside an scf.if.
   initReturnFlagAndSlot(resultTypes, location);
 
-  // DROP-TODO(D1): BLOCKED — collectExcludeVarsFromBlock is not factored into a
-  // reusable member function; cannot populate pendingFunctionParamDrops here
-  // without the return-exclusion pre-scan (double-free on return paths).
-  // Prerequisite: extract collectExcludeVarsFromBlock into a member function.
-
   mlir::Value bodyValue = generateBlock(*method.body, /*statementPosition=*/resultTypes.empty(),
                                         /*isFunctionBodyBlock=*/true);
 
@@ -4943,172 +5099,6 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
   // Each candidate stores (name, depth) until lowering resolves it to a
   // stable binding identity. The temporary depth tag lets us distinguish a
   // returned outer binding from a shadowed inner binding with the same name.
-  // These three helpers are mutually recursive (expr ↔ block ↔ stmtIf).
-  using ExcludeSet = std::set<std::pair<std::string, size_t>>;
-  std::function<void(const ast::Expr &, ExcludeSet &, size_t)> collectExcludeVars;
-  std::function<void(const ast::Block &, ExcludeSet &, size_t, bool)> collectExcludeVarsFromBlock;
-  std::function<void(const ast::StmtIf &, ExcludeSet &, size_t, bool)> collectExcludeVarsFromStmtIf;
-  collectExcludeVarsFromStmtIf = [&collectExcludeVarsFromBlock, &collectExcludeVarsFromStmtIf](
-                                     const ast::StmtIf &ifStmt, ExcludeSet &out, size_t depth,
-                                     bool producesValue) {
-    // StmtIf branches go through generateBlock which pushes a scope → depth+1
-    collectExcludeVarsFromBlock(ifStmt.then_block, out, depth + 1, producesValue);
-    if (ifStmt.else_block) {
-      if (ifStmt.else_block->block)
-        collectExcludeVarsFromBlock(*ifStmt.else_block->block, out, depth + 1, producesValue);
-      if (ifStmt.else_block->if_stmt) {
-        const auto &nested = ifStmt.else_block->if_stmt->value;
-        // else-if doesn't add a scope — stay at same depth
-        if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
-          collectExcludeVarsFromStmtIf(*nestedIf, out, depth, producesValue);
-      }
-    }
-  };
-  collectExcludeVarsFromBlock = [&collectExcludeVars, &collectExcludeVarsFromStmtIf,
-                                 &collectExcludeVarsFromBlock](const ast::Block &blk,
-                                                               ExcludeSet &out, size_t depth,
-                                                               bool producesValue) {
-    if (blk.trailing_expr) {
-      collectExcludeVars(blk.trailing_expr->value, out, depth);
-    } else if (producesValue && !blk.stmts.empty()) {
-      // When the block is expected to produce a value (non-void function
-      // body, expression-position block), the last statement's expression
-      // IS the implicit return value.  Exclude its variables from drops.
-      // When the block does NOT produce a value (void/unit functions),
-      // the last statement's result is discarded — do NOT exclude.
-      const auto &last = blk.stmts.back()->value;
-      if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind)) {
-        collectExcludeVars(exprStmt->expr.value, out, depth);
-      } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind)) {
-        collectExcludeVarsFromStmtIf(*ifStmt, out, depth, true);
-      } else if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
-        for (const auto &arm : matchStmt->arms) {
-          if (arm.body)
-            collectExcludeVars(arm.body->value, out, depth);
-        }
-      }
-    }
-    // Scan ALL statements for return expressions and let/var bindings
-    // that transfer ownership. Return statements can appear anywhere in
-    // the block (not just at the end), and each one's referenced variables
-    // must be excluded from function-level drops. We recurse into nested
-    // statement forms (if/for/while/match) to catch returns in inner scopes.
-    for (const auto &stmt : blk.stmts) {
-      if (auto *retStmt = std::get_if<ast::StmtReturn>(&stmt->value.kind)) {
-        if (retStmt->value)
-          collectExcludeVars(retStmt->value->value, out, depth);
-        continue;
-      }
-      // Recurse into nested control flow to find return statements.
-      if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
-        collectExcludeVarsFromBlock(ifStmt->then_block, out, depth + 1, producesValue);
-        if (ifStmt->else_block) {
-          if (ifStmt->else_block->block)
-            collectExcludeVarsFromBlock(*ifStmt->else_block->block, out, depth + 1, producesValue);
-          if (ifStmt->else_block->if_stmt) {
-            const auto &nested = ifStmt->else_block->if_stmt->value;
-            if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
-              collectExcludeVarsFromStmtIf(*nestedIf, out, depth, producesValue);
-          }
-        }
-        continue;
-      }
-      if (auto *forStmt = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
-        collectExcludeVarsFromBlock(forStmt->body, out, depth + 1, producesValue);
-        continue;
-      }
-      if (auto *whileStmt = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
-        collectExcludeVarsFromBlock(whileStmt->body, out, depth + 1, producesValue);
-        continue;
-      }
-      if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
-        for (const auto &arm : matchStmt->arms) {
-          if (arm.body)
-            collectExcludeVars(arm.body->value, out, depth);
-        }
-        continue;
-      }
-      // Scan let/var bindings whose RHS is a match/if/block expression.
-      const ast::Expr *rhs = nullptr;
-      if (auto *letStmt = std::get_if<ast::StmtLet>(&stmt->value.kind)) {
-        if (letStmt->value)
-          rhs = &letStmt->value->value;
-      } else if (auto *varStmt = std::get_if<ast::StmtVar>(&stmt->value.kind)) {
-        if (varStmt->value)
-          rhs = &varStmt->value->value;
-      }
-      if (!rhs)
-        continue;
-      // Only trace into match/if/block expressions whose arm results
-      // transfer ownership into the let binding.
-      if (std::get_if<ast::ExprMatch>(&rhs->kind) || std::get_if<ast::ExprIf>(&rhs->kind) ||
-          std::get_if<ast::ExprIfLet>(&rhs->kind) || std::get_if<ast::ExprBlock>(&rhs->kind)) {
-        collectExcludeVars(*rhs, out, depth);
-      }
-    }
-  };
-  collectExcludeVars = [&collectExcludeVars, &collectExcludeVarsFromBlock](
-                           const ast::Expr &expr, ExcludeSet &out, size_t depth) {
-    if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
-      out.insert({identExpr->name, depth});
-    } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
-      for (const auto &[fieldName, fieldVal] : si->fields) {
-        if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
-          out.insert({id->name, depth});
-      }
-    } else if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
-      // ExprIf doesn't push scopes — branches stay at same depth
-      if (ifE->then_block)
-        collectExcludeVars(ifE->then_block->value, out, depth);
-      if (ifE->else_block && *ifE->else_block)
-        collectExcludeVars((*ifE->else_block)->value, out, depth);
-    } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
-      // ExprIfLet bodies are blocks → generateBlock pushes scope
-      collectExcludeVarsFromBlock(ifLet->body, out, depth + 1, true);
-      if (ifLet->else_body)
-        collectExcludeVarsFromBlock(*ifLet->else_body, out, depth + 1, true);
-    } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
-      // ExprMatch arms don't push scopes — stay at same depth
-      for (const auto &arm : matchE->arms) {
-        if (arm.body)
-          collectExcludeVars(arm.body->value, out, depth);
-      }
-    } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
-      // ExprBlock → generateBlock pushes scope
-      collectExcludeVarsFromBlock(blockE->block, out, depth + 1, true);
-    } else if (auto *tupleE = std::get_if<ast::ExprTuple>(&expr.kind)) {
-      for (const auto &elem : tupleE->elements)
-        collectExcludeVars(elem->value, out, depth);
-    } else if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
-      // ExprUnsafe wraps a Block — descend like ExprBlock
-      collectExcludeVarsFromBlock(unsafeE->block, out, depth + 1, true);
-    } else if (auto *callE = std::get_if<ast::ExprCall>(&expr.kind)) {
-      // Only descend into enum variant constructors (Ok, Some, Err, etc.)
-      // where argument ownership transfers to the return value.  Regular
-      // function calls borrow arguments — the return value is independent.
-      //
-      // Enum variants are simple uppercase identifiers without :: path
-      // separators.  Qualified paths like Vec::new, Node::lookup, and
-      // generated names like Metric_from_yaml are NOT constructors.
-      bool isVariantCtor = false;
-      if (auto *id = std::get_if<ast::ExprIdentifier>(&callE->function->value.kind)) {
-        const auto &name = id->name;
-        if (!name.empty() && name.find("::") == std::string::npos &&
-            name.find('_') == std::string::npos &&
-            std::isupper(static_cast<unsigned char>(name[0])))
-          isVariantCtor = true;
-      }
-      if (isVariantCtor) {
-        for (const auto &arg : callE->args)
-          collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
-      }
-    } else if (std::holds_alternative<ast::ExprFieldAccess>(expr.kind)) {
-      // Field-access returns (e.g. `return obj.field`) are NOT excluded from
-      // drops.  Excluding the whole owner struct leaks sibling owned fields.
-      // Instead, returning a field of a callee-dropped param is rejected at
-      // compile time (see the post-param-drop scan in generateFunction).
-    }
-  };
   // Determine whether the function body produces a value (non-void return).
   // When producesValue is false, the last statement's result is discarded,
   // so variables in it should NOT be excluded from drops.
@@ -5151,8 +5141,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
       }
     }
   };
-  scanReturns = [&scanReturns, &scanReturnsIf, &collectExcludeVars, &hasNestedReturn,
-                 this](const ast::Block &blk) {
+  scanReturns = [&scanReturns, &scanReturnsIf, &hasNestedReturn, this](const ast::Block &blk) {
     for (const auto &stmt : blk.stmts) {
       if (auto *retStmt = std::get_if<ast::StmtReturn>(&stmt->value.kind)) {
         hasNestedReturn = true;

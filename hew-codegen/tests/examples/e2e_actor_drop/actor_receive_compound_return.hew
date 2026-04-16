@@ -1,0 +1,45 @@
+// Regression: actor receive compound returns must exclude moved parameters
+// from the handler's function-level drop scope.
+//
+// Before the fix, receive lowering only excluded a bare trailing identifier,
+// so Item(t) left `t` registered for scope-exit drop. The handler would print
+// "drop:42" before the caller observed the returned wrapper, proving the actor
+// dropped the moved value too early.
+
+type Token {
+    id: int;
+}
+
+impl Drop for Token {
+    fn drop(t: Token) {
+        println(f"drop:{t.id}");
+    }
+}
+
+enum Wrapped {
+    Item(Token);
+    Empty;
+}
+
+fn unwrap(w: Wrapped) -> Token {
+    match w {
+        Item(t) => t,
+        Empty => Token { id: -1 },
+    }
+}
+
+actor Vault {
+    receive fn wrap(t: Token) -> Wrapped {
+        Item(t)
+    }
+}
+
+fn main() {
+    let v = spawn Vault;
+    let tok = Token { id: 42 };
+    {
+        let inner = unwrap(await v.wrap(tok));
+        println(f"got:{inner.id}");
+    }
+    println("done");
+}

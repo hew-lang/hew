@@ -122,6 +122,155 @@ fn mutability_error_assign_to_let_binding() {
     );
 }
 
+#[test]
+fn if_let_bound_name_is_immutable() {
+    let output = typecheck(
+        r"
+        fn main(opt: Option<int>) {
+            if let Some(x) = opt {
+                x = 5;
+            }
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MutabilityError
+                && e.message
+                    .contains("cannot assign to immutable variable `x`")),
+        "Expected if-let binding MutabilityError, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn while_let_bound_name_is_immutable() {
+    let output = typecheck(
+        r"
+        fn main(opt: Option<int>) {
+            while let Some(x) = opt {
+                x = 5;
+            }
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MutabilityError
+                && e.message
+                    .contains("cannot assign to immutable variable `x`")),
+        "Expected while-let binding MutabilityError, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn mutable_param_can_be_reassigned_no_error() {
+    let output = typecheck(
+        r"
+        fn bump(var x: int) -> int {
+            x = x + 1;
+            x
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "mutable param reassignment should succeed, got errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("never reassigned")),
+        "mutable param reassignment should suppress unused-mut warning, got: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn var_never_reassigned_emits_unusedmut_warning() {
+    let output = typecheck(
+        r"
+        fn main() {
+            var x = 10;
+            println(x);
+        }
+    ",
+    );
+    let warning = output
+        .warnings
+        .iter()
+        .find(|w| w.message.contains("never reassigned"))
+        .unwrap_or_else(|| {
+            panic!(
+                "Expected never-reassigned warning, got: {:?}",
+                output.warnings
+            )
+        });
+    assert!(
+        matches!(warning.kind, TypeErrorKind::UnusedMut),
+        "Expected UnusedMut warning kind, got: {:?}",
+        warning.kind
+    );
+    assert!(
+        warning.suggestions.iter().any(|s| s.contains("let")),
+        "Expected `let` suggestion, got: {:?}",
+        warning.suggestions
+    );
+}
+
+#[test]
+fn let_field_assign_immutable_root_is_rejected() {
+    let output = typecheck(
+        r"
+        type Point { x: int; }
+
+        fn main() {
+            let p = Point { x: 1 };
+            p.x = 2;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MutabilityError
+                && e.message
+                    .contains("cannot assign to immutable variable `p`")),
+        "Expected immutable field root MutabilityError, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_index_assign_immutable_root_is_rejected() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let xs = [1, 2];
+            xs[0] = 3;
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MutabilityError
+                && e.message
+                    .contains("cannot assign to immutable variable `xs`")),
+        "Expected immutable index root MutabilityError, got errors: {:?}",
+        output.errors
+    );
+}
+
 // ── 2. ArityMismatch — wrong number of arguments ────────────────────
 
 #[test]

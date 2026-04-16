@@ -2400,10 +2400,16 @@ void MLIRGen::generateStructToSerial(const std::string &typeName, llvm::StringRe
                                  mlir::SymbolRefAttr::get(&context, rtSetString),
                                  mlir::ValueRange{objPtr, keyPtr, fv});
     } else {
-      // Integer types: sign-extend to i64 if needed
+      // Integer types: extend to i64 (zero-extend unsigned builtins, sign-extend signed)
       mlir::Value v64 = fv;
-      if (fv.getType() != i64Type)
-        v64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, fv);
+      if (fv.getType() != i64Type) {
+        bool isUnsignedBuiltin = !field.typeExprStr.empty() &&
+                                 isBuiltinUnsignedIntegerName(resolveTypeAlias(field.typeExprStr));
+        if (isUnsignedBuiltin)
+          v64 = mlir::arith::ExtUIOp::create(builder, location, i64Type, fv);
+        else
+          v64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, fv);
+      }
       hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                  mlir::SymbolRefAttr::get(&context, rtSetInt),
                                  mlir::ValueRange{objPtr, keyPtr, v64});

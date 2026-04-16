@@ -39,7 +39,7 @@ struct StructFieldInfo {
   mlir::Type type;
   mlir::Type semanticType;
   unsigned index;
-  std::string typeExprStr; // Original type expression string for collection dispatch
+  std::string typeExprStr; // Resolved type expression string for dispatch/coercion helpers
 };
 
 /// Information about a registered struct type.

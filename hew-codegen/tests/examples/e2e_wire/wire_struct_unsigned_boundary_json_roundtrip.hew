@@ -1,0 +1,19 @@
+// Regression: non-wire u32 fields at the sign bit boundary must serialize as
+// positive JSON integers and round-trip through from_json().
+type Counter {
+    value: u32;
+}
+
+fn main() {
+    let counter = Counter { value: 2147483648 };
+    let json1 = counter.to_json();
+    println(json1);
+
+    match Counter.from_json(json1) {
+        Ok(decoded) => {
+            println(decoded.value);
+            println(decoded.to_json());
+        },
+        Err(_) => println("unexpected error"),
+    }
+}

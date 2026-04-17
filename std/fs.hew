@@ -55,7 +55,7 @@ pub enum IoError {
 ///
 /// The int payload carried in each variant is the raw OS errno so callers
 /// can inspect the platform value. errno=0 (no OS error) maps to Other(0).
-pub fn io_error_from_errno(errno: i32) -> IoError {
+pub fn io_error_from_errno(errno: int) -> IoError {
     // ENOENT: Linux=2, macOS=2
     if errno == 2 {
         IoError::NotFound(errno as int)

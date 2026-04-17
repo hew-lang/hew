@@ -68,7 +68,7 @@ pub enum NetError {
 ///
 /// The int payload carried in each variant is the raw OS errno so callers
 /// can inspect the platform value. errno=0 (no OS error) maps to Other(0).
-fn net_error_from_errno(errno: i32) -> NetError {
+fn net_error_from_errno(errno: i32) -> NetError { // INTERNAL-ABI: errno from C ABI is i32; internal helper only
     // ECONNREFUSED: Linux=111, macOS=61
     if errno == 111 || errno == 61 {
         NetError::ConnectionRefused(errno as int)

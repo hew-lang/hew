@@ -1,0 +1,17 @@
+[package]
+name = "hew-capability-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generator scaffolding for the Hew WASM capability manifest"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "wasm", "capability"]
+categories = ["compilers"]
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"

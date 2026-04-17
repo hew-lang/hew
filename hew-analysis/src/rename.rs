@@ -74,10 +74,10 @@ pub(crate) fn is_valid_identifier(name: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    if !(first == '_' || first.is_alphabetic()) {
+    if !(first == '_' || first.is_ascii_alphabetic()) {
         return false;
     }
-    chars.all(|c| c == '_' || c.is_alphanumeric())
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
 /// Return `true` if `name` clashes with a language keyword or a
@@ -487,6 +487,34 @@ mod tests {
         let offset = source.find("let x").unwrap() + 4;
         let err = plan_rename(source, &pr, offset, "").unwrap_err();
         assert!(matches!(err, RenameError::InvalidIdentifier { .. }));
+    }
+
+    #[test]
+    fn rejects_unicode_letters_not_in_ascii() {
+        // The Hew lexer is ASCII-only; names like `héllo` must be rejected
+        // even though `é` is alphabetic in Unicode.
+        assert!(
+            !is_valid_identifier("héllo"),
+            "non-ASCII alphabetic must be rejected"
+        );
+        assert!(
+            !is_valid_identifier("naïve"),
+            "non-ASCII letter in body must be rejected"
+        );
+        assert!(
+            !is_valid_identifier("Ångström"),
+            "non-ASCII first char must be rejected"
+        );
+        // ASCII identifiers must still be accepted.
+        assert!(is_valid_identifier("hello"), "ASCII ident must be accepted");
+        assert!(
+            is_valid_identifier("_foo"),
+            "underscore prefix must be accepted"
+        );
+        assert!(
+            is_valid_identifier("x1"),
+            "alphanumeric body must be accepted"
+        );
     }
 
     #[test]

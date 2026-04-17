@@ -811,10 +811,11 @@ pub(super) fn plan_workspace_rename(
     Ok(build_workspace_edit(uri, doc, offset, new_name, documents))
 }
 
-/// Inspect another file's document for a pre-existing top-level item or
-/// imported name equal to `new_name`. If found, push a conflict whose
-/// `offending_span` points at `offending_visible_name`'s binding in that
-/// file (the name the cross-file compositor would rewrite).
+/// Inspect another file's document for a pre-existing top-level item,
+/// imported name, or local variable/parameter equal to `new_name`. If
+/// found, push a conflict whose `offending_span` points at
+/// `offending_visible_name`'s binding in that file (the name the
+/// cross-file compositor would rewrite).
 fn collect_cross_file_conflict(
     other_doc: &DocumentState,
     new_name: &str,
@@ -857,6 +858,58 @@ fn collect_cross_file_conflict(
             offending_span: offending,
             message: format!("renaming would clash with imported '{new_name}' in another file"),
         });
+    }
+
+    // Check every usage site of the imported binding in this file: if
+    // `new_name` is already a local variable or parameter in scope at any
+    // usage, renaming would silently shadow it there.
+    let usage_spans = hew_analysis::references::find_import_binding_references(
+        &other_doc.parse_result,
+        offending_visible_name,
+    );
+    for usage in usage_spans {
+        if let Some(existing) = hew_analysis::definition::find_local_binding_definition(
+            &other_doc.source,
+            &other_doc.parse_result,
+            new_name,
+            usage.start,
+        ) {
+            // Deduplicate on (existing, offending): many usages may share
+            // the same in-scope local, and we only need one conflict per pair.
+            if !conflicts
+                .iter()
+                .any(|c| c.existing_span == existing && c.offending_span == usage)
+            {
+                conflicts.push(hew_analysis::RenameConflict {
+                    kind: hew_analysis::RenameConflictKind::ShadowsLocal,
+                    existing_span: existing,
+                    offending_span: usage,
+                    message: format!(
+                        "renaming would shadow local '{new_name}' at a usage site in another file"
+                    ),
+                });
+            }
+            continue;
+        }
+        if let Some(existing) = hew_analysis::definition::find_param_definition(
+            &other_doc.parse_result,
+            new_name,
+            usage.start,
+        ) {
+            if !conflicts
+                .iter()
+                .any(|c| c.existing_span == existing && c.offending_span == usage)
+            {
+                conflicts.push(hew_analysis::RenameConflict {
+                    kind: hew_analysis::RenameConflictKind::ShadowsLocal,
+                    existing_span: existing,
+                    offending_span: usage,
+                    message: format!(
+                        "renaming would shadow parameter '{new_name}' at a usage site in another file"
+                    ),
+                });
+            }
+        }
     }
 }
 

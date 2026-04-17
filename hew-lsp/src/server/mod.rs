@@ -4074,6 +4074,72 @@ machine Traffic {
     }
 
     #[test]
+    fn plan_workspace_rename_detects_cross_file_local_shadow() {
+        // util.hew defines `greet`. main.hew imports it and calls it inside
+        // a function that also declares `let welcome = ...`. Renaming `greet`
+        // → `welcome` must be refused because `welcome` is a local variable
+        // in scope at the usage site in main.hew.
+        let util_source = "pub fn greet() -> i32 { 1 }";
+        let main_source = "import util::{ greet };\nfn m() -> i32 { let welcome = 0; greet() }";
+
+        let util_uri = make_test_uri("/project/util.hew");
+        let main_uri = make_test_uri("/project/main.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(main_uri.clone(), make_doc(main_source));
+
+        // Rename from the definition file — cross-file walk lands in main.hew.
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn greet").unwrap() + 3;
+        let err = plan_workspace_rename(&util_uri, &util_doc, offset, "welcome", &documents)
+            .expect_err("cross-file local shadow should be reported");
+        match err {
+            hew_analysis::RenameError::Conflicts { conflicts } => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == hew_analysis::RenameConflictKind::ShadowsLocal),
+                    "expected a ShadowsLocal conflict, got {conflicts:?}"
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_workspace_rename_detects_cross_file_param_shadow() {
+        // util.hew defines `greet`. main.hew imports it and calls it inside a
+        // function whose parameter is named `hi`. Renaming `greet` → `hi` must
+        // be refused because `hi` is a parameter in scope at the usage site.
+        let util_source = "pub fn greet() -> i32 { 1 }";
+        let main_source = "import util::{ greet };\nfn m(hi: i32) -> i32 { greet() }";
+
+        let util_uri = make_test_uri("/project/util.hew");
+        let main_uri = make_test_uri("/project/main.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(main_uri.clone(), make_doc(main_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn greet").unwrap() + 3;
+        let err = plan_workspace_rename(&util_uri, &util_doc, offset, "hi", &documents)
+            .expect_err("cross-file param shadow should be reported");
+        match err {
+            hew_analysis::RenameError::Conflicts { conflicts } => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == hew_analysis::RenameConflictKind::ShadowsLocal),
+                    "expected a ShadowsLocal conflict for param, got {conflicts:?}"
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn plan_workspace_rename_local_let_does_not_affect_module_top_level() {
         // Rename a local `let x` to `y`. Even though `y` does not collide
         // anywhere, the rename must affect ONLY the enclosing function,

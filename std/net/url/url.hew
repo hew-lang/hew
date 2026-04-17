@@ -336,7 +336,7 @@ fn is_unreserved_char(ch: char) -> bool {
         || ch == '~'
 }
 
-fn byte_char(code: i32) -> char {
+fn byte_char(code: i32) -> char { // INTERNAL-ABI: byte-level ASCII code 0-127; internal URL percent-encoder helper
     string_char_at(string.from_char(code), 0)
 }
 
@@ -549,7 +549,7 @@ fn percent_encode_high_byte(ch: char) -> String {
     }
 }
 
-fn hex_char_to_nibble(ch: char) -> i32 {
+fn hex_char_to_nibble(ch: char) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; internal URL percent-decoder helper
     if ch == '0' { 0 as i32 }
     else if ch == '1' { 1 as i32 }
     else if ch == '2' { 2 as i32 }
@@ -569,7 +569,7 @@ fn hex_char_to_nibble(ch: char) -> i32 {
     else { -1 as i32 }
 }
 
-fn prefix_len_before_nul(data: bytes) -> i32 {
+fn prefix_len_before_nul(data: bytes) -> i32 { // INTERNAL-ABI: byte-offset result used by C-string conversion; fits i32
     for i in 0..data.len() {
         if data.get(i) == 0 {
             return i as i32;

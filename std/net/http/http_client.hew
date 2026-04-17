@@ -45,7 +45,7 @@ type Response {}
 /// Methods available on an HTTP `Response`.
 trait ResponseMethods {
     /// Return the HTTP status code (e.g. 200, 404). Returns -1 on error.
-    fn status(resp: Response) -> i32;
+    fn status(resp: Response) -> int;
 
     /// Return a copy of the response body as a string.
     fn body(resp: Response) -> String;
@@ -73,7 +73,7 @@ trait ResponseMethods {
 
 impl ResponseMethods for Response {
     /// Return the HTTP status code (e.g. 200, 404).
-    fn status(resp: Response) -> i32 { unsafe { hew_http_response_status(resp) } }
+    fn status(resp: Response) -> int { unsafe { hew_http_response_status(resp) } }
     /// Return a copy of the response body as a string.
     fn body(resp: Response) -> String { unsafe { hew_http_response_body(resp) } }
     /// Look up a response header by name (case-insensitive).
@@ -149,8 +149,8 @@ pub fn request_string(method: String, url: String, body: String, headers: Vec<(S
 /// Set the global timeout applied to subsequent outbound HTTP requests.
 ///
 /// Pass `0` to disable the timeout.
-pub fn set_timeout(timeout_ms: i32) {
-    unsafe { hew_http_set_timeout(timeout_ms) };
+pub fn set_timeout(timeout_ms: int) {
+    unsafe { hew_http_set_timeout(timeout_ms as i32) }; // INTERNAL-ABI: C ABI takes i32 timeout
 }
 
 /// Perform an HTTP GET request and return a `Response` handle.

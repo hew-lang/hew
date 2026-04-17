@@ -16,7 +16,8 @@ use std::ffi::{c_char, CStr};
 ///
 /// Note: External C code calling `setenv`/`getenv`/`unsetenv` bypasses this lock
 /// (POSIX limitation). Hew programs should use the `hew_env_*` functions exclusively.
-pub(crate) static ENV_LOCK: std::sync::LazyLock<PoisonSafeRw<()>> = // `()` is intentional; this lock only synchronizes environ access.
+pub(crate) static ENV_LOCK: std::sync::LazyLock<PoisonSafeRw<()>> =
+    // `()` is intentional; this lock only synchronizes environ access.
     std::sync::LazyLock::new(|| PoisonSafeRw::new(()));
 
 /// Convert a Rust `String` to a malloc-allocated C string. Returns null on failure.

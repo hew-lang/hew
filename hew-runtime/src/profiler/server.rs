@@ -351,9 +351,10 @@ fn serve_actors() -> Response<Full<Bytes>> {
         }
         let _ = write!(
             json,
-            r#"{{"id":{},"pid":{},"state":"{}","msgs":{},"time_ns":{},"mbox_depth":{},"mbox_hwm":{}}}"#,
+            r#"{{"id":{},"pid":{},"actor_type":"{}","state":"{}","msgs":{},"time_ns":{},"mbox_depth":{},"mbox_hwm":{}}}"#,
             a.id,
             a.pid,
+            a.actor_type,
             a.state,
             a.messages_processed,
             a.processing_time_ns,

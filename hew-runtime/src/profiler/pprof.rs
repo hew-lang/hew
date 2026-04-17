@@ -192,7 +192,7 @@ pub fn generate_heap_profile() -> Vec<u8> {
 
     // Per-actor entries.
     for (fn_id, actor) in (next_id..).zip(&actors) {
-        let name = format!("Actor#{} (pid={})", actor.id, actor.pid);
+        let name = format!("{}#{} (pid={})", actor.actor_type, actor.id, actor.pid);
         let name_idx = strings.intern(&name);
         let file_idx = strings.intern("hew-program");
 
@@ -349,10 +349,11 @@ pub fn generate_flat_profile() -> String {
 
         let _ = writeln!(
             out,
-            "{pct:5.1}    {cumulative_ms:10.1}   {self_ms:8.1}   {msgs:6}   {self_us:7.1}    {total_us:7.1}    Actor#{id} (pid={pid}, state={state})",
+            "{pct:5.1}    {cumulative_ms:10.1}   {self_ms:8.1}   {msgs:6}   {self_us:7.1}    {total_us:7.1}    {actor_type}#{id} (pid={pid}, state={state})",
             msgs = actor.messages_processed,
             self_us = self_us_per_call,
             total_us = self_us_per_call,
+            actor_type = actor.actor_type,
             id = actor.id,
             pid = actor.pid,
             state = actor.state,

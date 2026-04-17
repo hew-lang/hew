@@ -1618,6 +1618,42 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
 
 // ── Budget API ──────────────────────────────────────────────────────────
 
+/// Register a Hew actor type name for a dispatch function.
+///
+/// Generated code calls this once per actor type (before spawning any
+/// instance) so the profiler can display the Hew type name instead of the
+/// generic `"Actor"` label.
+///
+/// `name` must be a NUL-terminated string with static lifetime (i.e. a
+/// string literal baked into the binary).  The function is idempotent:
+/// subsequent calls for the same `dispatch` pointer are silently ignored.
+///
+/// # Safety
+///
+/// - `dispatch` must be a valid dispatch function for the actor type.
+/// - `name` must point to a valid NUL-terminated UTF-8 string with `'static`
+///   lifetime.
+#[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_register_type(
+    dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+    name: *const std::ffi::c_char,
+) {
+    if name.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees `name` is a NUL-terminated static string.
+    let cstr = unsafe { std::ffi::CStr::from_ptr(name) };
+    // Leak the string to get a `&'static str`. This is intentional: type
+    // names are registered once and must outlive all profiler snapshots.
+    // SHIM: WHY: `&'static str` is required by the dispatch type registry.
+    //       WHEN: Remove leak if we switch to an owned type-name map.
+    //       REAL: Store an `Arc<str>` or intern into a static arena.
+    let Ok(s) = cstr.to_str() else { return };
+    let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    crate::profiler::actor_registry::register_dispatch_type(dispatch, leaked);
+}
+
 /// Set the per-actor message processing budget.
 ///
 /// A budget of `0` resets to the default ([`HEW_MSG_BUDGET`]).

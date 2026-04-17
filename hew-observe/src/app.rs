@@ -891,6 +891,7 @@ impl App {
             ActorInfo {
                 id: 1,
                 pid: 100,
+                actor_type: "Counter".to_owned(),
                 state: "running".to_owned(),
                 msgs: 4201,
                 time_ns: 1_200_000_000,
@@ -900,6 +901,7 @@ impl App {
             ActorInfo {
                 id: 2,
                 pid: 101,
+                actor_type: "Counter".to_owned(),
                 state: "idle".to_owned(),
                 msgs: 1580,
                 time_ns: 800_000_000,
@@ -909,6 +911,7 @@ impl App {
             ActorInfo {
                 id: 3,
                 pid: 102,
+                actor_type: "Logger".to_owned(),
                 state: "blocked".to_owned(),
                 msgs: 920,
                 time_ns: 450_000_000,
@@ -918,6 +921,7 @@ impl App {
             ActorInfo {
                 id: 4,
                 pid: 103,
+                actor_type: "Logger".to_owned(),
                 state: "crashed".to_owned(),
                 msgs: 312,
                 time_ns: 100_000_000,
@@ -927,6 +931,7 @@ impl App {
             ActorInfo {
                 id: 5,
                 pid: 104,
+                actor_type: "Supervisor".to_owned(),
                 state: "runnable".to_owned(),
                 msgs: 2105,
                 time_ns: 600_000_000,
@@ -936,6 +941,7 @@ impl App {
             ActorInfo {
                 id: 6,
                 pid: 105,
+                actor_type: "Worker".to_owned(),
                 state: "idle".to_owned(),
                 msgs: 88,
                 time_ns: 30_000_000,

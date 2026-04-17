@@ -1143,7 +1143,7 @@ fn draw_overview_top_actors(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|a| {
             Bar::default()
-                .label(Line::from(format!("actor:{}", a.id)))
+                .label(Line::from(format!("{}:{}", a.type_label(), a.id)))
                 .value(a.msgs)
                 .style(Style::default().fg(theme::ACCENT))
         })
@@ -1195,6 +1195,7 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
     let header = Row::new(vec![
         Cell::from("ID"),
         Cell::from("PID"),
+        Cell::from("Type"),
         Cell::from("State"),
         Cell::from("Messages"),
         Cell::from("Avg (µs)"),
@@ -1218,6 +1219,7 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
             Row::new(vec![
                 Cell::from(format!("{}", a.id)),
                 Cell::from(format!("{}", a.pid)),
+                Cell::from(a.type_label().to_owned()),
                 Cell::from(a.state_name()).style(Style::default().fg(state_colour)),
                 Cell::from(format!("{}", a.msgs)),
                 #[expect(clippy::cast_precision_loss, reason = "Display-only, 1 decimal place")]
@@ -1239,6 +1241,7 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
         [
             Constraint::Length(8),
             Constraint::Length(8),
+            Constraint::Length(14),
             Constraint::Length(12),
             Constraint::Length(12),
             Constraint::Length(10),

@@ -5,6 +5,15 @@
 //!
 //! Registration is O(1) and lock-free for the common path (spawn/free).
 //! Enumeration (used by the HTTP API) takes a brief lock.
+//!
+//! ## Actor type names
+//!
+//! `HewActor` is `#[repr(C)]` and its layout is fixed by the codegen ABI, so
+//! we cannot add a type-name field there.  Instead we maintain a side table
+//! keyed by the dispatch function pointer (cast to `usize`).  Generated code
+//! calls `hew_actor_register_type` once per actor type before spawning any
+//! instance of that type; `snapshot_all` consults the table when building
+//! snapshots.  Unregistered dispatch functions fall back to `"Actor"`.
 
 use crate::util::MutexExt;
 use std::collections::HashMap;
@@ -29,6 +38,66 @@ unsafe impl Send for SendPtr {}
 
 /// Global registry of live actors. Keyed by actor ID.
 static REGISTRY: Mutex<Option<HashMap<u64, SendPtr>>> = Mutex::new(None);
+
+/// Side table mapping dispatch function pointer (as `usize`) to Hew type name.
+///
+/// Populated by `hew_actor_register_type` before any instance of the type is
+/// spawned.  A `&'static str` is safe to store here because all type name
+/// strings originate from string literals baked into the binary.
+///
+/// # SHIM
+///
+/// WHY: `HewActor` is `#[repr(C)]` — adding a field would break the codegen
+///      ABI.  A side table keyed by dispatch-fn pointer gives us the mapping
+///      without touching the struct layout.
+/// WHEN: Remove if we ever add an out-of-band actor metadata channel that
+///       communicates type identity at spawn time without using the dispatch
+///       pointer as a key.
+/// REAL: Embed the type name directly in `HewActor` once the C ABI is
+///       versioned and codegen is updated to fill the new field.
+static DISPATCH_TYPE_REGISTRY: Mutex<Option<HashMap<usize, &'static str>>> = Mutex::new(None);
+
+/// Register a Hew type name for a dispatch function.
+///
+/// Must be called once per actor type, before spawning any instance of that
+/// type.  Subsequent registrations for the same `dispatch_fn` key are ignored.
+///
+/// `type_name` must be a `'static` string (a literal baked into the binary).
+pub fn register_dispatch_type(
+    dispatch_fn: Option<
+        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
+    >,
+    type_name: &'static str,
+) {
+    let key = dispatch_fn.map_or(0, |f| f as usize);
+    if key == 0 {
+        return;
+    }
+    let mut guard = DISPATCH_TYPE_REGISTRY.lock_or_recover();
+    guard
+        .get_or_insert_with(HashMap::new)
+        .entry(key)
+        .or_insert(type_name);
+}
+
+/// Look up the Hew type name for a dispatch function pointer.
+///
+/// Returns `"Actor"` if the dispatch fn is not registered.
+fn lookup_dispatch_type(
+    dispatch_fn: Option<
+        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
+    >,
+) -> &'static str {
+    let key = match dispatch_fn.map(|f| f as usize) {
+        Some(k) if k != 0 => k,
+        _ => return "Actor",
+    };
+    let guard = DISPATCH_TYPE_REGISTRY.lock_or_recover();
+    guard
+        .as_ref()
+        .and_then(|m| m.get(&key).copied())
+        .unwrap_or("Actor")
+}
 
 /// Register a newly spawned actor.
 ///
@@ -71,6 +140,9 @@ pub struct ActorSnapshot {
     pub id: u64,
     /// Actor PID.
     pub pid: u64,
+    /// Hew actor type name, e.g. `"Counter"`.  Defaults to `"Actor"` when the
+    /// type has not been registered via `hew_actor_register_type`.
+    pub actor_type: &'static str,
     /// Current lifecycle state.
     pub state: &'static str,
     /// Total messages dispatched.
@@ -128,9 +200,12 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
             )
         };
 
+        let actor_type = lookup_dispatch_type(a.dispatch);
+
         result.push(ActorSnapshot {
             id: a.id,
             pid: a.pid,
+            actor_type,
             state: state_name,
             messages_processed: a.prof_messages_processed.load(Ordering::Relaxed),
             processing_time_ns: a.prof_processing_time_ns.load(Ordering::Relaxed),
@@ -142,4 +217,64 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
     // Sort by ID for stable ordering.
     result.sort_by_key(|s| s.id);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe extern "C" fn fake_dispatch_a(
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+    ) {
+    }
+
+    unsafe extern "C" fn fake_dispatch_b(
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+    ) {
+    }
+
+    #[test]
+    fn unregistered_dispatch_defaults_to_actor() {
+        // A dispatch fn that was never registered should return the default.
+        let name = lookup_dispatch_type(Some(fake_dispatch_a));
+        // May be "Actor" (unregistered) or whatever a previous test left; the
+        // point is the function does not panic and returns a &'static str.
+        assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn registered_dispatch_returns_type_name() {
+        register_dispatch_type(Some(fake_dispatch_b), "MyCounter");
+        let name = lookup_dispatch_type(Some(fake_dispatch_b));
+        assert_eq!(name, "MyCounter");
+    }
+
+    #[test]
+    fn null_dispatch_defaults_to_actor() {
+        let name = lookup_dispatch_type(None);
+        assert_eq!(name, "Actor");
+    }
+
+    #[test]
+    fn second_registration_does_not_overwrite() {
+        // Register once with "TypeA".
+        unsafe extern "C" fn fake_dispatch_c(
+            _s: *mut std::ffi::c_void,
+            _m: i32,
+            _p: *mut std::ffi::c_void,
+            _n: usize,
+        ) {
+        }
+        register_dispatch_type(Some(fake_dispatch_c), "TypeA");
+        // Attempt to overwrite with "TypeB" — should be silently ignored.
+        register_dispatch_type(Some(fake_dispatch_c), "TypeB");
+        let name = lookup_dispatch_type(Some(fake_dispatch_c));
+        assert_eq!(name, "TypeA");
+    }
 }

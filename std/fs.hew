@@ -156,17 +156,17 @@ pub fn try_read(file_path: String) -> Result<String, IoError> {
 /// Write a string to a file, creating or overwriting it.
 ///
 /// Returns 0 on success, non-zero on error.
-/// Use `try_write` for a structured `Result<i32, IoError>` surface.
-pub fn write(path: String, content: String) -> i32 {
+/// Use `try_write` for a structured `Result<int, IoError>` surface.
+pub fn write(path: String, content: String) -> int {
     unsafe { hew_file_write(path, content) }
 }
 
 /// Write a string to a file, creating or overwriting it.
 ///
-/// Lifts the native status code into `Result<i32, IoError>`.
-pub fn try_write(file_path: String, content: String) -> Result<i32, IoError> {
+/// Lifts the native status code into `Result<int, IoError>`.
+pub fn try_write(file_path: String, content: String) -> Result<int, IoError> {
     match unsafe { hew_file_write(file_path, content) } {
-        0 => Ok(0 as i32),
+        0 => Ok(0),
         _ => Err(write_error(file_path)),
     }
 }
@@ -174,17 +174,17 @@ pub fn try_write(file_path: String, content: String) -> Result<i32, IoError> {
 /// Append a string to the end of a file.
 ///
 /// Creates the file if it does not exist. Returns 0 on success.
-/// Use `try_append` for a structured `Result<i32, IoError>` surface.
-pub fn append(path: String, content: String) -> i32 {
+/// Use `try_append` for a structured `Result<int, IoError>` surface.
+pub fn append(path: String, content: String) -> int {
     unsafe { hew_file_append(path, content) }
 }
 
 /// Append a string to the end of a file.
 ///
-/// Lifts the native status code into `Result<i32, IoError>`.
-pub fn try_append(file_path: String, content: String) -> Result<i32, IoError> {
+/// Lifts the native status code into `Result<int, IoError>`.
+pub fn try_append(file_path: String, content: String) -> Result<int, IoError> {
     match unsafe { hew_file_append(file_path, content) } {
-        0 => Ok(0 as i32),
+        0 => Ok(0),
         _ => Err(write_error(file_path)),
     }
 }
@@ -202,22 +202,22 @@ pub fn exists(path: String) -> bool {
 }
 
 /// Delete a file. Returns 0 on success.
-pub fn delete(path: String) -> i32 {
+pub fn delete(path: String) -> int {
     unsafe { hew_file_delete(path) }
 }
 
 /// Delete a file.
 ///
 /// Returns `Err(IoError::NotFound(_))` when the path is missing.
-pub fn try_delete(file_path: String) -> Result<i32, IoError> {
+pub fn try_delete(file_path: String) -> Result<int, IoError> {
     match unsafe { hew_file_delete(file_path) } {
-        0 => Ok(0 as i32),
+        0 => Ok(0),
         _ => Err(missing_path_error(file_path)),
     }
 }
 
 /// Returns the size of a file in bytes.
-pub fn size(path: String) -> i64 {
+pub fn size(path: String) -> int {
     unsafe { hew_file_size(path) }
 }
 
@@ -272,17 +272,17 @@ pub fn try_read_bytes(file_path: String) -> Result<bytes, IoError> {
 /// Write a `bytes` value to a file, creating or overwriting it.
 ///
 /// Returns 0 on success, non-zero on error.
-/// Use `try_write_bytes` for a structured `Result<i32, IoError>` surface.
-pub fn write_bytes(path: String, data: bytes) -> i32 {
+/// Use `try_write_bytes` for a structured `Result<int, IoError>` surface.
+pub fn write_bytes(path: String, data: bytes) -> int {
     unsafe { hew_file_write_bytes(path, data) }
 }
 
 /// Write a `bytes` value to a file, creating or overwriting it.
 ///
-/// Lifts the native status code into `Result<i32, IoError>`.
-pub fn try_write_bytes(file_path: String, data: bytes) -> Result<i32, IoError> {
+/// Lifts the native status code into `Result<int, IoError>`.
+pub fn try_write_bytes(file_path: String, data: bytes) -> Result<int, IoError> {
     match unsafe { hew_file_write_bytes(file_path, data) } {
-        0 => Ok(0 as i32),
+        0 => Ok(0),
         _ => Err(write_error(file_path)),
     }
 }
@@ -293,14 +293,14 @@ pub fn try_write_bytes(file_path: String, data: bytes) -> Result<i32, IoError> {
 ///
 /// Fails if any parent directory does not exist. Use `mkdir_all` to create
 /// parent directories automatically.
-pub fn mkdir(path: String) -> i32 {
+pub fn mkdir(path: String) -> int {
     unsafe { hew_fs_mkdir(path) }
 }
 
 /// Create a directory with structured `IoError` results.
-pub fn try_mkdir(dir_path: String) -> Result<i32, IoError> {
+pub fn try_mkdir(dir_path: String) -> Result<int, IoError> {
     match unsafe { hew_fs_mkdir(dir_path) } {
-        0 => Ok(0 as i32),
+        0 => Ok(0),
         _ => Err(mkdir_error(dir_path)),
     }
 }
@@ -308,16 +308,16 @@ pub fn try_mkdir(dir_path: String) -> Result<i32, IoError> {
 /// Create a directory and all its parent components.
 ///
 /// Returns 0 on success, -1 on error.
-pub fn mkdir_all(path: String) -> i32 {
+pub fn mkdir_all(path: String) -> int {
     unsafe { hew_fs_mkdir_all(path) }
 }
 
 /// Create a directory and all its parent components.
 ///
-/// Lifts the native status code into `Result<i32, IoError>`.
-pub fn try_mkdir_all(dir_path: String) -> Result<i32, IoError> {
+/// Lifts the native status code into `Result<int, IoError>`.
+pub fn try_mkdir_all(dir_path: String) -> Result<int, IoError> {
     match unsafe { hew_fs_mkdir_all(dir_path) } {
-        0 => Ok(0 as i32),
+        0 => Ok(0),
         _ => {
             if exists(dir_path) {
                 Err(IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS))
@@ -361,16 +361,16 @@ pub fn try_list_dir(dir_path: String) -> Result<Vec<String>, IoError> {
 /// Rename or move a file or directory.
 ///
 /// Returns 0 on success, -1 on error.
-pub fn rename(from: String, to: String) -> i32 {
+pub fn rename(from: String, to: String) -> int {
     unsafe { hew_fs_rename(from, to) }
 }
 
 /// Rename or move a file or directory.
 ///
-/// Lifts the native status code into `Result<i32, IoError>`.
-pub fn try_rename(from: String, to: String) -> Result<i32, IoError> {
+/// Lifts the native status code into `Result<int, IoError>`.
+pub fn try_rename(from: String, to: String) -> Result<int, IoError> {
     match unsafe { hew_fs_rename(from, to) } {
-        0 => Ok(0 as i32),
+        0 => Ok(0),
         _ => Err(move_copy_error(from, to)),
     }
 }
@@ -378,16 +378,16 @@ pub fn try_rename(from: String, to: String) -> Result<i32, IoError> {
 /// Copy a file.
 ///
 /// Returns 0 on success, -1 on error.
-pub fn copy(from: String, to: String) -> i32 {
+pub fn copy(from: String, to: String) -> int {
     unsafe { hew_fs_copy(from, to) }
 }
 
 /// Copy a file.
 ///
-/// Lifts the native status code into `Result<i32, IoError>`.
-pub fn try_copy(from: String, to: String) -> Result<i32, IoError> {
+/// Lifts the native status code into `Result<int, IoError>`.
+pub fn try_copy(from: String, to: String) -> Result<int, IoError> {
     match unsafe { hew_fs_copy(from, to) } {
-        0 => Ok(0 as i32),
+        0 => Ok(0),
         _ => Err(move_copy_error(from, to)),
     }
 }

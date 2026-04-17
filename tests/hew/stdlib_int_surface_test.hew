@@ -5,6 +5,7 @@ import std::channel::channel;
 import std::encoding::json;
 import std::encoding::toml;
 import std::encoding::yaml;
+import std::fs;
 import std::testing;
 
 #[test]
@@ -45,4 +46,29 @@ fn test_yaml_int_round_trip() {
     let i: int = v.get_int();
     testing.assert_eq(i, 7);
     v.free();
+}
+
+#[test]
+fn test_fs_write_returns_int() {
+    let path = "/tmp/hew_stdlib_int_test.txt";
+    let result: int = fs.write(path, "hello");
+    testing.assert_eq(result, 0);
+    fs.delete(path);
+}
+
+#[test]
+fn test_fs_size_returns_int() {
+    let path = "/tmp/hew_stdlib_int_size_test.txt";
+    fs.write(path, "hello");
+    let sz: int = fs.size(path);
+    testing.assert_eq(sz, 5);
+    fs.delete(path);
+}
+
+#[test]
+fn test_fs_mkdir_returns_int() {
+    let dir = "/tmp/hew_stdlib_int_mkdir_test";
+    let result: int = fs.mkdir(dir);
+    testing.assert_eq(result, 0);
+    fs.delete(dir);
 }

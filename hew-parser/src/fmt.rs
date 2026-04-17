@@ -122,6 +122,31 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Emit an outer (`///`) or inner (`//!`) doc-comment block, one line per
+    /// `\n` in the stored content. The parser strips the prefix and one
+    /// leading space; we add them back. Empty lines emit the prefix alone,
+    /// matching parser input.
+    fn write_doc_comment(&mut self, doc: &str, prefix: &str) {
+        for line in doc.split('\n') {
+            self.write_indent();
+            if line.is_empty() {
+                self.write(prefix);
+                self.write("\n");
+            } else {
+                self.write(prefix);
+                self.write(" ");
+                self.write(line);
+                self.write("\n");
+            }
+        }
+    }
+
+    fn write_outer_doc(&mut self, doc: Option<&String>) {
+        if let Some(d) = doc {
+            self.write_doc_comment(d, "///");
+        }
+    }
+
     // ------------------------------------------------------------------
     // Comment flushing
     // ------------------------------------------------------------------
@@ -206,6 +231,20 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     fn format_program(&mut self, program: &Program) {
+        if let Some(doc) = &program.module_doc {
+            for line in doc.split('\n') {
+                if line.is_empty() {
+                    self.write("//!\n");
+                } else {
+                    self.write("//! ");
+                    self.write(line);
+                    self.write("\n");
+                }
+            }
+            if !program.items.is_empty() {
+                self.write("\n");
+            }
+        }
         for (i, item) in program.items.iter().enumerate() {
             self.flush_comments_and_separate(item.1.start, i > 0);
             self.prev_source_pos = item.1.start;
@@ -294,6 +333,7 @@ impl<'a> Formatter<'a> {
             self.format_wire_type_decl(decl, wire);
             return;
         }
+        self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
         self.write_visibility(decl.visibility);
         if decl.is_indirect {
@@ -480,6 +520,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_trait(&mut self, decl: &TraitDecl, _span_end: usize) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("trait ");
@@ -715,6 +756,7 @@ impl<'a> Formatter<'a> {
 
     #[expect(clippy::too_many_lines, reason = "actor formatting has many sections")]
     fn format_actor(&mut self, decl: &ActorDecl, span_end: usize) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("actor ");
@@ -1088,6 +1130,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_fn(&mut self, decl: &FnDecl, span_end: usize) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
         self.format_attributes(&decl.attributes);
         self.write_indent();
         self.write_visibility(decl.visibility);
@@ -1516,6 +1559,11 @@ impl<'a> Formatter<'a> {
             if let Some(if_stmt) = &eb.if_stmt {
                 self.write(" else ");
                 // Print the inner `if` without leading indent (it's on the same line).
+                // Only `Stmt::If` and `Stmt::IfLet` are valid here by parser construction
+                // (see parser.rs: `else if`/`else if let` branches). Every other `Stmt`
+                // variant is enumerated explicitly so that adding a new control-flow
+                // statement forces a design decision at this dispatch site instead of
+                // silently falling through to `format_stmt` and re-indenting.
                 match &if_stmt.0 {
                     Stmt::If {
                         condition,
@@ -1547,8 +1595,29 @@ impl<'a> Formatter<'a> {
                             self.format_block(else_block, self.source.len());
                         }
                     }
-                    _ => {
-                        // Shouldn't happen for well-formed ASTs, but handle gracefully.
+                    Stmt::Let { .. }
+                    | Stmt::Var { .. }
+                    | Stmt::Assign { .. }
+                    | Stmt::Match { .. }
+                    | Stmt::Loop { .. }
+                    | Stmt::For { .. }
+                    | Stmt::While { .. }
+                    | Stmt::WhileLet { .. }
+                    | Stmt::Break { .. }
+                    | Stmt::Continue { .. }
+                    | Stmt::Return(_)
+                    | Stmt::Defer(_)
+                    | Stmt::Expression(_) => {
+                        // Parser invariant: `else if`/`else if let` are the only shapes
+                        // that populate `ElseBlock::if_stmt`. Reaching this arm means the
+                        // AST was hand-built or corrupted; fall back to `format_stmt` so
+                        // we still produce valid source, and log via `debug_assert!` so
+                        // tests surface the invariant break.
+                        debug_assert!(
+                            false,
+                            "format_else_block: non-if stmt in else-if position: {:?}",
+                            &if_stmt.0
+                        );
                         self.format_stmt(&if_stmt.0);
                     }
                 }

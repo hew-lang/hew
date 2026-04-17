@@ -1583,6 +1583,8 @@ version = "0.3.0"
 dependencies = [
  "hew-lexer",
  "serde",
+ "serde_json",
+ "walkdir",
 ]
 
 [[package]]

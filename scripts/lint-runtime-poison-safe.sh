@@ -13,6 +13,9 @@
 set -euo pipefail
 
 SRC="hew-runtime/src"
+# Migrated (must remain listed): LINK_TABLE, ENV_LOCK
+# Pending migration (add here immediately after PoisonSafe/PoisonSafeRw lands):
+# LIVE_ACTORS, MONITOR_TABLE, TOP_LEVEL_SUPERVISORS
 GLOBALS='LINK_TABLE|ENV_LOCK'
 
 fail=0

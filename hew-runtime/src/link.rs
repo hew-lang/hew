@@ -39,6 +39,11 @@ struct LinkShard {
 }
 
 /// Global sharded link table.
+/// We use `PoisonSafeRw` (instead of a raw `RwLock`) intentionally: link state
+/// must remain recoverable even if a panic poisons a lock while mutating a shard.
+/// The runtime's poison-recovery discipline is to continue operating with
+/// conservatively recovered state rather than cascading a poisoning failure,
+/// consistent with the rationale documented in `poison_safe.rs`.
 /// We use usize to store actor pointers to make it Send+Sync safe.
 /// The runtime guarantees actors remain valid while linked.
 static LINK_TABLE: LazyLock<[PoisonSafeRw<LinkShard>; LINK_SHARDS]> = LazyLock::new(|| {

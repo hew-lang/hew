@@ -175,10 +175,16 @@ impl RequestMethods for Request {
     }
     /// Begin a streaming response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError> {
-        let sink = req.respond_stream(status, content_type);
-        // respond_stream returns a null-equivalent handle on failure;
-        // HTTP has no errno channel — a follow-up issue will wire a validity check.
-        Ok(sink)
+        let sink = unsafe { hew_http_respond_stream(req, status as i32, content_type) };
+        // HTTP has no errno channel; the runtime sets a message via set_last_error
+        // on the two failure paths (null req, already-responded).  The errno side-
+        // channel is always 0 here, so Other(0) is the correct classification.
+        if unsafe { hew_sink_is_valid(sink) } {
+            Ok(sink)
+        } else {
+            let _ = unsafe { hew_stream_last_error() }; // consume the error message
+            Err(fs.io_error_from_errno(0))
+        }
     }
 }
 
@@ -249,4 +255,6 @@ extern "C" {
     fn hew_http_respond_stream(req: Request, status: i32, content_type: String) -> Sink<String>;
     fn hew_http_server_close(server: Server);
     fn hew_http_request_free(req: Request);
+    fn hew_sink_is_valid(sink: Sink<String>) -> bool;
+    fn hew_stream_last_error() -> String;
 }

@@ -43,7 +43,9 @@ impl IntegerBounds {
                 min: i64::from(i32::MIN),
                 max: u64::try_from(i64::from(i32::MAX)).unwrap_or(0),
             }),
-            PrimitiveWireKind::I64 => Some(Self {
+            // Duration stores nanoseconds as i64 (negative = past), so it
+            // shares I64's signed range rather than U64's unsigned range.
+            PrimitiveWireKind::I64 | PrimitiveWireKind::Duration => Some(Self {
                 min: i64::MIN,
                 max: u64::try_from(i64::MAX).unwrap_or(u64::MAX),
             }),
@@ -62,7 +64,7 @@ impl IntegerBounds {
                 min: 0,
                 max: u64::from(u32::MAX),
             }),
-            PrimitiveWireKind::U64 | PrimitiveWireKind::Duration => Some(Self {
+            PrimitiveWireKind::U64 => Some(Self {
                 min: 0,
                 max: u64::MAX,
             }),
@@ -484,5 +486,16 @@ mod tests {
         );
         assert_eq!(IntegerBounds::for_kind(&PrimitiveWireKind::F32), None);
         assert_eq!(IntegerBounds::for_kind(&PrimitiveWireKind::String), None);
+    }
+
+    #[test]
+    fn duration_bounds_permit_negative_nanoseconds() {
+        let bounds = IntegerBounds::for_kind(&PrimitiveWireKind::Duration)
+            .expect("Duration must have bounds");
+        // Duration stores nanoseconds as i64 — negative values mean "time in
+        // the past". The plan bounds must cover i64::MIN so that negative
+        // Duration values are not rejected by the encode guard.
+        assert_eq!(bounds.min, i64::MIN);
+        assert_eq!(bounds.max, u64::try_from(i64::MAX).unwrap());
     }
 }

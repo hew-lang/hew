@@ -13,6 +13,11 @@
 //!   float arms.
 //! - `Duration` stores nanoseconds as `i64` (matching the msgpack wire
 //!   encoding; negative means "time in the past").
+//! - `Serialize` / `Deserialize` are intentionally **not** derived here.
+//!   Float variants (`F32`, `F64`) serialise without issue, but roundtrip
+//!   fidelity (NaN identity, ±0 symmetry) is domain-specific. The
+//!   triple-roundtrip harness in a future PR will decide whether to derive
+//!   serde or provide hand-rolled impls (see Lane 7 Stage 7).
 //!
 //! LESSONS upheld: `type-info-survival`, `exhaustive-traversal-and-lowering`.
 
@@ -112,6 +117,13 @@ impl WireValue {
     ///
     /// "Shallow" means field values are not recursed into; only the top-level
     /// shape and variant membership are verified.
+    ///
+    /// **Limitation:** returns a plain `bool` — callers cannot distinguish
+    /// between a name mismatch, a shape mismatch, and a missing variant. The
+    /// `tests/value_kind.rs` mismatch-axis tests (`*_does_not_conform_*`) are
+    /// the canonical way to verify which axis caused a failure during
+    /// development. A typed `ConformanceError` is deferred to the full
+    /// validation layer (Lane 7 Stage 7).
     #[must_use]
     pub fn conforms_to_plan(&self, plan: &WireCodecPlan) -> bool {
         match self {

@@ -87,6 +87,42 @@ fn struct_value_does_not_conform_to_enum_plan() {
     assert!(!v.conforms_to_plan(&enum_plan("Point", &["A"])));
 }
 
+#[test]
+fn enum_value_conforms_to_matching_plan() {
+    let v = WireValue::Enum {
+        type_name: "Colour".to_string(),
+        variant: "Red".to_string(),
+    };
+    assert!(v.conforms_to_plan(&enum_plan("Colour", &["Red", "Green", "Blue"])));
+}
+
+#[test]
+fn enum_value_does_not_conform_when_variant_missing() {
+    let v = WireValue::Enum {
+        type_name: "Colour".to_string(),
+        variant: "Yellow".to_string(),
+    };
+    // Plan does not list Yellow as a valid variant.
+    assert!(!v.conforms_to_plan(&enum_plan("Colour", &["Red", "Green", "Blue"])));
+}
+
+#[test]
+fn enum_value_does_not_conform_to_name_mismatch_plan() {
+    let v = WireValue::Enum {
+        type_name: "Colour".to_string(),
+        variant: "Red".to_string(),
+    };
+    // Plan name differs — same variant, different type name.
+    assert!(!v.conforms_to_plan(&enum_plan("Shade", &["Red", "Green", "Blue"])));
+}
+
+#[test]
+fn primitive_value_does_not_conform_to_enum_plan() {
+    // Primitives always return false from conforms_to_plan; they are not plan
+    // subjects. The enum arm is the focal path but the guard is unconditional.
+    assert!(!WireValue::Bool(true).conforms_to_plan(&enum_plan("Colour", &["Red"])));
+}
+
 // ---------------------------------------------------------------------------
 // Float non-Eq demonstration
 // ---------------------------------------------------------------------------

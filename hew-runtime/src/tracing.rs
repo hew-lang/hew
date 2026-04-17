@@ -472,9 +472,8 @@ pub extern "C" fn hew_trace_reset() {
 ///
 /// SHIM: `handler_name` is always `null` in native non-WASM builds until
 /// `hew_actor_register_type` / `hew_register_handler_name` codegen emission
-/// is implemented in `hew-codegen/`. Tracked in the follow-up issues filed
-/// when the PR for this work was opened. Remove this comment once native
-/// emission lands.
+/// is implemented in `hew-codegen/`. Tracked in #1259. Remove this comment once
+/// native emission lands.
 #[cfg(feature = "profiler")]
 pub fn drain_events_json() -> String {
     use std::fmt::Write as _;
@@ -500,7 +499,7 @@ pub fn drain_events_json() -> String {
             // Resolve handler name from the WASM bridge metadata registry.
             // SHIM: bridge is only compiled under wasm32 or test; native profiler
             // builds always emit null here until hew_register_handler_name codegen
-            // emission lands (tracked in follow-up issues for #1234).
+            // emission lands (tracked in #1259).
             #[cfg(any(target_arch = "wasm32", test))]
             let handler_name = crate::bridge::resolve_handler_name(ev.msg_type);
             #[cfg(not(any(target_arch = "wasm32", test)))]

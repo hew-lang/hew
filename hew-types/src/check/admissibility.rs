@@ -1558,6 +1558,119 @@ mod tests {
         );
     }
 
+    // ── validate_handle_types_no_field_overlap ─────────────────────────────────
+
+    /// A type whose fully-qualified name appears in `module_registry.handle_types`
+    /// AND has non-empty `TypeDef.fields` must be rejected and pruned from
+    /// `type_defs` so the incompatible representations (opaque-handle MLIR path
+    /// vs struct-layout path) can never both reach codegen.
+    ///
+    /// Regression guard for hew-lang/hew#1252.
+    #[test]
+    fn handle_field_overlap_rejected() {
+        let mut module_registry = ModuleRegistry::new(vec![]);
+        module_registry.insert_handle_type_for_test("fake.Handle".to_string());
+        let mut checker = Checker::new(module_registry);
+
+        // "fake.Handle" is the qualified key in type_defs — exactly as
+        // register_qualified_type_alias would produce — and has non-empty fields.
+        let mut type_defs = HashMap::from([(
+            "fake.Handle".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "fake.Handle".to_string(),
+                type_params: vec![],
+                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        )]);
+
+        checker.validate_handle_types_no_field_overlap(&mut type_defs);
+
+        assert!(
+            type_defs.is_empty(),
+            "conflicting type must be pruned from type_defs"
+        );
+        let overlap_errors: Vec<_> = checker
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InvalidOperation)
+            .collect();
+        assert_eq!(
+            overlap_errors.len(),
+            1,
+            "exactly one InvalidOperation error must be emitted for the overlap: {:?}",
+            checker.errors
+        );
+        assert!(
+            overlap_errors[0].message.contains("fake.Handle"),
+            "error message must name the conflicting type"
+        );
+    }
+
+    /// A user-defined type whose unqualified name coincidentally matches the
+    /// short name of a stdlib handle type must NOT trigger the overlap check,
+    /// because `module_registry.is_handle_type` requires a fully-qualified name
+    /// (e.g. `"tls.TlsStream"`) and `type_defs` keys for user types are bare
+    /// (e.g. `"TlsStream"`).
+    ///
+    /// A fieldless qualified entry for the same type must survive as well.
+    ///
+    /// Regression guard for hew-lang/hew#1252 false-positive risk.
+    #[test]
+    fn clean_handle_and_clean_fielded_type_survive() {
+        let mut module_registry = ModuleRegistry::new(vec![]);
+        module_registry.insert_handle_type_for_test("tls.TlsStream".to_string());
+        let mut checker = Checker::new(module_registry);
+
+        let mut type_defs = HashMap::from([
+            // User type whose unqualified name matches the handle short name — must survive.
+            (
+                "TlsStream".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Struct,
+                    name: "TlsStream".to_string(),
+                    type_params: vec![],
+                    fields: HashMap::from([("fd".to_string(), Ty::I32)]),
+                    variants: HashMap::new(),
+                    methods: HashMap::new(),
+                    doc_comment: None,
+                    is_indirect: false,
+                },
+            ),
+            // Fieldless qualified alias for the actual handle type — also must survive.
+            (
+                "tls.TlsStream".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Struct,
+                    name: "tls.TlsStream".to_string(),
+                    type_params: vec![],
+                    fields: HashMap::new(), // fieldless — not a conflict
+                    variants: HashMap::new(),
+                    methods: HashMap::new(),
+                    doc_comment: None,
+                    is_indirect: false,
+                },
+            ),
+        ]);
+
+        checker.validate_handle_types_no_field_overlap(&mut type_defs);
+
+        assert_eq!(
+            type_defs.len(),
+            2,
+            "both entries must survive: no overlap between unqualified user key and qualified handle name"
+        );
+        assert!(
+            checker.errors.is_empty(),
+            "no errors must be emitted: {:?}",
+            checker.errors
+        );
+    }
+
     // ── validate_lowering_facts_output_contract ────────────────────────────────
 
     /// Well-formed facts whose spans exist in `expr_types` must survive.

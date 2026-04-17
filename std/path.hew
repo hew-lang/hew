@@ -28,10 +28,10 @@ type GlobResult {}
 /// Methods available on a `GlobResult`.
 trait GlobResultMethods {
     /// Return the number of matched paths.
-    fn count(res: GlobResult) -> i32;
+    fn count(res: GlobResult) -> int;
 
     /// Return the matched path at the given index.
-    fn get(res: GlobResult, index: i32) -> String;
+    fn get(res: GlobResult, index: int) -> String;
 
     /// Release the glob result resources.
     fn free(res: GlobResult);
@@ -39,9 +39,9 @@ trait GlobResultMethods {
 
 impl GlobResultMethods for GlobResult {
     /// Return the number of matched paths.
-    fn count(res: GlobResult) -> i32 { unsafe { hew_glob_count(res) } }
+    fn count(res: GlobResult) -> int { unsafe { hew_glob_count(res) } }
     /// Return the matched path at the given index.
-    fn get(res: GlobResult, index: i32) -> String { unsafe { hew_glob_get(res, index) } }
+    fn get(res: GlobResult, index: int) -> String { unsafe { hew_glob_get(res, index as i32) } } // INTERNAL-ABI: C ABI takes i32 index
     /// Release the glob result resources.
     fn free(res: GlobResult) { unsafe { hew_glob_free(res) }; }
 }

@@ -6,7 +6,10 @@ import std::encoding::json;
 import std::encoding::toml;
 import std::encoding::yaml;
 import std::fs;
+import std::semaphore;
+import std::text::semver;
 import std::testing;
+import std::vec;
 
 #[test]
 fn test_channel_new_accepts_int_capacity() {
@@ -71,4 +74,44 @@ fn test_fs_mkdir_returns_int() {
     let result: int = fs.mkdir(dir);
     testing.assert_eq(result, 0);
     fs.delete(dir);
+}
+
+#[test]
+fn test_vec_contains_accepts_int() {
+    let v: Vec<int> = Vec::new();
+    v.push(10);
+    v.push(20);
+    testing.assert_eq(vec.contains(v, 10), true);
+    testing.assert_eq(vec.contains(v, 99), false);
+}
+
+#[test]
+fn test_vec_min_max_return_int() {
+    let v: Vec<int> = Vec::new();
+    v.push(3);
+    v.push(1);
+    v.push(2);
+    let lo: int = vec.min(v);
+    let hi: int = vec.max(v);
+    testing.assert_eq(lo, 1);
+    testing.assert_eq(hi, 3);
+}
+
+#[test]
+fn test_semver_major_minor_patch_return_int() {
+    let v = semver.parse("2.5.11");
+    let maj: int = v.major();
+    let min: int = v.minor();
+    let pat: int = v.patch();
+    testing.assert_eq(maj, 2);
+    testing.assert_eq(min, 5);
+    testing.assert_eq(pat, 11);
+}
+
+#[test]
+fn test_semaphore_new_accepts_int() {
+    let sem = semaphore.new(3);
+    let n: int = sem.count();
+    testing.assert_eq(n, 3);
+    sem.free();
 }

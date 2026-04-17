@@ -96,7 +96,7 @@ fn file_input_renders_expected_html_structure() {
     let src = dir.path().join("math.hew");
     std::fs::write(
         &src,
-        "//! Math utilities.\n/// Adds numbers.\nfn add(a: i32, b: i32) -> i32 { a + b }\n",
+        "//! Math utilities.\n/// Adds numbers.\npub fn add(a: i32, b: i32) -> i32 { a + b }\n",
     )
     .unwrap();
     let out_dir = dir.path().join("docs");

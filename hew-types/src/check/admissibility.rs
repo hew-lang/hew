@@ -258,6 +258,56 @@ impl Checker {
         self.validate_method_call_receiver_kinds_output_contract(type_defs, fn_sigs);
     }
 
+    /// Validate that no type in `type_defs` is simultaneously registered as an
+    /// opaque handle type in the module registry.
+    ///
+    /// A type cannot be both fieldless-opaque in the stdlib handle registry
+    /// (`module_registry.handle_types`) and field-bearing in `TypeDef.fields`:
+    /// the two representations are incompatible in codegen (the opaque-handle
+    /// MLIR path versus the struct-layout path).  If both are present the
+    /// opaque path silently wins, producing wrong codegen without a diagnostic.
+    ///
+    /// Only types with non-empty `fields` are checked — a fieldless user struct
+    /// with the same unqualified name as a stdlib handle type is never a
+    /// conflict because `module_registry.is_handle_type` requires the fully
+    /// qualified name (e.g. `"tls.TlsStream"`), whereas `type_defs` keys are
+    /// always bare names (e.g. `"TlsStream"`).  This property guarantees there
+    /// are no false positives for user-defined types.
+    #[expect(
+        dead_code,
+        reason = "wired into validate_checker_output_contract in the following commit"
+    )]
+    pub(super) fn validate_handle_types_no_field_overlap(
+        &mut self,
+        type_defs: &mut HashMap<String, TypeDef>,
+    ) {
+        let conflicts: Vec<String> = type_defs
+            .iter()
+            .filter(|(name, type_def)| {
+                !type_def.fields.is_empty() && self.module_registry.is_handle_type(name)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        for name in &conflicts {
+            let span = self
+                .type_def_spans
+                .get(name.as_str())
+                .cloned()
+                .unwrap_or(0..0);
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &span,
+                format!(
+                    "type `{name}` is registered as an opaque handle but also declares \
+                     fields; remove the fields or remove the handle registration"
+                ),
+            );
+        }
+
+        type_defs.retain(|k, _| !conflicts.contains(k));
+    }
+
     fn collect_output_contract_tracked_inference_vars(&self) -> HashSet<TypeVar> {
         let mut covered_inference_vars = HashSet::new();
         for hole_vars in self

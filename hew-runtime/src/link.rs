@@ -6,15 +6,15 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::LazyLock;
 #[cfg(test)]
 use std::sync::{Arc, Barrier, Mutex};
-use std::sync::{LazyLock, RwLock};
 
 use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
+use crate::lifetime::PoisonSafeRw;
 use crate::mailbox;
 use crate::supervisor::SYS_MSG_EXIT;
-use crate::util::RwLockExt;
 
 /// Number of shards for link table to reduce contention.
 const LINK_SHARDS: usize = 16;
@@ -41,9 +41,9 @@ struct LinkShard {
 /// Global sharded link table.
 /// We use usize to store actor pointers to make it Send+Sync safe.
 /// The runtime guarantees actors remain valid while linked.
-static LINK_TABLE: LazyLock<[RwLock<LinkShard>; LINK_SHARDS]> = LazyLock::new(|| {
+static LINK_TABLE: LazyLock<[PoisonSafeRw<LinkShard>; LINK_SHARDS]> = LazyLock::new(|| {
     std::array::from_fn(|_| {
-        RwLock::new(LinkShard {
+        PoisonSafeRw::new(LinkShard {
             links: HashMap::new(),
             terminal_exits: HashMap::new(),
         })
@@ -83,44 +83,43 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
     let shard_index_b = get_shard_index(id_b);
 
     let (a_terminal_reason, b_terminal_reason) = match shard_index_a.cmp(&shard_index_b) {
-        std::cmp::Ordering::Equal => {
-            let mut shard = LINK_TABLE[shard_index_a].write_or_recover();
-            let a_terminal_reason = terminal_exit_reason(&shard, id_a, actor_a);
-            let b_terminal_reason = terminal_exit_reason(&shard, id_b, actor_b);
+        std::cmp::Ordering::Equal => LINK_TABLE[shard_index_a].access(|shard| {
+            let a_terminal_reason = terminal_exit_reason(shard, id_a, actor_a);
+            let b_terminal_reason = terminal_exit_reason(shard, id_b, actor_b);
 
             if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                add_link_locked(&mut shard, id_a, id_b, b);
-                add_link_locked(&mut shard, id_b, id_a, a);
+                add_link_locked(shard, id_a, id_b, b);
+                add_link_locked(shard, id_b, id_a, a);
             }
 
             (a_terminal_reason, b_terminal_reason)
-        }
-        std::cmp::Ordering::Less => {
-            let mut shard_a = LINK_TABLE[shard_index_a].write_or_recover();
-            let mut shard_b = LINK_TABLE[shard_index_b].write_or_recover();
-            let a_terminal_reason = terminal_exit_reason(&shard_a, id_a, actor_a);
-            let b_terminal_reason = terminal_exit_reason(&shard_b, id_b, actor_b);
+        }),
+        std::cmp::Ordering::Less => LINK_TABLE[shard_index_a].access(|shard_a| {
+            LINK_TABLE[shard_index_b].access(|shard_b| {
+                let a_terminal_reason = terminal_exit_reason(shard_a, id_a, actor_a);
+                let b_terminal_reason = terminal_exit_reason(shard_b, id_b, actor_b);
 
-            if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                add_link_locked(&mut shard_a, id_a, id_b, b);
-                add_link_locked(&mut shard_b, id_b, id_a, a);
-            }
+                if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                    add_link_locked(shard_a, id_a, id_b, b);
+                    add_link_locked(shard_b, id_b, id_a, a);
+                }
 
-            (a_terminal_reason, b_terminal_reason)
-        }
-        std::cmp::Ordering::Greater => {
-            let mut shard_b = LINK_TABLE[shard_index_b].write_or_recover();
-            let mut shard_a = LINK_TABLE[shard_index_a].write_or_recover();
-            let a_terminal_reason = terminal_exit_reason(&shard_a, id_a, actor_a);
-            let b_terminal_reason = terminal_exit_reason(&shard_b, id_b, actor_b);
+                (a_terminal_reason, b_terminal_reason)
+            })
+        }),
+        std::cmp::Ordering::Greater => LINK_TABLE[shard_index_b].access(|shard_b| {
+            LINK_TABLE[shard_index_a].access(|shard_a| {
+                let a_terminal_reason = terminal_exit_reason(shard_a, id_a, actor_a);
+                let b_terminal_reason = terminal_exit_reason(shard_b, id_b, actor_b);
 
-            if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                add_link_locked(&mut shard_a, id_a, id_b, b);
-                add_link_locked(&mut shard_b, id_b, id_a, a);
-            }
+                if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                    add_link_locked(shard_a, id_a, id_b, b);
+                    add_link_locked(shard_b, id_b, id_a, a);
+                }
 
-            (a_terminal_reason, b_terminal_reason)
-        }
+                (a_terminal_reason, b_terminal_reason)
+            })
+        }),
     };
 
     if let (Some(reason), None) = (a_terminal_reason, b_terminal_reason) {
@@ -238,15 +237,15 @@ fn send_exit_signal(
 /// Remove a unidirectional link: `from_id` -/-> `to_actor`.
 fn remove_link(from_id: u64, to_actor: *mut HewActor) {
     let shard_index = get_shard_index(from_id);
-    let mut shard = LINK_TABLE[shard_index].write_or_recover();
-
-    if let Some(linked_actors) = shard.links.get_mut(&from_id) {
-        let target_addr = to_actor as usize;
-        linked_actors.retain(|entry| entry.linked_actor != target_addr);
-        if linked_actors.is_empty() {
-            shard.links.remove(&from_id);
+    LINK_TABLE[shard_index].access(|shard| {
+        if let Some(linked_actors) = shard.links.get_mut(&from_id) {
+            let target_addr = to_actor as usize;
+            linked_actors.retain(|entry| entry.linked_actor != target_addr);
+            if linked_actors.is_empty() {
+                shard.links.remove(&from_id);
+            }
         }
-    }
+    });
 }
 
 /// Propagate exit signal to all linked actors when an actor crashes.
@@ -259,12 +258,11 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
     let shard_index = get_shard_index(actor_id);
 
     // Take all linked actors for this actor ID to prevent re-entrancy.
-    let linked_actors = {
-        let mut shard = LINK_TABLE[shard_index].write_or_recover();
+    let linked_actors = LINK_TABLE[shard_index].access(|shard| {
         let linked_actors = shard.links.remove(&actor_id).unwrap_or_default();
         shard.terminal_exits.insert(actor_id, reason);
         linked_actors
-    };
+    });
 
     // Send EXIT messages to all linked actors.
     for linked_actor_entry in linked_actors {
@@ -330,20 +328,20 @@ impl Drop for PropagateExitHookGuard {
 /// This is used to clean up reverse links when an actor exits.
 fn remove_link_by_target(from_id: u64, target_id: u64) {
     let shard_index = get_shard_index(from_id);
-    let mut shard = LINK_TABLE[shard_index].write_or_recover();
+    LINK_TABLE[shard_index].access(|shard| {
+        if let Some(linked_actors) = shard.links.get_mut(&from_id) {
+            linked_actors.retain(|entry| {
+                if entry.linked_actor == 0 {
+                    return false;
+                }
+                entry.linked_actor_id != target_id
+            });
 
-    if let Some(linked_actors) = shard.links.get_mut(&from_id) {
-        linked_actors.retain(|entry| {
-            if entry.linked_actor == 0 {
-                return false;
+            if linked_actors.is_empty() {
+                shard.links.remove(&from_id);
             }
-            entry.linked_actor_id != target_id
-        });
-
-        if linked_actors.is_empty() {
-            shard.links.remove(&from_id);
         }
-    }
+    });
 }
 
 /// Remove all link entries for a given actor (by ID) and purge its address
@@ -356,20 +354,20 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, actor_addr: *mut HewActo
 
     // Remove the actor's own link-list entry from its shard.
     let own_shard = get_shard_index(actor_id);
-    {
-        let mut shard = LINK_TABLE[own_shard].write_or_recover();
+    LINK_TABLE[own_shard].access(|shard| {
         shard.terminal_exits.remove(&actor_id);
         shard.links.remove(&actor_id);
-    }
+    });
 
     // Scan all shards and remove this actor's address from other actors'
     // link lists. This is O(shards × entries) but actors rarely have many
     // links, and this only runs at free time.
     for shard_rw in LINK_TABLE.iter() {
-        let mut shard = shard_rw.write_or_recover();
-        shard.links.retain(|_id, linked_actors| {
-            linked_actors.retain(|entry| entry.linked_actor != actor_usize);
-            !linked_actors.is_empty()
+        shard_rw.access(|shard| {
+            shard.links.retain(|_id, linked_actors| {
+                linked_actors.retain(|entry| entry.linked_actor != actor_usize);
+                !linked_actors.is_empty()
+            });
         });
     }
 }
@@ -389,19 +387,19 @@ struct ExitMessage {
 pub(crate) fn has_links_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> bool {
     let actor_usize = actor_addr as usize;
     let own_shard = get_shard_index(actor_id);
-    {
-        let shard = LINK_TABLE[own_shard].read_or_recover();
-        if shard.links.contains_key(&actor_id) {
-            return true;
-        }
+    if LINK_TABLE[own_shard].read_access(|shard| shard.links.contains_key(&actor_id)) {
+        return true;
     }
     // Check if this actor appears as a target in any other actor's link list.
     for shard_rw in LINK_TABLE.iter() {
-        let shard = shard_rw.read_or_recover();
-        for linked in shard.links.values() {
-            if linked.iter().any(|entry| entry.linked_actor == actor_usize) {
-                return true;
-            }
+        let hit = shard_rw.read_access(|shard| {
+            shard
+                .links
+                .values()
+                .any(|linked| linked.iter().any(|entry| entry.linked_actor == actor_usize))
+        });
+        if hit {
+            return true;
         }
     }
     false
@@ -470,8 +468,7 @@ mod tests {
         let shard_a = get_shard_index(100);
         let shard_b = get_shard_index(200);
 
-        {
-            let table_a = LINK_TABLE[shard_a].read_or_recover();
+        LINK_TABLE[shard_a].read_access(|table_a| {
             assert!(table_a
                 .links
                 .get(&100)
@@ -479,9 +476,8 @@ mod tests {
                     linked_actor_id: 200,
                     linked_actor: b_ptr as usize,
                 })));
-        }
-        {
-            let table_b = LINK_TABLE[shard_b].read_or_recover();
+        });
+        LINK_TABLE[shard_b].read_access(|table_b| {
             assert!(table_b
                 .links
                 .get(&200)
@@ -489,7 +485,7 @@ mod tests {
                     linked_actor_id: 100,
                     linked_actor: a_ptr as usize,
                 })));
-        }
+        });
 
         // Remove link
         // SAFETY: a_ptr and b_ptr are valid pointers to stack-allocated test actors.
@@ -498,20 +494,18 @@ mod tests {
         }
 
         // Verify links are removed
-        {
-            let table_a = LINK_TABLE[shard_a].read_or_recover();
+        LINK_TABLE[shard_a].read_access(|table_a| {
             assert!(!table_a
                 .links
                 .get(&100)
                 .is_some_and(|v| v.iter().any(|entry| entry.linked_actor == b_ptr as usize)));
-        }
-        {
-            let table_b = LINK_TABLE[shard_b].read_or_recover();
+        });
+        LINK_TABLE[shard_b].read_access(|table_b| {
             assert!(!table_b
                 .links
                 .get(&200)
                 .is_some_and(|v| v.iter().any(|entry| entry.linked_actor == a_ptr as usize)));
-        }
+        });
     }
 
     #[test]
@@ -538,8 +532,7 @@ mod tests {
         }
 
         let shard = get_shard_index(300);
-        let table = LINK_TABLE[shard].read_or_recover();
-        assert!(!table.links.contains_key(&300));
+        LINK_TABLE[shard].read_access(|table| assert!(!table.links.contains_key(&300)));
     }
 
     /// Link operations survive a poisoned `RwLock` shard.
@@ -553,8 +546,8 @@ mod tests {
         }));
         assert!(lock.is_poisoned());
 
-        // The global LINK_TABLE uses write_or_recover, so link/unlink
-        // must not panic even if another thread poisoned a shard.
+        // The global LINK_TABLE wraps each shard in PoisonSafeRw, so
+        // link/unlink must not panic even if another thread poisoned a shard.
         let mut actor_a = create_test_actor(900);
         let mut actor_b = create_test_actor(901);
 
@@ -594,16 +587,17 @@ mod tests {
 
         // Actor B's own entry that pointed to A should also be gone.
         let shard_b = get_shard_index(30_200);
-        let table_b = LINK_TABLE[shard_b].read_or_recover();
-        let b_links = table_b.links.get(&30_200);
-        assert!(
-            b_links.is_none()
-                || !b_links
-                    .unwrap()
-                    .iter()
-                    .any(|entry| entry.linked_actor == a_ptr as usize),
-            "actor B's link list should no longer reference actor A"
-        );
+        LINK_TABLE[shard_b].read_access(|table_b| {
+            let b_links = table_b.links.get(&30_200);
+            assert!(
+                b_links.is_none()
+                    || !b_links
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry.linked_actor == a_ptr as usize),
+                "actor B's link list should no longer reference actor A"
+            );
+        });
     }
 
     #[test]
@@ -644,18 +638,18 @@ mod tests {
         );
 
         let terminal_shard = get_shard_index(30_401);
-        {
-            let shard = LINK_TABLE[terminal_shard].read_or_recover();
+        LINK_TABLE[terminal_shard].read_access(|shard| {
             assert_eq!(shard.terminal_exits.get(&30_401), Some(&77));
-        }
+        });
 
         remove_all_links_for_actor(30_401, terminal_ptr);
 
-        let shard = LINK_TABLE[terminal_shard].read_or_recover();
-        assert!(
-            !shard.terminal_exits.contains_key(&30_401),
-            "actor cleanup must clear terminal EXIT tombstones"
-        );
+        LINK_TABLE[terminal_shard].read_access(|shard| {
+            assert!(
+                !shard.terminal_exits.contains_key(&30_401),
+                "actor cleanup must clear terminal EXIT tombstones"
+            );
+        });
     }
 
     #[test]

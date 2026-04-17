@@ -1290,8 +1290,11 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
 
     if node.transport.is_null() {
         // Check HEW_TRANSPORT env var for transport selection.
+        // SAFETY: ENV_LOCK synchronises access to the process-global environ array.
         #[cfg(feature = "quic")]
-        let use_quic = std::env::var("HEW_TRANSPORT").is_ok_and(|v| v.eq_ignore_ascii_case("quic"));
+        let use_quic = crate::env::ENV_LOCK.read_access(|()| {
+            std::env::var("HEW_TRANSPORT").is_ok_and(|v| v.eq_ignore_ascii_case("quic"))
+        });
         #[cfg(not(feature = "quic"))]
         let use_quic = false;
 
@@ -1982,11 +1985,15 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     };
     match s {
         "tcp" => {
-            std::env::set_var("HEW_TRANSPORT", "tcp");
+            // SAFETY: ENV_LOCK synchronises access to the process-global environ
+            // array; set_var is safe under exclusive write access.
+            crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", "tcp") });
             0
         }
         "quic" => {
-            std::env::set_var("HEW_TRANSPORT", "quic");
+            // SAFETY: ENV_LOCK synchronises access to the process-global environ
+            // array; set_var is safe under exclusive write access.
+            crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", "quic") });
             0
         }
         _ => {

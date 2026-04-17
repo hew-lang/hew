@@ -48,11 +48,9 @@ pub enum JsonOp {
     SetBytes,
     /// Duration — emitted as i64 nanoseconds.
     SetDuration,
-    /// Character — emitted as an unsigned integer codepoint in BMP range (0..=
-    /// 0xFFFF). Full Unicode scalar range (0..=0x10FFFF) is deferred; see
-    /// `plan.rs` SHIM comment on `IntegerBounds::for_kind` Char arm for msgpack
-    /// parity rationale. Matches the C++ `jsonKindOf` path in
-    /// `MLIRGenWire.cpp:147-149` which routes `Char → WireJsonKind::Integer`.
+    /// Emits the char as an unsigned integer codepoint in BMP range (0..=0xFFFF).
+    /// Full Unicode scalar range (0..=0x10FFFF) is deferred — see `plan.rs` SHIM
+    /// comment on `IntegerBounds::for_kind` Char arm.
     SetChar,
     /// Nested wire-type reference.
     Nested {

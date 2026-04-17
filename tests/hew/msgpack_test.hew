@@ -1,0 +1,49 @@
+//! Behavioural tests for std::encoding::msgpack.
+
+import std::encoding::msgpack;
+import std::encoding::json;
+import std::testing;
+
+// ── from_json / to_json round-trip ────────────────────────────────────
+
+#[test]
+fn test_from_json_to_json_round_trip_int_field() {
+    // Encode JSON with an integer field → MessagePack bytes → JSON string
+    let packed = msgpack.from_json("{\"n\": 42}");
+    // Must have produced non-empty bytes
+    testing.assert_true(packed.len() > 0);
+    let recovered = msgpack.to_json(packed);
+    // The recovered JSON must re-parse successfully and contain the field
+    let r = json.try_parse(recovered);
+    match r {
+        Ok(val) => {
+            let field = val.get_field("n");
+            testing.assert_eq(field.get_int(), 42);
+            field.free();
+            val.free();
+        },
+        Err(_) => panic("msgpack round-trip produced unparseable JSON"),
+    }
+}
+
+// ── encode_int / encode_string ────────────────────────────────────────
+
+#[test]
+fn test_encode_int_produces_nonempty_bytes() {
+    let encoded = msgpack.encode_int(7);
+    testing.assert_true(encoded.len() > 0);
+}
+
+#[test]
+fn test_encode_string_produces_nonempty_bytes() {
+    let encoded = msgpack.encode_string("hello");
+    testing.assert_true(encoded.len() > 0);
+}
+
+// ── Error boundary ────────────────────────────────────────────────────
+
+#[test]
+fn test_from_json_invalid_returns_empty() {
+    let packed = msgpack.from_json("{not json}");
+    testing.assert_eq(packed.len(), 0);
+}

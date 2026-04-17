@@ -1,0 +1,74 @@
+//! Behavioural tests for std::encoding::csv.
+
+import std::encoding::csv;
+import std::testing;
+
+// ── Happy-path parse ──────────────────────────────────────────────────
+
+#[test]
+fn test_parse_rows_count() {
+    let tbl = csv.parse("name,age\nAlice,30\nBob,25");
+    // 2 data rows (header excluded)
+    testing.assert_eq(tbl.rows(), 2);
+    tbl.free();
+}
+
+#[test]
+fn test_parse_cols_count() {
+    let tbl = csv.parse("name,age\nAlice,30");
+    testing.assert_eq(tbl.cols(), 2);
+    tbl.free();
+}
+
+#[test]
+fn test_parse_get_by_index() {
+    let tbl = csv.parse("name,age\nAlice,30\nBob,25");
+    testing.assert_eq_str(tbl.get(0, 0), "Alice");
+    testing.assert_eq_str(tbl.get(1, 1), "25");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_get_by_name() {
+    let tbl = csv.parse("name,age\nAlice,30");
+    testing.assert_eq_str(tbl.get_by_name(0, "name"), "Alice");
+    testing.assert_eq_str(tbl.get_by_name(0, "age"), "30");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_header_names() {
+    let tbl = csv.parse("first,last\nJane,Doe");
+    testing.assert_eq_str(tbl.header(0), "first");
+    testing.assert_eq_str(tbl.header(1), "last");
+    tbl.free();
+}
+
+// ── Boundary / error ─────────────────────────────────────────────────
+
+#[test]
+fn test_parse_get_out_of_bounds_returns_empty() {
+    let tbl = csv.parse("x\n1");
+    testing.assert_eq_str(tbl.get(99, 0), "");
+    testing.assert_eq_str(tbl.get(0, 99), "");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_get_by_name_missing_column_returns_empty() {
+    let tbl = csv.parse("name\nAlice");
+    testing.assert_eq_str(tbl.get_by_name(0, "nonexistent"), "");
+    tbl.free();
+}
+
+// ── Property round-trip (parse_no_headers → header naming) ───────────
+
+#[test]
+fn test_parse_no_headers_generates_synthetic_headers() {
+    let tbl = csv.parse_no_headers("a,b\nc,d");
+    // Synthetic headers are col0, col1
+    testing.assert_eq_str(tbl.header(0), "col0");
+    testing.assert_eq_str(tbl.header(1), "col1");
+    testing.assert_eq_str(tbl.get(0, 0), "a");
+    tbl.free();
+}

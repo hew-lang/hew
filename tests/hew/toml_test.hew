@@ -1,0 +1,72 @@
+//! Behavioural tests for std::encoding::toml.
+
+import std::encoding::toml;
+import std::testing;
+
+// ── try_parse ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_try_parse_valid_returns_ok() {
+    let r = toml.try_parse("[package]\nname = \"hew\"\nversion = 1");
+    match r {
+        Ok(val) => { val.free(); },
+        Err(_) => panic("expected Ok, got Err"),
+    }
+}
+
+#[test]
+fn test_try_parse_invalid_returns_err() {
+    let r = toml.try_parse("[[not valid toml");
+    match r {
+        Ok(val) => { val.free(); panic("expected Err, got Ok"); },
+        Err(_) => {},
+    }
+}
+
+// ── from_int / get_int round-trip ─────────────────────────────────────
+
+#[test]
+fn test_from_int_get_int_round_trip() {
+    let val = toml.from_int(99);
+    testing.assert_eq(val.get_int(), 99);
+    val.free();
+}
+
+// ── table() builder + get_field ──────────────────────────────────────
+
+#[test]
+fn test_table_builder_string_field() {
+    let tbl = toml.table().with_string("lang", "hew");
+    let field = tbl.get_field("lang");
+    testing.assert_eq_str(field.get_string(), "hew");
+    field.free();
+    tbl.free();
+}
+
+#[test]
+fn test_table_builder_int_field() {
+    let tbl = toml.table().with_int("count", 3);
+    let field = tbl.get_field("count");
+    testing.assert_eq(field.get_int(), 3);
+    field.free();
+    tbl.free();
+}
+
+// ── stringify round-trip ──────────────────────────────────────────────
+
+#[test]
+fn test_stringify_produces_valid_toml() {
+    let tbl = toml.table().with_int("x", 5);
+    let s = tbl.stringify();
+    let r = toml.try_parse(s);
+    match r {
+        Ok(reparsed) => {
+            let field = reparsed.get_field("x");
+            testing.assert_eq(field.get_int(), 5);
+            field.free();
+            reparsed.free();
+        },
+        Err(_) => panic("stringify produced unparseable TOML"),
+    }
+    tbl.free();
+}

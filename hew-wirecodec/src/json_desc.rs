@@ -48,12 +48,12 @@ pub enum JsonOp {
     SetBytes,
     /// Duration — emitted as i64 nanoseconds.
     //
-    // SHIM: WHY — current C++ consumer (MLIRGenWire.cpp:147-149) routes Duration
+    // SHIM: WHY: current C++ consumer (MLIRGenWire.cpp:147-149) routes Duration
     //        through WireJsonKind::Integer; no hew_json_object_set_duration
     //        runtime entry point exists today.
-    //       WHEN — remove once the descriptor-driven path replaces jsonKindOf
+    //       WHEN: remove once the descriptor-driven path replaces jsonKindOf
     //        (tracked in issue #1272, MLIRGenWire shrink).
-    //       WHAT — a dedicated `hew_json_object_set_duration` runtime call
+    //       WHAT: a dedicated `hew_json_object_set_duration` runtime call
     //        with a corresponding C++ consumer reading the descriptor's op
     //        stream rather than jsonKindOf.
     SetDuration,
@@ -61,12 +61,12 @@ pub enum JsonOp {
     /// Full Unicode scalar range (0..=0x10FFFF) is deferred — see `plan.rs`
     /// comment on `IntegerBounds::for_kind` Char arm.
     //
-    // SHIM: WHY — current C++ consumer (MLIRGenWire.cpp:147-149) routes Char
+    // SHIM: WHY: current C++ consumer (MLIRGenWire.cpp:147-149) routes Char
     //        through WireJsonKind::Integer; no hew_json_object_set_char
     //        runtime entry point exists today.
-    //       WHEN — remove once the descriptor-driven path replaces jsonKindOf
+    //       WHEN: remove once the descriptor-driven path replaces jsonKindOf
     //        (tracked in issue #1272, MLIRGenWire shrink).
-    //       WHAT — a dedicated `hew_json_object_set_char` runtime call
+    //       WHAT: a dedicated `hew_json_object_set_char` runtime call
     //        with a corresponding C++ consumer reading the descriptor's op
     //        stream rather than jsonKindOf.
     SetChar,

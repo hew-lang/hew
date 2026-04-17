@@ -164,6 +164,7 @@ mod tests {
             PrimitiveWireKind::Bytes,
             PrimitiveWireKind::Duration,
             PrimitiveWireKind::Char,
+            PrimitiveWireKind::Nested("Foo".to_string()),
         ]
         .into_iter()
         .enumerate()

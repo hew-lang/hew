@@ -741,20 +741,6 @@ pub(super) fn plan_workspace_rename(
     new_name: &str,
     documents: &DashMap<Url, DocumentState>,
 ) -> Result<Option<WorkspaceEdit>, hew_analysis::RenameError> {
-    // Fast-fail on name-shape validation before any cross-file work.
-    if !is_shape_valid(new_name) {
-        return Err(hew_analysis::RenameError::InvalidIdentifier {
-            name: new_name.to_string(),
-            message: format!("'{new_name}' is not a valid identifier"),
-        });
-    }
-    if hew_analysis::rename::is_builtin_name(new_name) {
-        return Err(hew_analysis::RenameError::Builtin {
-            name: new_name.to_string(),
-            message: format!("cannot rename to '{new_name}': reserved keyword or builtin name"),
-        });
-    }
-
     // Probe the local file's plan_rename to surface same-file conflicts
     // with rich spans before falling back to the cross-file compositor.
     match hew_analysis::rename::plan_rename(&doc.source, &doc.parse_result, offset, new_name) {
@@ -825,21 +811,10 @@ pub(super) fn plan_workspace_rename(
     Ok(build_workspace_edit(uri, doc, offset, new_name, documents))
 }
 
-fn is_shape_valid(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first == '_' || first.is_alphabetic()) {
-        return false;
-    }
-    chars.all(|c| c == '_' || c.is_alphanumeric())
-}
-
-/// Inspect an other-file document for a pre-existing top-level item or
-/// import named `new_name`. If found, record a conflict pointing at
-/// that binding; the `_offending_visible_name` is the name that would
-/// be rewritten in that file (used to locate an offending span).
+/// Inspect another file's document for a pre-existing top-level item or
+/// imported name equal to `new_name`. If found, push a conflict whose
+/// `offending_span` points at `offending_visible_name`'s binding in that
+/// file (the name the cross-file compositor would rewrite).
 fn collect_cross_file_conflict(
     other_doc: &DocumentState,
     new_name: &str,
@@ -867,6 +842,21 @@ fn collect_cross_file_conflict(
                 ),
             });
         }
+    } else if let Some(existing) =
+        hew_analysis::resolver::find_matching_import(&other_doc.parse_result, new_name)
+    {
+        let offending = hew_analysis::definition::find_definition(
+            &other_doc.source,
+            &other_doc.parse_result,
+            offending_visible_name,
+        )
+        .unwrap_or(existing);
+        conflicts.push(hew_analysis::RenameConflict {
+            kind: hew_analysis::RenameConflictKind::ShadowsImport,
+            existing_span: existing,
+            offending_span: offending,
+            message: format!("renaming would clash with imported '{new_name}' in another file"),
+        });
     }
 }
 

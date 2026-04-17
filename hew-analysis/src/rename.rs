@@ -32,21 +32,44 @@ use crate::{OffsetSpan, RenameConflict, RenameConflictKind, RenameEdit, RenameEr
 /// `TypeCheckOutput` for "names visible at this scope whose origin is
 /// `builtin`".
 const BUILTIN_FUNCTION_NAMES: &[&str] = &[
+    // Registered via register_builtin_fn in hew-types/src/check/registration.rs.
+    // SHIM: hard-coded until Lane 1B's type-checker introspection lands.
+    // Core I/O
     "print",
     "println",
     "panic",
     "assert",
     "debug",
-    "todo",
-    "unimplemented",
-    "unreachable",
+    // Assertions
+    "assert_eq",
+    "assert_ne",
+    // Math
+    "abs",
+    "sqrt",
+    // String / collection
+    "len",
+    "to_string",
+    // System / process
+    "exit",
+    "stop",
+    "close",
+    "sleep",
+    "sleep_ms",
+    // File I/O
+    "read_file",
+    "write_file",
+    // Actor fault-propagation
+    "link",
+    "unlink",
+    "monitor",
+    "demonitor",
 ];
 
 /// Return `true` if `name` is a syntactically valid Hew identifier.
 ///
 /// Must start with `_` or an alphabetic character and continue with
 /// identifier characters only. The empty string is rejected.
-fn is_valid_identifier(name: &str) -> bool {
+pub(crate) fn is_valid_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -559,5 +582,28 @@ mod tests {
         let applied = apply_edits(source, &edits);
         assert!(applied.contains("fn hello"));
         assert!(applied.contains("hello()"));
+    }
+
+    // ── plan_rename: ShadowsImport detection ──────────────────────────
+
+    #[test]
+    fn plan_rename_same_file_shadows_import_returns_conflict() {
+        // Rename the top-level `foo` to `bar`, but `bar` is already imported
+        // in the same file.  Detect before producing any edit.
+        let source = "import other::{ bar };\nfn foo() -> i32 { 1 }\nfn main() { foo() }";
+        let pr = parse(source);
+        let offset = source.find("fn foo").unwrap() + 3;
+        let err = plan_rename(source, &pr, offset, "bar").unwrap_err();
+        match err {
+            RenameError::Conflicts { conflicts } => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == RenameConflictKind::ShadowsImport),
+                    "expected ShadowsImport conflict, got {conflicts:?}"
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
     }
 }

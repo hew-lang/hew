@@ -4037,6 +4037,43 @@ machine Traffic {
     }
 
     #[test]
+    fn plan_workspace_rename_detects_cross_file_shadows_import() {
+        // util.hew defines `foo`; other.hew defines `bar`.
+        // main.hew imports both: `import util::{foo}; import other::{bar};`.
+        // Renaming `foo` → `bar` from util.hew walks main.hew, which already
+        // imports `bar` → ShadowsImport must be reported.
+        let util_source = "pub fn foo() -> i32 { 1 }";
+        let other_source = "pub fn bar() -> i32 { 2 }";
+        let main_source = "import util::{ foo };\nimport other::{ bar };\nfn m() -> i32 { foo() }";
+
+        let util_uri = make_test_uri("/project/util.hew");
+        let other_uri = make_test_uri("/project/other.hew");
+        let main_uri = make_test_uri("/project/main.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(other_uri.clone(), make_doc(other_source));
+        documents.insert(main_uri.clone(), make_doc(main_source));
+
+        // Rename from the definition file — cross-file walk lands in main.hew.
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+        let err = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents)
+            .expect_err("cross-file ShadowsImport should be reported");
+        match err {
+            hew_analysis::RenameError::Conflicts { conflicts } => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == hew_analysis::RenameConflictKind::ShadowsImport),
+                    "expected a ShadowsImport conflict, got {conflicts:?}"
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn plan_workspace_rename_local_let_does_not_affect_module_top_level() {
         // Rename a local `let x` to `y`. Even though `y` does not collide
         // anywhere, the rename must affect ONLY the enclosing function,

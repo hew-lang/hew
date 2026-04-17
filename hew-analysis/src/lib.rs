@@ -15,6 +15,7 @@ pub mod inlay_hints;
 mod method_lookup;
 pub mod references;
 pub mod rename;
+pub mod resolver;
 pub mod semantic_tokens;
 pub mod signature_help;
 pub mod symbols;

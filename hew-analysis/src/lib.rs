@@ -7,6 +7,7 @@
 pub mod calls;
 pub mod code_actions;
 pub mod completions;
+pub mod db;
 pub mod definition;
 pub mod folding;
 pub mod hover;

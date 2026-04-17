@@ -301,8 +301,6 @@ fi
 #   "Connection refused" — OS message string used for classify-by-text
 #   "Permission denied"  — OS message string used for classify-by-text
 #   "timed out"          — OS message string used for classify-by-text
-#   .contains("[A-Z...]  — General pattern: .contains() with a capital-letter
-#                          string literal; almost always an OS message match
 echo "==> grep-gate: checking for banned string-match error patterns in std/"
 grep_failed=0
 if grep --include="*.hew" -r "os error" std/ 2>/dev/null | grep -qv "^Binary"; then

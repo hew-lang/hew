@@ -148,10 +148,22 @@ impl ConnectionMethods for Connection {
     }
     /// Set the read timeout in milliseconds.
     fn set_read_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError> {
+        // SHIM: WHY: hew_tcp_set_read_timeout returns -1 on error without calling
+        //   set_last_error_with_errno on the runtime side, so failures surface as
+        //   IoError::Other(0) rather than a meaningful variant.
+        // WHEN: remove once hew_tcp_set_read_timeout populates errno on error paths.
+        // WHAT: switch to calling set_last_error_with_errno in the C runtime
+        //   counterpart (tracked in errno-coverage follow-up).
         net_result_from_status(unsafe { hew_tcp_set_read_timeout(conn, ms as i32) })
     }
     /// Set the write timeout in milliseconds.
     fn set_write_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError> {
+        // SHIM: WHY: hew_tcp_set_write_timeout returns -1 on error without calling
+        //   set_last_error_with_errno on the runtime side, so failures surface as
+        //   IoError::Other(0) rather than a meaningful variant.
+        // WHEN: remove once hew_tcp_set_write_timeout populates errno on error paths.
+        // WHAT: switch to calling set_last_error_with_errno in the C runtime
+        //   counterpart (tracked in errno-coverage follow-up).
         net_result_from_status(unsafe { hew_tcp_set_write_timeout(conn, ms as i32) })
     }
 }
@@ -265,6 +277,12 @@ pub fn connect_timeout(addr: String, timeout_sec: int, timeout_usec: int) -> Con
 ///
 /// Used in chat-server patterns to fan out messages.
 pub fn broadcast_except(sender: Connection, message: bytes) -> int {
+    // SHIM: WHY: hew_tcp_broadcast_except returns -1 on error without calling
+    //   set_last_error_with_errno on the runtime side, so errors cannot be
+    //   classified by the caller. Use try_broadcast_except for structured error handling.
+    // WHEN: remove once hew_tcp_broadcast_except populates errno on error paths.
+    // WHAT: switch to calling set_last_error_with_errno in the C runtime
+    //   counterpart (tracked in errno-coverage follow-up).
     unsafe { hew_tcp_broadcast_except(sender, message) }
 }
 

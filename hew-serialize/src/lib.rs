@@ -14,4 +14,7 @@ pub use msgpack::{
     serialize_to_msgpack, AssignTargetKindData, AssignTargetKindEntry, AssignTargetShapeEntry,
     ExprTypeEntry, LoweringFactEntry, MethodCallReceiverKindData, MethodCallReceiverKindEntry,
 };
-pub use wire::{serialize_wire_decl_legacy, serialize_wire_decl_via_plan};
+pub use wire::serialize_wire_decl_via_plan;
+
+#[cfg(feature = "legacy-wire-msgpack")]
+pub use wire::serialize_wire_decl_legacy;

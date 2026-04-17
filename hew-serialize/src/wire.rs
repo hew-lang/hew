@@ -37,13 +37,17 @@ pub fn serialize_wire_decl_via_plan(decl: &WireDecl) -> Result<Vec<u8>, WireCode
 /// The bytes emitted here are a different shape from the descriptor path
 /// (this encodes the source-level AST; the descriptor encodes the lowered
 /// op set) — callers must NOT assume byte equality across the two paths.
-/// Stage 3 moves this behind a feature flag so the default build exposes
-/// only the descriptor-driven entry point.
+///
+/// Gated behind the `legacy-wire-msgpack` feature so default builds cannot
+/// accidentally reach for it. Lane 7b stage 7 enables the feature to run
+/// the 10,000-iteration random-corpus shadow comparator; once that check
+/// lands green, the legacy symbol is deleted entirely.
 ///
 /// # Panics
 ///
 /// Panics if `rmp-serde` serialization fails; `to_vec_named` only fails on
 /// IO errors against in-memory buffers, which cannot occur.
+#[cfg(feature = "legacy-wire-msgpack")]
 #[must_use]
 pub fn serialize_wire_decl_legacy(decl: &WireDecl) -> Vec<u8> {
     rmp_serde::to_vec_named(decl).expect("WireDecl msgpack serialization never fails")

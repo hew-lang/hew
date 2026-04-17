@@ -34,9 +34,6 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use dashmap::DashMap;
-use hew_analysis::definition::{
-    find_field_definition, find_local_binding_definition, find_param_definition,
-};
 #[cfg(test)]
 use hew_analysis::references::count_all_references;
 #[cfg(test)]
@@ -684,27 +681,26 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        if let Some(range) =
-            find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &word)
-        {
-            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                uri: uri.clone(),
-                range,
-            })));
-        }
-
-        if let Some(range) = resolve_field_definition(doc.value(), offset) {
-            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                uri: uri.clone(),
-                range,
-            })));
-        }
-
-        if let Some(range) = resolve_local_or_param_definition(doc.value(), &word, offset) {
-            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                uri: uri.clone(),
-                range,
-            })));
+        // Route the intra-file resolution through the shared resolver. The
+        // LSP layer retains the qualified-name and cross-file fallbacks
+        // until those paths migrate into the database in later stages.
+        if let Some(resolution) = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            uri.as_str(),
+            offset,
+        ) {
+            if let Some((_res_uri, span)) = resolution.def_location() {
+                let range =
+                    offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
+                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: uri.clone(),
+                    range,
+                })));
+            }
+            // ModuleQualified and Unknown fall through to the qualified /
+            // cross-file fallbacks below.
         }
 
         // For qualified names like `c.increment` or `Counter::increment`,
@@ -1117,32 +1113,6 @@ impl LanguageServer for HewLanguageServer {
             .collect();
         Ok(non_empty(lsp_ranges))
     }
-}
-
-fn resolve_local_or_param_definition(
-    doc: &DocumentState,
-    word: &str,
-    offset: usize,
-) -> Option<Range> {
-    let span = find_local_binding_definition(&doc.source, &doc.parse_result, word, offset)
-        .or_else(|| find_param_definition(&doc.parse_result, word, offset))?;
-    Some(offset_range_to_lsp(
-        &doc.source,
-        &doc.line_offsets,
-        span.start,
-        span.end,
-    ))
-}
-
-fn resolve_field_definition(doc: &DocumentState, offset: usize) -> Option<Range> {
-    let type_output = doc.type_output.as_ref()?;
-    let span = find_field_definition(&doc.source, &doc.parse_result, type_output, offset)?;
-    Some(offset_range_to_lsp(
-        &doc.source,
-        &doc.line_offsets,
-        span.start,
-        span.end,
-    ))
 }
 
 #[cfg(test)]
@@ -1851,8 +1821,18 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let range = resolve_local_or_param_definition(&doc, &word, offset)
-            .expect("should resolve local binding");
+        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            "file:///test.hew",
+            offset,
+        )
+        .expect("resolver should classify local binding");
+        let (_, span) = resolution
+            .def_location()
+            .expect("local binding should carry def_location");
+        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
         let expected_start = source.find("let result").unwrap() + 4;
         let expected = offset_range_to_lsp(
             source,
@@ -1876,8 +1856,18 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let range =
-            resolve_field_definition(&doc, offset).expect("should resolve field definition");
+        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            "file:///test.hew",
+            offset,
+        )
+        .expect("resolver should classify field access");
+        let (_, span) = resolution
+            .def_location()
+            .expect("field access should carry def_location");
+        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
         let expected_start = source.find("x: i32").unwrap();
         let expected = offset_range_to_lsp(
             source,
@@ -1899,8 +1889,18 @@ impl Worker {
             find_definition_in_ast(source, &doc.line_offsets, &doc.parse_result, &word).is_none()
         );
 
-        let range = resolve_local_or_param_definition(&doc, &word, offset)
-            .expect("should resolve parameter definition");
+        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            "file:///test.hew",
+            offset,
+        )
+        .expect("resolver should classify param");
+        let (_, span) = resolution
+            .def_location()
+            .expect("param should carry def_location");
+        let range = offset_range_to_lsp(source, &doc.line_offsets, span.start, span.end);
         let expected_start = source.find("value: i32").unwrap();
         let expected = offset_range_to_lsp(
             source,

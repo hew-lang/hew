@@ -268,12 +268,13 @@ impl Checker {
     /// MLIR path versus the struct-layout path).  If both are present the
     /// opaque path silently wins, producing wrong codegen without a diagnostic.
     ///
-    /// Only types with non-empty `fields` are checked — a fieldless user struct
-    /// with the same unqualified name as a stdlib handle type is never a
-    /// conflict because `module_registry.is_handle_type` requires the fully
-    /// qualified name (e.g. `"tls.TlsStream"`), whereas `type_defs` keys are
-    /// always bare names (e.g. `"TlsStream"`).  This property guarantees there
-    /// are no false positives for user-defined types.
+    /// Only types with non-empty `fields` are checked — a user-declared type
+    /// whose name coincidentally matches the short form of a stdlib handle type
+    /// cannot trigger a false positive: user-declared names never contain `'.'`,
+    /// so the only `type_defs` keys that can match a qualified handle name (e.g.
+    /// `"tls.TlsStream"`) are those inserted by `register_qualified_type_alias`.
+    /// That alias path is precisely the overlap scenario this check is meant to
+    /// catch.
     pub(super) fn validate_handle_types_no_field_overlap(
         &mut self,
         type_defs: &mut HashMap<String, TypeDef>,

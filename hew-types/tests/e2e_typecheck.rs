@@ -2020,6 +2020,63 @@ fn smtp_conn_methods_rejected_on_wasm() {
     );
 }
 
+#[test]
+fn wasm_rejects_tls_stream_handle_method() {
+    // Obtain a tls.TlsStream via extern "C" so no module-level tls.connect()
+    // call fires first.  The only WASM rejection must come from the handle-method
+    // gate (`reject_if_wasm_native_only_handle` matching "tls.TlsStream"), not
+    // from the module-qualified-call gate that covers tls.connect / tls.read etc.
+    let output = typecheck_inline_wasm(
+        r#"
+        import std::net::tls;
+
+        extern "C" {
+            fn fake_stream() -> tls.TlsStream;
+        }
+
+        fn main() {
+            let stream = unsafe { fake_stream() };
+            stream.close();
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::PlatformLimitation && e.message.contains("std::net::tls")
+        }),
+        "expected tls.TlsStream handle-method wasm rejection, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn wasm_rejects_quic_connection_handle_method() {
+    // Obtain a quic.QUICConnection via extern "C" so no module-level quic.*
+    // constructor call fires first.  The rejection must come from
+    // `reject_if_wasm_native_only_handle` matching the "quic.QUICConnection" arm.
+    let output = typecheck_inline_wasm(
+        r#"
+        import std::net::quic;
+
+        extern "C" {
+            fn fake_conn() -> quic.QUICConnection;
+        }
+
+        fn main() {
+            let conn = unsafe { fake_conn() };
+            let _ = conn.observe();
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::PlatformLimitation && e.message.contains("std::net::quic")
+        }),
+        "expected quic.QUICConnection handle-method wasm rejection, got: {:#?}",
+        output.errors
+    );
+}
+
 /// Regression: the CLI injects a synthetic `import std::text::regex` when regex
 /// literals appear in source. The type checker must mark that import as used when
 /// synthesising the `regex.Pattern` type so no false-positive unused-import

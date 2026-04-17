@@ -1516,6 +1516,11 @@ impl<'a> Formatter<'a> {
             if let Some(if_stmt) = &eb.if_stmt {
                 self.write(" else ");
                 // Print the inner `if` without leading indent (it's on the same line).
+                // Only `Stmt::If` and `Stmt::IfLet` are valid here by parser construction
+                // (see parser.rs: `else if`/`else if let` branches). Every other `Stmt`
+                // variant is enumerated explicitly so that adding a new control-flow
+                // statement forces a design decision at this dispatch site instead of
+                // silently falling through to `format_stmt` and re-indenting.
                 match &if_stmt.0 {
                     Stmt::If {
                         condition,
@@ -1547,8 +1552,29 @@ impl<'a> Formatter<'a> {
                             self.format_block(else_block, self.source.len());
                         }
                     }
-                    _ => {
-                        // Shouldn't happen for well-formed ASTs, but handle gracefully.
+                    Stmt::Let { .. }
+                    | Stmt::Var { .. }
+                    | Stmt::Assign { .. }
+                    | Stmt::Match { .. }
+                    | Stmt::Loop { .. }
+                    | Stmt::For { .. }
+                    | Stmt::While { .. }
+                    | Stmt::WhileLet { .. }
+                    | Stmt::Break { .. }
+                    | Stmt::Continue { .. }
+                    | Stmt::Return(_)
+                    | Stmt::Defer(_)
+                    | Stmt::Expression(_) => {
+                        // Parser invariant: `else if`/`else if let` are the only shapes
+                        // that populate `ElseBlock::if_stmt`. Reaching this arm means the
+                        // AST was hand-built or corrupted; fall back to `format_stmt` so
+                        // we still produce valid source, and log via `debug_assert!` so
+                        // tests surface the invariant break.
+                        debug_assert!(
+                            false,
+                            "format_else_block: non-if stmt in else-if position: {:?}",
+                            &if_stmt.0
+                        );
                         self.format_stmt(&if_stmt.0);
                     }
                 }

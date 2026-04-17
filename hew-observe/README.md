@@ -9,6 +9,61 @@ Connects to a running Hew program's built-in profiler endpoint and displays:
 - Actor group hierarchy and supervisor trees
 - Memory allocation stats
 
+## Screens
+
+The observer organizes its views into seven tabs. Switch with `Tab` / `Shift+Tab`
+or the number keys `1`–`7`.
+
+### 1. Overview — system health at a glance
+
+![Overview tab](docs/screenshots/observer-tab1-overview.png)
+
+Top-level counters: actor count, messages processed, mailbox pressure, memory
+use, and uptime. Start here to sanity-check that a program is alive and
+making progress.
+
+### 2. Actors — per-actor detail
+
+![Actors tab](docs/screenshots/observer-tab2-actors.png)
+
+One row per actor: mailbox depth, processed-message count, and recent
+processing latency. Sort and scroll to find hot spots or stuck actors.
+
+### 3. Supervisors — supervision tree
+
+![Supervisors tab](docs/screenshots/observer-tab3-supervisors.png)
+
+Actor group hierarchy and supervisor trees. Shows restart counts and the
+parent-child relationships that define failure handling.
+
+### 4. Crashes — failure log
+
+![Crashes tab](docs/screenshots/observer-tab4-crashes.png)
+
+Rolling log of actor crashes with the failing actor, its supervisor's
+restart decision, and the surrounding context.
+
+### 5. Cluster — node view
+
+![Cluster tab](docs/screenshots/observer-tab5-cluster.png)
+
+Multi-node view for clustered deployments: per-node connection state,
+message flow across nodes, and distributed actor placement.
+
+### 6. Messages — message flow
+
+![Messages tab](docs/screenshots/observer-tab6-messages.png)
+
+Live message traffic between actors, with source, destination, kind, and
+recent rate.
+
+### 7. Timeline — temporal view
+
+![Timeline tab](docs/screenshots/observer-tab7-timeline.png)
+
+Time-ordered trace of scheduler and mailbox events so causality and
+ordering are visible at a glance.
+
 ## Usage
 
 ```sh

@@ -1608,6 +1608,7 @@ version = "0.3.0"
 dependencies = [
  "hew-parser",
  "hew-types",
+ "hew-wirecodec",
  "rmp-serde",
  "serde",
  "serde_json",

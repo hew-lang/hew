@@ -22,6 +22,11 @@ use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan, WireShape};
 /// line 49 but expresses each dispatch arm as a typed variant so the emitter
 /// cannot silently fall through. Adding a new `PrimitiveWireKind` variant
 /// forces a compile error in `field_op_for_kind` until wired up.
+///
+/// WHY the struct-with-tag form: rmp-serde's default enum encoding rejects
+/// internally tagged newtype variants carrying string payloads ("cannot
+/// serialize tagged newtype variant"). Using struct variants everywhere keeps
+/// the on-wire shape consistent and rmp-serde-compatible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum MsgpackOp {
@@ -40,8 +45,12 @@ pub enum MsgpackOp {
     String,
     /// Length-delimited byte string.
     Bytes,
-    /// Nested wire-type reference; the string is the nested type name.
-    Nested(String),
+    /// Nested wire-type reference; `type_name` is the canonical nested type
+    /// name (as it appears in `WireDecl::name`).
+    Nested {
+        /// Name of the nested wire-type referenced by this field.
+        type_name: String,
+    },
 }
 
 /// Serialized form of a single field's msgpack operation.
@@ -153,7 +162,9 @@ fn field_op_for_kind(kind: &PrimitiveWireKind) -> MsgpackOp {
         PrimitiveWireKind::F64 => MsgpackOp::Fixed64,
         PrimitiveWireKind::String => MsgpackOp::String,
         PrimitiveWireKind::Bytes => MsgpackOp::Bytes,
-        PrimitiveWireKind::Nested(name) => MsgpackOp::Nested(name.clone()),
+        PrimitiveWireKind::Nested(name) => MsgpackOp::Nested {
+            type_name: name.clone(),
+        },
     }
 }
 
@@ -231,7 +242,12 @@ mod tests {
             )],
         );
         let desc = MsgpackCodecDesc::from_plan(&plan);
-        assert_eq!(desc.fields[0].op, MsgpackOp::Nested("B".to_string()));
+        assert_eq!(
+            desc.fields[0].op,
+            MsgpackOp::Nested {
+                type_name: "B".into()
+            }
+        );
     }
 
     #[test]

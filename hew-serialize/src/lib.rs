@@ -2,6 +2,7 @@
 
 pub mod enrich;
 pub mod msgpack;
+pub mod wire;
 
 pub use enrich::{
     build_expr_type_map, enrich_items, enrich_program, normalize_items_types,
@@ -13,3 +14,4 @@ pub use msgpack::{
     serialize_to_msgpack, AssignTargetKindData, AssignTargetKindEntry, AssignTargetShapeEntry,
     ExprTypeEntry, LoweringFactEntry, MethodCallReceiverKindData, MethodCallReceiverKindEntry,
 };
+pub use wire::{serialize_wire_decl_legacy, serialize_wire_decl_via_plan};

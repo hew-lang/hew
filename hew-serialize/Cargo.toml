@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
+hew-wirecodec = { path = "../hew-wirecodec" }
 stacker = "0.1"
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }

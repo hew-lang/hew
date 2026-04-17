@@ -123,9 +123,15 @@ pub fn from_file(path: String) -> Result<Stream<String>, String> {
 /// returned error value so you can use the existing unqualified
 /// `IoError::Variant(...)` constructor/pattern style.
 pub fn try_from_file(path: String) -> Result<Stream<String>, fs.IoError> {
-    match from_file(path) {
-        Ok(stream) => Ok(stream),
-        Err(message) => Err(fs.io_error_from_message(message)),
+    unsafe {
+        let s = hew_stream_from_file_read(path);
+        if hew_stream_is_valid(s) {
+            Ok(s)
+        } else {
+            let errno = hew_stream_last_errno();
+            let _ = hew_stream_last_error();
+            Err(fs.io_error_from_errno(errno))
+        }
     }
 }
 
@@ -163,9 +169,15 @@ pub fn to_file(path: String) -> Result<Sink<String>, String> {
 /// returned error value so you can use the existing unqualified
 /// `IoError::Variant(...)` constructor/pattern style.
 pub fn try_to_file(path: String) -> Result<Sink<String>, fs.IoError> {
-    match to_file(path) {
-        Ok(sink) => Ok(sink),
-        Err(message) => Err(fs.io_error_from_message(message)),
+    unsafe {
+        let s = hew_stream_from_file_write(path);
+        if hew_sink_is_valid(s) {
+            Ok(s)
+        } else {
+            let errno = hew_stream_last_errno();
+            let _ = hew_stream_last_error();
+            Err(fs.io_error_from_errno(errno))
+        }
     }
 }
 
@@ -200,6 +212,7 @@ extern "C" {
     fn hew_stream_is_valid(stream: Stream<String>) -> bool;
     fn hew_sink_is_valid(sink: Sink<String>) -> bool;
     fn hew_stream_last_error() -> String;
+    fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
     fn hew_stream_close(stream: Stream<String>);
     fn hew_stream_lines(stream: Stream<String>) -> Stream<String>;
     fn hew_stream_chunks(stream: Stream<String>, size: i64) -> Stream<String>;

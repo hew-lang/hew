@@ -743,7 +743,10 @@ pub unsafe extern "C" fn hew_tcp_listen(addr: *const c_char) -> c_int {
     let listener = match TcpListener::bind(bind_addr) {
         Ok(l) => l,
         Err(e) => {
-            hew_cabi::sink::set_last_error(format!("hew_tcp_listen: {e}"));
+            hew_cabi::sink::set_last_error_with_errno(
+                format!("hew_tcp_listen: {e}"),
+                e.raw_os_error().unwrap_or(0),
+            );
             return -1;
         }
     };
@@ -800,7 +803,10 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
     let stream = match TcpStream::connect(connect_addr) {
         Ok(s) => s,
         Err(e) => {
-            hew_cabi::sink::set_last_error(format!("hew_tcp_connect: {e}"));
+            hew_cabi::sink::set_last_error_with_errno(
+                format!("hew_tcp_connect: {e}"),
+                e.raw_os_error().unwrap_or(0),
+            );
             return -1;
         }
     };

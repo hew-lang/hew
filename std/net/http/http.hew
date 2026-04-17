@@ -18,6 +18,8 @@
 //! }
 //! ```
 
+import std::fs;
+
 /// An HTTP server bound to a TCP address.
 ///
 /// Created by calling `http.listen(addr)`. Use `accept()` to wait for
@@ -111,6 +113,18 @@ trait RequestMethods {
     /// ```
     fn respond_stream(req: Request, status: int, content_type: String) -> Sink<String>;
 
+    /// Send a full HTTP response, returning `Err(fs.IoError)` on failure.
+    fn try_respond(req: Request, status: int, content_type: String, body: String) -> Result<int, fs.IoError>;
+
+    /// Send a plain-text HTTP response, returning `Err(fs.IoError)` on failure.
+    fn try_respond_text(req: Request, status: int, body: String) -> Result<int, fs.IoError>;
+
+    /// Send a JSON HTTP response, returning `Err(fs.IoError)` on failure.
+    fn try_respond_json(req: Request, status: int, json: String) -> Result<int, fs.IoError>;
+
+    /// Begin a streaming response, returning `Err(fs.IoError)` on failure.
+    fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError>;
+
 }
 
 impl RequestMethods for Request {
@@ -143,6 +157,46 @@ impl RequestMethods for Request {
     /// Release the underlying request resources.
     fn free(req: Request) {
         unsafe { hew_http_request_free(req) };
+    }
+    /// Send a full HTTP response; returns Err(IoError::Other(0)) on failure.
+    fn try_respond(req: Request, status: int, content_type: String, body: String) -> Result<int, fs.IoError> {
+        // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond(); call FFI
+        //   directly to preserve the arith.trunci that MLIR verification requires.
+        // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
+        // WHAT — restore to: let n = req.respond(status, content_type, body);
+        let n = unsafe { hew_http_respond_bridge(req, status as i32, content_type, body) } as int;
+        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
+    }
+    /// Send a plain-text HTTP response; returns Err(IoError::Other(0)) on failure.
+    fn try_respond_text(req: Request, status: int, body: String) -> Result<int, fs.IoError> {
+        // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_text(); call FFI
+        //   directly to preserve the arith.trunci that MLIR verification requires.
+        // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
+        // WHAT — restore to: let n = req.respond_text(status, body);
+        let n = unsafe { hew_http_respond_text(req, status as i32, body) } as int;
+        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
+    }
+    /// Send a JSON HTTP response; returns Err(IoError::Other(0)) on failure.
+    fn try_respond_json(req: Request, status: int, json: String) -> Result<int, fs.IoError> {
+        // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_json(); call FFI
+        //   directly to preserve the arith.trunci that MLIR verification requires.
+        // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
+        // WHAT — restore to: let n = req.respond_json(status, json);
+        let n = unsafe { hew_http_respond_json(req, status as i32, json) } as int;
+        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
+    }
+    /// Begin a streaming response; returns Err(IoError::Other(0)) on failure.
+    fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError> {
+        let sink = unsafe { hew_http_respond_stream(req, status as i32, content_type) };
+        // HTTP has no errno channel; the runtime sets a message via set_last_error
+        // on the two failure paths (null req, already-responded).  The errno side-
+        // channel is always 0 here, so Other(0) is the correct classification.
+        if unsafe { hew_sink_is_valid(sink) } {
+            Ok(sink)
+        } else {
+            let _ = unsafe { hew_stream_last_error() }; // consume the error message
+            Err(fs.io_error_from_errno(0))
+        }
     }
 }
 
@@ -177,6 +231,26 @@ pub fn listen(addr: String) -> Server {
     unsafe { hew_http_server_new(addr) }
 }
 
+/// Send a full HTTP response, returning `Err(fs.IoError)` on failure.
+pub fn try_respond(req: Request, status: int, content_type: String, body: String) -> Result<int, fs.IoError> {
+    req.try_respond(status, content_type, body)
+}
+
+/// Send a plain-text HTTP response, returning `Err(fs.IoError)` on failure.
+pub fn try_respond_text(req: Request, status: int, body: String) -> Result<int, fs.IoError> {
+    req.try_respond_text(status, body)
+}
+
+/// Send a JSON HTTP response, returning `Err(fs.IoError)` on failure.
+pub fn try_respond_json(req: Request, status: int, json: String) -> Result<int, fs.IoError> {
+    req.try_respond_json(status, json)
+}
+
+/// Begin a streaming HTTP response, returning `Err(fs.IoError)` on failure.
+pub fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError> {
+    req.try_respond_stream(status, content_type)
+}
+
 // ── FFI bindings (implementation detail) ──────────────────────────────
 
 extern "C" {
@@ -193,4 +267,6 @@ extern "C" {
     fn hew_http_respond_stream(req: Request, status: i32, content_type: String) -> Sink<String>;
     fn hew_http_server_close(server: Server);
     fn hew_http_request_free(req: Request);
+    fn hew_sink_is_valid(sink: Sink<String>) -> bool;
+    fn hew_stream_last_error() -> String;
 }

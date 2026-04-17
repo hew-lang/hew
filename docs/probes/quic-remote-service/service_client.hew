@@ -14,12 +14,13 @@
 //   HEW_QUIC_SERVICE_PORT=4545 hew run service_client.hew
 
 import std::net::quic;
+import std::fs;
 import std::os;
 
-fn assert_ok(result: Result<(), String>) {
+fn assert_ok(result: Result<(), fs.IoError>) {
     match result {
         Ok(_) => {},
-        Err(err) => panic(err),
+        Err(e) => panic("quic operation failed: " + fs.io_error_message(e)),
     }
 }
 

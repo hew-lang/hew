@@ -10,23 +10,45 @@ use std::io::Write;
 
 std::thread_local! {
     static LAST_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// OS errno associated with the last error, or 0 when not set.
+    static LAST_ERRNO: std::cell::RefCell<i32> = const { std::cell::RefCell::new(0) };
 }
 
 /// Store an error message for the current thread. Retrievable via
-/// [`hew_stream_last_error`].
+/// [`hew_stream_last_error`]. The associated errno is cleared to 0.
 pub fn set_last_error(msg: String) {
     LAST_ERROR.with(|e| *e.borrow_mut() = Some(msg));
+    LAST_ERRNO.with(|e| *e.borrow_mut() = 0);
 }
 
-/// Take and clear the last error, if any.
+/// Store an error message together with its OS errno for the current thread.
+/// Both are retrievable via [`hew_stream_last_error`] and [`hew_stream_last_errno`].
+pub fn set_last_error_with_errno(msg: String, errno: i32) {
+    LAST_ERROR.with(|e| *e.borrow_mut() = Some(msg));
+    LAST_ERRNO.with(|e| *e.borrow_mut() = errno);
+}
+
+/// Take and clear the last error, if any. Also clears the associated errno.
 #[must_use]
 pub fn take_last_error() -> Option<String> {
+    LAST_ERRNO.with(|e| *e.borrow_mut() = 0);
     LAST_ERROR.with(|e| e.borrow_mut().take())
+}
+
+/// Take and clear the last errno, if any. Returns 0 when none was set.
+#[must_use]
+pub fn take_last_errno() -> i32 {
+    LAST_ERRNO.with(|e| {
+        let v = *e.borrow();
+        *e.borrow_mut() = 0;
+        v
+    })
 }
 
 /// Return the last stream/sink error as a malloc'd C string, or NULL if none.
 ///
-/// Clears the error after reading. Callers must free the returned string.
+/// Clears both the error message and the associated errno after reading.
+/// Callers must free the returned string.
 #[no_mangle]
 pub extern "C" fn hew_stream_last_error() -> *mut std::ffi::c_char {
     match take_last_error() {
@@ -44,6 +66,19 @@ pub extern "C" fn hew_stream_last_error() -> *mut std::ffi::c_char {
         }
         None => std::ptr::null_mut(),
     }
+}
+
+/// Return the OS errno associated with the last stream/sink error, or 0 if none.
+///
+/// Clears the errno after reading. This export is intentionally independent of
+/// [`hew_stream_last_error`] — callers may read errno without consuming the message,
+/// or vice-versa, though typical usage reads both.
+///
+/// INTERNAL-ABI: populated by `set_last_error_with_errno` at runtime call sites where
+/// a Rust `io::Error` is in scope. String-only errors (no OS errno) leave this as 0.
+#[no_mangle]
+pub extern "C" fn hew_stream_last_errno() -> i32 {
+    take_last_errno()
 }
 
 // ── Sink handle ───────────────────────────────────────────────────────────────
@@ -259,6 +294,79 @@ mod tests {
             assert_eq!(recovered, "échec de connexion 🔥");
             libc::free(ptr.cast());
         }
+    }
+
+    // ── hew_stream_last_errno (C ABI) ────────────────────────────────────
+
+    #[test]
+    fn hew_stream_last_errno_returns_zero_when_not_set() {
+        // Clear any residual state.
+        let _ = take_last_error();
+        let _ = take_last_errno();
+        assert_eq!(hew_stream_last_errno(), 0);
+    }
+
+    #[test]
+    fn set_last_error_with_errno_roundtrip_via_abi() {
+        set_last_error_with_errno("connection refused".to_string(), 111);
+        assert_eq!(hew_stream_last_errno(), 111);
+        // Consuming errno does not consume the message.
+        let ptr = hew_stream_last_error();
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is malloc'd; free it.
+        unsafe {
+            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
+            assert_eq!(recovered, "connection refused");
+            libc::free(ptr.cast());
+        }
+    }
+
+    #[test]
+    fn hew_stream_last_errno_clears_after_read() {
+        set_last_error_with_errno("some error".to_string(), 42);
+        // Consume via C ABI.
+        let first = hew_stream_last_errno();
+        assert_eq!(first, 42);
+        // Second read must return 0 — errno was cleared.
+        assert_eq!(
+            hew_stream_last_errno(),
+            0,
+            "errno must be cleared after first read"
+        );
+        // Clean up the message side.
+        let ptr = hew_stream_last_error();
+        if !ptr.is_null() {
+            // SAFETY: malloc'd above.
+            unsafe { libc::free(ptr.cast()) };
+        }
+    }
+
+    #[test]
+    fn set_last_error_plain_clears_errno() {
+        // Pre-load an errno.
+        set_last_error_with_errno("original".to_string(), 99);
+        // Overwrite with plain set_last_error — errno must reset to 0.
+        set_last_error("replacement".to_string());
+        assert_eq!(
+            take_last_errno(),
+            0,
+            "plain set_last_error must clear errno to 0"
+        );
+        // Clean up the message.
+        let _ = take_last_error();
+    }
+
+    #[test]
+    fn errno_and_message_are_independent_paths() {
+        // Set with errno, consume errno first, message should still be present.
+        set_last_error_with_errno("disk full".to_string(), 28);
+        let errno = take_last_errno();
+        assert_eq!(errno, 28);
+        // Message should survive the errno read.
+        let msg = take_last_error();
+        assert_eq!(msg.as_deref(), Some("disk full"));
+        // After take_last_error the errno path is also cleared.
+        assert_eq!(take_last_errno(), 0);
     }
 
     // ── HewSink / into_sink_ptr / into_write_sink_ptr ───────────────────

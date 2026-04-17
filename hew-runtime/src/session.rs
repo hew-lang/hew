@@ -22,7 +22,7 @@
 //! 2. Profiler dispatch-registry clear      — clear type-name side-table second.
 //!
 //! This ordering is enforced by the init call sites: tracing registers from
-//! `scheduler::hew_sched_init`; profiler registers from `profiler::maybe_start`.
+//! `scheduler::hew_sched_init`; profiler registers from `profiler::register_reset_hooks`.
 
 use crate::util::MutexExt;
 use std::sync::Mutex;

@@ -259,6 +259,9 @@ mod tests {
 
     #[test]
     fn unregistered_dispatch_defaults_to_actor() {
+        let _lock = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A dispatch fn that was never registered should return the default.
         let name = lookup_dispatch_type(Some(fake_dispatch_a));
         // May be "Actor" (unregistered) or whatever a previous test left; the
@@ -268,6 +271,9 @@ mod tests {
 
     #[test]
     fn registered_dispatch_returns_type_name() {
+        let _lock = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         register_dispatch_type(Some(fake_dispatch_b), "MyCounter");
         let name = lookup_dispatch_type(Some(fake_dispatch_b));
         assert_eq!(name, "MyCounter");
@@ -297,6 +303,9 @@ mod tests {
 
     #[test]
     fn second_registration_does_not_overwrite() {
+        let _lock = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         register_dispatch_type(Some(fake_dispatch_c), "TypeA");
         // Attempt to overwrite with "TypeB" — should be silently ignored.
         register_dispatch_type(Some(fake_dispatch_c), "TypeB");

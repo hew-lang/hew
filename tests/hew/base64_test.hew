@@ -60,6 +60,10 @@ fn test_encode_url_safe_differs_from_standard() {
     let data = bytes [251, 255];
     let standard = base64.encode(data);
     let url_safe = base64.encode_url(data);
-    // They must not be equal when the encoding differs
+    // Round-trip: decode accepts both alphabets, so url-safe encoded data must
+    // decode back to the original bytes.
+    let decoded = base64.decode(url_safe);
+    assert_bytes_eq(decoded, data);
+    // Sanity: the two encodings differ for inputs that produce '+'/'-' or '/''_'
     testing.assert_false(standard == url_safe);
 }

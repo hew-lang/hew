@@ -19,7 +19,7 @@ fn test_try_parse_invalid_returns_err() {
     let r = toml.try_parse("[[not valid toml");
     match r {
         Ok(val) => { val.free(); panic("expected Err, got Ok"); },
-        Err(_) => {},
+        Err(ParseError::Invalid(_)) => {},
     }
 }
 

@@ -61,6 +61,25 @@ fn test_parse_get_by_name_missing_column_returns_empty() {
     tbl.free();
 }
 
+// ── Quoted-field parsing ──────────────────────────────────────────────
+
+#[test]
+fn test_parse_quoted_field_with_comma_parses_as_one_field() {
+    // "city" field contains a comma — must remain a single field, not split
+    let tbl = csv.parse("name,city\nAlice,\"Portland, OR\"");
+    testing.assert_eq(tbl.cols(), 2);
+    testing.assert_eq_str(tbl.get_by_name(0, "city"), "Portland, OR");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_escaped_quote_in_quoted_field_decoded() {
+    // "" inside a quoted field → literal '"' in the decoded value
+    let tbl = csv.parse("name,quote\nAlice,\"say \"\"hi\"\"\"");
+    testing.assert_eq_str(tbl.get_by_name(0, "quote"), "say \"hi\"");
+    tbl.free();
+}
+
 // ── Property round-trip (parse_no_headers → header naming) ───────────
 
 #[test]

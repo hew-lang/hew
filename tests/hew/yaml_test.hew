@@ -20,7 +20,7 @@ fn test_try_parse_invalid_returns_err() {
     let r = yaml.try_parse("key:\n\t- bad_indent");
     match r {
         Ok(val) => { val.free(); panic("expected Err, got Ok"); },
-        Err(_) => {},
+        Err(ParseError::Invalid(_)) => {},
     }
 }
 

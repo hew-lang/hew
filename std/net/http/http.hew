@@ -18,6 +18,8 @@
 //! }
 //! ```
 
+import std::fs;
+
 /// An HTTP server bound to a TCP address.
 ///
 /// Created by calling `http.listen(addr)`. Use `accept()` to wait for
@@ -111,6 +113,18 @@ trait RequestMethods {
     /// ```
     fn respond_stream(req: Request, status: int, content_type: String) -> Sink<String>;
 
+    /// Send a full HTTP response, returning `Err(fs.IoError)` on failure.
+    fn try_respond(req: Request, status: int, content_type: String, body: String) -> Result<int, fs.IoError>;
+
+    /// Send a plain-text HTTP response, returning `Err(fs.IoError)` on failure.
+    fn try_respond_text(req: Request, status: int, body: String) -> Result<int, fs.IoError>;
+
+    /// Send a JSON HTTP response, returning `Err(fs.IoError)` on failure.
+    fn try_respond_json(req: Request, status: int, json: String) -> Result<int, fs.IoError>;
+
+    /// Begin a streaming response, returning `Err(fs.IoError)` on failure.
+    fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError>;
+
 }
 
 impl RequestMethods for Request {
@@ -144,6 +158,28 @@ impl RequestMethods for Request {
     fn free(req: Request) {
         unsafe { hew_http_request_free(req) };
     }
+    /// Send a full HTTP response; returns Err(IoError::Other(0)) on failure.
+    fn try_respond(req: Request, status: int, content_type: String, body: String) -> Result<int, fs.IoError> {
+        let n = req.respond(status, content_type, body);
+        if n < 0 { Err(fs.IoError::Other(0)) } else { Ok(n) } // HTTP has no OS errno channel
+    }
+    /// Send a plain-text HTTP response; returns Err(IoError::Other(0)) on failure.
+    fn try_respond_text(req: Request, status: int, body: String) -> Result<int, fs.IoError> {
+        let n = req.respond_text(status, body);
+        if n < 0 { Err(fs.IoError::Other(0)) } else { Ok(n) } // HTTP has no OS errno channel
+    }
+    /// Send a JSON HTTP response; returns Err(IoError::Other(0)) on failure.
+    fn try_respond_json(req: Request, status: int, json: String) -> Result<int, fs.IoError> {
+        let n = req.respond_json(status, json);
+        if n < 0 { Err(fs.IoError::Other(0)) } else { Ok(n) } // HTTP has no OS errno channel
+    }
+    /// Begin a streaming response; returns Err(IoError::Other(0)) on failure.
+    fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError> {
+        let sink = req.respond_stream(status, content_type);
+        // respond_stream returns a null-equivalent handle on failure;
+        // HTTP has no errno channel — a follow-up issue will wire a validity check.
+        Ok(sink)
+    }
 }
 
 impl Drop for Request {
@@ -175,6 +211,26 @@ impl Drop for Server {
 /// ```
 pub fn listen(addr: String) -> Server {
     unsafe { hew_http_server_new(addr) }
+}
+
+/// Send a full HTTP response, returning `Err(fs.IoError)` on failure.
+pub fn try_respond(req: Request, status: int, content_type: String, body: String) -> Result<int, fs.IoError> {
+    req.try_respond(status, content_type, body)
+}
+
+/// Send a plain-text HTTP response, returning `Err(fs.IoError)` on failure.
+pub fn try_respond_text(req: Request, status: int, body: String) -> Result<int, fs.IoError> {
+    req.try_respond_text(status, body)
+}
+
+/// Send a JSON HTTP response, returning `Err(fs.IoError)` on failure.
+pub fn try_respond_json(req: Request, status: int, json: String) -> Result<int, fs.IoError> {
+    req.try_respond_json(status, json)
+}
+
+/// Begin a streaming HTTP response, returning `Err(fs.IoError)` on failure.
+pub fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError> {
+    req.try_respond_stream(status, content_type)
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────

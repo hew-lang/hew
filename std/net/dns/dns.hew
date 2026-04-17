@@ -18,6 +18,8 @@
 //! }
 //! ```
 
+import std::fs;
+
 /// Resolve a hostname to all associated IP addresses.
 ///
 /// Returns a vector of IP address strings. Returns an empty vector
@@ -32,6 +34,23 @@ pub fn resolve(hostname: String) -> Vec<String> {
     unsafe { hew_dns_resolve(hostname) }
 }
 
+/// Resolve a hostname to all associated IP addresses.
+///
+/// Returns `Err(fs.IoError::Other(0))` when the hostname cannot be resolved.
+/// Use this when structured error handling with `?` is preferred over an
+/// empty-vector sentinel.
+///
+/// Note: DNS has no OS errno channel; the errno payload is always 0.
+/// A follow-up issue will wire errno once hew_dns_resolve exposes it.
+pub fn try_resolve(hostname: String) -> Result<Vec<String>, fs.IoError> {
+    let addrs = resolve(hostname);
+    if addrs.len() == 0 {
+        Err(fs.IoError::Other(0))
+    } else {
+        Ok(addrs)
+    }
+}
+
 /// Resolve a hostname to its first IP address.
 ///
 /// Returns the first resolved IP address as a string, or an empty
@@ -44,6 +63,23 @@ pub fn resolve(hostname: String) -> Vec<String> {
 /// ```
 pub fn lookup_host(hostname: String) -> String {
     unsafe { hew_dns_lookup_host(hostname) }
+}
+
+/// Resolve a hostname to its first IP address.
+///
+/// Returns `Err(fs.IoError::Other(0))` when the hostname cannot be resolved.
+/// Use this when structured error handling with `?` is preferred over an
+/// empty-string sentinel.
+///
+/// Note: DNS has no OS errno channel; the errno payload is always 0.
+/// A follow-up issue will wire errno once hew_dns_lookup_host exposes it.
+pub fn try_lookup_host(hostname: String) -> Result<String, fs.IoError> {
+    let ip = lookup_host(hostname);
+    if ip == "" {
+        Err(fs.IoError::Other(0))
+    } else {
+        Ok(ip)
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

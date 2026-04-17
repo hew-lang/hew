@@ -85,7 +85,7 @@ pub fn cidr_broadcast(cidr: String) -> String {
 /// ```
 /// ipnet.cidr_hosts("192.168.1.0/24")  // 254
 /// ```
-pub fn cidr_hosts(cidr: String) -> i64 {
+pub fn cidr_hosts(cidr: String) -> int {
     unsafe { hew_cidr_hosts(cidr) }
 }
 

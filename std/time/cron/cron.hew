@@ -26,7 +26,7 @@ type Expr {}
 /// Methods available on a parsed `Expr`.
 trait ExprMethods {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(expr: Expr, after_epoch_secs: i64) -> i64;
+    fn next(expr: Expr, after_epoch_secs: int) -> int;
 
     /// Return the cron expression as a string.
     fn to_string(expr: Expr) -> String;
@@ -37,7 +37,7 @@ trait ExprMethods {
 
 impl ExprMethods for Expr {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(expr: Expr, after_epoch_secs: i64) -> i64 { unsafe { hew_cron_next(expr, after_epoch_secs) } }
+    fn next(expr: Expr, after_epoch_secs: int) -> int { unsafe { hew_cron_next(expr, after_epoch_secs) } }
     /// Return the cron expression as a string.
     fn to_string(expr: Expr) -> String { unsafe { hew_cron_to_string(expr) } }
     /// Release the parsed expression resources.

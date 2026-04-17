@@ -19,7 +19,7 @@
 // ── Algorithm mapping (pure Hew) ─────────────────────────────────────
 
 /// Map an algorithm name (e.g. "HS256") to its integer code for the FFI layer.
-fn algo_to_i32(algorithm: String) -> i32 {
+fn algo_to_i32(algorithm: String) -> i32 { // INTERNAL-ABI: C ABI algorithm code; values 0-2 and sentinel -1 fit i32
     match algorithm {
         "HS256" => 0 as i32,
         "HS384" => 1 as i32,

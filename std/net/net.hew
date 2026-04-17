@@ -100,7 +100,7 @@ fn net_error_from_message(message: String) -> NetError {
     }
 }
 
-fn net_result_from_status(status: i32) -> Result<(), NetError> {
+fn net_result_from_status(status: i32) -> Result<(), NetError> { // INTERNAL-ABI: status from C ABI is i32; internal helper only
     if status < 0 {
         Err(net_error_from_message(unsafe { hew_stream_last_error() }))
     } else {
@@ -302,7 +302,7 @@ pub fn connect_timeout(addr: String, timeout_sec: int, timeout_usec: int) -> Con
 /// Broadcast a message to all connections except the sender.
 ///
 /// Used in chat-server patterns to fan out messages.
-pub fn broadcast_except(sender: Connection, message: bytes) -> i32 {
+pub fn broadcast_except(sender: Connection, message: bytes) -> int {
     unsafe { hew_tcp_broadcast_except(sender, message) }
 }
 

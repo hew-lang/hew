@@ -439,15 +439,16 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
         Expr::Call { function, args, .. } => {
             if let Expr::Identifier(name) = &function.0 {
                 // Only treat as a simple C shim if every argument is a direct
-                // identifier (i.e. a parameter forwarded unchanged). A compound
-                // body such as `hew_bytes_to_string(hew_tcp_read(conn))` must
-                // NOT be registered as a single-step C pass-through, because
-                // the enricher would then rewrite `conn.read_string()` to
+                // identifier — or an identifier wrapped in an ABI-width cast
+                // like `port as i32`. The cast form preserves arity and the
+                // argument's identity; it is used at the stdlib `int` → C-ABI
+                // narrowing seam (INTERNAL-ABI). A compound body such as
+                // `hew_bytes_to_string(hew_tcp_read(conn))` must NOT be
+                // registered as a single-step C pass-through, because the
+                // enricher would then rewrite `conn.read_string()` to
                 // `hew_bytes_to_string(conn)` — dropping the inner call and
                 // passing an i32 fd where bytes are expected.
-                let all_direct = args
-                    .iter()
-                    .all(|arg| matches!(&arg.expr().0, Expr::Identifier(_)));
+                let all_direct = args.iter().all(|arg| is_pass_through_arg(&arg.expr().0));
                 if all_direct {
                     return Some((name.clone(), args.len()));
                 }
@@ -459,6 +460,17 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
         Expr::Block(block) | Expr::Unsafe(block) => extract_call_target(block),
         Expr::Cast { expr, .. } => call_target_from_expr(&expr.0),
         _ => None,
+    }
+}
+
+/// True for expressions that a stdlib C-shim may pass through unchanged:
+/// a direct parameter identifier, or that identifier wrapped in a single
+/// ABI-width cast (`ident as T`).
+fn is_pass_through_arg(expr: &Expr) -> bool {
+    match expr {
+        Expr::Identifier(_) => true,
+        Expr::Cast { expr, .. } => matches!(expr.0, Expr::Identifier(_)),
+        _ => false,
     }
 }
 
@@ -653,6 +665,27 @@ mod tests {
         // Should have "new" clean name
         let has_new = info.clean_names.iter().any(|(clean, _)| clean == "new");
         assert!(has_new, "semaphore module should have 'new' clean name");
+    }
+
+    #[test]
+    fn load_http_module_registers_handle_methods_through_abi_width_casts() {
+        // `impl RequestMethods for Request` wraps `status: int` in `status as i32`
+        // before calling the C shim. Those casts are pure ABI-width narrowing and
+        // must not prevent the method from registering as a handle pass-through —
+        // otherwise the type checker reports `no method respond on http.Request`.
+        let info =
+            load_module("std::net::http", &test_root()).expect("should load std::net::http module");
+
+        for method in ["respond", "respond_text", "respond_json", "respond_stream"] {
+            let found = info
+                .handle_methods
+                .iter()
+                .any(|((ty, name), _, _, _)| ty == "http.Request" && name == method);
+            assert!(
+                found,
+                "http.Request.{method} should register as a handle method even when its C shim uses `status as i32`"
+            );
+        }
     }
 
     #[test]

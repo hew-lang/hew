@@ -25,19 +25,19 @@ type Table {
 /// Methods available on a CSV `Table`.
 trait TableMethods {
     /// Return the number of data rows (excluding the header row).
-    fn rows(tbl: Table) -> i32;
+    fn rows(tbl: Table) -> int;
 
     /// Return the number of columns.
-    fn cols(tbl: Table) -> i32;
+    fn cols(tbl: Table) -> int;
 
     /// Return the header name for the given column index.
-    fn header(tbl: Table, col: i32) -> String;
+    fn header(tbl: Table, col: int) -> String;
 
     /// Return the cell value at the given row and column index.
-    fn get(tbl: Table, row: i32, col: i32) -> String;
+    fn get(tbl: Table, row: int, col: int) -> String;
 
     /// Return the cell value at the given row for the named column.
-    fn get_by_name(tbl: Table, row: i32, col_name: String) -> String;
+    fn get_by_name(tbl: Table, row: int, col_name: String) -> String;
 
     /// No-op for compatibility (struct tables don't need manual freeing).
     fn free(tbl: Table);
@@ -45,12 +45,12 @@ trait TableMethods {
 
 impl TableMethods for Table {
     /// Return the number of data rows (excluding the header row).
-    fn rows(tbl: Table) -> i32 { tbl.data.len() as i32 }
+    fn rows(tbl: Table) -> int { tbl.data.len() }
     /// Return the number of columns.
-    fn cols(tbl: Table) -> i32 { tbl.hdrs.len() as i32 }
+    fn cols(tbl: Table) -> int { tbl.hdrs.len() }
 
     /// Return the header name for the given column index.
-    fn header(tbl: Table, col: i32) -> String {
+    fn header(tbl: Table, col: int) -> String {
         if col < 0 || col >= tbl.hdrs.len() {
             return "";
         }
@@ -58,7 +58,7 @@ impl TableMethods for Table {
     }
 
     /// Return the cell value at the given row and column index.
-    fn get(tbl: Table, row: i32, col: i32) -> String {
+    fn get(tbl: Table, row: int, col: int) -> String {
         if row < 0 || row >= tbl.data.len() {
             return "";
         }
@@ -70,7 +70,7 @@ impl TableMethods for Table {
     }
 
     /// Return the cell value at the given row for the named column.
-    fn get_by_name(tbl: Table, row: i32, col_name: String) -> String {
+    fn get_by_name(tbl: Table, row: int, col_name: String) -> String {
         let col = find_header(tbl.hdrs, col_name);
         if col < 0 {
             return "";
@@ -220,7 +220,7 @@ fn parse_csv_line(line: String) -> Vec<String> {
 }
 
 /// Find the column index for a header name. Returns -1 if not found.
-fn find_header(headers: Vec<String>, name: String) -> i32 {
+fn find_header(headers: Vec<String>, name: String) -> i32 { // INTERNAL-ABI: sentinel -1 for not-found; used only by get_by_name impl
     for i in 0..headers.len() {
         if headers.get(i) == name {
             return i as i32;

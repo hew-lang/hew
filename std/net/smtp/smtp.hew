@@ -34,13 +34,13 @@ type Conn {}
 /// Methods available on an SMTP `Conn`.
 trait ConnMethods {
     /// Send a plain-text email. Return 0 on success.
-    fn send(conn: Conn, from: String, to: String, subject: String, body: String) -> i32;
+    fn send(conn: Conn, from: String, to: String, subject: String, body: String) -> int;
 
     /// Send a plain-text email.
     fn try_send(conn: Conn, from: String, to: String, subject: String, body: String) -> Result<(), String>;
 
     /// Send an HTML email. Return 0 on success.
-    fn send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> i32;
+    fn send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> int;
 
     /// Send an HTML email.
     fn try_send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> Result<(), String>;
@@ -51,8 +51,8 @@ trait ConnMethods {
 
 impl ConnMethods for Conn {
     /// Send a plain-text email. Return 0 on success.
-    fn send(conn: Conn, from: String, to: String, subject: String, body: String) -> i32 {
-        unsafe { hew_smtp_send(conn, from, to, subject, body) }
+    fn send(conn: Conn, from: String, to: String, subject: String, body: String) -> int {
+        unsafe { hew_smtp_send(conn, from, to, subject, body) } as int // INTERNAL-ABI: FFI returns i32
     }
     /// Send a plain-text email.
     fn try_send(conn: Conn, from: String, to: String, subject: String, body: String) -> Result<(), String> {
@@ -60,8 +60,8 @@ impl ConnMethods for Conn {
         if n < 0 { Err("smtp send failed") } else { Ok(()) }
     }
     /// Send an HTML email. Return 0 on success.
-    fn send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> i32 {
-        unsafe { hew_smtp_send_html(conn, from, to, subject, html) }
+    fn send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> int {
+        unsafe { hew_smtp_send_html(conn, from, to, subject, html) } as int // INTERNAL-ABI: FFI returns i32
     }
     /// Send an HTML email.
     fn try_send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> Result<(), String> {
@@ -110,8 +110,8 @@ pub fn send(
     to: String,
     subject: String,
     body: String,
-) -> i32 {
-    unsafe { hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body) }
+) -> int {
+    unsafe { hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body) } as int // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one plain-text
@@ -144,8 +144,8 @@ pub fn send_html(
     to: String,
     subject: String,
     html: String,
-) -> i32 {
-    unsafe { hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html) }
+) -> int {
+    unsafe { hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html) } as int // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one HTML email,

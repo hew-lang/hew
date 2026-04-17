@@ -2,44 +2,9 @@
 //!
 //! Pure Hew implementations for common vector operations.
 //! These replace the equivalent Rust FFI functions for simple linear scans.
-//!
-//! # Examples
-//!
-//! ```
-//! import std::vec;
-//!
-//! fn main() {
-//!     let v: Vec<i32> = Vec::new();
-//!     v.push(1);
-//!     v.push(2);
-//!     v.push(3);
-//!     println(vec.contains_i32(v, 2));       // true
-//!     println(vec.contains_i32(v, 9));       // false
-//!     println(vec.index_of_i32(v, 2));       // 1
-//!     println(vec.min_i32(v));               // 1
-//!     println(vec.max_i32(v));               // 3
-//!
-//!     let v2: Vec<i64> = Vec::new();
-//!     v2.push(1);
-//!     v2.push(2);
-//!     v2.push(3);
-//!     match vec.first_i64(v2) { Some(x) => println(x), None => {} }  // 1
-//!     match vec.last_i64(v2)  { Some(x) => println(x), None => {} }  // 3
-//! }
-//! ```
 
 /// Check if a `Vec<i32>` contains `val`. Returns `true` if found.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<i32> = Vec::new();
-/// v.push(10);
-/// v.push(20);
-/// println(vec.contains_i32(v, 10));  // true
-/// println(vec.contains_i32(v, 99));  // false
-/// ```
-pub fn contains_i32(v: Vec<i32>, val: i32) -> bool {
+pub fn contains_i32(v: Vec<i32>, val: i32) -> bool { // INTERNAL-ABI: typed for 32-bit integer vector storage
     var i = 0;
     let n = v.len();
     while i < n {
@@ -51,17 +16,8 @@ pub fn contains_i32(v: Vec<i32>, val: i32) -> bool {
     false
 }
 
-/// Check if a `Vec<i64>` contains `val`. Returns `true` if found.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<i64> = Vec::new();
-/// v.push(100);
-/// println(vec.contains_i64(v, 100));  // true
-/// println(vec.contains_i64(v, 999));  // false
-/// ```
-pub fn contains_i64(v: Vec<i64>, val: i64) -> bool {
+/// Check if a `Vec<i64>` contains `val`.
+pub fn contains_i64(v: Vec<i64>, val: i64) -> bool { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
     var i = 0;
     let n = v.len();
     while i < n {
@@ -119,19 +75,8 @@ pub fn contains_str(v: Vec<String>, val: String) -> bool {
 
 // ── index_of ──────────────────────────────────────────────────────────────
 
-/// Return the index of the first occurrence of `val` in `v`, or `-1` if not found.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<i32> = Vec::new();
-/// v.push(10);
-/// v.push(20);
-/// v.push(30);
-/// println(vec.index_of_i32(v, 20));  // 1
-/// println(vec.index_of_i32(v, 99));  // -1
-/// ```
-pub fn index_of_i32(v: Vec<i32>, val: i32) -> int {
+/// Return the index of `val` in a `Vec<i32>`, or `-1` if not found.
+pub fn index_of_i32(v: Vec<i32>, val: i32) -> int { // INTERNAL-ABI: typed for 32-bit integer vector storage
     var i = 0;
     let n = v.len();
     while i < n {
@@ -143,18 +88,8 @@ pub fn index_of_i32(v: Vec<i32>, val: i32) -> int {
     -1
 }
 
-/// Return the index of the first occurrence of `val` in `v`, or `-1` if not found.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<i64> = Vec::new();
-/// v.push(100);
-/// v.push(200);
-/// println(vec.index_of_i64(v, 200));  // 1
-/// println(vec.index_of_i64(v, 999));  // -1
-/// ```
-pub fn index_of_i64(v: Vec<i64>, val: i64) -> int {
+/// Return the index of `val` in a `Vec<i64>`, or `-1` if not found.
+pub fn index_of_i64(v: Vec<i64>, val: i64) -> int { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
     var i = 0;
     let n = v.len();
     while i < n {
@@ -215,24 +150,12 @@ pub fn index_of_str(v: Vec<String>, val: String) -> int {
 
 // ── first / last ──────────────────────────────────────────────────────────
 
-/// Return `Some` of the first element of `v`, or `None` if `v` is empty.
-/// Returns `Option<int>` (`int` = 64-bit integer), consistent with `std::option` helpers.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<i64> = Vec::new();
-/// v.push(7);
-/// v.push(8);
-/// println(vec.first_i64(v));  // Some(7)
-/// ```
-pub fn first_i64(v: Vec<i64>) -> Option<int> {
-    var i = 0;
-    let n = v.len();
-    if n == 0 {
+/// Return `Some` of the first element of a `Vec<i64>`, or `None` if empty.
+pub fn first_i64(v: Vec<i64>) -> Option<int> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
+    if v.len() == 0 {
         return None;
     }
-    Some(v.get(i))
+    Some(v.get(0))
 }
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
@@ -255,27 +178,13 @@ pub fn first_str(v: Vec<String>) -> Option<String> {
     Some(v.get(i))
 }
 
-/// Return `Some` of the last element of `v`, or `None` if `v` is empty.
-/// Returns `Option<int>` (`int` = 64-bit integer), consistent with `std::option` helpers.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<i64> = Vec::new();
-/// v.push(7);
-/// v.push(8);
-/// println(vec.last_i64(v));  // Some(8)
-/// ```
-pub fn last_i64(v: Vec<i64>) -> Option<int> {
-    var i = 0;
+/// Return `Some` of the last element of a `Vec<i64>`, or `None` if empty.
+pub fn last_i64(v: Vec<i64>) -> Option<int> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
     let n = v.len();
     if n == 0 {
         return None;
     }
-    while i + 1 < n {
-        i = i + 1;
-    }
-    Some(v.get(i))
+    Some(v.get(n - 1))
 }
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
@@ -306,22 +215,8 @@ pub fn last_str(v: Vec<String>) -> Option<String> {
 
 // ── min / max ─────────────────────────────────────────────────────────────
 
-/// Return the smallest element in `v`.
-///
-/// # Panics
-///
-/// Panics at runtime if `v` is empty.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<i32> = Vec::new();
-/// v.push(3);
-/// v.push(1);
-/// v.push(2);
-/// println(vec.min_i32(v));  // 1
-/// ```
-pub fn min_i32(v: Vec<i32>) -> i32 {
+/// Return the smallest element in a `Vec<i32>`. Panics if empty.
+pub fn min_i32(v: Vec<i32>) -> i32 { // INTERNAL-ABI: typed for 32-bit integer vector storage
     if v.len() == 0 {
         panic("vec::min_i32: called on empty vector");
     }
@@ -338,8 +233,8 @@ pub fn min_i32(v: Vec<i32>) -> i32 {
     m
 }
 
-/// Return the smallest element in `v`. Panics if `v` is empty.
-pub fn min_i64(v: Vec<i64>) -> i64 {
+/// Return the smallest element in a `Vec<i64>`. Panics if empty.
+pub fn min_i64(v: Vec<i64>) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
     if v.len() == 0 {
         panic("vec::min_i64: called on empty vector");
     }
@@ -375,22 +270,8 @@ pub fn min_f64(v: Vec<f64>) -> f64 {
     m
 }
 
-/// Return the largest element in `v`.
-///
-/// # Panics
-///
-/// Panics at runtime if `v` is empty.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<i32> = Vec::new();
-/// v.push(3);
-/// v.push(1);
-/// v.push(2);
-/// println(vec.max_i32(v));  // 3
-/// ```
-pub fn max_i32(v: Vec<i32>) -> i32 {
+/// Return the largest element in a `Vec<i32>`. Panics if empty.
+pub fn max_i32(v: Vec<i32>) -> i32 { // INTERNAL-ABI: typed for 32-bit integer vector storage
     if v.len() == 0 {
         panic("vec::max_i32: called on empty vector");
     }
@@ -407,8 +288,8 @@ pub fn max_i32(v: Vec<i32>) -> i32 {
     m
 }
 
-/// Return the largest element in `v`. Panics if `v` is empty.
-pub fn max_i64(v: Vec<i64>) -> i64 {
+/// Return the largest element in a `Vec<i64>`. Panics if empty.
+pub fn max_i64(v: Vec<i64>) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
     if v.len() == 0 {
         panic("vec::max_i64: called on empty vector");
     }

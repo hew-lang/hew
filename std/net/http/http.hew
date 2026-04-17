@@ -81,7 +81,7 @@ trait RequestMethods {
     /// Send a full HTTP response with status, content-type, and body.
     ///
     /// The `Content-Length` header is derived from `body` automatically.
-    fn respond(req: Request, status: i32, content_type: String, body: String) -> i32;
+    fn respond(req: Request, status: int, content_type: String, body: String) -> int;
 
     /// Send a plain-text HTTP response.
     ///
@@ -91,10 +91,10 @@ trait RequestMethods {
     /// req.respond_text(200, "OK");
     /// req.respond_text(404, "Not Found");
     /// ```
-    fn respond_text(req: Request, status: i32, body: String) -> i32;
+    fn respond_text(req: Request, status: int, body: String) -> int;
 
     /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(req: Request, status: i32, json: String) -> i32;
+    fn respond_json(req: Request, status: int, json: String) -> int;
 
     /// Begin a streaming response and return a `Sink` for chunked output.
     ///
@@ -109,7 +109,7 @@ trait RequestMethods {
     /// body.write("chunk 2");
     /// body.close();
     /// ```
-    fn respond_stream(req: Request, status: i32, content_type: String) -> Sink<String>;
+    fn respond_stream(req: Request, status: int, content_type: String) -> Sink<String>;
 
 }
 
@@ -125,20 +125,20 @@ impl RequestMethods for Request {
     /// Return the request body decoded according to `encoding`.
     fn body(req: Request, encoding: String) -> String { unsafe { hew_http_request_body_string(req, encoding) } }
     /// Send a full HTTP response with status, content-type, and body.
-    fn respond(req: Request, status: i32, content_type: String, body: String) -> i32 {
-        unsafe { hew_http_respond_bridge(req, status, content_type, body) }
+    fn respond(req: Request, status: int, content_type: String, body: String) -> int {
+        unsafe { hew_http_respond_bridge(req, status as i32, content_type, body) } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a plain-text HTTP response.
-    fn respond_text(req: Request, status: i32, body: String) -> i32 {
-        unsafe { hew_http_respond_text(req, status, body) }
+    fn respond_text(req: Request, status: int, body: String) -> int {
+        unsafe { hew_http_respond_text(req, status as i32, body) } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(req: Request, status: i32, json: String) -> i32 {
-        unsafe { hew_http_respond_json(req, status, json) }
+    fn respond_json(req: Request, status: int, json: String) -> int {
+        unsafe { hew_http_respond_json(req, status as i32, json) } // INTERNAL-ABI: C ABI status is i32
     }
     /// Begin a streaming response and return a `Sink` for chunked output.
-    fn respond_stream(req: Request, status: i32, content_type: String) -> Sink<String> {
-        unsafe { hew_http_respond_stream(req, status, content_type) }
+    fn respond_stream(req: Request, status: int, content_type: String) -> Sink<String> {
+        unsafe { hew_http_respond_stream(req, status as i32, content_type) } // INTERNAL-ABI: C ABI status is i32
     }
     /// Release the underlying request resources.
     fn free(req: Request) {

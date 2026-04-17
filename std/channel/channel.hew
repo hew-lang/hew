@@ -116,9 +116,9 @@ impl ReceiverMethods for Receiver {
 /// tx.send("hello");       // infers Sender<String>
 /// println(rx.recv());     // infers Receiver<String>
 /// ```
-pub fn new(capacity: i64) -> (Sender, Receiver) {
+pub fn new(capacity: int) -> (Sender, Receiver) {
     unsafe {
-        let pair = hew_channel_new(capacity);
+        let pair = hew_channel_new(capacity as i64); // INTERNAL-ABI: runtime ABI takes i64 capacity
         let tx = hew_channel_pair_sender(pair);
         let rx = hew_channel_pair_receiver(pair);
         hew_channel_pair_free(pair);

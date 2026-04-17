@@ -272,7 +272,7 @@ trait QUICStreamMethods {
     /// Unlike `finish`, pending data is discarded. Call `close()` afterwards to
     /// release the local stream handle. Returns `Ok(())` on success or
     /// `Err(String)` with the last QUIC error.
-    fn stop(strm: QUICStream, error_code: i64) -> Result<(), String>;
+    fn stop(strm: QUICStream, error_code: int) -> Result<(), String>;
 
     /// Release the local stream handle.
     ///
@@ -303,7 +303,7 @@ impl QUICStreamMethods for QUICStream {
     fn finish(strm: QUICStream) -> Result<(), String> {
         stream_finish(strm)
     }
-    fn stop(strm: QUICStream, error_code: i64) -> Result<(), String> {
+    fn stop(strm: QUICStream, error_code: int) -> Result<(), String> {
         stream_stop(strm, error_code)
     }
     fn close(strm: QUICStream) {
@@ -329,14 +329,14 @@ trait QUICEventMethods {
     /// Event kinds:
     ///   0 — connected, 1 — disconnected, 2 — stream opened,
     ///   3 — stream closed, −1 — error.
-    fn kind(evt: QUICEvent) -> i32;
+    fn kind(evt: QUICEvent) -> i32; // INTERNAL-ABI: opaque event-kind enum (0=connected, 1=disconnected, 2=stream-opened, 3=stream-closed, -1=error); planned enum migration
 
     /// Release the event and its resources.
     fn free(evt: QUICEvent);
 }
 
 impl QUICEventMethods for QUICEvent {
-    fn kind(evt: QUICEvent) -> i32 { unsafe { hew_quic_event_kind(evt) } }
+    fn kind(evt: QUICEvent) -> i32 { unsafe { hew_quic_event_kind(evt) } } // INTERNAL-ABI: opaque event-kind enum; planned enum migration
     fn free(evt: QUICEvent) { unsafe { hew_quic_event_free(evt) }; }
 }
 
@@ -462,7 +462,7 @@ pub fn stream_finish(strm: QUICStream) -> Result<(), String> {
     }
 }
 
-pub fn stream_stop(strm: QUICStream, error_code: i64) -> Result<(), String> {
+pub fn stream_stop(strm: QUICStream, error_code: int) -> Result<(), String> { // INTERNAL-ABI: QUIC protocol mandates 62-bit error codes; int is 64-bit i64 so no narrowing needed
     unsafe {
         let status = hew_quic_stream_stop(strm, error_code);
         if status < 0 {

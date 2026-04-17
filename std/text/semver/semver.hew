@@ -31,19 +31,19 @@ type Version {
 /// Methods available on a parsed `Version`.
 trait VersionMethods {
     /// Return the major version number.
-    fn major(ver: Version) -> i64;
+    fn major(ver: Version) -> int;
 
     /// Return the minor version number.
-    fn minor(ver: Version) -> i64;
+    fn minor(ver: Version) -> int;
 
     /// Return the patch version number.
-    fn patch(ver: Version) -> i64;
+    fn patch(ver: Version) -> int;
 
     /// Return the pre-release label, or an empty string if none.
     fn pre(ver: Version) -> String;
 
     /// Compare this version to another. Returns -1, 0, or 1.
-    fn compare(ver: Version, other: Version) -> i32;
+    fn compare(ver: Version, other: Version) -> int;
 
     /// Test whether this version satisfies a version requirement string.
     fn matches(ver: Version, req: String) -> bool;
@@ -57,16 +57,16 @@ trait VersionMethods {
 
 impl VersionMethods for Version {
     /// Return the major version number.
-    fn major(ver: Version) -> i64 { ver.maj }
+    fn major(ver: Version) -> int { ver.maj }
     /// Return the minor version number.
-    fn minor(ver: Version) -> i64 { ver.min }
+    fn minor(ver: Version) -> int { ver.min }
     /// Return the patch version number.
-    fn patch(ver: Version) -> i64 { ver.pat }
+    fn patch(ver: Version) -> int { ver.pat }
     /// Return the pre-release label, or an empty string if none.
     fn pre(ver: Version) -> String { ver.pre_release }
 
     /// Compare this version to another. Return -1, 0, or 1.
-    fn compare(ver: Version, other: Version) -> i32 {
+    fn compare(ver: Version, other: Version) -> int {
         // Bind to local to prevent extract_call_target from finding a direct
         // call, which would bypass this body via handle-method rewriting.
         let result = compare_versions(ver, other);
@@ -162,7 +162,7 @@ fn version_to_string(v: Version) -> String {
 // ── Comparison ────────────────────────────────────────────────────────
 
 /// Compare two versions according to SemVer 2.0 precedence rules.
-fn compare_versions(a: Version, b: Version) -> i32 {
+fn compare_versions(a: Version, b: Version) -> int {
     if a.maj < b.maj { return -1; }
     if a.maj > b.maj { return 1; }
     if a.min < b.min { return -1; }
@@ -181,7 +181,7 @@ fn compare_versions(a: Version, b: Version) -> i32 {
 }
 
 /// Compare two dot-separated pre-release identifier strings.
-fn compare_pre(a: String, b: String) -> i32 {
+fn compare_pre(a: String, b: String) -> int {
     // Compare dot-separated identifiers
     var a_pos = 0;
     var b_pos = 0;
@@ -215,11 +215,11 @@ fn compare_pre(a: String, b: String) -> i32 {
     // If one side is exhausted, shorter pre-release has lower precedence
     if a_pos < a_len && b_pos >= b_len { return 1; }
     if a_pos >= a_len && b_pos < b_len { return -1; }
-    0 as i32
+    0
 }
 
 /// Compare two individual pre-release identifiers (numeric or alphanumeric).
-fn compare_pre_id(a: String, b: String) -> i32 {
+fn compare_pre_id(a: String, b: String) -> int {
     let a_num = string.is_numeric(a);
     let b_num = string.is_numeric(b);
     if a_num && b_num {
@@ -235,7 +235,7 @@ fn compare_pre_id(a: String, b: String) -> i32 {
     // Lexicographic comparison for non-numeric
     if a < b { return -1; }
     if a > b { return 1; }
-    0 as i32
+    0
 }
 
 // ── Requirement matching ──────────────────────────────────────────────

@@ -33,13 +33,13 @@ trait NodeMethods {
     /// Get an attribute value by name. Returns empty string if not found.
     fn get_attribute(node: Node, name: String) -> String;
     /// Get the number of child nodes.
-    fn children_count(node: Node) -> i32;
+    fn children_count(node: Node) -> int;
     /// Get a child node by index. Returns a new Node that must be freed.
-    fn get_child(node: Node, index: i32) -> Node;
+    fn get_child(node: Node, index: int) -> Node;
     /// Get the concatenated text content of this node and its descendants.
     fn get_text(node: Node) -> String;
     /// Return 1 if this is an element node, 0 if text, -1 if null.
-    fn is_element(node: Node) -> i32;
+    fn is_element(node: Node) -> i32; // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
     /// Release the node resources.
     fn free(node: Node);
 }
@@ -50,10 +50,10 @@ impl NodeMethods for Node {
     fn get_attribute(node: Node, name: String) -> String {
         unsafe { hew_xml_get_attribute(node, name) }
     }
-    fn children_count(node: Node) -> i32 { unsafe { hew_xml_children_count(node) } }
-    fn get_child(node: Node, index: i32) -> Node { unsafe { hew_xml_get_child(node, index) } }
+    fn children_count(node: Node) -> int { unsafe { hew_xml_children_count(node) } }
+    fn get_child(node: Node, index: int) -> Node { unsafe { hew_xml_get_child(node, index as i32) } } // INTERNAL-ABI: C ABI index is i32
     fn get_text(node: Node) -> String { unsafe { hew_xml_get_text(node) } }
-    fn is_element(node: Node) -> i32 { unsafe { hew_xml_is_element(node) } }
+    fn is_element(node: Node) -> i32 { unsafe { hew_xml_is_element(node) } } // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
     fn free(node: Node) { unsafe { hew_xml_free(node) }; }
 }
 

@@ -31,23 +31,23 @@ type Message {}
 /// Methods available on a protobuf `Message`.
 trait MessageMethods {
     /// Set a string field by field number.
-    fn set_string(msg: Message, field_number: i32, value: String);
+    fn set_string(msg: Message, field_number: int, value: String);
 
     /// Get a string field by field number.
     ///
     /// Returns an empty string if the field is not set.
-    fn get_string(msg: Message, field_number: i32) -> String;
+    fn get_string(msg: Message, field_number: int) -> String;
 
     /// Set a varint (integer) field by field number.
-    fn set_varint(msg: Message, field_number: i32, value: i64);
+    fn set_varint(msg: Message, field_number: int, value: int);
 
     /// Get a varint (integer) field by field number.
     ///
     /// Returns `fallback` if the field is not set.
-    fn get_varint(msg: Message, field_number: i32, fallback: i64) -> i64;
+    fn get_varint(msg: Message, field_number: int, fallback: int) -> int;
 
     /// Test whether a field is present in the message.
-    fn has_field(msg: Message, field_number: i32) -> bool;
+    fn has_field(msg: Message, field_number: int) -> bool;
 
     /// Release the message resources.
     fn free(msg: Message);
@@ -55,24 +55,24 @@ trait MessageMethods {
 
 impl MessageMethods for Message {
     /// Set a string field by field number.
-    fn set_string(msg: Message, field_number: i32, value: String) {
-        unsafe { hew_proto_msg_set_string(msg, field_number, value) };
+    fn set_string(msg: Message, field_number: int, value: String) {
+        unsafe { hew_proto_msg_set_string(msg, field_number as i32, value) }; // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Get a string field by field number.
-    fn get_string(msg: Message, field_number: i32) -> String {
-        unsafe { hew_proto_msg_get_string(msg, field_number) }
+    fn get_string(msg: Message, field_number: int) -> String {
+        unsafe { hew_proto_msg_get_string(msg, field_number as i32) } // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Set a varint (integer) field by field number.
-    fn set_varint(msg: Message, field_number: i32, value: i64) {
-        unsafe { hew_proto_msg_set_varint(msg, field_number, value) };
+    fn set_varint(msg: Message, field_number: int, value: int) {
+        unsafe { hew_proto_msg_set_varint(msg, field_number as i32, value as i64) }; // INTERNAL-ABI: C ABI uses i32/i64
     }
     /// Get a varint (integer) field by field number.
-    fn get_varint(msg: Message, field_number: i32, fallback: i64) -> i64 {
-        unsafe { hew_proto_msg_get_varint(msg, field_number, fallback) }
+    fn get_varint(msg: Message, field_number: int, fallback: int) -> int {
+        unsafe { hew_proto_msg_get_varint(msg, field_number as i32, fallback as i64) } // INTERNAL-ABI: C ABI uses i32/i64
     }
     /// Test whether a field is present in the message.
-    fn has_field(msg: Message, field_number: i32) -> bool {
-        unsafe { hew_proto_msg_has_field(msg, field_number) }
+    fn has_field(msg: Message, field_number: int) -> bool {
+        unsafe { hew_proto_msg_has_field(msg, field_number as i32) } // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Release the message resources.
     fn free(msg: Message) { unsafe { hew_proto_msg_free(msg) }; }

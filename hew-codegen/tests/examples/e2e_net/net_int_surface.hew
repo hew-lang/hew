@@ -12,7 +12,7 @@ fn _prove_int_surface() {
     let smtp_port: int = 587;
     let _smtp_conn: smtp.Conn = smtp.connect("smtp.example.com", smtp_port, "user", "pass");
     let _smtp_tls_conn: smtp.Conn = smtp.connect_tls("smtp.example.com", 465, "user", "pass");
-    let _smtp_send_status: i32 = smtp.send(
+    let _smtp_send_status: int = smtp.send(
         "smtp.example.com",
         smtp_port,
         "user",
@@ -22,7 +22,7 @@ fn _prove_int_surface() {
         "subject",
         "body",
     );
-    let _smtp_send_html_status: i32 = smtp.send_html(
+    let _smtp_send_html_status: int = smtp.send_html(
         "smtp.example.com",
         smtp_port,
         "user",

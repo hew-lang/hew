@@ -50,7 +50,7 @@ type Message {}
 /// Methods available on a WebSocket `Conn`.
 trait ConnMethods {
     /// Send a text message over the connection. Return 0 on success.
-    fn send_text(conn: Conn, msg: String) -> i32;
+    fn send_text(conn: Conn, msg: String) -> int;
 
     /// Send a text message over the connection.
     fn try_send_text(conn: Conn, msg: String) -> Result<(), String>;
@@ -70,19 +70,19 @@ trait ConnMethods {
     /// `handler` is the actor that will receive on_message and on_close.
     /// `on_message_type` is the msg_type index for the on_message receive fn.
     /// `on_close_type` is the msg_type index for the on_close receive fn.
-    fn attach(conn: Conn, handler: ActorRef, on_message_type: i32, on_close_type: i32);
+    fn attach(conn: Conn, handler: ActorRef, on_message_type: int, on_close_type: int);
 }
 
 impl ConnMethods for Conn {
-    fn send_text(conn: Conn, msg: String) -> i32 { unsafe { hew_ws_send_text(conn, msg) } }
+    fn send_text(conn: Conn, msg: String) -> int { unsafe { hew_ws_send_text(conn, msg) } }
     fn try_send_text(conn: Conn, msg: String) -> Result<(), String> {
-        let n: i32 = unsafe { hew_ws_send_text(conn, msg) };
+        let n: int = unsafe { hew_ws_send_text(conn, msg) };
         if n < 0 { Err("websocket send_text failed") } else { Ok(()) }
     }
     fn recv(conn: Conn) -> Message { unsafe { hew_ws_recv(conn) } }
     fn close(conn: Conn) { unsafe { hew_ws_close(conn) }; }
-    fn attach(conn: Conn, handler: ActorRef, on_message_type: i32, on_close_type: i32) {
-        unsafe { hew_ws_attach(conn, handler, on_message_type, on_close_type) };
+    fn attach(conn: Conn, handler: ActorRef, on_message_type: int, on_close_type: int) {
+        unsafe { hew_ws_attach(conn, handler, on_message_type as i32, on_close_type as i32) }; // INTERNAL-ABI: C ABI takes i32 type indices
     }
 }
 
@@ -91,7 +91,7 @@ impl ConnMethods for Conn {
 /// Methods available on a WebSocket `Message`.
 trait MessageMethods {
     /// Get the message type (0=text, 1=binary, 2=ping, 3=pong, 4=close, -1=error).
-    fn msg_type(msg: Message) -> i32;
+    fn msg_type(msg: Message) -> i32; // INTERNAL-ABI: opaque frame-type enum; planned enum migration
     /// Extract the text content of a text message.
     fn text(msg: Message) -> String;
     /// Release the message resources.
@@ -99,7 +99,7 @@ trait MessageMethods {
 }
 
 impl MessageMethods for Message {
-    fn msg_type(msg: Message) -> i32 { unsafe { hew_ws_message_type(msg) } }
+    fn msg_type(msg: Message) -> i32 { unsafe { hew_ws_message_type(msg) } } // INTERNAL-ABI: opaque frame-type enum; planned enum migration
     fn text(msg: Message) -> String { unsafe { hew_ws_message_text(msg) } }
     /// Release the message resources.
     fn free(msg: Message) { unsafe { hew_ws_message_free(msg) }; }

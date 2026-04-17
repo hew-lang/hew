@@ -36,13 +36,13 @@ trait SemaphoreMethods {
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
     ///
     /// Returns `true` if a permit was acquired before the timeout.
-    fn acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool;
+    fn acquire_timeout(sem: Semaphore, timeout_ms: int) -> bool;
 
     /// Release a previously acquired permit.
     fn release(sem: Semaphore);
 
     /// Return the current number of available permits.
-    fn count(sem: Semaphore) -> i32;
+    fn count(sem: Semaphore) -> int;
 
     /// Release the semaphore resources.
     fn free(sem: Semaphore);
@@ -54,13 +54,13 @@ impl SemaphoreMethods for Semaphore {
     /// Try to acquire a permit without blocking.
     fn try_acquire(sem: Semaphore) -> bool { unsafe { hew_semaphore_try_acquire(sem) } }
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
-    fn acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool {
-        unsafe { hew_semaphore_acquire_timeout(sem, timeout_ms) }
+    fn acquire_timeout(sem: Semaphore, timeout_ms: int) -> bool {
+        unsafe { hew_semaphore_acquire_timeout(sem, timeout_ms as i64) } // INTERNAL-ABI: C ABI takes i64 timeout
     }
     /// Release a previously acquired permit.
     fn release(sem: Semaphore) { unsafe { hew_semaphore_release(sem) }; }
     /// Return the current number of available permits.
-    fn count(sem: Semaphore) -> i32 { unsafe { hew_semaphore_count(sem) } }
+    fn count(sem: Semaphore) -> int { unsafe { hew_semaphore_count(sem) } }
     /// Release the semaphore resources.
     fn free(sem: Semaphore) { unsafe { hew_semaphore_free(sem) }; }
 }
@@ -74,8 +74,8 @@ impl SemaphoreMethods for Semaphore {
 /// ```
 /// let sem = semaphore.new(5);
 /// ```
-pub fn new(count: i32) -> Semaphore {
-    unsafe { hew_semaphore_new(count) }
+pub fn new(count: int) -> Semaphore {
+    unsafe { hew_semaphore_new(count as i32) } // INTERNAL-ABI: C ABI takes i32 initial count
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

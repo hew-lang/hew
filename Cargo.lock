@@ -1608,6 +1608,7 @@ version = "0.3.0"
 dependencies = [
  "hew-parser",
  "hew-types",
+ "hew-wirecodec",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -1904,6 +1905,17 @@ dependencies = [
  "serde",
  "serde_json",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "hew-wirecodec"
+version = "0.3.0"
+dependencies = [
+ "hew-parser",
+ "hew-types",
+ "rmp-serde",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

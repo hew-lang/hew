@@ -15,7 +15,15 @@ workspace = true
 [dependencies]
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
+hew-wirecodec = { path = "../hew-wirecodec" }
 stacker = "0.1"
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+# Keep the legacy hand-written WireDecl msgpack path compiled only when
+# explicitly requested. Default builds expose only
+# `serialize_wire_decl_via_plan`. Lane 7b stage 7 re-enables the legacy
+# path to run the 10,000-iteration random-corpus comparator against it.
+legacy-wire-msgpack = []

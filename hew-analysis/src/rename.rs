@@ -24,13 +24,12 @@ use crate::{OffsetSpan, RenameConflict, RenameConflictKind, RenameEdit, RenameEr
 /// user code. Renaming to one of these would shadow a global reachable
 /// anywhere; the heuristic rejects it pre-emptively.
 ///
-/// SHIM: hard-coded list of well-known stdlib / intrinsic names.
-/// WHY: Lane 1B's `ResolvedTy` / stdlib introspection has not landed,
-/// so we cannot query an authoritative "is this name a builtin" source
-/// at analysis time. WHEN to remove: once the checker exposes the set
-/// of names it considers intrinsic. WHAT replaces it: a query on
-/// `TypeCheckOutput` for "names visible at this scope whose origin is
-/// `builtin`".
+/// SHIM: hard-coded list; a complete reflection of the builtin registry
+/// requires Lane 1B type-checker introspection. Until then, this list
+/// covers the 22 most commonly-collided names; a user attempting to
+/// rename into an unlisted builtin will parse-fail rather than be blocked
+/// at rename time. See `hew-types/src/check/registration.rs` for the
+/// canonical registry.
 const BUILTIN_FUNCTION_NAMES: &[&str] = &[
     // Registered via register_builtin_fn in hew-types/src/check/registration.rs.
     // SHIM: hard-coded until Lane 1B's type-checker introspection lands.

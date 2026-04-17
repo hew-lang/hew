@@ -729,11 +729,12 @@ pub(super) fn build_workspace_edit(
 ///   a keyword / builtin, is not a valid identifier, or would clash
 ///   with an existing binding in any file that would be edited.
 ///
-/// Conflict detection delegates to
-/// [`hew_analysis::rename::plan_rename`] on each target document so
-/// the destination-scope shadow check runs per-file using that file's
-/// own AST (catches shadows introduced by imports or top-level items
-/// in the importer that aren't present in the definition file).
+/// Unlike [`hew_analysis::rename::plan_rename`] (which validates a
+/// single file's own edits), this function additionally walks all files
+/// that would be modified across the workspace to check that `new_name`
+/// does not clash with top-level or imported names in any of them. For
+/// non-aliased imports, the check includes both the definition file and
+/// all other open files that import the same name.
 pub(super) fn plan_workspace_rename(
     uri: &Url,
     doc: &DocumentState,

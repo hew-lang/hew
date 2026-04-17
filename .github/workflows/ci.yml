@@ -110,6 +110,9 @@ jobs:
           category: clippy
           wait-for-processing: true
 
+      - name: Runtime poison-safe lint
+        run: bash scripts/lint-runtime-poison-safe.sh
+
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.
   # It checks manifest drift and hew-wasm build breakage; the curated WASI

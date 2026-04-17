@@ -35,13 +35,13 @@ use std::sync::{Mutex, PoisonError, RwLock, TryLockError};
 /// passed to the closure is valid only for the closure body.
 #[allow(
     dead_code,
-    reason = "first callers land with the LINK_TABLE/ENV_LOCK sweep"
+    reason = "Mutex variant ships alongside PoisonSafeRw; first callers land with the next sweep (LIVE_ACTORS, MONITOR_TABLE, ...)"
 )]
 pub(crate) struct PoisonSafe<T>(Mutex<T>);
 
 #[allow(
     dead_code,
-    reason = "first callers land with the LINK_TABLE/ENV_LOCK sweep"
+    reason = "Mutex variant ships alongside PoisonSafeRw; first callers land with the next sweep"
 )]
 impl<T> PoisonSafe<T> {
     /// Construct a new `PoisonSafe<T>` wrapping `value`.
@@ -88,16 +88,8 @@ impl<T> PoisonSafe<T> {
 /// Use [`PoisonSafeRw::read_access`] for shared-read access,
 /// [`PoisonSafeRw::access`] for exclusive-write access, and
 /// [`PoisonSafeRw::try_access`] for non-blocking write attempts.
-#[allow(
-    dead_code,
-    reason = "first callers land with the LINK_TABLE/ENV_LOCK sweep"
-)]
 pub(crate) struct PoisonSafeRw<T>(RwLock<T>);
 
-#[allow(
-    dead_code,
-    reason = "first callers land with the LINK_TABLE/ENV_LOCK sweep"
-)]
 impl<T> PoisonSafeRw<T> {
     /// Construct a new `PoisonSafeRw<T>` wrapping `value`.
     pub(crate) const fn new(value: T) -> Self {
@@ -124,6 +116,10 @@ impl<T> PoisonSafeRw<T> {
     /// reader or writer currently holds the lock. Recovers from
     /// poison transparently.
     #[inline]
+    #[allow(
+        dead_code,
+        reason = "no callers yet; provided for symmetry with PoisonSafe::try_access and future sweeps"
+    )]
     pub(crate) fn try_access<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         match self.0.try_write() {
             Ok(mut guard) => Some(f(&mut *guard)),

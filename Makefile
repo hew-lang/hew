@@ -47,7 +47,7 @@
 # ============================================================================
 
 .PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight wasm-dist release
-.PHONY: test test-all test-rust test-parser test-types test-cli test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -499,8 +499,15 @@ tsan:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint:
+lint: runtime-poison-safe-lint
 	cargo clippy --workspace --tests -- -D warnings
+
+# Grep-gate: fail on raw .lock()/.read()/.write() against any runtime global
+# that has been migrated to the PoisonSafe/PoisonSafeRw wrapper, and on the
+# `if let Ok(_) = X.lock()` anti-pattern anywhere in hew-runtime/src/. Extend
+# the allowlist in scripts/lint-runtime-poison-safe.sh as future sweeps land.
+runtime-poison-safe-lint:
+	bash scripts/lint-runtime-poison-safe.sh
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #

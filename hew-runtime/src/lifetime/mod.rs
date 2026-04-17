@@ -17,12 +17,8 @@
 
 pub(crate) mod poison_safe;
 
-// The wrapper types and their methods become reachable from non-test
-// code as the LINK_TABLE / ENV_LOCK migration lands in the follow-on
-// commit on this branch. Until then they are exercised by
-// `poison_safe::tests` only, which is non-public code.
 #[allow(
     unused_imports,
-    reason = "first callers land with the LINK_TABLE/ENV_LOCK sweep"
+    reason = "PoisonSafe (Mutex variant) is exported for future sweeps; current sweep wraps RwLock-backed globals only"
 )]
 pub(crate) use poison_safe::{PoisonSafe, PoisonSafeRw};

@@ -5,7 +5,7 @@
 //! are allocated with `libc::malloc` so callers can free them with `libc::free`.
 
 use crate::cabi::malloc_cstring;
-use crate::util::RwLockExt;
+use crate::lifetime::PoisonSafeRw;
 use std::ffi::{c_char, CStr};
 
 /// Global lock for environment variable access synchronization.
@@ -16,8 +16,8 @@ use std::ffi::{c_char, CStr};
 ///
 /// Note: External C code calling `setenv`/`getenv`/`unsetenv` bypasses this lock
 /// (POSIX limitation). Hew programs should use the `hew_env_*` functions exclusively.
-static ENV_LOCK: std::sync::LazyLock<std::sync::RwLock<()>> =
-    std::sync::LazyLock::new(|| std::sync::RwLock::new(()));
+pub(crate) static ENV_LOCK: std::sync::LazyLock<PoisonSafeRw<()>> =
+    std::sync::LazyLock::new(|| PoisonSafeRw::new(()));
 
 /// Convert a Rust `String` to a malloc-allocated C string. Returns null on failure.
 fn string_to_malloc(s: &str) -> *mut c_char {
@@ -47,11 +47,10 @@ pub unsafe extern "C" fn hew_env_get(key: *const c_char) -> *mut c_char {
         return std::ptr::null_mut();
     };
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.read_or_recover();
-    match std::env::var(key_str) {
+    ENV_LOCK.read_access(|()| match std::env::var(key_str) {
         Ok(val) => string_to_malloc(&val),
         Err(_) => std::ptr::null_mut(),
-    }
+    })
 }
 
 /// Set an environment variable.
@@ -72,10 +71,9 @@ pub unsafe extern "C" fn hew_env_set(key: *const c_char, val: *const c_char) {
     let Ok(val_str) = (unsafe { CStr::from_ptr(val) }).to_str() else {
         return;
     };
-    // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.write_or_recover();
-    // SAFETY: set_var is safe when protected by exclusive write access.
-    unsafe { std::env::set_var(key_str, val_str) };
+    // SAFETY: ENV_LOCK synchronizes access to the process-global environ array;
+    // set_var is safe when protected by exclusive write access.
+    ENV_LOCK.access(|()| unsafe { std::env::set_var(key_str, val_str) });
 }
 
 /// Remove an environment variable.
@@ -92,10 +90,9 @@ pub unsafe extern "C" fn hew_env_remove(key: *const c_char) {
     let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
         return;
     };
-    // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.write_or_recover();
-    // SAFETY: remove_var is safe when protected by exclusive write access.
-    unsafe { std::env::remove_var(key_str) };
+    // SAFETY: ENV_LOCK synchronizes access to the process-global environ array;
+    // remove_var is safe when protected by exclusive write access.
+    ENV_LOCK.access(|()| unsafe { std::env::remove_var(key_str) });
 }
 
 /// Check if an environment variable exists. Returns 1 if set, 0 otherwise.
@@ -113,8 +110,7 @@ pub unsafe extern "C" fn hew_env_has(key: *const c_char) -> i32 {
         return 0;
     };
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.read_or_recover();
-    i32::from(std::env::var(key_str).is_ok())
+    ENV_LOCK.read_access(|()| i32::from(std::env::var(key_str).is_ok()))
 }
 
 // ---------------------------------------------------------------------------
@@ -271,13 +267,14 @@ pub unsafe extern "C" fn hew_cwd() -> *mut c_char {
 pub unsafe extern "C" fn hew_temp_dir() -> *mut c_char {
     // SAFETY: ENV_LOCK synchronises access to the process-global environ
     // array — std::env::temp_dir() reads TMPDIR/TMP/TEMP under the hood.
-    let _guard = ENV_LOCK.read_or_recover();
-    let mut tmp = std::env::temp_dir().to_string_lossy().into_owned();
-    // Strip trailing separator for consistent path concatenation.
-    while tmp.ends_with('/') || tmp.ends_with('\\') {
-        tmp.pop();
-    }
-    string_to_malloc(&tmp)
+    ENV_LOCK.read_access(|()| {
+        let mut tmp = std::env::temp_dir().to_string_lossy().into_owned();
+        // Strip trailing separator for consistent path concatenation.
+        while tmp.ends_with('/') || tmp.ends_with('\\') {
+            tmp.pop();
+        }
+        string_to_malloc(&tmp)
+    })
 }
 
 /// Return the home directory as a malloc-allocated C string.
@@ -289,11 +286,12 @@ pub unsafe extern "C" fn hew_temp_dir() -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn hew_home_dir() -> *mut c_char {
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-    let _guard = ENV_LOCK.read_or_recover();
-    match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-        Ok(home) => string_to_malloc(&home),
-        Err(_) => std::ptr::null_mut(),
-    }
+    ENV_LOCK.read_access(|()| {
+        match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            Ok(home) => string_to_malloc(&home),
+            Err(_) => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// Return the system hostname as a malloc-allocated C string.
@@ -325,11 +323,10 @@ pub unsafe extern "C" fn hew_hostname() -> *mut c_char {
     {
         // Use COMPUTERNAME environment variable (always set on Windows).
         // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
-        let _guard = ENV_LOCK.read_or_recover();
-        match std::env::var("COMPUTERNAME") {
+        ENV_LOCK.read_access(|()| match std::env::var("COMPUTERNAME") {
             Ok(name) => string_to_malloc(&name),
             Err(_) => std::ptr::null_mut(),
-        }
+        })
     }
     #[cfg(not(any(unix, windows)))]
     {

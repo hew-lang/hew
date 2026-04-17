@@ -26,10 +26,10 @@ use crate::{OffsetSpan, RenameConflict, RenameConflictKind, RenameEdit, RenameEr
 ///
 /// SHIM: hard-coded list; a complete reflection of the builtin registry
 /// requires Lane 1B type-checker introspection. Until then, this list
-/// covers the 22 most commonly-collided names; a user attempting to
-/// rename into an unlisted builtin will parse-fail rather than be blocked
-/// at rename time. See `hew-types/src/check/registration.rs` for the
-/// canonical registry.
+/// covers the most commonly-collided names; a user attempting to rename
+/// into an unlisted builtin will parse-fail rather than be blocked at
+/// rename time. Every name here is verified against `register_builtin_fn`
+/// calls in `hew-types/src/check/registration.rs` (the canonical registry).
 const BUILTIN_FUNCTION_NAMES: &[&str] = &[
     // Registered via register_builtin_fn in hew-types/src/check/registration.rs.
     // SHIM: hard-coded until Lane 1B's type-checker introspection lands.
@@ -38,7 +38,6 @@ const BUILTIN_FUNCTION_NAMES: &[&str] = &[
     "println",
     "panic",
     "assert",
-    "debug",
     // Assertions
     "assert_eq",
     "assert_ne",
@@ -298,6 +297,38 @@ fn detect_conflicts(
             offending,
             format!("renaming would clash with imported '{new_name}' in this file"),
         );
+    }
+
+    // For top-level renames the file-level checks above handle structural
+    // collisions. But each individual call site may sit inside a function
+    // body where a local variable or parameter named `new_name` is in scope.
+    // If the call is rewritten there the local would shadow the renamed
+    // top-level symbol at that site — detect that per-site even when the
+    // symbol itself is not a local binding.
+    if !is_local {
+        for site in sites {
+            if let Some(existing) =
+                find_local_binding_definition(source, parse_result, new_name, site.start)
+            {
+                push_conflict(
+                    &mut conflicts,
+                    RenameConflictKind::ShadowsLocal,
+                    existing,
+                    *site,
+                    format!("renaming would shadow local '{new_name}' in scope at a call site"),
+                );
+                continue;
+            }
+            if let Some(existing) = find_param_definition(parse_result, new_name, site.start) {
+                push_conflict(
+                    &mut conflicts,
+                    RenameConflictKind::ShadowsLocal,
+                    existing,
+                    *site,
+                    format!("renaming would shadow parameter '{new_name}' in scope at a call site"),
+                );
+            }
+        }
     }
 
     conflicts

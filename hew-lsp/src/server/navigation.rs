@@ -792,6 +792,14 @@ pub(super) fn plan_workspace_rename(
         }
     } else if hew_analysis::references::is_top_level_name(&doc.parse_result, &name) {
         for importer in find_open_named_importers(uri, &name, documents) {
+            // Aliased importers (`import foo::{x as y}`) will have their
+            // import-name token rewritten to `new_name` but the visible name
+            // in the importer file remains the alias, not `new_name`. Treating
+            // the alias as an existing binding named `new_name` is a false
+            // positive — mirror the guard at the import-originated path above.
+            if importer.is_aliased() {
+                continue;
+            }
             if let Some(importer_doc) = documents.get(&importer.importer_uri) {
                 collect_cross_file_conflict(
                     &importer_doc,

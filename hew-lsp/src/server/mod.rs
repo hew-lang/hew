@@ -4929,4 +4929,67 @@ machine Traffic {
             "type-checking with in-memory circle.hew should produce no errors: {errors:?}"
         );
     }
+
+    // ── plan_workspace_rename: aliased-importer guard (Fix 1) ──────────
+
+    #[test]
+    fn plan_workspace_rename_skips_aliased_top_level_importer() {
+        // util.hew defines `foo`; main.hew imports it as `bar` (aliased).
+        // Renaming `foo` → `bar` from util.hew must NOT be rejected because
+        // main.hew's `bar` is the alias — it will be rewritten as part of the
+        // rename, not be left as a colliding name.
+        let util_source = "pub fn foo() -> i32 { 1 }";
+        let main_source = "import util::{ foo as bar };\nfn m() -> i32 { bar() }";
+
+        let util_uri = make_test_uri("/project/util.hew");
+        let main_uri = make_test_uri("/project/main.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(main_uri.clone(), make_doc(main_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+        // This must succeed — the alias `bar` in main.hew is NOT a conflict with
+        // the new name `bar` because the import will be rewritten as `{ bar }`.
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        match result {
+            Ok(_) => {} // correct — no conflict
+            Err(hew_analysis::RenameError::Conflicts { ref conflicts }) => {
+                panic!("aliased importer should not produce a conflict, got: {conflicts:?}");
+            }
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    // ── plan_workspace_rename: definition-file local shadow (Fix 2) ────
+
+    #[test]
+    fn plan_workspace_rename_detects_definition_file_local_shadow() {
+        // util.hew defines top-level `foo` AND a helper function that
+        // binds `let bar = 0` in scope and then calls `foo()`.
+        // Renaming `foo` → `bar` from util.hew must surface a ShadowsLocal
+        // conflict because the rename site `foo()` is in scope of `let bar`.
+        let util_source = "pub fn foo() -> i32 { 1 }\nfn helper() -> i32 { let bar = 0; foo() }";
+
+        let util_uri = make_test_uri("/project/util.hew");
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+        let err = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents)
+            .expect_err("definition-file local shadow must be detected");
+        match err {
+            hew_analysis::RenameError::Conflicts { conflicts } => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == hew_analysis::RenameConflictKind::ShadowsLocal),
+                    "expected a ShadowsLocal conflict, got {conflicts:?}"
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
 }

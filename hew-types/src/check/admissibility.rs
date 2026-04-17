@@ -304,6 +304,15 @@ impl Checker {
         }
 
         type_defs.retain(|k, _| !conflicts.contains(k));
+
+        // Defensive: also prune the bare-alias twin (short form) if a qualified key
+        // is removed. If `fake.Handle` conflicts and is removed, also remove `Handle`
+        // so `lookup_user_type_def`'s fallback cannot resolve to a field-bearing entry.
+        for name in &conflicts {
+            if let Some((_, short)) = name.split_once('.') {
+                type_defs.remove(short);
+            }
+        }
     }
 
     fn collect_output_contract_tracked_inference_vars(&self) -> HashSet<TypeVar> {
@@ -1736,6 +1745,70 @@ mod tests {
             overlap_errors[0].span,
             10..25,
             "diagnostic span must be the bare-name declaration span, not 0..0"
+        );
+    }
+
+    /// When a qualified key (e.g. `fake.Handle`) is identified as conflicting,
+    /// the validator must defensively prune the bare-name twin (e.g. `Handle`) from
+    /// `type_defs` so that `lookup_user_type_def`'s fallback cannot resolve to a
+    /// field-bearing entry.
+    #[test]
+    fn validate_handle_types_no_field_overlap_prunes_bare_alias_twin() {
+        let mut module_registry = ModuleRegistry::new(vec![]);
+        module_registry.insert_handle_type_for_test("fake.Handle".to_string());
+        let mut checker = Checker::new(module_registry);
+
+        let mut type_defs = HashMap::from([(
+            "Handle".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Handle".to_string(),
+                type_params: vec![],
+                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        )]);
+
+        // Also seed the qualified key that will trigger the conflict.
+        type_defs.insert(
+            "fake.Handle".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "fake.Handle".to_string(),
+                type_params: vec![],
+                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+
+        checker.validate_handle_types_no_field_overlap(&mut type_defs);
+
+        // Both the qualified key and its bare-name twin must be removed.
+        assert!(
+            !type_defs.contains_key("fake.Handle"),
+            "conflicting qualified key must be removed"
+        );
+        assert!(
+            !type_defs.contains_key("Handle"),
+            "bare-alias twin must also be pruned defensively"
+        );
+
+        // Verify an error was reported for the conflict.
+        let overlap_errors: Vec<_> = checker
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InvalidOperation)
+            .collect();
+        assert_eq!(
+            overlap_errors.len(),
+            1,
+            "expected exactly one overlap error for the qualified key"
         );
     }
 

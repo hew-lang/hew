@@ -165,6 +165,51 @@ pub struct RenameEdit {
     pub new_text: String,
 }
 
+/// A rename conflict: applying the rename would introduce a name clash.
+///
+/// `existing_span` points to the pre-existing binding with the requested
+/// name (i.e. the `new_name`'s current definition). `offending_span` is
+/// the rename site whose new name would collide with it. `message` is a
+/// user-facing description suitable for a preview / `showMessage`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameConflict {
+    pub kind: RenameConflictKind,
+    pub existing_span: OffsetSpan,
+    pub offending_span: OffsetSpan,
+    pub message: String,
+}
+
+/// Classification of a rename conflict so consumers can decide how to
+/// render it (preview, reject outright, offer force-override, ...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenameConflictKind {
+    /// The new name already refers to a local binding / parameter in
+    /// the same scope.
+    ShadowsLocal,
+    /// The new name already refers to a top-level item (function, type,
+    /// const, actor, wire, ...) in the same file.
+    ShadowsTopLevel,
+    /// The new name is already brought into scope by an `import`.
+    ShadowsImport,
+}
+
+/// Failure modes for a rename request. Returned by
+/// [`rename::plan_rename`](crate::rename::plan_rename) when the rename
+/// must be refused before any edit is produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RenameError {
+    /// The new name is a language keyword or a builtin identifier that
+    /// cannot be shadowed by user code.
+    Builtin { name: String, message: String },
+    /// The new name is syntactically invalid (empty, starts with a
+    /// digit, contains non-identifier characters).
+    InvalidIdentifier { name: String, message: String },
+    /// Applying the rename would introduce one or more name clashes.
+    Conflicts { conflicts: Vec<RenameConflict> },
+}
+
 // ── Folding ──────────────────────────────────────────────────────────
 
 /// A foldable range expressed in line numbers (0-based).

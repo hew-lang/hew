@@ -356,7 +356,10 @@ fn classify_type_body(
 /// import specifier. Returns the span on the visible name inside the import
 /// declaration, or the whole declaration span when the LSP uses "jump to
 /// the import statement" behaviour.
-fn find_matching_import(parse_result: &hew_parser::ParseResult, word: &str) -> Option<OffsetSpan> {
+pub(crate) fn find_matching_import(
+    parse_result: &hew_parser::ParseResult,
+    word: &str,
+) -> Option<OffsetSpan> {
     for (item, span) in &parse_result.program.items {
         let Item::Import(import) = item else {
             continue;

@@ -1,0 +1,23 @@
+enum Flag {
+    On;
+    Off;
+    Other;
+}
+
+fn main() -> int {
+    let first = Off;
+    if let On | Off = first {
+        println("match");
+    } else {
+        println("unexpected");
+    }
+
+    let second = Other;
+    if let On | Off = second {
+        println("unexpected");
+    } else {
+        println("miss");
+    }
+
+    return 0;
+}

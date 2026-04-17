@@ -1,0 +1,14 @@
+type Point {
+    x: int;
+    y: int;
+}
+
+fn main() -> int {
+    let p = Point { x: 3, y: 4 };
+    if let Point { x, y } = p {
+        println(x + y);
+    } else {
+        println(-1);
+    }
+    return 0;
+}

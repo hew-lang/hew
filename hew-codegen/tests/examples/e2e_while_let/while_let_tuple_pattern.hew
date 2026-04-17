@@ -1,0 +1,11 @@
+fn main() -> int {
+    var current = 0;
+    while let (left, right) = (current, current + 10) {
+        println(left + right);
+        if left == 2 {
+            break;
+        }
+        current = current + 1;
+    }
+    return 0;
+}

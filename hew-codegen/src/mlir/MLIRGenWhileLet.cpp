@@ -126,22 +126,25 @@ void MLIRGen::generateWhileLetStmt(const ast::StmtWhileLet &stmt) {
     return;
   }
 
-  // Constructor: enum tag-test.
-  auto *ctorPat = std::get_if<ast::PatConstructor>(&pattern.kind);
-  if (!ctorPat) {
+  if (!std::holds_alternative<ast::PatConstructor>(pattern.kind) &&
+      !std::holds_alternative<ast::PatStruct>(pattern.kind) &&
+      !std::holds_alternative<ast::PatTuple>(pattern.kind) &&
+      !std::holds_alternative<ast::PatOr>(pattern.kind)) {
     ++errorCount_;
-    emitError(location) << "while-let only supports constructor, wildcard, and identifier patterns";
+    emitError(location)
+        << "while-let only supports constructor, struct, tuple, or, wildcard, and identifier "
+           "patterns";
     return;
   }
 
-  const auto &ctorName = ctorPat->name;
-  auto ctorVarIt = variantLookup.find(ctorName);
-  if (ctorVarIt == variantLookup.end()) {
-    ++errorCount_;
-    emitError(location) << "unknown constructor '" << ctorName << "' in while-let pattern";
-    return;
+  if (auto *ctorPat = std::get_if<ast::PatConstructor>(&pattern.kind)) {
+    const auto &ctorName = ctorPat->name;
+    if (variantLookup.find(ctorName) == variantLookup.end()) {
+      ++errorCount_;
+      emitError(location) << "unknown constructor '" << ctorName << "' in while-let pattern";
+      return;
+    }
   }
-  auto variantIndex = static_cast<int64_t>(ctorVarIt->second.second);
 
   auto lc = pushLoopControl(stmt.label, location);
 
@@ -184,7 +187,52 @@ void MLIRGen::generateWhileLetStmt(const ast::StmtWhileLet &stmt) {
     popLoopControl(lc, whileOp);
     return;
   }
-  mlir::Value tagMatch = emitTagEqualCondition(scrutinee, variantIndex, location);
+
+  mlir::Value tagMatch;
+  auto bindPatternVars = [&]() {
+    if (auto *tuplePat = std::get_if<ast::PatTuple>(&pattern.kind)) {
+      bindTuplePatternFields(*tuplePat, scrutinee, location);
+      return;
+    }
+    if (auto *structPat = std::get_if<ast::PatStruct>(&pattern.kind)) {
+      bindStructPatternFields(*structPat, scrutinee, location);
+      return;
+    }
+    if (auto *ctorPat = std::get_if<ast::PatConstructor>(&pattern.kind)) {
+      bindConstructorPatternVars(*ctorPat, scrutinee, location);
+    }
+  };
+
+  if (std::holds_alternative<ast::PatTuple>(pattern.kind)) {
+    tagMatch = createIntConstant(builder, location, builder.getI1Type(), 1);
+  } else if (auto *structPat = std::get_if<ast::PatStruct>(&pattern.kind)) {
+    if (variantLookup.count(structPat->name) > 0) {
+      tagMatch = emitTagEqualCondition(
+          scrutinee, static_cast<int64_t>(variantLookup.find(structPat->name)->second.second),
+          location);
+    } else {
+      tagMatch = createIntConstant(builder, location, builder.getI1Type(), 1);
+    }
+  } else if (auto *orPat = std::get_if<ast::PatOr>(&pattern.kind)) {
+    (void)orPat;
+    tagMatch = generateOrPatternCondition(scrutinee, pattern, location);
+    if (!tagMatch) {
+      ++errorCount_;
+      emitError(location) << "unsupported while-let or-pattern";
+      mlir::memref::StoreOp::create(builder, location, falseVal, lc.activeFlag);
+      ensureYieldTerminator(location);
+      popLoopControl(lc, whileOp);
+      return;
+    }
+  } else {
+    auto *ctorPat = std::get_if<ast::PatConstructor>(&pattern.kind);
+    if (!ctorPat)
+      return;
+    const auto &ctorName = ctorPat->name;
+    auto ctorVarIt = variantLookup.find(ctorName);
+    tagMatch =
+        emitTagEqualCondition(scrutinee, static_cast<int64_t>(ctorVarIt->second.second), location);
+  }
 
   // Create scf.if: if tag matches, bind + body; else, break.
   auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, tagMatch,
@@ -197,7 +245,7 @@ void MLIRGen::generateWhileLetStmt(const ast::StmtWhileLet &stmt) {
     MutableTableScopeT bodyMutScope(mutableVars);
     pushDropScope();
 
-    bindConstructorPatternVars(*ctorPat, scrutinee, location);
+    bindPatternVars();
     generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), lc.continueFlag,
                                        location);
     popDropScope();

@@ -12025,25 +12025,38 @@ mod iflet_whilelet_pattern_contract {
     }
 
     #[test]
-    fn iflet_stmt_tuple_pattern_is_rejected() {
-        let errors = check_iflet_whilelet(r"fn foo(x: (int, int)) { if let (a, b) = x { 0 } }");
+    fn iflet_stmt_struct_pattern_is_accepted() {
+        let errors = check_iflet_whilelet(
+            r"type Point { x: int; y: int; } fn foo(p: Point) { if let Point { x, y } = p { x + y } }",
+        );
         assert!(
-            errors
+            !errors
                 .iter()
-                .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("tuple")),
-            "expected InvalidOperation for tuple if-let pattern; got: {errors:?}",
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "struct if-let pattern must not emit InvalidOperation; got: {errors:?}",
         );
     }
 
     #[test]
-    fn iflet_stmt_or_pattern_is_rejected() {
+    fn iflet_stmt_tuple_pattern_is_accepted() {
+        let errors = check_iflet_whilelet(r"fn foo(x: (int, int)) { if let (a, b) = x { a + b } }");
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "tuple if-let pattern must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn iflet_stmt_or_pattern_is_accepted() {
         let errors =
             check_iflet_whilelet(r"enum E { A; B; } fn foo(x: E) { if let A | B = x { 0 } }");
         assert!(
-            errors
+            !errors
                 .iter()
-                .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("or")),
-            "expected InvalidOperation for or if-let pattern; got: {errors:?}",
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "or if-let pattern must not emit InvalidOperation; got: {errors:?}",
         );
     }
 
@@ -12080,14 +12093,40 @@ mod iflet_whilelet_pattern_contract {
     }
 
     #[test]
-    fn whilelet_stmt_tuple_pattern_is_rejected() {
+    fn whilelet_stmt_struct_pattern_is_accepted() {
+        let errors = check_iflet_whilelet(
+            r"enum Msg { Data { value: int }; Done; } fn foo(x: Msg) { while let Data { value } = x { break; } }",
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "struct while-let pattern must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn whilelet_stmt_tuple_pattern_is_accepted() {
         let errors =
             check_iflet_whilelet(r"fn foo(x: (int, int)) { while let (a, b) = x { break; } }");
         assert!(
-            errors
+            !errors
                 .iter()
-                .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("tuple")),
-            "expected InvalidOperation for tuple while-let pattern; got: {errors:?}",
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "tuple while-let pattern must not emit InvalidOperation; got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn whilelet_stmt_or_pattern_is_accepted() {
+        let errors = check_iflet_whilelet(
+            r"enum E { A; B; } fn foo(x: E) { while let A | B = x { break; } }",
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "or while-let pattern must not emit InvalidOperation; got: {errors:?}",
         );
     }
 

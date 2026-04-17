@@ -13067,7 +13067,7 @@ fn capture_once(x: int) -> int {
   PASS();
 }
 
-// Fail-closed: inject an unsupported PatTuple into an if-let statement's
+// Fail-closed: inject an unsupported PatLiteral into an if-let statement's
 // pattern after successful type-checking, then verify that codegen increments
 // errorCount_ and produces no module.
 static void test_iflet_stmt_unsupported_pattern_fails_closed() {
@@ -13097,8 +13097,9 @@ fn test(w: Wrap) -> int {
     return;
   }
 
-  // Replace the Constructor pattern with an unsupported PatTuple.
-  ifLetStmt->pattern.value.kind = hew::ast::PatTuple{};
+  // Replace the Constructor pattern with an unsupported PatLiteral.
+  // (Struct/tuple/or patterns are now supported in if-let; literals are not.)
+  ifLetStmt->pattern.value.kind = hew::ast::PatLiteral{hew::ast::LitInteger{0}};
 
   mlir::MLIRContext ctx;
   initContext(ctx);
@@ -13121,7 +13122,7 @@ fn test(w: Wrap) -> int {
   PASS();
 }
 
-// Fail-closed: inject an unsupported PatTuple into a while-let statement's
+// Fail-closed: inject an unsupported PatLiteral into a while-let statement's
 // pattern after successful type-checking.
 static void test_whilelet_stmt_unsupported_pattern_fails_closed() {
   TEST(whilelet_stmt_unsupported_pattern_fails_closed);
@@ -13155,8 +13156,9 @@ fn length(w: Wrap) -> int {
     return;
   }
 
-  // Replace the Constructor pattern with an unsupported PatTuple.
-  whileLetStmt->pattern.value.kind = hew::ast::PatTuple{};
+  // Replace the Constructor pattern with an unsupported PatLiteral.
+  // (Struct/tuple/or patterns are now supported in while-let; literals are not.)
+  whileLetStmt->pattern.value.kind = hew::ast::PatLiteral{hew::ast::LitInteger{0}};
 
   mlir::MLIRContext ctx;
   initContext(ctx);

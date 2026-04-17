@@ -21,9 +21,11 @@
 pub mod kind;
 pub mod msgpack_desc;
 pub mod plan;
+pub mod value;
 
 pub use crate::kind::{KindError, PrimitiveWireKind};
 pub use crate::msgpack_desc::{MsgpackCodecDesc, MsgpackFieldOp, MsgpackOp};
 pub use crate::plan::{
     FieldModifiers, FieldPlan, IntegerBounds, VariantPlan, WireCodecError, WireCodecPlan, WireShape,
 };
+pub use crate::value::WireValue;

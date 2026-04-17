@@ -760,21 +760,41 @@ pub fn bridge_shutdown() {
     state.cache_all = None;
 }
 
+// ── Test helpers (pub(crate) so tracing.rs tests can share the lock) ───
+
+/// Serialisation lock for bridge tests; also acquired by `tracing.rs` tests
+/// that call into bridge globals so all bridge-touching tests run serially.
+///
+/// Only compiled under `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) static BRIDGE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Clear all bridge state: outbound queue, metadata registry, handler-name
+/// side table, and JSON cache.  Full reset including `handler_names`, which
+/// [`bridge_shutdown`] intentionally skips for AOT semantics.
+///
+/// Only compiled under `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) fn reset_bridge_full() {
+    outbound_queue().clear();
+    let mut state = meta_state();
+    state.registry.clear();
+    state.handler_names.clear();
+    state.cache_all = None;
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Serialize tests to avoid inter-test mutation races on shared globals.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    // Tests within this module use BRIDGE_TEST_LOCK (pub(crate) above);
+    // tracing.rs tests that touch bridge globals acquire the same lock,
+    // so all bridge-global-touching tests run serially regardless of module.
+    use super::BRIDGE_TEST_LOCK as TEST_LOCK;
 
     fn reset_bridge() {
-        outbound_queue().clear();
-        let mut state = meta_state();
-        state.registry.clear();
-        state.handler_names.clear();
-        state.cache_all = None;
+        reset_bridge_full();
     }
 
     #[test]

@@ -463,7 +463,18 @@ pub extern "C" fn hew_trace_reset() {
 
 /// Drain up to 256 trace events and return them as a JSON array.
 ///
-/// Each element: `{"trace_id":"HEX32","span_id":N,"parent_span_id":N,"actor_id":N,"event_type":"S","msg_type":N,"timestamp_ns":N}`
+/// Each element: `{"trace_id":"HEX32","span_id":N,"parent_span_id":N,"actor_id":N,"event_type":"S","msg_type":N,"timestamp_ns":N,"handler_name":"ActorType::handler"|null}`
+///
+/// `handler_name` is non-null only when the WASM bridge metadata registry has
+/// been populated for the event's `msg_type` via `hew_wasm_register_actor_meta`.
+/// In native profiler builds the registry is unpopulated until the follow-up
+/// codegen emission work lands (see #1234 native path), so the field emits `null`.
+///
+/// SHIM: `handler_name` is always `null` in native non-WASM builds until
+/// `hew_actor_register_type` / `hew_register_handler_name` codegen emission
+/// is implemented in `hew-codegen/`. Tracked in the follow-up issues filed
+/// when the PR for this work was opened. Remove this comment once native
+/// emission lands.
 #[cfg(feature = "profiler")]
 pub fn drain_events_json() -> String {
     use std::fmt::Write as _;
@@ -486,9 +497,21 @@ pub fn drain_events_json() -> String {
                 SPAN_SEND => "send",
                 _ => "unknown",
             };
+            // Resolve handler name from the WASM bridge metadata registry.
+            // SHIM: bridge is only compiled under wasm32 or test; native profiler
+            // builds always emit null here until hew_register_handler_name codegen
+            // emission lands (tracked in follow-up issues for #1234).
+            #[cfg(any(target_arch = "wasm32", test))]
+            let handler_name = crate::bridge::resolve_handler_name(ev.msg_type);
+            #[cfg(not(any(target_arch = "wasm32", test)))]
+            let handler_name: Option<String> = None;
+            let handler_name_json = match &handler_name {
+                Some(name) => format!("\"{name}\""),
+                None => "null".to_owned(),
+            };
             let _ = write!(
                 json,
-                r#"{{"trace_id":"{:016x}{:016x}","span_id":{},"parent_span_id":{},"actor_id":{},"event_type":"{}","msg_type":{},"timestamp_ns":{}}}"#,
+                r#"{{"trace_id":"{:016x}{:016x}","span_id":{},"parent_span_id":{},"actor_id":{},"event_type":"{}","msg_type":{},"timestamp_ns":{},"handler_name":{}}}"#,
                 ev.trace_id_hi,
                 ev.trace_id_lo,
                 ev.span_id,
@@ -497,6 +520,7 @@ pub fn drain_events_json() -> String {
                 event_type_str,
                 ev.msg_type,
                 ev.timestamp_ns,
+                handler_name_json,
             );
         }
     }
@@ -672,6 +696,76 @@ mod tests {
         assert_eq!(count, 3);
         assert_eq!(hew_trace_event_count(), 7); // 10 - 3 drained
 
+        hew_trace_reset();
+    }
+
+    /// Verify that `drain_events_json` emits `"handler_name":"ActorType::handler"`
+    /// for a registered `msg_type` and `"handler_name":null` for an unknown one.
+    ///
+    /// This test exercises the bridge registration path together with the tracing
+    /// JSON emission path. It acquires the shared `BRIDGE_TEST_LOCK` so it
+    /// serialises against all other bridge-global-touching tests.
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn drain_events_json_includes_handler_name() {
+        use crate::bridge::{
+            hew_wasm_register_actor_meta, reset_bridge_full, HewActorMeta, HewHandlerMeta,
+            BRIDGE_TEST_LOCK,
+        };
+
+        // Acquire both locks in a consistent order (bridge first, then tracing)
+        // to avoid deadlocks with concurrent bridge tests.
+        let _bridge_guard = BRIDGE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _trace_guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Full reset of both subsystems.
+        reset_bridge_full();
+        hew_trace_reset();
+        hew_trace_enable(1);
+
+        // Register a synthetic actor: "TestActor" with handler "on_ping" at msg_type 77.
+        let actor_name = b"TestActor\0";
+        let handler_name = b"on_ping\0";
+        let handler = HewHandlerMeta {
+            name: handler_name.as_ptr().cast(),
+            msg_type: 77,
+            params: std::ptr::null(),
+            param_count: 0,
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let actor_meta = HewActorMeta {
+            name: actor_name.as_ptr().cast(),
+            handlers: &raw const handler,
+            handler_count: 1,
+        };
+        // SAFETY: all pointers are valid stack pointers with lifetimes that
+        // outlast this call; hew_wasm_register_actor_meta copies the strings.
+        unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
+
+        // Emit two trace events: one with the registered msg_type, one unknown.
+        hew_trace_begin(42, 77); // known msg_type
+        hew_trace_begin(42, 99); // unknown msg_type
+
+        let json = crate::tracing::drain_events_json();
+
+        // The known msg_type must carry "handler_name":"TestActor::on_ping".
+        assert!(
+            json.contains(r#""handler_name":"TestActor::on_ping""#),
+            "expected handler_name for known msg_type in: {json}"
+        );
+        // The unknown msg_type must carry "handler_name":null.
+        assert!(
+            json.contains(r#""handler_name":null"#),
+            "expected null handler_name for unknown msg_type in: {json}"
+        );
+
+        // Cleanup.
+        reset_bridge_full();
         hew_trace_reset();
     }
 }

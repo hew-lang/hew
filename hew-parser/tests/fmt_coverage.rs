@@ -1182,7 +1182,7 @@ fn main() {
 
 #[test]
 fn fmt_full_program() {
-    // A small but complete programme exercising multiple constructs.
+    // A small but complete program exercising multiple constructs.
     let src = r"const MAX: i32 = 100;
 
 type Point {

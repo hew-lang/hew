@@ -3,8 +3,8 @@
 //! Consumes a [`WireCodecPlan`] and produces a serde-serializable descriptor
 //! (`JsonCodecDesc`) that records the JSON shape for each wire-type field.
 //! The descriptor is the canonical record of "what `to_json` / `from_json`
-//! do per field" — it replaces the hand-written `jsonKindOf` dispatch in
-//! `hew-codegen/src/mlir/MLIRGenWire.cpp` line 127.
+//! do per field". A future PR will replace `jsonKindOf` in
+//! `hew-codegen/src/mlir/MLIRGenWire.cpp` with this descriptor-driven path.
 //!
 //! The emission model mirrors the msgpack descriptor: a single exhaustive
 //! match over [`PrimitiveWireKind`] turns each wire field into a typed
@@ -49,7 +49,7 @@ pub enum JsonOp {
     /// Duration — emitted as i64 nanoseconds.
     SetDuration,
     /// Emits the char as an unsigned integer codepoint in BMP range (0..=0xFFFF).
-    /// Full Unicode scalar range (0..=0x10FFFF) is deferred — see `plan.rs` SHIM
+    /// Full Unicode scalar range (0..=0x10FFFF) is deferred — see `plan.rs`
     /// comment on `IntegerBounds::for_kind` Char arm.
     SetChar,
     /// Nested wire-type reference.
@@ -104,7 +104,7 @@ impl JsonCodecDesc {
                 fields
                     .iter()
                     .filter(|f| !f.modifiers.is_reserved)
-                    .map(json_field_op_from_plan)
+                    .map(field_op_from_plan)
                     .collect(),
                 Vec::new(),
             ),
@@ -132,7 +132,7 @@ impl JsonCodecDesc {
     }
 }
 
-fn json_field_op_from_plan(f: &FieldPlan) -> JsonFieldOp {
+fn field_op_from_plan(f: &FieldPlan) -> JsonFieldOp {
     JsonFieldOp {
         key: f.json_name.clone(),
         name: f.name.clone(),
@@ -147,9 +147,9 @@ fn json_field_op_from_plan(f: &FieldPlan) -> JsonFieldOp {
 /// Map a [`PrimitiveWireKind`] to its JSON dispatch operation.
 ///
 /// Exhaustive over all variants — adding a new kind forces a compile error.
-/// This is the single choke point that replaces `jsonKindOf` in
-/// `hew-codegen/src/mlir/MLIRGenWire.cpp`; follow-on work wires the C++
-/// consumer onto this descriptor.
+/// A future PR will replace `jsonKindOf` in
+/// `hew-codegen/src/mlir/MLIRGenWire.cpp` with this descriptor-driven path;
+/// this function is the single choke point that makes that replacement safe.
 ///
 /// `pub(crate)` so `yaml_desc` can reuse it without a forwarding wrapper.
 /// Consumers outside this crate should use [`JsonCodecDesc::from_plan`] or
@@ -181,29 +181,8 @@ pub(crate) fn json_op_for_kind(kind: &PrimitiveWireKind) -> JsonOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{FieldModifiers, VariantPlan};
-
-    fn plan_with_fields(name: &str, fields: Vec<FieldPlan>) -> WireCodecPlan {
-        WireCodecPlan {
-            name: name.to_string(),
-            shape: WireShape::Struct { fields },
-            json_case: None,
-            yaml_case: None,
-        }
-    }
-
-    fn simple_field(name: &str, number: u32, kind: PrimitiveWireKind) -> FieldPlan {
-        let narrowing = IntegerBounds::for_kind(&kind);
-        FieldPlan {
-            name: name.to_string(),
-            number,
-            json_name: name.to_string(),
-            yaml_name: name.to_string(),
-            kind,
-            modifiers: FieldModifiers::default(),
-            narrowing,
-        }
-    }
+    use crate::plan::VariantPlan;
+    use crate::test_helpers::{plan_with_fields, simple_field};
 
     #[test]
     fn bool_field_maps_to_set_bool() {

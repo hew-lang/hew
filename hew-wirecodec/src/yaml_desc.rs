@@ -69,7 +69,7 @@ impl YamlCodecDesc {
                 fields
                     .iter()
                     .filter(|f| !f.modifiers.is_reserved)
-                    .map(yaml_field_op_from_plan)
+                    .map(field_op_from_plan)
                     .collect(),
                 Vec::new(),
             ),
@@ -97,7 +97,7 @@ impl YamlCodecDesc {
     }
 }
 
-fn yaml_field_op_from_plan(f: &FieldPlan) -> YamlFieldOp {
+fn field_op_from_plan(f: &FieldPlan) -> YamlFieldOp {
     YamlFieldOp {
         key: f.yaml_name.clone(),
         name: f.name.clone(),
@@ -113,29 +113,8 @@ fn yaml_field_op_from_plan(f: &FieldPlan) -> YamlFieldOp {
 mod tests {
     use super::*;
     use crate::kind::PrimitiveWireKind;
-    use crate::plan::{FieldModifiers, VariantPlan};
-
-    fn plan_with_fields(name: &str, fields: Vec<FieldPlan>) -> WireCodecPlan {
-        WireCodecPlan {
-            name: name.to_string(),
-            shape: WireShape::Struct { fields },
-            json_case: None,
-            yaml_case: None,
-        }
-    }
-
-    fn simple_field(name: &str, number: u32, kind: PrimitiveWireKind) -> FieldPlan {
-        let narrowing = IntegerBounds::for_kind(&kind);
-        FieldPlan {
-            name: name.to_string(),
-            number,
-            json_name: name.to_string(),
-            yaml_name: name.to_string(),
-            kind,
-            modifiers: FieldModifiers::default(),
-            narrowing,
-        }
-    }
+    use crate::plan::VariantPlan;
+    use crate::test_helpers::{plan_with_fields, simple_field};
 
     #[test]
     fn struct_shape_produces_one_field_op_per_field() {
@@ -244,5 +223,35 @@ mod tests {
         let bytes = desc.to_msgpack_bytes();
         let round: YamlCodecDesc = rmp_serde::from_slice(&bytes).expect("round-trip");
         assert_eq!(round, desc);
+    }
+
+    #[test]
+    fn yaml_nested_reference_preserved() {
+        let plan = plan_with_fields(
+            "Outer",
+            vec![simple_field(
+                "inner",
+                1,
+                PrimitiveWireKind::Nested("Inner".to_string()),
+            )],
+        );
+        let desc = YamlCodecDesc::from_plan(&plan);
+        assert_eq!(
+            desc.fields[0].op,
+            YamlOp::Nested {
+                type_name: "Inner".into()
+            }
+        );
+    }
+
+    #[test]
+    fn yaml_modifier_propagation() {
+        let mut f = simple_field("items", 1, PrimitiveWireKind::I32);
+        f.modifiers.is_optional = true;
+        f.modifiers.is_repeated = true;
+        let plan = plan_with_fields("A", vec![f]);
+        let desc = YamlCodecDesc::from_plan(&plan);
+        assert!(desc.fields[0].is_optional);
+        assert!(desc.fields[0].is_repeated);
     }
 }

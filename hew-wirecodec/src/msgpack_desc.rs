@@ -171,29 +171,8 @@ fn field_op_for_kind(kind: &PrimitiveWireKind) -> MsgpackOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{FieldModifiers, VariantPlan};
-
-    fn plan_with_fields(name: &str, fields: Vec<FieldPlan>) -> WireCodecPlan {
-        WireCodecPlan {
-            name: name.to_string(),
-            shape: WireShape::Struct { fields },
-            json_case: None,
-            yaml_case: None,
-        }
-    }
-
-    fn simple_field(name: &str, number: u32, kind: PrimitiveWireKind) -> FieldPlan {
-        let narrowing = IntegerBounds::for_kind(&kind);
-        FieldPlan {
-            name: name.to_string(),
-            number,
-            json_name: name.to_string(),
-            yaml_name: name.to_string(),
-            kind,
-            modifiers: FieldModifiers::default(),
-            narrowing,
-        }
-    }
+    use crate::plan::VariantPlan;
+    use crate::test_helpers::{plan_with_fields, simple_field};
 
     #[test]
     fn signed_integer_field_uses_zigzag_varint() {

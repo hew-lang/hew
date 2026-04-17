@@ -21,6 +21,8 @@ pub mod json_desc;
 pub mod kind;
 pub mod msgpack_desc;
 pub mod plan;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 pub mod value;
 pub mod yaml_desc;
 

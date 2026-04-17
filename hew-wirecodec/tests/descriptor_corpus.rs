@@ -40,7 +40,7 @@ const DEFAULT_ITERATIONS: u32 = 10_000;
 /// Minimum surface coverage required by the corpus. If `assert_kind_coverage`
 /// finds fewer than this many distinct `PrimitiveWireKind` discriminants were
 /// exercised, the generator is biased and the test fails.
-const REQUIRED_KIND_VARIANTS: usize = 15;
+const REQUIRED_KIND_VARIANTS: usize = 16;
 
 /// xorshift64 pseudo-random generator — deterministic, no dependencies.
 ///

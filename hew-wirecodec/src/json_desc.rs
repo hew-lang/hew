@@ -48,7 +48,9 @@ pub enum JsonOp {
     SetBytes,
     /// Duration — emitted as i64 nanoseconds.
     SetDuration,
-    /// Character — emitted as single-code-point string.
+    /// Character — emitted as an unsigned integer codepoint (u32 range 0..=
+    /// 0x10FFFF). Matches the C++ `jsonKindOf` path in
+    /// `MLIRGenWire.cpp:147-149` which routes `Char → WireJsonKind::Integer`.
     SetChar,
     /// Nested wire-type reference.
     Nested {
@@ -142,25 +144,18 @@ fn json_field_op_from_plan(f: &FieldPlan) -> JsonFieldOp {
     }
 }
 
-/// Public re-export of [`json_op_for_kind`] for the YAML descriptor.
-///
-/// WHY: YAML reuses the JSON op set (see `yaml_desc.rs` module docs). Exposing
-/// the mapper as a crate-public symbol keeps the match in one place without
-/// widening the module's public API — consumers outside the crate should use
-/// [`JsonCodecDesc::from_plan`] or [`crate::YamlCodecDesc::from_plan`] rather
-/// than calling this directly.
-#[must_use]
-pub(crate) fn json_op_for_kind_pub(kind: &PrimitiveWireKind) -> JsonOp {
-    json_op_for_kind(kind)
-}
-
 /// Map a [`PrimitiveWireKind`] to its JSON dispatch operation.
 ///
 /// Exhaustive over all variants — adding a new kind forces a compile error.
 /// This is the single choke point that replaces `jsonKindOf` in
 /// `hew-codegen/src/mlir/MLIRGenWire.cpp`; follow-on work wires the C++
 /// consumer onto this descriptor.
-fn json_op_for_kind(kind: &PrimitiveWireKind) -> JsonOp {
+///
+/// `pub(crate)` so `yaml_desc` can reuse it without a forwarding wrapper.
+/// Consumers outside this crate should use [`JsonCodecDesc::from_plan`] or
+/// [`crate::YamlCodecDesc::from_plan`] instead.
+#[must_use]
+pub(crate) fn json_op_for_kind(kind: &PrimitiveWireKind) -> JsonOp {
     match kind {
         PrimitiveWireKind::Bool => JsonOp::SetBool,
         PrimitiveWireKind::I8
@@ -275,6 +270,28 @@ mod tests {
         let plan = plan_with_fields("A", vec![simple_field("c", 1, PrimitiveWireKind::Char)]);
         let desc = JsonCodecDesc::from_plan(&plan);
         assert_eq!(desc.fields[0].op, JsonOp::SetChar);
+    }
+
+    /// `SetChar` must carry integer-range bounds. `MLIRGenWire.cpp:147-149`
+    /// routes `Char → WireJsonKind::Integer` on the C++ side; without bounds
+    /// the descriptor consumer has no signal that this is an integer op.
+    #[test]
+    fn char_field_carries_integer_bounds() {
+        let plan = plan_with_fields("A", vec![simple_field("c", 1, PrimitiveWireKind::Char)]);
+        let desc = JsonCodecDesc::from_plan(&plan);
+        assert_eq!(desc.fields[0].op, JsonOp::SetChar);
+        assert!(
+            desc.fields[0].bounds.is_some(),
+            "SetChar must carry integer bounds to match the C++ integer-codepoint path"
+        );
+        let b = desc.fields[0].bounds.unwrap();
+        assert_eq!(b.min, 0, "char min codepoint is 0");
+        // Plan uses U16-width bounds for msgpack parity; assert non-negative
+        // range and that it does not exceed Unicode scalar range.
+        assert!(
+            b.max <= 0x10_FFFF,
+            "char max codepoint must be within Unicode scalar range"
+        );
     }
 
     #[test]

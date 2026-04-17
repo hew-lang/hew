@@ -23,7 +23,7 @@
 //! test is what makes that consumer implementable against a stable, well-
 //! exercised producer.
 //!
-//! Uses a deterministic Lehmer RNG (no external crate) so CI runs identical
+//! Uses a deterministic xorshift64 RNG (no external crate) so CI runs identical
 //! cases on every build; a seeded override env var `HEW_CORPUS_SEED` is
 //! available for reproducing any specific failure.
 
@@ -42,11 +42,10 @@ const DEFAULT_ITERATIONS: u32 = 10_000;
 /// exercised, the generator is biased and the test fails.
 const REQUIRED_KIND_VARIANTS: usize = 15;
 
-/// Lehmer / MCG pseudo-random generator — deterministic, no dependencies.
+/// xorshift64 pseudo-random generator — deterministic, no dependencies.
 ///
-/// Parameters from Park–Miller ("Random Number Generators: Good Ones are Hard
-/// to Find", CACM 31:10). Suitable for generating test corpora; not suitable
-/// for cryptographic use.
+/// Uses the Marsaglia shift triple (13, 7, 17). Suitable for generating test
+/// corpora; not suitable for cryptographic use.
 struct Rng {
     state: u64,
 }
@@ -58,7 +57,7 @@ impl Rng {
     }
 
     fn next_u32(&mut self) -> u32 {
-        // xorshift64* — deterministic and well-distributed for small state.
+        // xorshift64 — deterministic and well-distributed for small state.
         self.state ^= self.state << 13;
         self.state ^= self.state >> 7;
         self.state ^= self.state << 17;

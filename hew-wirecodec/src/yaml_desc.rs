@@ -17,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::json_desc::{json_op_for_kind_pub, JsonOp};
+use crate::json_desc::{json_op_for_kind, JsonOp};
 use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan, WireShape};
 
 /// YAML field op — structurally identical to [`JsonOp`].
@@ -102,7 +102,7 @@ fn yaml_field_op_from_plan(f: &FieldPlan) -> YamlFieldOp {
         key: f.yaml_name.clone(),
         name: f.name.clone(),
         tag: f.number,
-        op: json_op_for_kind_pub(&f.kind),
+        op: json_op_for_kind(&f.kind),
         bounds: f.narrowing,
         is_optional: f.modifiers.is_optional,
         is_repeated: f.modifiers.is_repeated,

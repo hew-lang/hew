@@ -1,6 +1,13 @@
 import std::net::quic;
 import std::fs;
 
+fn assert_ok(result: Result<(), fs.IoError>) {
+    match result {
+        Ok(_) => {},
+        Err(e) => panic("quic operation failed: " + fs.io_error_message(e)),
+    }
+}
+
 fn main() {
     let server = quic.new_server("127.0.0.1:0");
     let server_endpoint = server.observe();
@@ -38,14 +45,8 @@ fn main() {
             assert_eq(stream_after_recv.bytes_received, 10);
             assert_eq(stream_after_recv.last_error, "");
 
-            match stream.send(data) {
-                Ok(_) => {},
-                Err(_) => panic("quic operation failed"),
-            }
-            match stream.finish() {
-                Ok(_) => {},
-                Err(_) => panic("quic operation failed"),
-            }
+            assert_ok(stream.send(data));
+            assert_ok(stream.finish());
             let stream_after_send = stream.observe();
             assert_eq(stream_after_send.bytes_sent, 10);
             assert(stream_after_send.send_closed);
@@ -66,10 +67,7 @@ fn main() {
             let conn_after_disconnect = conn.observe();
             server_conn_closed = conn_after_disconnect.closed;
 
-            match conn.disconnect() {
-                Ok(_) => {},
-                Err(_) => panic("quic operation failed"),
-            }
+            assert_ok(conn.disconnect());
             server.close();
         };
 
@@ -93,10 +91,7 @@ fn main() {
         assert(conn_before_send.bytes_sent >= 0);
         assert(conn_before_send.bytes_received >= 0);
 
-        match stream.send(b"hello quic") {
-            Ok(_) => {},
-            Err(_) => panic("quic operation failed"),
-        }
+        assert_ok(stream.send(b"hello quic"));
         let stream_after_send = stream.observe();
         assert_eq(stream_after_send.bytes_sent, 10);
         assert(!stream_after_send.send_closed);
@@ -107,10 +102,7 @@ fn main() {
         assert_eq(stream_after_recv.bytes_received, 10);
         assert_eq(stream_after_recv.last_error, "");
 
-        match stream.finish() {
-            Ok(_) => {},
-            Err(_) => panic("quic operation failed"),
-        }
+        assert_ok(stream.finish());
         let eof = stream.recv();
         assert_eq(eof.len(), 0);
         let stream_after_eof = stream.observe();
@@ -126,10 +118,7 @@ fn main() {
         assert_eq(closed.kind(), 3);
         closed.free();
 
-        match conn.disconnect() {
-            Ok(_) => {},
-            Err(_) => panic("quic operation failed"),
-        }
+        assert_ok(conn.disconnect());
         client.close();
     }
 

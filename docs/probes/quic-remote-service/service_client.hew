@@ -20,7 +20,7 @@ import std::os;
 fn assert_ok(result: Result<(), fs.IoError>) {
     match result {
         Ok(_) => {},
-        Err(_) => panic("quic operation failed"),
+        Err(e) => panic("quic operation failed: " + fs.io_error_message(e)),
     }
 }
 

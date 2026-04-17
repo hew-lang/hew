@@ -1,0 +1,47 @@
+// e2e test: try_respond_stream compiles and returns Ok(Sink) on a valid request.
+//
+// This is the regression guard for the broken implementation that
+// unconditionally returned Ok(sink) even when hew_http_respond_stream
+// returned null (e.g. when the request was already responded to).
+//
+// The success path proves that:
+//  - hew_sink_is_valid is wired and returns true for a fresh respond_stream call
+//  - the Sink can be written to and closed without panic
+//
+// The null-path (already-responded request) is covered by the Rust unit test
+// respond_stream_null_request_returns_null in std/net/http/src/server.rs.
+
+import std::net::http;
+import std::net::http::http_client;
+import std::fs;
+import std::stream;
+
+fn main() {
+    // Fixed port for this test.  If the port is unavailable, the test will
+    // fail at server creation and the error will surface clearly.
+    let listen_addr = ":18731";
+    let server = http.listen(listen_addr);
+
+    scope |s| {
+        s.spawn {
+            let req = server.accept();
+
+            match req.try_respond_stream(200, "text/plain") {
+                Ok(sink) => {
+                    sink.write("hello");
+                    sink.close();
+                },
+                Err(e) => panic("try_respond_stream failed: " + fs.io_error_message(e)),
+            }
+
+            server.close();
+        };
+
+        let headers: Vec<(String, String)> = Vec::new();
+        http_client.set_timeout(3000);
+        let resp = http_client.request("GET", "http://127.0.0.1:18731/", "", headers);
+        resp.free();
+    }
+
+    println("ok");
+}

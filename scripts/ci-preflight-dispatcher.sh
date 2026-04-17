@@ -293,9 +293,8 @@ fi
 # ── grep-gate: no string-matched error classification in std/ ──────────────
 # Asserts that no string-matched OS error patterns remain in std/ — these
 # indicate classification via message text which was replaced with errno-based
-# IoError/NetError population in #1241.  If this fires, you have introduced a
-# regression; remove the string match and use io_error_from_errno /
-# net_error_from_errno instead.
+# IoError population in #1241 and #1266.  If this fires, you have introduced a
+# regression; remove the string match and use io_error_from_errno instead.
 #
 # Caught patterns:
 #   "os error"           — Rust std error prefix (legacy classification)

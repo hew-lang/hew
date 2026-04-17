@@ -3,6 +3,7 @@ import std::net::quic;
 import std::net::smtp;
 import std::net::tls;
 import std::net::websocket;
+import std::fs;
 
 fn main() {
     let tls_port: int = 443;
@@ -39,8 +40,8 @@ fn main() {
 
     let timeout_ms: int = 1500;
     let conn: net.Connection = net.connect_timeout("127.0.0.1:8080", 1, 500000);
-    let _read_timeout_status: Result<(), net.NetError> = conn.set_read_timeout(timeout_ms);
-    let _write_timeout_status: Result<(), net.NetError> = conn.set_write_timeout(timeout_ms);
+    let _read_timeout_status: Result<(), fs.IoError> = conn.set_read_timeout(timeout_ms);
+    let _write_timeout_status: Result<(), fs.IoError> = conn.set_write_timeout(timeout_ms);
 
     let quic_conn: quic.QUICConnection = quic.new_client().connect("127.0.0.1:4433", "localhost");
     let quic_obs: quic.QUICConnectionObservation = quic_conn.observe();

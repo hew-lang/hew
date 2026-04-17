@@ -6,12 +6,15 @@
 //!
 //! # Error Handling
 //!
-//! `NetError` is the stable user-facing error enum for network failures.
-//! Use the `try_*` wrappers with `Result<T, NetError>` and the `?` operator
-//! for structured error propagation:
+//! `fs.IoError` is the stable user-facing error enum for all I/O failures,
+//! including TCP network errors.  Use the `try_*` wrappers with
+//! `Result<T, fs.IoError>` and the `?` operator for structured error
+//! propagation:
 //!
 //! ```
-//! fn dial(addr: String) -> Result<Connection, NetError> {
+//! import std::fs;
+//!
+//! fn dial(addr: String) -> Result<Connection, fs.IoError> {
 //!     net.try_connect(addr)
 //! }
 //!
@@ -20,9 +23,9 @@
 //!         Ok(conn) => println("connected"),
 //!         Err(e) => {
 //!             match e {
-//!                 NetError::ConnectionRefused(_) => println("nobody home"),
-//!                 NetError::TimedOut(_)          => println("timed out"),
-//!                 _                              => println("network error"),
+//!                 IoError::ConnectionRefused(_) => println("nobody home"),
+//!                 IoError::TimedOut(_)          => println("timed out"),
+//!                 _                             => println("network error"),
 //!             }
 //!         },
 //!     }
@@ -43,57 +46,17 @@
 //! }
 //! ```
 
+import std::fs;
 import std::string;
 
-// ── Error type ────────────────────────────────────────────────────────
-
-/// Structured error type for TCP network operations.
-///
-/// Use `Result<T, NetError>` return types for structured error handling
-/// with the `?` operator.
-pub enum NetError {
-    // The remote host actively refused the connection.
-    ConnectionRefused(int);
-    // The local address is already in use.
-    AddressInUse(int);
-    // The connection attempt timed out.
-    TimedOut(int);
-    // The address or hostname could not be resolved.
-    AddressNotAvailable(int);
-    // Any other OS-level network failure.
-    Other(int);
-}
-
-/// INTERNAL-ABI: map an OS errno integer to a structured NetError variant.
-///
-/// The int payload carried in each variant is the raw OS errno so callers
-/// can inspect the platform value. errno=0 (no OS error) maps to Other(0).
-fn net_error_from_errno(errno: i32) -> NetError { // INTERNAL-ABI: errno from C ABI is i32; internal helper only
-    // ECONNREFUSED: Linux=111, macOS=61
-    if errno == 111 || errno == 61 {
-        NetError::ConnectionRefused(errno as int)
-    // EADDRINUSE: Linux=98, macOS=48
-    } else if errno == 98 || errno == 48 {
-        NetError::AddressInUse(errno as int)
-    // ETIMEDOUT: Linux=110, macOS=60
-    } else if errno == 110 || errno == 60 {
-        NetError::TimedOut(errno as int)
-    // EADDRNOTAVAIL: Linux=99, macOS=49
-    } else if errno == 99 || errno == 49 {
-        NetError::AddressNotAvailable(errno as int)
-    } else {
-        NetError::Other(errno as int)
-    }
-}
-
-fn net_result_from_status(status: i32) -> Result<(), NetError> { // INTERNAL-ABI: status from C ABI is i32; internal helper only
+fn net_result_from_status(status: i32) -> Result<(), fs.IoError> { // INTERNAL-ABI: status from C ABI is i32; internal helper only
     if status < 0 {
         // Read errno before the message: hew_stream_last_error clears errno as a
         // side-effect (they share a paired thread-local), so errno must be
         // consumed first.
         let errno = unsafe { hew_stream_last_errno() };
         let _ = unsafe { hew_stream_last_error() };
-        Err(net_error_from_errno(errno))
+        Err(fs.io_error_from_errno(errno as int))
     } else {
         Ok(())
     }
@@ -162,12 +125,12 @@ trait ConnectionMethods {
     /// Set the read timeout in milliseconds.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_read_timeout(conn: Connection, ms: int) -> Result<(), NetError>;
+    fn set_read_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError>;
 
     /// Set the write timeout in milliseconds.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_write_timeout(conn: Connection, ms: int) -> Result<(), NetError>;
+    fn set_write_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError>;
 }
 
 impl ConnectionMethods for Connection {
@@ -184,11 +147,11 @@ impl ConnectionMethods for Connection {
         unsafe { hew_tcp_close(conn) };
     }
     /// Set the read timeout in milliseconds.
-    fn set_read_timeout(conn: Connection, ms: int) -> Result<(), NetError> {
+    fn set_read_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError> {
         net_result_from_status(unsafe { hew_tcp_set_read_timeout(conn, ms as i32) })
     }
     /// Set the write timeout in milliseconds.
-    fn set_write_timeout(conn: Connection, ms: int) -> Result<(), NetError> {
+    fn set_write_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError> {
         net_result_from_status(unsafe { hew_tcp_set_write_timeout(conn, ms as i32) })
     }
 }
@@ -210,18 +173,20 @@ pub fn listen(addr: String) -> Listener {
 
 /// Create a TCP listener bound to the given address.
 ///
-/// Returns `Err(NetError)` instead of panicking on bind failure.
+/// Returns `Err(fs.IoError)` instead of panicking on bind failure.
 ///
 /// # Examples
 ///
 /// ```
+/// import std::fs;
+///
 /// match net.try_listen(":9000") {
 ///     Ok(ln) => { /* accept connections */ },
-///     Err(NetError::AddressInUse(_)) => println("port already taken"),
+///     Err(IoError::AddressInUse(_)) => println("port already taken"),
 ///     Err(e) => println("bind failed"),
 /// }
 /// ```
-pub fn try_listen(addr: String) -> Result<Listener, NetError> {
+pub fn try_listen(addr: String) -> Result<Listener, fs.IoError> {
     unsafe {
         let ln = hew_tcp_listen(addr);
         if hew_listener_is_valid(ln) {
@@ -229,7 +194,7 @@ pub fn try_listen(addr: String) -> Result<Listener, NetError> {
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(net_error_from_errno(errno))
+            Err(fs.io_error_from_errno(errno as int))
         }
     }
 }
@@ -249,18 +214,20 @@ pub fn connect(addr: String) -> Connection {
 
 /// Connect to a TCP server at the given address.
 ///
-/// Returns `Err(NetError)` instead of panicking on failure.
+/// Returns `Err(fs.IoError)` instead of panicking on failure.
 ///
 /// # Examples
 ///
 /// ```
+/// import std::fs;
+///
 /// match net.try_connect("localhost:9000") {
 ///     Ok(conn) => { /* use conn */ },
-///     Err(NetError::ConnectionRefused(_)) => println("nothing listening"),
+///     Err(IoError::ConnectionRefused(_)) => println("nothing listening"),
 ///     Err(e) => println("connect failed"),
 /// }
 /// ```
-pub fn try_connect(addr: String) -> Result<Connection, NetError> {
+pub fn try_connect(addr: String) -> Result<Connection, fs.IoError> {
     unsafe {
         let conn = hew_tcp_connect(addr);
         if hew_connection_is_valid(conn) {
@@ -268,7 +235,7 @@ pub fn try_connect(addr: String) -> Result<Connection, NetError> {
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(net_error_from_errno(errno))
+            Err(fs.io_error_from_errno(errno as int))
         }
     }
 }
@@ -304,12 +271,12 @@ pub fn broadcast_except(sender: Connection, message: bytes) -> int {
 /// Broadcast a message to all connections except the sender.
 ///
 /// Used in chat-server patterns to fan out messages.
-pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<int, NetError> {
+pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<int, fs.IoError> {
     let n: i32 = unsafe { hew_tcp_broadcast_except(sender, message) };
     if n < 0 {
         let errno = unsafe { hew_stream_last_errno() };
         unsafe { let _ = hew_stream_last_error(); }
-        Err(net_error_from_errno(errno))
+        Err(fs.io_error_from_errno(errno as int))
     } else {
         Ok(n as int)
     }

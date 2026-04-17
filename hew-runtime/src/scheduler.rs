@@ -438,6 +438,11 @@ pub extern "C" fn hew_sched_shutdown() {
         }
     }
 
+    // Fire all registered session reset hooks (tracing clear, profiler
+    // dispatch-registry clear once Stage 3 is in).  Workers are joined at this
+    // point so no concurrent actor activations can race the hook callbacks.
+    crate::session::session_reset();
+
     // Write profile files on exit if HEW_PROF_OUTPUT is set.
     crate::profiler::maybe_write_on_exit();
 }

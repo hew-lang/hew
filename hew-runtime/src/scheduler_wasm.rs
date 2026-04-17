@@ -572,6 +572,12 @@ pub extern "C" fn hew_sched_shutdown() {
 
     crate::bridge::bridge_shutdown();
 
+    // Fire all registered session reset hooks (tracing clear, profiler registry
+    // clear on native, etc.).  Actor drain has completed; bridge state is
+    // cleared; hooks run before scheduler statics are zeroed so that any hook
+    // that inspects scheduler state sees a quiesced but not-yet-cleared runtime.
+    crate::session::session_reset();
+
     // SAFETY: Single-threaded on WASM.
     unsafe {
         RUN_QUEUE = None;

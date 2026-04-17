@@ -1376,7 +1376,16 @@ impl Checker {
                                 WasmUnsupportedFeature::ProcessExecution,
                             );
                         }
+                        "tls" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Tls),
+                        "quic" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Quic),
+                        "dns" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Dns),
+                        "os" => self.reject_wasm_feature(span, WasmUnsupportedFeature::OsEnv),
                         _ => {}
+                    }
+                    // Warn-level module-qualified calls with degraded wasm32
+                    // semantics (non-cryptographic PRNG fallback).
+                    if name == "crypto" && method == "random_bytes" {
+                        self.warn_wasm_limitation(span, WasmUnsupportedFeature::CryptoRandom);
                     }
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {

@@ -63,11 +63,11 @@ The **Checker disposition** column documents what the type checker emits when
 | **`http.listen`, `http.Server.*`, `http.Request.*`** | 🚫 Error (`HttpServer`) | Native-only runtime module | WASM-TODO |
 | **`net.listen`, `net.connect`, `net.*`, `net.Listener.*`, `net.Connection.*`** | 🚫 Error (`TcpNetworking`) | Native-only runtime module | WASM-TODO |
 | **`process.run`, `process.start`, `process.*`, `process.Child.*`** | 🚫 Error (`ProcessExecution`) | Native-only runtime module | WASM-TODO |
-| **`std::net::tls.connect/read/write/close`, `TlsStream.*`** | ⚠️ WASM-TODO (not checker-gated) | Native TLS-over-TCP stack today; no documented wasm32 path | WASM-TODO |
-| **`std::net::quic.*`, `QUICEndpoint/Connection/Stream/Event.*`** | ⚠️ WASM-TODO (not checker-gated) | `quic_transport` is feature-gated and not compiled for wasm32 | WASM-TODO |
-| **`std::net::dns.resolve`, `dns.lookup_host`** | ⚠️ WASM-TODO (not checker-gated) | `wasm32-wasip1` resolver behavior still needs runtime confirmation | WASM-TODO |
-| **`std::os.*`** | ⚠️ WASM-TODO (not checker-gated) | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO |
-| **`std::crypto::crypto.random_bytes`** | ⚠️ WASM-TODO (not checker-gated) | wasm32 secure-entropy story is unresolved; do not assume cryptographic randomness | WASM-TODO |
+| **`std::net::tls.connect/read/write/close`, `TlsStream.*`** | 🚫 Error (`Tls`) | Native TLS-over-TCP stack today; no documented wasm32 path | WASM-TODO |
+| **`std::net::quic.*`, `QUICEndpoint/Connection/Stream/Event.*`** | 🚫 Error (`Quic`) | `quic_transport` is feature-gated and not compiled for wasm32 | WASM-TODO |
+| **`std::net::dns.resolve`, `dns.lookup_host`** | 🚫 Error (`Dns`) | Native OS resolver today; `wasm32-wasip1` behavior needs runtime confirmation. May relax to Warn after a `wasmtime` `sock_addr_*` probe. | WASM-TODO |
+| **`std::os.*`** | 🚫 Error (`OsEnv`) | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO |
+| **`std::crypto::crypto.random_bytes`** | ⚠️ Warn (`CryptoRandom`) | wasm32 falls back to a seeded PRNG without host entropy; not cryptographically secure | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
 
 ---

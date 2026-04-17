@@ -292,6 +292,28 @@ mod tests {
         );
     }
 
+    /// `SetDuration` must carry integer-range bounds. Duration is emitted as
+    /// i64 nanoseconds and must signal to the C++ consumer that this is a
+    /// signed integer range (not unsigned).
+    #[test]
+    fn duration_field_carries_integer_bounds() {
+        let plan = plan_with_fields("A", vec![simple_field("d", 1, PrimitiveWireKind::Duration)]);
+        let desc = JsonCodecDesc::from_plan(&plan);
+        assert_eq!(desc.fields[0].op, JsonOp::SetDuration);
+        assert!(
+            desc.fields[0].bounds.is_some(),
+            "SetDuration must carry integer bounds to match the signed i64 nanosecond range"
+        );
+        let b = desc.fields[0].bounds.unwrap();
+        // Duration stores nanoseconds as i64, matching the signed i64 contract.
+        // Plan bounds max is u64::try_from(i64::MAX) from IntegerBounds::for_kind.
+        assert_eq!(
+            b.max,
+            u64::try_from(i64::MAX).unwrap(),
+            "Duration uses i64::MAX as bounds max (i64 nanoseconds)"
+        );
+    }
+
     #[test]
     fn nested_field_preserves_reference_name() {
         let plan = plan_with_fields(

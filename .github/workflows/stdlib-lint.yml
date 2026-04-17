@@ -13,9 +13,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check stdlib int surface (warn-only during migration wave)
-        run: |
-          bash scripts/lint-stdlib-int-surface.sh || true
-          # Note: || true makes this warn-only.
-          # This becomes a hard failure in the follow-up commit that flips
-          # to fail-mode once all modules are migrated.
+      - name: Check stdlib int surface
+        run: bash scripts/lint-stdlib-int-surface.sh

@@ -47,6 +47,7 @@ members = [
   "hew-astgen",
   "hew-compile",
   "hew-wirecodec",
+  "hew-capability-gen",
 ]
 exclude = ["hew-parser/fuzz"]
 resolver = "2"

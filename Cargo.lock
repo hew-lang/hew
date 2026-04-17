@@ -1462,6 +1462,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-capability-gen"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "hew-cli"
 version = "0.3.0"
 dependencies = [

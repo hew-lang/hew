@@ -36,7 +36,7 @@ hew-parser/fuzz/corpus/
 hew-parser/fuzz/artifacts/
 node_modules/
 .claude/
-Testing/
+/Testing/
 
 # AI assistant configs (machine-specific)
 CLAUDE.md

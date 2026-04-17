@@ -32,7 +32,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 
 // ── Trace context ──────────────────────────────────────────────────────
 
@@ -448,6 +448,23 @@ pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32
 pub extern "C" fn hew_trace_clear() {
     let mut events = TRACE_EVENTS.lock_or_recover();
     events.clear();
+}
+
+/// Register `hew_trace_reset` as a session reset hook.
+///
+/// Safe to call multiple times; the registration is guarded by a `Once` so
+/// the hook is added to the registry exactly once per process lifetime.
+/// Called from `scheduler::hew_sched_init` on the native path.
+pub fn register_trace_reset_hook() {
+    // Wrapper converts the extern "C" fn to a plain Rust fn() as required by
+    // the ResetHook type alias.
+    fn trace_reset_hook() {
+        hew_trace_reset();
+    }
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        crate::session::register_reset_hook(trace_reset_hook);
+    });
 }
 
 /// Reset all tracing state (disable + clear events + reset context).

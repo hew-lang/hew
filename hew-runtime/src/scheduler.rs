@@ -351,6 +351,14 @@ pub extern "C" fn hew_sched_init() -> c_int {
     };
     *lock = handles;
 
+    // Register subsystem reset hooks for JIT session lifecycle.
+    // Tracing is first so events are cleared before the profiler type registry.
+    crate::tracing::register_trace_reset_hook();
+    // TODO(Stage 3): register profiler dispatch-registry reset hook here, via
+    // a dedicated profiler::register_reset_hooks() call (not via maybe_start,
+    // which is gated on HEW_PPROF and would leave the registry un-cleared when
+    // the profiler feature is compiled in but HEW_PPROF is not set).
+
     // Start the profiler if HEW_PPROF is set.
     crate::profiler::maybe_start();
     // Start the OTel exporter if HEW_OTEL_ENDPOINT is set.
@@ -462,6 +470,14 @@ pub extern "C" fn hew_runtime_cleanup() {
 
     // Clear the name registry so no dangling pointers remain.
     crate::registry::hew_registry_clear();
+
+    // SHIM: JIT reload must clear handler_names here; see #1234 Commit 1 rebase.
+    // WHY: The `handler_names` side-table added by #1234 Commit 1 is part of
+    //      the WASM bridge (bridge.rs MetaState), which is not compiled on
+    //      native.  When a native equivalent arises, clearing it belongs here.
+    // WHEN: Remove this marker if a native handler_names structure is introduced
+    //       and needs teardown alongside the other native registry state.
+    // REAL: `handler_names.clear()` adjacent to `hew_registry_clear()` above.
 
     // Free the scheduler itself (deques, parkers, stealers, global queue).
     let ptr = SCHEDULER.swap(std::ptr::null_mut(), Ordering::AcqRel);

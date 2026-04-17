@@ -54,7 +54,7 @@ impl TlsStreamMethods for TlsStream {
     }
     fn try_write(stream: TlsStream, data: bytes) -> Result<int, fs.IoError> {
         let n: int = unsafe { hew_tls_write(stream, data) };
-        if n < 0 { Err(fs.IoError::Other(0)) } else { Ok(n) } // TLS errors carry no OS errno
+        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // TLS errors carry no OS errno
     }
     fn read(stream: TlsStream, size: int) -> bytes {
         unsafe { hew_tls_read(stream, size as i32) }

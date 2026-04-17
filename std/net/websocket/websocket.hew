@@ -79,7 +79,7 @@ impl ConnMethods for Conn {
     fn send_text(conn: Conn, msg: String) -> int { unsafe { hew_ws_send_text(conn, msg) } }
     fn try_send_text(conn: Conn, msg: String) -> Result<(), fs.IoError> {
         let n: int = unsafe { hew_ws_send_text(conn, msg) };
-        if n < 0 { Err(fs.IoError::Other(0)) } else { Ok(()) } // WebSocket errors carry no OS errno
+        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(()) } // WebSocket errors carry no OS errno
     }
     fn recv(conn: Conn) -> Message { unsafe { hew_ws_recv(conn) } }
     fn close(conn: Conn) { unsafe { hew_ws_close(conn) }; }

@@ -422,10 +422,11 @@ pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
 }
 
 pub fn connection_disconnect(conn: QUICConnection) -> Result<(), fs.IoError> {
+    // QUIC errors carry no OS errno; error string available via conn.observe().last_error
     unsafe {
         let status = hew_quic_conn_disconnect(conn);
         if status < 0 {
-            Err(fs.IoError::Other(0)) // QUIC errors carry no OS errno; string available via conn.observe().last_error
+            Err(fs.io_error_from_errno(0))
         } else {
             Ok(())
         }
@@ -443,10 +444,11 @@ pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
 }
 
 pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError> {
+    // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
         let status = hew_quic_stream_send(strm, data);
         if status < 0 {
-            Err(fs.IoError::Other(0)) // QUIC errors carry no OS errno; string available via stream.observe().last_error
+            Err(fs.io_error_from_errno(0))
         } else {
             Ok(())
         }
@@ -454,10 +456,11 @@ pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError> {
 }
 
 pub fn stream_finish(strm: QUICStream) -> Result<(), fs.IoError> {
+    // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
         let status = hew_quic_stream_finish(strm);
         if status < 0 {
-            Err(fs.IoError::Other(0)) // QUIC errors carry no OS errno; string available via stream.observe().last_error
+            Err(fs.io_error_from_errno(0))
         } else {
             Ok(())
         }
@@ -465,10 +468,11 @@ pub fn stream_finish(strm: QUICStream) -> Result<(), fs.IoError> {
 }
 
 pub fn stream_stop(strm: QUICStream, error_code: int) -> Result<(), fs.IoError> { // INTERNAL-ABI: QUIC protocol mandates 62-bit error codes; int is 64-bit i64 so no narrowing needed
+    // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
         let status = hew_quic_stream_stop(strm, error_code);
         if status < 0 {
-            Err(fs.IoError::Other(0)) // QUIC errors carry no OS errno; string available via stream.observe().last_error
+            Err(fs.io_error_from_errno(0))
         } else {
             Ok(())
         }

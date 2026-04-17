@@ -161,17 +161,17 @@ impl RequestMethods for Request {
     /// Send a full HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond(req: Request, status: int, content_type: String, body: String) -> Result<int, fs.IoError> {
         let n = req.respond(status, content_type, body);
-        if n < 0 { Err(fs.IoError::Other(0)) } else { Ok(n) } // HTTP has no OS errno channel
+        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
     }
     /// Send a plain-text HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_text(req: Request, status: int, body: String) -> Result<int, fs.IoError> {
         let n = req.respond_text(status, body);
-        if n < 0 { Err(fs.IoError::Other(0)) } else { Ok(n) } // HTTP has no OS errno channel
+        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
     }
     /// Send a JSON HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_json(req: Request, status: int, json: String) -> Result<int, fs.IoError> {
         let n = req.respond_json(status, json);
-        if n < 0 { Err(fs.IoError::Other(0)) } else { Ok(n) } // HTTP has no OS errno channel
+        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
     }
     /// Begin a streaming response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError> {

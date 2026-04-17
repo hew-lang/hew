@@ -290,6 +290,21 @@ if (( DRY_RUN == 1 )); then
     exit 0
 fi
 
+# ── grep-gate: no string-matched error classification in std/ ──────────────
+# Asserts that no "os error" string literals remain in std/ — these indicate
+# classification via string matching which was replaced with errno-based
+# IoError/NetError population in #1241.  If this fires, you have introduced
+# a regression; remove the string match and use io_error_from_errno /
+# net_error_from_errno instead.
+echo "==> grep-gate: checking for banned 'os error' patterns in std/"
+if grep --include="*.hew" -r "os error" std/ 2>/dev/null | grep -qv "^Binary"; then
+    echo "error: 'os error' string patterns found in std/ — use errno-based error classification instead:" >&2
+    grep --include="*.hew" -r "os error" std/ >&2
+    exit 1
+fi
+echo "grep-gate passed: no 'os error' patterns in std/"
+# ──────────────────────────────────────────────────────────────────────────────
+
 for cmd in "${COMMANDS[@]}"; do
     echo "==> $cmd"
     bash -lc "$cmd"

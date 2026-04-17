@@ -781,13 +781,6 @@ pub(crate) fn reset_bridge_full() {
     state.registry.clear();
     state.handler_names.clear();
     state.cache_all = None;
-    // SHIM: JIT reload must clear handler_names here; see #1234 Commit 1 rebase.
-    // WHY: The `handler_names` field added by #1234 Commit 1 lives inside
-    //      MetaState but is not yet present here because that branch has not
-    //      yet rebased onto session.rs.
-    // WHEN: Remove this marker once feat/message-handler-name-side-table rebases
-    //       onto this branch and adds `state.handler_names.clear()` here.
-    // REAL: `state.handler_names.clear()` in the same block above.
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────

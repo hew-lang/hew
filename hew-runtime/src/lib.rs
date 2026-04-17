@@ -448,7 +448,6 @@ pub mod routing;
 pub mod session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stream;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod tracing;
 
 // ── Ecosystem modules (feature-gated) ───────────────────────────────────────

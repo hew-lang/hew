@@ -339,4 +339,94 @@ mod tests {
             "lookup must return default after clear_dispatch_registry"
         );
     }
+
+    unsafe extern "C" fn fake_dispatch_e(
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+    ) {
+    }
+
+    /// Regression test for the `hew_sched_shutdown` ordering bug:
+    ///
+    /// `session_reset()` (which calls `clear_dispatch_registry()`) must fire
+    /// AFTER the exit profile snapshot runs, not before.  If the reset fires
+    /// first, `snapshot_all()` sees an empty dispatch-type registry and falls
+    /// back to "Actor" for every actor — degrading exit profile labels.
+    ///
+    /// This test proves the invariant at the snapshot seam: `snapshot_all`
+    /// returns the registered type name before clear and "Actor" after,
+    /// confirming that calling clear before snapshot loses the type label.
+    #[test]
+    fn snapshot_preserves_type_name_before_session_reset() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Clear registries to a known state before the test.
+        clear_dispatch_registry();
+        let mut reg = REGISTRY.lock_or_recover();
+        if let Some(m) = reg.as_mut() {
+            m.clear();
+        }
+        drop(reg);
+
+        // Register the dispatch type for the fake actor.
+        register_dispatch_type(Some(fake_dispatch_e), "ProfiledActor");
+
+        // Build a minimal HewActor on the heap.  All fields are zero-initialized
+        // (atomics initialised to 0, pointers to null).  `mailbox` is null so
+        // snapshot_all skips the mailbox-depth read.  `dispatch` is set to
+        // fake_dispatch_e so lookup_dispatch_type returns the registered name.
+        //
+        // SAFETY: zero-initialising a #[repr(C)] struct where every atomic field
+        // has a valid zero value and every raw-pointer field is null is safe.
+        // We unregister before the Box is dropped so the registry never holds a
+        // dangling pointer.
+        let mut actor: Box<HewActor> = unsafe { Box::new(std::mem::zeroed()) };
+        actor.id = 0xdead_beef_cafe_1234;
+        actor.pid = 0xdead_beef_cafe_1234;
+        actor.dispatch = Some(fake_dispatch_e);
+
+        let actor_ptr: *mut HewActor = &raw mut *actor;
+
+        // Register the fake actor so snapshot_all can enumerate it.
+        // SAFETY: actor_ptr is valid for the duration of this test.
+        unsafe { register(actor_ptr) };
+
+        // Profile snapshot runs against a live dispatch registry — type name
+        // must appear in the output.  This is the state BEFORE session_reset()
+        // fires (i.e. the correct ordering: profile first, then reset).
+        let before_snapshots = snapshot_all();
+        let before = before_snapshots
+            .iter()
+            .find(|s| s.id == actor.id)
+            .expect("registered actor must appear in snapshot");
+        assert_eq!(
+            before.actor_type, "ProfiledActor",
+            "snapshot before session_reset must preserve registered type name"
+        );
+
+        // Now simulate what session_reset() does: clear the dispatch registry.
+        // This is what would happen if hew_sched_shutdown called session_reset()
+        // BEFORE maybe_write_on_exit() — the bug being fixed.
+        clear_dispatch_registry();
+
+        // After session_reset the same actor snapshot falls back to "Actor".
+        // This proves that the ordering matters: profile must run before reset.
+        let after_snapshots = snapshot_all();
+        let after = after_snapshots
+            .iter()
+            .find(|s| s.id == actor.id)
+            .expect("registered actor must still appear in snapshot");
+        assert_eq!(
+            after.actor_type, "Actor",
+            "snapshot after clear_dispatch_registry must fall back to default"
+        );
+
+        // Clean up: unregister before actor is dropped.
+        // SAFETY: actor_ptr is still valid; actor has not been freed.
+        unsafe { unregister(actor_ptr) };
+    }
 }

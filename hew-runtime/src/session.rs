@@ -11,7 +11,8 @@
 //! The registry itself is unconditionally compiled so both the WASM cooperative
 //! scheduler and the native work-stealing scheduler share the same plumbing.
 //! Individual hooks are registered only when their owning module is compiled
-//! (e.g. `hew_trace_reset` is registered only on native builds; the profiler
+//! (e.g. `hew_trace_reset` is registered on both native and WASM builds since
+//! the `tracing` module is unconditionally compiled; the profiler
 //! dispatch-registry clear is registered only when the `profiler` feature is
 //! active on a native target).
 //!

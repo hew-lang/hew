@@ -454,7 +454,9 @@ pub extern "C" fn hew_trace_clear() {
 ///
 /// Safe to call multiple times; the registration is guarded by a `Once` so
 /// the hook is added to the registry exactly once per process lifetime.
-/// Called from `scheduler::hew_sched_init` on the native path.
+/// Called from `scheduler::hew_sched_init` (native) and
+/// `scheduler_wasm::hew_sched_init` (WASM) so trace events are cleared on
+/// every `session_reset()` regardless of target.
 pub fn register_trace_reset_hook() {
     // Wrapper converts the extern "C" fn to a plain Rust fn() as required by
     // the ResetHook type alias.

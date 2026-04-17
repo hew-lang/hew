@@ -72,7 +72,7 @@ enum ListenMode {
 /// and must not be used for hook registration.
 ///
 /// The registration is Once-guarded; safe to call multiple times per process.
-pub fn register_reset_hooks() {
+pub(crate) fn register_reset_hooks() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {

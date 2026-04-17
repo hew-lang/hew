@@ -107,7 +107,7 @@ fn lookup_dispatch_type(
 ///
 /// After this call, `lookup_dispatch_type` returns `"Actor"` for all pointers
 /// until `register_dispatch_type` is called again.
-pub fn clear_dispatch_registry() {
+pub(crate) fn clear_dispatch_registry() {
     let mut guard = DISPATCH_TYPE_REGISTRY.lock_or_recover();
     if let Some(map) = guard.as_mut() {
         map.clear();

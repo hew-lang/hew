@@ -457,7 +457,7 @@ pub extern "C" fn hew_trace_clear() {
 /// Called from `scheduler::hew_sched_init` (native) and
 /// `scheduler_wasm::hew_sched_init` (WASM) so trace events are cleared on
 /// every `session_reset()` regardless of target.
-pub fn register_trace_reset_hook() {
+pub(crate) fn register_trace_reset_hook() {
     // Wrapper converts the extern "C" fn to a plain Rust fn() as required by
     // the ResetHook type alias.
     fn trace_reset_hook() {

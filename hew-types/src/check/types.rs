@@ -274,6 +274,28 @@ pub(super) enum WasmUnsupportedFeature {
     /// wasm32.
     /// WASM-TODO: define a host capability model for subprocess execution.
     ProcessExecution,
+    /// `tls.*` constructors and `tls.*Stream` methods: the TLS transport runtime
+    /// is backed by `rustls` over native sockets and is not compiled for
+    /// wasm32. WASM-TODO: expose a WASI TLS bridge.
+    Tls,
+    /// `quic.*` endpoint/connection/stream/event constructors and methods: the
+    /// QUIC transport is backed by `quinn` over native sockets and is not
+    /// compiled for wasm32. WASM-TODO: expose a WASI QUIC bridge.
+    Quic,
+    /// `dns.resolve` / `dns.lookup_host`: the resolver is backed by the native
+    /// OS resolver and is not compiled for wasm32. WASM-TODO: probe whether
+    /// wasip1 `sock_addr_*` can cover the common case; relax to warn if so.
+    Dns,
+    /// `os.*` env / path / process helpers: the OS-env layer relies on native
+    /// POSIX APIs and is not compiled for wasm32. WASM-TODO: route through a
+    /// capability-scoped WASI surface.
+    OsEnv,
+    // ── Warning group additions ─────────────────────────────────────────────
+    /// `crypto.random_bytes`: on wasm32 the implementation falls back to a
+    /// seeded PRNG without host-provided entropy, so the resulting stream is
+    /// not cryptographically secure. Warn so callers can gate their use.
+    /// WASM-TODO: plumb host entropy through WASI `random_get`.
+    CryptoRandom,
 }
 
 impl WasmUnsupportedFeature {
@@ -292,6 +314,11 @@ impl WasmUnsupportedFeature {
             Self::HttpServer => "HTTP server operations",
             Self::TcpNetworking => "TCP networking operations",
             Self::ProcessExecution => "Process execution operations",
+            Self::Tls => "std::net::tls operations",
+            Self::Quic => "std::net::quic operations",
+            Self::Dns => "std::net::dns resolver operations",
+            Self::OsEnv => "std::os environment and path operations",
+            Self::CryptoRandom => "std::crypto::random_bytes",
         }
     }
 
@@ -341,6 +368,27 @@ impl WasmUnsupportedFeature {
             Self::ProcessExecution => {
                 "hew_process_run / hew_process_spawn require the native OS process model; \
                  the process runtime module is not compiled for wasm32"
+            }
+            Self::Tls => {
+                "the std::net::tls transport is backed by rustls over native sockets; \
+                 no wasm32 TLS bridge exists yet"
+            }
+            Self::Quic => {
+                "the std::net::quic transport is backed by quinn over native sockets; \
+                 no wasm32 QUIC bridge exists yet"
+            }
+            Self::Dns => {
+                "the std::net::dns resolver uses the native OS resolver; \
+                 no wasm32 implementation exists yet"
+            }
+            Self::OsEnv => {
+                "the std::os helpers rely on native POSIX APIs; \
+                 the os runtime layer is not compiled for wasm32"
+            }
+            Self::CryptoRandom => {
+                "on wasm32 crypto.random_bytes falls back to a seeded PRNG without host \
+                 entropy and is not cryptographically secure; \
+                 the result is suitable for test data but not for key material"
             }
         }
     }

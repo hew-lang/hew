@@ -184,6 +184,12 @@ impl Checker {
             "sleep_ms" | "sleep" => {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::Timers);
             }
+            // crypto.random_bytes falls back to a seeded non-cryptographic PRNG
+            // on wasm32; warn rather than reject so programs can still use it
+            // for test data with the degraded-semantics caveat.
+            "random_bytes" => {
+                self.warn_wasm_limitation(span, WasmUnsupportedFeature::CryptoRandom);
+            }
             _ => {}
         }
     }

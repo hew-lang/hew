@@ -51,28 +51,22 @@ pub enum IoError {
     Other(int);
 }
 
-const IO_ERROR_OTHER: int = 1;
-const IO_ERROR_NOT_FOUND: int = 2;
-const IO_ERROR_PERMISSION_DENIED: int = 13;
-const IO_ERROR_ALREADY_EXISTS: int = 17;
-
-pub fn io_error_from_message(message: String) -> IoError {
-    if message.contains("os error 2") || message.contains("No such file") || message.contains("no such file") {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
-    } else if message.contains("os error 13")
-        || message.contains("Permission denied")
-        || message.contains("permission denied")
-    {
-        IoError::PermissionDenied(IO_ERROR_PERMISSION_DENIED)
-    } else if message.contains("os error 17")
-        || message.contains("Already exists")
-        || message.contains("already exists")
-        || message.contains("File exists")
-        || message.contains("file exists")
-    {
-        IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS)
+/// INTERNAL-ABI: map an OS errno integer to a structured IoError variant.
+///
+/// The int payload carried in each variant is the raw OS errno so callers
+/// can inspect the platform value. errno=0 (no OS error) maps to Other(0).
+pub fn io_error_from_errno(errno: i32) -> IoError {
+    // ENOENT: Linux=2, macOS=2
+    if errno == 2 {
+        IoError::NotFound(errno as int)
+    // EACCES: Linux=13, macOS=13
+    } else if errno == 13 {
+        IoError::PermissionDenied(errno as int)
+    // EEXIST: Linux=17, macOS=17
+    } else if errno == 17 {
+        IoError::AlreadyExists(errno as int)
     } else {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(errno as int)
     }
 }
 
@@ -83,37 +77,37 @@ fn missing_parent(target: String) -> bool {
 
 fn write_error(target: String) -> IoError {
     if missing_parent(target) {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
     } else {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(0)
     }
 }
 
 fn missing_path_error(target: String) -> IoError {
     if exists(target) {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(0)
     } else {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
     }
 }
 
 fn mkdir_error(target: String) -> IoError {
     if exists(target) {
-        IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS)
+        IoError::AlreadyExists(0)
     } else if missing_parent(target) {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
     } else {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(0)
     }
 }
 
 fn move_copy_error(source: String, target: String) -> IoError {
     if !exists(source) {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
     } else if missing_parent(target) {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
     } else {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(0)
     }
 }
 
@@ -148,7 +142,9 @@ pub fn try_read(file_path: String) -> Result<String, IoError> {
         if hew_stream_is_valid(file) {
             Ok(hew_stream_collect_string(file))
         } else {
-            Err(io_error_from_message(hew_stream_last_error()))
+            let errno = hew_stream_last_errno();
+            let _ = hew_stream_last_error();
+            Err(io_error_from_errno(errno))
         }
     }
 }
@@ -262,7 +258,11 @@ pub fn try_read_bytes(file_path: String) -> Result<bytes, IoError> {
         let data = hew_file_read_bytes(file_path);
         let error = hew_file_last_error();
         if error != "" {
-            Err(io_error_from_message(error))
+            // hew_file_last_error uses the hew-runtime error pipeline which has no
+            // errno channel; fall back to path-checking heuristics.
+            // TODO(#1241-follow-up): wire errno through hew_file_read_bytes once
+            // hew-runtime gains a set_last_error_with_errno counterpart.
+            Err(missing_path_error(file_path))
         } else {
             Ok(clone_bytes(data))
         }
@@ -320,9 +320,9 @@ pub fn try_mkdir_all(dir_path: String) -> Result<int, IoError> {
         0 => Ok(0),
         _ => {
             if exists(dir_path) {
-                Err(IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS))
+                Err(IoError::AlreadyExists(0))
             } else {
-                Err(IoError::Other(IO_ERROR_OTHER))
+                Err(IoError::Other(0))
             }
         },
     }
@@ -350,10 +350,10 @@ pub fn list_dir(path: String) -> Vec<String> {
 /// Distinguishes missing and non-directory paths from a successful listing.
 pub fn try_list_dir(dir_path: String) -> Result<Vec<String>, IoError> {
     if !exists(dir_path) {
-        return Err(IoError::NotFound(IO_ERROR_NOT_FOUND));
+        return Err(IoError::NotFound(0));
     }
     if !is_dir(dir_path) {
-        return Err(IoError::Other(IO_ERROR_OTHER));
+        return Err(IoError::Other(0));
     }
     Ok(unsafe { hew_fs_list_dir(dir_path) })
 }
@@ -420,5 +420,6 @@ extern "C" {
     fn hew_stream_from_file_read(path: String) -> FileReadStream;
     fn hew_stream_is_valid(stream: FileReadStream) -> bool;
     fn hew_stream_last_error() -> String;
+    fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
     fn hew_stream_collect_string(stream: FileReadStream) -> String;
 }

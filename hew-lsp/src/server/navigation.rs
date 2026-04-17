@@ -771,6 +771,31 @@ pub(super) fn plan_workspace_rename(
                     &import_match.imported_name,
                     &mut cross_file_conflicts,
                 );
+
+                // `collect_cross_file_conflict` checks top-level and import
+                // clashes in the definition file, but does NOT walk that file's
+                // own local/param scopes (it has no offset to anchor a
+                // `plan_rename` call). Do it here so that a `let <new_name>`
+                // shadowing a call-site of the definition in the same file is
+                // caught on the importer-originated path, matching the
+                // definition-originated path (which already runs `plan_rename`
+                // against the current doc at line ~747 above).
+                if let Some(def_span) = hew_analysis::definition::find_definition(
+                    &target_doc.source,
+                    &target_doc.parse_result,
+                    &import_match.imported_name,
+                ) {
+                    if let Err(hew_analysis::RenameError::Conflicts { conflicts }) =
+                        hew_analysis::rename::plan_rename(
+                            &target_doc.source,
+                            &target_doc.parse_result,
+                            def_span.start,
+                            new_name,
+                        )
+                    {
+                        cross_file_conflicts.extend(conflicts);
+                    }
+                }
             }
             for importer in find_open_named_importers(
                 &import_match.imported_uri,

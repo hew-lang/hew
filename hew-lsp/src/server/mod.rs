@@ -4965,6 +4965,45 @@ machine Traffic {
     // ── plan_workspace_rename: definition-file local shadow (Fix 2) ────
 
     #[test]
+    fn plan_workspace_rename_importer_side_detects_definition_file_local_shadow() {
+        // Regression: importer-originated path must also detect local shadows
+        // in the definition file.
+        //
+        // util.hew defines `pub fn foo()` at the top level AND has an internal
+        // helper with `let bar = 0; foo()` — so renaming `foo` → `bar` from the
+        // definition side is correctly refused.  The gap (PR #1255 rev5) was
+        // that the SAME rename initiated from the import token in main.hew was
+        // NOT refused, because `collect_cross_file_conflict` does not walk
+        // local scopes of the definition file.
+        let util_source = "pub fn foo() -> i32 { 1 }\nfn helper() -> i32 { let bar = 0; foo() }";
+        let main_source = "import util::{ foo };\nfn main() -> i32 { foo() }";
+
+        let util_uri = make_test_uri("/project/util.hew");
+        let main_uri = make_test_uri("/project/main.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(main_uri.clone(), make_doc(main_source));
+
+        // Cursor on `foo` import token in main.hew — importer-originated path.
+        let main_doc = documents.get(&main_uri).unwrap();
+        let offset = main_source.find("foo").unwrap();
+        let err = plan_workspace_rename(&main_uri, &main_doc, offset, "bar", &documents)
+            .expect_err("ShadowsLocal in definition file must be detected from importer side");
+        match err {
+            hew_analysis::RenameError::Conflicts { conflicts } => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == hew_analysis::RenameConflictKind::ShadowsLocal),
+                    "expected a ShadowsLocal conflict, got {conflicts:?}"
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn plan_workspace_rename_detects_definition_file_local_shadow() {
         // util.hew defines top-level `foo` AND a helper function that
         // binds `let bar = 0` in scope and then calls `foo()`.

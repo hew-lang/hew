@@ -29,7 +29,7 @@ use crate::util::MutexExt;
 use std::sync::Mutex;
 
 /// A zero-argument, infallible cleanup callback.
-pub type ResetHook = fn();
+pub(crate) type ResetHook = fn();
 
 /// Global list of reset hooks, populated at init time.
 static RESET_HOOKS: Mutex<Vec<ResetHook>> = Mutex::new(Vec::new());
@@ -39,7 +39,7 @@ static RESET_HOOKS: Mutex<Vec<ResetHook>> = Mutex::new(Vec::new());
 /// Hooks registered here will be called in order when `session_reset` fires.
 /// Callers are responsible for guarding against duplicate registration (e.g.
 /// with `std::sync::Once`).
-pub fn register_reset_hook(hook: ResetHook) {
+pub(crate) fn register_reset_hook(hook: ResetHook) {
     RESET_HOOKS.lock_or_recover().push(hook);
 }
 
@@ -48,7 +48,7 @@ pub fn register_reset_hook(hook: ResetHook) {
 /// Called from both `hew_sched_shutdown` paths (WASM cooperative and native
 /// work-stealing) after the actor drain completes and before scheduler statics
 /// are cleared.
-pub fn session_reset() {
+pub(crate) fn session_reset() {
     // Snapshot the hooks under the lock, then release the lock before
     // calling each hook.  This avoids a potential deadlock if a hook
     // attempts to register another hook during teardown.

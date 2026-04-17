@@ -438,6 +438,9 @@ pub extern "C" fn hew_sched_shutdown() {
         }
     }
 
+    // Release worker_handles lock so hooks can access scheduler state.
+    drop(handles);
+
     // Write profile files on exit if HEW_PROF_OUTPUT is set.  Must run BEFORE
     // session_reset() so that the dispatch-type registry is still populated
     // and actor type labels appear correctly in the profile output.  If

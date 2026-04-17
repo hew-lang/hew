@@ -160,17 +160,29 @@ impl RequestMethods for Request {
     }
     /// Send a full HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond(req: Request, status: int, content_type: String, body: String) -> Result<int, fs.IoError> {
-        let n = req.respond(status, content_type, body);
+        // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond(); call FFI
+        //   directly to preserve the arith.trunci that MLIR verification requires.
+        // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
+        // WHAT — restore to: let n = req.respond(status, content_type, body);
+        let n = unsafe { hew_http_respond_bridge(req, status as i32, content_type, body) } as int;
         if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
     }
     /// Send a plain-text HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_text(req: Request, status: int, body: String) -> Result<int, fs.IoError> {
-        let n = req.respond_text(status, body);
+        // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_text(); call FFI
+        //   directly to preserve the arith.trunci that MLIR verification requires.
+        // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
+        // WHAT — restore to: let n = req.respond_text(status, body);
+        let n = unsafe { hew_http_respond_text(req, status as i32, body) } as int;
         if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
     }
     /// Send a JSON HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_json(req: Request, status: int, json: String) -> Result<int, fs.IoError> {
-        let n = req.respond_json(status, json);
+        // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_json(); call FFI
+        //   directly to preserve the arith.trunci that MLIR verification requires.
+        // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
+        // WHAT — restore to: let n = req.respond_json(status, json);
+        let n = unsafe { hew_http_respond_json(req, status as i32, json) } as int;
         if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
     }
     /// Begin a streaming response; returns Err(IoError::Other(0)) on failure.

@@ -143,6 +143,23 @@ fn missing_path_error(target: String) -> IoError {
     }
 }
 
+/// Classify a raw error message string from hew_file_read_bytes into an IoError.
+///
+/// `hew_file_read_bytes` sets the error as `"hew_file_read_bytes: <OS message>"`.
+/// The OS message for permission denied always contains "permission denied" (Rust
+/// formats std::io::Error this way on Linux and macOS).  When no message keyword
+/// matches, fall back to a stat-based path-existence check so NotFound is still
+/// preferred over Other for missing files.
+fn classify_file_error(error: String, file_path: String) -> IoError {
+    if error.contains("permission denied") {
+        IoError::PermissionDenied(0)
+    } else if error.contains("already exists") {
+        IoError::AlreadyExists(0)
+    } else {
+        missing_path_error(file_path)
+    }
+}
+
 fn mkdir_error(target: String) -> IoError {
     if exists(target) {
         IoError::AlreadyExists(0)
@@ -310,14 +327,15 @@ pub fn try_read_bytes(file_path: String) -> Result<bytes, IoError> {
         let data = hew_file_read_bytes(file_path);
         let error = hew_file_last_error();
         if error != "" {
-            // SHIM: WHY — hew_file_read_bytes calls crate::set_last_error (no errno
-            //   channel), so io_error_from_errno cannot be used; path-checking
-            //   heuristics approximate the classification instead.
+            // SHIM: WHY — hew_file_read_bytes has no errno channel (uses set_last_error,
+            //   not set_last_error_with_errno), so io_error_from_errno cannot be used.
+            //   classify_file_error inspects the OS message string to recover PermissionDenied
+            //   and AlreadyExists; for other failures it falls back to path-existence stat.
             // WHEN — remove when hew-runtime wires errno through hew_file_read_bytes
             //   via set_last_error_with_errno (tracked in issue #1241-follow-up).
             // WHAT — switch to: let errno = hew_stream_last_errno(); Err(io_error_from_errno(errno))
             //   once the runtime-side counterpart lands.
-            Err(missing_path_error(file_path))
+            Err(classify_file_error(error, file_path))
         } else {
             Ok(clone_bytes(data))
         }

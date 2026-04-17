@@ -71,7 +71,7 @@ fn encode_impl(data: bytes, upper: bool) -> String {
 }
 
 /// Convert a 4-bit nibble (0–15) to its ASCII hex character code.
-fn nibble_to_char(n: i32, upper: bool) -> i32 {
+fn nibble_to_char(n: i32, upper: bool) -> i32 { // INTERNAL-ABI: byte-level nibble arithmetic; values 0-15 fit i32
     if n < 10 {
         48 + n
     } else {
@@ -84,7 +84,7 @@ fn nibble_to_char(n: i32, upper: bool) -> i32 {
 }
 
 /// Convert a single hex character to its 4-bit nibble value, or -1 if invalid.
-fn hex_char_to_nibble(ch: String) -> i32 {
+fn hex_char_to_nibble(ch: String) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; byte-level helper
     if ch == "0" { 0 as i32 }
     else if ch == "1" { 1 as i32 }
     else if ch == "2" { 2 as i32 }

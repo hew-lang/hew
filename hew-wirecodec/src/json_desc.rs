@@ -48,8 +48,10 @@ pub enum JsonOp {
     SetBytes,
     /// Duration — emitted as i64 nanoseconds.
     SetDuration,
-    /// Character — emitted as an unsigned integer codepoint (u32 range 0..=
-    /// 0x10FFFF). Matches the C++ `jsonKindOf` path in
+    /// Character — emitted as an unsigned integer codepoint in BMP range (0..=
+    /// 0xFFFF). Full Unicode scalar range (0..=0x10FFFF) is deferred; see
+    /// `plan.rs` SHIM comment on `IntegerBounds::for_kind` Char arm for msgpack
+    /// parity rationale. Matches the C++ `jsonKindOf` path in
     /// `MLIRGenWire.cpp:147-149` which routes `Char → WireJsonKind::Integer`.
     SetChar,
     /// Nested wire-type reference.
@@ -286,11 +288,12 @@ mod tests {
         );
         let b = desc.fields[0].bounds.unwrap();
         assert_eq!(b.min, 0, "char min codepoint is 0");
-        // Plan uses U16-width bounds for msgpack parity; assert non-negative
-        // range and that it does not exceed Unicode scalar range.
-        assert!(
-            b.max <= 0x10_FFFF,
-            "char max codepoint must be within Unicode scalar range"
+        // Plan uses U16-width bounds for msgpack parity. Assert the actual
+        // contract pinned by IntegerBounds::for_kind Char arm.
+        assert_eq!(
+            b.max,
+            u64::from(u16::MAX),
+            "char uses u16 bounds (BMP only) for msgpack parity"
         );
     }
 

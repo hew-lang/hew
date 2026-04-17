@@ -476,6 +476,12 @@ impl Checker {
             "net.Listener" | "net.Connection" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
             }
+            "tls.TlsStream" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Tls);
+            }
+            "quic.QUICEndpoint" | "quic.QUICConnection" | "quic.QUICStream" | "quic.QUICEvent" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Quic);
+            }
             _ => {}
         }
     }

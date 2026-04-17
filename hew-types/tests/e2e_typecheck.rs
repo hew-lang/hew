@@ -2020,6 +2020,150 @@ fn smtp_conn_methods_rejected_on_wasm() {
     );
 }
 
+/// Table-driven: every handle type covered by `reject_if_wasm_native_only_handle`
+/// for TLS and QUIC must produce a `PlatformLimitation` error on the wasm32 target.
+/// The handles are obtained via `extern "C"` so no module-level constructor call
+/// fires the module-qualified-call gate first — the rejection must come solely from
+/// the handle-method arm.
+#[test]
+fn wasm_rejects_all_native_only_handle_methods() {
+    // Each row: (import_path, handle_type, extern_fn, method_call, expected_label)
+    // method_call must be a valid method on the handle type so method resolution
+    // succeeds before `reject_if_wasm_native_only_handle` inspects the receiver.
+    let cases: &[(&str, &str, &str, &str, &str)] = &[
+        (
+            "std::net::tls",
+            "tls.TlsStream",
+            "fn fake_tls() -> tls.TlsStream",
+            "let stream = unsafe { fake_tls() };\n            stream.close();",
+            "std::net::tls",
+        ),
+        (
+            "std::net::quic",
+            "quic.QUICEndpoint",
+            "fn fake_endpoint() -> quic.QUICEndpoint",
+            "let ep = unsafe { fake_endpoint() };\n            ep.close();",
+            "std::net::quic",
+        ),
+        (
+            "std::net::quic",
+            "quic.QUICConnection",
+            "fn fake_conn() -> quic.QUICConnection",
+            "let conn = unsafe { fake_conn() };\n            let _ = conn.observe();",
+            "std::net::quic",
+        ),
+        (
+            "std::net::quic",
+            "quic.QUICStream",
+            "fn fake_stream() -> quic.QUICStream",
+            "let strm = unsafe { fake_stream() };\n            strm.close();",
+            "std::net::quic",
+        ),
+        (
+            "std::net::quic",
+            "quic.QUICEvent",
+            "fn fake_event() -> quic.QUICEvent",
+            "let ev = unsafe { fake_event() };\n            ev.free();",
+            "std::net::quic",
+        ),
+    ];
+
+    for (import_path, handle_type, extern_fn, method_call, expected_label) in cases {
+        let source = format!(
+            r#"
+        import {import_path};
+
+        extern "C" {{
+            {extern_fn};
+        }}
+
+        fn main() {{
+            {method_call}
+        }}
+        "#,
+        );
+        let output = typecheck_inline_wasm(&source);
+        assert!(
+            output.errors.iter().any(|e| {
+                e.kind == TypeErrorKind::PlatformLimitation && e.message.contains(expected_label)
+            }),
+            "expected wasm PlatformLimitation for {handle_type} handle-method, got: {:#?}",
+            output.errors
+        );
+    }
+}
+
+/// Native-target parity: the same handle-method calls that are rejected on
+/// wasm32 must NOT produce a `PlatformLimitation` error when type-checked
+/// without the wasm target.  A regression that over-blocks on native would
+/// pass the wasm tests above while silently breaking native builds.
+#[test]
+fn native_allows_all_native_only_handle_methods_no_platform_error() {
+    // Mirrors the wasm table above — same programs, checked with `typecheck_inline`
+    // (no `enable_wasm_target()` call).
+    let cases: &[(&str, &str, &str, &str, &str)] = &[
+        (
+            "std::net::tls",
+            "tls.TlsStream",
+            "fn fake_tls() -> tls.TlsStream",
+            "let stream = unsafe { fake_tls() };\n            stream.close();",
+            "std::net::tls",
+        ),
+        (
+            "std::net::quic",
+            "quic.QUICEndpoint",
+            "fn fake_endpoint() -> quic.QUICEndpoint",
+            "let ep = unsafe { fake_endpoint() };\n            ep.close();",
+            "std::net::quic",
+        ),
+        (
+            "std::net::quic",
+            "quic.QUICConnection",
+            "fn fake_conn() -> quic.QUICConnection",
+            "let conn = unsafe { fake_conn() };\n            let _ = conn.observe();",
+            "std::net::quic",
+        ),
+        (
+            "std::net::quic",
+            "quic.QUICStream",
+            "fn fake_stream() -> quic.QUICStream",
+            "let strm = unsafe { fake_stream() };\n            strm.close();",
+            "std::net::quic",
+        ),
+        (
+            "std::net::quic",
+            "quic.QUICEvent",
+            "fn fake_event() -> quic.QUICEvent",
+            "let ev = unsafe { fake_event() };\n            ev.free();",
+            "std::net::quic",
+        ),
+    ];
+
+    for (import_path, handle_type, extern_fn, method_call, expected_label) in cases {
+        let source = format!(
+            r#"
+        import {import_path};
+
+        extern "C" {{
+            {extern_fn};
+        }}
+
+        fn main() {{
+            {method_call}
+        }}
+        "#,
+        );
+        let output = typecheck_inline(&source);
+        assert!(
+            !output.errors.iter().any(|e| {
+                e.kind == TypeErrorKind::PlatformLimitation && e.message.contains(expected_label)
+            }),
+            "unexpected PlatformLimitation on native target for {handle_type}: {:#?}",
+            output.errors
+        );
+    }
+}
+
 /// Regression: the CLI injects a synthetic `import std::text::regex` when regex
 /// literals appear in source. The type checker must mark that import as used when
 /// synthesising the `regex.Pattern` type so no false-positive unused-import

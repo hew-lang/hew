@@ -318,7 +318,7 @@ impl WasmUnsupportedFeature {
             Self::Quic => "std::net::quic operations",
             Self::Dns => "std::net::dns resolver operations",
             Self::OsEnv => "std::os environment and path operations",
-            Self::CryptoRandom => "std::crypto::random_bytes",
+            Self::CryptoRandom => "std::crypto::crypto.random_bytes operations",
         }
     }
 

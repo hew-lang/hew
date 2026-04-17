@@ -11615,7 +11615,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "tls"),
+            platform_error_contains(&output, "std::net::tls"),
             "error message should mention TLS feature; got: {:?}",
             output.errors
         );
@@ -11634,7 +11634,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "quic"),
+            platform_error_contains(&output, "std::net::quic"),
             "error message should mention QUIC feature; got: {:?}",
             output.errors
         );
@@ -11653,7 +11653,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "dns"),
+            platform_error_contains(&output, "std::net::dns"),
             "error message should mention DNS feature; got: {:?}",
             output.errors
         );
@@ -11669,7 +11669,7 @@ mod wasm_rejects {
             output.errors
         );
         assert!(
-            platform_error_contains(&output, "os"),
+            platform_error_contains(&output, "std::os"),
             "error message should mention OS feature; got: {:?}",
             output.errors
         );
@@ -11690,8 +11690,7 @@ mod wasm_rejects {
             output.warnings
         );
         assert!(
-            platform_warning_contains(&output, "random_bytes")
-                || platform_warning_contains(&output, "crypto"),
+            platform_warning_contains(&output, "random_bytes"),
             "warning message should mention crypto.random_bytes; got: {:?}",
             output.warnings
         );
@@ -11699,6 +11698,135 @@ mod wasm_rejects {
             !has_platform_limitation_error(&output),
             "crypto.random_bytes should NOT be a compile-time error on WASM; got errors: {:?}",
             output.errors
+        );
+    }
+
+    // ── Native sibling tests: no platform error on non-wasm target ────────
+
+    #[test]
+    fn native_tls_no_platform_error() {
+        let source = concat!(
+            "import std::net::tls;\n",
+            "fn main() { tls.connect(\"host\", 443); }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "tls.connect should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "tls.connect should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn native_quic_no_platform_error() {
+        let source = concat!(
+            "import std::net::quic;\n",
+            "fn main() { quic.new_client(); }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "quic.* should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "quic.* should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn native_dns_no_platform_error() {
+        let source = concat!(
+            "import std::net::dns;\n",
+            "fn main() { dns.resolve(\"example.com\"); }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "dns.resolve should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "dns.resolve should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn native_os_no_platform_error() {
+        let source = concat!("import std::os;\n", "fn main() { os.env(\"HOME\"); }\n",);
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "os.* should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "os.* should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn native_crypto_random_bytes_no_platform_error() {
+        let source = concat!(
+            "import std::crypto::crypto;\n",
+            "fn main() { crypto.random_bytes(16); }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "crypto.random_bytes should not emit PlatformLimitation error on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "crypto.random_bytes should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
         );
     }
 

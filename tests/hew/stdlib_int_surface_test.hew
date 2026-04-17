@@ -9,7 +9,6 @@ import std::fs;
 import std::semaphore;
 import std::text::semver;
 import std::testing;
-import std::vec;
 
 #[test]
 fn test_channel_new_accepts_int_capacity() {
@@ -74,27 +73,6 @@ fn test_fs_mkdir_returns_int() {
     let result: int = fs.mkdir(dir);
     testing.assert_eq(result, 0);
     fs.delete(dir);
-}
-
-#[test]
-fn test_vec_contains_accepts_int() {
-    let v: Vec<int> = Vec::new();
-    v.push(10);
-    v.push(20);
-    testing.assert_eq(vec.contains(v, 10), true);
-    testing.assert_eq(vec.contains(v, 99), false);
-}
-
-#[test]
-fn test_vec_min_max_return_int() {
-    let v: Vec<int> = Vec::new();
-    v.push(3);
-    v.push(1);
-    v.push(2);
-    let lo: int = vec.min(v);
-    let hi: int = vec.max(v);
-    testing.assert_eq(lo, 1);
-    testing.assert_eq(hi, 3);
 }
 
 #[test]

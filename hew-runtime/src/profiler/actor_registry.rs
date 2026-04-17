@@ -99,6 +99,21 @@ fn lookup_dispatch_type(
         .unwrap_or("Actor")
 }
 
+/// Clear all registered dispatch-type mappings.
+///
+/// Called at JIT session reset (via the session hook registered in
+/// `profiler::register_reset_hooks`) so that stale dispatch-pointer-to-type-name
+/// mappings from a prior JIT load cycle cannot bleed into a fresh one.
+///
+/// After this call, `lookup_dispatch_type` returns `"Actor"` for all pointers
+/// until `register_dispatch_type` is called again.
+pub fn clear_dispatch_registry() {
+    let mut guard = DISPATCH_TYPE_REGISTRY.lock_or_recover();
+    if let Some(map) = guard.as_mut() {
+        map.clear();
+    }
+}
+
 /// Register a newly spawned actor.
 ///
 /// # Safety
@@ -223,6 +238,9 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
 mod tests {
     use super::*;
 
+    /// Serialise tests that modify shared registry state.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     unsafe extern "C" fn fake_dispatch_a(
         _s: *mut std::ffi::c_void,
         _m: i32,
@@ -261,20 +279,55 @@ mod tests {
         assert_eq!(name, "Actor");
     }
 
+    unsafe extern "C" fn fake_dispatch_c(
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+    ) {
+    }
+
+    unsafe extern "C" fn fake_dispatch_d(
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+    ) {
+    }
+
     #[test]
     fn second_registration_does_not_overwrite() {
-        // Register once with "TypeA".
-        unsafe extern "C" fn fake_dispatch_c(
-            _s: *mut std::ffi::c_void,
-            _m: i32,
-            _p: *mut std::ffi::c_void,
-            _n: usize,
-        ) {
-        }
         register_dispatch_type(Some(fake_dispatch_c), "TypeA");
         // Attempt to overwrite with "TypeB" — should be silently ignored.
         register_dispatch_type(Some(fake_dispatch_c), "TypeB");
         let name = lookup_dispatch_type(Some(fake_dispatch_c));
         assert_eq!(name, "TypeA");
+    }
+
+    /// After `clear_dispatch_registry`, any previously registered dispatch fn
+    /// returns the default `"Actor"` fallback.
+    #[test]
+    fn dispatch_registry_cleared_after_clear() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Register a known type.
+        register_dispatch_type(Some(fake_dispatch_d), "MyWidget");
+        assert_eq!(
+            lookup_dispatch_type(Some(fake_dispatch_d)),
+            "MyWidget",
+            "type must be registered before clear"
+        );
+
+        // Clear the registry.
+        clear_dispatch_registry();
+
+        // After clear, the same dispatch fn falls back to the default.
+        assert_eq!(
+            lookup_dispatch_type(Some(fake_dispatch_d)),
+            "Actor",
+            "lookup must return default after clear_dispatch_registry"
+        );
     }
 }

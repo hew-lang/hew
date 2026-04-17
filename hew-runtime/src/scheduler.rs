@@ -352,12 +352,12 @@ pub extern "C" fn hew_sched_init() -> c_int {
     *lock = handles;
 
     // Register subsystem reset hooks for JIT session lifecycle.
-    // Tracing is first so events are cleared before the profiler type registry.
+    // Tracing first so events are cleared before the profiler type registry.
     crate::tracing::register_trace_reset_hook();
-    // TODO(Stage 3): register profiler dispatch-registry reset hook here, via
-    // a dedicated profiler::register_reset_hooks() call (not via maybe_start,
-    // which is gated on HEW_PPROF and would leave the registry un-cleared when
-    // the profiler feature is compiled in but HEW_PPROF is not set).
+    // Profiler dispatch-registry clear second (native + profiler feature only;
+    // the stub profiler module does not expose register_reset_hooks).
+    #[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
+    crate::profiler::register_reset_hooks();
 
     // Start the profiler if HEW_PPROF is set.
     crate::profiler::maybe_start();

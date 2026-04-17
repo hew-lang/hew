@@ -64,6 +64,25 @@ enum ListenMode {
     Unix,
 }
 
+/// Register profiler-owned session reset hooks.
+///
+/// Called unconditionally from `hew_sched_init` (before `maybe_start`) so that
+/// the dispatch-type registry is cleared on every JIT reload cycle regardless
+/// of whether `HEW_PPROF` is set.  `maybe_start` is gated on the env variable
+/// and must not be used for hook registration.
+///
+/// The registration is Once-guarded; safe to call multiple times per process.
+pub fn register_reset_hooks() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        fn clear_dispatch_registry_hook() {
+            actor_registry::clear_dispatch_registry();
+        }
+        crate::session::register_reset_hook(clear_dispatch_registry_hook);
+    });
+}
+
 /// Check `HEW_PPROF` and start the profiler if set.
 ///
 /// Called from [`hew_sched_init`](crate::scheduler::hew_sched_init) during

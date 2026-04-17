@@ -1,0 +1,12 @@
+# hew-parser / fmt_roundtrip_corpus known-fails allowlist.
+#
+# Each non-empty, non-comment line is `<relative-path>: <reason>`.
+# Files on this list are SKIPPED by the corpus round-trip sweep — use only for
+# real formatter/parser limitations that cannot be fixed in the same change.
+#
+# Path is relative to the workspace root (the directory containing the top-level
+# Cargo.toml). Reason must name the specific invariant that fails and either a
+# tracking issue or a PR that removes the entry.
+#
+# Hard budget: 20 entries. The corpus test fails if this list grows beyond that.
+# Entries without a reason string are rejected.

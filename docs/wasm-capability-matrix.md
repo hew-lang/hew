@@ -178,24 +178,6 @@ dedicated checker warning/error for them.
   high-level networking modules while keeping raw host socket capability in the
   backlog instead of marking it ✅ Pass.
 
-- **`std::net::tls` / `std::net::quic`**: these modules sit on top of native
-  transport stacks today. `quic_transport` is explicitly gated out on wasm32,
-  and the TLS surface has no documented wasm32 runtime path yet.
-
-- **`std::net::dns`**: scout work found the resolver path needs a direct
-  `wasm32-wasip1` runtime probe before Hew can claim either support or an
-  explicit reject.
-
-- **`std::os`**: the current Hew `args`/`env`/cwd/home/hostname/pid/temp-dir`
-  helpers route through native runtime shims, even though parts of WASI may
-  expose analogous host data. Until Hew ships WASI-backed shims, this surface
-  stays in the backlog.
-
-- **`std::crypto::crypto.random_bytes`**: the wasm32 secure-entropy path is not
-  yet grounded well enough to claim support. Separately, the non-crypto runtime
-  PRNG in `hew-runtime/src/random.rs` uses a fixed seed on wasm32, so callers
-  should not infer native entropy guarantees from the current runtime.
-
 ---
 
 ## Generators on WASM — note
@@ -232,15 +214,15 @@ reject_wasm_feature   → Severity::Error    → self.errors
 - `hew-types/src/check/expressions.rs :: reject_if_wasm_incompatible_expr` (scope/tasks)
 - `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (link/monitor/supervisor)
 - `hew-types/src/check/registration.rs` (supervisor actor declarations)
-- `hew-types/src/check/methods.rs :: check_method_call` (stream.* / `http_client.*` / `smtp.*` / http.* / net.* / process.* module calls)
+- `hew-types/src/check/methods.rs :: check_method_call` (stream.* / `http_client.*` / `smtp.*` / http.* / net.* / process.* / tls.* / quic.* / dns.* / os.* module calls)
 - `hew-types/src/check/methods.rs` Receiver match arm (`recv` → `BlockingChannelRecv`)
 - `hew-types/src/check/methods.rs` semaphore handle gate (`acquire` / `acquire_timeout` → `BlockingSemaphoreAcquire`)
-- `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child match arms
+- `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child / tls.TlsStream / quic.QUIC* handle match arms
 
 Rows marked **WASM-TODO (not checker-gated)** currently have no dedicated
 `WasmUnsupportedFeature` guard point. As of main, that bucket includes raw WASI
-socket capability, `std::net::tls`, `std::net::quic`, `std::net::dns`,
-`std::os`, and `std::crypto::crypto.random_bytes`.
+socket capability only. `std::net::tls`, `std::net::quic`, `std::net::dns`,
+`std::os`, and `std::crypto::crypto.random_bytes` are now checker-gated.
 
 ---
 
@@ -256,11 +238,11 @@ These gaps are explicitly deferred and tracked here:
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
 | HTTP server parity | Cooperative WASI-hosted request accept/respond runtime | `WASM-TODO: http-server` |
 | TCP listener / connection parity | WASI socket-backed accept/read/write abstractions | `WASM-TODO: tcp-networking` |
-| TLS client parity | wasm-capable TLS-over-sockets design plus checker/runtime classification | `WASM-TODO: tls` |
+| TLS client parity | wasm-capable TLS-over-sockets design and runtime support | `WASM-TODO: tls` |
 | QUIC parity | wasm-capable UDP/QUIC transport plus feature-gated runtime support | `WASM-TODO: quic` |
 | DNS resolution classification | Confirm actual `wasm32-wasip1` resolver behavior before declaring pass vs reject | `WASM-TODO: dns` |
 | `std::os` parity | WASI-backed args/env/path/system shims for the current stdlib surface | `WASM-TODO: os` |
-| `crypto.random_bytes` parity | Secure wasm32 entropy source and explicit capability classification | `WASM-TODO: crypto-random` |
+| `crypto.random_bytes` parity | Secure wasm32 entropy source (WASI `random_get` plumbing) | `WASM-TODO: crypto-random` |
 | Process execution parity | Explicit host capability model for subprocesses | `WASM-TODO: process-execution` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |

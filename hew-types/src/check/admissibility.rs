@@ -310,6 +310,7 @@ impl Checker {
         // so `lookup_user_type_def`'s fallback cannot resolve to a field-bearing entry.
         for name in &conflicts {
             if let Some((_, short)) = name.split_once('.') {
+                // Current register_qualified_type_alias format is "{module_short}.{name}"; split_once is safe here. If multi-dot module paths are ever added, switch to rsplit_once or a dedicated helper.
                 type_defs.remove(short);
             }
         }
@@ -1809,6 +1810,93 @@ mod tests {
             overlap_errors.len(),
             1,
             "expected exactly one overlap error for the qualified key"
+        );
+    }
+
+    /// Integration test: handle-type field overlap is detected and pruned via the
+    /// public entry point `validate_checker_output_contract`, not just the internal
+    /// `validate_handle_types_no_field_overlap` validator.
+    ///
+    /// This test seeded an overlap via qualified-alias registration, verifies:
+    /// 1. The overlap is rejected with an `InvalidOperation` diagnostic
+    /// 2. Both the qualified key and bare-name twin are removed from `type_defs`
+    /// 3. The error is reportable through the full contract validation pipeline
+    #[test]
+    fn validate_checker_output_contract_prunes_handle_type_field_overlap_via_public_entry() {
+        let mut module_registry = ModuleRegistry::new(vec![]);
+        module_registry.insert_handle_type_for_test("fake.Handle".to_string());
+        let mut checker = Checker::new(module_registry);
+
+        // Seed type_defs with both the bare name and qualified alias, simulating
+        // what the checker's registration pipeline would produce:
+        // - "Handle" from register_type_decl
+        // - "fake.Handle" from register_qualified_type_alias with fields
+        let mut type_defs = HashMap::from([
+            (
+                "Handle".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Struct,
+                    name: "Handle".to_string(),
+                    type_params: vec![],
+                    fields: HashMap::from([("fd".to_string(), Ty::I32)]),
+                    variants: HashMap::new(),
+                    methods: HashMap::new(),
+                    doc_comment: None,
+                    is_indirect: false,
+                },
+            ),
+            (
+                "fake.Handle".to_string(),
+                TypeDef {
+                    kind: TypeDefKind::Struct,
+                    name: "fake.Handle".to_string(),
+                    type_params: vec![],
+                    fields: HashMap::from([("fd".to_string(), Ty::I32)]),
+                    variants: HashMap::new(),
+                    methods: HashMap::new(),
+                    doc_comment: None,
+                    is_indirect: false,
+                },
+            ),
+        ]);
+
+        let mut expr_types = HashMap::new();
+        let mut fn_sigs = HashMap::new();
+        let mut call_type_args = HashMap::new();
+
+        checker.validate_checker_output_contract(
+            &mut expr_types,
+            &mut type_defs,
+            &mut fn_sigs,
+            &mut call_type_args,
+        );
+
+        // Both qualified key and bare-name twin must be pruned from type_defs
+        // after validate_checker_output_contract processes the overlap.
+        assert!(
+            !type_defs.contains_key("fake.Handle"),
+            "qualified handle-type key with fields must be pruned from type_defs"
+        );
+        assert!(
+            !type_defs.contains_key("Handle"),
+            "bare-alias twin must also be pruned defensively from type_defs"
+        );
+
+        // Exactly one InvalidOperation diagnostic must be reported.
+        let overlap_errors: Vec<_> = checker
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InvalidOperation)
+            .collect();
+        assert_eq!(
+            overlap_errors.len(),
+            1,
+            "exactly one overlap error must be emitted via the public contract entry: {:?}",
+            checker.errors
+        );
+        assert!(
+            overlap_errors[0].message.contains("fake.Handle"),
+            "error message must name the conflicting type"
         );
     }
 

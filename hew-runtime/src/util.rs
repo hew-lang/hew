@@ -3,12 +3,14 @@
 //! The Hew runtime recovers from poisoned locks rather than panicking,
 //! because a panicked thread should not cascade-crash independent actors.
 
-use std::sync::{
-    Condvar, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{Condvar, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 /// Build a JSON array by writing each element directly into the output string.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn json_array<I, F>(items: I, mut write_item: F) -> String
 where
     I: IntoIterator,
@@ -29,6 +31,7 @@ where
 }
 
 /// Push a JSON string value into `out`, escaping control characters as needed.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn push_json_string(out: &mut String, s: &str) {
     use std::fmt::Write as _;
 
@@ -61,11 +64,13 @@ impl<T> MutexExt<T> for Mutex<T> {
 }
 
 /// Extension trait for [`RwLock`] that recovers from poisoned locks.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) trait RwLockExt<T> {
     fn read_or_recover(&self) -> RwLockReadGuard<'_, T>;
     fn write_or_recover(&self) -> RwLockWriteGuard<'_, T>;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> RwLockExt<T> for RwLock<T> {
     fn read_or_recover(&self) -> RwLockReadGuard<'_, T> {
         self.read().unwrap_or_else(PoisonError::into_inner)
@@ -77,6 +82,7 @@ impl<T> RwLockExt<T> for RwLock<T> {
 }
 
 /// Extension trait for [`Condvar`] that recovers from poisoned waits.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) trait CondvarExt {
     fn wait_or_recover<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T>;
 
@@ -92,6 +98,7 @@ pub(crate) trait CondvarExt {
 /// # Safety
 ///
 /// `ptr` must be a valid, null-terminated C string or null.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn cstr_to_str<'a>(
     ptr: *const std::ffi::c_char,
     context: &str,
@@ -109,6 +116,7 @@ pub(crate) unsafe fn cstr_to_str<'a>(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl CondvarExt for Condvar {
     fn wait_or_recover<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
         self.wait(guard).unwrap_or_else(PoisonError::into_inner)
@@ -124,7 +132,7 @@ impl CondvarExt for Condvar {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

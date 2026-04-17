@@ -247,6 +247,7 @@ impl Checker {
             });
             true
         });
+        self.validate_handle_types_no_field_overlap(type_defs);
 
         fn_sigs.retain(|_, sig| {
             !fn_sig_has_inference_var(sig)
@@ -273,10 +274,6 @@ impl Checker {
     /// qualified name (e.g. `"tls.TlsStream"`), whereas `type_defs` keys are
     /// always bare names (e.g. `"TlsStream"`).  This property guarantees there
     /// are no false positives for user-defined types.
-    #[expect(
-        dead_code,
-        reason = "wired into validate_checker_output_contract in the following commit"
-    )]
     pub(super) fn validate_handle_types_no_field_overlap(
         &mut self,
         type_defs: &mut HashMap<String, TypeDef>,

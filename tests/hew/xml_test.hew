@@ -1,0 +1,66 @@
+//! Behavioural tests for std::encoding::xml.
+
+import std::encoding::xml;
+import std::testing;
+
+// ── Happy-path parse ──────────────────────────────────────────────────
+
+#[test]
+fn test_parse_root_tag() {
+    let root = xml.parse("<a>text</a>");
+    testing.assert_eq_str(root.get_tag(), "a");
+    root.free();
+}
+
+#[test]
+fn test_parse_text_content() {
+    let root = xml.parse("<a>hello</a>");
+    testing.assert_eq_str(root.get_text(), "hello");
+    root.free();
+}
+
+#[test]
+fn test_parse_children_count() {
+    let root = xml.parse("<root><child1/><child2/></root>");
+    testing.assert_eq(root.children_count(), 2);
+    root.free();
+}
+
+#[test]
+fn test_parse_child_tag() {
+    let root = xml.parse("<root><item>val</item></root>");
+    let child = root.get_child(0);
+    testing.assert_eq_str(child.get_tag(), "item");
+    child.free();
+    root.free();
+}
+
+#[test]
+fn test_parse_attribute() {
+    let root = xml.parse("<a id=\"42\"/>");
+    testing.assert_eq_str(root.get_attribute("id"), "42");
+    root.free();
+}
+
+#[test]
+fn test_is_element_returns_positive_for_element() {
+    let root = xml.parse("<a/>");
+    // is_element == 1 for element nodes
+    testing.assert_eq(root.is_element(), 1);
+    root.free();
+}
+
+// ── Boundary / error ─────────────────────────────────────────────────
+
+#[test]
+fn test_free_no_panic() {
+    let root = xml.parse("<x/>");
+    root.free();
+}
+
+#[test]
+fn test_missing_attribute_returns_empty() {
+    let root = xml.parse("<a/>");
+    testing.assert_eq_str(root.get_attribute("missing"), "");
+    root.free();
+}

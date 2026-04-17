@@ -1,0 +1,73 @@
+//! Behavioural tests for std::encoding::yaml.
+
+import std::encoding::yaml;
+import std::testing;
+
+// ── try_parse ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_try_parse_valid_returns_ok() {
+    let r = yaml.try_parse("name: Hew\nversion: 1");
+    match r {
+        Ok(val) => { val.free(); },
+        Err(_) => panic("expected Ok, got Err"),
+    }
+}
+
+#[test]
+fn test_try_parse_invalid_returns_err() {
+    // A tab in indentation where YAML forbids it is a reliable parse error
+    let r = yaml.try_parse("key:\n\t- bad_indent");
+    match r {
+        Ok(val) => { val.free(); panic("expected Err, got Ok"); },
+        Err(ParseError::Invalid(_)) => {},
+    }
+}
+
+// ── from_int / get_int round-trip ─────────────────────────────────────
+
+#[test]
+fn test_from_int_get_int_round_trip() {
+    let val = yaml.from_int(7);
+    testing.assert_eq(val.get_int(), 7);
+    val.free();
+}
+
+// ── object() builder + get_field ─────────────────────────────────────
+
+#[test]
+fn test_object_builder_string_field() {
+    let obj = yaml.object().with_string("lang", "hew");
+    let field = obj.get_field("lang");
+    testing.assert_eq_str(field.get_string(), "hew");
+    field.free();
+    obj.free();
+}
+
+// ── sequence + array_len ─────────────────────────────────────────────
+
+#[test]
+fn test_array_len() {
+    let arr = yaml.array().push_int(1).push_int(2);
+    testing.assert_eq(arr.array_len(), 2);
+    arr.free();
+}
+
+// ── stringify round-trip ──────────────────────────────────────────────
+
+#[test]
+fn test_stringify_produces_valid_yaml() {
+    let obj = yaml.object().with_int("n", 3);
+    let s = obj.stringify();
+    let r = yaml.try_parse(s);
+    match r {
+        Ok(reparsed) => {
+            let field = reparsed.get_field("n");
+            testing.assert_eq(field.get_int(), 3);
+            field.free();
+            reparsed.free();
+        },
+        Err(_) => panic("stringify produced unparseable YAML"),
+    }
+    obj.free();
+}

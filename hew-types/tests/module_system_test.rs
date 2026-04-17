@@ -61,6 +61,7 @@ fn make_pub_const(name: &str, ty: TypeExpr) -> ConstDecl {
         name: name.to_string(),
         ty: (ty, 0..0),
         value: (Expr::Literal(Literal::Bool(false)), 0..0),
+        doc_comment: None,
     }
 }
 
@@ -700,6 +701,7 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
         },
         span: 0..0,
         attributes: vec![],
+        doc_comment: None,
     }
 }
 

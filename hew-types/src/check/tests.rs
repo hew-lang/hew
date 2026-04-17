@@ -739,6 +739,7 @@ fn test_receive_gen_fn_returns_stream() {
         },
         span: 0..0,
         attributes: vec![],
+        doc_comment: None,
     };
 
     let actor = ActorDecl {
@@ -1416,6 +1417,7 @@ fn typecheck_actor_receive_fn_registered() {
         where_clause: None,
         span: 0..0,
         attributes: vec![],
+        doc_comment: None,
     };
     let actor = ActorDecl {
         visibility: Visibility::Pub,
@@ -3705,6 +3707,7 @@ fn user_module_registers_pub_consts() {
             0..0,
         ),
         value: make_int_literal(100, 0..3),
+        doc_comment: None,
     };
     let priv_const = ConstDecl {
         visibility: Visibility::Private,
@@ -3717,6 +3720,7 @@ fn user_module_registers_pub_consts() {
             0..0,
         ),
         value: make_int_literal(42, 0..2),
+        doc_comment: None,
     };
     let import = make_user_import(
         &["myapp", "config"],
@@ -3769,6 +3773,7 @@ fn user_module_const_bare_import_qualified_only() {
             0..0,
         ),
         value: make_int_literal(50, 0..2),
+        doc_comment: None,
     };
     let import = make_user_import(
         &["myapp", "config"],
@@ -3814,6 +3819,7 @@ fn user_module_registers_types() {
                 0..0,
             ),
             attributes: Vec::new(),
+            doc_comment: None,
         }],
         doc_comment: None,
         wire: None,
@@ -4342,6 +4348,7 @@ fn import_trait_from_module_glob() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -4382,6 +4389,7 @@ fn import_private_trait_not_registered() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -4522,6 +4530,7 @@ fn test_file_import_private_items_not_visible() {
             }),
             0..0,
         ),
+        doc_comment: None,
     });
 
     let private_type = Item::TypeDecl(TypeDecl {
@@ -6199,6 +6208,7 @@ fn const_default_width_registers_in_const_values() {
             0..0,
         ),
         value: make_int_literal(100, 0..3),
+        doc_comment: None,
     };
     checker.check_const(&decl, &(0..3));
 
@@ -6231,6 +6241,7 @@ fn const_explicit_width_not_in_const_values_widening_ok() {
             0..0,
         ),
         value: make_int_literal(100, 0..3),
+        doc_comment: None,
     };
     checker.check_const(&decl, &(0..3));
 
@@ -6801,6 +6812,7 @@ fn make_checker_with_trait(
                 where_clause: None,
                 body: None,
                 span: 0..0,
+                doc_comment: None,
             })
         })
         .collect();
@@ -8128,6 +8140,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 where_clause: None,
                 body: None,
                 span: 0..0,
+                doc_comment: None,
             }),
         ],
         doc_comment: None,
@@ -8165,6 +8178,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -8216,6 +8230,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -8251,6 +8266,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -8790,6 +8806,7 @@ mod non_root_module_inference_scope {
                     trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
                 }),
                 span: 0..0,
+                doc_comment: None,
             })],
             doc_comment: None,
         };
@@ -8831,6 +8848,7 @@ mod non_root_module_inference_scope {
                     trailing_expr: Some(Box::new((Expr::Identifier("None".to_string()), 20..24))),
                 }),
                 span: 0..0,
+                doc_comment: None,
             })],
             doc_comment: None,
         };
@@ -8889,6 +8907,7 @@ mod non_root_module_inference_scope {
                     trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
                 }),
                 span: 0..0,
+                doc_comment: None,
             })],
             doc_comment: None,
         };
@@ -9400,6 +9419,7 @@ fn module_graph_body_private_local_type_is_available() {
                 0..1,
             ),
             attributes: Vec::new(),
+            doc_comment: None,
         }],
         is_indirect: false,
         doc_comment: None,

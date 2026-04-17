@@ -225,6 +225,12 @@ pub struct TraceEvent {
     pub msg_type: i32,
     #[serde(default)]
     pub timestamp_ns: u64,
+    /// Fully-qualified handler name (`"ActorType::handler_name"`), or `None`
+    /// when the runtime's metadata registry has not been populated for this
+    /// `msg_type`.  Always `None` in native profiler builds until the
+    /// follow-up codegen emission work lands.
+    #[serde(default)]
+    pub handler_name: Option<String>,
 }
 
 impl TraceEvent {

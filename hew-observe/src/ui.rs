@@ -715,7 +715,15 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
         let time_str = format!("{relative_s:>6.2}s");
 
         let event_label = match evt.event_type.as_str() {
-            "send" => format!("──▶ send({})", evt.msg_type),
+            "send" => {
+                // Show resolved handler name when available, fall back to
+                // the raw msg_type integer.
+                if let Some(name) = &evt.handler_name {
+                    format!("──▶ send({name})")
+                } else {
+                    format!("──▶ send({})", evt.msg_type)
+                }
+            }
             "spawn" => "◆ spawn".to_owned(),
             "crash" => "✕ crash".to_owned(),
             "stop" => "◇ stop".to_owned(),

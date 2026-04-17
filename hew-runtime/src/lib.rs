@@ -77,6 +77,7 @@ macro_rules! cabi_guard {
     };
 }
 
+pub(crate) mod lifetime;
 pub(crate) mod util;
 
 #[cfg(test)]

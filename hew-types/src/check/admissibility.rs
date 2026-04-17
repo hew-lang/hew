@@ -279,7 +279,7 @@ impl Checker {
         &mut self,
         type_defs: &mut HashMap<String, TypeDef>,
     ) {
-        let conflicts: Vec<String> = type_defs
+        let conflicts: HashSet<String> = type_defs
             .iter()
             .filter(|(name, type_def)| {
                 !type_def.fields.is_empty() && self.module_registry.is_handle_type(name)
@@ -1568,7 +1568,7 @@ mod tests {
     ///
     /// Regression guard for hew-lang/hew#1252.
     #[test]
-    fn handle_field_overlap_rejected() {
+    fn validate_handle_types_no_field_overlap_rejects_overlap() {
         let mut module_registry = ModuleRegistry::new(vec![]);
         module_registry.insert_handle_type_for_test("fake.Handle".to_string());
         let mut checker = Checker::new(module_registry);
@@ -1622,7 +1622,7 @@ mod tests {
     ///
     /// Regression guard for hew-lang/hew#1252 false-positive risk.
     #[test]
-    fn clean_handle_and_clean_fielded_type_survive() {
+    fn validate_handle_types_no_field_overlap_survives_unqualified_user_type() {
         let mut module_registry = ModuleRegistry::new(vec![]);
         module_registry.insert_handle_type_for_test("tls.TlsStream".to_string());
         let mut checker = Checker::new(module_registry);
@@ -1669,6 +1669,73 @@ mod tests {
             checker.errors.is_empty(),
             "no errors must be emitted: {:?}",
             checker.errors
+        );
+    }
+
+    /// Diagnostic emitted for a qualified alias that has fields must carry the
+    /// bare-name span, not the zero span that results when
+    /// `register_qualified_type_alias` omits the span propagation.
+    ///
+    /// Regression guard for the `0..0` fallback in
+    /// `validate_handle_types_no_field_overlap`.
+    #[test]
+    fn validate_handle_types_no_field_overlap_qualified_alias_span_is_propagated() {
+        let mut module_registry = ModuleRegistry::new(vec![]);
+        module_registry.insert_handle_type_for_test("fake.Handle".to_string());
+        let mut checker = Checker::new(module_registry);
+
+        // Seed the bare name entry in type_defs and type_def_spans, simulating
+        // what register_type_namespace_name + register_type_decl would do.
+        checker.type_def_spans.insert("Handle".to_string(), 10..25);
+        checker.type_defs.insert(
+            "Handle".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Handle".to_string(),
+                type_params: vec![],
+                fields: HashMap::new(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+
+        // register_qualified_type_alias must propagate the span to the qualified key.
+        checker.register_qualified_type_alias("fake", "Handle");
+
+        // Build the local type_defs map as the checker would pass to the validator:
+        // the qualified alias has fields — triggering the overlap check.
+        let mut type_defs = HashMap::from([(
+            "fake.Handle".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "fake.Handle".to_string(),
+                type_params: vec![],
+                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        )]);
+
+        checker.validate_handle_types_no_field_overlap(&mut type_defs);
+
+        let overlap_errors: Vec<_> = checker
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InvalidOperation)
+            .collect();
+        assert_eq!(
+            overlap_errors.len(),
+            1,
+            "expected exactly one overlap error"
+        );
+        assert_eq!(
+            overlap_errors[0].span,
+            10..25,
+            "diagnostic span must be the bare-name declaration span, not 0..0"
         );
     }
 

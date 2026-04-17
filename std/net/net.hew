@@ -64,45 +64,36 @@ pub enum NetError {
     Other(int);
 }
 
-const NET_ERROR_OTHER: int               = 1;
-const NET_ERROR_CONNECTION_REFUSED: int  = 111;
-const NET_ERROR_ADDRESS_IN_USE: int      = 98;
-const NET_ERROR_TIMED_OUT: int           = 110;
-const NET_ERROR_ADDRESS_NOT_AVAILABLE: int = 99;
-
-fn net_error_from_message(message: String) -> NetError {
-    if message.contains("Connection refused")
-        || message.contains("connection refused")
-        || message.contains("os error 111")
-        || message.contains("os error 61")
-    {
-        NetError::ConnectionRefused(NET_ERROR_CONNECTION_REFUSED)
-    } else if message.contains("Address already in use")
-        || message.contains("address already in use")
-        || message.contains("os error 98")
-        || message.contains("os error 48")
-    {
-        NetError::AddressInUse(NET_ERROR_ADDRESS_IN_USE)
-    } else if message.contains("timed out")
-        || message.contains("Timed out")
-        || message.contains("os error 110")
-        || message.contains("os error 60")
-    {
-        NetError::TimedOut(NET_ERROR_TIMED_OUT)
-    } else if message.contains("Cannot assign requested address")
-        || message.contains("cannot assign requested address")
-        || message.contains("os error 99")
-        || message.contains("os error 49")
-    {
-        NetError::AddressNotAvailable(NET_ERROR_ADDRESS_NOT_AVAILABLE)
+/// INTERNAL-ABI: map an OS errno integer to a structured NetError variant.
+///
+/// The int payload carried in each variant is the raw OS errno so callers
+/// can inspect the platform value. errno=0 (no OS error) maps to Other(0).
+fn net_error_from_errno(errno: i32) -> NetError {
+    // ECONNREFUSED: Linux=111, macOS=61
+    if errno == 111 || errno == 61 {
+        NetError::ConnectionRefused(errno as int)
+    // EADDRINUSE: Linux=98, macOS=48
+    } else if errno == 98 || errno == 48 {
+        NetError::AddressInUse(errno as int)
+    // ETIMEDOUT: Linux=110, macOS=60
+    } else if errno == 110 || errno == 60 {
+        NetError::TimedOut(errno as int)
+    // EADDRNOTAVAIL: Linux=99, macOS=49
+    } else if errno == 99 || errno == 49 {
+        NetError::AddressNotAvailable(errno as int)
     } else {
-        NetError::Other(NET_ERROR_OTHER)
+        NetError::Other(errno as int)
     }
 }
 
 fn net_result_from_status(status: i32) -> Result<(), NetError> { // INTERNAL-ABI: status from C ABI is i32; internal helper only
     if status < 0 {
-        Err(net_error_from_message(unsafe { hew_stream_last_error() }))
+        // Read errno before the message: hew_stream_last_error clears errno as a
+        // side-effect (they share a paired thread-local), so errno must be
+        // consumed first.
+        let errno = unsafe { hew_stream_last_errno() };
+        let _ = unsafe { hew_stream_last_error() };
+        Err(net_error_from_errno(errno))
     } else {
         Ok(())
     }
@@ -236,7 +227,9 @@ pub fn try_listen(addr: String) -> Result<Listener, NetError> {
         if hew_listener_is_valid(ln) {
             Ok(ln)
         } else {
-            Err(net_error_from_message(hew_stream_last_error()))
+            let errno = hew_stream_last_errno();
+            let _ = hew_stream_last_error();
+            Err(net_error_from_errno(errno))
         }
     }
 }
@@ -273,7 +266,9 @@ pub fn try_connect(addr: String) -> Result<Connection, NetError> {
         if hew_connection_is_valid(conn) {
             Ok(conn)
         } else {
-            Err(net_error_from_message(hew_stream_last_error()))
+            let errno = hew_stream_last_errno();
+            let _ = hew_stream_last_error();
+            Err(net_error_from_errno(errno))
         }
     }
 }
@@ -312,7 +307,9 @@ pub fn broadcast_except(sender: Connection, message: bytes) -> int {
 pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<int, NetError> {
     let n: i32 = unsafe { hew_tcp_broadcast_except(sender, message) };
     if n < 0 {
-        Err(net_error_from_message(unsafe { hew_stream_last_error() }))
+        let errno = unsafe { hew_stream_last_errno() };
+        unsafe { let _ = hew_stream_last_error(); }
+        Err(net_error_from_errno(errno))
     } else {
         Ok(n as int)
     }
@@ -337,4 +334,5 @@ extern "C" {
     fn hew_listener_is_valid(ln: Listener) -> bool;
     fn hew_connection_is_valid(conn: Connection) -> bool;
     fn hew_stream_last_error() -> String;
+    fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
 }

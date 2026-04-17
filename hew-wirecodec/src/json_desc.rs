@@ -52,7 +52,7 @@ pub enum JsonOp {
     //        through WireJsonKind::Integer; no hew_json_object_set_duration
     //        runtime entry point exists today.
     //       WHEN — remove once the descriptor-driven path replaces jsonKindOf
-    //        (see follow-up issue for MLIRGenWire shrink).
+    //        (tracked in issue #1272, MLIRGenWire shrink).
     //       WHAT — a dedicated `hew_json_object_set_duration` runtime call
     //        with a corresponding C++ consumer reading the descriptor's op
     //        stream rather than jsonKindOf.
@@ -65,7 +65,7 @@ pub enum JsonOp {
     //        through WireJsonKind::Integer; no hew_json_object_set_char
     //        runtime entry point exists today.
     //       WHEN — remove once the descriptor-driven path replaces jsonKindOf
-    //        (see follow-up issue for MLIRGenWire shrink).
+    //        (tracked in issue #1272, MLIRGenWire shrink).
     //       WHAT — a dedicated `hew_json_object_set_char` runtime call
     //        with a corresponding C++ consumer reading the descriptor's op
     //        stream rather than jsonKindOf.

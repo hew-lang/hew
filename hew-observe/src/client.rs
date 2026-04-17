@@ -85,6 +85,10 @@ pub struct ActorInfo {
     pub id: u64,
     #[serde(default)]
     pub pid: u64,
+    /// Hew actor type name, e.g. `"Counter"`.  Absent from older profiler
+    /// versions; defaults to an empty string in that case.
+    #[serde(default)]
+    pub actor_type: String,
     #[serde(default)]
     pub state: String,
     #[serde(default)]
@@ -104,6 +108,18 @@ impl ActorInfo {
             "Unknown"
         } else {
             &self.state
+        }
+    }
+
+    /// Display label for the actor type.
+    ///
+    /// Returns the registered Hew type name when available, or `"Actor"` as a
+    /// fallback for older profiler versions that do not emit `actor_type`.
+    pub fn type_label(&self) -> &str {
+        if self.actor_type.is_empty() {
+            "Actor"
+        } else {
+            &self.actor_type
         }
     }
 }

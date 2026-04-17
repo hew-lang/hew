@@ -141,7 +141,11 @@ impl<T> PoisonSafeRw<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `Arc`, `Barrier`, and `thread` are only used by the contention tests,
+    // which are gated off of `wasm32-wasip1` (no working `thread::spawn`).
+    #[cfg(not(target_arch = "wasm32"))]
     use std::sync::{Arc, Barrier};
+    #[cfg(not(target_arch = "wasm32"))]
     use std::thread;
 
     #[test]
@@ -155,6 +159,14 @@ mod tests {
         assert_eq!(ps.access(|v| *v), 21);
     }
 
+    // On `wasm32-wasip1` the workspace profile sets `panic = "abort"`, so a
+    // panic inside a closure terminates the test binary instead of unwinding.
+    // `catch_unwind` is unusable there, which makes panic-driven poison
+    // recovery impossible to exercise. The recovery code is target-agnostic
+    // (it only depends on `PoisonError::into_inner`), so verifying it on the
+    // host targets is sufficient. See `scheduler_wasm.rs` for the same
+    // pattern applied to `#[should_panic]` tests.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn poison_safe_recovers_and_access_returns_value() {
         let ps = PoisonSafe::new(Vec::<u32>::new());
@@ -183,6 +195,10 @@ mod tests {
         assert_eq!(read, -17);
     }
 
+    // See `poison_safe_recovers_and_access_returns_value` for why this
+    // test is gated off of `wasm32`: `panic = "abort"` on wasm makes
+    // `catch_unwind` unable to observe the panic that produces the poison.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn poison_safe_rw_recovers_from_write_panic() {
         let ps = PoisonSafeRw::new(0u32);
@@ -203,6 +219,12 @@ mod tests {
         assert_eq!(w, 9);
     }
 
+    // Contention tests rely on `std::thread::spawn`, which panics on
+    // `wasm32-wasip1` (no real threads). The non-blocking code paths that
+    // these tests cover are exercised through real runtime use on every
+    // target, and are otherwise trivially correct (`try_lock` / `try_write`
+    // plus poison matching), so host-only coverage is sufficient.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn poison_safe_try_access_returns_none_on_contention() {
         let ps = Arc::new(PoisonSafe::new(0u32));
@@ -235,6 +257,9 @@ mod tests {
         assert_eq!(got, Some(0));
     }
 
+    // See `poison_safe_try_access_returns_none_on_contention` for why this
+    // is gated off of `wasm32-wasip1`.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn poison_safe_rw_try_access_returns_none_on_contention() {
         let ps = Arc::new(PoisonSafeRw::new(0u32));

@@ -5,27 +5,30 @@
 //! wire codec path (msgpack, JSON, YAML) reads the same plan rather than
 //! dispatching directly on `PrimitiveTypeKind` or type-name strings.
 //!
-//! Stages 1–3 (this crate's initial landing):
-//! 1. Introduce `WireCodecPlan`, [`PrimitiveWireKind`], and [`FieldPlan`]
-//!    as the structural-canonical record of a wire type.
-//! 2. Add [`MsgpackCodecDesc`] as the descriptor-driven msgpack emitter.
-//!    A shadow test in `hew-serialize` compares byte-for-byte against the
-//!    legacy path on every `e2e_wire` fixture.
-//! 3. Make the descriptor-driven path the canonical wire-type codec entry;
-//!    the legacy `rmp_serde::to_vec_named(&WireDecl)` path stays behind a
-//!    feature flag for the 10,000-iteration random-corpus check (Lane 7b).
+//! The crate currently exposes three descriptor types — [`MsgpackCodecDesc`],
+//! [`JsonCodecDesc`], and [`YamlCodecDesc`] — plus the plan and kind
+//! primitives. Every descriptor is produced from the same
+//! [`WireCodecPlan`] via a `from_plan` constructor whose per-field dispatch
+//! is an exhaustive match on [`PrimitiveWireKind`]; adding a new kind forces
+//! a compile error in every descriptor until wired up, which is the
+//! structural defence against the silent-default class of bugs (PRs #914,
+//! #944) that motivated this consolidation.
 //!
 //! LESSONS upheld: `serializer-fail-closed`, `generated-narrowing-guards`,
 //! `exhaustive-traversal-and-lowering`.
 
+pub mod json_desc;
 pub mod kind;
 pub mod msgpack_desc;
 pub mod plan;
 pub mod value;
+pub mod yaml_desc;
 
+pub use crate::json_desc::{JsonCodecDesc, JsonFieldOp, JsonOp};
 pub use crate::kind::{KindError, PrimitiveWireKind};
 pub use crate::msgpack_desc::{MsgpackCodecDesc, MsgpackFieldOp, MsgpackOp};
 pub use crate::plan::{
     FieldModifiers, FieldPlan, IntegerBounds, VariantPlan, WireCodecError, WireCodecPlan, WireShape,
 };
 pub use crate::value::WireValue;
+pub use crate::yaml_desc::{YamlCodecDesc, YamlFieldOp, YamlOp};

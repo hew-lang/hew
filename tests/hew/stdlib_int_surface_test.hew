@@ -2,6 +2,9 @@
 //! One assertion per migrated module — extended in each migration commit.
 
 import std::channel::channel;
+import std::encoding::json;
+import std::encoding::toml;
+import std::encoding::yaml;
 import std::testing;
 
 #[test]
@@ -10,4 +13,36 @@ fn test_channel_new_accepts_int_capacity() {
     let (tx, rx) = channel.new(capacity);
     tx.close();
     rx.close();
+}
+
+#[test]
+fn test_json_int_round_trip() {
+    let v = json.from_int(42);
+    let i: int = v.get_int();
+    testing.assert_eq(i, 42);
+    v.free();
+}
+
+#[test]
+fn test_json_array_len_returns_int() {
+    let arr = json.array().push_int(1).push_int(2).push_int(3);
+    let n: int = arr.array_len();
+    testing.assert_eq(n, 3);
+    arr.free();
+}
+
+#[test]
+fn test_toml_int_round_trip() {
+    let v = toml.from_int(99);
+    let i: int = v.get_int();
+    testing.assert_eq(i, 99);
+    v.free();
+}
+
+#[test]
+fn test_yaml_int_round_trip() {
+    let v = yaml.from_int(7);
+    let i: int = v.get_int();
+    testing.assert_eq(i, 7);
+    v.free();
 }

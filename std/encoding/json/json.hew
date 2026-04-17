@@ -39,11 +39,11 @@ trait ValueMethods {
     /// Serialize the value back to a JSON string.
     fn stringify(val: Value) -> String;
     /// Return the type tag (0=null, 1=bool, 2=int, 3=float, 4=string, 5=array, 6=object).
-    fn type_of(val: Value) -> i32;
+    fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the boolean value (0 or 1).
-    fn get_bool(val: Value) -> i32;
+    fn get_bool(val: Value) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
     /// Extract the integer value.
-    fn get_int(val: Value) -> i64;
+    fn get_int(val: Value) -> int;
     /// Extract the floating-point value.
     fn get_float(val: Value) -> f64;
     /// Extract the string value.
@@ -51,9 +51,9 @@ trait ValueMethods {
     /// Look up a field by key in a JSON object.
     fn get_field(val: Value, key: String) -> Value;
     /// Return the number of elements in a JSON array.
-    fn array_len(val: Value) -> i32;
+    fn array_len(val: Value) -> int;
     /// Return the element at the given index in a JSON array.
-    fn array_get(val: Value, index: i32) -> Value;
+    fn array_get(val: Value, index: int) -> Value;
     /// Return a JSON array of the object's keys.
     fn keys(val: Value) -> Value;
     /// Release the value resources before scope exit.
@@ -64,7 +64,7 @@ trait ValueMethods {
     /// Set a string field on an object. Returns the object for chaining.
     fn with_string(obj: Value, key: String, val: String) -> Value;
     /// Set an integer field. Returns the object for chaining.
-    fn with_int(obj: Value, key: String, val: i64) -> Value;
+    fn with_int(obj: Value, key: String, val: int) -> Value;
     /// Set a float field. Returns the object for chaining.
     fn with_float(obj: Value, key: String, val: f64) -> Value;
     /// Set a boolean field. Returns the object for chaining.
@@ -76,7 +76,7 @@ trait ValueMethods {
     /// Push a Value onto an array. The child is consumed. Returns the array.
     fn push(arr: Value, child: Value) -> Value;
     /// Push an integer onto an array. Returns the array.
-    fn push_int(arr: Value, val: i64) -> Value;
+    fn push_int(arr: Value, val: int) -> Value;
     /// Push a string onto an array. Returns the array.
     fn push_string(arr: Value, val: String) -> Value;
     /// Push a float onto an array. Returns the array.
@@ -89,22 +89,22 @@ trait ValueMethods {
 
 impl ValueMethods for Value {
     fn stringify(val: Value) -> String { unsafe { hew_json_stringify(val) } }
-    fn type_of(val: Value) -> i32 { unsafe { hew_json_type(val) } }
-    fn get_bool(val: Value) -> i32 { unsafe { hew_json_get_bool(val) } }
-    fn get_int(val: Value) -> i64 { unsafe { hew_json_get_int(val) } }
+    fn type_of(val: Value) -> i32 { unsafe { hew_json_type(val) } } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
+    fn get_bool(val: Value) -> i32 { unsafe { hew_json_get_bool(val) } } // INTERNAL-ABI: C ABI returns bool as i32
+    fn get_int(val: Value) -> int { unsafe { hew_json_get_int(val) } }
     fn get_float(val: Value) -> f64 { unsafe { hew_json_get_float(val) } }
     fn get_string(val: Value) -> String { unsafe { hew_json_get_string(val) } }
     fn get_field(val: Value, key: String) -> Value { unsafe { hew_json_get_field(val, key) } }
-    fn array_len(val: Value) -> i32 { unsafe { hew_json_array_len(val) } }
-    fn array_get(val: Value, index: i32) -> Value { unsafe { hew_json_array_get(val, index) } }
+    fn array_len(val: Value) -> int { unsafe { hew_json_array_len(val) } }
+    fn array_get(val: Value, index: int) -> Value { unsafe { hew_json_array_get(val, index as i32) } } // INTERNAL-ABI: C ABI index is i32
     fn keys(val: Value) -> Value { unsafe { hew_json_object_keys(val) } }
     fn free(val: Value) { unsafe { hew_json_free(val) }; }
 
     fn with_string(obj: Value, key: String, val: String) -> Value {
         unsafe { hew_json_object_set_string(obj, key, val) }; obj
     }
-    fn with_int(obj: Value, key: String, val: i64) -> Value {
-        unsafe { hew_json_object_set_int(obj, key, val) }; obj
+    fn with_int(obj: Value, key: String, val: int) -> Value {
+        unsafe { hew_json_object_set_int(obj, key, val as i64) }; obj // INTERNAL-ABI: C ABI takes i64
     }
     fn with_float(obj: Value, key: String, val: f64) -> Value {
         unsafe { hew_json_object_set_float(obj, key, val) }; obj
@@ -121,8 +121,8 @@ impl ValueMethods for Value {
     fn push(arr: Value, child: Value) -> Value {
         unsafe { hew_json_array_push(arr, child) }; arr
     }
-    fn push_int(arr: Value, val: i64) -> Value {
-        unsafe { hew_json_array_push_int(arr, val) }; arr
+    fn push_int(arr: Value, val: int) -> Value {
+        unsafe { hew_json_array_push_int(arr, val as i64) }; arr // INTERNAL-ABI: C ABI takes i64
     }
     fn push_string(arr: Value, val: String) -> Value {
         unsafe { hew_json_array_push_string(arr, val) }; arr
@@ -184,7 +184,7 @@ pub fn array() -> Value {
 }
 
 /// Create a JSON Value from an integer.
-pub fn from_int(val: i64) -> Value { unsafe { hew_json_from_int(val) } }
+pub fn from_int(val: int) -> Value { unsafe { hew_json_from_int(val as i64) } } // INTERNAL-ABI: C ABI takes i64
 
 /// Create a JSON Value from a float.
 pub fn from_float(val: f64) -> Value { unsafe { hew_json_from_float(val) } }

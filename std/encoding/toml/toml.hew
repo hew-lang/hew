@@ -39,21 +39,21 @@ type Value {}
 /// Methods available on a TOML `Value`.
 trait ValueMethods {
     /// Return the type tag (0=string, 1=int, 2=float, 3=bool, 4=array, 5=table, 6=datetime).
-    fn type_of(val: Value) -> i32;
+    fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the string value.
     fn get_string(val: Value) -> String;
     /// Extract the integer value.
-    fn get_int(val: Value) -> i64;
+    fn get_int(val: Value) -> int;
     /// Extract the floating-point value.
     fn get_float(val: Value) -> f64;
     /// Extract the boolean value (0 or 1).
-    fn get_bool(val: Value) -> i32;
+    fn get_bool(val: Value) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
     /// Look up a field by key in a TOML table.
     fn get_field(val: Value, key: String) -> Value;
     /// Return the number of elements in a TOML array.
-    fn array_len(val: Value) -> i32;
+    fn array_len(val: Value) -> int;
     /// Return the element at the given index in a TOML array.
-    fn array_get(val: Value, index: i32) -> Value;
+    fn array_get(val: Value, index: int) -> Value;
     /// Serialize the value back to a TOML string.
     fn stringify(val: Value) -> String;
     /// Release the value resources.
@@ -64,7 +64,7 @@ trait ValueMethods {
     /// Set a string field on a table. Returns the table for chaining.
     fn with_string(tbl: Value, key: String, val: String) -> Value;
     /// Set an integer field. Returns the table for chaining.
-    fn with_int(tbl: Value, key: String, val: i64) -> Value;
+    fn with_int(tbl: Value, key: String, val: int) -> Value;
     /// Set a float field. Returns the table for chaining.
     fn with_float(tbl: Value, key: String, val: f64) -> Value;
     /// Set a boolean field. Returns the table for chaining.
@@ -74,7 +74,7 @@ trait ValueMethods {
     /// Push a Value onto an array. The child is consumed. Returns the array.
     fn push(arr: Value, child: Value) -> Value;
     /// Push an integer onto an array. Returns the array.
-    fn push_int(arr: Value, val: i64) -> Value;
+    fn push_int(arr: Value, val: int) -> Value;
     /// Push a string onto an array. Returns the array.
     fn push_string(arr: Value, val: String) -> Value;
     /// Push a float onto an array. Returns the array.
@@ -84,22 +84,22 @@ trait ValueMethods {
 }
 
 impl ValueMethods for Value {
-    fn type_of(val: Value) -> i32 { unsafe { hew_toml_type(val) } }
+    fn type_of(val: Value) -> i32 { unsafe { hew_toml_type(val) } } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     fn get_string(val: Value) -> String { unsafe { hew_toml_get_string(val) } }
-    fn get_int(val: Value) -> i64 { unsafe { hew_toml_get_int(val) } }
+    fn get_int(val: Value) -> int { unsafe { hew_toml_get_int(val) } }
     fn get_float(val: Value) -> f64 { unsafe { hew_toml_get_float(val) } }
-    fn get_bool(val: Value) -> i32 { unsafe { hew_toml_get_bool(val) } }
+    fn get_bool(val: Value) -> i32 { unsafe { hew_toml_get_bool(val) } } // INTERNAL-ABI: C ABI returns bool as i32
     fn get_field(val: Value, key: String) -> Value { unsafe { hew_toml_get_field(val, key) } }
-    fn array_len(val: Value) -> i32 { unsafe { hew_toml_array_len(val) } }
-    fn array_get(val: Value, index: i32) -> Value { unsafe { hew_toml_array_get(val, index) } }
+    fn array_len(val: Value) -> int { unsafe { hew_toml_array_len(val) } }
+    fn array_get(val: Value, index: int) -> Value { unsafe { hew_toml_array_get(val, index as i32) } } // INTERNAL-ABI: C ABI index is i32
     fn stringify(val: Value) -> String { unsafe { hew_toml_stringify(val) } }
     fn free(val: Value) { unsafe { hew_toml_free(val) }; }
 
     fn with_string(tbl: Value, key: String, val: String) -> Value {
         unsafe { hew_toml_table_set_string(tbl, key, val) }; tbl
     }
-    fn with_int(tbl: Value, key: String, val: i64) -> Value {
-        unsafe { hew_toml_table_set_int(tbl, key, val) }; tbl
+    fn with_int(tbl: Value, key: String, val: int) -> Value {
+        unsafe { hew_toml_table_set_int(tbl, key, val as i64) }; tbl // INTERNAL-ABI: C ABI takes i64
     }
     fn with_float(tbl: Value, key: String, val: f64) -> Value {
         unsafe { hew_toml_table_set_float(tbl, key, val) }; tbl
@@ -113,8 +113,8 @@ impl ValueMethods for Value {
     fn push(arr: Value, child: Value) -> Value {
         unsafe { hew_toml_array_push(arr, child) }; arr
     }
-    fn push_int(arr: Value, val: i64) -> Value {
-        unsafe { hew_toml_array_push_int(arr, val) }; arr
+    fn push_int(arr: Value, val: int) -> Value {
+        unsafe { hew_toml_array_push_int(arr, val as i64) }; arr // INTERNAL-ABI: C ABI takes i64
     }
     fn push_string(arr: Value, val: String) -> Value {
         unsafe { hew_toml_array_push_string(arr, val) }; arr
@@ -166,7 +166,7 @@ pub fn array() -> Value {
 }
 
 /// Create a TOML Value from an integer.
-pub fn from_int(val: i64) -> Value { unsafe { hew_toml_from_int(val) } }
+pub fn from_int(val: int) -> Value { unsafe { hew_toml_from_int(val as i64) } } // INTERNAL-ABI: C ABI takes i64
 
 /// Create a TOML Value from a float.
 pub fn from_float(val: f64) -> Value { unsafe { hew_toml_from_float(val) } }

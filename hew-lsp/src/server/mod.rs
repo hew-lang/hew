@@ -4140,6 +4140,45 @@ machine Traffic {
     }
 
     #[test]
+    fn plan_workspace_rename_does_not_duplicate_cross_file_conflicts() {
+        // Verify that when the plan_rename probe at the definition file
+        // re-emits a ShadowsTopLevel/ShadowsImport conflict already reported
+        // by collect_cross_file_conflict, the dedup filter removes the duplicate.
+        // This prevents inflating the conflict count in the editor UI.
+        let util_source = "fn greet() -> i32 { 1 }";
+        let main_source = "import util::{ greet };\nfn greet() -> i32 { 0 }\nfn main() { greet() }";
+
+        let util_uri = make_test_uri("/project/util.hew");
+        let main_uri = make_test_uri("/project/main.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(main_uri.clone(), make_doc(main_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn greet").unwrap() + 3;
+        let err = plan_workspace_rename(&util_uri, &util_doc, offset, "greet", &documents)
+            .expect_err("clash with main.hew's top-level greet should be reported");
+        match err {
+            hew_analysis::RenameError::Conflicts { conflicts } => {
+                // The key assertion: conflicts should be deduped. Before the fix,
+                // collect_cross_file_conflict would report a ShadowsTopLevel clash,
+                // then the plan_rename probe would re-emit it, inflating the count.
+                assert_eq!(
+                    conflicts.len(),
+                    1,
+                    "conflicts should be deduped, got {conflicts:?}"
+                );
+                assert_eq!(
+                    conflicts[0].kind,
+                    hew_analysis::RenameConflictKind::ShadowsTopLevel
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn plan_workspace_rename_local_let_does_not_affect_module_top_level() {
         // Rename a local `let x` to `y`. Even though `y` does not collide
         // anywhere, the rename must affect ONLY the enclosing function,

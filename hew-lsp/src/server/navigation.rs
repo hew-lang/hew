@@ -836,6 +836,25 @@ pub(super) fn plan_workspace_rename(
         }
     }
 
+    // Deduplicate conflicts on (existing_span, offending_span, kind).
+    // Both collect_cross_file_conflict and the plan_rename probe may report
+    // the same ShadowsTopLevel/ShadowsImport conflict, inflating the count
+    // in the editor UI.
+    let mut deduped = Vec::new();
+    for conflict in cross_file_conflicts {
+        if !deduped
+            .iter()
+            .any(|existing: &hew_analysis::RenameConflict| {
+                existing.existing_span == conflict.existing_span
+                    && existing.offending_span == conflict.offending_span
+                    && existing.kind == conflict.kind
+            })
+        {
+            deduped.push(conflict);
+        }
+    }
+    cross_file_conflicts = deduped;
+
     if !cross_file_conflicts.is_empty() {
         return Err(hew_analysis::RenameError::Conflicts {
             conflicts: cross_file_conflicts,

@@ -1,14 +1,15 @@
 import std::net::quic;
+import std::fs;
 
 // End-to-end test for the QUICStream send_string / recv_string helpers.
 // Mirrors the byte-level quic_loopback.hew structure but exercises the
 // text surface so callers do not need to reach for raw FFI or manual
 // bytes conversion.
 
-fn assert_ok(result: Result<(), String>) {
+fn assert_ok(result: Result<(), fs.IoError>) {
     match result {
         Ok(_) => {},
-        Err(err) => panic(err),
+        Err(_) => panic("quic operation failed"),
     }
 }
 

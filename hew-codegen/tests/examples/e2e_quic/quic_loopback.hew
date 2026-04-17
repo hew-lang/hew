@@ -1,4 +1,5 @@
 import std::net::quic;
+import std::fs;
 
 fn main() {
     let server = quic.new_server("127.0.0.1:0");
@@ -39,11 +40,11 @@ fn main() {
 
             match stream.send(data) {
                 Ok(_) => {},
-                Err(err) => panic(err),
+                Err(_) => panic("quic operation failed"),
             }
             match stream.finish() {
                 Ok(_) => {},
-                Err(err) => panic(err),
+                Err(_) => panic("quic operation failed"),
             }
             let stream_after_send = stream.observe();
             assert_eq(stream_after_send.bytes_sent, 10);
@@ -67,7 +68,7 @@ fn main() {
 
             match conn.disconnect() {
                 Ok(_) => {},
-                Err(err) => panic(err),
+                Err(_) => panic("quic operation failed"),
             }
             server.close();
         };
@@ -94,7 +95,7 @@ fn main() {
 
         match stream.send(b"hello quic") {
             Ok(_) => {},
-            Err(err) => panic(err),
+            Err(_) => panic("quic operation failed"),
         }
         let stream_after_send = stream.observe();
         assert_eq(stream_after_send.bytes_sent, 10);
@@ -108,7 +109,7 @@ fn main() {
 
         match stream.finish() {
             Ok(_) => {},
-            Err(err) => panic(err),
+            Err(_) => panic("quic operation failed"),
         }
         let eof = stream.recv();
         assert_eq(eof.len(), 0);
@@ -127,7 +128,7 @@ fn main() {
 
         match conn.disconnect() {
             Ok(_) => {},
-            Err(err) => panic(err),
+            Err(_) => panic("quic operation failed"),
         }
         client.close();
     }

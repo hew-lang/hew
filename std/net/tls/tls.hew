@@ -18,6 +18,8 @@
 //! }
 //! ```
 
+import std::fs;
+
 /// An established TLS connection to a remote host.
 ///
 /// Created by `tls.connect(host, port)`. Must be released with `close()`.
@@ -34,8 +36,8 @@ trait TlsStreamMethods {
 
     /// Write raw bytes to the TLS stream.
     ///
-    /// Returns the number of bytes written, or an error message on failure.
-    fn try_write(stream: TlsStream, data: bytes) -> Result<int, String>;
+    /// Returns the number of bytes written, or `Err(fs.IoError)` on failure.
+    fn try_write(stream: TlsStream, data: bytes) -> Result<int, fs.IoError>;
 
     /// Read up to `size` bytes from the TLS stream.
     ///
@@ -50,9 +52,9 @@ impl TlsStreamMethods for TlsStream {
     fn write(stream: TlsStream, data: bytes) -> int {
         unsafe { hew_tls_write(stream, data) }
     }
-    fn try_write(stream: TlsStream, data: bytes) -> Result<int, String> {
+    fn try_write(stream: TlsStream, data: bytes) -> Result<int, fs.IoError> {
         let n: int = unsafe { hew_tls_write(stream, data) };
-        if n < 0 { Err("tls write failed") } else { Ok(n) }
+        if n < 0 { Err(fs.IoError::Other(0)) } else { Ok(n) } // TLS errors carry no OS errno
     }
     fn read(stream: TlsStream, size: int) -> bytes {
         unsafe { hew_tls_read(stream, size as i32) }
@@ -87,8 +89,8 @@ pub fn write(stream: TlsStream, data: bytes) -> int {
 
 /// Write raw bytes to a TLS stream.
 ///
-/// Returns the number of bytes written, or an error message on failure.
-pub fn try_write(stream: TlsStream, data: bytes) -> Result<int, String> {
+/// Returns the number of bytes written, or `Err(fs.IoError)` on failure.
+pub fn try_write(stream: TlsStream, data: bytes) -> Result<int, fs.IoError> {
     stream.try_write(data)
 }
 

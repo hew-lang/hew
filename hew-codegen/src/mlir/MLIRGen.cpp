@@ -3543,6 +3543,31 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
 
       builder.restoreInsertionPoint(savedIP);
     }
+
+    // Attach a module-level attribute encoding the actor type registry.
+    // Format: array of flat strings, each entry either:
+    //   "T:<actor_name>:<dispatch_sym>" — actor type registration
+    //   "H:<dispatch_sym>:<msg_type>:<handler_fq_name>" — handler name registration
+    //
+    // The SchedInitOpLowering reads this attribute and emits calls to
+    // hew_actor_register_type and hew_register_handler_name at program startup.
+    // Storing metadata here (rather than emitting ops inline) avoids the need
+    // to pass function-pointer values through the Hew dialect IR before the
+    // FuncToLLVM conversion runs.
+    llvm::SmallVector<mlir::Attribute, 16> metaEntries;
+    for (const auto &[actorName, actorInfo] : actorRegistry) {
+      std::string dispatchSym = actorName + "_dispatch";
+      // Type registration entry
+      metaEntries.push_back(builder.getStringAttr("T:" + actorName + ":" + dispatchSym));
+      // Handler name entries
+      for (size_t i = 0; i < actorInfo.receiveFns.size(); ++i) {
+        const auto &recv = actorInfo.receiveFns[i];
+        std::string fqName = actorName + "::" + recv.name;
+        metaEntries.push_back(
+            builder.getStringAttr("H:" + dispatchSym + ":" + std::to_string(i) + ":" + fqName));
+      }
+    }
+    module->setAttr("hew.actor_type_registry", builder.getArrayAttr(metaEntries));
   }
 
   // Verify the module
@@ -6162,9 +6187,10 @@ mlir::func::FuncOp MLIRGen::specializeGenericFunction(const std::string &baseNam
 /// Unlike regular lambda lowering, there is no env/closure wrapper. The call
 /// site materializes captured outer values and passes them as trailing
 /// arguments after the user-visible lambda parameters.
-mlir::func::FuncOp MLIRGen::specializeGenericLambda(const std::string &varName,
-                                                    const std::vector<std::string> &typeArgs,
-                                                    const std::vector<CapturedVarInfo> &capturedVars) {
+mlir::func::FuncOp
+MLIRGen::specializeGenericLambda(const std::string &varName,
+                                 const std::vector<std::string> &typeArgs,
+                                 const std::vector<CapturedVarInfo> &capturedVars) {
   auto mangled = "__glambda_" + varName + "_" + mangleGenericName("", typeArgs).substr(1);
   // mangleGenericName("", args) returns "_arg1_arg2…" so strip leading "_".
   // Re-derive more simply:

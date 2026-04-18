@@ -1,4 +1,4 @@
-# Hew Language Specification (audited for v0.2.0)
+# Hew Language Specification (audited for v0.3.0)
 
 Hew is a **high-performance, network-native, machine-code compiled** language for building long-lived services. Its design is anchored in four proven pillars:
 
@@ -4466,7 +4466,7 @@ Hew provides built-in distributed computing through the `Node` API. Actors on di
 - **Pluggable transport:** TCP (default) or QUIC with TLS 1.3. Selected before the node starts.
 - **Gossip-based registry:** Actor names propagate across the cluster via SWIM protocol piggybacking, so `Node::lookup` can resolve actors on any connected node.
 
-### 10.1 Node lifecycle
+### 11.1 Node lifecycle
 
 A distributed node is started, used, and shut down within a single program:
 
@@ -4487,9 +4487,9 @@ fn main() {
 
 The runtime maintains a single implicit current node per process. All `Node::` calls operate on this current node.
 
-### 10.2 API reference
+### 11.2 API reference
 
-#### 10.2.1 `Node::start(addr: string)`
+#### 11.2.1 `Node::start(addr: string)`
 
 Bind the current node to a network address and begin accepting connections.
 
@@ -4503,7 +4503,7 @@ Node::start("127.0.0.1:0");      // ephemeral port (OS-assigned)
 - Spawns a background accept loop for incoming peer connections
 - Transitions node state to `Running`
 
-#### 10.2.2 `Node::connect(addr: string)`
+#### 11.2.2 `Node::connect(addr: string)`
 
 Connect the current node to a remote peer node.
 
@@ -4514,7 +4514,7 @@ Node::connect("127.0.0.1:9001");  // join peer
 
 Once connected, registry gossip and message routing flow between the two nodes. Connections are bidirectional — either side can send messages to actors on the other.
 
-#### 10.2.3 `Node::register(name: string, actor)`
+#### 11.2.3 `Node::register(name: string, actor)`
 
 Register a spawned actor under a human-readable name in the distributed registry.
 
@@ -4529,7 +4529,7 @@ Node::register("counter", counter);
 - The runtime automatically removes the name when that actor is freed or when
   the owning node shuts down
 
-#### 10.2.4 `Node::lookup(name: string) -> T`
+#### 11.2.4 `Node::lookup(name: string) -> T`
 
 Look up an actor by its registered name. Returns the actor reference if found, or a zero value if not found.
 
@@ -4545,7 +4545,7 @@ if found != 0 {
 - The return type is generic (`T`) — assign to a typed binding at the call site
 - Remote request-response (`await`) has a 5-second timeout; when the caller expects a reply value, timeout or other remote delivery failures surface as an explicit runtime failure instead of a synthesized zero/default reply
 
-#### 10.2.5 `Node::shutdown()`
+#### 11.2.5 `Node::shutdown()`
 
 Shut down the current node, closing all connections and cleaning up resources.
 
@@ -4559,7 +4559,7 @@ Node::shutdown();
   registry state
 - Frees all node-owned memory
 
-#### 10.2.6 `Node::set_transport(transport: string)`
+#### 11.2.6 `Node::set_transport(transport: string)`
 
 Select the network transport **before** calling `Node::start`. Supported values:
 
@@ -4575,7 +4575,7 @@ Node::start("127.0.0.1:9000");
 
 If not called, TCP is used. Calling `set_transport` after `start` has no effect on the current node.
 
-### 10.3 Remote message dispatch
+### 11.3 Remote message dispatch
 
 Messages sent to a remote actor are routed transparently by the runtime:
 
@@ -4601,7 +4601,7 @@ let n = await remote_counter.get_count(); // request-response (routed to node A,
 - When the target node ID differs, the message is serialized using HBF framing (4-byte little-endian length prefix + payload) and sent over the transport to the remote node.
 - Remote request-response (`await`) assigns a unique request ID, sends the request, and blocks the caller until the reply arrives (5-second timeout). When a reply value is expected, remote ask failures surface as an explicit failure instead of fabricating a zero/default reply value.
 
-### 10.4 Cross-node registry gossip
+### 11.4 Cross-node registry gossip
 
 Actor name registrations propagate across the cluster using the SWIM protocol's gossip channel:
 
@@ -4621,7 +4621,7 @@ Registry events have a bounded dissemination count (pruned after 8 gossips). Unr
 | `Dead`    | Node confirmed unreachable              |
 | `Left`    | Node departed gracefully via `shutdown` |
 
-### 10.5 QUIC transport
+### 11.5 QUIC transport
 
 When `Node::set_transport("quic")` is used, the node communicates over QUIC with TLS 1.3:
 
@@ -4631,7 +4631,7 @@ When `Node::set_transport("quic")` is used, the node communicates over QUIC with
   - `HEW_QUIC_KEY` — PEM server private key
 - Message framing is identical to TCP (4-byte little-endian length prefix), layered on QUIC bidirectional streams.
 
-### 10.6 Complete example
+### 11.6 Complete example
 
 ```hew
 actor Counter {
@@ -4687,7 +4687,7 @@ When the grammar files and this specification disagree, the parser implementatio
 
 **Implementation note:** closures use lambda lifting — captured variables are passed as extra parameters to the generated function. Full closure implementation with heap-allocated environment structs is future work.
 
-### 11.1 Built-in Numeric Types
+### 12.1 Built-in Numeric Types
 
 | Type                      | Size          | Description             |
 | ------------------------- | ------------- | ----------------------- |
@@ -4727,7 +4727,7 @@ let i: i32 = len.to_i32();
 
 These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.to_i32()`, `.to_i64()`, `.to_u8()`, `.to_u16()`, `.to_u32()`, `.to_u64()`, `.to_f32()`, `.to_f64()`, `.to_usize()`, `.to_isize()`.
 
-### 11.2 Operator Precedence (highest to lowest)
+### 12.2 Operator Precedence (highest to lowest)
 
 1. Postfix: `?`, `.field`, `(args)`, `[index]`
 2. Unary: `!`, `-`, `~`, `await`
@@ -4746,7 +4746,7 @@ These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.t
 15. Send: `<-`
 16. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 
-### 11.3 Duration Literals
+### 12.3 Duration Literals
 
 Duration literals provide a concise syntax for time values. They compile to `i64` values representing nanoseconds:
 
@@ -4816,7 +4816,7 @@ let result = await task | after 5s;        // Timeout after 5 seconds
 DurationLit = IntLit ("ns" | "us" | "ms" | "s" | "m" | "h") ;
 ```
 
-### 11.4 Labelled Loops and Break-with-Value
+### 12.4 Labelled Loops and Break-with-Value
 
 Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`. Labels allow `break` and `continue` to target a specific enclosing loop in nested contexts.
 
@@ -4877,7 +4877,7 @@ above shows their surface spelling.
 
 Hew is designed with self-hosting as a long-term goal. This section outlines the strategy and requirements for the Hew compiler to be written in Hew itself.
 
-### 12.1 Minimum Viable Subset for Self-Hosting
+### 13.1 Minimum Viable Subset for Self-Hosting
 
 The compiler requires only a subset of Hew's features. The following features are **essential**:
 
@@ -4903,7 +4903,7 @@ The following Hew features are **NOT required** for self-hosting:
 | Wire types      | No serialization needed         |
 | Network I/O     | File-based operation            |
 
-### 12.2 Kernel Language Concept
+### 13.2 Kernel Language Concept
 
 The "kernel language" is the minimal subset that can compile itself:
 
@@ -4926,7 +4926,7 @@ The kernel standard library includes:
 - File I/O (`Read`, `Write`, `File`)
 - Basic formatting
 
-### 12.3 Bootstrap Chain
+### 13.3 Bootstrap Chain
 
 **Phase 1: Rust Frontend + C++ MLIR Codegen (Current)**
 
@@ -4949,7 +4949,7 @@ hewcpp2 (Hew binary) → hewcpp.hew (Hew source) → hewcpp3 (Hew binary)
 hewcpp2 and hewcpp3 should be identical (verified via hash)
 ```
 
-### 12.4 Verification Strategy
+### 13.4 Verification Strategy
 
 **Diverse Double Compilation (DDC):**
 
@@ -4972,7 +4972,7 @@ Requirements for verifiable builds:
 - Fixed seeds for any "random" build decisions
 - Sorted iteration over collections
 
-### 12.5 Implementation Ordering
+### 13.5 Implementation Ordering
 
 **Recommended porting order for compiler components:**
 
@@ -4994,7 +4994,7 @@ Phase 4: Driver
 └── Compiler main - Ties everything together
 ```
 
-### 12.6 Stdlib for Self-Hosting
+### 13.6 Stdlib for Self-Hosting
 
 Minimum standard library required (estimated ~2600 lines):
 
@@ -5006,7 +5006,7 @@ Minimum standard library required (estimated ~2600 lines):
 | **io**          | ~400  | Read, Write, File, BufReader    |
 | **fmt**         | ~300  | Basic formatting                |
 
-### 12.7 Backend Strategy for Bootstrap
+### 13.7 Backend Strategy for Bootstrap
 
 **Recommended approach:**
 
@@ -5024,7 +5024,7 @@ Minimum standard library required (estimated ~2600 lines):
    - For maximum performance
    - Can be optional backend
 
-### 12.8 WASM as Portable Bootstrap Format
+### 13.8 WASM as Portable Bootstrap Format
 
 Future consideration: compile the Hew compiler to WebAssembly for portable bootstrapping:
 

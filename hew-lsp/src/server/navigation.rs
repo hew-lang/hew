@@ -477,7 +477,27 @@ pub(super) fn workspace_edit_from_changes(
                 .map(|edit| rename_edit_to_text_edit(&target_doc, edit))
                 .collect()
         } else {
-            continue;
+            // File is not open; load from disk to generate edits.
+            // If disk read/parse fails, return None to reject the rename entirely.
+            let Ok(target_path) = target_uri.to_file_path() else {
+                return None;
+            };
+            let Ok(target_source) = std::fs::read_to_string(&target_path) else {
+                return None;
+            };
+            let target_line_offsets = hew_analysis::util::compute_line_offsets(&target_source);
+            edits
+                .into_iter()
+                .map(|edit| TextEdit {
+                    range: offset_range_to_lsp(
+                        &target_source,
+                        &target_line_offsets,
+                        edit.span.start,
+                        edit.span.end,
+                    ),
+                    new_text: edit.new_text,
+                })
+                .collect()
         };
         lsp_changes.insert(target_uri, text_edits);
     }
@@ -646,6 +666,32 @@ pub(super) fn build_workspace_edit(
                             .entry(import_match.imported_uri.clone())
                             .or_default()
                             .extend(target_edits);
+                    }
+                }
+            } else {
+                // Definition file is closed; load from disk and compute edits.
+                if let Ok(target_path) = import_match.imported_uri.to_file_path() {
+                    if let Ok(target_source) = std::fs::read_to_string(&target_path) {
+                        let target_parse = hew_parser::parse(&target_source);
+                        if let Some(def_span) = find_definition_name_span(
+                            &target_source,
+                            &target_parse,
+                            &import_match.imported_name,
+                        ) {
+                            let target_edits = hew_analysis::rename::rename(
+                                &target_source,
+                                &target_parse,
+                                def_span.start,
+                                new_name,
+                            )
+                            .unwrap_or_default();
+                            if !target_edits.is_empty() {
+                                changes
+                                    .entry(import_match.imported_uri.clone())
+                                    .or_default()
+                                    .extend(target_edits);
+                            }
+                        }
                     }
                 }
             }

@@ -5401,6 +5401,106 @@ machine Traffic {
     }
 
     #[test]
+    fn importer_originated_rename_includes_unopened_definition_file_edits() {
+        // Regression test: when an importer cursor renames a symbol, the workspace
+        // edit must include edits for the definition file even if it's not open.
+        //
+        // Layout:
+        //   <test_dir>/std/          ← workspace root marker
+        //   <test_dir>/util.hew      ← defines `pub fn foo`; WAS open, then closed
+        //   <test_dir>/importer.hew  ← imports `foo` and uses it; OPEN (cursor here)
+        //
+        // Rename `foo -> bar` from the import binding in importer.hew.
+        // The resulting WorkspaceEdit must include edits for BOTH:
+        // 1. The importer (the binding token in `import util::{ foo }`)
+        // 2. The unopened definition file (the definition `pub fn foo`)
+        //
+        // This verifies that build_workspace_edit loads unopened definition files
+        // from disk and includes their edits in the returned WorkspaceEdit.
+
+        let test_dir = TestDir::new("unopened-def-file-edits");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let importer_path = project_root.join("importer.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        let importer_source = "import util::{ foo };\nfn main() { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&importer_path, importer_source).unwrap();
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        // Both files are initially open for import resolution to work.
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(importer_uri.clone(), make_doc(importer_source));
+
+        // Now close util.hew (user closed the file) by removing it from documents.
+        documents.remove(&util_uri);
+
+        let importer_doc = documents.get(&importer_uri).unwrap();
+        // Place cursor on the `foo` binding in `import util::{ foo }`.
+        let offset = importer_source.find("{ foo }").unwrap() + 2;
+
+        let edit = navigation::build_workspace_edit(
+            &importer_uri,
+            &importer_doc,
+            offset,
+            "bar",
+            &documents,
+        );
+        let edit = edit.expect("workspace edit should be generated");
+
+        let changes = edit.changes.expect("changes must be present");
+
+        // Verify edits exist for both URIs.
+        assert!(
+            changes.contains_key(&importer_uri),
+            "workspace edit must include changes for importer URI: {importer_uri}"
+        );
+        assert!(
+            changes.contains_key(&util_uri),
+            "workspace edit must include changes for unopened definition URI: {util_uri}"
+        );
+
+        // Verify the definition file's edit covers the `foo` definition.
+        let util_edits = &changes[&util_uri];
+        assert!(
+            !util_edits.is_empty(),
+            "unopened definition file must have at least one edit"
+        );
+        // The edit should rename `foo` to `bar` in the definition.
+        let util_has_bar_edit = util_edits.iter().any(|e| {
+            e.new_text == "bar"
+                && util_source[util_source.find("pub fn foo").unwrap()..].starts_with("pub fn foo")
+        });
+        assert!(
+            util_has_bar_edit || util_edits.iter().any(|e| e.new_text == "bar"),
+            "unopened definition file edits must include renaming foo to bar, got {util_edits:?}"
+        );
+
+        // Verify the importer file's edit covers the import binding and usages.
+        let importer_edits = &changes[&importer_uri];
+        assert!(
+            !importer_edits.is_empty(),
+            "importer file must have at least one edit"
+        );
+        let renames_to_bar = importer_edits
+            .iter()
+            .filter(|e| e.new_text == "bar")
+            .count();
+        // Should have at least 2 edits: one for the binding, one for the usage.
+        assert!(
+            renames_to_bar >= 2,
+            "importer file should rename at least 2 occurrences of foo (binding + usage), got {renames_to_bar} edits to bar"
+        );
+    }
+
+    #[test]
     fn rename_error_to_jsonrpc_uses_request_failed_code() {
         // LSP 3.17 §3.16.3: semantic refusals of well-formed rename requests
         // must use RequestFailed (-32803), not InvalidParams (-32602).

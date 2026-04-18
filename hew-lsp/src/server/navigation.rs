@@ -719,6 +719,260 @@ pub(super) fn build_workspace_edit(
     workspace_edit_from_changes(uri, doc, documents, changes)
 }
 
+/// Plan a rename with cross-file conflict detection.
+///
+/// Returns:
+/// - `Ok(Some(edit))` when the rename can be applied; `edit` is the
+///   same `WorkspaceEdit` [`build_workspace_edit`] would produce.
+/// - `Ok(None)` when the cursor is not on a valid rename target.
+/// - `Err(RenameError)` when the rename is refused — the new name is
+///   a keyword / builtin, is not a valid identifier, or would clash
+///   with an existing binding in any file that would be edited.
+///
+/// Unlike [`hew_analysis::rename::plan_rename`] (which validates a
+/// single file's own edits), this function additionally walks all files
+/// that would be modified across the workspace to check that `new_name`
+/// does not clash with top-level or imported names in any of them. For
+/// non-aliased imports, the check includes both the definition file and
+/// all other open files that import the same name.
+pub(super) fn plan_workspace_rename(
+    uri: &Url,
+    doc: &DocumentState,
+    offset: usize,
+    new_name: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> Result<Option<WorkspaceEdit>, hew_analysis::RenameError> {
+    // Probe the local file's plan_rename to surface same-file conflicts
+    // with rich spans before falling back to the cross-file compositor.
+    match hew_analysis::rename::plan_rename(&doc.source, &doc.parse_result, offset, new_name) {
+        Ok(_edits) => {}
+        Err(err) => return Err(err),
+    }
+
+    // For each file that will receive cross-file edits, check that
+    // `new_name` is not already a top-level or imported name there.
+    let mut cross_file_conflicts: Vec<hew_analysis::RenameConflict> = Vec::new();
+    let Some((name, _)) = hew_analysis::util::simple_word_at_offset(&doc.source, offset) else {
+        return Ok(None);
+    };
+
+    // Same-name rename is a no-op: skip cross-file scanning entirely.
+    // plan_rename above already returned Ok([]) for this case; we mirror
+    // that here so no spurious cross-file ShadowsTopLevel conflicts surface.
+    if name == new_name {
+        return Ok(None);
+    }
+
+    // If this rename has cross-file reach (imported or definition of a
+    // top-level item), walk each other file that would be edited.
+    if let Some((import_match, _)) =
+        find_resolved_named_import_match(uri, doc, offset, &name, documents)
+    {
+        // Check the definition file and every open importer (except
+        // this one, which was already validated).
+        if !import_match.is_aliased() {
+            if let Some(target_doc) = documents.get(&import_match.imported_uri) {
+                collect_cross_file_conflict(
+                    &target_doc,
+                    new_name,
+                    &import_match.imported_name,
+                    &mut cross_file_conflicts,
+                );
+
+                // `collect_cross_file_conflict` checks top-level and import
+                // clashes in the definition file, but does NOT walk that file's
+                // own local/param scopes (it has no offset to anchor a
+                // `plan_rename` call). Do it here so that a `let <new_name>`
+                // shadowing a call-site of the definition in the same file is
+                // caught on the importer-originated path, matching the
+                // definition-originated path (which already runs `plan_rename`
+                // against the current doc at line ~747 above).
+                if let Some(def_span) = hew_analysis::definition::find_definition(
+                    &target_doc.source,
+                    &target_doc.parse_result,
+                    &import_match.imported_name,
+                ) {
+                    if let Err(hew_analysis::RenameError::Conflicts { conflicts }) =
+                        hew_analysis::rename::plan_rename(
+                            &target_doc.source,
+                            &target_doc.parse_result,
+                            def_span.start,
+                            new_name,
+                        )
+                    {
+                        cross_file_conflicts.extend(conflicts);
+                    }
+                }
+            }
+            for importer in find_open_named_importers(
+                &import_match.imported_uri,
+                &import_match.imported_name,
+                documents,
+            ) {
+                if importer.importer_uri == *uri {
+                    continue;
+                }
+                if let Some(importer_doc) = documents.get(&importer.importer_uri) {
+                    collect_cross_file_conflict(
+                        &importer_doc,
+                        new_name,
+                        &importer.visible_name,
+                        &mut cross_file_conflicts,
+                    );
+                }
+            }
+        }
+    } else if hew_analysis::references::is_top_level_name(&doc.parse_result, &name) {
+        for importer in find_open_named_importers(uri, &name, documents) {
+            // Aliased importers (`import foo::{x as y}`) will have their
+            // import-name token rewritten to `new_name` but the visible name
+            // in the importer file remains the alias, not `new_name`. Treating
+            // the alias as an existing binding named `new_name` is a false
+            // positive — mirror the guard at the import-originated path above.
+            if importer.is_aliased() {
+                continue;
+            }
+            if let Some(importer_doc) = documents.get(&importer.importer_uri) {
+                collect_cross_file_conflict(
+                    &importer_doc,
+                    new_name,
+                    &importer.visible_name,
+                    &mut cross_file_conflicts,
+                );
+            }
+        }
+    }
+
+    // Deduplicate conflicts on (existing_span, offending_span, kind).
+    // Both collect_cross_file_conflict and the plan_rename probe may report
+    // the same ShadowsTopLevel/ShadowsImport conflict, inflating the count
+    // in the editor UI.
+    let mut deduped = Vec::new();
+    for conflict in cross_file_conflicts {
+        if !deduped
+            .iter()
+            .any(|existing: &hew_analysis::RenameConflict| {
+                existing.existing_span == conflict.existing_span
+                    && existing.offending_span == conflict.offending_span
+                    && existing.kind == conflict.kind
+            })
+        {
+            deduped.push(conflict);
+        }
+    }
+    cross_file_conflicts = deduped;
+
+    if !cross_file_conflicts.is_empty() {
+        return Err(hew_analysis::RenameError::Conflicts {
+            conflicts: cross_file_conflicts,
+        });
+    }
+
+    Ok(build_workspace_edit(uri, doc, offset, new_name, documents))
+}
+
+/// Inspect another file's document for a pre-existing top-level item,
+/// imported name, or local variable/parameter equal to `new_name`. If
+/// found, push a conflict whose `offending_span` points at
+/// `offending_visible_name`'s binding in that file (the name the
+/// cross-file compositor would rewrite).
+fn collect_cross_file_conflict(
+    other_doc: &DocumentState,
+    new_name: &str,
+    offending_visible_name: &str,
+    conflicts: &mut Vec<hew_analysis::RenameConflict>,
+) {
+    if hew_analysis::references::is_top_level_name(&other_doc.parse_result, new_name) {
+        if let Some(existing) = hew_analysis::definition::find_definition(
+            &other_doc.source,
+            &other_doc.parse_result,
+            new_name,
+        ) {
+            let offending = hew_analysis::definition::find_definition(
+                &other_doc.source,
+                &other_doc.parse_result,
+                offending_visible_name,
+            )
+            .unwrap_or(existing);
+            conflicts.push(hew_analysis::RenameConflict {
+                kind: hew_analysis::RenameConflictKind::ShadowsTopLevel,
+                existing_span: existing,
+                offending_span: offending,
+                message: format!(
+                    "renaming would clash with existing top-level '{new_name}' in another file"
+                ),
+            });
+        }
+    } else if let Some(existing) =
+        hew_analysis::resolver::find_matching_import(&other_doc.parse_result, new_name)
+    {
+        let offending = hew_analysis::definition::find_definition(
+            &other_doc.source,
+            &other_doc.parse_result,
+            offending_visible_name,
+        )
+        .unwrap_or(existing);
+        conflicts.push(hew_analysis::RenameConflict {
+            kind: hew_analysis::RenameConflictKind::ShadowsImport,
+            existing_span: existing,
+            offending_span: offending,
+            message: format!("renaming would clash with imported '{new_name}' in another file"),
+        });
+    }
+
+    // Check every usage site of the imported binding in this file: if
+    // `new_name` is already a local variable or parameter in scope at any
+    // usage, renaming would silently shadow it there.
+    let usage_spans = hew_analysis::references::find_import_binding_references(
+        &other_doc.parse_result,
+        offending_visible_name,
+    );
+    for usage in usage_spans {
+        if let Some(existing) = hew_analysis::definition::find_local_binding_definition(
+            &other_doc.source,
+            &other_doc.parse_result,
+            new_name,
+            usage.start,
+        ) {
+            // Deduplicate on (existing, offending): many usages may share
+            // the same in-scope local, and we only need one conflict per pair.
+            if !conflicts
+                .iter()
+                .any(|c| c.existing_span == existing && c.offending_span == usage)
+            {
+                conflicts.push(hew_analysis::RenameConflict {
+                    kind: hew_analysis::RenameConflictKind::ShadowsLocal,
+                    existing_span: existing,
+                    offending_span: usage,
+                    message: format!(
+                        "renaming would shadow local '{new_name}' at a usage site in another file"
+                    ),
+                });
+            }
+            continue;
+        }
+        if let Some(existing) = hew_analysis::definition::find_param_definition(
+            &other_doc.parse_result,
+            new_name,
+            usage.start,
+        ) {
+            if !conflicts
+                .iter()
+                .any(|c| c.existing_span == existing && c.offending_span == usage)
+            {
+                conflicts.push(hew_analysis::RenameConflict {
+                    kind: hew_analysis::RenameConflictKind::ShadowsLocal,
+                    existing_span: existing,
+                    offending_span: usage,
+                    message: format!(
+                        "renaming would shadow parameter '{new_name}' at a usage site in another file"
+                    ),
+                });
+            }
+        }
+    }
+}
+
 // ── Cross-file go-to-definition ───────────────────────────────────────
 
 /// Search for the definition of `word` in the files imported by the current

@@ -1076,7 +1076,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Const) => {
                 self.advance();
-                Item::Const(self.parse_const_decl(Visibility::Private)?)
+                Item::Const(self.parse_const_decl(Visibility::Private, doc_comment)?)
             }
             Some(Token::Pub) => {
                 let vis = self.parse_visibility();
@@ -1106,7 +1106,7 @@ impl<'src> Parser<'src> {
                     }
                     Some(Token::Type) => {
                         if self.is_type_alias_lookahead() {
-                            Item::TypeAlias(self.parse_type_alias(vis)?)
+                            Item::TypeAlias(self.parse_type_alias(vis, doc_comment)?)
                         } else {
                             let mut t = self.parse_struct_or_enum(vis)?;
                             t.doc_comment = doc_comment;
@@ -1144,7 +1144,7 @@ impl<'src> Parser<'src> {
                     }
                     Some(Token::Const) => {
                         self.advance();
-                        Item::Const(self.parse_const_decl(vis)?)
+                        Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
                         if is_pure {
@@ -1191,7 +1191,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Type) => {
                 if self.is_type_alias_lookahead() {
-                    Item::TypeAlias(self.parse_type_alias(Visibility::Private)?)
+                    Item::TypeAlias(self.parse_type_alias(Visibility::Private, doc_comment)?)
                 } else {
                     let mut t = self.parse_struct_or_enum(Visibility::Private)?;
                     t.doc_comment = doc_comment;
@@ -1350,7 +1350,11 @@ impl<'src> Parser<'src> {
             && matches!(self.tokens.get(self.pos + 2), Some((Token::Equal, _)))
     }
 
-    fn parse_type_alias(&mut self, visibility: Visibility) -> Option<TypeAliasDecl> {
+    fn parse_type_alias(
+        &mut self,
+        visibility: Visibility,
+        doc_comment: Option<String>,
+    ) -> Option<TypeAliasDecl> {
         self.expect(&Token::Type)?;
         let name = self.expect_ident()?;
         self.expect(&Token::Equal)?;
@@ -1360,6 +1364,7 @@ impl<'src> Parser<'src> {
             visibility,
             name,
             ty,
+            doc_comment,
         })
     }
 
@@ -1431,23 +1436,30 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_type_body_item(&mut self, kind: TypeDeclKind) -> Option<TypeBodyItem> {
+        // Collect any doc comments before attributes or the field/variant/method
+        // itself. Support both `/// docs #[attr]` and `#[attr] /// docs`.
+        let mut doc_comment = self.collect_doc_comments();
         match kind {
             TypeDeclKind::Struct => {
-                // Collect any #[...] attributes before the field or method
                 let attributes = self.parse_attributes();
+                if doc_comment.is_none() {
+                    doc_comment = self.collect_doc_comments();
+                }
 
                 if self.peek() == Some(&Token::Fn) {
                     let fn_start = self.peek_span().start;
                     self.advance();
                     // Attributes on methods are passed to parse_function
-                    Some(TypeBodyItem::Method(self.parse_function(
+                    let mut method = self.parse_function(
                         fn_start,
                         false,
                         false,
                         Visibility::Private,
                         false,
                         attributes,
-                    )?))
+                    )?;
+                    method.doc_comment = doc_comment;
+                    Some(TypeBodyItem::Method(method))
                 } else {
                     // Field with optional attributes (e.g. #[encode(rename = "x")])
                     let name = self.expect_ident()?;
@@ -1460,6 +1472,7 @@ impl<'src> Parser<'src> {
                         name,
                         ty,
                         attributes,
+                        doc_comment,
                     })
                 }
             }
@@ -1497,7 +1510,11 @@ impl<'src> Parser<'src> {
                     self.error("use `;` instead of `,` to separate variants".to_string());
                     self.advance();
                 }
-                Some(TypeBodyItem::Variant(VariantDecl { name, kind }))
+                Some(TypeBodyItem::Variant(VariantDecl {
+                    name,
+                    kind,
+                    doc_comment,
+                }))
             }
         }
     }
@@ -1537,8 +1554,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_trait_item(&mut self) -> Option<TraitItem> {
-        // Skip doc comments before trait items
-        self.collect_doc_comments();
+        let doc_comment = self.collect_doc_comments();
         let is_pure = self.eat(&Token::Pure);
         match self.peek() {
             Some(Token::Fn) => {
@@ -1571,6 +1587,7 @@ impl<'src> Parser<'src> {
                     where_clause,
                     body,
                     span: fn_start..fn_end,
+                    doc_comment,
                 }))
             }
             Some(Token::Type) => {
@@ -1716,8 +1733,12 @@ impl<'src> Parser<'src> {
         let mut overflow_policy = None;
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-            // Parse optional attributes (e.g. #[every(5s)]) before receive fns.
+            // Collect doc comments and attributes in either order.
+            let mut doc_comment = self.collect_doc_comments();
             let attrs = self.parse_attributes();
+            if doc_comment.is_none() {
+                doc_comment = self.collect_doc_comments();
+            }
 
             if self.peek() == Some(&Token::Init) {
                 if !attrs.is_empty() {
@@ -1779,11 +1800,12 @@ impl<'src> Parser<'src> {
                         body,
                         span: recv_start..recv_end,
                         attributes: attrs,
+                        doc_comment,
                     });
                 } else if self.peek() == Some(&Token::Fn) {
                     let fn_start = self.peek_span().start;
                     self.advance();
-                    if let Some(method) = self.parse_function(
+                    if let Some(mut method) = self.parse_function(
                         fn_start,
                         false,
                         false,
@@ -1791,6 +1813,7 @@ impl<'src> Parser<'src> {
                         is_pure,
                         Vec::new(),
                     ) {
+                        method.doc_comment = doc_comment;
                         methods.push(method);
                     }
                 } else {
@@ -1803,7 +1826,7 @@ impl<'src> Parser<'src> {
                 }
                 let fn_start = self.peek_span().start;
                 self.advance();
-                if let Some(method) = self.parse_function(
+                if let Some(mut method) = self.parse_function(
                     fn_start,
                     false,
                     false,
@@ -1811,6 +1834,7 @@ impl<'src> Parser<'src> {
                     false,
                     Vec::new(),
                 ) {
+                    method.doc_comment = doc_comment;
                     methods.push(method);
                 }
             } else if self.peek() == Some(&Token::Let) {
@@ -1828,6 +1852,7 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    doc_comment,
                 });
             } else if self.peek() == Some(&Token::Var) {
                 self.advance();
@@ -1845,6 +1870,7 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    doc_comment,
                 });
             } else if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "mailbox") {
                 self.advance();
@@ -1874,6 +1900,7 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    doc_comment,
                 });
             } else {
                 self.error(format!("unexpected token in actor body: {:?}", self.peek()));
@@ -2444,6 +2471,7 @@ impl<'src> Parser<'src> {
                 name: field_name.clone(),
                 ty,
                 attributes: Vec::new(),
+                doc_comment: None,
             });
             field_meta.push((
                 field_name,
@@ -2662,6 +2690,7 @@ impl<'src> Parser<'src> {
                     variants.push(VariantDecl {
                         name: variant_name,
                         kind,
+                        doc_comment: None,
                     });
                 }
             }
@@ -2784,7 +2813,11 @@ impl<'src> Parser<'src> {
         })
     }
 
-    fn parse_const_decl(&mut self, visibility: Visibility) -> Option<ConstDecl> {
+    fn parse_const_decl(
+        &mut self,
+        visibility: Visibility,
+        doc_comment: Option<String>,
+    ) -> Option<ConstDecl> {
         let name = self.expect_ident()?;
         self.expect(&Token::Colon)?;
         let ty = self.parse_type()?;
@@ -2797,6 +2830,7 @@ impl<'src> Parser<'src> {
             name,
             ty,
             value,
+            doc_comment,
         })
     }
 
@@ -6355,6 +6389,94 @@ wire type Msg {
         assert!(
             matches!(expr, Expr::Block(_)),
             "expected Block, got {expr:?}"
+        );
+    }
+
+    #[test]
+    fn capture_doc_comment_on_trait_method() {
+        let source = "trait T {\n    /// First line.\n    /// Second line.\n    fn m();\n}\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Trait(t) = &result.program.items[0].0 else {
+            panic!("expected trait");
+        };
+        let TraitItem::Method(m) = &t.items[0] else {
+            panic!("expected method");
+        };
+        assert_eq!(m.doc_comment.as_deref(), Some("First line.\nSecond line."));
+    }
+
+    #[test]
+    fn capture_doc_comment_on_enum_variant() {
+        let source = "enum E {\n    /// The only variant.\n    A;\n}\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::TypeDecl(t) = &result.program.items[0].0 else {
+            panic!("expected type decl");
+        };
+        let TypeBodyItem::Variant(v) = &t.body[0] else {
+            panic!("expected variant");
+        };
+        assert_eq!(v.doc_comment.as_deref(), Some("The only variant."));
+    }
+
+    #[test]
+    fn capture_doc_comment_on_struct_field() {
+        let source = "type S {\n    /// The x coord.\n    x: i32;\n}\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::TypeDecl(t) = &result.program.items[0].0 else {
+            panic!("expected type decl");
+        };
+        let TypeBodyItem::Field { doc_comment, .. } = &t.body[0] else {
+            panic!("expected field");
+        };
+        assert_eq!(doc_comment.as_deref(), Some("The x coord."));
+    }
+
+    #[test]
+    fn capture_doc_comment_on_receive_fn_and_actor_field() {
+        let source = "actor A {\n    /// The counter.\n    let n: i32;\n    /// Increment handler.\n    receive fn inc() {}\n}\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(a) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(a.fields[0].doc_comment.as_deref(), Some("The counter."));
+        assert_eq!(
+            a.receive_fns[0].doc_comment.as_deref(),
+            Some("Increment handler."),
+        );
+    }
+
+    #[test]
+    fn capture_doc_comment_on_const_and_type_alias() {
+        let source =
+            "/// The answer.\npub const ANSWER: i32 = 42;\n\n/// An id.\npub type Id = i64;\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Const(c) = &result.program.items[0].0 else {
+            panic!("expected const");
+        };
+        assert_eq!(c.doc_comment.as_deref(), Some("The answer."));
+        let Item::TypeAlias(ta) = &result.program.items[1].0 else {
+            panic!("expected type alias");
+        };
+        assert_eq!(ta.doc_comment.as_deref(), Some("An id."));
+    }
+
+    #[test]
+    fn capture_doc_comment_on_actor_method() {
+        let source = "actor A {\n    /// Reset the counter.\n    fn reset() {}\n}\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(a) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(a.methods.len(), 1);
+        assert_eq!(
+            a.methods[0].doc_comment.as_deref(),
+            Some("Reset the counter.")
         );
     }
 } // mod tests

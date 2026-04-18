@@ -324,6 +324,9 @@ static ast::FieldDecl parseFieldDecl(const msgpack::object &obj) {
   ast::FieldDecl result;
   result.name = getString(mapReq(obj, "name"));
   result.ty = parseSpanned<ast::TypeExpr>(mapReq(obj, "ty"), parseTypeExpr);
+  const auto *doc_comment = mapGet(obj, "doc_comment");
+  if (doc_comment && !isNil(*doc_comment))
+    result.doc_comment = getString(*doc_comment);
   return result;
 }
 
@@ -422,6 +425,9 @@ static ast::ConstDecl parseConstDecl(const msgpack::object &obj) {
   result.name = getString(mapReq(obj, "name"));
   result.ty = parseSpanned<ast::TypeExpr>(mapReq(obj, "ty"), parseTypeExpr);
   result.value = parseSpanned<ast::Expr>(mapReq(obj, "value"), parseExpr);
+  const auto *doc_comment = mapGet(obj, "doc_comment");
+  if (doc_comment && !isNil(*doc_comment))
+    result.doc_comment = getString(*doc_comment);
   return result;
 }
 
@@ -582,6 +588,9 @@ static ast::TraitMethod parseTraitMethod(const msgpack::object &obj) {
   const auto *span_ = mapGet(obj, "span");
   if (span_ && !isNil(*span_))
     result.span = parseSpan(*span_);
+  const auto *doc_comment = mapGet(obj, "doc_comment");
+  if (doc_comment && !isNil(*doc_comment))
+    result.doc_comment = getString(*doc_comment);
   return result;
 }
 
@@ -611,6 +620,9 @@ static ast::TypeAliasDecl parseTypeAliasDecl(const msgpack::object &obj) {
     result.visibility = parseVisibility(*visibility_);
   result.name = getString(mapReq(obj, "name"));
   result.ty = parseSpanned<ast::TypeExpr>(mapReq(obj, "ty"), parseTypeExpr);
+  const auto *doc_comment = mapGet(obj, "doc_comment");
+  if (doc_comment && !isNil(*doc_comment))
+    result.doc_comment = getString(*doc_comment);
   return result;
 }
 

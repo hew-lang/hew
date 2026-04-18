@@ -664,4 +664,29 @@ mod tests {
             other => panic!("expected Conflicts, got {other:?}"),
         }
     }
+
+    // ── plan_rename: Actor.fields ShadowsTopLevel detection ──────────
+
+    #[test]
+    fn plan_rename_conflicts_with_actor_field_name() {
+        // Renaming a top-level function to a name that is already used as an
+        // actor field must be rejected with ShadowsTopLevel.  Prior to the
+        // fix, find_definition skipped Actor.fields so detect_conflicts
+        // silently bypassed the conflict check.
+        let source = "actor Counter { count: i64; receive fn inc() {} }\nfn foo() -> i64 { 0 }";
+        let pr = parse(source);
+        let offset = source.find("fn foo").unwrap() + 3;
+        let err = plan_rename(source, &pr, offset, "count").unwrap_err();
+        match err {
+            RenameError::Conflicts { conflicts } => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == RenameConflictKind::ShadowsTopLevel),
+                    "expected ShadowsTopLevel conflict for actor field name, got {conflicts:?}"
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
 }

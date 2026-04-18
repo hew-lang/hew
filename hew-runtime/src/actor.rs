@@ -1649,6 +1649,11 @@ pub unsafe extern "C" fn hew_actor_register_type(
     // SHIM: WHY: `&'static str` is required by the dispatch type registry.
     //       WHEN: Remove leak if we switch to an owned type-name map.
     //       REAL: Store an `Arc<str>` or intern into a static arena.
+    // JIT LEAK RISK: Under ORCv2 JIT reloads each unique dispatch fn leaks one
+    //       String per reload cycle.  `clear_dispatch_registry()` (called at
+    //       session reset) clears the pointer-to-name map entries but cannot
+    //       reclaim the leaked strings.  Acceptable for Milestone 2; tracked
+    //       in #1226 M3 (ORCv2 ResourceTracker choreography).
     let Ok(s) = cstr.to_str() else { return };
     let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
     crate::profiler::actor_registry::register_dispatch_type(dispatch, leaked);

@@ -351,6 +351,14 @@ pub extern "C" fn hew_sched_init() -> c_int {
     };
     *lock = handles;
 
+    // Register subsystem reset hooks for JIT session lifecycle.
+    // Tracing first so events are cleared before the profiler type registry.
+    crate::tracing::register_trace_reset_hook();
+    // Profiler dispatch-registry clear second (native + profiler feature only;
+    // the stub profiler module does not expose register_reset_hooks).
+    #[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
+    crate::profiler::register_reset_hooks();
+
     // Start the profiler if HEW_PPROF is set.
     crate::profiler::maybe_start();
     // Start the OTel exporter if HEW_OTEL_ENDPOINT is set.
@@ -430,8 +438,21 @@ pub extern "C" fn hew_sched_shutdown() {
         }
     }
 
-    // Write profile files on exit if HEW_PROF_OUTPUT is set.
+    // Release worker_handles lock so hooks can access scheduler state.
+    drop(handles);
+
+    // Write profile files on exit if HEW_PROF_OUTPUT is set.  Must run BEFORE
+    // session_reset() so that the dispatch-type registry is still populated
+    // and actor type labels appear correctly in the profile output.  If
+    // session_reset() ran first it would clear DISPATCH_TYPE_REGISTRY and
+    // every actor would fall back to "Actor" in the snapshot.
     crate::profiler::maybe_write_on_exit();
+
+    // Fire all registered session reset hooks (tracing clear, profiler
+    // dispatch-registry clear) after the exit profile has been written.
+    // Workers are joined at this point so no concurrent actor activations can
+    // race the hook callbacks.
+    crate::session::session_reset();
 }
 
 /// Clean up all remaining runtime resources after shutdown.
@@ -462,6 +483,14 @@ pub extern "C" fn hew_runtime_cleanup() {
 
     // Clear the name registry so no dangling pointers remain.
     crate::registry::hew_registry_clear();
+
+    // SHIM: JIT reload must clear handler_names here; see #1234 Commit 1 rebase.
+    // WHY: The `handler_names` side-table added by #1234 Commit 1 is part of
+    //      the WASM bridge (bridge.rs MetaState), which is not compiled on
+    //      native.  When a native equivalent arises, clearing it belongs here.
+    // WHEN: Remove this marker if a native handler_names structure is introduced
+    //       and needs teardown alongside the other native registry state.
+    // REAL: `handler_names.clear()` adjacent to `hew_registry_clear()` above.
 
     // Free the scheduler itself (deques, parkers, stealers, global queue).
     let ptr = SCHEDULER.swap(std::ptr::null_mut(), Ordering::AcqRel);

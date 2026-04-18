@@ -32,7 +32,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 
 // ── Trace context ──────────────────────────────────────────────────────
 
@@ -450,6 +450,25 @@ pub extern "C" fn hew_trace_clear() {
     events.clear();
 }
 
+/// Register `hew_trace_reset` as a session reset hook.
+///
+/// Safe to call multiple times; the registration is guarded by a `Once` so
+/// the hook is added to the registry exactly once per process lifetime.
+/// Called from `scheduler::hew_sched_init` (native) and
+/// `scheduler_wasm::hew_sched_init` (WASM) so trace events are cleared on
+/// every `session_reset()` regardless of target.
+pub(crate) fn register_trace_reset_hook() {
+    // Wrapper converts the extern "C" fn to a plain Rust fn() as required by
+    // the ResetHook type alias.
+    fn trace_reset_hook() {
+        hew_trace_reset();
+    }
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        crate::session::register_reset_hook(trace_reset_hook);
+    });
+}
+
 /// Reset all tracing state (disable + clear events + reset context).
 #[no_mangle]
 pub extern "C" fn hew_trace_reset() {
@@ -766,5 +785,55 @@ mod tests {
         // Cleanup.
         reset_bridge_full();
         hew_trace_reset();
+    }
+
+    // Hook wrapper used by session_reset_clears_trace_state_via_hook.
+    // Defined at module level to satisfy the items-after-statements lint.
+    fn trace_reset_hook_for_test() {
+        hew_trace_reset();
+    }
+
+    /// Verifies that when a trace-reset hook is registered in `RESET_HOOKS`,
+    /// calling `session_reset()` clears trace events and disables tracing.
+    ///
+    /// Acquires `SESSION_TEST_LOCK` first and the local `TEST_LOCK` second so
+    /// that concurrent session tests cannot clear the hook list mid-test.  The
+    /// `SESSION_TEST_LOCK`-first acquisition order must match any other test
+    /// that holds both locks.
+    #[test]
+    fn session_reset_clears_trace_state_via_hook() {
+        // Acquire session lock first, tracing lock second (consistent order).
+        let _session_guard = crate::session::reset_hooks_for_test();
+        let _trace_guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Reset tracing state to a known baseline.
+        hew_trace_reset();
+
+        // Register the trace reset hook directly for this test (bypassing the
+        // production Once guard so the test is self-contained even if the Once
+        // already fired in an earlier test run).
+        crate::session::register_reset_hook(trace_reset_hook_for_test);
+
+        // Enable tracing and record an event.
+        hew_trace_enable(1);
+        hew_trace_lifecycle(42, SPAN_SPAWN);
+        assert_eq!(hew_trace_event_count(), 1);
+        assert_eq!(hew_trace_is_enabled(), 1);
+
+        // Fire all session hooks — must invoke the registered trace_reset_hook.
+        crate::session::session_reset();
+
+        assert_eq!(
+            hew_trace_event_count(),
+            0,
+            "trace events must be empty after session_reset"
+        );
+        assert_eq!(
+            hew_trace_is_enabled(),
+            0,
+            "tracing must be disabled after session_reset"
+        );
     }
 }

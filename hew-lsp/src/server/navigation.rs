@@ -1119,6 +1119,9 @@ fn scan_disk_importers_for_conflicts(
     );
 }
 
+// NOTE: See issue #1287 — this disk-scan logic duplicates workspace walker
+// policy in navigation.rs:49-60 and workspace.rs:225-258. A future unification
+// will consolidate both paths onto shared workspace helpers.
 fn scan_dir_for_conflicts(
     definition_uri: &Url,
     renamed_name: &str,

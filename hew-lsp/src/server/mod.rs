@@ -5245,9 +5245,9 @@ machine Traffic {
 
     #[test]
     fn plan_workspace_rename_disk_scan_skips_aliased_importer() {
-        // Regression test for finding #2 from rev-gate: an unopened file that
-        // imports `foo as baz` must NOT block renaming `foo -> bar`, because the
-        // visible binding in that file remains `baz`, not `bar`.
+        // Regression for issue #1285: an unopened file that imports `foo as baz`
+        // must NOT block renaming `foo -> bar`, because the visible binding in
+        // that file remains `baz`, not `bar`.
         //
         // Layout:
         //   <test_dir>/std/           ← workspace root marker
@@ -5292,10 +5292,10 @@ machine Traffic {
 
     #[test]
     fn plan_workspace_rename_from_importer_cursor_catches_unopened_sibling_conflict() {
-        // Regression test for finding #3 from rev-gate: when the rename is initiated
-        // from an *importer* cursor (cursor on the import-binding token in importer.hew),
-        // the disk scan must search for files that import the *definition* file (util.hew),
-        // not files that import importer.hew.
+        // Regression for issue #1283: when the rename is initiated from an
+        // *importer* cursor (cursor on the import-binding token in importer.hew),
+        // the disk scan must search for files that import the *definition* file
+        // (util.hew), not files that import importer.hew.
         //
         // Layout:
         //   <test_dir>/std/              ← workspace root marker
@@ -5355,8 +5355,8 @@ machine Traffic {
 
     #[test]
     fn plan_workspace_rename_disk_scan_skips_worktrees_dir() {
-        // Regression test for finding #4 from rev-gate: the disk scan must not
-        // descend into `worktrees/` directories (matching workspace.rs skip policy).
+        // Regression for issue #1285: the disk scan must not descend into
+        // `worktrees/` directories (matching workspace.rs skip policy).
         //
         // Layout:
         //   <test_dir>/std/

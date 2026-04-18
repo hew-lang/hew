@@ -1893,7 +1893,7 @@ mod tests {
 
     #[test]
     fn cursor_on_import_path_segment_not_misclassified_as_binding() {
-        // Regression guard for finding #5: when a path component shares its name
+        // Regression for issue #1283: when a path component shares its name
         // with a binding name (e.g. `import foo::{ foo }`), a cursor on the
         // *path* component (`foo` before `::`) must NOT be treated as a cursor on
         // the import binding.

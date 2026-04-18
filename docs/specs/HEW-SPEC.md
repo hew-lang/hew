@@ -2366,6 +2366,8 @@ value.
 
 ## 4. Effects, IO, and Async Semantics
 
+**Provisional (as of 2026-04-17).** This section is under active revision pending resolution of the I/O subsystem (#1236) and related sub-issues on cancellation semantics (#1243), actor I/O integration (#1239), and backpressure (milestone #3). Features marked "not currently implemented" or "parses today; no user-facing examples" below are parseable by the compiler today but may not be fully implemented end-to-end. Consult `examples/` for ground-truth usage before relying on them. This section will be updated after #1236's resolution to reflect the final design.
+
 This section defines Hew's concurrency model within actors. Hew distinguishes between:
 
 - **Inter-actor concurrency**: Actors communicate via asynchronous message passing (Section 2.1)
@@ -2507,7 +2509,7 @@ Cooperative tasks (`s.launch`) MUST yield at:
 
 - `await` expressions — suspends coroutine until awaited result is ready
 - `cooperate` — reduction budget exhaustion; compiler inserts `cooperate` calls at loop headers and function call sites
-- Tasks may opt out of safepoints in critical sections with `#[no_safepoint]`
+- Tasks may opt out of safepoints in critical sections with `#[no_safepoint]` (not currently implemented)
 
 Parallel tasks (`s.spawn`) run on OS threads and are not subject to cooperative yield points.
 
@@ -2598,13 +2600,14 @@ The following points are safepoints where cancellation is checked automatically:
 
 When cancellation fires at a safepoint, the runtime initiates **stack unwinding** with a `Cancelled` payload. All `defer` blocks and `Drop` implementations run during unwinding, ensuring deterministic resource cleanup.
 
-**`#[noncancellable]` for critical sections:**
+**`#[noncancellable]` for critical sections (not currently implemented):**
 
 ```hew
 #[noncancellable]
 fn commit_transaction(tx: Transaction) -> Result<(), Error> {
     // This function will NOT be interrupted by cancellation.
     // Cancellation is deferred until after this function returns.
+    // NOTE: This attribute is parses today but is not yet fully implemented end-to-end.
     tx.write_log()?;
     tx.commit()?;
     Ok(())
@@ -2830,9 +2833,9 @@ This hybrid provides:
 - Safe resource management via structured lifetimes (Swift-style)
 - No data-race-by-design at all levels of concurrency
 
-### 4.10 Actor Await and Synchronization
+### 4.10 Actor Await and Synchronization (parses today; no end-user examples; revisit after #1236)
 
-Hew provides deterministic actor synchronization primitives that replace polling patterns like `sleep_ms()`:
+Hew provides deterministic actor synchronization primitives that replace polling patterns like `sleep_ms()`. Note: The syntax and semantics described in this section are parseable by the compiler but lack comprehensive end-to-end implementation in current releases. Consult `examples/` for ground-truth usage.
 
 **Awaiting a single actor:**
 
@@ -3211,7 +3214,7 @@ The cross-actor streaming protocol uses the existing mailbox infrastructure:
 
 Cross-actor generators provide **natural backpressure**: the producer only runs when the consumer requests the next value. This is demand-driven — unlike push-based streaming, the producer cannot overwhelm the consumer's mailbox.
 
-The streaming protocol MAY use a **prefetch window** to amortize message-passing overhead:
+The streaming protocol MAY use a **prefetch window** to amortize message-passing overhead (not currently implemented):
 
 ```hew
 actor DataSource {
@@ -3224,7 +3227,7 @@ actor DataSource {
 }
 ```
 
-This is an optimization hint — the observable semantics are identical to one-at-a-time request/yield.
+This is an optimization hint — the observable semantics are identical to one-at-a-time request/yield. NOTE: The `#[prefetch(N)]` attribute is not yet implemented end-to-end.
 
 **Network transparency:**
 

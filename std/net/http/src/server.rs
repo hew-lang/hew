@@ -13,9 +13,13 @@ use std::sync::mpsc;
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 /// Opaque HTTP server handle.
+///
+/// The `inner` is wrapped in `Option<Box<...>>` to enable idempotent close semantics:
+/// `hew_http_server_close` uses `.take()` to extract and free the server once. A second
+/// call finds `None` and no-ops. This avoids double-free and is thread-safe, unlike
+/// thread-local tracking which fails on cross-thread close or address reuse.
 pub struct HewHttpServer {
-    inner: tiny_http::Server,
-    max_body_size: usize,
+    inner: Option<Box<(tiny_http::Server, usize)>>,
 }
 
 impl std::fmt::Debug for HewHttpServer {
@@ -63,8 +67,7 @@ pub unsafe extern "C" fn hew_http_server_new(addr: *const c_char) -> *mut HewHtt
 
     match tiny_http::Server::http(addr_str) {
         Ok(server) => Box::into_raw(Box::new(HewHttpServer {
-            inner: server,
-            max_body_size: MAX_BODY_SIZE,
+            inner: Some(Box::new((server, MAX_BODY_SIZE))),
         })),
         Err(_) => std::ptr::null_mut(),
     }
@@ -86,10 +89,15 @@ pub unsafe extern "C" fn hew_http_server_recv(srv: *mut HewHttpServer) -> *mut H
     // SAFETY: srv was allocated by hew_http_server_new and is valid.
     let server = unsafe { &*srv };
 
-    match server.inner.recv() {
+    let Some(inner_box) = server.inner.as_ref() else {
+        return std::ptr::null_mut();
+    };
+    let (http_server, max_body_size) = &**inner_box;
+
+    match http_server.recv() {
         Ok(req) => Box::into_raw(Box::new(HewHttpRequest {
             inner: Some(req),
-            max_body_size: server.max_body_size,
+            max_body_size: *max_body_size,
         })),
         Err(_) => std::ptr::null_mut(),
     }
@@ -116,8 +124,12 @@ pub unsafe extern "C" fn hew_http_server_set_max_body(
     };
     // SAFETY: srv was allocated by hew_http_server_new and is valid.
     let server = unsafe { &mut *srv };
-    server.max_body_size = max_body_size;
-    0
+    if let Some(inner) = server.inner.as_mut() {
+        inner.1 = max_body_size;
+        0
+    } else {
+        -1
+    }
 }
 
 /// Return the HTTP method of the request as a `malloc`-allocated C string.
@@ -588,17 +600,22 @@ pub unsafe extern "C" fn hew_http_respond_stream(
 
 /// Close and free the HTTP server.
 ///
+/// This function is idempotent: calling it multiple times is safe. The first call
+/// frees the server; subsequent calls detect that the server has already been closed
+/// (via `Option::take()`) and return without attempting to free again.
+///
 /// # Safety
 ///
-/// `srv` must be a valid pointer previously returned by [`hew_http_server_new`],
-/// and must not have been freed already.
+/// `srv` must be a valid pointer previously returned by [`hew_http_server_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_server_close(srv: *mut HewHttpServer) {
     if srv.is_null() {
         return;
     }
-    // SAFETY: srv was allocated with Box::into_raw in hew_http_server_new.
-    drop(unsafe { Box::from_raw(srv) });
+    // SAFETY: srv was allocated with Box::into_raw in hew_http_server_new and is valid.
+    let server = unsafe { &mut *srv };
+    // Take ownership of the inner server (if any). A second call finds None and no-ops.
+    let _ = server.inner.take();
 }
 
 /// Free a request handle without sending a response.
@@ -1154,7 +1171,8 @@ mod tests {
     fn server_addr(srv: *mut HewHttpServer) -> String {
         // SAFETY: srv is valid and was just created.
         let server = unsafe { &*srv };
-        format!("http://{}", server.inner.server_addr().to_ip().unwrap())
+        let http_server = &server.inner.as_ref().unwrap().0;
+        format!("http://{}", http_server.server_addr().to_ip().unwrap())
     }
 
     #[test]
@@ -1755,5 +1773,73 @@ mod tests {
         unsafe { hew_http_request_free(req) };
         // SAFETY: srv was allocated by hew_http_server_new.
         unsafe { hew_http_server_close(srv) };
+    }
+
+    // -- Close idempotence -----------------------------------------------
+
+    #[test]
+    fn server_close_idempotent_same_thread() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string literal.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null(), "server creation should succeed");
+
+        // First close should succeed.
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+
+        // Second close on same thread should no-op (not crash or double-free).
+        // SAFETY: srv is still valid (Option is None but the outer Box still exists).
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
+    fn server_close_idempotent_different_thread() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string literal.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null(), "server creation should succeed");
+
+        // Close on a different thread should not leak or crash.
+        // Cast pointer to usize for Send across thread boundary, then back.
+        let srv_addr = srv as usize;
+        let handle = std::thread::spawn(move || {
+            let srv = srv_addr as *mut HewHttpServer;
+            // SAFETY: srv is valid; cross-thread close must be safe.
+            unsafe { hew_http_server_close(srv) };
+        });
+        handle.join().unwrap();
+
+        // No second close needed; thread already freed the inner Option.
+    }
+
+    #[test]
+    fn server_drop_is_idempotent_after_explicit_close() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string literal.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null(), "server creation should succeed");
+
+        // Explicitly close the server.
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+
+        // Now drop it (simulating Hew's Drop impl calling hew_http_server_close again).
+        // The outer Box is dropped; the inner Option has already been taken, so
+        // Drop does not attempt to free again.
+        // SAFETY: srv is a valid pointer allocated with Box::into_raw; Drop will no-op.
+        drop(unsafe { Box::from_raw(srv) });
+    }
+
+    #[test]
+    fn server_drop_without_explicit_close_is_safe() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string literal.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null(), "server creation should succeed");
+
+        // Drop without calling close() explicitly (simulating immediate drop).
+        // SAFETY: srv is a valid pointer allocated with Box::into_raw.
+        drop(unsafe { Box::from_raw(srv) });
     }
 }

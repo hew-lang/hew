@@ -1,0 +1,27 @@
+// e2e test: calling close() explicitly, then allowing Drop to run, should not double-free.
+//
+// This is the regression guard for issue #1281: HttpServer double-free on `close()` + `Drop`.
+// Both impl ServerMethods::close and impl Drop for Server called hew_http_server_close,
+// which would cause SIGSEGV (exit 139) when a user called server.close() explicitly
+// and then the value dropped at the end of scope.
+//
+// The fix makes hew_http_server_close idempotent by tracking a "closed" flag inside
+// HewHttpServer; the second call (from Drop) detects that the server is already closed
+// and returns without attempting to free the same pointer again.
+
+import std::net::http;
+
+fn main() {
+    // Use port 0 (let the OS pick an ephemeral port) so there's no conflict with other tests.
+    let server = http.listen(":0");
+
+    // Explicitly call close(). This should mark the server as closed.
+    server.close();
+
+    // server drops here at the end of scope.
+    // Drop impl also calls hew_http_server_close(), but because we've already
+    // called close() above, the flag check prevents a second Box::from_raw,
+    // avoiding the double-free.
+
+    println("ok");
+}

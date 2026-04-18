@@ -4142,11 +4142,65 @@ machine Traffic {
     #[test]
     fn plan_workspace_rename_does_not_duplicate_cross_file_conflicts() {
         // Verify that when the plan_rename probe at the definition file
-        // re-emits a ShadowsTopLevel/ShadowsImport conflict already reported
-        // by collect_cross_file_conflict, the dedup filter removes the duplicate.
-        // This prevents inflating the conflict count in the editor UI.
-        let util_source = "fn greet() -> i32 { 1 }";
-        let main_source = "import util::{ greet };\nfn greet() -> i32 { 0 }\nfn main() { greet() }";
+        // re-emits a ShadowsTopLevel conflict already reported by
+        // collect_cross_file_conflict, the dedup filter collapses it to one.
+        //
+        // Setup: util.hew defines both `greet` AND `hello` (top-level).
+        //        main.hew imports `greet` from util.
+        //        Renaming from main.hew's import token (`greet` → `hello`):
+        //   1. collect_cross_file_conflict(util_doc, "hello", "greet") detects
+        //      that `hello` is already a top-level name in util.hew → ShadowsTopLevel.
+        //   2. The plan_rename probe on util.hew (at greet's def span) also hits
+        //      the same clash and extends cross_file_conflicts with an identical entry.
+        //
+        // Before the dedup block, conflicts.len() == 2.  After dedup: 1.
+        // Regression guard: both collection paths emit an identical ShadowsTopLevel
+        // entry for the same (existing_span, offending_span) — the dedup block must
+        // collapse them to one.  Without dedup this assertion fails with len == 2.
+        let util_source = "pub fn greet() -> i32 { 1 }\npub fn hello() -> i32 { 2 }";
+        let main_source = "import util::{ greet };\nfn m() -> i32 { greet() }";
+
+        let util_uri = make_test_uri("/project/util.hew");
+        let main_uri = make_test_uri("/project/main.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(main_uri.clone(), make_doc(main_source));
+
+        // Cursor on main.hew's import token `greet` — importer-originated path,
+        // which exercises both collect_cross_file_conflict and the plan_rename probe
+        // on the definition file (the two paths that each independently emit the clash).
+        let main_doc = documents.get(&main_uri).unwrap();
+        let offset = main_source.find("greet").unwrap();
+        let err = plan_workspace_rename(&main_uri, &main_doc, offset, "hello", &documents)
+            .expect_err("clash with util.hew's top-level hello should be reported");
+        match err {
+            hew_analysis::RenameError::Conflicts { conflicts } => {
+                // The key assertion: dedup must reduce two identical ShadowsTopLevel
+                // entries (one from collect_cross_file_conflict, one from the
+                // plan_rename probe) down to exactly one.
+                assert_eq!(
+                    conflicts.len(),
+                    1,
+                    "conflicts should be deduped to 1, got {conflicts:?}"
+                );
+                assert_eq!(
+                    conflicts[0].kind,
+                    hew_analysis::RenameConflictKind::ShadowsTopLevel
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_workspace_rename_same_name_is_noop() {
+        // Renaming a symbol to its own name must return Ok(None) — no conflict,
+        // no edit — even when cross-file importers exist.  Before the early-return
+        // guard, the cross-file walk could surface spurious ShadowsTopLevel clashes
+        // (e.g. main.hew's `greet` seen as a clash for new_name == "greet").
+        let util_source = "pub fn greet() -> i32 { 1 }";
+        let main_source = "import util::{ greet };\nfn m() -> i32 { greet() }";
 
         let util_uri = make_test_uri("/project/util.hew");
         let main_uri = make_test_uri("/project/main.hew");
@@ -4157,24 +4211,13 @@ machine Traffic {
 
         let util_doc = documents.get(&util_uri).unwrap();
         let offset = util_source.find("fn greet").unwrap() + 3;
-        let err = plan_workspace_rename(&util_uri, &util_doc, offset, "greet", &documents)
-            .expect_err("clash with main.hew's top-level greet should be reported");
-        match err {
-            hew_analysis::RenameError::Conflicts { conflicts } => {
-                // The key assertion: conflicts should be deduped. Before the fix,
-                // collect_cross_file_conflict would report a ShadowsTopLevel clash,
-                // then the plan_rename probe would re-emit it, inflating the count.
-                assert_eq!(
-                    conflicts.len(),
-                    1,
-                    "conflicts should be deduped, got {conflicts:?}"
-                );
-                assert_eq!(
-                    conflicts[0].kind,
-                    hew_analysis::RenameConflictKind::ShadowsTopLevel
-                );
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "greet", &documents);
+        match result {
+            Ok(None | Some(_)) => {} // no error: correct
+            Err(hew_analysis::RenameError::Conflicts { ref conflicts }) => {
+                panic!("same-name rename must not produce conflicts, got: {conflicts:?}");
             }
-            other => panic!("expected Conflicts, got {other:?}"),
+            Err(other) => panic!("unexpected error on same-name rename: {other:?}"),
         }
     }
 

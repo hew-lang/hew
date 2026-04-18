@@ -756,6 +756,13 @@ pub(super) fn plan_workspace_rename(
         return Ok(None);
     };
 
+    // Same-name rename is a no-op: skip cross-file scanning entirely.
+    // plan_rename above already returned Ok([]) for this case; we mirror
+    // that here so no spurious cross-file ShadowsTopLevel conflicts surface.
+    if name == new_name {
+        return Ok(None);
+    }
+
     // If this rename has cross-file reach (imported or definition of a
     // top-level item), walk each other file that would be edited.
     if let Some((import_match, _)) =

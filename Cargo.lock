@@ -1604,6 +1604,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pemfile",
+ "serde_json",
  "snow",
  "socket2",
  "tempfile",

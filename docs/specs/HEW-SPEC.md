@@ -4175,7 +4175,7 @@ Tier 2 uses checker disposition categories instead of a single "supported vs uns
 - **Pass** — the surface works on WASI as implemented today (for example, basic actors such as `spawn` / `send` / `ask`).
 - **Warn** — the surface exists on WASI but with important cooperative-semantics differences (for example, `sleep_ms` / `sleep`).
 - **Error** — the checker rejects the surface at compile time on WASI because Hew does not yet provide a coherent runtime path there (for example, structured concurrency scopes).
-- **WASM-TODO** — the surface remains a documented backlog item and is not yet checker-gated with a dedicated Pass / Warn / Error disposition (for example, `std::net::tls`).
+- **WASM-TODO** — the surface remains a documented backlog item and is not yet checker-gated with a dedicated Pass / Warn / Error disposition (for example, raw host WASI socket capability).
 
 For the authoritative full feature table — including the current bounded non-blocking channel subset, timer warnings, compile-time networking rejects, and the remaining WASM-TODO backlog — see [`docs/wasm-capability-matrix.md`](../wasm-capability-matrix.md).
 

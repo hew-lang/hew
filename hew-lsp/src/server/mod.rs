@@ -6041,20 +6041,22 @@ machine Traffic {
         let root = test_dir.path();
         std::fs::create_dir_all(root.join("std")).unwrap();
 
-        // Create a real subdirectory with a .hew file.
-        let real_subdir = root.join("a_real");
+        // Create a real subdirectory with a .hew file. Name it so it sorts AFTER
+        // the symlink — the walker's children.sort() + reverse-push + pop yields
+        // ascending order, so the symlink must come first in this test to actually
+        // exercise the "symlink visited first poisons the visited set" bug.
+        let real_subdir = root.join("z_real");
         std::fs::create_dir_all(&real_subdir).unwrap();
         let real_file = real_subdir.join("def.hew");
         std::fs::write(&real_file, "pub fn foo() {}").unwrap();
 
-        // Create a symlink to the real directory, ordered to sort before it.
-        let symlink_path = root.join("z_link");
+        // Create a symlink to the real directory, named to sort BEFORE it.
+        let symlink_path = root.join("a_link");
         let _ = std::fs::remove_dir_all(&symlink_path); // Clean up any leftover
         std::os::unix::fs::symlink(&real_subdir, &symlink_path).unwrap();
 
-        // Walk from the root. Both z_link and a_real exist; z_link is visited first
-        // (alphabetical pop order). The symlink should be skipped, and the real
-        // directory should still be visited.
+        // Walk from the root. Pop order is a_link, then z_real. The symlink is
+        // skipped on encounter; the real directory must still be visited.
         let mut visited_files = Vec::new();
         let result: std::result::Result<(), (std::path::PathBuf, std::io::Error)> =
             super::workspace::for_each_hew_file(root, |path| {

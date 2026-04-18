@@ -1881,7 +1881,7 @@ trait Drop {
 }
 ```
 
-#### 3.10.3 Core Types
+#### 3.10.3 Core Types and Error Handling
 
 **Option and Result** are first-class generic enums:
 
@@ -1897,10 +1897,20 @@ enum Result<T, E> {
 }
 ```
 
-Any error type `E` may be used with `Result<T, E>`. In practice, the current
-stdlib mixes `Result<T, String>` with sentinel-value APIs (for example, empty
-strings or `-1` on failure) depending on the module. There is no shared
-stdlib-wide `IoError` or `AllocError` family in v0.2.0.
+Any error type `E` may be used with `Result<T, E>`. The recommended pattern is for each module to define its own structured error enum, as demonstrated by the canonical `std::fs::IoError`:
+
+```hew
+pub enum IoError {
+    NotFound(int);
+    PermissionDenied(int);
+    AlreadyExists(int);
+    Other(int);
+}
+
+pub fn io_error_from_message(message: String) -> IoError { ... }
+```
+
+This pattern is used across every `try_*` function in the `std::fs` module and pairs with the `?` operator for ergonomic error propagation. Each stdlib module defines its own error type following this shape; there is no single cross-module error enum. Future stdlib modules (under #1247) will adopt the same per-module structured error approach.
 
 **String and Vec** are built-in generic/runtime-backed types with dot-syntax
 methods:

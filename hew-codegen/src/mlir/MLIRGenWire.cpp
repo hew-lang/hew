@@ -122,7 +122,18 @@ static bool isVarintType(const std::string &ty) {
 
 /// Classifies a wire type for JSON/YAML serialization.
 /// Resolves the semantic kind from the type name string.
-enum class WireJsonKind { Bool, Float32, Float64, String, Bytes, Integer };
+///
+/// Char and Duration are distinct from Integer so the consumer can emit
+/// dedicated `hew_{format}_object_set_char` / `hew_{format}_object_set_duration`
+/// calls rather than routing through `set_int`.  The binary-wire path
+/// (wireKindOf / encodeFunc) keeps them grouped as varint because the on-wire
+/// representation is identical; only the C ABI name changes.
+///
+/// WHY: Issue #1272 — descriptor op stream (JsonOp::SetChar / SetDuration) must
+/// match the emitted C symbol so a future descriptor-driven Phase-M consumer
+/// can consume the descriptor without re-plumbing the ops.
+/// WHEN obsolete: when the C++ consumer is fully replaced by the descriptor.
+enum class WireJsonKind { Bool, Float32, Float64, String, Bytes, Integer, Char, Duration };
 
 static WireJsonKind jsonKindOf(const std::string &ty) {
   switch (primitiveTypeKind(ty)) {
@@ -136,6 +147,10 @@ static WireJsonKind jsonKindOf(const std::string &ty) {
     return WireJsonKind::String;
   case PrimitiveTypeKind::Bytes:
     return WireJsonKind::Bytes;
+  case PrimitiveTypeKind::Char:
+    return WireJsonKind::Char;
+  case PrimitiveTypeKind::Duration:
+    return WireJsonKind::Duration;
   case PrimitiveTypeKind::I8:
   case PrimitiveTypeKind::I16:
   case PrimitiveTypeKind::I32:
@@ -144,8 +159,6 @@ static WireJsonKind jsonKindOf(const std::string &ty) {
   case PrimitiveTypeKind::U16:
   case PrimitiveTypeKind::U32:
   case PrimitiveTypeKind::U64:
-  case PrimitiveTypeKind::Char:
-  case PrimitiveTypeKind::Duration:
     return WireJsonKind::Integer;
   case PrimitiveTypeKind::Unknown:
     llvm_unreachable(
@@ -1361,6 +1374,8 @@ void MLIRGen::generateWireToSerial(
     std::string rtSetString = "hew_" + format.str() + "_object_set_string";
     std::string rtSetBytes = "hew_" + format.str() + "_object_set_bytes";
     std::string rtSetInt = "hew_" + format.str() + "_object_set_int";
+    std::string rtSetChar = "hew_" + format.str() + "_object_set_char";
+    std::string rtSetDuration = "hew_" + format.str() + "_object_set_duration";
     std::string rtSetNull = "hew_" + format.str() + "_object_set_null";
     std::string rtStringify = "hew_" + format.str() + "_stringify";
     std::string rtFree = "hew_" + format.str() + "_free";
@@ -1426,6 +1441,20 @@ void MLIRGen::generateWireToSerial(
           hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                      mlir::SymbolRefAttr::get(&context, rtSetBytes),
                                      mlir::ValueRange{objPtr, keyPtr, payloadPtr});
+        } else if (jkind == WireJsonKind::Char) {
+          mlir::Value v64 = payload;
+          if (payload.getType() == i32Type)
+            v64 = mlir::arith::ExtUIOp::create(builder, location, i64Type, payload);
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, rtSetChar),
+                                     mlir::ValueRange{objPtr, keyPtr, v64});
+        } else if (jkind == WireJsonKind::Duration) {
+          mlir::Value v64 = payload;
+          if (payload.getType() == i32Type)
+            v64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, payload);
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, rtSetDuration),
+                                     mlir::ValueRange{objPtr, keyPtr, v64});
         } else {
           mlir::Value v64 = payload;
           if (payload.getType() == i32Type) {
@@ -1491,6 +1520,8 @@ void MLIRGen::generateWireToSerial(
   std::string rtSetString = "hew_" + format.str() + "_object_set_string";
   std::string rtSetBytes = "hew_" + format.str() + "_object_set_bytes";
   std::string rtSetInt = "hew_" + format.str() + "_object_set_int";
+  std::string rtSetChar = "hew_" + format.str() + "_object_set_char";
+  std::string rtSetDuration = "hew_" + format.str() + "_object_set_duration";
   std::string rtStringify = "hew_" + format.str() + "_stringify";
   std::string rtFree = "hew_" + format.str() + "_free";
 
@@ -1567,6 +1598,22 @@ void MLIRGen::generateWireToSerial(
       hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                  mlir::SymbolRefAttr::get(&context, rtSetBytes),
                                  mlir::ValueRange{objPtr, keyPtr, fv});
+    } else if (jkind == WireJsonKind::Char) {
+      // Char: zero-extend i32 codepoint to i64 for the dedicated C ABI entry point.
+      mlir::Value v64 = fv;
+      if (fv.getType() == i32Type)
+        v64 = mlir::arith::ExtUIOp::create(builder, location, i64Type, fv);
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtSetChar),
+                                 mlir::ValueRange{objPtr, keyPtr, v64});
+    } else if (jkind == WireJsonKind::Duration) {
+      // Duration: sign-extend i64 nanoseconds (Duration is stored as i64 directly).
+      mlir::Value v64 = fv;
+      if (fv.getType() == i32Type)
+        v64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, fv);
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtSetDuration),
+                                 mlir::ValueRange{objPtr, keyPtr, v64});
     } else {
       // WireJsonKind::Integer — extend to i64 (zero-extend unsigned, sign-extend signed)
       mlir::Value v64 = fv;
@@ -1780,6 +1827,8 @@ void MLIRGen::generateWireFromSerial(
     std::string rtGetFloat = "hew_" + format.str() + "_get_float";
     std::string rtGetBytes = "hew_" + format.str() + "_get_bytes";
     std::string rtGetInt = "hew_" + format.str() + "_get_int";
+    std::string rtGetChar = "hew_" + format.str() + "_get_char";
+    std::string rtGetDuration = "hew_" + format.str() + "_get_duration";
     std::string rtFree = "hew_" + format.str() + "_free";
 
     auto parsed = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
@@ -1856,6 +1905,21 @@ void MLIRGen::generateWireFromSerial(
             decoded =
                 hew::BitcastOp::create(builder, location, variantInfo.payloadTypes[0], decoded)
                     .getResult();
+        } else if (jkind == WireJsonKind::Char) {
+          auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
+                                                   mlir::SymbolRefAttr::get(&context, rtGetChar),
+                                                   mlir::ValueRange{fieldJval})
+                            .getResult();
+          auto fieldType = wireTypeToMLIR(builder, payloadTyNames[index]);
+          decoded =
+              (fieldType == i32Type)
+                  ? mlir::arith::TruncIOp::create(builder, location, i32Type, rawI64).getResult()
+                  : rawI64;
+        } else if (jkind == WireJsonKind::Duration) {
+          decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
+                                               mlir::SymbolRefAttr::get(&context, rtGetDuration),
+                                               mlir::ValueRange{fieldJval})
+                        .getResult();
         } else {
           auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
                                                    mlir::SymbolRefAttr::get(&context, rtGetInt),
@@ -1959,6 +2023,8 @@ void MLIRGen::generateWireFromSerial(
   std::string rtGetString = "hew_" + format.str() + "_get_string";
   std::string rtGetBytes = "hew_" + format.str() + "_get_bytes";
   std::string rtGetInt = "hew_" + format.str() + "_get_int";
+  std::string rtGetChar = "hew_" + format.str() + "_get_char";
+  std::string rtGetDuration = "hew_" + format.str() + "_get_duration";
   std::string rtFree = "hew_" + format.str() + "_free";
 
   // obj = hew_{format}_parse(str)
@@ -2034,6 +2100,23 @@ void MLIRGen::generateWireFromSerial(
       } else if (jkind == WireJsonKind::Bytes) {
         decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
                                              mlir::SymbolRefAttr::get(&context, rtGetBytes),
+                                             mlir::ValueRange{fieldJval})
+                      .getResult();
+      } else if (jkind == WireJsonKind::Char) {
+        // Char: read via dedicated entry point; truncate to i32 for storage.
+        auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
+                                                 mlir::SymbolRefAttr::get(&context, rtGetChar),
+                                                 mlir::ValueRange{fieldJval})
+                          .getResult();
+        auto fieldType = wireTypeToMLIR(builder, field.ty);
+        decoded =
+            (fieldType == i32Type)
+                ? mlir::arith::TruncIOp::create(builder, location, i32Type, rawI64).getResult()
+                : rawI64;
+      } else if (jkind == WireJsonKind::Duration) {
+        // Duration: read as i64 nanoseconds via dedicated entry point; stored as i64.
+        decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
+                                             mlir::SymbolRefAttr::get(&context, rtGetDuration),
                                              mlir::ValueRange{fieldJval})
                       .getResult();
       } else {

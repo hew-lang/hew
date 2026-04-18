@@ -596,6 +596,74 @@ pub unsafe extern "C" fn hew_json_object_set_bytes(
     }
 }
 
+/// Set a `char` (Unicode codepoint) field on a JSON object as an integer.
+///
+/// `val` is the Unicode codepoint as a `u32`. Only BMP codepoints (0..=0xFFFF)
+/// are expected at this boundary (see `IntegerBounds::for_kind(Char)` SHIM in
+/// `hew-wirecodec/src/plan.rs` for the lift-to-full-Unicode tracking note).
+/// Emitted as a JSON number (integer).
+///
+/// # Safety
+///
+/// Same as [`hew_json_object_set_bool`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_object_set_char(
+    obj: *mut HewJsonValue,
+    key: *const c_char,
+    val: i64,
+) {
+    // SAFETY: delegates to set_int after verifying null contracts; caller
+    // guarantees obj and key are valid per the same contract as set_bool.
+    unsafe { hew_json_object_set_int(obj, key, val) }
+}
+
+/// Set a `duration` (nanoseconds as i64) field on a JSON object as an integer.
+///
+/// `val` is the duration in nanoseconds, encoded as a signed i64. Negative
+/// values represent time in the past. Emitted as a JSON number (integer).
+///
+/// # Safety
+///
+/// Same as [`hew_json_object_set_bool`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_object_set_duration(
+    obj: *mut HewJsonValue,
+    key: *const c_char,
+    val: i64,
+) {
+    // SAFETY: delegates to set_int after verifying null contracts; caller
+    // guarantees obj and key are valid per the same contract as set_bool.
+    unsafe { hew_json_object_set_int(obj, key, val) }
+}
+
+/// Get the `char` (Unicode codepoint) from a [`HewJsonValue`] integer field.
+///
+/// Returns the integer value as an `i64` (same as `hew_json_get_int`). The
+/// caller is responsible for verifying the value is in the BMP range before
+/// interpreting it as a char codepoint.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_get_char(val: *const HewJsonValue) -> i64 {
+    // SAFETY: delegates under the same null-or-valid-pointer contract.
+    unsafe { hew_json_get_int(val) }
+}
+
+/// Get the `duration` (nanoseconds as i64) from a [`HewJsonValue`] integer field.
+///
+/// Returns the integer value as an `i64` (same as `hew_json_get_int`).
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_get_duration(val: *const HewJsonValue) -> i64 {
+    // SAFETY: delegates under the same null-or-valid-pointer contract.
+    unsafe { hew_json_get_int(val) }
+}
+
 // ---------------------------------------------------------------------------
 // Object builder — null and Value child setters
 // ---------------------------------------------------------------------------
@@ -1315,6 +1383,8 @@ mod tests {
             hew_json_object_set_int(std::ptr::null_mut(), std::ptr::null(), 1);
             hew_json_object_set_float(std::ptr::null_mut(), std::ptr::null(), 1.0);
             hew_json_object_set_string(std::ptr::null_mut(), std::ptr::null(), std::ptr::null());
+            hew_json_object_set_char(std::ptr::null_mut(), std::ptr::null(), 65);
+            hew_json_object_set_duration(std::ptr::null_mut(), std::ptr::null(), 1_000_000);
             hew_json_object_set_null(std::ptr::null_mut(), std::ptr::null());
             hew_json_object_set(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut());
             hew_json_array_push_bool(std::ptr::null_mut(), 1);
@@ -1324,9 +1394,60 @@ mod tests {
             hew_json_array_push_null(std::ptr::null_mut());
             hew_json_array_push(std::ptr::null_mut(), std::ptr::null_mut());
 
+            // get_char / get_duration on null must return 0.
+            assert_eq!(hew_json_get_char(std::ptr::null()), 0);
+            assert_eq!(hew_json_get_duration(std::ptr::null()), 0);
+
             // Free on null must also be a no-op.
             hew_json_free(std::ptr::null_mut());
             hew_json_string_free(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn set_char_round_trips_bmp_codepoint() {
+        // SAFETY: obj is valid from hew_json_object_new.
+        unsafe {
+            let obj = hew_json_object_new();
+            let k = CString::new("cp").unwrap();
+            hew_json_object_set_char(obj, k.as_ptr(), 0x41); // 'A' = 65
+            let field = hew_json_get_field(obj, k.as_ptr());
+            assert!(!field.is_null());
+            assert_eq!(hew_json_get_char(field), 0x41);
+            hew_json_free(field);
+            hew_json_free(obj);
+        }
+    }
+
+    #[test]
+    fn set_duration_round_trips_nanoseconds() {
+        let ns: i64 = 1_500_000_000; // 1.5 seconds in nanoseconds
+                                     // SAFETY: obj is valid from hew_json_object_new.
+        unsafe {
+            let obj = hew_json_object_new();
+            let k = CString::new("dur").unwrap();
+            hew_json_object_set_duration(obj, k.as_ptr(), ns);
+            let field = hew_json_get_field(obj, k.as_ptr());
+            assert!(!field.is_null());
+            assert_eq!(hew_json_get_duration(field), ns);
+            hew_json_free(field);
+            hew_json_free(obj);
+        }
+    }
+
+    #[test]
+    fn set_duration_round_trips_negative_nanoseconds() {
+        let ns: i64 = -500_000_000; // 0.5 seconds in the past
+                                    // SAFETY: obj is valid from hew_json_object_new.
+        unsafe {
+            let obj = hew_json_object_new();
+            let k = CString::new("past").unwrap();
+            hew_json_object_set_duration(obj, k.as_ptr(), ns);
+            let field = hew_json_get_field(obj, k.as_ptr());
+            assert!(!field.is_null());
+            assert_eq!(hew_json_get_duration(field), ns);
+            hew_json_free(field);
+            hew_json_free(obj);
         }
     }
 

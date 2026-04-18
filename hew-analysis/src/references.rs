@@ -131,7 +131,14 @@ fn find_all_references_raw(
     // Cursor on an import binding token (e.g. `foo` in `import util::{ foo }`)
     // — treat exactly like a top-level name: return all body usages without
     // scope-filtering, since the binding is file-scoped.
+    // HOWEVER: use the shadow-aware walker to avoid returning locals/parameters
+    // that shadow the import (e.g., a `foo` parameter when the import is `foo`).
     if is_cursor_on_import_binding(source, parse_result, &name, offset) {
+        // Use shadow-aware reference collection to skip shadowed bindings.
+        spans.clear();
+        for (item, _span) in &parse_result.program.items {
+            collect_import_binding_refs_in_item(item, &name, &mut spans);
+        }
         // Also include the import token itself as a reference site.
         if let Some(import_span) = find_import_binding_span(source, parse_result, &name, offset) {
             spans.insert(0, import_span);
@@ -1888,6 +1895,40 @@ mod tests {
         assert!(
             spans.len() >= 2,
             "expected at least 2 references (one per function body), got {spans:?}"
+        );
+    }
+
+    #[test]
+    fn import_binding_cursor_excludes_shadowed_parameters() {
+        // Regression: import-binding cursors must not return locals/parameters
+        // that shadow the import. When cursor is on `foo` in `import util::{ foo }`,
+        // and there's a `foo` parameter in main(), find_all_references must return
+        // ONLY the import span, not the parameter use.
+        let source = "import util::{ foo }; fn main(foo: i64) -> i64 { foo }";
+        let pr = parse(source);
+
+        // Cursor on the import binding token `foo` (after `{`).
+        let import_offset = source.find("{ foo }").unwrap() + 2;
+        let result = find_all_references(source, &pr, import_offset);
+
+        // Must find the reference, but it should be ONLY the import itself,
+        // not the parameter or its use in main's body.
+        let (_name, spans) = result.expect("should find import reference");
+        assert_eq!(
+            spans.len(),
+            1,
+            "import-binding cursor should find ONLY the import token, not the shadowing parameter use; got {spans:?}"
+        );
+
+        // Verify the single span is the import token, not the parameter use.
+        let span = &spans[0];
+        let span_text = &source[span.start..span.end];
+        assert_eq!(span_text, "foo", "reference must be to the import token");
+        // The import token appears at offset ~21-24; the parameter appears later.
+        // The parameter use in `{ foo }` body is much later (~50-53).
+        assert!(
+            span.start < 30,
+            "reference should be near the import, not the parameter use at offset 49-53"
         );
     }
 

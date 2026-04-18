@@ -10725,7 +10725,7 @@ mod warning_source_attribution {
         );
     }
 
-    // ── Wave 13 Ty::Error return-context seeding regressions ───────────────────
+    // ── Ty::Error return-context seeding regressions ──────────────────────────
     //
     // When a function's return-type annotation cannot be resolved (e.g.
     // `UnknownType`), `resolve_type_expr` produces `Ty::Error`.  Before this

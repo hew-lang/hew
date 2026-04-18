@@ -128,6 +128,20 @@ fn find_all_references_raw(
         return Some((name, spans));
     }
 
+    // Cursor on an import binding token (e.g. `foo` in `import util::{ foo }`)
+    // — treat exactly like a top-level name: return all body usages without
+    // scope-filtering, since the binding is file-scoped.
+    if is_cursor_on_import_binding(parse_result, &name, offset) {
+        // Also include the import token itself as a reference site.
+        if let Some(import_span) = find_import_binding_span(source, parse_result, &name, offset) {
+            spans.insert(0, import_span);
+        }
+        if spans.is_empty() {
+            return None;
+        }
+        return Some((name, spans));
+    }
+
     // For local variables/parameters, restrict to the enclosing function/handler scope.
     let scope_opt = find_defining_scope(parse_result, offset);
     if let Some(scope) = &scope_opt {
@@ -184,6 +198,44 @@ fn find_defining_scope(parse_result: &ParseResult, offset: usize) -> Option<Span
         return Some(item_span.clone());
     }
     None
+}
+
+/// Return `true` if `offset` sits inside an `import` item AND the word at
+/// that offset is one of the explicitly-listed imported binding names.
+///
+/// Used by `find_all_references_raw` to detect the import-token cursor path
+/// and return file-scoped references instead of falling through to the
+/// local-variable scope-filtering path.
+fn is_cursor_on_import_binding(parse_result: &ParseResult, name: &str, offset: usize) -> bool {
+    use hew_parser::ast::ImportSpec;
+    for (item, item_span) in &parse_result.program.items {
+        if !item_span.contains(&offset) {
+            continue;
+        }
+        if let Item::Import(decl) = item {
+            if let Some(ImportSpec::Names(names)) = &decl.spec {
+                return names
+                    .iter()
+                    .any(|n| n.name == name || n.alias.as_deref() == Some(name));
+            }
+        }
+        break;
+    }
+    false
+}
+
+/// Return the byte span of the import binding token at `offset` in `source`.
+///
+/// Since the cursor is already on the token, `simple_word_at_offset` gives us
+/// the span directly.
+fn find_import_binding_span(
+    source: &str,
+    _parse_result: &ParseResult,
+    _name: &str,
+    offset: usize,
+) -> Option<Span> {
+    let (_, os) = simple_word_at_offset(source, offset)?;
+    Some(os.start..os.end)
 }
 
 /// Collect the start offsets of all binding (declaration) sites for `name`
@@ -1772,5 +1824,49 @@ mod tests {
         }
         assert_eq!(access_refs, 2);
         assert_eq!(init_refs, 2);
+    }
+
+    // ── find_import_binding_references: multi-scope coverage (#1283) ──
+
+    #[test]
+    fn import_binding_refs_collected_across_all_functions() {
+        // Regression test for issue #1283: find_import_binding_references must
+        // return usages in every function body, not just the first one.
+        // Previously this was suspected to miss scopes; this test confirms it
+        // already works correctly and guards against regressions.
+        let source =
+            "import util::{ foo };\nfn a() -> i64 { foo() }\nfn b() -> i64 { foo() }\nfn c() -> i64 { foo() }";
+        let pr = parse(source);
+
+        let spans = find_import_binding_references(&pr, "foo");
+        assert_eq!(
+            spans.len(),
+            3,
+            "foo() usage must be found in all three function bodies, got {spans:?}"
+        );
+        // Each span must point to "foo".
+        for span in &spans {
+            assert_eq!(&source[span.start..span.end], "foo");
+        }
+    }
+
+    #[test]
+    fn import_binding_refs_finds_usages_from_importer_cursor() {
+        // When the cursor sits on the import binding token (the `foo` in
+        // `import util::{ foo }`), find_all_references must return every usage
+        // of `foo` in the file — including usages across multiple functions.
+        let source = "import util::{ foo };\nfn a() -> i64 { foo() }\nfn b() -> i64 { foo() }";
+        let pr = parse(source);
+
+        // Place cursor on the import token.
+        let import_offset = source.find("{ foo }").unwrap() + 2;
+        let result = find_all_references(source, &pr, import_offset);
+        let (_name, spans) = result.expect("should find references from import token");
+
+        // Must include both call sites.
+        assert!(
+            spans.len() >= 2,
+            "expected at least 2 references (one per function body), got {spans:?}"
+        );
     }
 }

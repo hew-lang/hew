@@ -224,9 +224,9 @@ mod tests {
         assert_eq!(desc.fields[0].op, JsonOp::SetChar);
     }
 
-    /// `SetChar` must carry integer-range bounds. `MLIRGenWire.cpp:147-149`
-    /// routes `Char → WireJsonKind::Integer` on the C++ side; without bounds
-    /// the descriptor consumer has no signal that this is an integer op.
+    /// `SetChar` must carry integer-range bounds. `MLIRGenWire.cpp:150-153`
+    /// returns `WireJsonKind::Char` on the C++ side; the descriptor bounds
+    /// tell the consumer the valid codepoint range for the integer-codepoint path.
     #[test]
     fn char_field_carries_integer_bounds() {
         let plan = plan_with_fields("A", vec![simple_field("c", 1, PrimitiveWireKind::Char)]);

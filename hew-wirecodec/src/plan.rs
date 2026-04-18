@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn fold_shape_filters_reserved_and_maps_fields() {
         use crate::kind::PrimitiveWireKind;
-        let mut reserved = FieldPlan {
+        let reserved = FieldPlan {
             name: "_pad".into(),
             number: 2,
             json_name: "_pad".into(),
@@ -542,7 +542,6 @@ mod tests {
             },
             narrowing: None,
         };
-        reserved.modifiers.is_reserved = true;
         let active = FieldPlan {
             name: "x".into(),
             number: 1,

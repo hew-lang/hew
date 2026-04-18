@@ -265,6 +265,84 @@ pub(super) fn should_skip_workspace_dir(path: &Path) -> bool {
     )
 }
 
+/// Find the workspace root for a URI: the nearest ancestor directory that
+/// contains a `std/` subdirectory.  Returns `None` if no such ancestor exists.
+///
+/// This is the canonical workspace-root heuristic; both the import-path
+/// resolver (`compute_import_path`) and the rename disk-scan use it.
+pub(super) fn find_workspace_root_for_uri(uri: &Url) -> Option<PathBuf> {
+    let mut dir = uri
+        .to_file_path()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    while let Some(d) = dir {
+        if d.join("std").is_dir() {
+            return Some(d);
+        }
+        dir = d.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+/// Walk every `*.hew` file under `root`, calling `f` for each one.
+///
+/// Traversal rules:
+/// - Uses `symlink_metadata` so that symlinked directories are **never**
+///   followed.  This prevents cycle-induced stack overflows on hostile
+///   workspace layouts (issue #1290).
+/// - Applies `should_skip_workspace_dir` to prune `.git`, `target`,
+///   `.worktree`, `.worktrees`, and `worktrees` directories.
+/// - I/O errors on `read_dir` or `symlink_metadata` are propagated as `E`
+///   via `From<io::Error>`, so callers can decide whether to abort or
+///   ignore.
+///
+/// Returns `Ok(())` when all reachable files have been visited without
+/// error, or `Err(e)` on the first I/O or visitor error.
+pub(super) fn for_each_hew_file<E, F>(root: &Path, mut f: F) -> Result<(), E>
+where
+    E: From<std::io::Error>,
+    F: FnMut(&Path) -> Result<(), E>,
+{
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(path) = stack.pop() {
+        let metadata = std::fs::symlink_metadata(&path).map_err(E::from)?;
+
+        // Symlinks are never followed — this is what prevents directory-symlink
+        // cycles (issue #1290). `is_symlink()` is true for both file and dir
+        // symlinks; we skip both so no I/O is done through a symlink.
+        if metadata.is_symlink() {
+            continue;
+        }
+
+        if metadata.is_file() {
+            if path.extension().and_then(|ext| ext.to_str()) == Some("hew") {
+                f(&path)?;
+            }
+            continue;
+        }
+
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        if should_skip_workspace_dir(&path) {
+            continue;
+        }
+
+        let entries = std::fs::read_dir(&path).map_err(E::from)?;
+        let mut children: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        children.sort();
+        // Push in reverse so we pop in sorted order (deterministic, mirrors
+        // the existing collect_hew_files stack order).
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+
+    Ok(())
+}
+
 fn path_is_under_workspace_root(path: &Path, workspace_roots: &[PathBuf]) -> bool {
     let normalized_path = normalize_workspace_path(path);
     workspace_roots

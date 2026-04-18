@@ -466,6 +466,9 @@ fn rename_error_to_jsonrpc(err: &hew_analysis::RenameError) -> tower_lsp::jsonrp
                 first
             }
         }
+        hew_analysis::RenameError::Io { path, message } => {
+            format!("rename failed: {path}: {message}")
+        }
     };
     // LSP 3.17 §3.16.3: semantic refusals of well-formed requests use
     // RequestFailed (-32803); InvalidParams (-32602) is reserved for
@@ -5397,6 +5400,175 @@ machine Traffic {
             result.is_ok(),
             "rename foo->bar should succeed when the only importer is under worktrees/ \
              (which should be skipped), got {result:?}"
+        );
+    }
+
+    // ── #1290 Symlink-cycle regression ──────────────────────────────────────
+
+    #[test]
+    fn plan_workspace_rename_disk_scan_skips_symlinked_directory() {
+        // Regression for issue #1290: a symlink pointing to an ancestor directory
+        // under the workspace root must not cause unbounded recursion or a
+        // stack overflow.
+        //
+        // Layout:
+        //   <test_dir>/std/         ← workspace root marker
+        //   <test_dir>/util.hew     ← defines `pub fn foo`; OPEN
+        //   <test_dir>/loop         → symlink to <test_dir> itself
+        //
+        // Without the fix (is_dir() == true through a symlink) the scan would
+        // recurse endlessly.  With symlink_metadata the symlink is identified
+        // and skipped.
+
+        let test_dir = TestDir::new("disk-symlink-cycle");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        std::fs::write(&util_path, util_source).unwrap();
+
+        // Create a directory symlink that points back at the workspace root.
+        let loop_path = project_root.join("loop");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(project_root, &loop_path).unwrap();
+        #[cfg(not(unix))]
+        {
+            // Windows requires elevated rights for symlinks; skip on non-unix.
+            return;
+        }
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        // This must complete without stack overflow or infinite loop.
+        // No conflict exists — the rename should succeed.
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        assert!(
+            result.is_ok(),
+            "rename foo->bar should succeed; symlink cycle must be skipped, got {result:?}"
+        );
+    }
+
+    // ── #1288 Unreadable-file / unreadable-directory regressions ────────────
+
+    #[test]
+    #[cfg(unix)]
+    fn plan_workspace_rename_disk_scan_surfaces_error_for_unreadable_file() {
+        // Regression for issue #1288: an unreadable .hew file under the workspace
+        // must surface a RenameError::Io rather than being silently skipped and
+        // producing a potentially-incomplete conflict check.
+        //
+        // Skipped when running as root because the kernel ignores mode bits for root,
+        // so the permission change would be a no-op.  The guard below verifies this
+        // at runtime rather than relying on an env-var convention.
+        use std::os::unix::fs::PermissionsExt;
+
+        // RestoreOnDrop is declared at the top so it is in scope before any
+        // statements (required by clippy::items_after_statements).
+        struct RestoreOnDrop(PathBuf, u32);
+        impl Drop for RestoreOnDrop {
+            fn drop(&mut self) {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
+            }
+        }
+
+        let test_dir = TestDir::new("disk-unreadable-file");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let secret_path = project_root.join("secret.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        // secret.hew imports foo — if readable it would trigger the scan.
+        let secret_source = "import util::{ foo };\npub fn uses_foo() -> i64 { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&secret_path, secret_source).unwrap();
+
+        // Remove read permission from secret.hew.
+        std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Verify that the permission change actually took effect (no-op under root).
+        if std::fs::read_to_string(&secret_path).is_ok() {
+            return; // running as root — permission enforcement is bypassed; skip
+        }
+
+        // Restore permissions on drop so TestDir cleanup succeeds.
+        let _restore = RestoreOnDrop(secret_path.clone(), 0o644);
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        assert!(
+            matches!(result, Err(hew_analysis::RenameError::Io { .. })),
+            "expected RenameError::Io for unreadable file, got {result:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn plan_workspace_rename_disk_scan_surfaces_error_for_unreadable_directory() {
+        // Regression for issue #1288: an unreadable subdirectory under the workspace
+        // must surface a RenameError::Io rather than being silently skipped.
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestoreOnDrop(PathBuf, u32);
+        impl Drop for RestoreOnDrop {
+            fn drop(&mut self) {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
+            }
+        }
+
+        let test_dir = TestDir::new("disk-unreadable-dir");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let locked_dir = project_root.join("locked");
+        std::fs::create_dir_all(&locked_dir).unwrap();
+        let inner_path = locked_dir.join("importer.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        // importer.hew inside locked/ imports foo.
+        let inner_source = "import util::{ foo };\npub fn uses_foo() -> i64 { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&inner_path, inner_source).unwrap();
+
+        // Remove read+exec from the directory so read_dir will fail.
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Verify the permission took effect.
+        if std::fs::read_dir(&locked_dir).is_ok() {
+            return; // running as root
+        }
+
+        let _restore = RestoreOnDrop(locked_dir.clone(), 0o755);
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        assert!(
+            matches!(result, Err(hew_analysis::RenameError::Io { .. })),
+            "expected RenameError::Io for unreadable directory, got {result:?}"
         );
     }
 

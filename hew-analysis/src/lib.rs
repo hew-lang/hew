@@ -208,6 +208,26 @@ pub enum RenameError {
     InvalidIdentifier { name: String, message: String },
     /// Applying the rename would introduce one or more name clashes.
     Conflicts { conflicts: Vec<RenameConflict> },
+    /// The disk scan encountered an I/O error that prevents a complete
+    /// conflict or edit check.  `path` is the file or directory that
+    /// could not be read; `message` is the OS error string.
+    Io { path: String, message: String },
+}
+
+impl From<std::io::Error> for RenameError {
+    /// Converts a bare I/O error into `RenameError::Io` with an empty path.
+    ///
+    /// Used by the generic `for_each_hew_file` walker, which propagates
+    /// traversal-level I/O errors (e.g. `read_dir` failing on the root)
+    /// before a specific file path is known.  Callers that have a path
+    /// (individual-file reads) construct `RenameError::Io { path, .. }`
+    /// directly.
+    fn from(e: std::io::Error) -> Self {
+        RenameError::Io {
+            path: String::new(),
+            message: e.to_string(),
+        }
+    }
 }
 
 // ── Folding ──────────────────────────────────────────────────────────

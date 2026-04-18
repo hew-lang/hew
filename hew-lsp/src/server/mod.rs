@@ -5619,6 +5619,88 @@ machine Traffic {
     }
 
     #[test]
+    fn unopened_aliased_importer_rename_rewrites_import_name() {
+        // Regression test: unopened files with aliased imports (`import foo as baz`)
+        // must have the imported name (`foo`) rewritten when the symbol is renamed,
+        // but the alias (`baz`) must remain unchanged.
+        //
+        // Layout:
+        //   <test_dir>/std/          ← workspace root marker
+        //   <test_dir>/util.hew      ← defines `pub fn foo`
+        //   <test_dir>/importer.hew  ← imports `foo as baz` and uses `baz`; CLOSED
+        //
+        // Rename `foo -> bar` from the definition file cursor.
+        // The WorkspaceEdit must include an edit in importer.hew that rewrites
+        // only the imported name token from `foo` to `bar`, leaving `baz` intact.
+
+        let test_dir = TestDir::new("unopened-aliased-importer-rename");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let importer_path = project_root.join("importer.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        let importer_source = "import util::{ foo as baz };\nfn main() { baz() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&importer_path, importer_source).unwrap();
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        // Only util is open; importer is closed.
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        // Place cursor on the `foo` definition.
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        let edit =
+            navigation::build_workspace_edit(&util_uri, &util_doc, offset, "bar", &documents);
+        let edit = edit.expect("workspace edit should be generated");
+
+        let changes = edit.changes.expect("changes must be present");
+
+        // Verify edits exist for both the util and the unopened importer.
+        assert!(
+            changes.contains_key(&util_uri),
+            "workspace edit must include changes for definition URI: {util_uri}"
+        );
+        assert!(
+            changes.contains_key(&importer_uri),
+            "workspace edit must include changes for unopened aliased importer URI: {importer_uri}"
+        );
+
+        // Verify importer's edit: should rewrite `foo` to `bar` in the import,
+        // leaving `baz` unchanged. The importer uses `baz()`, which should NOT
+        // be renamed (only the imported name in the import statement changes).
+        let importer_edits = &changes[&importer_uri];
+        assert!(
+            !importer_edits.is_empty(),
+            "unopened aliased importer file must have at least one edit"
+        );
+
+        // Expect exactly 1 edit: the import-name token from foo to bar.
+        // The alias `baz` and the usage `baz()` should NOT be edited.
+        assert_eq!(
+            importer_edits.len(),
+            1,
+            "unopened aliased importer should have exactly 1 edit (the import-name), got {}: {:?}",
+            importer_edits.len(),
+            importer_edits
+        );
+
+        let edit = &importer_edits[0];
+        assert_eq!(
+            edit.new_text, "bar",
+            "edit should rename to bar, got {}",
+            edit.new_text
+        );
+    }
+
+    #[test]
     fn rename_error_to_jsonrpc_uses_request_failed_code() {
         // LSP 3.17 §3.16.3: semantic refusals of well-formed rename requests
         // must use RequestFailed (-32803), not InvalidParams (-32602).

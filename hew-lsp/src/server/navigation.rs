@@ -759,6 +759,11 @@ pub(super) fn build_workspace_edit(
                         });
 
                     // Load the unopened file and compute edits for import-binding references.
+                    // Skip reference walk for aliased imports (same constraint as open-importer loop at L715-717).
+                    if unopened.is_aliased() {
+                        continue;
+                    }
+
                     if let Ok(unopened_path) = unopened.importer_uri.to_file_path() {
                         if let Ok(unopened_source) = std::fs::read_to_string(&unopened_path) {
                             let unopened_parse = hew_parser::parse(&unopened_source);
@@ -846,6 +851,11 @@ pub(super) fn build_workspace_edit(
                     });
 
                 // Load the unopened file and compute edits for import-binding references.
+                // Skip reference walk for aliased imports (same constraint as open-importer loop at L715-717).
+                if unopened.is_aliased() {
+                    continue;
+                }
+
                 if let Ok(unopened_path) = unopened.importer_uri.to_file_path() {
                     if let Ok(unopened_source) = std::fs::read_to_string(&unopened_path) {
                         let unopened_parse = hew_parser::parse(&unopened_source);
@@ -1265,7 +1275,7 @@ fn scan_dir_for_conflicts(
     open_uris: &HashSet<Url>,
     conflicts: &mut Vec<hew_analysis::RenameConflict>,
 ) {
-    // FOLLOW-UP: see issue #TODO — silently skipping unreadable directories
+    // FOLLOW-UP: see issue #1289 — silently skipping unreadable directories
     // means conflicts may be missed if the filesystem walk hits I/O errors.
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -1297,7 +1307,7 @@ fn scan_dir_for_conflicts(
             if open_uris.contains(&file_uri) || file_uri == *definition_uri {
                 continue;
             }
-            // FOLLOW-UP: see issue #TODO — silently skipping unreadable files
+            // FOLLOW-UP: see issue #1289 — silently skipping unreadable files
             // means conflicts may be missed if individual files fail to load.
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
@@ -1367,7 +1377,7 @@ fn collect_unopened_importers_in_dir(
 ) -> Vec<NamedImportMatch> {
     let mut matches = Vec::new();
 
-    // FOLLOW-UP: see issue #TODO — silently skipping unreadable directories
+    // FOLLOW-UP: see issue #1289 — silently skipping unreadable directories
     // means unopened importers may be missed if the filesystem walk hits I/O errors.
     let Ok(entries) = std::fs::read_dir(dir) else {
         return matches;
@@ -1392,15 +1402,17 @@ fn collect_unopened_importers_in_dir(
             if open_uris.contains(&file_uri) || file_uri == *definition_uri {
                 continue;
             }
-            // FOLLOW-UP: see issue #TODO — silently skipping unreadable files
+            // FOLLOW-UP: see issue #1289 — silently skipping unreadable files
             // means unopened importers may be missed if individual files fail to load.
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
             let parse_result = hew_parser::parse(&source);
 
-            // Only non-aliased imports can contribute edits for import-binding
-            // references (same constraint as the open-importer loop).
+            // Collect all imports (aliased and non-aliased) for the unopened-importer
+            // edits. The loop consuming these matches will emit import-name edits for
+            // both, but only walk references for non-aliased (same constraint as the
+            // open-importer loop at L715-717).
             let mut file_matches = Vec::new();
             for (import, item_span) in collect_import_items(&parse_result) {
                 let Some(ImportSpec::Names(names)) = &import.spec else {
@@ -1421,20 +1433,20 @@ fn collect_unopened_importers_in_dir(
                     if import_name.name != renamed_name {
                         continue;
                     }
-                    // Skip aliased imports.
-                    if import_name.alias.is_some() {
-                        continue;
-                    }
                     let Some((import_name_span, visible_name_span)) =
                         find_named_import_spans(&source, &item_span, import_name)
                     else {
                         continue;
                     };
+                    let visible_name = import_name
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| import_name.name.clone());
                     file_matches.push(NamedImportMatch {
                         importer_uri: file_uri.clone(),
                         imported_uri: resolved_uri.clone(),
                         imported_name: import_name.name.clone(),
-                        visible_name: import_name.name.clone(), // non-aliased, so no alias
+                        visible_name,
                         import_name_span,
                         visible_name_span,
                     });

@@ -482,17 +482,33 @@ pub extern "C" fn hew_trace_reset() {
 
 /// Drain up to 256 trace events and return them as a JSON array.
 ///
-/// Each element: `{"trace_id":"HEX32","span_id":N,"parent_span_id":N,"actor_id":N,"event_type":"S","msg_type":N,"timestamp_ns":N,"handler_name":"ActorType::handler"|null}`
+/// Each element:
+/// ```json
+/// {
+///   "trace_id": "HEX32",
+///   "span_id": N,
+///   "parent_span_id": N,
+///   "actor_id": N,
+///   "actor_type_id": N,
+///   "actor_type": "TypeName"|null,
+///   "event_type": "begin"|"end"|"spawn"|"crash"|"stop"|"send",
+///   "msg_type": N,
+///   "timestamp_ns": N,
+///   "handler_name": "ActorType::handler_name"|null
+/// }
+/// ```
 ///
-/// `handler_name` is non-null only when the WASM bridge metadata registry has
-/// been populated for the event's `msg_type` via `hew_wasm_register_actor_meta`.
-/// In native profiler builds the registry is unpopulated until the follow-up
-/// codegen emission work lands (see #1234 native path), so the field emits `null`.
+/// `actor_type_id` is the dispatch function pointer cast to `u64`.  It is `0`
+/// when the actor is no longer live at drain time (short-lived actors may have
+/// been freed before the drain runs).
 ///
-/// SHIM: `handler_name` is always `null` in native non-WASM builds until
-/// `hew_actor_register_type` / `hew_register_handler_name` codegen emission
-/// is implemented in `hew-codegen/`. Tracked in #1259. Remove this comment once
-/// native emission lands.
+/// `actor_type` is the registered Hew type name (e.g. `"Counter"`).  It is
+/// `null` when the dispatch pointer has not been registered via
+/// `hew_actor_register_type` (which requires codegen emission — see #1258).
+///
+/// `handler_name` is non-null on native builds when `hew_register_handler_name`
+/// has been called for the `(dispatch_fn, msg_type)` pair (requires codegen
+/// emission — see #1259).  On WASM builds the bridge metadata registry is used.
 #[cfg(feature = "profiler")]
 pub fn drain_events_json() -> String {
     use std::fmt::Write as _;
@@ -515,26 +531,61 @@ pub fn drain_events_json() -> String {
                 SPAN_SEND => "send",
                 _ => "unknown",
             };
-            // Resolve handler name from the WASM bridge metadata registry.
-            // SHIM: bridge is only compiled under wasm32 or test; native profiler
-            // builds always emit null here until hew_register_handler_name codegen
-            // emission lands (tracked in #1259).
-            #[cfg(any(target_arch = "wasm32", test))]
-            let handler_name = crate::bridge::resolve_handler_name(ev.msg_type);
+
+            // Resolve actor_type_id and actor_type via the profiler actor registry.
+            // Option B from #1260: drain-time lookup avoids adding a dispatch-fn
+            // pointer field to HewTraceEvent (which would break the C ABI).
+            //
+            // SHIM: WHY: HewTraceEvent is #[repr(C)]; adding fields would break
+            //       hew_trace_drain callers.  Drain-time lookup is the zero-ABI-
+            //       impact path.
+            //       WHEN: Remove this lookup if a future ABI revision embeds
+            //       actor_type_id directly in HewTraceEvent.
+            //       REAL: Store dispatch_fn in HewTraceEvent when the C ABI is versioned.
             #[cfg(not(any(target_arch = "wasm32", test)))]
-            let handler_name: Option<String> = None;
+            let (actor_type_id, actor_type_str, handler_name) = {
+                let dispatch_ptr =
+                    crate::profiler::actor_registry::lookup_dispatch_for_actor_id(ev.actor_id)
+                        .unwrap_or(0);
+                let type_id = dispatch_ptr as u64;
+                let type_name =
+                    crate::profiler::actor_registry::lookup_dispatch_type_by_ptr(dispatch_ptr);
+                let hname = crate::profiler::actor_registry::lookup_handler_name_by_ptr(
+                    dispatch_ptr,
+                    ev.msg_type,
+                );
+                (type_id, type_name, hname)
+            };
+
+            // WASM and test builds use the bridge metadata registry for handler
+            // names; actor_type_id and actor_type are not yet populated in those
+            // paths (WASM codegen registration is a separate follow-up).
+            #[cfg(any(target_arch = "wasm32", test))]
+            let (actor_type_id, actor_type_str, handler_name): (
+                u64,
+                &'static str,
+                Option<String>,
+            ) = (0, "Actor", crate::bridge::resolve_handler_name(ev.msg_type));
+
+            let actor_type_json = if actor_type_str == "Actor" && actor_type_id == 0 {
+                "null".to_owned()
+            } else {
+                format!("\"{actor_type_str}\"")
+            };
             let handler_name_json = match &handler_name {
                 Some(name) => format!("\"{name}\""),
                 None => "null".to_owned(),
             };
             let _ = write!(
                 json,
-                r#"{{"trace_id":"{:016x}{:016x}","span_id":{},"parent_span_id":{},"actor_id":{},"event_type":"{}","msg_type":{},"timestamp_ns":{},"handler_name":{}}}"#,
+                r#"{{"trace_id":"{:016x}{:016x}","span_id":{},"parent_span_id":{},"actor_id":{},"actor_type_id":{},"actor_type":{},"event_type":"{}","msg_type":{},"timestamp_ns":{},"handler_name":{}}}"#,
                 ev.trace_id_hi,
                 ev.trace_id_lo,
                 ev.span_id,
                 ev.parent_span_id,
                 ev.actor_id,
+                actor_type_id,
+                actor_type_json,
                 event_type_str,
                 ev.msg_type,
                 ev.timestamp_ns,
@@ -784,6 +835,39 @@ mod tests {
 
         // Cleanup.
         reset_bridge_full();
+        hew_trace_reset();
+    }
+
+    /// Regression test for #1260: `drain_events_json` must always emit
+    /// `"actor_type_id"` and `"actor_type"` fields on every event, even when
+    /// the actor registry has not been populated (they emit 0 / null in that
+    /// case).  This verifies the JSON schema shape is present regardless of
+    /// whether actor-type registration codegen emission has run.
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn drain_events_json_includes_actor_type_fields() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        hew_trace_reset();
+        hew_trace_enable(1);
+
+        // Emit a single trace event.
+        hew_trace_begin(123, 0);
+
+        let json = crate::tracing::drain_events_json();
+
+        // Both new fields must be present in every event.
+        assert!(
+            json.contains(r#""actor_type_id":"#),
+            "drain_events_json must always emit actor_type_id field; got: {json}"
+        );
+        assert!(
+            json.contains(r#""actor_type":"#),
+            "drain_events_json must always emit actor_type field; got: {json}"
+        );
+
         hew_trace_reset();
     }
 

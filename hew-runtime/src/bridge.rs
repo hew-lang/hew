@@ -760,6 +760,49 @@ pub fn bridge_shutdown() {
     state.cache_all = None;
 }
 
+// ── WASM stubs for actor type registration (imported via env namespace) ──
+
+/// WASM-exported no-op stub for `hew_actor_register_type`.
+///
+/// The generated WASM code emits calls to this function at startup. In WASM,
+/// there is no profiler registry, so this is always a no-op. The symbol is
+/// exported so it can be satisfied as an import from the `env` namespace.
+///
+/// Signature: `hew_actor_register_type(dispatch: *const c_void, name: *const c_char)`
+///
+/// # Safety
+///
+/// This is a no-op and does not dereference its parameters, so any pointer
+/// values are safe.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_register_type(
+    _dispatch: *const c_void,
+    _name: *const std::ffi::c_char,
+) {
+}
+
+/// WASM-exported no-op stub for `hew_register_handler_name`.
+///
+/// The generated WASM code emits calls to this function at startup. In WASM,
+/// there is no profiler registry, so this is always a no-op. The symbol is
+/// exported so it can be satisfied as an import from the `env` namespace.
+///
+/// Signature: `hew_register_handler_name(dispatch: *const c_void, msg_type: i32, name: *const c_char)`
+///
+/// # Safety
+///
+/// This is a no-op and does not dereference its parameters, so any pointer
+/// values are safe.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_register_handler_name(
+    _dispatch: *const c_void,
+    _msg_type: i32,
+    _name: *const std::ffi::c_char,
+) {
+}
+
 // ── Test helpers (pub(crate) so tracing.rs tests can share the lock) ───
 
 /// Serialisation lock for bridge tests; also acquired by `tracing.rs` tests

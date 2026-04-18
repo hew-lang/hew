@@ -1636,10 +1636,10 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
 #[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_register_type(
-    dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+    dispatch: *const c_void,
     name: *const std::ffi::c_char,
 ) {
-    if name.is_null() {
+    if name.is_null() || dispatch.is_null() {
         return;
     }
     // SAFETY: Caller guarantees `name` is a NUL-terminated static string.
@@ -1656,7 +1656,86 @@ pub unsafe extern "C" fn hew_actor_register_type(
     //       in #1226 M3 (ORCv2 ResourceTracker choreography).
     let Ok(s) = cstr.to_str() else { return };
     let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
-    crate::profiler::actor_registry::register_dispatch_type(dispatch, leaked);
+    // Convert the void pointer to the dispatch function type for registration.
+    // SAFETY: The caller has cast the dispatch function pointer to void*; we cast it
+    // back to the correct function pointer type. This is safe as long as the caller
+    // passed a valid dispatch function pointer.
+    let dispatch_fn: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)> =
+        unsafe { std::mem::transmute(dispatch) };
+    crate::profiler::actor_registry::register_dispatch_type(dispatch_fn, leaked);
+}
+
+/// No-op stub for non-profiler native builds.
+///
+/// The symbol must exist so that MLIR codegen can emit unconditional calls to
+/// `hew_actor_register_type` without needing to know whether the profiler
+/// feature is enabled.  In non-profiler builds this is a near-zero-cost no-op.
+///
+/// SHIM: WHY: Codegen cannot conditionally emit calls based on Rust feature flags.
+///       WHEN: Remove if we add a build-system mechanism to communicate the profiler
+///       feature flag to the codegen.
+///       REAL: Pass a feature flag to the codegen so it can omit the call entirely.
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "profiler")))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_register_type(
+    _dispatch: *const c_void,
+    _name: *const std::ffi::c_char,
+) {
+}
+
+/// Register a fully-qualified handler name for a native profiler build.
+///
+/// Generated code calls this once per `(actor_type, handler)` pair at program
+/// startup (alongside `hew_actor_register_type`) so the profiler can resolve
+/// `msg_type` integers to human-readable names in trace events.
+///
+/// The key is `(dispatch_fn_ptr, msg_type)` — this is unambiguous even when
+/// multiple actor types use overlapping `msg_type` integers (unlike the WASM
+/// bridge's flat `msg_type → name` map).
+///
+/// `name` must be a NUL-terminated `"ActorName::handler_name"` string with
+/// static lifetime (a string literal baked into the binary).
+///
+/// # Safety
+///
+/// - `dispatch` must be a valid dispatch function for the actor type.
+/// - `name` must point to a valid NUL-terminated UTF-8 string with `'static`
+///   lifetime.
+#[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_register_handler_name(
+    dispatch: *const c_void,
+    msg_type: i32,
+    name: *const std::ffi::c_char,
+) {
+    if name.is_null() || dispatch.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees `name` is a NUL-terminated static string.
+    let cstr = unsafe { std::ffi::CStr::from_ptr(name) };
+    let Ok(s) = cstr.to_str() else { return };
+    // Convert the void pointer to the dispatch function type for registration.
+    // SAFETY: The caller has cast the dispatch function pointer to void*; we cast it
+    // back to the correct function pointer type. This is safe as long as the caller
+    // passed a valid dispatch function pointer.
+    let dispatch_fn: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)> =
+        unsafe { std::mem::transmute(dispatch) };
+    crate::profiler::actor_registry::register_handler_name(dispatch_fn, msg_type, s.to_owned());
+}
+
+/// No-op stub for non-profiler native builds.
+///
+/// SHIM: WHY: Codegen emits unconditional calls; profiler feature determines
+///       whether the body does anything.
+///       WHEN: Remove if a build-system mechanism can communicate feature flags to codegen.
+///       REAL: Pass a feature flag to the codegen so it can omit the call entirely.
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "profiler")))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_register_handler_name(
+    _dispatch: *const c_void,
+    _msg_type: i32,
+    _name: *const std::ffi::c_char,
+) {
 }
 
 /// Set the per-actor message processing budget.

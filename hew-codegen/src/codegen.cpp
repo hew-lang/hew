@@ -3251,11 +3251,119 @@ struct SchedInitOpLowering : public mlir::OpConversionPattern<hew::SchedInitOp> 
                                       mlir::ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto module = op->getParentOfType<mlir::ModuleOp>();
+    auto *ctx = rewriter.getContext();
     auto i32Type = rewriter.getI32Type();
-    auto funcType = rewriter.getFunctionType({}, {i32Type});
-    getOrInsertFuncDecl(module, rewriter, "hew_sched_init", funcType);
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(ctx);
+    auto sizeType = getSizeType(ctx, module);
+
+    // Call hew_sched_init first.
+    auto schedInitFuncType = rewriter.getFunctionType({}, {i32Type});
+    getOrInsertFuncDecl(module, rewriter, "hew_sched_init", schedInitFuncType);
     mlir::func::CallOp::create(rewriter, loc, "hew_sched_init", mlir::TypeRange{i32Type},
                                mlir::ValueRange{});
+
+    // Emit actor type and handler name registration calls using the metadata
+    // stored on the module by MLIRGen (#1258 / #1259).
+    //
+    // hew_actor_register_type(dispatch_fn_ptr, actor_name_cstr)
+    // hew_register_handler_name(dispatch_fn_ptr, msg_type, handler_name_cstr)
+    //
+    // The attribute format is an array of strings:
+    //   "T:<actor_name>:<dispatch_sym>"  → actor type registration
+    //   "H:<dispatch_sym>:<msg_type>:<fq_handler_name>"  → handler name registration
+    auto registryAttr = module->getAttrOfType<mlir::ArrayAttr>("hew.actor_type_registry");
+    if (registryAttr) {
+      // Declare registration ABI functions (no-ops in non-profiler builds; see
+      // actor.rs stubs).
+      auto dispatchFnType = rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType}, {});
+      auto regTypeFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
+      auto regHandlerFuncType = rewriter.getFunctionType({ptrType, i32Type, ptrType}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_actor_register_type", regTypeFuncType);
+      getOrInsertFuncDecl(module, rewriter, "hew_register_handler_name", regHandlerFuncType);
+
+      // Cached dispatch pointer Values, keyed by dispatch symbol name.
+      llvm::SmallDenseMap<llvm::StringRef, mlir::Value> dispatchPtrCache;
+
+      auto getOrBuildDispatchPtr = [&](llvm::StringRef dispatchSym) -> mlir::Value {
+        auto it = dispatchPtrCache.find(dispatchSym);
+        if (it != dispatchPtrCache.end())
+          return it->second;
+        // Ensure the dispatch fn is declared.
+        getOrInsertFuncDecl(module, rewriter, dispatchSym, dispatchFnType);
+        // Get a typed function reference and cast to !llvm.ptr.
+        // The UnrealizedConversionCastOp is cleaned up by ReconcileUnrealizedCasts
+        // after FuncToLLVM, following the same pattern as ActorSpawnOpLowering.
+        auto funcRef = mlir::func::ConstantOp::create(rewriter, loc, dispatchFnType,
+                                                      mlir::SymbolRefAttr::get(ctx, dispatchSym));
+        auto dispatchPtr =
+            mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType, funcRef.getResult())
+                .getResult(0);
+        dispatchPtrCache[dispatchSym] = dispatchPtr;
+        return dispatchPtr;
+      };
+
+      auto getOrBuildCStr = [&](llvm::StringRef strVal) -> mlir::Value {
+        // Emit a NUL-terminated LLVM global for the C string and return its address.
+        std::string symName = "__hew_cstr_" + strVal.str();
+        // Sanitize sym name for use as an LLVM symbol (replace non-alnum with _).
+        for (char &c : symName)
+          if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
+            c = '_';
+        if (!module.lookupSymbol(symName)) {
+          auto savedIP = rewriter.saveInsertionPoint();
+          rewriter.setInsertionPointToStart(module.getBody());
+          auto i8Type = rewriter.getIntegerType(8);
+          auto arrayType = mlir::LLVM::LLVMArrayType::get(i8Type, strVal.size() + 1);
+          mlir::LLVM::GlobalOp::create(rewriter, loc, arrayType, /*isConstant=*/true,
+                                       mlir::LLVM::Linkage::Internal, symName,
+                                       rewriter.getStringAttr(std::string(strVal) + '\0'));
+          rewriter.restoreInsertionPoint(savedIP);
+        }
+        return mlir::LLVM::AddressOfOp::create(rewriter, loc, ptrType, symName).getResult();
+      };
+
+      for (auto attr : registryAttr) {
+        auto strAttr = mlir::dyn_cast<mlir::StringAttr>(attr);
+        if (!strAttr)
+          continue;
+        auto entry = strAttr.getValue();
+        if (entry.starts_with("T:")) {
+          // "T:<actor_name>:<dispatch_sym>"
+          auto rest = entry.drop_front(2);
+          auto colonPos = rest.find(':');
+          if (colonPos == llvm::StringRef::npos)
+            continue;
+          auto actorName = rest.take_front(colonPos);
+          auto dispatchSym = rest.drop_front(colonPos + 1);
+          auto dispatchPtr = getOrBuildDispatchPtr(dispatchSym);
+          auto nameCStr = getOrBuildCStr(actorName);
+          mlir::func::CallOp::create(rewriter, loc, "hew_actor_register_type", mlir::TypeRange{},
+                                     mlir::ValueRange{dispatchPtr, nameCStr});
+        } else if (entry.starts_with("H:")) {
+          // "H:<dispatch_sym>:<msg_type>:<fq_handler_name>"
+          auto rest = entry.drop_front(2);
+          auto colon1 = rest.find(':');
+          if (colon1 == llvm::StringRef::npos)
+            continue;
+          auto dispatchSym = rest.take_front(colon1);
+          rest = rest.drop_front(colon1 + 1);
+          auto colon2 = rest.find(':');
+          if (colon2 == llvm::StringRef::npos)
+            continue;
+          auto msgTypeStr = rest.take_front(colon2);
+          auto fqName = rest.drop_front(colon2 + 1);
+          int msgType = 0;
+          (void)msgTypeStr.getAsInteger(10, msgType);
+          auto dispatchPtr = getOrBuildDispatchPtr(dispatchSym);
+          auto nameCStr = getOrBuildCStr(fqName);
+          auto msgTypeVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type,
+                                                               static_cast<int64_t>(msgType));
+          mlir::func::CallOp::create(rewriter, loc, "hew_register_handler_name", mlir::TypeRange{},
+                                     mlir::ValueRange{dispatchPtr, msgTypeVal, nameCStr});
+        }
+      }
+    }
+
     rewriter.eraseOp(op);
     return mlir::success();
   }

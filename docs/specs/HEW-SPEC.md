@@ -3651,243 +3651,141 @@ Hew tooling provides:
 
 Hew supports multiple encoding formats for wire types. The primary internal format (HBF) is designed for efficiency; JSON encoding provides external interoperability.
 
-#### 7.3.1 Hew Binary Format (HBF) — Default Internal Encoding
+#### 7.3.1 MessagePack — Default Binary Encoding
 
-The Hew Binary Format is the primary wire encoding. Design goals: compact representation, fast encode/decode, zero-copy reads where possible, forward/backward compatibility.
+The MessagePack format is the primary shipped binary wire encoding for Hew wire types. MessagePack is a compact, language-agnostic serialization format that maps Hew types to MessagePack primitives efficiently.
 
-##### 7.3.1.1 Message Structure
+Design goals: compact representation, fast encode/decode, language interoperability, forward/backward compatibility.
 
-Every HBF message has the following structure:
+**Implementation reference:** The canonical MessagePack descriptor is implemented in `hew-wirecodec/src/msgpack_desc.rs` (codec emitter) and leverages the plan-based architecture in `hew-wirecodec/src/plan.rs`.
 
-```
-+--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+
-|      Magic (4 bytes)     | Ver(1) | Flags(1)|       Message Length (4 bytes)          |
-+--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+
-|                                    Payload (variable)                                   |
-+-----------------------------------------------------------------------------------------+
-```
+##### 7.3.1.1 Wire Type–to–MessagePack Mapping
 
-**Header (10 bytes):**
+Hew wire types map to MessagePack formats as follows:
 
-| Offset | Size | Field   | Description                                 |
-| ------ | ---- | ------- | ------------------------------------------- |
-| 0      | 4    | Magic   | `0x48 0x45 0x57 0x31` (ASCII "HEW1")        |
-| 4      | 1    | Version | Format version, currently `0x01`            |
-| 5      | 1    | Flags   | Bit flags (see below)                       |
-| 6      | 4    | Length  | Payload length in bytes (little-endian u32) |
+| Hew Type     | MessagePack Format      | Format Marker(s)           | Notes                            |
+| ------------ | ----------------------- | -------------------------- | -------------------------------- |
+| `bool`       | boolean                 | `0xc3` (true), `0xc2` (false) | Single-byte primitives           |
+| `u8`–`u16`   | uint (up to 16-bit)     | `0xcc`, `0xcd`             | Variable-length uint encoding    |
+| `u32`–`u64`  | uint (up to 64-bit)     | `0xce`, `0xcf`             | Variable-length uint encoding    |
+| `i8`–`i16`   | int (signed, up to 16)  | `0xd0`, `0xd1`             | Variable-length signed encoding  |
+| `i32`–`i64`  | int (signed, up to 64)  | `0xd2`, `0xd3`             | Variable-length signed encoding  |
+| `f32`        | float32                 | `0xca`                     | IEEE 754 single precision        |
+| `f64`        | float64                 | `0xcb`                     | IEEE 754 double precision        |
+| `string`     | string                  | `0xa0`–`0xbf`, `0xd9`, ... | Length-prefixed UTF-8 string     |
+| `bytes`      | binary                  | `0xc4`, `0xc5`, `0xc6`     | Length-prefixed raw bytes        |
+| wire struct  | map                     | `0x80`–`0x8f`, `0xde`, ... | Key–value pairs (field number keys) |
+| wire enum    | int + str (variant)     | Tag + variant index/name   | Encoded as MessagePack integer (variant index) or string (variant name) |
+| Optional     | nil or value            | `0xc0` or type of Some(v)  | `None` encodes as MessagePack nil |
+| List         | array                   | `0x90`–`0x9f`, `0xdc`, ... | Length-prefixed sequence         |
 
-**Flag bits:**
+##### 7.3.1.2 Wire Struct Encoding
 
-| Bit | Name       | Meaning                       |
-| --- | ---------- | ----------------------------- |
-| 0   | COMPRESSED | Payload is LZ4-compressed     |
-| 1   | CHECKSUM   | 4-byte CRC32C follows payload |
-| 2-7 | Reserved   | Must be 0                     |
+A wire struct is encoded as a MessagePack **map**. Field numbers are used as map keys (as MessagePack integers), and values are encoded according to the table above.
 
-##### 7.3.1.2 Field Encoding (TLV)
+```hew
+wire struct User {
+    id: u64 @1;
+    name: string @2;
+    email: string @3?;
+}
 
-The payload consists of zero or more field encodings. Each field is encoded as:
+// User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
+// MessagePack map: {
+//   1 (int): 42 (uint),
+//   2 (int): "alice" (string),
+//   3 (int): "alice@example.com" (string)
+// }
 
-```
-+----------------+------------------+-------------------+
-|   Tag (varint) |  Length (varint) |  Value (variable) |
-+----------------+------------------+-------------------+
-```
-
-**Tag encoding:**
-
-The tag is a varint encoding: `(field_number << 3) | wire_type`
-
-- `field_number`: The field's numeric tag from the wire type definition (e.g., `@1`, `@2`)
-- `wire_type`: 3-bit type indicator
-
-**Wire types:**
-
-| Value | Name             | Description             | Length field                  |
-| ----- | ---------------- | ----------------------- | ----------------------------- |
-| 0     | VARINT           | Variable-length integer | Not present (self-delimiting) |
-| 1     | FIXED64          | 64-bit fixed-width      | Not present (always 8 bytes)  |
-| 2     | LENGTH_DELIMITED | Length-prefixed bytes   | Present (varint length)       |
-| 5     | FIXED32          | 32-bit fixed-width      | Not present (always 4 bytes)  |
-
-Wire types 3, 4, 6, 7 are reserved for future use.
-
-##### 7.3.1.3 Varint Encoding (Unsigned LEB128)
-
-Varints encode unsigned integers in 1-10 bytes using unsigned LEB128 (Little Endian Base 128):
-
-**Algorithm:**
-
-```
-encode_varint(value):
-    while value >= 0x80:
-        emit_byte((value & 0x7F) | 0x80)  // Set continuation bit
-        value = value >> 7
-    emit_byte(value & 0x7F)               // Final byte, no continuation
-
-decode_varint():
-    result = 0
-    shift = 0
-    loop:
-        byte = read_byte()
-        result = result | ((byte & 0x7F) << shift)
-        if (byte & 0x80) == 0:
-            return result
-        shift = shift + 7
-        if shift >= 64:
-            error("varint too long")
+// User { id: 42, name: "alice", email: None } encodes as:
+// MessagePack map: {
+//   1 (int): 42 (uint),
+//   2 (int): "alice" (string)
+// }
+// (optional field 3 omitted)
 ```
 
-**Examples:**
+##### 7.3.1.3 Wire Enum Encoding
 
-| Value | Encoded bytes    |
-| ----- | ---------------- |
-| 0     | `0x00`           |
-| 1     | `0x01`           |
-| 127   | `0x7F`           |
-| 128   | `0x80 0x01`      |
-| 300   | `0xAC 0x02`      |
-| 16383 | `0xFF 0x7F`      |
-| 16384 | `0x80 0x80 0x01` |
+Wire enums are encoded as MessagePack **integers** representing the 0-based variant index:
 
-##### 7.3.1.4 ZigZag Encoding (Signed Integers)
-
-Signed integers use ZigZag encoding to map negative values to positive values, enabling efficient varint encoding:
-
-**Algorithm:**
-
-```
-zigzag_encode(n: i64) -> u64:
-    return (n << 1) ^ (n >> 63)
-
-zigzag_decode(n: u64) -> i64:
-    return (n >> 1) ^ -(n & 1)
-```
-
-**Mapping:**
-
-| Signed      | Unsigned   |
-| ----------- | ---------- |
-| 0           | 0          |
-| -1          | 1          |
-| 1           | 2          |
-| -2          | 3          |
-| 2           | 4          |
-| -2147483648 | 4294967295 |
-| 2147483647  | 4294967294 |
-
-##### 7.3.1.5 Primitive Type Encodings
-
-| Hew Type                  | Wire Type            | Encoding                       |
-| ------------------------- | -------------------- | ------------------------------ |
-| `bool`                    | VARINT (0)           | 0 = false, 1 = true            |
-| `u8`, `u16`, `u32`, `u64` | VARINT (0)           | Unsigned LEB128                |
-| `i8`, `i16`, `i32`, `i64` | VARINT (0)           | ZigZag then unsigned LEB128    |
-| `f32`                     | FIXED32 (5)          | IEEE 754 single, little-endian |
-| `f64`                     | FIXED64 (1)          | IEEE 754 double, little-endian |
-| `string`                  | LENGTH_DELIMITED (2) | Length (varint) + UTF-8 bytes  |
-| `bytes`                   | LENGTH_DELIMITED (2) | Length (varint) + raw bytes    |
-
-##### 7.3.1.6 Composite Type Encodings
-
-**Nested messages (wire struct):**
-
-Encoded as LENGTH_DELIMITED. The value is the recursive HBF encoding of the nested message (payload only, no header).
-
-```
-wire struct Inner { x: i32 @1; }
-wire struct Outer { inner: Inner @1; }
-
-// Outer { inner: Inner { x: 150 } } encodes as:
-// Tag: 0x0A (field 1, wire type 2)
-// Length: 0x03 (3 bytes)
-// Nested payload: 0x08 0x96 0x01 (field 1, varint, value 150 zigzag-encoded)
-```
-
-**Lists (repeated fields):**
-
-Lists are encoded as: count (varint) followed by N elements.
-
-```
-wire struct Data { values: [i32] @1; }
-
-// Data { values: [1, 2, 3] } encodes as:
-// Tag: 0x0A (field 1, wire type 2)
-// Length: 0x07 (total payload length)
-// Count: 0x03 (3 elements)
-// Element 1: 0x02 (zigzag of 1)
-// Element 2: 0x04 (zigzag of 2)
-// Element 3: 0x06 (zigzag of 3)
-```
-
-For primitive numeric types, elements are packed (no per-element tags). For nested messages, each element is length-prefixed.
-
-**Enums (wire enum):**
-
-Encoded as VARINT containing the 0-based variant index.
-
-```
+```hew
 wire enum Status { Pending; Active; Completed; }
 
-// Status::Active encodes as varint 1
+// Status::Pending  -> MessagePack: 0 (int)
+// Status::Active   -> MessagePack: 1 (int)
+// Status::Completed -> MessagePack: 2 (int)
 ```
 
-**Optional fields:**
+##### 7.3.1.4 Optional Field Handling
 
-Optional fields use a presence byte followed by the value if present:
+Optional fields are represented using MessagePack **nil** for `None`:
 
-```
-wire struct User { nickname: string? @3; }
+```hew
+wire struct Config {
+    timeout_ms: u64 @1;
+    proxy_url: string @2?;
+}
 
-// User { nickname: None } encodes as:
-// Tag: 0x1A (field 3, wire type 2)
-// Length: 0x01
-// Presence: 0x00 (None)
+// Config { timeout_ms: 5000, proxy_url: None } encodes as:
+// MessagePack map: { 1: 5000 }
 
-// User { nickname: Some("alice") } encodes as:
-// Tag: 0x1A (field 3, wire type 2)
-// Length: 0x07
-// Presence: 0x01 (Some)
-// String length: 0x05
-// String data: "alice"
+// Config { timeout_ms: 5000, proxy_url: Some("http://proxy:8080") } encodes as:
+// MessagePack map: { 1: 5000, 2: "http://proxy:8080" }
 ```
 
-##### 7.3.1.7 Unknown Fields
+##### 7.3.1.5 List (Array) Encoding
 
-Decoders MUST preserve unknown fields encountered during decoding. When re-encoding a message, unknown fields MUST be included in their original encoded form. This enables forward compatibility: older code can decode, pass through, and re-encode messages containing fields added in newer versions.
+Lists are encoded as MessagePack **arrays**. Each element is encoded according to the element type:
 
-Implementation: Store unknown fields as `Vec<(u32, Vec<u8>)>` mapping field numbers to raw encoded bytes.
+```hew
+wire struct Data {
+    values: [i64] @1;
+    tags: [string] @2;
+}
 
-##### 7.3.1.8 Field Ordering
+// Data { values: [1, 2, 3], tags: ["a", "b"] } encodes as:
+// MessagePack map: {
+//   1: [1, 2, 3] (array of 3 ints),
+//   2: ["a", "b"] (array of 2 strings)
+// }
+```
 
-**Encoding:** Fields SHOULD be written in ascending field number order for deterministic output.
+##### 7.3.1.6 Nested Structure Encoding
 
-**Decoding:** Decoders MUST accept fields in any order. If the same field number appears multiple times:
+Nested wire structs are encoded recursively as MessagePack maps:
 
-- For scalar fields: last value wins
-- For repeated fields: values are concatenated
+```hew
+wire struct Inner { x: i32 @1; }
+wire struct Outer { inner: Inner @1; nested_list: [Inner] @2; }
 
-##### 7.3.1.9 Default Value Omission
+// Outer { inner: Inner { x: 150 }, nested_list: [Inner { x: 200 }] } encodes as:
+// MessagePack map: {
+//   1: { 1: 150 } (nested map),
+//   2: [{ 1: 200 }] (array of nested maps)
+// }
+```
 
-Fields with default/zero values MAY be omitted from the encoding:
+##### 7.3.1.7 Forward and Backward Compatibility
 
-| Type          | Zero value |
-| ------------- | ---------- |
-| Integer types | 0          |
-| Float types   | 0.0        |
-| `bool`        | false      |
-| `string`      | "" (empty) |
-| `bytes`       | [] (empty) |
-| Lists         | [] (empty) |
-| Optional      | None       |
+Unknown fields are preserved during round-trip encoding/decoding. When a wire struct carries fields unknown to a decoder, those fields are:
 
-Decoders MUST treat missing fields as having their default value.
+1. Decoded and stored in the decoder's internal unknown-fields store.
+2. Re-encoded when the struct is re-serialized.
 
-##### 7.3.1.10 Size Limits
+This enables older code to accept and pass through messages containing fields added in newer schema versions.
 
-- Maximum message size: 2^32 - 1 bytes (4 GiB)
-- Maximum varint size: 10 bytes (sufficient for u64)
-- Maximum nesting depth: 100 levels (implementation-defined)
+##### 7.3.1.8 Field Ordering and Determinism
+
+To enable deterministic encoding (important for hashing, signatures, and comparison):
+
+- **Encoding:** Fields SHOULD be written in ascending field-number order.
+- **Decoding:** Decoders MUST accept fields in any order.
+- **Repeated fields:** If a field number appears multiple times in the wire, the last value wins (for scalars) or values are concatenated (for repeated fields).
+
+##### 7.3.1.9 Versioning Guarantees
+
+The MessagePack descriptor version is embedded in compiled plans (see `hew-wirecodec/src/plan.rs`). Wire types produced by the current compiler are compatible with any decoder that implements this §7.3.1 specification. Future versions of the codec will increment the plan version to signal breaking changes.
 
 #### 7.3.2 JSON Encoding — External Interop
 

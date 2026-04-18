@@ -826,17 +826,29 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
 #[no_mangle]
 pub extern "C" fn hew_tcp_set_read_timeout(fd: c_int, timeout_ms: c_int) -> c_int {
     let Some(stream) = tcp_clone_stream(fd) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_set_read_timeout: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
         return -1;
     };
     let timeout = if timeout_ms < 0 {
         None
     } else {
         let Ok(timeout_ms) = u64::try_from(timeout_ms) else {
+            hew_cabi::sink::set_last_error_with_errno(
+                "hew_tcp_set_read_timeout: invalid timeout value".into(),
+                22, // EINVAL: Invalid argument
+            );
             return -1;
         };
         Some(std::time::Duration::from_millis(timeout_ms))
     };
-    if stream.set_read_timeout(timeout).is_err() {
+    if let Err(e) = stream.set_read_timeout(timeout) {
+        hew_cabi::sink::set_last_error_with_errno(
+            format!("hew_tcp_set_read_timeout: {e}"),
+            e.raw_os_error().unwrap_or(0),
+        );
         return -1;
     }
     0
@@ -849,17 +861,29 @@ pub extern "C" fn hew_tcp_set_read_timeout(fd: c_int, timeout_ms: c_int) -> c_in
 #[no_mangle]
 pub extern "C" fn hew_tcp_set_write_timeout(fd: c_int, timeout_ms: c_int) -> c_int {
     let Some(stream) = tcp_clone_stream(fd) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_set_write_timeout: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
         return -1;
     };
     let timeout = if timeout_ms < 0 {
         None
     } else {
         let Ok(timeout_ms) = u64::try_from(timeout_ms) else {
+            hew_cabi::sink::set_last_error_with_errno(
+                "hew_tcp_set_write_timeout: invalid timeout value".into(),
+                22, // EINVAL: Invalid argument
+            );
             return -1;
         };
         Some(std::time::Duration::from_millis(timeout_ms))
     };
-    if stream.set_write_timeout(timeout).is_err() {
+    if let Err(e) = stream.set_write_timeout(timeout) {
+        hew_cabi::sink::set_last_error_with_errno(
+            format!("hew_tcp_set_write_timeout: {e}"),
+            e.raw_os_error().unwrap_or(0),
+        );
         return -1;
     }
     0
@@ -1034,13 +1058,27 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
     exclude_conn: c_int,
     msg: *const c_char,
 ) -> c_int {
-    cabi_guard!(msg.is_null(), -1);
+    cabi_guard!(msg.is_null(), {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_broadcast_except: null message pointer".into(),
+            22, // EINVAL: Invalid argument
+        );
+        -1
+    });
     // SAFETY: caller guarantees `msg` is a valid C string.
     let Ok(text) = unsafe { CStr::from_ptr(msg) }.to_str() else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_broadcast_except: invalid UTF-8 in message".into(),
+            22, // EINVAL: Invalid argument
+        );
         return -1;
     };
     let mut recipients = 0usize;
     let Ok(state) = TCP_API_STATE.lock() else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_broadcast_except: failed to acquire transport state lock".into(),
+            11, // EAGAIN: Resource temporarily unavailable
+        );
         return -1;
     };
     for (conn, stream) in &state.streams {

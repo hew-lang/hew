@@ -300,9 +300,10 @@ pub(super) fn find_workspace_root_for_uri(uri: &Url) -> Option<PathBuf> {
 /// Walk every `*.hew` file under `root`, calling `f` for each one.
 ///
 /// Traversal rules:
-/// - Uses `symlink_metadata` so that symlinked directories are **never**
-///   followed.  This prevents cycle-induced stack overflows on hostile
-///   workspace layouts (issue #1290).
+/// - The workspace `root` itself is allowed to be a symlink (the entry
+///   point); `root` is canonicalized once at entry.  After that, any
+///   encountered symlink inside the traversal is skipped to prevent
+///   directory cycles (issue #1290).
 /// - Applies `should_skip_workspace_dir` to prune `.git`, `target`,
 ///   `.worktree`, `.worktrees`, and `worktrees` directories.
 /// - I/O errors on `read_dir` or `symlink_metadata` are propagated as
@@ -317,14 +318,22 @@ where
     E: From<(PathBuf, std::io::Error)>,
     F: FnMut(&Path) -> Result<(), E>,
 {
+    use std::collections::HashSet as VisitedSet;
+
+    // Canonicalize the root once so we can detect cycles by canonical inode.
+    // If canonicalization fails (e.g., root doesn't exist), use the original
+    // path and rely on symlink_metadata to fail later.
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+
     let mut stack = vec![root.to_path_buf()];
+    let mut visited: VisitedSet<std::path::PathBuf> = VisitedSet::new();
+    visited.insert(canonical_root.clone());
 
     while let Some(path) = stack.pop() {
         let metadata = std::fs::symlink_metadata(&path).map_err(|e| E::from((path.clone(), e)))?;
 
-        // Symlinks are never followed — this is what prevents directory-symlink
-        // cycles (issue #1290). `is_symlink()` is true for both file and dir
-        // symlinks; we skip both so no I/O is done through a symlink.
+        // Skip symlinks encountered during traversal (but not the root itself,
+        // which was the entry point). This prevents directory cycles.
         if metadata.is_symlink() {
             continue;
         }
@@ -345,12 +354,28 @@ where
         }
 
         let entries = std::fs::read_dir(&path).map_err(|e| E::from((path.clone(), e)))?;
-        let mut children: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        let mut children: Vec<PathBuf> = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(e) => children.push(e.path()),
+                Err(e) => return Err(E::from((path.clone(), e))),
+            }
+        }
         children.sort();
         // Push in reverse so we pop in sorted order (deterministic, mirrors
         // the existing collect_hew_files stack order).
         for child in children.into_iter().rev() {
-            stack.push(child);
+            // Only descend into directories we haven't visited yet (by canonical path).
+            if let Ok(canonical_child) = std::fs::canonicalize(&child) {
+                if !visited.contains(&canonical_child) {
+                    visited.insert(canonical_child);
+                    stack.push(child);
+                }
+            } else {
+                // If canonicalization fails, push anyway and let symlink_metadata
+                // or read_dir report the actual error.
+                stack.push(child);
+            }
         }
     }
 

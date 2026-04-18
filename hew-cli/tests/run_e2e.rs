@@ -74,6 +74,27 @@ fn run_timeout_kills_grandchild_process_tree() {
     // Give the OS a brief window to finish reaping processes.
     std::thread::sleep(std::time::Duration::from_millis(300));
 
+    // Poll for the PID file to exist rather than assuming it is present.
+    // Under load during the test run, the Hew program's startup and shell
+    // invocation may take longer than expected.
+    let pid_file_exists = {
+        let mut retries = 0;
+        loop {
+            if pid_file.exists() {
+                break true;
+            }
+            if retries >= 20 {
+                break false;
+            }
+            retries += 1;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    assert!(
+        pid_file_exists,
+        "grandchild PID file should have been written before the timeout fired"
+    );
+
     let pid_str = std::fs::read_to_string(&pid_file)
         .expect("grandchild PID file should have been written before the timeout fired");
     let grandchild_pid: u32 = pid_str

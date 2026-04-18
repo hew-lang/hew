@@ -752,8 +752,27 @@ mod tests {
         let mut cmd = Command::new(&script);
         let mut bounded = BoundedChild::spawn(&mut cmd).expect("failed to spawn tree_spinner.sh");
 
-        // Give the grandchild a moment to start and write its PID.
-        std::thread::sleep(Duration::from_millis(200));
+        // Poll for the grandchild PID file to exist, rather than assuming a fixed
+        // sleep window. Under concurrent test load, 200ms may be insufficient.
+        // Allow up to 5 seconds (200 × 25ms) for the shell script to start the
+        // grandchild and write its PID.
+        let pid_file_exists = {
+            let mut retries = 0;
+            loop {
+                if pid_file.exists() {
+                    break true;
+                }
+                if retries >= 200 {
+                    break false;
+                }
+                retries += 1;
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        };
+        assert!(
+            pid_file_exists,
+            "grandchild should have written its PID before the timeout fired"
+        );
 
         let outcome = bounded
             .wait_with_timeout(Duration::from_secs(1))

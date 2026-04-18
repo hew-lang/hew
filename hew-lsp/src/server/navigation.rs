@@ -1291,6 +1291,9 @@ fn scan_dir_for_conflicts(
             if super::workspace::should_skip_workspace_dir(&path) {
                 continue;
             }
+            // FOLLOW-UP: see issue #1290 — symlink cycles in the workspace would
+            // cause unbounded recursion here. Use visited set or symlink_metadata
+            // to prevent stack overflow on hostile filesystem layouts.
             scan_dir_for_conflicts(
                 definition_uri,
                 renamed_name,
@@ -1389,6 +1392,9 @@ fn collect_unopened_importers_in_dir(
             if super::workspace::should_skip_workspace_dir(&path) {
                 continue;
             }
+            // FOLLOW-UP: see issue #1290 — symlink cycles in the workspace would
+            // cause unbounded recursion here. Use visited set or symlink_metadata
+            // to prevent stack overflow on hostile filesystem layouts.
             matches.extend(collect_unopened_importers_in_dir(
                 definition_uri,
                 renamed_name,

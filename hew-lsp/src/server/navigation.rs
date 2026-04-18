@@ -8,6 +8,7 @@ use tower_lsp::lsp_types::{
     DocumentLink, Location, PrepareRenameResponse, Range, TextEdit, Url, WorkspaceEdit,
 };
 
+use super::workspace::find_workspace_root_for_uri;
 use super::{offset_range_to_lsp, span_to_range, DocumentState};
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -64,20 +65,8 @@ pub(super) fn compute_import_path(uri: &Url, import: &ImportDecl) -> Option<std:
 
     let relative = format!("{}.hew", import.path.join("/"));
 
-    // Workspace root: the directory that directly contains a `std/` folder.
-    let workspace_root = uri.to_file_path().ok().and_then(|p| {
-        let mut dir = p.parent().map(std::path::Path::to_path_buf);
-        while let Some(d) = dir {
-            if d.join("std").is_dir() {
-                return Some(d);
-            }
-            dir = d.parent().map(std::path::Path::to_path_buf);
-        }
-        None
-    });
-
     // Prefer workspace root when the file already exists there.
-    if let Some(root) = workspace_root {
+    if let Some(root) = find_workspace_root_for_uri(uri) {
         let candidate = root.join(&relative);
         if candidate.exists() {
             return Some(candidate);

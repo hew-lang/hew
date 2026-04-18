@@ -736,6 +736,53 @@ pub(super) fn build_workspace_edit(
                     }
                 }
             }
+
+            // Include edits for unopened sibling importers (parallel to the conflict
+            // scan in plan_workspace_rename). Unopened files can only be updated if
+            // they are non-aliased importers (aliased imports have the same constraint
+            // as the open-importer loop above).
+            if let Some(root) = find_workspace_root(&import_match.imported_uri) {
+                let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
+                let unopened_importers = collect_unopened_sibling_importers_for_edits(
+                    &import_match.imported_uri,
+                    &import_match.imported_name,
+                    &root,
+                    &open_uris,
+                );
+                for unopened in unopened_importers {
+                    changes
+                        .entry(unopened.importer_uri.clone())
+                        .or_default()
+                        .push(hew_analysis::RenameEdit {
+                            span: unopened.import_name_span,
+                            new_text: new_name.to_string(),
+                        });
+
+                    // Load the unopened file and compute edits for import-binding references.
+                    if let Ok(unopened_path) = unopened.importer_uri.to_file_path() {
+                        if let Ok(unopened_source) = std::fs::read_to_string(&unopened_path) {
+                            let unopened_parse = hew_parser::parse(&unopened_source);
+                            let unopened_edits: Vec<_> =
+                                hew_analysis::references::find_import_binding_references(
+                                    &unopened_parse,
+                                    &unopened.visible_name,
+                                )
+                                .into_iter()
+                                .map(|span| hew_analysis::RenameEdit {
+                                    span,
+                                    new_text: new_name.to_string(),
+                                })
+                                .collect();
+                            if !unopened_edits.is_empty() {
+                                changes
+                                    .entry(unopened.importer_uri.clone())
+                                    .or_default()
+                                    .extend(unopened_edits);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         return workspace_edit_from_changes(uri, doc, documents, changes);
@@ -778,6 +825,48 @@ pub(super) fn build_workspace_edit(
                         .entry(importer.importer_uri.clone())
                         .or_default()
                         .extend(importer_edits);
+                }
+            }
+        }
+
+        // Include edits for unopened sibling importers (symmetric to the
+        // import-originated path above). Definition-file renaming should also
+        // update unopened importers.
+        if let Some(root) = find_workspace_root(uri) {
+            let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
+            let unopened_importers =
+                collect_unopened_sibling_importers_for_edits(uri, &name, &root, &open_uris);
+            for unopened in unopened_importers {
+                changes
+                    .entry(unopened.importer_uri.clone())
+                    .or_default()
+                    .push(hew_analysis::RenameEdit {
+                        span: unopened.import_name_span,
+                        new_text: new_name.to_string(),
+                    });
+
+                // Load the unopened file and compute edits for import-binding references.
+                if let Ok(unopened_path) = unopened.importer_uri.to_file_path() {
+                    if let Ok(unopened_source) = std::fs::read_to_string(&unopened_path) {
+                        let unopened_parse = hew_parser::parse(&unopened_source);
+                        let unopened_edits: Vec<_> =
+                            hew_analysis::references::find_import_binding_references(
+                                &unopened_parse,
+                                &unopened.visible_name,
+                            )
+                            .into_iter()
+                            .map(|span| hew_analysis::RenameEdit {
+                                span,
+                                new_text: new_name.to_string(),
+                            })
+                            .collect();
+                        if !unopened_edits.is_empty() {
+                            changes
+                                .entry(unopened.importer_uri.clone())
+                                .or_default()
+                                .extend(unopened_edits);
+                        }
+                    }
                 }
             }
         }
@@ -1176,6 +1265,8 @@ fn scan_dir_for_conflicts(
     open_uris: &HashSet<Url>,
     conflicts: &mut Vec<hew_analysis::RenameConflict>,
 ) {
+    // FOLLOW-UP: see issue #TODO — silently skipping unreadable directories
+    // means conflicts may be missed if the filesystem walk hits I/O errors.
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -1206,6 +1297,8 @@ fn scan_dir_for_conflicts(
             if open_uris.contains(&file_uri) || file_uri == *definition_uri {
                 continue;
             }
+            // FOLLOW-UP: see issue #TODO — silently skipping unreadable files
+            // means conflicts may be missed if individual files fail to load.
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
@@ -1248,6 +1341,110 @@ fn scan_dir_for_conflicts(
             );
         }
     }
+}
+
+/// Collect unopened files on disk that (non-aliased) import a symbol from
+/// `definition_uri`. Mirrored from `scan_dir_for_conflicts` but returns matches
+/// instead of populating conflicts.
+///
+/// Used to extend the edit set in [`build_workspace_edit`] for unopened sibling
+/// importers. Returns an empty vec if the disk walk fails; I/O and parse errors
+/// skip individual files silently (same as `scan_disk_importers_for_conflicts`).
+fn collect_unopened_sibling_importers_for_edits(
+    definition_uri: &Url,
+    renamed_name: &str,
+    root: &std::path::Path,
+    open_uris: &HashSet<Url>,
+) -> Vec<NamedImportMatch> {
+    collect_unopened_importers_in_dir(definition_uri, renamed_name, root, open_uris)
+}
+
+fn collect_unopened_importers_in_dir(
+    definition_uri: &Url,
+    renamed_name: &str,
+    dir: &std::path::Path,
+    open_uris: &HashSet<Url>,
+) -> Vec<NamedImportMatch> {
+    let mut matches = Vec::new();
+
+    // FOLLOW-UP: see issue #TODO — silently skipping unreadable directories
+    // means unopened importers may be missed if the filesystem walk hits I/O errors.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return matches;
+    };
+    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            if super::workspace::should_skip_workspace_dir(&path) {
+                continue;
+            }
+            matches.extend(collect_unopened_importers_in_dir(
+                definition_uri,
+                renamed_name,
+                &path,
+                open_uris,
+            ));
+        } else if path.extension().and_then(|e| e.to_str()) == Some("hew") {
+            let Ok(file_uri) = Url::from_file_path(&path) else {
+                continue;
+            };
+            if open_uris.contains(&file_uri) || file_uri == *definition_uri {
+                continue;
+            }
+            // FOLLOW-UP: see issue #TODO — silently skipping unreadable files
+            // means unopened importers may be missed if individual files fail to load.
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let parse_result = hew_parser::parse(&source);
+
+            // Only non-aliased imports can contribute edits for import-binding
+            // references (same constraint as the open-importer loop).
+            let mut file_matches = Vec::new();
+            for (import, item_span) in collect_import_items(&parse_result) {
+                let Some(ImportSpec::Names(names)) = &import.spec else {
+                    continue;
+                };
+                // Resolve the import path from this disk file's URI.
+                let Some(resolved) = compute_import_path(&file_uri, &import) else {
+                    continue;
+                };
+                let Ok(resolved_uri) = Url::from_file_path(&resolved) else {
+                    continue;
+                };
+                if resolved_uri != *definition_uri {
+                    continue;
+                }
+
+                for import_name in names {
+                    if import_name.name != renamed_name {
+                        continue;
+                    }
+                    // Skip aliased imports.
+                    if import_name.alias.is_some() {
+                        continue;
+                    }
+                    let Some((import_name_span, visible_name_span)) =
+                        find_named_import_spans(&source, &item_span, import_name)
+                    else {
+                        continue;
+                    };
+                    file_matches.push(NamedImportMatch {
+                        importer_uri: file_uri.clone(),
+                        imported_uri: resolved_uri.clone(),
+                        imported_name: import_name.name.clone(),
+                        visible_name: import_name.name.clone(), // non-aliased, so no alias
+                        import_name_span,
+                        visible_name_span,
+                    });
+                }
+            }
+            matches.extend(file_matches);
+        }
+    }
+
+    matches
 }
 
 // ── Cross-file go-to-definition ───────────────────────────────────────

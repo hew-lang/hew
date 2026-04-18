@@ -5501,6 +5501,124 @@ machine Traffic {
     }
 
     #[test]
+    fn importer_originated_rename_includes_unopened_sibling_importer_edits() {
+        // Regression test: when an importer cursor renames a symbol, the workspace
+        // edit must include edits for unopened sibling importers that also import
+        // the symbol non-aliased.
+        //
+        // Layout:
+        //   <test_dir>/std/          ← workspace root marker
+        //   <test_dir>/util.hew      ← defines `pub fn foo`
+        //   <test_dir>/importer1.hew ← imports `foo` and uses it; OPEN (cursor here)
+        //   <test_dir>/importer2.hew ← imports `foo` and uses it; CLOSED (unopened)
+        //
+        // Rename `foo -> bar` from the import binding in importer1.hew.
+        // The resulting WorkspaceEdit must include edits for ALL THREE:
+        // 1. The current importer (importer1.hew)
+        // 2. The unopened sibling importer (importer2.hew)
+        // 3. The definition file (util.hew)
+        //
+        // This verifies that build_workspace_edit includes edits for unopened
+        // sibling importers when the cursor is on an import binding.
+
+        let test_dir = TestDir::new("unopened-sibling-importer-edits");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let importer1_path = project_root.join("importer1.hew");
+        let importer2_path = project_root.join("importer2.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        let importer1_source = "import util::{ foo };\nfn main() { foo() }";
+        let importer2_source = "import util::{ foo };\nfn helper() { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&importer1_path, importer1_source).unwrap();
+        std::fs::write(&importer2_path, importer2_source).unwrap();
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let importer1_uri = Url::from_file_path(&importer1_path).unwrap();
+        let importer2_uri = Url::from_file_path(&importer2_path).unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        // Only importer1 is open; importer2 is closed.
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(importer1_uri.clone(), make_doc(importer1_source));
+
+        let importer1_doc = documents.get(&importer1_uri).unwrap();
+        // Place cursor on the `foo` binding in `import util::{ foo }`.
+        let offset = importer1_source.find("{ foo }").unwrap() + 2;
+
+        let edit = navigation::build_workspace_edit(
+            &importer1_uri,
+            &importer1_doc,
+            offset,
+            "bar",
+            &documents,
+        );
+        let edit = edit.expect("workspace edit should be generated");
+
+        let changes = edit.changes.expect("changes must be present");
+
+        // Verify edits exist for all three URIs.
+        assert!(
+            changes.contains_key(&importer1_uri),
+            "workspace edit must include changes for current importer URI: {importer1_uri}"
+        );
+        assert!(
+            changes.contains_key(&util_uri),
+            "workspace edit must include changes for definition URI: {util_uri}"
+        );
+        assert!(
+            changes.contains_key(&importer2_uri),
+            "workspace edit must include changes for unopened sibling importer URI: {importer2_uri}"
+        );
+
+        // Verify importer1's edits (binding + usage).
+        let importer1_edits = &changes[&importer1_uri];
+        assert!(
+            !importer1_edits.is_empty(),
+            "current importer file must have at least one edit"
+        );
+        let renames_to_bar_1 = importer1_edits
+            .iter()
+            .filter(|e| e.new_text == "bar")
+            .count();
+        assert!(
+            renames_to_bar_1 >= 2,
+            "current importer should rename at least 2 occurrences of foo (binding + usage), got {renames_to_bar_1}"
+        );
+
+        // Verify importer2's edits (binding + usage).
+        let importer2_edits = &changes[&importer2_uri];
+        assert!(
+            !importer2_edits.is_empty(),
+            "unopened sibling importer file must have at least one edit"
+        );
+        let renames_to_bar_2 = importer2_edits
+            .iter()
+            .filter(|e| e.new_text == "bar")
+            .count();
+        assert!(
+            renames_to_bar_2 >= 2,
+            "unopened sibling importer should rename at least 2 occurrences of foo (binding + usage), got {renames_to_bar_2}"
+        );
+
+        // Verify the definition file's edit (just the definition).
+        let util_edits = &changes[&util_uri];
+        assert!(
+            !util_edits.is_empty(),
+            "definition file must have at least one edit"
+        );
+        let util_has_bar_edit = util_edits.iter().any(|e| e.new_text == "bar");
+        assert!(
+            util_has_bar_edit,
+            "definition file edits must include renaming foo to bar, got {util_edits:?}"
+        );
+    }
+
+    #[test]
     fn rename_error_to_jsonrpc_uses_request_failed_code() {
         // LSP 3.17 §3.16.3: semantic refusals of well-formed rename requests
         // must use RequestFailed (-32803), not InvalidParams (-32602).

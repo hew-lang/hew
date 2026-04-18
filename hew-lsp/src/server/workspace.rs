@@ -223,13 +223,42 @@ fn open_document_paths(documents: &DashMap<Url, DocumentState>) -> Vec<PathBuf> 
 }
 
 fn collect_hew_files(root: &Path) -> Vec<PathBuf> {
+    // This is a best-effort walk: I/O errors on any single entry are silently
+    // skipped so that one unreadable subtree does not truncate the result.
+    // It intentionally does NOT delegate to for_each_hew_file, which aborts on
+    // the first error — aborting mid-walk would silently omit everything popped
+    // from the stack after the failing entry.
+    //
+    // Symlink handling: the workspace root itself is allowed to be a symlink
+    // (entry point); intra-tree symlinks are skipped to prevent cycles
+    // (matches for_each_hew_file behaviour).
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
+    let mut first = true;
 
     while let Some(path) = stack.pop() {
-        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-            continue;
+        // For the root (first iteration), follow symlinks to get the actual directory.
+        // For all other paths, use symlink_metadata to avoid following intra-tree
+        // symlinks (which could cause cycles).
+        let metadata = if first {
+            match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            }
+        } else {
+            match std::fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            }
         };
+
+        // Skip symlinks encountered during traversal (but not the root itself,
+        // which was the entry point). This prevents directory cycles.
+        if !first && metadata.is_symlink() {
+            first = false;
+            continue;
+        }
+        first = false;
 
         if metadata.is_file() {
             if path.extension().and_then(|ext| ext.to_str()) == Some("hew") {
@@ -242,15 +271,16 @@ fn collect_hew_files(root: &Path) -> Vec<PathBuf> {
             continue;
         }
 
+        if should_skip_workspace_dir(&path) {
+            continue;
+        }
+
         let Ok(entries) = std::fs::read_dir(&path) else {
             continue;
         };
         let mut children: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
         children.sort();
         for child in children.into_iter().rev() {
-            if child.is_dir() && should_skip_workspace_dir(&child) {
-                continue;
-            }
             stack.push(child);
         }
     }
@@ -263,6 +293,131 @@ pub(super) fn should_skip_workspace_dir(path: &Path) -> bool {
         path.file_name().and_then(|name| name.to_str()),
         Some(".git" | "target" | ".worktree" | ".worktrees" | "worktrees")
     )
+}
+
+/// Find the workspace root for a URI: the nearest ancestor directory that
+/// contains a `std/` subdirectory.  Returns `None` if no such ancestor exists.
+///
+/// This is the canonical workspace-root heuristic; both the import-path
+/// resolver (`compute_import_path`) and the rename disk-scan use it.
+pub(super) fn find_workspace_root_for_uri(uri: &Url) -> Option<PathBuf> {
+    let mut dir = uri
+        .to_file_path()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    while let Some(d) = dir {
+        if d.join("std").is_dir() {
+            return Some(d);
+        }
+        dir = d.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+/// Walk every `*.hew` file under `root`, calling `f` for each one.
+///
+/// Traversal rules:
+/// - The workspace `root` itself is allowed to be a symlink (the entry
+///   point) and will be traversed; `root` is canonicalized once at entry
+///   to detect cycles by canonical inode. Any symlinks encountered *within*
+///   the traversal are skipped to prevent directory cycles (issue #1290).
+/// - Applies `should_skip_workspace_dir` to prune `.git`, `target`,
+///   `.worktree`, `.worktrees`, and `worktrees` directories.
+/// - I/O errors on `read_dir` or `symlink_metadata` are propagated as
+///   `E` via `From<(PathBuf, io::Error)>`, carrying the path that
+///   triggered the error so the caller can include it in the user-visible
+///   message (#1288).
+///
+/// Returns `Ok(())` when all reachable files have been visited without
+/// error, or `Err(e)` on the first I/O or visitor error.
+pub(super) fn for_each_hew_file<E, F>(root: &Path, mut f: F) -> Result<(), E>
+where
+    E: From<(PathBuf, std::io::Error)>,
+    F: FnMut(&Path) -> Result<(), E>,
+{
+    use std::collections::HashSet as VisitedSet;
+
+    // Canonicalize the root once so we can detect cycles by canonical inode.
+    // If canonicalization fails (e.g., root doesn't exist), use the original
+    // path and rely on symlink_metadata to fail later.
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited: VisitedSet<std::path::PathBuf> = VisitedSet::new();
+    visited.insert(canonical_root.clone());
+    let mut first = true;
+
+    while let Some(path) = stack.pop() {
+        // For the root (first iteration), follow symlinks to get the actual directory.
+        // For all other paths, use symlink_metadata to avoid following intra-tree
+        // symlinks (which could cause cycles).
+        let metadata = if first {
+            std::fs::metadata(&path).map_err(|e| E::from((path.clone(), e)))?
+        } else {
+            std::fs::symlink_metadata(&path).map_err(|e| E::from((path.clone(), e)))?
+        };
+
+        // Skip symlinks encountered during traversal (but not the root itself,
+        // which was the entry point). This prevents directory cycles.
+        if !first && metadata.is_symlink() {
+            first = false;
+            continue;
+        }
+        first = false;
+
+        if metadata.is_file() {
+            if path.extension().and_then(|ext| ext.to_str()) == Some("hew") {
+                f(&path)?;
+            }
+            continue;
+        }
+
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        if should_skip_workspace_dir(&path) {
+            continue;
+        }
+
+        let entries = std::fs::read_dir(&path).map_err(|e| E::from((path.clone(), e)))?;
+        let mut children: Vec<PathBuf> = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(e) => children.push(e.path()),
+                Err(e) => return Err(E::from((path.clone(), e))),
+            }
+        }
+        children.sort();
+        // Push in reverse so we pop in sorted order (deterministic, mirrors
+        // the existing collect_hew_files stack order).
+        for child in children.into_iter().rev() {
+            // Skip symlinks to prevent cycles and avoid re-visiting real directories
+            // via alternate symlink paths. Check is_symlink() before canonicalizing,
+            // since canonicalize() will follow the symlink.
+            if let Ok(child_metadata) = std::fs::symlink_metadata(&child) {
+                if child_metadata.is_symlink() {
+                    // Skip this symlink; we will visit the real directory when we
+                    // encounter it at its real path.
+                    continue;
+                }
+            }
+
+            // Only descend into directories we haven't visited yet (by canonical path).
+            if let Ok(canonical_child) = std::fs::canonicalize(&child) {
+                if !visited.contains(&canonical_child) {
+                    visited.insert(canonical_child);
+                    stack.push(child);
+                }
+            } else {
+                // If canonicalization fails, push anyway and let symlink_metadata
+                // or read_dir report the actual error.
+                stack.push(child);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn path_is_under_workspace_root(path: &Path, workspace_roots: &[PathBuf]) -> bool {

@@ -466,6 +466,10 @@ fn rename_error_to_jsonrpc(err: &hew_analysis::RenameError) -> tower_lsp::jsonrp
                 first
             }
         }
+        hew_analysis::RenameError::Io { path, message } => {
+            format!("rename failed: {path}: {message}")
+        }
+        _ => "rename failed".to_string(),
     };
     // LSP 3.17 §3.16.3: semantic refusals of well-formed requests use
     // RequestFailed (-32803); InvalidParams (-32602) is reserved for
@@ -1179,6 +1183,18 @@ mod tests {
     impl Drop for TestDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[cfg(unix)]
+    // Restores file/directory permissions on drop, used by permission-change tests.
+    struct RestoreOnDrop(PathBuf, u32);
+
+    #[cfg(unix)]
+    impl Drop for RestoreOnDrop {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
         }
     }
 
@@ -3712,6 +3728,7 @@ machine Traffic {
         let offset = main_source.rfind("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&main_uri, &main_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce a cross-file workspace edit");
         let changes = workspace_edit
             .changes
@@ -3753,6 +3770,7 @@ machine Traffic {
         let offset = main_source.rfind("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&main_uri, &main_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce a cross-file workspace edit");
         let changes = workspace_edit
             .changes
@@ -3805,6 +3823,7 @@ machine Traffic {
         let offset = util_source.find("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&util_uri, &util_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce a cross-file workspace edit");
         let changes = workspace_edit
             .changes
@@ -3869,6 +3888,7 @@ machine Traffic {
         let offset = main_source.rfind("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&main_uri, &main_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce local edits");
         let changes = workspace_edit
             .changes
@@ -3905,6 +3925,7 @@ machine Traffic {
         let offset = util_source.find("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&util_uri, &util_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce a cross-file workspace edit");
         let changes = workspace_edit
             .changes
@@ -5400,6 +5421,179 @@ machine Traffic {
         );
     }
 
+    // ── #1290 Symlink-cycle regression ──────────────────────────────────────
+
+    #[test]
+    fn plan_workspace_rename_disk_scan_skips_symlinked_directory() {
+        // Regression for issue #1290: a symlink pointing to an ancestor directory
+        // under the workspace root must not cause unbounded recursion or a
+        // stack overflow.
+        //
+        // Layout:
+        //   <test_dir>/std/         ← workspace root marker
+        //   <test_dir>/util.hew     ← defines `pub fn foo`; OPEN
+        //   <test_dir>/loop         → symlink to <test_dir> itself
+        //
+        // Without the fix (is_dir() == true through a symlink) the scan would
+        // recurse endlessly.  With symlink_metadata the symlink is identified
+        // and skipped.
+
+        let test_dir = TestDir::new("disk-symlink-cycle");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        std::fs::write(&util_path, util_source).unwrap();
+
+        // Create a directory symlink that points back at the workspace root.
+        let loop_path = project_root.join("loop");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(project_root, &loop_path).unwrap();
+        #[cfg(not(unix))]
+        {
+            // Windows requires elevated rights for symlinks; skip on non-unix.
+            return;
+        }
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        // This must complete without stack overflow or infinite loop.
+        // No conflict exists — the rename should succeed.
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        assert!(
+            result.is_ok(),
+            "rename foo->bar should succeed; symlink cycle must be skipped, got {result:?}"
+        );
+    }
+
+    // ── #1288 Unreadable-file / unreadable-directory regressions ────────────
+
+    #[test]
+    #[cfg(unix)]
+    fn plan_workspace_rename_disk_scan_surfaces_error_for_unreadable_file() {
+        // Regression for issue #1288: an unreadable .hew file under the workspace
+        // must surface a RenameError::Io rather than being silently skipped and
+        // producing a potentially-incomplete conflict check.
+        //
+        // Skipped when running as root because the kernel ignores mode bits for root,
+        // so the permission change would be a no-op.  The guard below verifies this
+        // at runtime rather than relying on an env-var convention.
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_dir = TestDir::new("disk-unreadable-file");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let secret_path = project_root.join("secret.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        // secret.hew imports foo — if readable it would trigger the scan.
+        let secret_source = "import util::{ foo };\npub fn uses_foo() -> i64 { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&secret_path, secret_source).unwrap();
+
+        // Remove read permission from secret.hew.
+        std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Verify that the permission change actually took effect (no-op under root).
+        if std::fs::read_to_string(&secret_path).is_ok() {
+            return; // running as root — permission enforcement is bypassed; skip
+        }
+
+        // Restore permissions on drop so TestDir cleanup succeeds.
+        let _restore = RestoreOnDrop(secret_path.clone(), 0o644);
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        // Assert both the variant and that the path field is non-empty and names
+        // the unreadable file, so "rename failed: : permission denied" is impossible.
+        match &result {
+            Err(hew_analysis::RenameError::Io { path, .. }) => {
+                assert!(
+                    !path.is_empty(),
+                    "RenameError::Io path must be non-empty; got empty string"
+                );
+                assert!(
+                    path.contains("secret.hew"),
+                    "RenameError::Io path should name the unreadable file; got {path:?}"
+                );
+            }
+            other => panic!("expected RenameError::Io for unreadable file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn plan_workspace_rename_disk_scan_surfaces_error_for_unreadable_directory() {
+        // Regression for issue #1288: an unreadable subdirectory under the workspace
+        // must surface a RenameError::Io rather than being silently skipped.
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_dir = TestDir::new("disk-unreadable-dir");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let locked_dir = project_root.join("locked");
+        std::fs::create_dir_all(&locked_dir).unwrap();
+        let inner_path = locked_dir.join("importer.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        // importer.hew inside locked/ imports foo.
+        let inner_source = "import util::{ foo };\npub fn uses_foo() -> i64 { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&inner_path, inner_source).unwrap();
+
+        // Remove read+exec from the directory so read_dir will fail.
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Verify the permission took effect.
+        if std::fs::read_dir(&locked_dir).is_ok() {
+            return; // running as root
+        }
+
+        let _restore = RestoreOnDrop(locked_dir.clone(), 0o755);
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        // Assert both the variant and that the path field names the locked directory,
+        // so "rename failed: : permission denied" is impossible.
+        match &result {
+            Err(hew_analysis::RenameError::Io { path, .. }) => {
+                assert!(
+                    !path.is_empty(),
+                    "RenameError::Io path must be non-empty; got empty string"
+                );
+                assert!(
+                    path.contains("locked"),
+                    "RenameError::Io path should name the locked directory; got {path:?}"
+                );
+            }
+            other => panic!("expected RenameError::Io for unreadable directory, got {other:?}"),
+        }
+    }
+
     #[test]
     fn importer_originated_rename_includes_unopened_definition_file_edits() {
         // Regression test: when an importer cursor renames a symbol, the workspace
@@ -5453,7 +5647,9 @@ machine Traffic {
             "bar",
             &documents,
         );
-        let edit = edit.expect("workspace edit should be generated");
+        let edit = edit
+            .expect("workspace edit should not error")
+            .expect("workspace edit should be generated");
 
         let changes = edit.changes.expect("changes must be present");
 
@@ -5557,7 +5753,9 @@ machine Traffic {
             "bar",
             &documents,
         );
-        let edit = edit.expect("workspace edit should be generated");
+        let edit = edit
+            .expect("workspace edit should not error")
+            .expect("workspace edit should be generated");
 
         let changes = edit.changes.expect("changes must be present");
 
@@ -5659,7 +5857,9 @@ machine Traffic {
 
         let edit =
             navigation::build_workspace_edit(&util_uri, &util_doc, offset, "bar", &documents);
-        let edit = edit.expect("workspace edit should be generated");
+        let edit = edit
+            .expect("workspace edit should not error")
+            .expect("workspace edit should be generated");
 
         let changes = edit.changes.expect("changes must be present");
 
@@ -5732,5 +5932,145 @@ machine Traffic {
                 jsonrpc_err.code,
             );
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn build_workspace_edit_propagates_io_error_for_unreadable_closed_definition_file() {
+        // Regression for issue #1299: when the definition file is closed and unreadable,
+        // build_workspace_edit should propagate the I/O error via RenameError::Io,
+        // not silently skip edits and return a partial rename.
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_dir = TestDir::new("build-workspace-edit-unreadable-definition");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let importer_path = project_root.join("importer.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        let importer_source = "import util::{ foo };\npub fn uses_foo() -> i64 { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&importer_path, importer_source).unwrap();
+
+        // Remove read permission from the definition file.
+        std::fs::set_permissions(&util_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Verify the permission took effect.
+        if std::fs::read(util_path.clone()).is_ok() {
+            return; // running as root
+        }
+
+        let _restore = RestoreOnDrop(util_path.clone(), 0o644);
+
+        let _util_uri = Url::from_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(importer_uri.clone(), make_doc(importer_source));
+
+        let importer_doc = documents.get(&importer_uri).unwrap();
+        // Rename the import binding reference (offset inside `uses_foo`).
+        let offset = importer_source.find("uses_foo").unwrap() + 5;
+
+        let result = build_workspace_edit(&importer_uri, &importer_doc, offset, "bar", &documents);
+
+        match result {
+            Err(hew_analysis::RenameError::Io { path, .. }) => {
+                assert!(
+                    path.contains("util.hew"),
+                    "RenameError::Io should name the unreadable definition file; got {path:?}"
+                );
+            }
+            other => panic!(
+                "expected RenameError::Io for unreadable closed definition file, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn for_each_hew_file_allows_symlinked_workspace_root() {
+        // Regression for issue #1299: the workspace root itself may be a symlink,
+        // and for_each_hew_file should traverse it. Only intra-tree symlinks are skipped.
+        let test_dir = TestDir::new("for-each-hew-file-symlink-root");
+        let real_path = test_dir.path();
+        std::fs::create_dir_all(real_path.join("std")).unwrap();
+
+        // Create a .hew file in the real directory.
+        let real_file = real_path.join("lib.hew");
+        std::fs::write(&real_file, "pub fn bar() {}").unwrap();
+
+        // Create a symlink to the directory.
+        let symlink_parent = real_path.parent().unwrap();
+        let symlink_path = symlink_parent.join("symlink-root");
+        let _ = std::fs::remove_dir_all(&symlink_path); // Clean up any leftover from previous runs
+        std::os::unix::fs::symlink(real_path, &symlink_path).unwrap();
+
+        let mut visited_files = Vec::new();
+
+        let result: std::result::Result<(), (std::path::PathBuf, std::io::Error)> =
+            super::workspace::for_each_hew_file(&symlink_path, |path| {
+                visited_files.push(path.to_path_buf());
+                Ok(())
+            });
+
+        assert!(
+            result.is_ok(),
+            "for_each_hew_file should traverse a symlinked root, got {result:?}"
+        );
+        assert!(
+            !visited_files.is_empty(),
+            "for_each_hew_file should have visited at least one .hew file under the symlinked root"
+        );
+        assert!(
+            visited_files.iter().any(|p| p.ends_with("lib.hew")),
+            "for_each_hew_file should have visited lib.hew"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn for_each_hew_file_visits_real_dir_despite_symlink_sibling() {
+        // Regression for issue #1299: when a workspace contains both a real directory
+        // and a symlink to it, both paths must visit the real directory's files.
+        // Previously, the symlink would claim the canonical path in visited, and the
+        // real directory would be skipped as already-visited.
+        let test_dir = TestDir::new("for-each-hew-file-symlink-and-real");
+        let root = test_dir.path();
+        std::fs::create_dir_all(root.join("std")).unwrap();
+
+        // Create a real subdirectory with a .hew file. Name it so it sorts AFTER
+        // the symlink — the walker's children.sort() + reverse-push + pop yields
+        // ascending order, so the symlink must come first in this test to actually
+        // exercise the "symlink visited first poisons the visited set" bug.
+        let real_subdir = root.join("z_real");
+        std::fs::create_dir_all(&real_subdir).unwrap();
+        let real_file = real_subdir.join("def.hew");
+        std::fs::write(&real_file, "pub fn foo() {}").unwrap();
+
+        // Create a symlink to the real directory, named to sort BEFORE it.
+        let symlink_path = root.join("a_link");
+        let _ = std::fs::remove_dir_all(&symlink_path); // Clean up any leftover
+        std::os::unix::fs::symlink(&real_subdir, &symlink_path).unwrap();
+
+        // Walk from the root. Pop order is a_link, then z_real. The symlink is
+        // skipped on encounter; the real directory must still be visited.
+        let mut visited_files = Vec::new();
+        let result: std::result::Result<(), (std::path::PathBuf, std::io::Error)> =
+            super::workspace::for_each_hew_file(root, |path| {
+                visited_files.push(path.to_path_buf());
+                Ok(())
+            });
+
+        assert!(
+            result.is_ok(),
+            "for_each_hew_file should succeed when workspace has symlink and real dir, got {result:?}"
+        );
+        assert!(
+            visited_files.iter().any(|p| p.ends_with("def.hew")),
+            "for_each_hew_file should have visited def.hew in the real directory despite the symlink sibling"
+        );
     }
 }

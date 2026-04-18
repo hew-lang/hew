@@ -199,6 +199,7 @@ pub enum RenameConflictKind {
 /// must be refused before any edit is produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RenameError {
     /// The new name is a language keyword or a builtin identifier that
     /// cannot be shadowed by user code.
@@ -208,6 +209,26 @@ pub enum RenameError {
     InvalidIdentifier { name: String, message: String },
     /// Applying the rename would introduce one or more name clashes.
     Conflicts { conflicts: Vec<RenameConflict> },
+    /// The disk scan encountered an I/O error that prevents a complete
+    /// conflict or edit check.  `path` is the file or directory that
+    /// could not be read; `message` is the OS error string.
+    Io { path: String, message: String },
+}
+
+impl From<(std::path::PathBuf, std::io::Error)> for RenameError {
+    /// Converts a `(path, io_error)` pair into `RenameError::Io`.
+    ///
+    /// Used by `for_each_hew_file` to propagate traversal-level I/O errors
+    /// (e.g. `symlink_metadata` or `read_dir` failing on a specific path)
+    /// with the path that triggered the error included in the result, so the
+    /// user-facing message reads "rename failed: /some/path: permission denied"
+    /// rather than "rename failed: : permission denied".
+    fn from((path, e): (std::path::PathBuf, std::io::Error)) -> Self {
+        RenameError::Io {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        }
+    }
 }
 
 // ── Folding ──────────────────────────────────────────────────────────

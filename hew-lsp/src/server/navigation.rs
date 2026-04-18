@@ -10,6 +10,24 @@ use tower_lsp::lsp_types::{
 
 use super::{offset_range_to_lsp, span_to_range, DocumentState};
 
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/// Load source code from a URI, returning a `RenameError::Io` on any I/O or
+/// URI-conversion failure. Encapsulates the "could not convert URI to file path"
+/// and "could not read source file" error patterns.
+fn read_source_or_io_error(uri: &Url) -> Result<String, hew_analysis::RenameError> {
+    let path = uri
+        .to_file_path()
+        .map_err(|_e| hew_analysis::RenameError::Io {
+            path: uri.to_string(),
+            message: "could not convert URI to file path".to_string(),
+        })?;
+    std::fs::read_to_string(&path).map_err(|e| hew_analysis::RenameError::Io {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })
+}
+
 // ── Go-to-definition ─────────────────────────────────────────────────
 
 /// Search for a definition matching `word` in the AST, returning an LSP `Range`.
@@ -454,14 +472,14 @@ pub(super) fn workspace_edit_from_changes(
     doc: &DocumentState,
     documents: &DashMap<Url, DocumentState>,
     mut changes: HashMap<Url, Vec<hew_analysis::RenameEdit>>,
-) -> Option<WorkspaceEdit> {
+) -> Result<Option<WorkspaceEdit>, hew_analysis::RenameError> {
     for edits in changes.values_mut() {
         sort_and_dedup_rename_edits(edits);
     }
     changes.retain(|_, edits| !edits.is_empty());
 
     if changes.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let mut lsp_changes = HashMap::new();
@@ -478,13 +496,8 @@ pub(super) fn workspace_edit_from_changes(
                 .collect()
         } else {
             // File is not open; load from disk to generate edits.
-            // If disk read/parse fails, return None to reject the rename entirely.
-            let Ok(target_path) = target_uri.to_file_path() else {
-                return None;
-            };
-            let Ok(target_source) = std::fs::read_to_string(&target_path) else {
-                return None;
-            };
+            // If disk read/parse fails, return an error to reject the rename entirely.
+            let target_source = read_source_or_io_error(&target_uri)?;
             let target_line_offsets = hew_analysis::util::compute_line_offsets(&target_source);
             edits
                 .into_iter()
@@ -502,10 +515,10 @@ pub(super) fn workspace_edit_from_changes(
         lsp_changes.insert(target_uri, text_edits);
     }
 
-    Some(WorkspaceEdit {
+    Ok(Some(WorkspaceEdit {
         changes: Some(lsp_changes),
         ..Default::default()
-    })
+    }))
 }
 
 pub(super) fn build_reference_locations(
@@ -632,8 +645,13 @@ pub(super) fn build_workspace_edit(
     offset: usize,
     new_name: &str,
     documents: &DashMap<Url, DocumentState>,
-) -> Option<WorkspaceEdit> {
-    let (name, _) = hew_analysis::util::simple_word_at_offset(&doc.source, offset)?;
+) -> Result<Option<WorkspaceEdit>, hew_analysis::RenameError> {
+    let (name, _) = hew_analysis::util::simple_word_at_offset(&doc.source, offset).ok_or(
+        hew_analysis::RenameError::InvalidIdentifier {
+            name: String::new(),
+            message: "cursor not on a valid identifier".to_string(),
+        },
+    )?;
 
     if let Some((import_match, usage_spans)) =
         find_resolved_named_import_match(uri, doc, offset, &name, documents)
@@ -670,28 +688,25 @@ pub(super) fn build_workspace_edit(
                 }
             } else {
                 // Definition file is closed; load from disk and compute edits.
-                if let Ok(target_path) = import_match.imported_uri.to_file_path() {
-                    if let Ok(target_source) = std::fs::read_to_string(&target_path) {
-                        let target_parse = hew_parser::parse(&target_source);
-                        if let Some(def_span) = find_definition_name_span(
-                            &target_source,
-                            &target_parse,
-                            &import_match.imported_name,
-                        ) {
-                            let target_edits = hew_analysis::rename::rename(
-                                &target_source,
-                                &target_parse,
-                                def_span.start,
-                                new_name,
-                            )
-                            .unwrap_or_default();
-                            if !target_edits.is_empty() {
-                                changes
-                                    .entry(import_match.imported_uri.clone())
-                                    .or_default()
-                                    .extend(target_edits);
-                            }
-                        }
+                let target_source = read_source_or_io_error(&import_match.imported_uri)?;
+                let target_parse = hew_parser::parse(&target_source);
+                if let Some(def_span) = find_definition_name_span(
+                    &target_source,
+                    &target_parse,
+                    &import_match.imported_name,
+                ) {
+                    let target_edits = hew_analysis::rename::rename(
+                        &target_source,
+                        &target_parse,
+                        def_span.start,
+                        new_name,
+                    )
+                    .unwrap_or_default();
+                    if !target_edits.is_empty() {
+                        changes
+                            .entry(import_match.imported_uri.clone())
+                            .or_default()
+                            .extend(target_edits);
                     }
                 }
             }
@@ -741,14 +756,19 @@ pub(super) fn build_workspace_edit(
             // scan in plan_workspace_rename). For aliased imports we still rewrite
             // the `import_name` token (matching the open-importer path) but leave the
             // alias binding and its usages alone.
-            if let Some(root) = find_workspace_root(&import_match.imported_uri) {
+            if let Some(root) =
+                super::workspace::find_workspace_root_for_uri(&import_match.imported_uri)
+            {
                 let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
+                // Propagate I/O errors from unopened-importer discovery so the caller
+                // can refuse the rename if a disk scan fails, matching the policy
+                // used in plan_workspace_rename (#1288).
                 let unopened_importers = collect_unopened_sibling_importers_for_edits(
                     &import_match.imported_uri,
                     &import_match.imported_name,
                     &root,
                     &open_uris,
-                );
+                )?;
                 for unopened in unopened_importers {
                     changes
                         .entry(unopened.importer_uri.clone())
@@ -764,27 +784,24 @@ pub(super) fn build_workspace_edit(
                         continue;
                     }
 
-                    if let Ok(unopened_path) = unopened.importer_uri.to_file_path() {
-                        if let Ok(unopened_source) = std::fs::read_to_string(&unopened_path) {
-                            let unopened_parse = hew_parser::parse(&unopened_source);
-                            let unopened_edits: Vec<_> =
-                                hew_analysis::references::find_import_binding_references(
-                                    &unopened_parse,
-                                    &unopened.visible_name,
-                                )
-                                .into_iter()
-                                .map(|span| hew_analysis::RenameEdit {
-                                    span,
-                                    new_text: new_name.to_string(),
-                                })
-                                .collect();
-                            if !unopened_edits.is_empty() {
-                                changes
-                                    .entry(unopened.importer_uri.clone())
-                                    .or_default()
-                                    .extend(unopened_edits);
-                            }
-                        }
+                    let unopened_source = read_source_or_io_error(&unopened.importer_uri)?;
+                    let unopened_parse = hew_parser::parse(&unopened_source);
+                    let unopened_edits: Vec<_> =
+                        hew_analysis::references::find_import_binding_references(
+                            &unopened_parse,
+                            &unopened.visible_name,
+                        )
+                        .into_iter()
+                        .map(|span| hew_analysis::RenameEdit {
+                            span,
+                            new_text: new_name.to_string(),
+                        })
+                        .collect();
+                    if !unopened_edits.is_empty() {
+                        changes
+                            .entry(unopened.importer_uri.clone())
+                            .or_default()
+                            .extend(unopened_edits);
                     }
                 }
             }
@@ -837,10 +854,11 @@ pub(super) fn build_workspace_edit(
         // Include edits for unopened sibling importers (symmetric to the
         // import-originated path above). Definition-file renaming should also
         // update unopened importers.
-        if let Some(root) = find_workspace_root(uri) {
+        if let Some(root) = super::workspace::find_workspace_root_for_uri(uri) {
             let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
+            // Propagate I/O errors from unopened-importer discovery (#1288).
             let unopened_importers =
-                collect_unopened_sibling_importers_for_edits(uri, &name, &root, &open_uris);
+                collect_unopened_sibling_importers_for_edits(uri, &name, &root, &open_uris)?;
             for unopened in unopened_importers {
                 changes
                     .entry(unopened.importer_uri.clone())
@@ -856,27 +874,24 @@ pub(super) fn build_workspace_edit(
                     continue;
                 }
 
-                if let Ok(unopened_path) = unopened.importer_uri.to_file_path() {
-                    if let Ok(unopened_source) = std::fs::read_to_string(&unopened_path) {
-                        let unopened_parse = hew_parser::parse(&unopened_source);
-                        let unopened_edits: Vec<_> =
-                            hew_analysis::references::find_import_binding_references(
-                                &unopened_parse,
-                                &unopened.visible_name,
-                            )
-                            .into_iter()
-                            .map(|span| hew_analysis::RenameEdit {
-                                span,
-                                new_text: new_name.to_string(),
-                            })
-                            .collect();
-                        if !unopened_edits.is_empty() {
-                            changes
-                                .entry(unopened.importer_uri.clone())
-                                .or_default()
-                                .extend(unopened_edits);
-                        }
-                    }
+                let unopened_source = read_source_or_io_error(&unopened.importer_uri)?;
+                let unopened_parse = hew_parser::parse(&unopened_source);
+                let unopened_edits: Vec<_> =
+                    hew_analysis::references::find_import_binding_references(
+                        &unopened_parse,
+                        &unopened.visible_name,
+                    )
+                    .into_iter()
+                    .map(|span| hew_analysis::RenameEdit {
+                        span,
+                        new_text: new_name.to_string(),
+                    })
+                    .collect();
+                if !unopened_edits.is_empty() {
+                    changes
+                        .entry(unopened.importer_uri.clone())
+                        .or_default()
+                        .extend(unopened_edits);
                 }
             }
         }
@@ -975,39 +990,35 @@ pub(super) fn plan_workspace_rename(
                 }
             } else {
                 // The definition file is not open; read it from disk and check
-                // for conflicts using the unopened-file path. Degrades gracefully:
-                // I/O or parse errors skip this file silently.
-                if let Ok(def_path) = import_match.imported_uri.to_file_path() {
-                    if let Ok(source) = std::fs::read_to_string(&def_path) {
-                        let parse_result = hew_parser::parse(&source);
+                // for conflicts using the unopened-file path.
+                let source = read_source_or_io_error(&import_match.imported_uri)?;
+                let parse_result = hew_parser::parse(&source);
 
-                        // Check top-level and import clashes (mirrors the open-document path).
-                        collect_cross_file_conflict_raw(
+                // Check top-level and import clashes (mirrors the open-document path).
+                collect_cross_file_conflict_raw(
+                    &source,
+                    &parse_result,
+                    new_name,
+                    &import_match.imported_name,
+                    &mut cross_file_conflicts,
+                );
+
+                // Also check local scopes in the definition file for shadowing.
+                // Mirrors the open-document `plan_rename` call above.
+                if let Some(def_span) = hew_analysis::definition::find_definition(
+                    &source,
+                    &parse_result,
+                    &import_match.imported_name,
+                ) {
+                    if let Err(hew_analysis::RenameError::Conflicts { conflicts }) =
+                        hew_analysis::rename::plan_rename(
                             &source,
                             &parse_result,
+                            def_span.start,
                             new_name,
-                            &import_match.imported_name,
-                            &mut cross_file_conflicts,
-                        );
-
-                        // Also check local scopes in the definition file for shadowing.
-                        // Mirrors the open-document `plan_rename` call above.
-                        if let Some(def_span) = hew_analysis::definition::find_definition(
-                            &source,
-                            &parse_result,
-                            &import_match.imported_name,
-                        ) {
-                            if let Err(hew_analysis::RenameError::Conflicts { conflicts }) =
-                                hew_analysis::rename::plan_rename(
-                                    &source,
-                                    &parse_result,
-                                    def_span.start,
-                                    new_name,
-                                )
-                            {
-                                cross_file_conflicts.extend(conflicts);
-                            }
-                        }
+                        )
+                    {
+                        cross_file_conflicts.extend(conflicts);
                     }
                 }
             }
@@ -1032,7 +1043,9 @@ pub(super) fn plan_workspace_rename(
             // Scan unopened sibling importers of the *definition* file — not the
             // current (importer) file. Using the current URI/name would find files
             // that import *this* importer, which is wrong (#1285 + quality finding).
-            if let Some(root) = find_workspace_root(&import_match.imported_uri) {
+            if let Some(root) =
+                super::workspace::find_workspace_root_for_uri(&import_match.imported_uri)
+            {
                 let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
                 scan_disk_importers_for_conflicts(
                     &import_match.imported_uri,
@@ -1041,7 +1054,7 @@ pub(super) fn plan_workspace_rename(
                     &root,
                     &open_uris,
                     &mut cross_file_conflicts,
-                );
+                )?;
             }
         }
     } else if hew_analysis::references::is_top_level_name(&doc.parse_result, &name) {
@@ -1065,8 +1078,8 @@ pub(super) fn plan_workspace_rename(
         }
 
         // Scan unopened files on disk that import the renamed symbol (#1285).
-        // Degrades gracefully: I/O or parse errors skip individual files silently.
-        if let Some(root) = find_workspace_root(uri) {
+        // I/O errors are surfaced as RenameError::Io (#1288).
+        if let Some(root) = super::workspace::find_workspace_root_for_uri(uri) {
             let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
             scan_disk_importers_for_conflicts(
                 uri,
@@ -1075,7 +1088,7 @@ pub(super) fn plan_workspace_rename(
                 &root,
                 &open_uris,
                 &mut cross_file_conflicts,
-            );
+            )?;
         }
     }
 
@@ -1104,7 +1117,7 @@ pub(super) fn plan_workspace_rename(
         });
     }
 
-    Ok(build_workspace_edit(uri, doc, offset, new_name, documents))
+    build_workspace_edit(uri, doc, offset, new_name, documents)
 }
 
 /// Inspect another file's document for a pre-existing top-level item,
@@ -1221,31 +1234,21 @@ fn collect_cross_file_conflict_raw(
     }
 }
 
-// ── Workspace-disk importer scan (#1285) ────────────────────────────
-
-/// Find the workspace root for `uri`: the nearest ancestor directory that
-/// contains a `std/` subdirectory (same heuristic as `compute_import_path`).
-fn find_workspace_root(uri: &Url) -> Option<std::path::PathBuf> {
-    let mut dir = uri
-        .to_file_path()
-        .ok()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
-    while let Some(d) = dir {
-        if d.join("std").is_dir() {
-            return Some(d);
-        }
-        dir = d.parent().map(std::path::Path::to_path_buf);
-    }
-    None
-}
+// ── Workspace-disk importer scan (#1285, #1287, #1288, #1290) ────────
 
 /// Walk every `*.hew` file under `root` that is NOT in `open_uris`, parse it
 /// on-demand, check whether it imports the renamed symbol from `definition_uri`,
-/// and if so run `collect_cross_file_conflict` against it.
+/// and if so run `collect_cross_file_conflict_raw` against it.
 ///
-/// SHIM: `O(#disk_files)` per rename; acceptable because rename is user-initiated
-/// and infrequent.  A proper solution would maintain an index of importers.
-/// Degrades gracefully: any I/O or parse error skips the file silently.
+/// Uses the shared `for_each_hew_file` walker from workspace.rs, which:
+/// - Skips symlinked directories via `symlink_metadata` (no cycles, #1290).
+/// - Applies `should_skip_workspace_dir` for `.git`, `target`, etc.
+/// - Propagates I/O errors as `RenameError::Io` rather than silently
+///   swallowing them (#1288).
+///
+/// SHIM: `O(#disk_files)` per rename; acceptable because rename is
+/// user-initiated and infrequent.  A proper solution would maintain an index
+/// of importers.
 fn scan_disk_importers_for_conflicts(
     definition_uri: &Url,
     renamed_name: &str,
@@ -1253,216 +1256,116 @@ fn scan_disk_importers_for_conflicts(
     root: &std::path::Path,
     open_uris: &HashSet<Url>,
     conflicts: &mut Vec<hew_analysis::RenameConflict>,
-) {
-    scan_dir_for_conflicts(
-        definition_uri,
-        renamed_name,
-        new_name,
-        root,
-        open_uris,
-        conflicts,
-    );
-}
-
-// NOTE: See issue #1287 — this disk-scan logic duplicates workspace walker
-// policy in navigation.rs:49-60 and workspace.rs:225-258. A future unification
-// will consolidate both paths onto shared workspace helpers.
-fn scan_dir_for_conflicts(
-    definition_uri: &Url,
-    renamed_name: &str,
-    new_name: &str,
-    dir: &std::path::Path,
-    open_uris: &HashSet<Url>,
-    conflicts: &mut Vec<hew_analysis::RenameConflict>,
-) {
-    // FOLLOW-UP: see issue #1289 — silently skipping unreadable directories
-    // means conflicts may be missed if the filesystem walk hits I/O errors.
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    // Sort for deterministic conflict order (mirrors workspace.rs:248-250).
-    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            // Use the same skip policy as the workspace walker so that hidden
-            // dirs, `target`, `.worktree`, `.worktrees`, and `worktrees` are
-            // all excluded (mirrors workspace.rs:261-265).
-            if super::workspace::should_skip_workspace_dir(&path) {
-                continue;
-            }
-            // FOLLOW-UP: see issue #1290 — symlink cycles in the workspace would
-            // cause unbounded recursion here. Use visited set or symlink_metadata
-            // to prevent stack overflow on hostile filesystem layouts.
-            scan_dir_for_conflicts(
-                definition_uri,
-                renamed_name,
-                new_name,
-                &path,
-                open_uris,
-                conflicts,
-            );
-        } else if path.extension().and_then(|e| e.to_str()) == Some("hew") {
-            let Ok(file_uri) = Url::from_file_path(&path) else {
-                continue;
-            };
-            // Already checked by the open-documents pass.
-            if open_uris.contains(&file_uri) || file_uri == *definition_uri {
-                continue;
-            }
-            // FOLLOW-UP: see issue #1289 — silently skipping unreadable files
-            // means conflicts may be missed if individual files fail to load.
-            let Ok(source) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let parse_result = hew_parser::parse(&source);
-
-            // Only proceed if this file imports `renamed_name` (non-aliased) from
-            // `definition_uri`.  Aliased importers (`import foo::{ x as y }`) only
-            // rewrite the imported token — the visible binding remains the alias, so
-            // they cannot introduce a `renamed_name`-visible conflict (#1285 quality).
-            let imports_target_nonaliased =
-                collect_import_items(&parse_result)
-                    .into_iter()
-                    .any(|(import, _)| {
-                        let Some(ImportSpec::Names(names)) = &import.spec else {
-                            return false;
-                        };
-                        // Skip if the only match is an aliased import entry.
-                        if !names
-                            .iter()
-                            .any(|n| n.name == renamed_name && n.alias.is_none())
-                        {
-                            return false;
-                        }
-                        // Resolve the import path from this disk file's URI.
-                        let Some(resolved) = compute_import_path(&file_uri, &import) else {
-                            return false;
-                        };
-                        Url::from_file_path(&resolved).ok().as_ref() == Some(definition_uri)
-                    });
-            if !imports_target_nonaliased {
-                continue;
-            }
-
-            collect_cross_file_conflict_raw(
-                &source,
-                &parse_result,
-                new_name,
-                renamed_name,
-                conflicts,
-            );
+) -> Result<(), hew_analysis::RenameError> {
+    super::workspace::for_each_hew_file(root, |path| -> Result<(), hew_analysis::RenameError> {
+        let Ok(file_uri) = Url::from_file_path(path) else {
+            return Ok(());
+        };
+        // Already checked by the open-documents pass.
+        if open_uris.contains(&file_uri) || file_uri == *definition_uri {
+            return Ok(());
         }
-    }
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| hew_analysis::RenameError::from((path.to_path_buf(), e)))?;
+        let parse_result = hew_parser::parse(&source);
+
+        // Only proceed if this file imports `renamed_name` (non-aliased) from
+        // `definition_uri`.  Aliased importers (`import foo::{ x as y }`) only
+        // rewrite the imported token — the visible binding remains the alias, so
+        // they cannot introduce a `renamed_name`-visible conflict (#1285 quality).
+        let imports_target_nonaliased =
+            collect_import_items(&parse_result)
+                .into_iter()
+                .any(|(import, _)| {
+                    let Some(ImportSpec::Names(names)) = &import.spec else {
+                        return false;
+                    };
+                    if !names
+                        .iter()
+                        .any(|n| n.name == renamed_name && n.alias.is_none())
+                    {
+                        return false;
+                    }
+                    let Some(resolved) = compute_import_path(&file_uri, &import) else {
+                        return false;
+                    };
+                    Url::from_file_path(&resolved).ok().as_ref() == Some(definition_uri)
+                });
+        if !imports_target_nonaliased {
+            return Ok(());
+        }
+
+        collect_cross_file_conflict_raw(&source, &parse_result, new_name, renamed_name, conflicts);
+        Ok(())
+    })
 }
 
-/// Collect unopened files on disk that (non-aliased) import a symbol from
-/// `definition_uri`. Mirrored from `scan_dir_for_conflicts` but returns matches
-/// instead of populating conflicts.
+/// Collect unopened files on disk that import a symbol from `definition_uri`.
 ///
 /// Used to extend the edit set in [`build_workspace_edit`] for unopened sibling
-/// importers. Returns an empty vec if the disk walk fails; I/O and parse errors
-/// skip individual files silently (same as `scan_disk_importers_for_conflicts`).
+/// importers.  I/O errors propagate as `RenameError::Io` (#1288).
 fn collect_unopened_sibling_importers_for_edits(
     definition_uri: &Url,
     renamed_name: &str,
     root: &std::path::Path,
     open_uris: &HashSet<Url>,
-) -> Vec<NamedImportMatch> {
-    collect_unopened_importers_in_dir(definition_uri, renamed_name, root, open_uris)
-}
-
-fn collect_unopened_importers_in_dir(
-    definition_uri: &Url,
-    renamed_name: &str,
-    dir: &std::path::Path,
-    open_uris: &HashSet<Url>,
-) -> Vec<NamedImportMatch> {
+) -> Result<Vec<NamedImportMatch>, hew_analysis::RenameError> {
     let mut matches = Vec::new();
-
-    // FOLLOW-UP: see issue #1289 — silently skipping unreadable directories
-    // means unopened importers may be missed if the filesystem walk hits I/O errors.
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return matches;
-    };
-    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            if super::workspace::should_skip_workspace_dir(&path) {
-                continue;
-            }
-            // FOLLOW-UP: see issue #1290 — symlink cycles in the workspace would
-            // cause unbounded recursion here. Use visited set or symlink_metadata
-            // to prevent stack overflow on hostile filesystem layouts.
-            matches.extend(collect_unopened_importers_in_dir(
-                definition_uri,
-                renamed_name,
-                &path,
-                open_uris,
-            ));
-        } else if path.extension().and_then(|e| e.to_str()) == Some("hew") {
-            let Ok(file_uri) = Url::from_file_path(&path) else {
-                continue;
-            };
-            if open_uris.contains(&file_uri) || file_uri == *definition_uri {
-                continue;
-            }
-            // FOLLOW-UP: see issue #1289 — silently skipping unreadable files
-            // means unopened importers may be missed if individual files fail to load.
-            let Ok(source) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let parse_result = hew_parser::parse(&source);
-
-            // Collect all imports (aliased and non-aliased) for the unopened-importer
-            // edits. The loop consuming these matches will emit import-name edits for
-            // both, but only walk references for non-aliased (same constraint as the
-            // open-importer loop at L715-717).
-            let mut file_matches = Vec::new();
-            for (import, item_span) in collect_import_items(&parse_result) {
-                let Some(ImportSpec::Names(names)) = &import.spec else {
-                    continue;
-                };
-                // Resolve the import path from this disk file's URI.
-                let Some(resolved) = compute_import_path(&file_uri, &import) else {
-                    continue;
-                };
-                let Ok(resolved_uri) = Url::from_file_path(&resolved) else {
-                    continue;
-                };
-                if resolved_uri != *definition_uri {
-                    continue;
-                }
-
-                for import_name in names {
-                    if import_name.name != renamed_name {
-                        continue;
-                    }
-                    let Some((import_name_span, visible_name_span)) =
-                        find_named_import_spans(&source, &item_span, import_name)
-                    else {
-                        continue;
-                    };
-                    let visible_name = import_name
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| import_name.name.clone());
-                    file_matches.push(NamedImportMatch {
-                        importer_uri: file_uri.clone(),
-                        imported_uri: resolved_uri.clone(),
-                        imported_name: import_name.name.clone(),
-                        visible_name,
-                        import_name_span,
-                        visible_name_span,
-                    });
-                }
-            }
-            matches.extend(file_matches);
+    super::workspace::for_each_hew_file(root, |path| -> Result<(), hew_analysis::RenameError> {
+        let Ok(file_uri) = Url::from_file_path(path) else {
+            return Ok(());
+        };
+        if open_uris.contains(&file_uri) || file_uri == *definition_uri {
+            return Ok(());
         }
-    }
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| hew_analysis::RenameError::from((path.to_path_buf(), e)))?;
+        let parse_result = hew_parser::parse(&source);
 
-    matches
+        // Collect all imports (aliased and non-aliased) for the unopened-importer
+        // edits. The loop consuming these matches will emit import-name edits for
+        // both, but only walk references for non-aliased (same constraint as the
+        // open-importer loop at the call sites).
+        for (import, item_span) in collect_import_items(&parse_result) {
+            let Some(ImportSpec::Names(names)) = &import.spec else {
+                continue;
+            };
+            let Some(resolved) = compute_import_path(&file_uri, &import) else {
+                continue;
+            };
+            let Ok(resolved_uri) = Url::from_file_path(&resolved) else {
+                continue;
+            };
+            if resolved_uri != *definition_uri {
+                continue;
+            }
+
+            for import_name in names {
+                if import_name.name != renamed_name {
+                    continue;
+                }
+                let Some((import_name_span, visible_name_span)) =
+                    find_named_import_spans(&source, &item_span, import_name)
+                else {
+                    continue;
+                };
+                let visible_name = import_name
+                    .alias
+                    .clone()
+                    .unwrap_or_else(|| import_name.name.clone());
+                matches.push(NamedImportMatch {
+                    importer_uri: file_uri.clone(),
+                    imported_uri: resolved_uri.clone(),
+                    imported_name: import_name.name.clone(),
+                    visible_name,
+                    import_name_span,
+                    visible_name_span,
+                });
+            }
+        }
+        Ok(())
+    })?;
+    Ok(matches)
 }
 
 // ── Cross-file go-to-definition ───────────────────────────────────────

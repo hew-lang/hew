@@ -258,7 +258,7 @@ fn collect_hew_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn should_skip_workspace_dir(path: &Path) -> bool {
+pub(super) fn should_skip_workspace_dir(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
         Some(".git" | "target" | ".worktree" | ".worktrees" | "worktrees")

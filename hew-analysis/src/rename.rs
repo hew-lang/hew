@@ -26,10 +26,16 @@ use crate::{OffsetSpan, RenameConflict, RenameConflictKind, RenameEdit, RenameEr
 ///
 /// SHIM: hard-coded list; a complete reflection of the builtin registry
 /// requires Lane 1B type-checker introspection. Until then, this list
-/// covers the most commonly-collided names; a user attempting to rename
-/// into an unlisted builtin will parse-fail rather than be blocked at
-/// rename time. Every name here is verified against `register_builtin_fn`
-/// calls in `hew-types/src/check/registration.rs` (the canonical registry).
+/// covers all plain-identifier builtins (no `::` or `.`); a user
+/// attempting to rename into an unlisted qualified builtin (e.g.
+/// `Vec::new`, `math.sqrt`) will encounter a type-check error rather
+/// than a rename-time refusal. Every name here is verified against
+/// `register_builtin_fn` calls in
+/// `hew-types/src/check/registration.rs` (the canonical registry).
+///
+/// Excluded intentionally: names containing `::` or `.` such as
+/// `Vec::new`, `HashMap::new`, `Node::start`, `math.*`, `random.*`.
+/// Those are module-qualified and can't be introduced by a bare rename.
 const BUILTIN_FUNCTION_NAMES: &[&str] = &[
     // Registered via register_builtin_fn in hew-types/src/check/registration.rs.
     // SHIM: hard-coded until Lane 1B's type-checker introspection lands.
@@ -37,16 +43,53 @@ const BUILTIN_FUNCTION_NAMES: &[&str] = &[
     "print",
     "println",
     "panic",
-    "assert",
     // Assertions
+    "assert",
     "assert_eq",
     "assert_ne",
     // Math
     "abs",
     "sqrt",
+    "min",
+    "max",
+    "to_float",
     // String / collection
     "len",
     "to_string",
+    "string_concat",
+    "string_length",
+    "string_char_at",
+    "string_equals",
+    "string_from_int",
+    "string_contains",
+    "string_split",
+    "string_starts_with",
+    "substring",
+    "string_slice",
+    "string_trim",
+    "string_to_int",
+    "string_find",
+    "string_replace",
+    "string_to_upper",
+    "string_to_lower",
+    "string_ends_with",
+    "int_to_string",
+    "float_to_string",
+    "char_to_string",
+    "bool_to_string",
+    // Typed print variants
+    "println_int",
+    "println_str",
+    "print_int",
+    "print_str",
+    "println_float",
+    "println_bool",
+    "print_float",
+    "print_bool",
+    "println_f64",
+    "print_f64",
+    "println_i64",
+    "println_char",
     // System / process
     "exit",
     "stop",
@@ -61,6 +104,15 @@ const BUILTIN_FUNCTION_NAMES: &[&str] = &[
     "unlink",
     "monitor",
     "demonitor",
+    // Supervisor helpers
+    "supervisor_child",
+    "supervisor_stop",
+    // Channel receive builtins (registered conditionally in registration.rs:2131-2135
+    // when both Receiver and hew_channel_send are present, but always plain identifiers)
+    "hew_channel_recv",
+    "hew_channel_recv_int",
+    "hew_channel_try_recv",
+    "hew_channel_try_recv_int",
 ];
 
 /// Return `true` if `name` is a syntactically valid Hew identifier.
@@ -502,6 +554,73 @@ mod tests {
     }
 
     #[test]
+    fn plan_rename_rejects_newly_added_builtin_names() {
+        // Regression guard for the names added to BUILTIN_FUNCTION_NAMES in
+        // the fix for issue #1277.  Each must be rejected with Builtin.
+        let source = "fn main() { let x = 1; }";
+        let pr = parse(source);
+        let offset = source.find("let x").unwrap() + 4;
+
+        let newly_added = [
+            // Math
+            "min",
+            "max",
+            "to_float",
+            // String utilities
+            "string_concat",
+            "string_length",
+            "string_char_at",
+            "string_equals",
+            "string_from_int",
+            "string_contains",
+            "string_split",
+            "string_starts_with",
+            "substring",
+            "string_slice",
+            "string_trim",
+            "string_to_int",
+            "string_find",
+            "string_replace",
+            "string_to_upper",
+            "string_to_lower",
+            "string_ends_with",
+            "int_to_string",
+            "float_to_string",
+            "char_to_string",
+            "bool_to_string",
+            // Typed print variants
+            "println_int",
+            "println_str",
+            "print_int",
+            "print_str",
+            "println_float",
+            "println_bool",
+            "print_float",
+            "print_bool",
+            "println_f64",
+            "print_f64",
+            "println_i64",
+            "println_char",
+            // Supervisor
+            "supervisor_child",
+            "supervisor_stop",
+            // Channel receive builtins (added for issue #1277 completeness)
+            "hew_channel_recv",
+            "hew_channel_recv_int",
+            "hew_channel_try_recv",
+            "hew_channel_try_recv_int",
+        ];
+
+        for name in newly_added {
+            let err = plan_rename(source, &pr, offset, name).unwrap_err();
+            assert!(
+                matches!(err, RenameError::Builtin { .. }),
+                "expected Builtin error for '{name}', got {err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn plan_rename_rejects_invalid_identifier() {
         let source = "fn main() { let x = 1; }";
         let pr = parse(source);
@@ -659,6 +778,31 @@ mod tests {
                         .iter()
                         .any(|c| c.kind == RenameConflictKind::ShadowsImport),
                     "expected ShadowsImport conflict, got {conflicts:?}"
+                );
+            }
+            other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    // ── plan_rename: Actor.fields ShadowsTopLevel detection ──────────
+
+    #[test]
+    fn plan_rename_conflicts_with_actor_field_name() {
+        // Renaming a top-level function to a name that is already used as an
+        // actor field must be rejected with ShadowsTopLevel.  Prior to the
+        // fix, find_definition skipped Actor.fields so detect_conflicts
+        // silently bypassed the conflict check.
+        let source = "actor Counter { count: i64; receive fn inc() {} }\nfn foo() -> i64 { 0 }";
+        let pr = parse(source);
+        let offset = source.find("fn foo").unwrap() + 3;
+        let err = plan_rename(source, &pr, offset, "count").unwrap_err();
+        match err {
+            RenameError::Conflicts { conflicts } => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == RenameConflictKind::ShadowsTopLevel),
+                    "expected ShadowsTopLevel conflict for actor field name, got {conflicts:?}"
                 );
             }
             other => panic!("expected Conflicts, got {other:?}"),

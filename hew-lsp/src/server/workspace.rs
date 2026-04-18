@@ -223,22 +223,51 @@ fn open_document_paths(documents: &DashMap<Url, DocumentState>) -> Vec<PathBuf> 
 }
 
 fn collect_hew_files(root: &Path) -> Vec<PathBuf> {
-    // Wrapper error type that is `From<(PathBuf, io::Error)>` but discards both,
-    // matching the original swallow-on-error semantics of workspace-symbol scan.
-    struct Ignored;
-    impl From<(PathBuf, std::io::Error)> for Ignored {
-        fn from(_: (PathBuf, std::io::Error)) -> Self {
-            Ignored
+    // This is a best-effort walk: I/O errors on any single entry are silently
+    // skipped so that one unreadable subtree does not truncate the result.
+    // It intentionally does NOT delegate to for_each_hew_file, which aborts on
+    // the first error — aborting mid-walk would silently omit everything popped
+    // from the stack after the failing entry.
+    //
+    // Symlinked directories are skipped via symlink_metadata (matches
+    // for_each_hew_file behaviour, prevents cycles on hostile layouts).
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(path) = stack.pop() {
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+
+        if metadata.is_symlink() {
+            continue;
+        }
+
+        if metadata.is_file() {
+            if path.extension().and_then(|ext| ext.to_str()) == Some("hew") {
+                files.push(path);
+            }
+            continue;
+        }
+
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        if should_skip_workspace_dir(&path) {
+            continue;
+        }
+
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        let mut children: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        children.sort();
+        for child in children.into_iter().rev() {
+            stack.push(child);
         }
     }
 
-    let mut files = Vec::new();
-    // I/O errors are silently ignored here — workspace-symbol scans are best-effort.
-    // Rename disk scans use for_each_hew_file directly and propagate errors.
-    let _ = for_each_hew_file::<Ignored, _>(root, |path| {
-        files.push(path.to_path_buf());
-        Ok(())
-    });
     files
 }
 

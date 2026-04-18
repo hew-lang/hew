@@ -768,6 +768,8 @@ pub fn bridge_shutdown() {
 /// there is no profiler registry, so this is always a no-op. The symbol is
 /// exported so it can be satisfied as an import from the `env` namespace.
 ///
+/// Signature: `hew_actor_register_type(dispatch: *const c_void, name: *const c_char)`
+///
 /// # Safety
 ///
 /// This is a no-op and does not dereference its parameters, so any pointer
@@ -775,7 +777,7 @@ pub fn bridge_shutdown() {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_register_type(
-    _dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+    _dispatch: *const c_void,
     _name: *const std::ffi::c_char,
 ) {
 }
@@ -786,6 +788,8 @@ pub unsafe extern "C" fn hew_actor_register_type(
 /// there is no profiler registry, so this is always a no-op. The symbol is
 /// exported so it can be satisfied as an import from the `env` namespace.
 ///
+/// Signature: `hew_register_handler_name(dispatch: *const c_void, msg_type: i32, name: *const c_char)`
+///
 /// # Safety
 ///
 /// This is a no-op and does not dereference its parameters, so any pointer
@@ -793,7 +797,7 @@ pub unsafe extern "C" fn hew_actor_register_type(
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_register_handler_name(
-    _dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+    _dispatch: *const c_void,
     _msg_type: i32,
     _name: *const std::ffi::c_char,
 ) {

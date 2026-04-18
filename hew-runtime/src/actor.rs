@@ -1636,10 +1636,10 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
 #[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_register_type(
-    dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+    dispatch: *const c_void,
     name: *const std::ffi::c_char,
 ) {
-    if name.is_null() {
+    if name.is_null() || dispatch.is_null() {
         return;
     }
     // SAFETY: Caller guarantees `name` is a NUL-terminated static string.
@@ -1656,7 +1656,13 @@ pub unsafe extern "C" fn hew_actor_register_type(
     //       in #1226 M3 (ORCv2 ResourceTracker choreography).
     let Ok(s) = cstr.to_str() else { return };
     let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
-    crate::profiler::actor_registry::register_dispatch_type(dispatch, leaked);
+    // Convert the void pointer to the dispatch function type for registration.
+    // SAFETY: The caller has cast the dispatch function pointer to void*; we cast it
+    // back to the correct function pointer type. This is safe as long as the caller
+    // passed a valid dispatch function pointer.
+    let dispatch_fn: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)> =
+        unsafe { std::mem::transmute(dispatch) };
+    crate::profiler::actor_registry::register_dispatch_type(dispatch_fn, leaked);
 }
 
 /// No-op stub for non-profiler native builds.
@@ -1672,7 +1678,7 @@ pub unsafe extern "C" fn hew_actor_register_type(
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "profiler")))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_register_type(
-    _dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+    _dispatch: *const c_void,
     _name: *const std::ffi::c_char,
 ) {
 }
@@ -1698,17 +1704,23 @@ pub unsafe extern "C" fn hew_actor_register_type(
 #[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_register_handler_name(
-    dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+    dispatch: *const c_void,
     msg_type: i32,
     name: *const std::ffi::c_char,
 ) {
-    if name.is_null() {
+    if name.is_null() || dispatch.is_null() {
         return;
     }
     // SAFETY: Caller guarantees `name` is a NUL-terminated static string.
     let cstr = unsafe { std::ffi::CStr::from_ptr(name) };
     let Ok(s) = cstr.to_str() else { return };
-    crate::profiler::actor_registry::register_handler_name(dispatch, msg_type, s.to_owned());
+    // Convert the void pointer to the dispatch function type for registration.
+    // SAFETY: The caller has cast the dispatch function pointer to void*; we cast it
+    // back to the correct function pointer type. This is safe as long as the caller
+    // passed a valid dispatch function pointer.
+    let dispatch_fn: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)> =
+        unsafe { std::mem::transmute(dispatch) };
+    crate::profiler::actor_registry::register_handler_name(dispatch_fn, msg_type, s.to_owned());
 }
 
 /// No-op stub for non-profiler native builds.
@@ -1720,7 +1732,7 @@ pub unsafe extern "C" fn hew_register_handler_name(
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "profiler")))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_register_handler_name(
-    _dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+    _dispatch: *const c_void,
     _msg_type: i32,
     _name: *const std::ffi::c_char,
 ) {

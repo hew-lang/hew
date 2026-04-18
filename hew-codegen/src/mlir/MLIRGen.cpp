@@ -1526,7 +1526,6 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
   if (auto dstClosure = mlir::dyn_cast<hew::ClosureType>(targetType)) {
     if (auto srcStruct = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType())) {
       if (!srcStruct.isIdentified() && srcStruct.getBody().size() == 2) {
-        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
         auto fnPtr = mlir::LLVM::ExtractValueOp::create(builder, location, value,
                                                         llvm::ArrayRef<int64_t>{0});
         auto envPtr = mlir::LLVM::ExtractValueOp::create(builder, location, value,

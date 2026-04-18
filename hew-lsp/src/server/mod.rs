@@ -5178,6 +5178,163 @@ machine Traffic {
     }
 
     #[test]
+    fn plan_workspace_rename_disk_scan_skips_aliased_importer() {
+        // Regression test for finding #2 from rev-gate: an unopened file that
+        // imports `foo as baz` must NOT block renaming `foo -> bar`, because the
+        // visible binding in that file remains `baz`, not `bar`.
+        //
+        // Layout:
+        //   <test_dir>/std/           ← workspace root marker
+        //   <test_dir>/util.hew       ← defines `pub fn foo`; OPEN
+        //   <test_dir>/aliased.hew    ← `import util::{ foo as baz }; fn uses() { baz() }`; NOT open
+        //                               Also defines `bar` — but since it imports via alias,
+        //                               there is no `bar` conflict introduced by the rename.
+
+        let test_dir = TestDir::new("disk-aliased-importer");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let aliased_path = project_root.join("aliased.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        // aliased.hew imports foo with an alias and has a top-level `bar`.
+        // If the disk scan incorrectly treats this as a conflict, the rename
+        // `foo -> bar` would be rejected; but it should succeed.
+        let aliased_source = "import util::{ foo as baz };\npub fn bar() -> i64 { baz() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&aliased_path, aliased_source).unwrap();
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        // aliased.hew is intentionally NOT inserted — only on disk.
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        // `aliased.hew` imports `foo as baz`, so it is an aliased importer.
+        // The disk scan must skip it, and the rename must succeed.
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        assert!(
+            result.is_ok(),
+            "rename foo->bar should succeed when only importer is aliased (foo as baz), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn plan_workspace_rename_from_importer_cursor_catches_unopened_sibling_conflict() {
+        // Regression test for finding #3 from rev-gate: when the rename is initiated
+        // from an *importer* cursor (cursor on the import-binding token in importer.hew),
+        // the disk scan must search for files that import the *definition* file (util.hew),
+        // not files that import importer.hew.
+        //
+        // Layout:
+        //   <test_dir>/std/              ← workspace root marker
+        //   <test_dir>/util.hew          ← defines `pub fn foo`; OPEN
+        //   <test_dir>/importer.hew      ← `import util::{ foo }`; OPEN (cursor here)
+        //   <test_dir>/sibling.hew       ← also imports `foo` from util + defines `bar`; NOT open
+        //
+        // Rename `foo -> bar` from importer.hew's import binding.
+        // sibling.hew would have a conflict (it imports foo and has `bar`).
+
+        let test_dir = TestDir::new("disk-sibling-conflict-from-importer");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let importer_path = project_root.join("importer.hew");
+        let sibling_path = project_root.join("sibling.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        let importer_source = "import util::{ foo };\nfn use_foo() -> i64 { foo() }";
+        // sibling.hew imports foo and defines bar — conflict when renaming foo->bar.
+        let sibling_source = "import util::{ foo };\npub fn bar() -> i64 { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&importer_path, importer_source).unwrap();
+        std::fs::write(&sibling_path, sibling_source).unwrap();
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(importer_uri.clone(), make_doc(importer_source));
+        // sibling.hew is intentionally NOT inserted.
+
+        let importer_doc = documents.get(&importer_uri).unwrap();
+        // Place cursor on the `foo` binding in `import util::{ foo }`.
+        let offset = importer_source.find("{ foo }").unwrap() + 2;
+
+        let result = plan_workspace_rename(&importer_uri, &importer_doc, offset, "bar", &documents);
+        match result {
+            Err(hew_analysis::RenameError::Conflicts { conflicts }) => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == hew_analysis::RenameConflictKind::ShadowsTopLevel),
+                    "expected ShadowsTopLevel conflict from unopened sibling.hew, got {conflicts:?}"
+                );
+            }
+            Ok(_) => panic!(
+                "expected rename to be rejected due to conflict in unopened sibling.hew, \
+                 but it succeeded — disk scan searched wrong URI"
+            ),
+            Err(other) => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_workspace_rename_disk_scan_skips_worktrees_dir() {
+        // Regression test for finding #4 from rev-gate: the disk scan must not
+        // descend into `worktrees/` directories (matching workspace.rs skip policy).
+        //
+        // Layout:
+        //   <test_dir>/std/
+        //   <test_dir>/util.hew       ← defines `pub fn foo`; OPEN
+        //   <test_dir>/worktrees/wt/importer.hew  ← imports `foo` + defines `bar`; NOT open
+        //
+        // Without the fix, the scan descends into `worktrees/` and finds a conflict.
+        // With the fix, `worktrees/` is skipped and the rename succeeds.
+
+        let test_dir = TestDir::new("disk-worktrees-skip");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let wt_dir = project_root.join("worktrees").join("wt");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+        let wt_importer_path = wt_dir.join("importer.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        // This importer is under worktrees/ — it must be skipped.
+        let wt_importer_source = "import util::{ foo };\npub fn bar() -> i64 { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&wt_importer_path, wt_importer_source).unwrap();
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        // The worktrees/wt/importer.hew has `bar` — if it were scanned, the rename
+        // `foo -> bar` would be rejected. Skipping worktrees/ means it succeeds.
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        assert!(
+            result.is_ok(),
+            "rename foo->bar should succeed when the only importer is under worktrees/ \
+             (which should be skipped), got {result:?}"
+        );
+    }
+
+    #[test]
     fn rename_error_to_jsonrpc_uses_request_failed_code() {
         // LSP 3.17 §3.16.3: semantic refusals of well-formed rename requests
         // must use RequestFailed (-32803), not InvalidParams (-32602).

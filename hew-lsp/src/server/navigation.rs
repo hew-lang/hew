@@ -825,6 +825,21 @@ pub(super) fn plan_workspace_rename(
                     );
                 }
             }
+
+            // Scan unopened sibling importers of the *definition* file — not the
+            // current (importer) file. Using the current URI/name would find files
+            // that import *this* importer, which is wrong (#1285 + quality finding).
+            if let Some(root) = find_workspace_root(&import_match.imported_uri) {
+                let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
+                scan_disk_importers_for_conflicts(
+                    &import_match.imported_uri,
+                    &import_match.imported_name,
+                    new_name,
+                    &root,
+                    &open_uris,
+                    &mut cross_file_conflicts,
+                );
+            }
         }
     } else if hew_analysis::references::is_top_level_name(&doc.parse_result, &name) {
         for importer in find_open_named_importers(uri, &name, documents) {
@@ -845,20 +860,9 @@ pub(super) fn plan_workspace_rename(
                 );
             }
         }
-    }
 
-    // Scan unopened workspace files for conflicts that the open-documents
-    // DashMap walk missed (#1285).  Only activate for top-level renames
-    // (cross-file reach) and when a workspace root can be found.
-    // Degrades gracefully: if no root or no disk files are found, the
-    // cross_file_conflicts list is unchanged.
-    let is_cross_file_rename = {
-        let import_match =
-            find_resolved_named_import_match(uri, doc, offset, &name, documents).is_some();
-        let top_level = hew_analysis::references::is_top_level_name(&doc.parse_result, &name);
-        import_match || top_level
-    };
-    if is_cross_file_rename {
+        // Scan unopened files on disk that import the renamed symbol (#1285).
+        // Degrades gracefully: I/O or parse errors skip individual files silently.
         if let Some(root) = find_workspace_root(uri) {
             let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
             scan_disk_importers_for_conflicts(
@@ -1068,13 +1072,15 @@ fn scan_dir_for_conflicts(
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    // Sort for deterministic conflict order (mirrors workspace.rs:248-250).
+    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
         if path.is_dir() {
-            // Skip hidden dirs and the Rust build artefact directory to avoid
-            // scanning generated code or parsed test fixtures.
-            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if dir_name.starts_with('.') || dir_name == "target" {
+            // Use the same skip policy as the workspace walker so that hidden
+            // dirs, `target`, `.worktree`, `.worktrees`, and `worktrees` are
+            // all excluded (mirrors workspace.rs:261-265).
+            if super::workspace::should_skip_workspace_dir(&path) {
                 continue;
             }
             scan_dir_for_conflicts(
@@ -1098,15 +1104,22 @@ fn scan_dir_for_conflicts(
             };
             let parse_result = hew_parser::parse(&source);
 
-            // Only proceed if this file imports `renamed_name` from `definition_uri`.
-            let imports_target =
+            // Only proceed if this file imports `renamed_name` (non-aliased) from
+            // `definition_uri`.  Aliased importers (`import foo::{ x as y }`) only
+            // rewrite the imported token — the visible binding remains the alias, so
+            // they cannot introduce a `renamed_name`-visible conflict (#1285 quality).
+            let imports_target_nonaliased =
                 collect_import_items(&parse_result)
                     .into_iter()
                     .any(|(import, _)| {
                         let Some(ImportSpec::Names(names)) = &import.spec else {
                             return false;
                         };
-                        if !names.iter().any(|n| n.name == renamed_name) {
+                        // Skip if the only match is an aliased import entry.
+                        if !names
+                            .iter()
+                            .any(|n| n.name == renamed_name && n.alias.is_none())
+                        {
                             return false;
                         }
                         // Resolve the import path from this disk file's URI.
@@ -1115,7 +1128,7 @@ fn scan_dir_for_conflicts(
                         };
                         Url::from_file_path(&resolved).ok().as_ref() == Some(definition_uri)
                     });
-            if !imports_target {
+            if !imports_target_nonaliased {
                 continue;
             }
 

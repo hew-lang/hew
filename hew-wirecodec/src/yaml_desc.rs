@@ -3,8 +3,8 @@
 //! YAML's structural shape for the subset Hew supports (primitives, nested
 //! wire types, enum-as-string) is identical to JSON: both bind to a shared
 //! runtime API of `object_set_*` / `object_get_*` calls keyed by string. The
-//! op set is therefore reused from `json_desc`; the YAML descriptor differs
-//! only in:
+//! op set is therefore consumed from the neutral [`crate::op_codec`] helper
+//! (not from `json_desc`). The YAML descriptor differs from JSON only in:
 //!
 //! - the effective object key (per-field `yaml_name`, not `json_name`)
 //! - the top-level type name (distinct `YamlCodecDesc`) so downstream
@@ -17,8 +17,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::json_desc::{json_op_for_kind, JsonOp};
-use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan, WireShape};
+use crate::json_desc::JsonOp;
+use crate::op_codec;
+use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan};
 
 /// YAML field op — structurally identical to [`JsonOp`].
 ///
@@ -64,20 +65,7 @@ impl YamlCodecDesc {
     /// Lower a [`WireCodecPlan`] to a [`YamlCodecDesc`].
     #[must_use]
     pub fn from_plan(plan: &WireCodecPlan) -> Self {
-        let (fields, variants) = match &plan.shape {
-            WireShape::Struct { fields } => (
-                fields
-                    .iter()
-                    .filter(|f| !f.modifiers.is_reserved)
-                    .map(field_op_from_plan)
-                    .collect(),
-                Vec::new(),
-            ),
-            WireShape::Enum { variants } => (
-                Vec::new(),
-                variants.iter().map(|v| v.name.clone()).collect(),
-            ),
-        };
+        let (fields, variants) = plan.fold_shape(field_op_from_plan);
         Self {
             name: plan.name.clone(),
             fields,
@@ -102,7 +90,7 @@ fn field_op_from_plan(f: &FieldPlan) -> YamlFieldOp {
         key: f.yaml_name.clone(),
         name: f.name.clone(),
         tag: f.number,
-        op: json_op_for_kind(&f.kind),
+        op: op_codec::op_for_kind(&f.kind),
         bounds: f.narrowing,
         is_optional: f.modifiers.is_optional,
         is_repeated: f.modifiers.is_repeated,
@@ -113,7 +101,7 @@ fn field_op_from_plan(f: &FieldPlan) -> YamlFieldOp {
 mod tests {
     use super::*;
     use crate::kind::PrimitiveWireKind;
-    use crate::plan::VariantPlan;
+    use crate::plan::{VariantPlan, WireShape};
     use crate::test_helpers::{plan_with_fields, simple_field};
 
     #[test]

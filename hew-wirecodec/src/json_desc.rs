@@ -15,7 +15,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::kind::PrimitiveWireKind;
-use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan, WireShape};
+use crate::op_codec;
+use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan};
 
 /// The JSON operation for a single field.
 ///
@@ -117,20 +118,7 @@ impl JsonCodecDesc {
     /// Lower a [`WireCodecPlan`] to a [`JsonCodecDesc`].
     #[must_use]
     pub fn from_plan(plan: &WireCodecPlan) -> Self {
-        let (fields, variants) = match &plan.shape {
-            WireShape::Struct { fields } => (
-                fields
-                    .iter()
-                    .filter(|f| !f.modifiers.is_reserved)
-                    .map(field_op_from_plan)
-                    .collect(),
-                Vec::new(),
-            ),
-            WireShape::Enum { variants } => (
-                Vec::new(),
-                variants.iter().map(|v| v.name.clone()).collect(),
-            ),
-        };
+        let (fields, variants) = plan.fold_shape(field_op_from_plan);
         Self {
             name: plan.name.clone(),
             fields,
@@ -169,37 +157,18 @@ fn field_op_from_plan(f: &FieldPlan) -> JsonFieldOp {
 /// `hew-codegen/src/mlir/MLIRGenWire.cpp` with this descriptor-driven path;
 /// this function is the single choke point that makes that replacement safe.
 ///
-/// `pub(crate)` so `yaml_desc` can reuse it without a forwarding wrapper.
-/// Consumers outside this crate should use [`JsonCodecDesc::from_plan`] or
-/// [`crate::YamlCodecDesc::from_plan`] instead.
+/// Delegates to [`crate::op_codec::op_for_kind`] — the neutral mapping shared
+/// with `yaml_desc`. Kept here as a named alias so existing call sites in this
+/// module are stable when `op_codec` evolves.
 #[must_use]
 pub(crate) fn json_op_for_kind(kind: &PrimitiveWireKind) -> JsonOp {
-    match kind {
-        PrimitiveWireKind::Bool => JsonOp::SetBool,
-        PrimitiveWireKind::I8
-        | PrimitiveWireKind::I16
-        | PrimitiveWireKind::I32
-        | PrimitiveWireKind::I64 => JsonOp::SetInt { unsigned: false },
-        PrimitiveWireKind::U8
-        | PrimitiveWireKind::U16
-        | PrimitiveWireKind::U32
-        | PrimitiveWireKind::U64 => JsonOp::SetInt { unsigned: true },
-        PrimitiveWireKind::F32 => JsonOp::SetFloat { widen: true },
-        PrimitiveWireKind::F64 => JsonOp::SetFloat { widen: false },
-        PrimitiveWireKind::String => JsonOp::SetString,
-        PrimitiveWireKind::Bytes => JsonOp::SetBytes,
-        PrimitiveWireKind::Duration => JsonOp::SetDuration,
-        PrimitiveWireKind::Char => JsonOp::SetChar,
-        PrimitiveWireKind::Nested(name) => JsonOp::Nested {
-            type_name: name.clone(),
-        },
-    }
+    op_codec::op_for_kind(kind)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::VariantPlan;
+    use crate::plan::{VariantPlan, WireShape};
     use crate::test_helpers::{plan_with_fields, simple_field};
 
     #[test]

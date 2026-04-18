@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::kind::PrimitiveWireKind;
-use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan, WireShape};
+use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan};
 
 /// The msgpack wire operation for a single field.
 ///
@@ -87,20 +87,7 @@ impl MsgpackCodecDesc {
     /// Lower a [`WireCodecPlan`] to an [`MsgpackCodecDesc`].
     #[must_use]
     pub fn from_plan(plan: &WireCodecPlan) -> Self {
-        let (fields, variants) = match &plan.shape {
-            WireShape::Struct { fields } => (
-                fields
-                    .iter()
-                    .filter(|f| !f.modifiers.is_reserved)
-                    .map(field_op_from_plan)
-                    .collect(),
-                Vec::new(),
-            ),
-            WireShape::Enum { variants } => (
-                Vec::new(),
-                variants.iter().map(|v| v.name.clone()).collect(),
-            ),
-        };
+        let (fields, variants) = plan.fold_shape(field_op_from_plan);
         Self {
             name: plan.name.clone(),
             fields,
@@ -171,7 +158,7 @@ fn field_op_for_kind(kind: &PrimitiveWireKind) -> MsgpackOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::VariantPlan;
+    use crate::plan::{VariantPlan, WireShape};
     use crate::test_helpers::{plan_with_fields, simple_field};
 
     #[test]

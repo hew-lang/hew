@@ -107,6 +107,12 @@ const BUILTIN_FUNCTION_NAMES: &[&str] = &[
     // Supervisor helpers
     "supervisor_child",
     "supervisor_stop",
+    // Channel receive builtins (registered conditionally in registration.rs:2131-2135
+    // when both Receiver and hew_channel_send are present, but always plain identifiers)
+    "hew_channel_recv",
+    "hew_channel_recv_int",
+    "hew_channel_try_recv",
+    "hew_channel_try_recv_int",
 ];
 
 /// Return `true` if `name` is a syntactically valid Hew identifier.
@@ -598,6 +604,11 @@ mod tests {
             // Supervisor
             "supervisor_child",
             "supervisor_stop",
+            // Channel receive builtins (added for issue #1277 completeness)
+            "hew_channel_recv",
+            "hew_channel_recv_int",
+            "hew_channel_try_recv",
+            "hew_channel_try_recv_int",
         ];
 
         for name in newly_added {

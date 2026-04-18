@@ -735,6 +735,10 @@ pub(super) fn build_workspace_edit(
 /// does not clash with top-level or imported names in any of them. For
 /// non-aliased imports, the check includes both the definition file and
 /// all other open files that import the same name.
+#[expect(
+    clippy::too_many_lines,
+    reason = "workspace rename walks several paths; extracting helpers would obscure the control flow"
+)]
 pub(super) fn plan_workspace_rename(
     uri: &Url,
     doc: &DocumentState,
@@ -843,6 +847,31 @@ pub(super) fn plan_workspace_rename(
         }
     }
 
+    // Scan unopened workspace files for conflicts that the open-documents
+    // DashMap walk missed (#1285).  Only activate for top-level renames
+    // (cross-file reach) and when a workspace root can be found.
+    // Degrades gracefully: if no root or no disk files are found, the
+    // cross_file_conflicts list is unchanged.
+    let is_cross_file_rename = {
+        let import_match =
+            find_resolved_named_import_match(uri, doc, offset, &name, documents).is_some();
+        let top_level = hew_analysis::references::is_top_level_name(&doc.parse_result, &name);
+        import_match || top_level
+    };
+    if is_cross_file_rename {
+        if let Some(root) = find_workspace_root(uri) {
+            let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
+            scan_disk_importers_for_conflicts(
+                uri,
+                &name,
+                new_name,
+                &root,
+                &open_uris,
+                &mut cross_file_conflicts,
+            );
+        }
+    }
+
     // Deduplicate conflicts on (existing_span, offending_span, kind).
     // Both collect_cross_file_conflict and the plan_rename probe may report
     // the same ShadowsTopLevel/ShadowsImport conflict, inflating the count
@@ -882,15 +911,32 @@ fn collect_cross_file_conflict(
     offending_visible_name: &str,
     conflicts: &mut Vec<hew_analysis::RenameConflict>,
 ) {
-    if hew_analysis::references::is_top_level_name(&other_doc.parse_result, new_name) {
-        if let Some(existing) = hew_analysis::definition::find_definition(
-            &other_doc.source,
-            &other_doc.parse_result,
-            new_name,
-        ) {
+    collect_cross_file_conflict_raw(
+        &other_doc.source,
+        &other_doc.parse_result,
+        new_name,
+        offending_visible_name,
+        conflicts,
+    );
+}
+
+/// Core conflict-detection logic over raw `(source, parse_result)`.  Called
+/// from both `collect_cross_file_conflict` (open docs) and the disk-importer
+/// scanner (#1285).
+fn collect_cross_file_conflict_raw(
+    source: &str,
+    parse_result: &ParseResult,
+    new_name: &str,
+    offending_visible_name: &str,
+    conflicts: &mut Vec<hew_analysis::RenameConflict>,
+) {
+    if hew_analysis::references::is_top_level_name(parse_result, new_name) {
+        if let Some(existing) =
+            hew_analysis::definition::find_definition(source, parse_result, new_name)
+        {
             let offending = hew_analysis::definition::find_definition(
-                &other_doc.source,
-                &other_doc.parse_result,
+                source,
+                parse_result,
                 offending_visible_name,
             )
             .unwrap_or(existing);
@@ -904,14 +950,11 @@ fn collect_cross_file_conflict(
             });
         }
     } else if let Some(existing) =
-        hew_analysis::resolver::find_matching_import(&other_doc.parse_result, new_name)
+        hew_analysis::resolver::find_matching_import(parse_result, new_name)
     {
-        let offending = hew_analysis::definition::find_definition(
-            &other_doc.source,
-            &other_doc.parse_result,
-            offending_visible_name,
-        )
-        .unwrap_or(existing);
+        let offending =
+            hew_analysis::definition::find_definition(source, parse_result, offending_visible_name)
+                .unwrap_or(existing);
         conflicts.push(hew_analysis::RenameConflict {
             kind: hew_analysis::RenameConflictKind::ShadowsImport,
             existing_span: existing,
@@ -924,13 +967,13 @@ fn collect_cross_file_conflict(
     // `new_name` is already a local variable or parameter in scope at any
     // usage, renaming would silently shadow it there.
     let usage_spans = hew_analysis::references::find_import_binding_references(
-        &other_doc.parse_result,
+        parse_result,
         offending_visible_name,
     );
     for usage in usage_spans {
         if let Some(existing) = hew_analysis::definition::find_local_binding_definition(
-            &other_doc.source,
-            &other_doc.parse_result,
+            source,
+            parse_result,
             new_name,
             usage.start,
         ) {
@@ -951,11 +994,9 @@ fn collect_cross_file_conflict(
             }
             continue;
         }
-        if let Some(existing) = hew_analysis::definition::find_param_definition(
-            &other_doc.parse_result,
-            new_name,
-            usage.start,
-        ) {
+        if let Some(existing) =
+            hew_analysis::definition::find_param_definition(parse_result, new_name, usage.start)
+        {
             if !conflicts
                 .iter()
                 .any(|c| c.existing_span == existing && c.offending_span == usage)
@@ -969,6 +1010,122 @@ fn collect_cross_file_conflict(
                     ),
                 });
             }
+        }
+    }
+}
+
+// ── Workspace-disk importer scan (#1285) ────────────────────────────
+
+/// Find the workspace root for `uri`: the nearest ancestor directory that
+/// contains a `std/` subdirectory (same heuristic as `compute_import_path`).
+fn find_workspace_root(uri: &Url) -> Option<std::path::PathBuf> {
+    let mut dir = uri
+        .to_file_path()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+    while let Some(d) = dir {
+        if d.join("std").is_dir() {
+            return Some(d);
+        }
+        dir = d.parent().map(std::path::Path::to_path_buf);
+    }
+    None
+}
+
+/// Walk every `*.hew` file under `root` that is NOT in `open_uris`, parse it
+/// on-demand, check whether it imports the renamed symbol from `definition_uri`,
+/// and if so run `collect_cross_file_conflict` against it.
+///
+/// SHIM: `O(#disk_files)` per rename; acceptable because rename is user-initiated
+/// and infrequent.  A proper solution would maintain an index of importers.
+/// Degrades gracefully: any I/O or parse error skips the file silently.
+fn scan_disk_importers_for_conflicts(
+    definition_uri: &Url,
+    renamed_name: &str,
+    new_name: &str,
+    root: &std::path::Path,
+    open_uris: &HashSet<Url>,
+    conflicts: &mut Vec<hew_analysis::RenameConflict>,
+) {
+    scan_dir_for_conflicts(
+        definition_uri,
+        renamed_name,
+        new_name,
+        root,
+        open_uris,
+        conflicts,
+    );
+}
+
+fn scan_dir_for_conflicts(
+    definition_uri: &Url,
+    renamed_name: &str,
+    new_name: &str,
+    dir: &std::path::Path,
+    open_uris: &HashSet<Url>,
+    conflicts: &mut Vec<hew_analysis::RenameConflict>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Skip hidden dirs and the Rust build artefact directory to avoid
+            // scanning generated code or parsed test fixtures.
+            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if dir_name.starts_with('.') || dir_name == "target" {
+                continue;
+            }
+            scan_dir_for_conflicts(
+                definition_uri,
+                renamed_name,
+                new_name,
+                &path,
+                open_uris,
+                conflicts,
+            );
+        } else if path.extension().and_then(|e| e.to_str()) == Some("hew") {
+            let Ok(file_uri) = Url::from_file_path(&path) else {
+                continue;
+            };
+            // Already checked by the open-documents pass.
+            if open_uris.contains(&file_uri) || file_uri == *definition_uri {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let parse_result = hew_parser::parse(&source);
+
+            // Only proceed if this file imports `renamed_name` from `definition_uri`.
+            let imports_target =
+                collect_import_items(&parse_result)
+                    .into_iter()
+                    .any(|(import, _)| {
+                        let Some(ImportSpec::Names(names)) = &import.spec else {
+                            return false;
+                        };
+                        if !names.iter().any(|n| n.name == renamed_name) {
+                            return false;
+                        }
+                        // Resolve the import path from this disk file's URI.
+                        let Some(resolved) = compute_import_path(&file_uri, &import) else {
+                            return false;
+                        };
+                        Url::from_file_path(&resolved).ok().as_ref() == Some(definition_uri)
+                    });
+            if !imports_target {
+                continue;
+            }
+
+            collect_cross_file_conflict_raw(
+                &source,
+                &parse_result,
+                new_name,
+                renamed_name,
+                conflicts,
+            );
         }
     }
 }

@@ -3513,10 +3513,14 @@ machine Traffic {
         let main_doc = documents.get(&main_uri).unwrap();
         let offset = main_source.find("greet").unwrap();
 
+        // `prepare_rename` internally calls `find_all_references` (line 152 of
+        // rename.rs), so the #1283 fix to `find_all_references_raw` propagates
+        // here: the import-binding cursor is now recognised, `find_all_references`
+        // returns Some, and `prepare_rename` no longer falls through to None.
         assert!(
             hew_analysis::rename::prepare_rename(&main_doc.source, &main_doc.parse_result, offset)
-                .is_none(),
-            "analysis-layer prepare_rename stays local-only for named imports"
+                .is_some(),
+            "prepare_rename should succeed on a named import binding cursor after #1283 fix"
         );
 
         let response = build_prepare_rename_response(&main_uri, &main_doc, offset, &documents)
@@ -5114,6 +5118,62 @@ machine Traffic {
                 );
             }
             other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_workspace_rename_scans_unopened_disk_importer_for_conflicts() {
+        // Regression test for issue #1285: the conflict walk must include files
+        // that are not open in the LSP documents map, reading them from disk.
+        //
+        // Layout:
+        //   <test_dir>/std/          ← presence triggers workspace-root detection
+        //   <test_dir>/util.hew      ← defines `pub fn foo`; OPEN in documents
+        //   <test_dir>/importer.hew  ← imports `foo` and defines `bar`; NOT open
+        //
+        // Rename `foo` → `bar`.  `importer.hew` has a top-level `bar`, so the
+        // scan must surface a ShadowsTopLevel conflict even though the file is
+        // not open.
+
+        let test_dir = TestDir::new("disk-importer-conflict");
+        let project_root = test_dir.path();
+
+        // Create the std/ stub so find_workspace_root can locate the project root.
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let importer_path = project_root.join("importer.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        let importer_source = "import util::{ foo };\npub fn bar() -> i64 { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&importer_path, importer_source).unwrap();
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        // importer.hew is intentionally NOT inserted — only on disk.
+
+        let util_doc = documents.get(&util_uri).unwrap();
+        let offset = util_source.find("fn foo").unwrap() + 3;
+
+        let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
+        match result {
+            Err(hew_analysis::RenameError::Conflicts { conflicts }) => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == hew_analysis::RenameConflictKind::ShadowsTopLevel),
+                    "expected ShadowsTopLevel conflict from unopened importer.hew, got {conflicts:?}"
+                );
+            }
+            Ok(_) => panic!(
+                "expected rename to be rejected due to conflict in unopened importer.hew, \
+                 but it succeeded — disk scan did not run"
+            ),
+            Err(other) => panic!("expected Conflicts, got {other:?}"),
         }
     }
 

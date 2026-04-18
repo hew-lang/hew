@@ -738,9 +738,9 @@ pub(super) fn build_workspace_edit(
             }
 
             // Include edits for unopened sibling importers (parallel to the conflict
-            // scan in plan_workspace_rename). Unopened files can only be updated if
-            // they are non-aliased importers (aliased imports have the same constraint
-            // as the open-importer loop above).
+            // scan in plan_workspace_rename). For aliased imports we still rewrite
+            // the `import_name` token (matching the open-importer path) but leave the
+            // alias binding and its usages alone.
             if let Some(root) = find_workspace_root(&import_match.imported_uri) {
                 let open_uris: HashSet<Url> = documents.iter().map(|e| e.key().clone()).collect();
                 let unopened_importers = collect_unopened_sibling_importers_for_edits(

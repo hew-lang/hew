@@ -49,13 +49,12 @@ pub enum JsonOp {
     SetBytes,
     /// Duration — emitted as i64 nanoseconds.
     /// Encode uses `hew_json_object_set_duration` (std/encoding/json/src/lib.rs:629).
-    /// Decode uses `hew_json_get_duration` (std/encoding/json/src/lib.rs:658).
+    /// Decode uses `hew_json_get_duration` (std/encoding/json/src/lib.rs:662).
     SetDuration,
-    /// Emits the char as an unsigned integer codepoint in BMP range (0..=0xFFFF).
-    /// Full Unicode scalar range (0..=0x10FFFF) is deferred — see `plan.rs`
-    /// comment on `IntegerBounds::for_kind` Char arm.
-    /// Encode uses `hew_json_object_set_char` (std/encoding/json/src/lib.rs:613).
-    /// Decode uses `hew_json_get_char` (std/encoding/json/src/lib.rs:642).
+    /// Emits the char as an unsigned integer codepoint.
+    /// Full Unicode scalar range (0..=0x10FFFF) is enforced — see issue #1276.
+    /// Encode uses `hew_json_object_set_char` (std/encoding/json/src/lib.rs:610).
+    /// Decode uses `hew_json_get_char` (std/encoding/json/src/lib.rs:649).
     SetChar,
     /// Nested wire-type reference.
     Nested {

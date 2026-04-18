@@ -1449,12 +1449,10 @@ void MLIRGen::generateWireToSerial(
                                      mlir::SymbolRefAttr::get(&context, rtSetChar),
                                      mlir::ValueRange{objPtr, keyPtr, v64});
         } else if (jkind == WireJsonKind::Duration) {
-          mlir::Value v64 = payload;
-          if (payload.getType() == i32Type)
-            v64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, payload);
+          // Duration is always i64 (wireTypeToMLIR:177).
           hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                      mlir::SymbolRefAttr::get(&context, rtSetDuration),
-                                     mlir::ValueRange{objPtr, keyPtr, v64});
+                                     mlir::ValueRange{objPtr, keyPtr, payload});
         } else {
           mlir::Value v64 = payload;
           if (payload.getType() == i32Type) {
@@ -1607,13 +1605,10 @@ void MLIRGen::generateWireToSerial(
                                  mlir::SymbolRefAttr::get(&context, rtSetChar),
                                  mlir::ValueRange{objPtr, keyPtr, v64});
     } else if (jkind == WireJsonKind::Duration) {
-      // Duration: sign-extend i64 nanoseconds (Duration is stored as i64 directly).
-      mlir::Value v64 = fv;
-      if (fv.getType() == i32Type)
-        v64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, fv);
+      // Duration is always i64 (wireTypeToMLIR:177).
       hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                  mlir::SymbolRefAttr::get(&context, rtSetDuration),
-                                 mlir::ValueRange{objPtr, keyPtr, v64});
+                                 mlir::ValueRange{objPtr, keyPtr, fv});
     } else {
       // WireJsonKind::Integer — extend to i64 (zero-extend unsigned, sign-extend signed)
       mlir::Value v64 = fv;
@@ -1906,10 +1901,29 @@ void MLIRGen::generateWireFromSerial(
                 hew::BitcastOp::create(builder, location, variantInfo.payloadTypes[0], decoded)
                     .getResult();
         } else if (jkind == WireJsonKind::Char) {
+          // Char: read via dedicated entry point; enforce full Unicode bounds (issue #1276).
           auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
                                                    mlir::SymbolRefAttr::get(&context, rtGetChar),
                                                    mlir::ValueRange{fieldJval})
                             .getResult();
+          // Validate Unicode scalar range [0, 0x10FFFF].
+          auto bounds = wireFromSerialIntegerBounds("char");
+          auto minVal = createIntConstant(builder, location, i64Type, bounds->min);
+          auto maxVal = createIntConstant(builder, location, i64Type, bounds->max);
+          auto belowMin = mlir::arith::CmpIOp::create(
+              builder, location, mlir::arith::CmpIPredicate::slt, rawI64, minVal);
+          auto aboveMax = mlir::arith::CmpIOp::create(
+              builder, location, mlir::arith::CmpIPredicate::sgt, rawI64, maxVal);
+          auto outOfRange = mlir::arith::OrIOp::create(builder, location, belowMin, aboveMax);
+          auto outOfRangeIf =
+              mlir::scf::IfOp::create(builder, location, outOfRange, /*hasElse=*/false);
+          builder.setInsertionPointToStart(&outOfRangeIf.getThenRegion().front());
+          auto msgPtr = wireStringPtr(location, wireFromSerialIntegerDecodeErrorMessage(
+                                                    "JSON", variantName, "char", *bounds));
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                     mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
+                                     mlir::ValueRange{msgPtr});
+          builder.setInsertionPointAfter(outOfRangeIf);
           auto fieldType = wireTypeToMLIR(builder, payloadTyNames[index]);
           decoded =
               (fieldType == i32Type)
@@ -2103,11 +2117,29 @@ void MLIRGen::generateWireFromSerial(
                                              mlir::ValueRange{fieldJval})
                       .getResult();
       } else if (jkind == WireJsonKind::Char) {
-        // Char: read via dedicated entry point; truncate to i32 for storage.
+        // Char: read via dedicated entry point; enforce full Unicode bounds (issue #1276).
         auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
                                                  mlir::SymbolRefAttr::get(&context, rtGetChar),
                                                  mlir::ValueRange{fieldJval})
                           .getResult();
+        // Validate Unicode scalar range [0, 0x10FFFF].
+        auto bounds = wireFromSerialIntegerBounds("char");
+        auto minVal = createIntConstant(builder, location, i64Type, bounds->min);
+        auto maxVal = createIntConstant(builder, location, i64Type, bounds->max);
+        auto belowMin = mlir::arith::CmpIOp::create(
+            builder, location, mlir::arith::CmpIPredicate::slt, rawI64, minVal);
+        auto aboveMax = mlir::arith::CmpIOp::create(
+            builder, location, mlir::arith::CmpIPredicate::sgt, rawI64, maxVal);
+        auto outOfRange = mlir::arith::OrIOp::create(builder, location, belowMin, aboveMax);
+        auto outOfRangeIf =
+            mlir::scf::IfOp::create(builder, location, outOfRange, /*hasElse=*/false);
+        builder.setInsertionPointToStart(&outOfRangeIf.getThenRegion().front());
+        auto msgPtr = wireStringPtr(
+            location, wireFromSerialIntegerDecodeErrorMessage("JSON", field.name, "char", *bounds));
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, "hew_panic_msg"),
+                                   mlir::ValueRange{msgPtr});
+        builder.setInsertionPointAfter(outOfRangeIf);
         auto fieldType = wireTypeToMLIR(builder, field.ty);
         decoded =
             (fieldType == i32Type)

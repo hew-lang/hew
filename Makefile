@@ -506,8 +506,13 @@ lint: runtime-poison-safe-lint
 # that has been migrated to the PoisonSafe/PoisonSafeRw wrapper, and on the
 # `if let Ok(_) = X.lock()` anti-pattern anywhere in hew-runtime/src/. Extend
 # the allowlist in scripts/lint-runtime-poison-safe.sh as future sweeps land.
-runtime-poison-safe-lint:
+runtime-poison-safe-lint: runtime-poison-safe-lint-self-test
 	bash scripts/lint-runtime-poison-safe.sh
+
+# Validate that the lint script's own pattern-matching regex is coherent.
+# Runs synthetic violations through the linter to confirm every guard fires.
+runtime-poison-safe-lint-self-test:
+	bash scripts/lint-runtime-poison-safe.sh --self-test
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #

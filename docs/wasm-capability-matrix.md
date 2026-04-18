@@ -63,9 +63,9 @@ The **Checker disposition** column documents what the type checker emits when
 | **`http.listen`, `http.Server.*`, `http.Request.*`** | 🚫 Error (`HttpServer`) | Native-only runtime module | WASM-TODO |
 | **`net.listen`, `net.connect`, `net.*`, `net.Listener.*`, `net.Connection.*`** | 🚫 Error (`TcpNetworking`) | Native-only runtime module | WASM-TODO |
 | **`process.run`, `process.start`, `process.*`, `process.Child.*`** | 🚫 Error (`ProcessExecution`) | Native-only runtime module | WASM-TODO |
-| **`std::net::tls.connect/read/write/close`, `TlsStream.*`** | 🚫 Error (`Tls`) | Native TLS-over-TCP stack today; no documented wasm32 path | WASM-TODO |
-| **`std::net::quic.*`, `QUICEndpoint/Connection/Stream/Event.*`** | 🚫 Error (`Quic`) | `quic_transport` is feature-gated and not compiled for wasm32 | WASM-TODO |
-| **`std::net::dns.resolve`, `dns.lookup_host`** | 🚫 Error (`Dns`) | Native OS resolver today; `wasm32-wasip1` behavior needs runtime confirmation. May relax to Warn after a `wasmtime` `sock_addr_*` probe. | WASM-TODO |
+| **`std::net::tls.connect/read/write/close`, `tls.TlsStream.*`** | 🚫 Error (`Tls`) | Native TLS-over-TCP stack today; no documented wasm32 path | WASM-TODO |
+| **`std::net::quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`** | 🚫 Error (`Quic`) | `quic_transport` is feature-gated and not compiled for wasm32 | WASM-TODO |
+| **`std::net::dns.resolve`, `dns.lookup_host`** | 🚫 Error (`Dns`) | Native OS resolver; not compiled for wasm32 | WASM-TODO |
 | **`std::os.*`** | 🚫 Error (`OsEnv`) | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO |
 | **`std::crypto::crypto.random_bytes`** | ⚠️ Warn (`CryptoRandom`) | wasm32 falls back to a seeded PRNG without host entropy; not cryptographically secure | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
@@ -222,7 +222,7 @@ reject_wasm_feature   → Severity::Error    → self.errors
 Rows marked **WASM-TODO (not checker-gated)** currently have no dedicated
 `WasmUnsupportedFeature` guard point. As of main, that bucket includes raw WASI
 socket capability only. `std::net::tls`, `std::net::quic`, `std::net::dns`,
-`std::os`, and `std::crypto::crypto.random_bytes` are now checker-gated.
+`std::os`, and `std::crypto::crypto.random_bytes` are all checker-gated.
 
 ---
 
@@ -238,11 +238,11 @@ These gaps are explicitly deferred and tracked here:
 | I/O stream adapters | WASI fd/socket APIs | `WASM-TODO: streams` |
 | HTTP server parity | Cooperative WASI-hosted request accept/respond runtime | `WASM-TODO: http-server` |
 | TCP listener / connection parity | WASI socket-backed accept/read/write abstractions | `WASM-TODO: tcp-networking` |
-| TLS client parity | wasm-capable TLS-over-sockets design and runtime support | `WASM-TODO: tls` |
+| TLS client parity | wasm-capable TLS-over-sockets design plus checker/runtime classification | `WASM-TODO: tls` |
 | QUIC parity | wasm-capable UDP/QUIC transport plus feature-gated runtime support | `WASM-TODO: quic` |
-| DNS resolution classification | Confirm actual `wasm32-wasip1` resolver behavior before declaring pass vs reject | `WASM-TODO: dns` |
+| DNS resolver parity | WASI-backed resolver shim; current native OS resolver is not compiled for wasm32 | `WASM-TODO: dns` |
 | `std::os` parity | WASI-backed args/env/path/system shims for the current stdlib surface | `WASM-TODO: os` |
-| `crypto.random_bytes` parity | Secure wasm32 entropy source (WASI `random_get` plumbing) | `WASM-TODO: crypto-random` |
+| `crypto.random_bytes` parity | Secure wasm32 entropy source and explicit capability classification | `WASM-TODO: crypto-random` |
 | Process execution parity | Explicit host capability model for subprocesses | `WASM-TODO: process-execution` |
 | Supervision tree restart strategies | OS-thread-free supervision design | `WASM-TODO: supervision` |
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |

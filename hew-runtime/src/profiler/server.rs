@@ -3,7 +3,7 @@
 //! Runs on a dedicated OS thread (not a Hew actor) so it remains
 //! responsive even when the scheduler is overloaded.
 
-use crate::util::MutexExt;
+use crate::util::{json_array, push_json_string, MutexExt};
 use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
@@ -340,31 +340,30 @@ fn serve_flat_profile() -> Response<Full<Bytes>> {
     text_response(body, "text/plain; charset=utf-8")
 }
 
+/// Build the JSON array body for `/api/actors` from a snapshot slice.
+///
+/// Extracted for testability — `serve_actors` delegates here.
+/// Uses `util::json_array` + `util::push_json_string` for all user-sourced
+/// string fields so that RFC 8259 escaping (including `\b`, `\f`, and other
+/// U+0000–U+001F control characters) is handled by the canonical helper.
+fn actors_json(actors: &[crate::profiler::actor_registry::ActorSnapshot]) -> String {
+    json_array(actors, |json, a| {
+        let _ = write!(json, r#"{{"id":{},"pid":{},"actor_type":"#, a.id, a.pid);
+        push_json_string(json, a.actor_type);
+        let _ = write!(json, r#","state":"#);
+        push_json_string(json, a.state);
+        let _ = write!(
+            json,
+            r#","msgs":{},"time_ns":{},"mbox_depth":{},"mbox_hwm":{}}}"#,
+            a.messages_processed, a.processing_time_ns, a.mailbox_depth, a.mailbox_hwm,
+        );
+    })
+}
+
 /// `GET /api/actors` — per-actor stats and mailbox depths.
 fn serve_actors() -> Response<Full<Bytes>> {
     let actors = crate::profiler::actor_registry::snapshot_all();
-
-    let mut json = String::from("[");
-    for (i, a) in actors.iter().enumerate() {
-        if i > 0 {
-            json.push(',');
-        }
-        let _ = write!(
-            json,
-            r#"{{"id":{},"pid":{},"actor_type":"{}","state":"{}","msgs":{},"time_ns":{},"mbox_depth":{},"mbox_hwm":{}}}"#,
-            a.id,
-            a.pid,
-            a.actor_type,
-            a.state,
-            a.messages_processed,
-            a.processing_time_ns,
-            a.mailbox_depth,
-            a.mailbox_hwm,
-        );
-    }
-    json.push(']');
-
-    json_response(json)
+    json_response(actors_json(&actors))
 }
 
 // ── Distributed runtime endpoints ───────────────────────────────────────
@@ -421,4 +420,60 @@ fn serve_supervisors() -> Response<Full<Bytes>> {
 fn serve_crashes() -> Response<Full<Bytes>> {
     let json = crate::crash::snapshot_crashes_json();
     json_response(json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::profiler::actor_registry::ActorSnapshot;
+
+    fn make_snapshot(actor_type: &'static str, state: &'static str) -> ActorSnapshot {
+        ActorSnapshot {
+            id: 1,
+            pid: 0,
+            actor_type,
+            state,
+            messages_processed: 0,
+            processing_time_ns: 0,
+            mailbox_depth: 0,
+            mailbox_hwm: 0,
+        }
+    }
+
+    fn parse_actor_type(output: &str) -> String {
+        let parsed: serde_json::Value =
+            serde_json::from_str(output).expect("actors_json must produce valid JSON");
+        let arr = parsed.as_array().expect("top-level must be an array");
+        arr[0]["actor_type"]
+            .as_str()
+            .expect("actor_type must be a string")
+            .to_owned()
+    }
+
+    #[test]
+    fn actors_json_metacharacters_in_type_name_round_trip() {
+        // `"`, `\`, `\n`, `\r`, `\t` must be escaped so serde can parse and
+        // the round-tripped value equals the original.
+        let snapshots = vec![make_snapshot("quo\"te\\slash\nline\rreturn\t", "idle")];
+        let output = actors_json(&snapshots);
+        assert_eq!(parse_actor_type(&output), "quo\"te\\slash\nline\rreturn\t");
+    }
+
+    #[test]
+    fn actors_json_clean_type_name_round_trips() {
+        let snapshots = vec![make_snapshot("MyActorType", "idle")];
+        let output = actors_json(&snapshots);
+        assert_eq!(parse_actor_type(&output), "MyActorType");
+    }
+
+    #[test]
+    fn actors_json_control_chars_in_type_name_produce_valid_json() {
+        // U+0008 (\b), U+000C (\f), and U+0001 are all control characters
+        // that the RFC 8259-incomplete `json_escape` helper (removed) missed.
+        // `util::push_json_string` handles them via the `ch.is_control()` arm.
+        let snapshots = vec![make_snapshot("a\x08b\x0Cc\x01d", "idle")];
+        let output = actors_json(&snapshots);
+        // Must parse as valid JSON and round-trip the original value.
+        assert_eq!(parse_actor_type(&output), "a\x08b\x0Cc\x01d");
+    }
 }

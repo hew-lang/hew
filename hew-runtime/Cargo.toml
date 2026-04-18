@@ -81,6 +81,8 @@ rand = "0.10"
 tempfile = "3"
 # For the OTel integration test mock receiver (direct HTTP POST)
 ureq = { version = "3", default-features = false }
+# For profiler server JSON-escape unit tests
+serde_json = "1"
 
 [lints]
 workspace = true

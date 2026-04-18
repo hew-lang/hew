@@ -48,28 +48,14 @@ pub enum JsonOp {
     /// Byte string — emitted as base64-encoded JSON string.
     SetBytes,
     /// Duration — emitted as i64 nanoseconds.
-    //
-    // SHIM: WHY: current C++ consumer (MLIRGenWire.cpp:147-149) routes Duration
-    //        through WireJsonKind::Integer; no hew_json_object_set_duration
-    //        runtime entry point exists today.
-    //       WHEN: remove once the descriptor-driven path replaces jsonKindOf
-    //        (tracked in issue #1272, MLIRGenWire shrink).
-    //       WHAT: a dedicated `hew_json_object_set_duration` runtime call
-    //        with a corresponding C++ consumer reading the descriptor's op
-    //        stream rather than jsonKindOf.
+    /// Encode uses `hew_json_object_set_duration` (std/encoding/json/src/lib.rs:629).
+    /// Decode uses `hew_json_get_duration` (std/encoding/json/src/lib.rs:658).
     SetDuration,
     /// Emits the char as an unsigned integer codepoint in BMP range (0..=0xFFFF).
     /// Full Unicode scalar range (0..=0x10FFFF) is deferred — see `plan.rs`
     /// comment on `IntegerBounds::for_kind` Char arm.
-    //
-    // SHIM: WHY: current C++ consumer (MLIRGenWire.cpp:147-149) routes Char
-    //        through WireJsonKind::Integer; no hew_json_object_set_char
-    //        runtime entry point exists today.
-    //       WHEN: remove once the descriptor-driven path replaces jsonKindOf
-    //        (tracked in issue #1272, MLIRGenWire shrink).
-    //       WHAT: a dedicated `hew_json_object_set_char` runtime call
-    //        with a corresponding C++ consumer reading the descriptor's op
-    //        stream rather than jsonKindOf.
+    /// Encode uses `hew_json_object_set_char` (std/encoding/json/src/lib.rs:613).
+    /// Decode uses `hew_json_get_char` (std/encoding/json/src/lib.rs:642).
     SetChar,
     /// Nested wire-type reference.
     Nested {

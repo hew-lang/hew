@@ -1186,6 +1186,18 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    // Restores file/directory permissions on drop, used by permission-change tests.
+    struct RestoreOnDrop(PathBuf, u32);
+
+    #[cfg(unix)]
+    impl Drop for RestoreOnDrop {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
+        }
+    }
+
     fn semantic_token_data(source: &str, tokens: &[SemanticToken]) -> Vec<(String, u32, u32)> {
         let lo = compute_line_offsets(source);
         let mut line = 0u32;
@@ -5474,16 +5486,6 @@ machine Traffic {
         // at runtime rather than relying on an env-var convention.
         use std::os::unix::fs::PermissionsExt;
 
-        // RestoreOnDrop is declared at the top so it is in scope before any
-        // statements (required by clippy::items_after_statements).
-        struct RestoreOnDrop(PathBuf, u32);
-        impl Drop for RestoreOnDrop {
-            fn drop(&mut self) {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
-            }
-        }
-
         let test_dir = TestDir::new("disk-unreadable-file");
         let project_root = test_dir.path();
         std::fs::create_dir_all(project_root.join("std")).unwrap();
@@ -5540,14 +5542,6 @@ machine Traffic {
         // Regression for issue #1288: an unreadable subdirectory under the workspace
         // must surface a RenameError::Io rather than being silently skipped.
         use std::os::unix::fs::PermissionsExt;
-
-        struct RestoreOnDrop(PathBuf, u32);
-        impl Drop for RestoreOnDrop {
-            fn drop(&mut self) {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
-            }
-        }
 
         let test_dir = TestDir::new("disk-unreadable-dir");
         let project_root = test_dir.path();
@@ -5938,5 +5932,101 @@ machine Traffic {
                 jsonrpc_err.code,
             );
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn build_workspace_edit_propagates_io_error_for_unreadable_closed_definition_file() {
+        // Regression for issue #1299: when the definition file is closed and unreadable,
+        // build_workspace_edit should propagate the I/O error via RenameError::Io,
+        // not silently skip edits and return a partial rename.
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_dir = TestDir::new("build-workspace-edit-unreadable-definition");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let importer_path = project_root.join("importer.hew");
+
+        let util_source = "pub fn foo() -> i64 { 0 }";
+        let importer_source = "import util::{ foo };\npub fn uses_foo() -> i64 { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&importer_path, importer_source).unwrap();
+
+        // Remove read permission from the definition file.
+        std::fs::set_permissions(&util_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Verify the permission took effect.
+        if std::fs::read(util_path.clone()).is_ok() {
+            return; // running as root
+        }
+
+        let _restore = RestoreOnDrop(util_path.clone(), 0o644);
+
+        let _util_uri = Url::from_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(importer_uri.clone(), make_doc(importer_source));
+
+        let importer_doc = documents.get(&importer_uri).unwrap();
+        // Rename the import binding reference (offset inside `uses_foo`).
+        let offset = importer_source.find("uses_foo").unwrap() + 5;
+
+        let result = build_workspace_edit(&importer_uri, &importer_doc, offset, "bar", &documents);
+
+        match result {
+            Err(hew_analysis::RenameError::Io { path, .. }) => {
+                assert!(
+                    path.contains("util.hew"),
+                    "RenameError::Io should name the unreadable definition file; got {path:?}"
+                );
+            }
+            other => panic!(
+                "expected RenameError::Io for unreadable closed definition file, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn for_each_hew_file_allows_symlinked_workspace_root() {
+        // Regression for issue #1299: the workspace root itself may be a symlink,
+        // and for_each_hew_file should traverse it. Only intra-tree symlinks are skipped.
+        let test_dir = TestDir::new("for-each-hew-file-symlink-root");
+        let real_path = test_dir.path();
+        std::fs::create_dir_all(real_path.join("std")).unwrap();
+
+        // Create a .hew file in the real directory.
+        let real_file = real_path.join("lib.hew");
+        std::fs::write(&real_file, "pub fn bar() {}").unwrap();
+
+        // Create a symlink to the directory.
+        let symlink_parent = real_path.parent().unwrap();
+        let symlink_path = symlink_parent.join("symlink-root");
+        let _ = std::fs::remove_dir_all(&symlink_path); // Clean up any leftover from previous runs
+        std::os::unix::fs::symlink(real_path, &symlink_path).unwrap();
+
+        let mut visited_files = Vec::new();
+
+        let result: std::result::Result<(), (std::path::PathBuf, std::io::Error)> =
+            super::workspace::for_each_hew_file(&symlink_path, |path| {
+                visited_files.push(path.to_path_buf());
+                Ok(())
+            });
+
+        assert!(
+            result.is_ok(),
+            "for_each_hew_file should traverse a symlinked root, got {result:?}"
+        );
+        assert!(
+            !visited_files.is_empty(),
+            "for_each_hew_file should have visited at least one .hew file under the symlinked root"
+        );
+        assert!(
+            visited_files.iter().any(|p| p.ends_with("lib.hew")),
+            "for_each_hew_file should have visited lib.hew"
+        );
     }
 }

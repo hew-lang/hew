@@ -678,28 +678,36 @@ pub(super) fn build_workspace_edit(
                 }
             } else {
                 // Definition file is closed; load from disk and compute edits.
-                if let Ok(target_path) = import_match.imported_uri.to_file_path() {
-                    if let Ok(target_source) = std::fs::read_to_string(&target_path) {
-                        let target_parse = hew_parser::parse(&target_source);
-                        if let Some(def_span) = find_definition_name_span(
-                            &target_source,
-                            &target_parse,
-                            &import_match.imported_name,
-                        ) {
-                            let target_edits = hew_analysis::rename::rename(
-                                &target_source,
-                                &target_parse,
-                                def_span.start,
-                                new_name,
-                            )
-                            .unwrap_or_default();
-                            if !target_edits.is_empty() {
-                                changes
-                                    .entry(import_match.imported_uri.clone())
-                                    .or_default()
-                                    .extend(target_edits);
-                            }
-                        }
+                let target_path = import_match.imported_uri.to_file_path().map_err(|_e| {
+                    hew_analysis::RenameError::Io {
+                        path: import_match.imported_uri.to_string(),
+                        message: "could not convert URI to file path".to_string(),
+                    }
+                })?;
+                let target_source = std::fs::read_to_string(&target_path).map_err(|e| {
+                    hew_analysis::RenameError::Io {
+                        path: target_path.display().to_string(),
+                        message: e.to_string(),
+                    }
+                })?;
+                let target_parse = hew_parser::parse(&target_source);
+                if let Some(def_span) = find_definition_name_span(
+                    &target_source,
+                    &target_parse,
+                    &import_match.imported_name,
+                ) {
+                    let target_edits = hew_analysis::rename::rename(
+                        &target_source,
+                        &target_parse,
+                        def_span.start,
+                        new_name,
+                    )
+                    .unwrap_or_default();
+                    if !target_edits.is_empty() {
+                        changes
+                            .entry(import_match.imported_uri.clone())
+                            .or_default()
+                            .extend(target_edits);
                     }
                 }
             }
@@ -777,27 +785,35 @@ pub(super) fn build_workspace_edit(
                         continue;
                     }
 
-                    if let Ok(unopened_path) = unopened.importer_uri.to_file_path() {
-                        if let Ok(unopened_source) = std::fs::read_to_string(&unopened_path) {
-                            let unopened_parse = hew_parser::parse(&unopened_source);
-                            let unopened_edits: Vec<_> =
-                                hew_analysis::references::find_import_binding_references(
-                                    &unopened_parse,
-                                    &unopened.visible_name,
-                                )
-                                .into_iter()
-                                .map(|span| hew_analysis::RenameEdit {
-                                    span,
-                                    new_text: new_name.to_string(),
-                                })
-                                .collect();
-                            if !unopened_edits.is_empty() {
-                                changes
-                                    .entry(unopened.importer_uri.clone())
-                                    .or_default()
-                                    .extend(unopened_edits);
-                            }
+                    let unopened_path = unopened.importer_uri.to_file_path().map_err(|_e| {
+                        hew_analysis::RenameError::Io {
+                            path: unopened.importer_uri.to_string(),
+                            message: "could not convert URI to file path".to_string(),
                         }
+                    })?;
+                    let unopened_source = std::fs::read_to_string(&unopened_path).map_err(|e| {
+                        hew_analysis::RenameError::Io {
+                            path: unopened_path.display().to_string(),
+                            message: e.to_string(),
+                        }
+                    })?;
+                    let unopened_parse = hew_parser::parse(&unopened_source);
+                    let unopened_edits: Vec<_> =
+                        hew_analysis::references::find_import_binding_references(
+                            &unopened_parse,
+                            &unopened.visible_name,
+                        )
+                        .into_iter()
+                        .map(|span| hew_analysis::RenameEdit {
+                            span,
+                            new_text: new_name.to_string(),
+                        })
+                        .collect();
+                    if !unopened_edits.is_empty() {
+                        changes
+                            .entry(unopened.importer_uri.clone())
+                            .or_default()
+                            .extend(unopened_edits);
                     }
                 }
             }
@@ -870,27 +886,35 @@ pub(super) fn build_workspace_edit(
                     continue;
                 }
 
-                if let Ok(unopened_path) = unopened.importer_uri.to_file_path() {
-                    if let Ok(unopened_source) = std::fs::read_to_string(&unopened_path) {
-                        let unopened_parse = hew_parser::parse(&unopened_source);
-                        let unopened_edits: Vec<_> =
-                            hew_analysis::references::find_import_binding_references(
-                                &unopened_parse,
-                                &unopened.visible_name,
-                            )
-                            .into_iter()
-                            .map(|span| hew_analysis::RenameEdit {
-                                span,
-                                new_text: new_name.to_string(),
-                            })
-                            .collect();
-                        if !unopened_edits.is_empty() {
-                            changes
-                                .entry(unopened.importer_uri.clone())
-                                .or_default()
-                                .extend(unopened_edits);
-                        }
+                let unopened_path = unopened.importer_uri.to_file_path().map_err(|_e| {
+                    hew_analysis::RenameError::Io {
+                        path: unopened.importer_uri.to_string(),
+                        message: "could not convert URI to file path".to_string(),
                     }
+                })?;
+                let unopened_source = std::fs::read_to_string(&unopened_path).map_err(|e| {
+                    hew_analysis::RenameError::Io {
+                        path: unopened_path.display().to_string(),
+                        message: e.to_string(),
+                    }
+                })?;
+                let unopened_parse = hew_parser::parse(&unopened_source);
+                let unopened_edits: Vec<_> =
+                    hew_analysis::references::find_import_binding_references(
+                        &unopened_parse,
+                        &unopened.visible_name,
+                    )
+                    .into_iter()
+                    .map(|span| hew_analysis::RenameEdit {
+                        span,
+                        new_text: new_name.to_string(),
+                    })
+                    .collect();
+                if !unopened_edits.is_empty() {
+                    changes
+                        .entry(unopened.importer_uri.clone())
+                        .or_default()
+                        .extend(unopened_edits);
                 }
             }
         }
@@ -989,39 +1013,46 @@ pub(super) fn plan_workspace_rename(
                 }
             } else {
                 // The definition file is not open; read it from disk and check
-                // for conflicts using the unopened-file path. Degrades gracefully:
-                // I/O or parse errors skip this file silently.
-                if let Ok(def_path) = import_match.imported_uri.to_file_path() {
-                    if let Ok(source) = std::fs::read_to_string(&def_path) {
-                        let parse_result = hew_parser::parse(&source);
+                // for conflicts using the unopened-file path.
+                let def_path = import_match.imported_uri.to_file_path().map_err(|_e| {
+                    hew_analysis::RenameError::Io {
+                        path: import_match.imported_uri.to_string(),
+                        message: "could not convert URI to file path".to_string(),
+                    }
+                })?;
+                let source = std::fs::read_to_string(&def_path).map_err(|e| {
+                    hew_analysis::RenameError::Io {
+                        path: def_path.display().to_string(),
+                        message: e.to_string(),
+                    }
+                })?;
+                let parse_result = hew_parser::parse(&source);
 
-                        // Check top-level and import clashes (mirrors the open-document path).
-                        collect_cross_file_conflict_raw(
+                // Check top-level and import clashes (mirrors the open-document path).
+                collect_cross_file_conflict_raw(
+                    &source,
+                    &parse_result,
+                    new_name,
+                    &import_match.imported_name,
+                    &mut cross_file_conflicts,
+                );
+
+                // Also check local scopes in the definition file for shadowing.
+                // Mirrors the open-document `plan_rename` call above.
+                if let Some(def_span) = hew_analysis::definition::find_definition(
+                    &source,
+                    &parse_result,
+                    &import_match.imported_name,
+                ) {
+                    if let Err(hew_analysis::RenameError::Conflicts { conflicts }) =
+                        hew_analysis::rename::plan_rename(
                             &source,
                             &parse_result,
+                            def_span.start,
                             new_name,
-                            &import_match.imported_name,
-                            &mut cross_file_conflicts,
-                        );
-
-                        // Also check local scopes in the definition file for shadowing.
-                        // Mirrors the open-document `plan_rename` call above.
-                        if let Some(def_span) = hew_analysis::definition::find_definition(
-                            &source,
-                            &parse_result,
-                            &import_match.imported_name,
-                        ) {
-                            if let Err(hew_analysis::RenameError::Conflicts { conflicts }) =
-                                hew_analysis::rename::plan_rename(
-                                    &source,
-                                    &parse_result,
-                                    def_span.start,
-                                    new_name,
-                                )
-                            {
-                                cross_file_conflicts.extend(conflicts);
-                            }
-                        }
+                        )
+                    {
+                        cross_file_conflicts.extend(conflicts);
                     }
                 }
             }

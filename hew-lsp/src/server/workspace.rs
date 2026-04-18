@@ -301,9 +301,9 @@ pub(super) fn find_workspace_root_for_uri(uri: &Url) -> Option<PathBuf> {
 ///
 /// Traversal rules:
 /// - The workspace `root` itself is allowed to be a symlink (the entry
-///   point); `root` is canonicalized once at entry.  After that, any
-///   encountered symlink inside the traversal is skipped to prevent
-///   directory cycles (issue #1290).
+///   point) and will be traversed; `root` is canonicalized once at entry
+///   to detect cycles by canonical inode. Any symlinks encountered *within*
+///   the traversal are skipped to prevent directory cycles (issue #1290).
 /// - Applies `should_skip_workspace_dir` to prune `.git`, `target`,
 ///   `.worktree`, `.worktrees`, and `worktrees` directories.
 /// - I/O errors on `read_dir` or `symlink_metadata` are propagated as
@@ -328,15 +328,25 @@ where
     let mut stack = vec![root.to_path_buf()];
     let mut visited: VisitedSet<std::path::PathBuf> = VisitedSet::new();
     visited.insert(canonical_root.clone());
+    let mut first = true;
 
     while let Some(path) = stack.pop() {
-        let metadata = std::fs::symlink_metadata(&path).map_err(|e| E::from((path.clone(), e)))?;
+        // For the root (first iteration), follow symlinks to get the actual directory.
+        // For all other paths, use symlink_metadata to avoid following intra-tree
+        // symlinks (which could cause cycles).
+        let metadata = if first {
+            std::fs::metadata(&path).map_err(|e| E::from((path.clone(), e)))?
+        } else {
+            std::fs::symlink_metadata(&path).map_err(|e| E::from((path.clone(), e)))?
+        };
 
         // Skip symlinks encountered during traversal (but not the root itself,
         // which was the entry point). This prevents directory cycles.
-        if metadata.is_symlink() {
+        if !first && metadata.is_symlink() {
+            first = false;
             continue;
         }
+        first = false;
 
         if metadata.is_file() {
             if path.extension().and_then(|ext| ext.to_str()) == Some("hew") {

@@ -57,6 +57,25 @@ static REGISTRY: Mutex<Option<HashMap<u64, SendPtr>>> = Mutex::new(None);
 ///       versioned and codegen is updated to fill the new field.
 static DISPATCH_TYPE_REGISTRY: Mutex<Option<HashMap<usize, &'static str>>> = Mutex::new(None);
 
+/// Side table mapping `(dispatch_fn_ptr_as_usize, msg_type)` to the fully-qualified
+/// handler name `"ActorName::handler_name"`.
+///
+/// Populated by `hew_register_handler_name` (called at program startup by codegen).
+/// Used at `drain_events_json` time on native profiler builds to resolve handler names
+/// for trace events — keyed by `(dispatch_fn, msg_type)` to correctly disambiguate
+/// between actor types that share the same `msg_type` integer.
+///
+/// # SHIM
+///
+/// WHY: WASM uses a flat `msg_type → name` map in bridge.rs (last-registered wins),
+///      which is ambiguous for programs with multiple actor types sharing `msg_type` values.
+///      This table uses a compound key to be unambiguous.
+/// WHEN: Remove the WASM flat-map ambiguity when WASM codegen calls
+///       `hew_register_handler_name` instead of (or alongside)
+///       `hew_wasm_register_actor_meta`.  Tracked in #1259.
+/// REAL: Unify WASM and native paths onto this compound-key registry.
+static HANDLER_NAME_REGISTRY: Mutex<Option<HashMap<(usize, i32), String>>> = Mutex::new(None);
+
 /// Register a Hew type name for a dispatch function.
 ///
 /// Must be called once per actor type, before spawning any instance of that
@@ -83,7 +102,8 @@ pub fn register_dispatch_type(
 /// Look up the Hew type name for a dispatch function pointer.
 ///
 /// Returns `"Actor"` if the dispatch fn is not registered.
-fn lookup_dispatch_type(
+#[must_use]
+pub fn lookup_dispatch_type(
     dispatch_fn: Option<
         unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
     >,
@@ -92,11 +112,105 @@ fn lookup_dispatch_type(
         Some(k) if k != 0 => k,
         _ => return "Actor",
     };
+    lookup_dispatch_type_by_ptr(key)
+}
+
+/// Look up the Hew type name for a dispatch function pointer stored as `usize`.
+///
+/// Returns `"Actor"` if the pointer is zero or has not been registered.
+pub fn lookup_dispatch_type_by_ptr(dispatch_ptr: usize) -> &'static str {
+    if dispatch_ptr == 0 {
+        return "Actor";
+    }
     let guard = DISPATCH_TYPE_REGISTRY.lock_or_recover();
     guard
         .as_ref()
-        .and_then(|m| m.get(&key).copied())
+        .and_then(|m| m.get(&dispatch_ptr).copied())
         .unwrap_or("Actor")
+}
+
+/// Look up the fully-qualified handler name by raw dispatch pointer and `msg_type`.
+///
+/// Returns `Some("ActorName::handler_name")` when registered, `None` otherwise.
+/// This variant avoids a `transmute` by operating on the raw `usize` pointer.
+pub fn lookup_handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<String> {
+    if dispatch_ptr == 0 {
+        return None;
+    }
+    let guard = HANDLER_NAME_REGISTRY.lock_or_recover();
+    guard
+        .as_ref()
+        .and_then(|m| m.get(&(dispatch_ptr, msg_type)).cloned())
+}
+
+/// Register a fully-qualified handler name for a `(dispatch_fn_ptr, msg_type)` pair.
+///
+/// Must be called once per `(actor_type, handler)` pair at program startup, before
+/// any instances of that actor type are spawned.  Subsequent registrations for the
+/// same key are silently ignored (first-registered wins, matching `register_dispatch_type`).
+///
+/// `handler_name` must be a `"ActorName::handler_name"` string.
+pub fn register_handler_name(
+    dispatch_fn: Option<
+        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
+    >,
+    msg_type: i32,
+    handler_name: String,
+) {
+    let key = dispatch_fn.map_or(0, |f| f as usize);
+    if key == 0 {
+        return;
+    }
+    let mut guard = HANDLER_NAME_REGISTRY.lock_or_recover();
+    guard
+        .get_or_insert_with(HashMap::new)
+        .entry((key, msg_type))
+        .or_insert(handler_name);
+}
+
+/// Look up the fully-qualified handler name for a `(dispatch_fn_ptr, msg_type)` pair.
+///
+/// Returns `Some("ActorName::handler_name")` when the pair was previously registered
+/// via `register_handler_name`, or `None` if not found.
+pub fn lookup_handler_name(
+    dispatch_fn: Option<
+        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
+    >,
+    msg_type: i32,
+) -> Option<String> {
+    let key = dispatch_fn.map_or(0, |f| f as usize);
+    if key == 0 {
+        return None;
+    }
+    let guard = HANDLER_NAME_REGISTRY.lock_or_recover();
+    guard
+        .as_ref()
+        .and_then(|m| m.get(&(key, msg_type)).cloned())
+}
+
+/// Look up the dispatch function pointer (as `usize`) for a live actor by its ID.
+///
+/// Returns `Some(dispatch_fn_as_usize)` when the actor is currently registered in
+/// the profiler registry, or `None` if the actor has already been freed or was
+/// never registered.  Used at `drain_events_json` drain time to build the compound
+/// `(dispatch_fn, msg_type)` key for handler-name resolution.
+///
+/// SHIM: WHY: `HewTraceEvent` cannot carry a dispatch-fn pointer without an ABI
+///       change.  Drain-time lookup from the live actor registry is the
+///       zero-ABI-impact alternative (Option B from #1260).
+/// WHEN: Remove if `HewTraceEvent` is extended with `actor_type_id` in a future
+///       ABI revision.
+/// REAL: Embed the dispatch pointer (or a stable type ID) directly in
+///       `HewTraceEvent` when the C ABI is versioned.
+pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
+    let guard = REGISTRY.lock_or_recover();
+    let map = guard.as_ref()?;
+    let SendPtr(ptr) = map.get(&actor_id)?;
+    // SAFETY: The actor pointer is valid while it is registered.  We take only
+    // the dispatch fn value (a function pointer cast to usize) without
+    // dereferencing any managed data.
+    let dispatch = unsafe { (**ptr).dispatch };
+    dispatch.map(|f| f as usize)
 }
 
 /// Clear all registered dispatch-type mappings.
@@ -110,6 +224,10 @@ fn lookup_dispatch_type(
 pub(crate) fn clear_dispatch_registry() {
     let mut guard = DISPATCH_TYPE_REGISTRY.lock_or_recover();
     if let Some(map) = guard.as_mut() {
+        map.clear();
+    }
+    let mut hguard = HANDLER_NAME_REGISTRY.lock_or_recover();
+    if let Some(map) = hguard.as_mut() {
         map.clear();
     }
 }
@@ -428,5 +546,125 @@ mod tests {
         // Clean up: unregister before actor is dropped.
         // SAFETY: actor_ptr is still valid; actor has not been freed.
         unsafe { unregister(actor_ptr) };
+    }
+
+    unsafe extern "C" fn fake_dispatch_handler(
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+    ) {
+    }
+
+    /// Registering a handler name and looking it up by raw ptr returns the stored value.
+    #[test]
+    fn handler_name_round_trips() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        register_handler_name(
+            Some(fake_dispatch_handler),
+            7,
+            "Counter::on_increment".to_owned(),
+        );
+        let ptr = fake_dispatch_handler as *const () as usize;
+        let result = lookup_handler_name_by_ptr(ptr, 7);
+        assert_eq!(
+            result.as_deref(),
+            Some("Counter::on_increment"),
+            "registered handler name must round-trip"
+        );
+    }
+
+    /// Unknown (`dispatch_ptr`, `msg_type`) pair returns None.
+    #[test]
+    fn handler_name_unknown_pair_returns_none() {
+        let result = lookup_handler_name_by_ptr(0xdead_beef_cafe_babe, 42);
+        assert!(result.is_none(), "unknown pair must return None");
+    }
+
+    /// Second registration for the same (`dispatch_ptr`, `msg_type`) is silently ignored.
+    #[test]
+    fn handler_name_second_registration_ignored() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        register_handler_name(Some(fake_dispatch_handler), 99, "Actor::first".to_owned());
+        register_handler_name(Some(fake_dispatch_handler), 99, "Actor::second".to_owned());
+        let ptr = fake_dispatch_handler as *const () as usize;
+        let result = lookup_handler_name_by_ptr(ptr, 99);
+        // First registration wins.
+        assert_eq!(result.as_deref(), Some("Actor::first"));
+    }
+
+    /// `clear_dispatch_registry` also clears handler name registrations.
+    #[test]
+    fn handler_names_cleared_with_dispatch_registry() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        register_handler_name(Some(fake_dispatch_handler), 55, "MyType::on_msg".to_owned());
+        let ptr = fake_dispatch_handler as *const () as usize;
+        assert!(
+            lookup_handler_name_by_ptr(ptr, 55).is_some(),
+            "handler name must be present before clear"
+        );
+        clear_dispatch_registry();
+        assert!(
+            lookup_handler_name_by_ptr(ptr, 55).is_none(),
+            "handler name must be absent after clear_dispatch_registry"
+        );
+    }
+
+    unsafe extern "C" fn fake_dispatch_for_id_lookup(
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+    ) {
+    }
+
+    /// `lookup_dispatch_for_actor_id` returns the dispatch pointer while an actor is live.
+    #[test]
+    fn dispatch_for_actor_id_returns_ptr_while_live() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Clear registry to known state.
+        let mut reg = REGISTRY.lock_or_recover();
+        if let Some(m) = reg.as_mut() {
+            m.clear();
+        }
+        drop(reg);
+
+        let mut actor: Box<crate::actor::HewActor> =
+            // SAFETY: zero-initialising is valid for all atomic and ptr fields.
+            unsafe { Box::new(std::mem::zeroed()) };
+        actor.id = 0x1234_5678_9abc_def0;
+        actor.dispatch = Some(fake_dispatch_for_id_lookup);
+
+        let actor_ptr: *mut crate::actor::HewActor = &raw mut *actor;
+        // SAFETY: actor_ptr is valid for the duration of this test.
+        unsafe { register(actor_ptr) };
+
+        let found = lookup_dispatch_for_actor_id(actor.id);
+        assert_eq!(
+            found,
+            Some(fake_dispatch_for_id_lookup as *const () as usize),
+            "dispatch ptr must match while actor is registered"
+        );
+
+        // After unregister the lookup returns None.
+        // SAFETY: actor_ptr is still valid.
+        unsafe { unregister(actor_ptr) };
+        let gone = lookup_dispatch_for_actor_id(actor.id);
+        assert!(
+            gone.is_none(),
+            "dispatch ptr must be absent after unregister"
+        );
     }
 }

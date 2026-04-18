@@ -6,22 +6,11 @@
 use hew_cabi::cabi::{malloc_cstring, str_to_malloc};
 use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
 use hew_cabi::vec::HewVec;
-use std::collections::HashSet;
 use std::ffi::{c_char, c_void, CStr};
 use std::io::{Read, Write};
 use std::sync::mpsc;
-use std::sync::Mutex;
 
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
-
-// Thread-local set of currently-allocated HTTP server pointers.
-// Used to make hew_http_server_close idempotent: before freeing, we check if the pointer
-// is in this set. If it is, we remove it and free. If it's not, it's already been freed
-// and we no-op. This prevents double-free when both the user's close() call and Drop impl
-// invoke hew_http_server_close.
-thread_local! {
-    static LIVE_HTTP_SERVERS: Mutex<HashSet<*mut HewHttpServer>> = Mutex::new(HashSet::new());
-}
 
 /// Opaque HTTP server handle.
 pub struct HewHttpServer {
@@ -62,10 +51,6 @@ impl std::fmt::Debug for HewHttpRequest {
 /// # Safety
 ///
 /// `addr` must be a valid NUL-terminated C string.
-///
-/// # Panics
-///
-/// Panics if the thread-local state for tracking live servers is poisoned.
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_server_new(addr: *const c_char) -> *mut HewHttpServer {
     if addr.is_null() {
@@ -77,17 +62,10 @@ pub unsafe extern "C" fn hew_http_server_new(addr: *const c_char) -> *mut HewHtt
     };
 
     match tiny_http::Server::http(addr_str) {
-        Ok(server) => {
-            let srv = Box::into_raw(Box::new(HewHttpServer {
-                inner: server,
-                max_body_size: MAX_BODY_SIZE,
-            }));
-            // Register this pointer as live so hew_http_server_close can detect double-frees.
-            LIVE_HTTP_SERVERS.with(|set| {
-                set.lock().unwrap().insert(srv);
-            });
-            srv
-        }
+        Ok(server) => Box::into_raw(Box::new(HewHttpServer {
+            inner: server,
+            max_body_size: MAX_BODY_SIZE,
+        })),
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -610,30 +588,16 @@ pub unsafe extern "C" fn hew_http_respond_stream(
 
 /// Close and free the HTTP server.
 ///
-/// This function is idempotent: calling it multiple times is safe. The first call
-/// frees the server; subsequent calls detect that the pointer is no longer live
-/// and return without attempting to free again.
-///
 /// # Safety
 ///
-/// `srv` must be a valid pointer previously returned by [`hew_http_server_new`].
-///
-/// # Panics
-///
-/// Panics if the thread-local state for tracking live servers is poisoned.
+/// `srv` must be a valid pointer previously returned by [`hew_http_server_new`],
+/// and must not have been freed already.
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_server_close(srv: *mut HewHttpServer) {
     if srv.is_null() {
         return;
     }
-    // Check if this pointer is in the set of live servers. If not, it's already been freed.
-    let was_live = LIVE_HTTP_SERVERS.with(|set| set.lock().unwrap().remove(&srv));
-    if !was_live {
-        // Already closed; this is a no-op.
-        return;
-    }
-    // SAFETY: srv was allocated with Box::into_raw in hew_http_server_new and we just verified
-    // it was in the live set, so it is valid to reconstruct and drop the Box.
+    // SAFETY: srv was allocated with Box::into_raw in hew_http_server_new.
     drop(unsafe { Box::from_raw(srv) });
 }
 
@@ -1791,30 +1755,5 @@ mod tests {
         unsafe { hew_http_request_free(req) };
         // SAFETY: srv was allocated by hew_http_server_new.
         unsafe { hew_http_server_close(srv) };
-    }
-
-    #[test]
-    fn server_close_idempotent_prevents_double_free() {
-        // Regression test for issue #1281: HttpServer double-free on `close()` + `Drop`.
-        // The test verifies that calling close() and then calling it again does not crash
-        // or cause undefined behaviour. The fix uses a thread-local set to track live servers;
-        // the first call removes the pointer from the set and frees it, the second call finds
-        // it not in the set and no-ops.
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
-        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
-        assert!(!srv.is_null());
-
-        // First close: this should remove the pointer from the live set and free the server.
-        // SAFETY: srv is valid.
-        unsafe { hew_http_server_close(srv) };
-
-        // Second close: this should find the pointer is no longer in the live set and return
-        // early without attempting Box::from_raw again. If this test crashes (SIGSEGV), the
-        // fix did not work.
-        // SAFETY: the function handles already-closed servers gracefully.
-        unsafe { hew_http_server_close(srv) };
-
-        // If we reach here without crashing, the test passes.
     }
 }

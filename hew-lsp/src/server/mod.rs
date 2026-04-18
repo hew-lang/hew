@@ -5178,6 +5178,72 @@ machine Traffic {
     }
 
     #[test]
+    fn plan_workspace_rename_unopened_definition_file_checked_from_disk() {
+        // Regression for issue #1285: when a rename targets a definition file,
+        // the conflict walk must check that file even if it's not open, by reading
+        // it from disk and checking for top-level conflicts.
+        //
+        // This scenario: a definition file is INITIALLY open (so import resolution
+        // works), then CLOSED (simulating a user action). The rename must still check
+        // the definition file for top-level symbol conflicts.
+        //
+        // Layout:
+        //   <test_dir>/std/          ← workspace root marker
+        //   <test_dir>/util.hew      ← defines `pub fn foo` AND `pub fn bar`; WAS open
+        //   <test_dir>/importer.hew  ← imports `foo`; OPEN (cursor here)
+        //
+        // After both files are created, util.hew is closed (removed from documents).
+        // Rename `foo -> bar` from importer.hew's import binding.
+        // util.hew already has a top-level `bar`, so this is a ShadowsTopLevel conflict.
+
+        let test_dir = TestDir::new("unopened-def-file-conflict");
+        let project_root = test_dir.path();
+        std::fs::create_dir_all(project_root.join("std")).unwrap();
+
+        let util_path = project_root.join("util.hew");
+        let importer_path = project_root.join("importer.hew");
+
+        // util.hew defines both foo and bar.
+        let util_source = "pub fn foo() -> i64 { 0 }\npub fn bar() -> i64 { 1 }";
+        let importer_source = "import util::{ foo };\nfn main() { foo() }";
+
+        std::fs::write(&util_path, util_source).unwrap();
+        std::fs::write(&importer_path, importer_source).unwrap();
+
+        let util_uri = Url::from_file_path(&util_path).unwrap();
+        let importer_uri = Url::from_file_path(&importer_path).unwrap();
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        // Both files are initially open for import resolution to work.
+        documents.insert(util_uri.clone(), make_doc(util_source));
+        documents.insert(importer_uri.clone(), make_doc(importer_source));
+
+        // Now close util.hew (user closed the file) by removing it from documents.
+        documents.remove(&util_uri);
+
+        let importer_doc = documents.get(&importer_uri).unwrap();
+        // Place cursor on the `foo` binding in `import util::{ foo }`.
+        let offset = importer_source.find("{ foo }").unwrap() + 2;
+
+        let result = plan_workspace_rename(&importer_uri, &importer_doc, offset, "bar", &documents);
+        match result {
+            Err(hew_analysis::RenameError::Conflicts { conflicts }) => {
+                assert!(
+                    conflicts
+                        .iter()
+                        .any(|c| c.kind == hew_analysis::RenameConflictKind::ShadowsTopLevel),
+                    "expected ShadowsTopLevel conflict from unopened definition file util.hew, got {conflicts:?}"
+                );
+            }
+            Ok(_) => panic!(
+                "expected rename to be rejected due to conflict in unopened definition file, \
+                 but it succeeded"
+            ),
+            Err(other) => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn plan_workspace_rename_disk_scan_skips_aliased_importer() {
         // Regression test for finding #2 from rev-gate: an unopened file that
         // imports `foo as baz` must NOT block renaming `foo -> bar`, because the

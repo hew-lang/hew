@@ -177,9 +177,6 @@ pub(super) fn find_named_import_match(
         let Ok(imported_uri) = Url::from_file_path(&path) else {
             continue;
         };
-        let Some(target_doc) = documents.get(&imported_uri) else {
-            continue;
-        };
 
         for import_name in names {
             let visible_name = import_name
@@ -189,15 +186,39 @@ pub(super) fn find_named_import_match(
             if visible_name != word {
                 continue;
             }
-            if hew_analysis::definition::find_definition(
-                &target_doc.source,
-                &target_doc.parse_result,
-                &import_name.name,
-            )
-            .is_none()
-            {
+
+            // Check if the definition exists in the imported file.
+            // Try the open-documents path first (fast), then fall back to disk (slow).
+            let has_definition = if let Some(target_doc) = documents.get(&imported_uri) {
+                hew_analysis::definition::find_definition(
+                    &target_doc.source,
+                    &target_doc.parse_result,
+                    &import_name.name,
+                )
+                .is_some()
+            } else {
+                // File not open; check on disk (degrades gracefully on I/O error).
+                if let Ok(file_path) = imported_uri.to_file_path() {
+                    if let Ok(file_source) = std::fs::read_to_string(&file_path) {
+                        let file_parse = hew_parser::parse(&file_source);
+                        hew_analysis::definition::find_definition(
+                            &file_source,
+                            &file_parse,
+                            &import_name.name,
+                        )
+                        .is_some()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if !has_definition {
                 continue;
             }
+
             let Some((import_name_span, visible_name_span)) =
                 find_named_import_spans(source, &item_span, import_name)
             else {
@@ -805,6 +826,43 @@ pub(super) fn plan_workspace_rename(
                         )
                     {
                         cross_file_conflicts.extend(conflicts);
+                    }
+                }
+            } else {
+                // The definition file is not open; read it from disk and check
+                // for conflicts using the unopened-file path. Degrades gracefully:
+                // I/O or parse errors skip this file silently.
+                if let Ok(def_path) = import_match.imported_uri.to_file_path() {
+                    if let Ok(source) = std::fs::read_to_string(&def_path) {
+                        let parse_result = hew_parser::parse(&source);
+
+                        // Check top-level and import clashes (mirrors the open-document path).
+                        collect_cross_file_conflict_raw(
+                            &source,
+                            &parse_result,
+                            new_name,
+                            &import_match.imported_name,
+                            &mut cross_file_conflicts,
+                        );
+
+                        // Also check local scopes in the definition file for shadowing.
+                        // Mirrors the open-document `plan_rename` call above.
+                        if let Some(def_span) = hew_analysis::definition::find_definition(
+                            &source,
+                            &parse_result,
+                            &import_match.imported_name,
+                        ) {
+                            if let Err(hew_analysis::RenameError::Conflicts { conflicts }) =
+                                hew_analysis::rename::plan_rename(
+                                    &source,
+                                    &parse_result,
+                                    def_span.start,
+                                    new_name,
+                                )
+                            {
+                                cross_file_conflicts.extend(conflicts);
+                            }
+                        }
                     }
                 }
             }

@@ -469,6 +469,7 @@ fn rename_error_to_jsonrpc(err: &hew_analysis::RenameError) -> tower_lsp::jsonrp
         hew_analysis::RenameError::Io { path, message } => {
             format!("rename failed: {path}: {message}")
         }
+        _ => "rename failed".to_string(),
     };
     // LSP 3.17 §3.16.3: semantic refusals of well-formed requests use
     // RequestFailed (-32803); InvalidParams (-32602) is reserved for
@@ -3715,6 +3716,7 @@ machine Traffic {
         let offset = main_source.rfind("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&main_uri, &main_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce a cross-file workspace edit");
         let changes = workspace_edit
             .changes
@@ -3756,6 +3758,7 @@ machine Traffic {
         let offset = main_source.rfind("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&main_uri, &main_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce a cross-file workspace edit");
         let changes = workspace_edit
             .changes
@@ -3808,6 +3811,7 @@ machine Traffic {
         let offset = util_source.find("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&util_uri, &util_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce a cross-file workspace edit");
         let changes = workspace_edit
             .changes
@@ -3872,6 +3876,7 @@ machine Traffic {
         let offset = main_source.rfind("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&main_uri, &main_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce local edits");
         let changes = workspace_edit
             .changes
@@ -3908,6 +3913,7 @@ machine Traffic {
         let offset = util_source.find("greet").unwrap();
         let workspace_edit =
             build_workspace_edit(&util_uri, &util_doc, offset, "welcome", &documents)
+                .expect("rename should not error")
                 .expect("rename should produce a cross-file workspace edit");
         let changes = workspace_edit
             .changes
@@ -5647,7 +5653,9 @@ machine Traffic {
             "bar",
             &documents,
         );
-        let edit = edit.expect("workspace edit should be generated");
+        let edit = edit
+            .expect("workspace edit should not error")
+            .expect("workspace edit should be generated");
 
         let changes = edit.changes.expect("changes must be present");
 
@@ -5751,7 +5759,9 @@ machine Traffic {
             "bar",
             &documents,
         );
-        let edit = edit.expect("workspace edit should be generated");
+        let edit = edit
+            .expect("workspace edit should not error")
+            .expect("workspace edit should be generated");
 
         let changes = edit.changes.expect("changes must be present");
 
@@ -5853,7 +5863,9 @@ machine Traffic {
 
         let edit =
             navigation::build_workspace_edit(&util_uri, &util_doc, offset, "bar", &documents);
-        let edit = edit.expect("workspace edit should be generated");
+        let edit = edit
+            .expect("workspace edit should not error")
+            .expect("workspace edit should be generated");
 
         let changes = edit.changes.expect("changes must be present");
 

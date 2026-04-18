@@ -131,7 +131,7 @@ fn find_all_references_raw(
     // Cursor on an import binding token (e.g. `foo` in `import util::{ foo }`)
     // — treat exactly like a top-level name: return all body usages without
     // scope-filtering, since the binding is file-scoped.
-    if is_cursor_on_import_binding(parse_result, &name, offset) {
+    if is_cursor_on_import_binding(source, parse_result, &name, offset) {
         // Also include the import token itself as a reference site.
         if let Some(import_span) = find_import_binding_span(source, parse_result, &name, offset) {
             spans.insert(0, import_span);
@@ -206,7 +206,16 @@ fn find_defining_scope(parse_result: &ParseResult, offset: usize) -> Option<Span
 /// Used by `find_all_references_raw` to detect the import-token cursor path
 /// and return file-scoped references instead of falling through to the
 /// local-variable scope-filtering path.
-fn is_cursor_on_import_binding(parse_result: &ParseResult, name: &str, offset: usize) -> bool {
+///
+/// The check requires that `offset` lies *after* the opening `{` of the import
+/// spec in the source text so that a cursor on a path component that happens to
+/// share a name with a binding (e.g. `import foo::{ foo }`) is not misclassified.
+fn is_cursor_on_import_binding(
+    source: &str,
+    parse_result: &ParseResult,
+    name: &str,
+    offset: usize,
+) -> bool {
     use hew_parser::ast::ImportSpec;
     for (item, item_span) in &parse_result.program.items {
         if !item_span.contains(&offset) {
@@ -214,9 +223,21 @@ fn is_cursor_on_import_binding(parse_result: &ParseResult, name: &str, offset: u
         }
         if let Item::Import(decl) = item {
             if let Some(ImportSpec::Names(names)) = &decl.spec {
-                return names
+                if !names
                     .iter()
-                    .any(|n| n.name == name || n.alias.as_deref() == Some(name));
+                    .any(|n| n.name == name || n.alias.as_deref() == Some(name))
+                {
+                    break;
+                }
+                // Confirm the cursor is inside the `{...}` spec portion, not on a
+                // path segment that shares the same text.  Find the first `{` within
+                // the item span in the source text.
+                let item_src = &source[item_span.clone()];
+                let brace_offset = item_src.find('{').map(|rel| item_span.start + rel);
+                if let Some(brace_pos) = brace_offset {
+                    return offset > brace_pos;
+                }
+                // No `{` found (should not happen for Names spec); fall through.
             }
         }
         break;
@@ -1868,5 +1889,51 @@ mod tests {
             spans.len() >= 2,
             "expected at least 2 references (one per function body), got {spans:?}"
         );
+    }
+
+    #[test]
+    fn cursor_on_import_path_segment_not_misclassified_as_binding() {
+        // Regression guard for finding #5: when a path component shares its name
+        // with a binding name (e.g. `import foo::{ foo }`), a cursor on the
+        // *path* component (`foo` before `::`) must NOT be treated as a cursor on
+        // the import binding.
+        //
+        // `import foo::{ foo }` — the module path `foo` is at offset 7,
+        // the binding `foo` is after `{` at a later offset.
+        // find_all_references from the path token must fall through to the
+        // local-variable path (not the import-binding path), which means it
+        // should either return None (no local `foo` in scope outside an import)
+        // or diverge from the binding-cursor result.
+        let source = "import foo::{ foo };\nfn main() { foo() }";
+        let pr = parse(source);
+
+        // Cursor on the path segment `foo` (before `::`).
+        let path_offset = source.find("import foo").unwrap() + 7; // offset of `f` in `foo::`
+                                                                  // Cursor on the binding token `foo` (after `{`).
+        let binding_offset = source.find("{ foo }").unwrap() + 2;
+
+        let binding_result = find_all_references(source, &pr, binding_offset);
+
+        // The binding cursor should find at least the call in main().
+        let (_name, binding_spans) = binding_result.expect("binding cursor should find references");
+        assert!(
+            !binding_spans.is_empty(),
+            "binding cursor should find at least one reference"
+        );
+
+        // The path cursor must NOT produce the same wide result as the binding cursor.
+        // It may return None or a narrower result — but it must not be identical to
+        // the binding-cursor result (which would indicate it was misclassified).
+        let path_result = find_all_references(source, &pr, path_offset);
+        if let Some((_pname, path_spans)) = path_result {
+            // If the path cursor does return references, they must not include
+            // the import token itself at path_offset (that would be the binding path).
+            // The key invariant: path_spans != binding_spans.
+            assert_ne!(
+                path_spans, binding_spans,
+                "cursor on path component should not be classified as an import-binding cursor"
+            );
+        }
+        // None is also acceptable — means no local `foo` found at path position.
     }
 }

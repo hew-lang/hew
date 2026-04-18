@@ -214,17 +214,17 @@ pub enum RenameError {
     Io { path: String, message: String },
 }
 
-impl From<std::io::Error> for RenameError {
-    /// Converts a bare I/O error into `RenameError::Io` with an empty path.
+impl From<(std::path::PathBuf, std::io::Error)> for RenameError {
+    /// Converts a `(path, io_error)` pair into `RenameError::Io`.
     ///
-    /// Used by the generic `for_each_hew_file` walker, which propagates
-    /// traversal-level I/O errors (e.g. `read_dir` failing on the root)
-    /// before a specific file path is known.  Callers that have a path
-    /// (individual-file reads) construct `RenameError::Io { path, .. }`
-    /// directly.
-    fn from(e: std::io::Error) -> Self {
+    /// Used by `for_each_hew_file` to propagate traversal-level I/O errors
+    /// (e.g. `symlink_metadata` or `read_dir` failing on a specific path)
+    /// with the path that triggered the error included in the result, so the
+    /// user-facing message reads "rename failed: /some/path: permission denied"
+    /// rather than "rename failed: : permission denied".
+    fn from((path, e): (std::path::PathBuf, std::io::Error)) -> Self {
         RenameError::Io {
-            path: String::new(),
+            path: path.display().to_string(),
             message: e.to_string(),
         }
     }

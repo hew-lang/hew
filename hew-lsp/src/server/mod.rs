@@ -5511,10 +5511,21 @@ machine Traffic {
         let offset = util_source.find("fn foo").unwrap() + 3;
 
         let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
-        assert!(
-            matches!(result, Err(hew_analysis::RenameError::Io { .. })),
-            "expected RenameError::Io for unreadable file, got {result:?}"
-        );
+        // Assert both the variant and that the path field is non-empty and names
+        // the unreadable file, so "rename failed: : permission denied" is impossible.
+        match &result {
+            Err(hew_analysis::RenameError::Io { path, .. }) => {
+                assert!(
+                    !path.is_empty(),
+                    "RenameError::Io path must be non-empty; got empty string"
+                );
+                assert!(
+                    path.contains("secret.hew"),
+                    "RenameError::Io path should name the unreadable file; got {path:?}"
+                );
+            }
+            other => panic!("expected RenameError::Io for unreadable file, got {other:?}"),
+        }
     }
 
     #[test]
@@ -5566,10 +5577,21 @@ machine Traffic {
         let offset = util_source.find("fn foo").unwrap() + 3;
 
         let result = plan_workspace_rename(&util_uri, &util_doc, offset, "bar", &documents);
-        assert!(
-            matches!(result, Err(hew_analysis::RenameError::Io { .. })),
-            "expected RenameError::Io for unreadable directory, got {result:?}"
-        );
+        // Assert both the variant and that the path field names the locked directory,
+        // so "rename failed: : permission denied" is impossible.
+        match &result {
+            Err(hew_analysis::RenameError::Io { path, .. }) => {
+                assert!(
+                    !path.is_empty(),
+                    "RenameError::Io path must be non-empty; got empty string"
+                );
+                assert!(
+                    path.contains("locked"),
+                    "RenameError::Io path should name the locked directory; got {path:?}"
+                );
+            }
+            other => panic!("expected RenameError::Io for unreadable directory, got {other:?}"),
+        }
     }
 
     #[test]

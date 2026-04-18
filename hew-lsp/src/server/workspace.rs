@@ -223,38 +223,22 @@ fn open_document_paths(documents: &DashMap<Url, DocumentState>) -> Vec<PathBuf> 
 }
 
 fn collect_hew_files(root: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-
-    while let Some(path) = stack.pop() {
-        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
-
-        if metadata.is_file() {
-            if path.extension().and_then(|ext| ext.to_str()) == Some("hew") {
-                files.push(path);
-            }
-            continue;
-        }
-
-        if !metadata.is_dir() {
-            continue;
-        }
-
-        let Ok(entries) = std::fs::read_dir(&path) else {
-            continue;
-        };
-        let mut children: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-        children.sort();
-        for child in children.into_iter().rev() {
-            if child.is_dir() && should_skip_workspace_dir(&child) {
-                continue;
-            }
-            stack.push(child);
+    // Wrapper error type that is `From<(PathBuf, io::Error)>` but discards both,
+    // matching the original swallow-on-error semantics of workspace-symbol scan.
+    struct Ignored;
+    impl From<(PathBuf, std::io::Error)> for Ignored {
+        fn from(_: (PathBuf, std::io::Error)) -> Self {
+            Ignored
         }
     }
 
+    let mut files = Vec::new();
+    // I/O errors are silently ignored here — workspace-symbol scans are best-effort.
+    // Rename disk scans use for_each_hew_file directly and propagate errors.
+    let _ = for_each_hew_file::<Ignored, _>(root, |path| {
+        files.push(path.to_path_buf());
+        Ok(())
+    });
     files
 }
 
@@ -292,21 +276,22 @@ pub(super) fn find_workspace_root_for_uri(uri: &Url) -> Option<PathBuf> {
 ///   workspace layouts (issue #1290).
 /// - Applies `should_skip_workspace_dir` to prune `.git`, `target`,
 ///   `.worktree`, `.worktrees`, and `worktrees` directories.
-/// - I/O errors on `read_dir` or `symlink_metadata` are propagated as `E`
-///   via `From<io::Error>`, so callers can decide whether to abort or
-///   ignore.
+/// - I/O errors on `read_dir` or `symlink_metadata` are propagated as
+///   `E` via `From<(PathBuf, io::Error)>`, carrying the path that
+///   triggered the error so the caller can include it in the user-visible
+///   message (#1288).
 ///
 /// Returns `Ok(())` when all reachable files have been visited without
 /// error, or `Err(e)` on the first I/O or visitor error.
 pub(super) fn for_each_hew_file<E, F>(root: &Path, mut f: F) -> Result<(), E>
 where
-    E: From<std::io::Error>,
+    E: From<(PathBuf, std::io::Error)>,
     F: FnMut(&Path) -> Result<(), E>,
 {
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(path) = stack.pop() {
-        let metadata = std::fs::symlink_metadata(&path).map_err(E::from)?;
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| E::from((path.clone(), e)))?;
 
         // Symlinks are never followed — this is what prevents directory-symlink
         // cycles (issue #1290). `is_symlink()` is true for both file and dir
@@ -330,7 +315,7 @@ where
             continue;
         }
 
-        let entries = std::fs::read_dir(&path).map_err(E::from)?;
+        let entries = std::fs::read_dir(&path).map_err(|e| E::from((path.clone(), e)))?;
         let mut children: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
         children.sort();
         // Push in reverse so we pop in sorted order (deterministic, mirrors

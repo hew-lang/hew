@@ -199,6 +199,7 @@ pub enum RenameConflictKind {
 /// must be refused before any edit is produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RenameError {
     /// The new name is a language keyword or a builtin identifier that
     /// cannot be shadowed by user code.

@@ -229,19 +229,36 @@ fn collect_hew_files(root: &Path) -> Vec<PathBuf> {
     // the first error — aborting mid-walk would silently omit everything popped
     // from the stack after the failing entry.
     //
-    // Symlinked directories are skipped via symlink_metadata (matches
-    // for_each_hew_file behaviour, prevents cycles on hostile layouts).
+    // Symlink handling: the workspace root itself is allowed to be a symlink
+    // (entry point); intra-tree symlinks are skipped to prevent cycles
+    // (matches for_each_hew_file behaviour).
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
+    let mut first = true;
 
     while let Some(path) = stack.pop() {
-        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-            continue;
+        // For the root (first iteration), follow symlinks to get the actual directory.
+        // For all other paths, use symlink_metadata to avoid following intra-tree
+        // symlinks (which could cause cycles).
+        let metadata = if first {
+            match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            }
+        } else {
+            match std::fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            }
         };
 
-        if metadata.is_symlink() {
+        // Skip symlinks encountered during traversal (but not the root itself,
+        // which was the entry point). This prevents directory cycles.
+        if !first && metadata.is_symlink() {
+            first = false;
             continue;
         }
+        first = false;
 
         if metadata.is_file() {
             if path.extension().and_then(|ext| ext.to_str()) == Some("hew") {
@@ -375,6 +392,17 @@ where
         // Push in reverse so we pop in sorted order (deterministic, mirrors
         // the existing collect_hew_files stack order).
         for child in children.into_iter().rev() {
+            // Skip symlinks to prevent cycles and avoid re-visiting real directories
+            // via alternate symlink paths. Check is_symlink() before canonicalizing,
+            // since canonicalize() will follow the symlink.
+            if let Ok(child_metadata) = std::fs::symlink_metadata(&child) {
+                if child_metadata.is_symlink() {
+                    // Skip this symlink; we will visit the real directory when we
+                    // encounter it at its real path.
+                    continue;
+                }
+            }
+
             // Only descend into directories we haven't visited yet (by canonical path).
             if let Ok(canonical_child) = std::fs::canonicalize(&child) {
                 if !visited.contains(&canonical_child) {

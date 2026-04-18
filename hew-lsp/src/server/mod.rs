@@ -6029,4 +6029,46 @@ machine Traffic {
             "for_each_hew_file should have visited lib.hew"
         );
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn for_each_hew_file_visits_real_dir_despite_symlink_sibling() {
+        // Regression for issue #1299: when a workspace contains both a real directory
+        // and a symlink to it, both paths must visit the real directory's files.
+        // Previously, the symlink would claim the canonical path in visited, and the
+        // real directory would be skipped as already-visited.
+        let test_dir = TestDir::new("for-each-hew-file-symlink-and-real");
+        let root = test_dir.path();
+        std::fs::create_dir_all(root.join("std")).unwrap();
+
+        // Create a real subdirectory with a .hew file.
+        let real_subdir = root.join("a_real");
+        std::fs::create_dir_all(&real_subdir).unwrap();
+        let real_file = real_subdir.join("def.hew");
+        std::fs::write(&real_file, "pub fn foo() {}").unwrap();
+
+        // Create a symlink to the real directory, ordered to sort before it.
+        let symlink_path = root.join("z_link");
+        let _ = std::fs::remove_dir_all(&symlink_path); // Clean up any leftover
+        std::os::unix::fs::symlink(&real_subdir, &symlink_path).unwrap();
+
+        // Walk from the root. Both z_link and a_real exist; z_link is visited first
+        // (alphabetical pop order). The symlink should be skipped, and the real
+        // directory should still be visited.
+        let mut visited_files = Vec::new();
+        let result: std::result::Result<(), (std::path::PathBuf, std::io::Error)> =
+            super::workspace::for_each_hew_file(root, |path| {
+                visited_files.push(path.to_path_buf());
+                Ok(())
+            });
+
+        assert!(
+            result.is_ok(),
+            "for_each_hew_file should succeed when workspace has symlink and real dir, got {result:?}"
+        );
+        assert!(
+            visited_files.iter().any(|p| p.ends_with("def.hew")),
+            "for_each_hew_file should have visited def.hew in the real directory despite the symlink sibling"
+        );
+    }
 }

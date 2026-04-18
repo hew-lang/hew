@@ -10,6 +10,24 @@ use tower_lsp::lsp_types::{
 
 use super::{offset_range_to_lsp, span_to_range, DocumentState};
 
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/// Load source code from a URI, returning a `RenameError::Io` on any I/O or
+/// URI-conversion failure. Encapsulates the "could not convert URI to file path"
+/// and "could not read source file" error patterns.
+fn read_source_or_io_error(uri: &Url) -> Result<String, hew_analysis::RenameError> {
+    let path = uri
+        .to_file_path()
+        .map_err(|_e| hew_analysis::RenameError::Io {
+            path: uri.to_string(),
+            message: "could not convert URI to file path".to_string(),
+        })?;
+    std::fs::read_to_string(&path).map_err(|e| hew_analysis::RenameError::Io {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })
+}
+
 // ── Go-to-definition ─────────────────────────────────────────────────
 
 /// Search for a definition matching `word` in the AST, returning an LSP `Range`.
@@ -479,15 +497,7 @@ pub(super) fn workspace_edit_from_changes(
         } else {
             // File is not open; load from disk to generate edits.
             // If disk read/parse fails, return an error to reject the rename entirely.
-            let target_path =
-                target_uri
-                    .to_file_path()
-                    .map_err(|()| hew_analysis::RenameError::Io {
-                        path: target_uri.to_string(),
-                        message: "could not convert URI to file path".to_string(),
-                    })?;
-            let target_source = std::fs::read_to_string(&target_path)
-                .map_err(|e| hew_analysis::RenameError::from((target_path.clone(), e)))?;
+            let target_source = read_source_or_io_error(&target_uri)?;
             let target_line_offsets = hew_analysis::util::compute_line_offsets(&target_source);
             edits
                 .into_iter()
@@ -678,18 +688,7 @@ pub(super) fn build_workspace_edit(
                 }
             } else {
                 // Definition file is closed; load from disk and compute edits.
-                let target_path = import_match.imported_uri.to_file_path().map_err(|_e| {
-                    hew_analysis::RenameError::Io {
-                        path: import_match.imported_uri.to_string(),
-                        message: "could not convert URI to file path".to_string(),
-                    }
-                })?;
-                let target_source = std::fs::read_to_string(&target_path).map_err(|e| {
-                    hew_analysis::RenameError::Io {
-                        path: target_path.display().to_string(),
-                        message: e.to_string(),
-                    }
-                })?;
+                let target_source = read_source_or_io_error(&import_match.imported_uri)?;
                 let target_parse = hew_parser::parse(&target_source);
                 if let Some(def_span) = find_definition_name_span(
                     &target_source,
@@ -785,18 +784,7 @@ pub(super) fn build_workspace_edit(
                         continue;
                     }
 
-                    let unopened_path = unopened.importer_uri.to_file_path().map_err(|_e| {
-                        hew_analysis::RenameError::Io {
-                            path: unopened.importer_uri.to_string(),
-                            message: "could not convert URI to file path".to_string(),
-                        }
-                    })?;
-                    let unopened_source = std::fs::read_to_string(&unopened_path).map_err(|e| {
-                        hew_analysis::RenameError::Io {
-                            path: unopened_path.display().to_string(),
-                            message: e.to_string(),
-                        }
-                    })?;
+                    let unopened_source = read_source_or_io_error(&unopened.importer_uri)?;
                     let unopened_parse = hew_parser::parse(&unopened_source);
                     let unopened_edits: Vec<_> =
                         hew_analysis::references::find_import_binding_references(
@@ -886,18 +874,7 @@ pub(super) fn build_workspace_edit(
                     continue;
                 }
 
-                let unopened_path = unopened.importer_uri.to_file_path().map_err(|_e| {
-                    hew_analysis::RenameError::Io {
-                        path: unopened.importer_uri.to_string(),
-                        message: "could not convert URI to file path".to_string(),
-                    }
-                })?;
-                let unopened_source = std::fs::read_to_string(&unopened_path).map_err(|e| {
-                    hew_analysis::RenameError::Io {
-                        path: unopened_path.display().to_string(),
-                        message: e.to_string(),
-                    }
-                })?;
+                let unopened_source = read_source_or_io_error(&unopened.importer_uri)?;
                 let unopened_parse = hew_parser::parse(&unopened_source);
                 let unopened_edits: Vec<_> =
                     hew_analysis::references::find_import_binding_references(
@@ -1014,18 +991,7 @@ pub(super) fn plan_workspace_rename(
             } else {
                 // The definition file is not open; read it from disk and check
                 // for conflicts using the unopened-file path.
-                let def_path = import_match.imported_uri.to_file_path().map_err(|_e| {
-                    hew_analysis::RenameError::Io {
-                        path: import_match.imported_uri.to_string(),
-                        message: "could not convert URI to file path".to_string(),
-                    }
-                })?;
-                let source = std::fs::read_to_string(&def_path).map_err(|e| {
-                    hew_analysis::RenameError::Io {
-                        path: def_path.display().to_string(),
-                        message: e.to_string(),
-                    }
-                })?;
+                let source = read_source_or_io_error(&import_match.imported_uri)?;
                 let parse_result = hew_parser::parse(&source);
 
                 // Check top-level and import clashes (mirrors the open-document path).

@@ -467,8 +467,11 @@ fn rename_error_to_jsonrpc(err: &hew_analysis::RenameError) -> tower_lsp::jsonrp
             }
         }
     };
+    // LSP 3.17 §3.16.3: semantic refusals of well-formed requests use
+    // RequestFailed (-32803); InvalidParams (-32602) is reserved for
+    // malformed JSON-RPC parameter objects.
     Error {
-        code: ErrorCode::InvalidParams,
+        code: ErrorCode::ServerError(-32803),
         message: message.into(),
         data: None,
     }
@@ -5111,6 +5114,40 @@ machine Traffic {
                 );
             }
             other => panic!("expected Conflicts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_error_to_jsonrpc_uses_request_failed_code() {
+        // LSP 3.17 §3.16.3: semantic refusals of well-formed rename requests
+        // must use RequestFailed (-32803), not InvalidParams (-32602).
+        use tower_lsp::jsonrpc::ErrorCode;
+
+        let invalid_id_err = hew_analysis::RenameError::InvalidIdentifier {
+            name: "123bad".to_string(),
+            message: "not a valid identifier".to_string(),
+        };
+        let builtin_err = hew_analysis::RenameError::Builtin {
+            name: "print".to_string(),
+            message: "cannot rename to a built-in".to_string(),
+        };
+        let conflicts_err = hew_analysis::RenameError::Conflicts {
+            conflicts: vec![hew_analysis::RenameConflict {
+                kind: hew_analysis::RenameConflictKind::ShadowsLocal,
+                message: "shadows local binding".to_string(),
+                existing_span: hew_analysis::OffsetSpan { start: 0, end: 0 },
+                offending_span: hew_analysis::OffsetSpan { start: 0, end: 0 },
+            }],
+        };
+
+        for err in [&invalid_id_err, &builtin_err, &conflicts_err] {
+            let jsonrpc_err = rename_error_to_jsonrpc(err);
+            assert_eq!(
+                jsonrpc_err.code,
+                ErrorCode::ServerError(-32803),
+                "expected RequestFailed (-32803) for {err:?}, got {:?}",
+                jsonrpc_err.code,
+            );
         }
     }
 }

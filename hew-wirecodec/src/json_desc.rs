@@ -15,7 +15,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::kind::PrimitiveWireKind;
-use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan, WireShape};
+use crate::op_codec;
+use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan};
 
 /// The JSON operation for a single field.
 ///
@@ -47,28 +48,13 @@ pub enum JsonOp {
     /// Byte string — emitted as base64-encoded JSON string.
     SetBytes,
     /// Duration — emitted as i64 nanoseconds.
-    //
-    // SHIM: WHY: current C++ consumer (MLIRGenWire.cpp:147-149) routes Duration
-    //        through WireJsonKind::Integer; no hew_json_object_set_duration
-    //        runtime entry point exists today.
-    //       WHEN: remove once the descriptor-driven path replaces jsonKindOf
-    //        (tracked in issue #1272, MLIRGenWire shrink).
-    //       WHAT: a dedicated `hew_json_object_set_duration` runtime call
-    //        with a corresponding C++ consumer reading the descriptor's op
-    //        stream rather than jsonKindOf.
+    /// Encode uses `hew_json_object_set_duration` (std/encoding/json/src/lib.rs:629).
+    /// Decode uses `hew_json_get_duration` (std/encoding/json/src/lib.rs:662).
     SetDuration,
-    /// Emits the char as an unsigned integer codepoint in BMP range (0..=0xFFFF).
-    /// Full Unicode scalar range (0..=0x10FFFF) is deferred — see `plan.rs`
-    /// comment on `IntegerBounds::for_kind` Char arm.
-    //
-    // SHIM: WHY: current C++ consumer (MLIRGenWire.cpp:147-149) routes Char
-    //        through WireJsonKind::Integer; no hew_json_object_set_char
-    //        runtime entry point exists today.
-    //       WHEN: remove once the descriptor-driven path replaces jsonKindOf
-    //        (tracked in issue #1272, MLIRGenWire shrink).
-    //       WHAT: a dedicated `hew_json_object_set_char` runtime call
-    //        with a corresponding C++ consumer reading the descriptor's op
-    //        stream rather than jsonKindOf.
+    /// Emits the char as an unsigned integer codepoint.
+    /// Full Unicode scalar range (0..=0x10FFFF) is enforced — see issue #1276.
+    /// Encode uses `hew_json_object_set_char` (std/encoding/json/src/lib.rs:610).
+    /// Decode uses `hew_json_get_char` (std/encoding/json/src/lib.rs:649).
     SetChar,
     /// Nested wire-type reference.
     Nested {
@@ -117,20 +103,7 @@ impl JsonCodecDesc {
     /// Lower a [`WireCodecPlan`] to a [`JsonCodecDesc`].
     #[must_use]
     pub fn from_plan(plan: &WireCodecPlan) -> Self {
-        let (fields, variants) = match &plan.shape {
-            WireShape::Struct { fields } => (
-                fields
-                    .iter()
-                    .filter(|f| !f.modifiers.is_reserved)
-                    .map(field_op_from_plan)
-                    .collect(),
-                Vec::new(),
-            ),
-            WireShape::Enum { variants } => (
-                Vec::new(),
-                variants.iter().map(|v| v.name.clone()).collect(),
-            ),
-        };
+        let (fields, variants) = plan.fold_shape(field_op_from_plan);
         Self {
             name: plan.name.clone(),
             fields,
@@ -169,37 +142,18 @@ fn field_op_from_plan(f: &FieldPlan) -> JsonFieldOp {
 /// `hew-codegen/src/mlir/MLIRGenWire.cpp` with this descriptor-driven path;
 /// this function is the single choke point that makes that replacement safe.
 ///
-/// `pub(crate)` so `yaml_desc` can reuse it without a forwarding wrapper.
-/// Consumers outside this crate should use [`JsonCodecDesc::from_plan`] or
-/// [`crate::YamlCodecDesc::from_plan`] instead.
+/// Delegates to [`crate::op_codec::op_for_kind`] — the neutral mapping shared
+/// with `yaml_desc`. Kept here as a named alias so existing call sites in this
+/// module are stable when `op_codec` evolves.
 #[must_use]
 pub(crate) fn json_op_for_kind(kind: &PrimitiveWireKind) -> JsonOp {
-    match kind {
-        PrimitiveWireKind::Bool => JsonOp::SetBool,
-        PrimitiveWireKind::I8
-        | PrimitiveWireKind::I16
-        | PrimitiveWireKind::I32
-        | PrimitiveWireKind::I64 => JsonOp::SetInt { unsigned: false },
-        PrimitiveWireKind::U8
-        | PrimitiveWireKind::U16
-        | PrimitiveWireKind::U32
-        | PrimitiveWireKind::U64 => JsonOp::SetInt { unsigned: true },
-        PrimitiveWireKind::F32 => JsonOp::SetFloat { widen: true },
-        PrimitiveWireKind::F64 => JsonOp::SetFloat { widen: false },
-        PrimitiveWireKind::String => JsonOp::SetString,
-        PrimitiveWireKind::Bytes => JsonOp::SetBytes,
-        PrimitiveWireKind::Duration => JsonOp::SetDuration,
-        PrimitiveWireKind::Char => JsonOp::SetChar,
-        PrimitiveWireKind::Nested(name) => JsonOp::Nested {
-            type_name: name.clone(),
-        },
-    }
+    op_codec::op_for_kind(kind)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::VariantPlan;
+    use crate::plan::{VariantPlan, WireShape};
     use crate::test_helpers::{plan_with_fields, simple_field};
 
     #[test]
@@ -269,9 +223,9 @@ mod tests {
         assert_eq!(desc.fields[0].op, JsonOp::SetChar);
     }
 
-    /// `SetChar` must carry integer-range bounds. `MLIRGenWire.cpp:147-149`
-    /// routes `Char → WireJsonKind::Integer` on the C++ side; without bounds
-    /// the descriptor consumer has no signal that this is an integer op.
+    /// `SetChar` must carry integer-range bounds. `MLIRGenWire.cpp:150-153`
+    /// returns `WireJsonKind::Char` on the C++ side; the descriptor bounds
+    /// tell the consumer the valid codepoint range for the integer-codepoint path.
     #[test]
     fn char_field_carries_integer_bounds() {
         let plan = plan_with_fields("A", vec![simple_field("c", 1, PrimitiveWireKind::Char)]);

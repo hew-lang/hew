@@ -24,6 +24,7 @@ use std::time::Duration;
 use crate::actor::{self, HewActor, HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET};
 use crate::deque::{GlobalQueue, WorkDeque, WorkStealer};
 use crate::internal::types::HewActorState;
+use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox::{
     self, hew_mailbox_has_messages, hew_mailbox_try_recv, hew_msg_node_free, HewMailbox,
 };
@@ -62,16 +63,11 @@ impl Drop for ActivationMetricsGuard {
 }
 
 #[cfg(test)]
-static ACTIVATE_PRE_REENQUEUE_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
+static ACTIVATE_PRE_REENQUEUE_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSafe::new(None);
 
 #[cfg(test)]
 fn run_activate_pre_reenqueue_hook(actor: *mut HewActor) {
-    let hook = {
-        let guard = ACTIVATE_PRE_REENQUEUE_HOOK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard
-    };
+    let hook = ACTIVATE_PRE_REENQUEUE_HOOK.access(|h| *h);
     if let Some(hook) = hook {
         hook(actor);
     }
@@ -177,10 +173,10 @@ pub(crate) fn drain_is_idle() -> bool {
 /// The scheduler owns the shared global queue, per-worker stealers,
 /// shutdown flag, and condvar for worker parking.
 ///
-/// Worker thread handles are stored behind a `Mutex` so they can be
+/// Worker thread handles are stored behind a `PoisonSafe` so they can be
 /// `take`-n during shutdown (`JoinHandle` is `Send` but not `Sync`).
 struct Scheduler {
-    worker_handles: Mutex<Vec<Option<JoinHandle<()>>>>,
+    worker_handles: PoisonSafe<Vec<Option<JoinHandle<()>>>>,
     global_queue: GlobalQueue,
     stealers: Vec<WorkStealer>,
     shutdown: AtomicBool,
@@ -198,7 +194,7 @@ struct Parker {
 
 // SAFETY: All fields are either `Sync` (`AtomicBool`, `Mutex`, `Condvar`,
 // `GlobalQueue`, `Vec<WorkStealer>`, `Vec<Parker>`) or wrapped in a
-// `Mutex` (`JoinHandle`).
+// `PoisonSafe` (`JoinHandle`).
 unsafe impl Sync for Scheduler {}
 
 // ── Xorshift64 PRNG for victim selection ────────────────────────────────
@@ -271,7 +267,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         .collect();
 
     let scheduler = Box::new(Scheduler {
-        worker_handles: Mutex::new(Vec::new()),
+        worker_handles: PoisonSafe::new(Vec::new()),
         global_queue,
         stealers,
         shutdown: AtomicBool::new(false),
@@ -345,11 +341,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         eprintln!("hew: scheduler init failed — global pointer lost after CAS");
         std::process::exit(1);
     };
-    let Ok(mut lock) = sched.worker_handles.lock() else {
-        eprintln!("hew: scheduler init failed — worker_handles mutex poisoned");
-        std::process::exit(1);
-    };
-    *lock = handles;
+    sched.worker_handles.access(|lock| *lock = handles);
 
     // Register subsystem reset hooks for JIT session lifecycle.
     // Tracing first so events are cleared before the profiler type registry.
@@ -416,30 +408,25 @@ pub extern "C" fn hew_sched_shutdown() {
 
     // Join worker threads, skipping our own handle to avoid self-join
     // deadlock when the spawn-failure fallback runs on a worker thread.
+    // The closure scope acts as the lock scope — the guard is released
+    // before the hooks below run.
     let current_id = std::thread::current().id();
-    let Ok(mut handles) = sched.worker_handles.lock() else {
-        // Policy: per-scheduler state (C-ABI) — poisoned worker_handles means
-        // scheduler integrity is lost; report error and bail.
-        set_last_error("hew_sched_shutdown: mutex poisoned (a thread panicked)");
-        return;
-    };
-    for handle in &mut *handles {
-        if let Some(ref h) = handle {
-            if h.thread().id() == current_id {
-                // Drop the handle without joining — we're running on this thread.
-                let _ = handle.take();
-                continue;
+    sched.worker_handles.access(|handles| {
+        for handle in handles.iter_mut() {
+            if let Some(ref h) = handle {
+                if h.thread().id() == current_id {
+                    // Drop the handle without joining — we're running on this thread.
+                    let _ = handle.take();
+                    continue;
+                }
+            }
+            if let Some(h) = handle.take() {
+                if h.join().is_err() {
+                    eprintln!("hew: scheduler worker thread panicked during shutdown");
+                }
             }
         }
-        if let Some(h) = handle.take() {
-            if h.join().is_err() {
-                eprintln!("hew: scheduler worker thread panicked during shutdown");
-            }
-        }
-    }
-
-    // Release worker_handles lock so hooks can access scheduler state.
-    drop(handles);
+    });
 
     // Write profile files on exit if HEW_PROF_OUTPUT is set.  Must run BEFORE
     // session_reset() so that the dispatch-type registry is still populated
@@ -1165,20 +1152,16 @@ mod tests {
 
     impl ActivatePreReenqueueHookGuard {
         fn install(hook: fn(*mut HewActor)) -> Self {
-            let mut guard = ACTIVATE_PRE_REENQUEUE_HOOK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert!(guard.replace(hook).is_none(), "test hook already installed");
+            ACTIVATE_PRE_REENQUEUE_HOOK.access(|h| {
+                assert!(h.replace(hook).is_none(), "test hook already installed");
+            });
             Self
         }
     }
 
     impl Drop for ActivatePreReenqueueHookGuard {
         fn drop(&mut self) {
-            let mut guard = ACTIVATE_PRE_REENQUEUE_HOOK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard = None;
+            ACTIVATE_PRE_REENQUEUE_HOOK.access(|h| *h = None);
         }
     }
 
@@ -1423,7 +1406,7 @@ mod tests {
             worker_count: 1,
             parkers: vec![parker],
             stealers: Vec::new(),
-            worker_handles: std::sync::Mutex::new(Vec::new()),
+            worker_handles: PoisonSafe::new(Vec::new()),
             // SAFETY: no preconditions for GlobalQueue::new().
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
@@ -1450,8 +1433,9 @@ mod tests {
         {
             // SAFETY: sched_ptr was just allocated above and is valid.
             let sched = unsafe { &*SCHEDULER.load(Ordering::Acquire) };
-            let mut handles = sched.worker_handles.lock().unwrap();
-            handles.push(Some(handle));
+            sched
+                .worker_handles
+                .access(|handles| handles.push(Some(handle)));
         }
         // Release the spawned thread to call hew_sched_shutdown.
         barrier.wait();
@@ -1490,7 +1474,7 @@ mod tests {
             worker_count: 1,
             parkers: vec![parker],
             stealers: vec![queued_stealer],
-            worker_handles: Mutex::new(Vec::new()),
+            worker_handles: PoisonSafe::new(Vec::new()),
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
@@ -1583,7 +1567,7 @@ mod tests {
             worker_count: 1,
             parkers: vec![parker],
             stealers: Vec::new(),
-            worker_handles: Mutex::new(Vec::new()),
+            worker_handles: PoisonSafe::new(Vec::new()),
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),

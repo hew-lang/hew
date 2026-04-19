@@ -86,6 +86,21 @@ if(HEW_CLI)
   set_tests_properties(codegen_capi PROPERTIES ENVIRONMENT "HEW_CLI=${HEW_CLI}")
 endif()
 
+# ── JIT symbol map test ────────────────────────────────────────────────────
+add_executable(test_jit_symbol_map test_jit_symbol_map.cpp)
+
+target_include_directories(test_jit_symbol_map PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_BINARY_DIR}/include
+)
+
+target_link_libraries(test_jit_symbol_map PRIVATE
+  HewCodegen
+  $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
+)
+
+add_test(NAME jit_symbol_map COMMAND test_jit_symbol_map)
+
 # ── Msgpack reader test ──────────────────────────────────────────────────
 add_executable(test_msgpack_reader test_msgpack_reader.cpp)
 

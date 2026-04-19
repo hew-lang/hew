@@ -236,9 +236,33 @@ else()
 endif()
 
 # ── Hew codegen library ───────────────────────────────────────────────────
+set(HEW_GENERATED_JIT_STABLE_SYMBOLS
+  ${PROJECT_BINARY_DIR}/include/hew/generated_jit_stable_symbols.h
+)
+file(GLOB_RECURSE HEW_RUNTIME_RUST_SOURCES CONFIGURE_DEPENDS
+  ${CMAKE_SOURCE_DIR}/../hew-runtime/src/*.rs
+)
+
+add_custom_command(
+  OUTPUT ${HEW_GENERATED_JIT_STABLE_SYMBOLS}
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/../scripts/verify-ffi-symbols.py
+          --emit-cpp-header ${HEW_GENERATED_JIT_STABLE_SYMBOLS}
+          --validate
+  DEPENDS
+    ${CMAKE_SOURCE_DIR}/../scripts/verify-ffi-symbols.py
+    ${CMAKE_SOURCE_DIR}/../scripts/jit-symbol-classification.toml
+    ${HEW_RUNTIME_RUST_SOURCES}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/..
+  COMMENT "Generating Hew JIT stable symbol header"
+  VERBATIM
+)
+
+add_custom_target(HewJitStableSymbolHeader DEPENDS ${HEW_GENERATED_JIT_STABLE_SYMBOLS})
+
 add_library(HewCodegen STATIC
   codegen.cpp
   debug_info.cpp
+  jit_symbol_map.cpp
 )
 
 target_include_directories(HewCodegen PUBLIC
@@ -246,7 +270,7 @@ target_include_directories(HewCodegen PUBLIC
   ${PROJECT_BINARY_DIR}/include
 )
 
-add_dependencies(HewCodegen HewOpsIncGen HewTypesIncGen)
+add_dependencies(HewCodegen HewOpsIncGen HewTypesIncGen HewJitStableSymbolHeader)
 
 target_link_libraries(HewCodegen PUBLIC
   HewMLIRDialect

@@ -1,0 +1,26 @@
+#include "hew/jit_symbol_map.h"
+
+#include <cassert>
+#include <cstdio>
+#include <string_view>
+
+int main() {
+  hew::HewJitSymbolMap map;
+  assert(map.stableSymbolCount() > 0);
+  assert(map.hasStableSymbol("hew_actor_spawn"));
+  assert(!map.hasStableSymbol("hew_sched_init"));
+  assert(!map.hasStableSymbol("hew_runtime_cleanup"));
+  assert(!map.hasStableSymbol("hew_shutdown_initiate"));
+
+  std::size_t visited = 0;
+  map.forEachStableSymbol([&](std::string_view symbol) {
+    ++visited;
+    assert(symbol != "hew_sched_init");
+    assert(symbol != "hew_runtime_cleanup");
+    assert(symbol != "hew_shutdown_initiate");
+  });
+
+  assert(visited == map.stableSymbolCount());
+  std::printf("loaded %zu stable JIT symbols\n", visited);
+  return 0;
+}

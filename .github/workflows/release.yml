@@ -301,9 +301,12 @@ jobs:
 
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
-      - name: Verify macOS binary has no non-system dynamic dependencies
+      - name: Verify macOS binaries have no non-system dynamic dependencies
         if: startsWith(matrix.target, 'darwin')
-        run: scripts/verify-macos-binary.sh "${ARCHIVE_NAME}/bin/hew"
+        run: |
+          for bin in "${ARCHIVE_NAME}"/bin/*; do
+            scripts/verify-macos-binary.sh "${bin}"
+          done
 
       - name: Package archive (Windows)
         if: startsWith(matrix.target, 'windows')

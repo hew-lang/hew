@@ -15,6 +15,8 @@
 //! }
 //! ```
 
+import std::encoding::wire::value_trait;
+
 /// Structured error type for JSON parsing failures.
 ///
 /// Use `Result<Value, ParseError>` with `try_parse` for structured error
@@ -35,59 +37,21 @@ pub enum ParseError {
 type Value {}
 
 /// Methods available on a JSON `Value`.
-trait ValueMethods {
-    /// Serialize the value back to a JSON string.
-    fn stringify(val: Value) -> String;
-    /// Return the type tag (0=null, 1=bool, 2=int, 3=float, 4=string, 5=array, 6=object).
-    fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
-    /// Extract the boolean value (0 or 1).
-    fn get_bool(val: Value) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
-    /// Extract the integer value.
-    fn get_int(val: Value) -> int;
-    /// Extract the floating-point value.
-    fn get_float(val: Value) -> f64;
-    /// Extract the string value.
-    fn get_string(val: Value) -> String;
-    /// Look up a field by key in a JSON object.
-    fn get_field(val: Value, key: String) -> Value;
-    /// Return the number of elements in a JSON array.
-    fn array_len(val: Value) -> int;
-    /// Return the element at the given index in a JSON array.
-    fn array_get(val: Value, index: int) -> Value;
+///
+/// Extends the shared opaque-handle contract from
+/// `std::encoding::wire::value_trait`.
+trait ValueMethods: CanonicalValueMethods {
     /// Return a JSON array of the object's keys.
     fn keys(val: Value) -> Value;
-    /// Release the value resources before scope exit.
-    fn free(val: Value);
 
     // ── Fluent builders (return self for chaining) ──────────────
-
-    /// Set a string field on an object. Returns the object for chaining.
-    fn with_string(obj: Value, key: String, val: String) -> Value;
-    /// Set an integer field. Returns the object for chaining.
-    fn with_int(obj: Value, key: String, val: int) -> Value;
-    /// Set a float field. Returns the object for chaining.
-    fn with_float(obj: Value, key: String, val: f64) -> Value;
-    /// Set a boolean field. Returns the object for chaining.
-    fn with_bool(obj: Value, key: String, val: bool) -> Value;
     /// Set a null field. Returns the object for chaining.
     fn with_null(obj: Value, key: String) -> Value;
-    /// Set a Value child on an object. The child is consumed. Returns the object.
-    fn with(obj: Value, key: String, child: Value) -> Value;
-    /// Push a Value onto an array. The child is consumed. Returns the array.
-    fn push(arr: Value, child: Value) -> Value;
-    /// Push an integer onto an array. Returns the array.
-    fn push_int(arr: Value, val: int) -> Value;
-    /// Push a string onto an array. Returns the array.
-    fn push_string(arr: Value, val: String) -> Value;
-    /// Push a float onto an array. Returns the array.
-    fn push_float(arr: Value, val: f64) -> Value;
-    /// Push a boolean onto an array. Returns the array.
-    fn push_bool(arr: Value, val: bool) -> Value;
     /// Push null onto an array. Returns the array.
     fn push_null(arr: Value) -> Value;
 }
 
-impl ValueMethods for Value {
+impl CanonicalValueMethods for Value {
     fn stringify(val: Value) -> String { unsafe { hew_json_stringify(val) } }
     fn type_of(val: Value) -> i32 { unsafe { hew_json_type(val) } } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     fn get_bool(val: Value) -> i32 { unsafe { hew_json_get_bool(val) } } // INTERNAL-ABI: C ABI returns bool as i32
@@ -133,8 +97,16 @@ impl ValueMethods for Value {
     fn push_bool(arr: Value, val: bool) -> Value {
         unsafe { hew_json_array_push_bool(arr, val as i32) }; arr
     }
+}
+
+impl ValueMethods for Value {
+    fn keys(val: Value) -> Value { unsafe { hew_json_object_keys(val) } }
+
     fn push_null(arr: Value) -> Value {
         unsafe { hew_json_array_push_null(arr) }; arr
+    }
+    fn with_null(obj: Value, key: String) -> Value {
+        unsafe { hew_json_object_set_null(obj, key) }; obj
     }
 }
 

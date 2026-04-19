@@ -110,11 +110,28 @@ WINDOWS_PROJECT_DIR=P:/path/to/hew
 What `make pre-release` does:
 1. `make release` — static-link release build of all binaries
 2. `scripts/pre-release-validate.sh` — per-platform:
-   - Build all release artifacts
-   - Verify binaries exist and run (`--version`)
-   - Smoke test: compile and execute a .hew program
-   - Linux: verify no dynamic LLVM/MLIR deps (`ldd` check)
-   - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
+    - Build all release artifacts
+    - Verify binaries exist and run (`--version`)
+    - Smoke test: compile and execute a .hew program
+    - Linux: verify no dynamic LLVM/MLIR deps (`ldd` check)
+    - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
+
+For a local macOS clean-room check of the Homebrew/release binary shape:
+
+```bash
+HEW_EMBED_STATIC=1 cargo build -p hew-cli --release
+scripts/verify-macos-binary.sh target/release/hew
+cat > hew-smoke.hew <<'EOF'
+fn main() { println("Hello from Hew!"); }
+EOF
+./target/release/hew version
+./target/release/hew check hew-smoke.hew
+rm -f hew-smoke.hew
+```
+
+Expected `otool -L` output is limited to system paths under `/usr/lib/` and
+`/System/Library/`. Any `/opt/homebrew/` or `/usr/local/opt/` entry is a
+release blocker.
 
 ## Phase 5 — Tag and release
 
@@ -124,11 +141,25 @@ git push origin v0.3.0
 ```
 
 This triggers `.github/workflows/release.yml`, which:
-- Builds release tarballs for linux-x86_64, linux-aarch64, darwin-aarch64, windows-x86_64
-- Signs and notarizes macOS binaries (if Apple secrets are configured)
+- Builds release tarballs for linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64, windows-x86_64
+- Runs `scripts/verify-macos-binary.sh` on macOS artifacts before signing
+- Signs and notarizes macOS binaries on tag releases
 - Creates a GitHub Release with checksums
 - Updates the Homebrew tap (if HOMEBREW_TAP_TOKEN is configured)
 - Publishes the VS Code extension (if VSCE_PAT is configured)
+
+macOS release notes:
+
+- arm64 release builds run on `macos-15`; Intel release builds stay on `macos-13`
+- `MACOSX_DEPLOYMENT_TARGET=13.0` is exported in the release workflow so the
+  shipped binaries remain compatible with macOS 13+
+- Tag releases require all of:
+  - `APPLE_CERTIFICATE_P12`
+  - `APPLE_CERTIFICATE_PASSWORD`
+  - `APPLE_API_KEY_P8`
+  - `APPLE_API_KEY_ID`
+  - `APPLE_API_ISSUER_ID`
+- If any required Apple secret is missing on a tag release, the macOS job must fail
 
 ## Phase 6 — Post-release verification
 

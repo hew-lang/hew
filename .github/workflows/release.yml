@@ -11,7 +11,8 @@
 #   std/              — standard library sources
 #   completions/      — shell completions (bash, zsh, fish), generated at build time
 #
-# Required secrets for macOS code signing (optional — skipped if absent):
+# Required secrets for macOS code signing/notarization on tag releases
+# (workflow_dispatch can still be used for unsigned dry runs):
 #   APPLE_CERTIFICATE_P12       — Base64-encoded .p12 signing certificate
 #   APPLE_CERTIFICATE_PASSWORD  — Password for the .p12 file
 #   APPLE_API_KEY_P8            — App Store Connect API private key (.p8 contents)
@@ -61,7 +62,7 @@ jobs:
             os: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
           - target: darwin-aarch64
-            os: macos-14
+            os: macos-15
             rust_target: aarch64-apple-darwin
           - target: darwin-x86_64
             os: macos-13
@@ -105,7 +106,7 @@ jobs:
       - name: Install LLVM/MLIR (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
-          brew install llvm@${{ env.LLVM_VERSION }} ninja
+          brew install llvm@${{ env.LLVM_VERSION }} ninja zstd
           # Expose the brew LLVM prefix and binaries for later steps
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
@@ -300,6 +301,13 @@ jobs:
 
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
+      - name: Verify macOS binaries have no non-system dynamic dependencies
+        if: startsWith(matrix.target, 'darwin')
+        run: |
+          for bin in "${ARCHIVE_NAME}"/bin/*; do
+            scripts/verify-macos-binary.sh "${bin}"
+          done
+
       - name: Package archive (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
@@ -333,6 +341,32 @@ jobs:
         shell: pwsh
 
       # ── macOS code signing & notarization ───────────────────────────────
+
+      - name: Validate macOS signing secrets (tag releases)
+        if: startsWith(matrix.target, 'darwin') && startsWith(github.ref, 'refs/tags/v')
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          missing=0
+          for secret_name in \
+            APPLE_CERTIFICATE_P12 \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_API_KEY_P8 \
+            APPLE_API_KEY_ID \
+            APPLE_API_ISSUER_ID; do
+            if [ -z "${!secret_name}" ]; then
+              echo "::error::${secret_name} secret is required for macOS tag releases"
+              missing=1
+            fi
+          done
+
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Code sign binaries (macOS)
         if: startsWith(matrix.target, 'darwin') && env.APPLE_CERTIFICATE_P12 != ''
@@ -376,9 +410,10 @@ jobs:
           rm -f certificate.p12
 
       - name: Notarize archive (macOS)
-        if: startsWith(matrix.target, 'darwin') && env.APPLE_CERTIFICATE_P12 != '' && env.APPLE_API_KEY_P8 != ''
+        if: startsWith(matrix.target, 'darwin') && env.APPLE_CERTIFICATE_P12 != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_API_KEY_P8 != '' && env.APPLE_API_KEY_ID != '' && env.APPLE_API_ISSUER_ID != ''
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}

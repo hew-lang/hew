@@ -499,7 +499,7 @@ tsan:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint
+lint: runtime-poison-safe-lint verify-ffi
 	cargo clippy --workspace --tests -- -D warnings
 
 # Grep-gate: fail on raw .lock()/.read()/.write() against any runtime global
@@ -628,6 +628,7 @@ endif
 
 verify-ffi:
 	python3 scripts/verify-ffi-symbols.py --strict
+	python3 scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
 
 # ── ANTLR4 grammar validation ──────────────────────────────────────────────
 # Requires Java and the ANTLR4 jar. This is rarely needed — only when

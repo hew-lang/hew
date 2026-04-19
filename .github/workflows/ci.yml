@@ -39,6 +39,8 @@ jobs:
               - '**/*.cpp'
               - '**/*.h'
               - '**/*.td'
+              - 'scripts/**/*.py'
+              - 'scripts/**/*.toml'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - '**/CMakeLists.txt'
@@ -101,6 +103,9 @@ jobs:
             | clippy-sarif \
             | tee clippy-results.sarif \
             | sarif-fmt
+
+      - name: Verify JIT host ABI classification
+        run: make verify-ffi
 
       - name: Upload Clippy SARIF
         if: always() && hashFiles('clippy-results.sarif') != ''

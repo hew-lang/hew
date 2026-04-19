@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Explicit HTTP/regex handle teardown:** `http.Server` and `regex.Pattern`
+  no longer auto-release on scope exit. Callers must invoke `close()` /
+  `free()` explicitly before those values go out of scope to avoid leaks
+  (#1281).
+
 ## [0.4.0] - 2026-04-15
 
 ### Added

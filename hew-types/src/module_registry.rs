@@ -469,8 +469,13 @@ mod tests {
             "http.Request should be a drop type"
         );
         assert!(
-            reg.is_drop_type("http.Server"),
-            "http.Server should be a drop type"
+            !reg.is_drop_type("http.Server"),
+            "http.Server should not be a drop type"
+        );
+        reg.load("std::text::regex").unwrap();
+        assert!(
+            !reg.is_drop_type("regex.Pattern"),
+            "regex.Pattern should not be a drop type"
         );
     }
 
@@ -491,11 +496,17 @@ mod tests {
         );
         assert_eq!(
             reg.drop_func_for("http.Server"),
-            Some("hew_http_server_close"),
-            "http.Server drop func should be hew_http_server_close"
+            None,
+            "http.Server should not have a drop func"
+        );
+        reg.load("std::text::regex").unwrap();
+        assert_eq!(
+            reg.drop_func_for("regex.Pattern"),
+            None,
+            "regex.Pattern should not have a drop func"
         );
         let all = reg.all_drop_funcs();
-        assert!(all.len() >= 3, "should have at least 3 drop funcs");
+        assert!(all.len() >= 2, "should have at least 2 drop funcs");
     }
 
     #[test]

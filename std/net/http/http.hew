@@ -10,11 +10,9 @@
 //!
 //! fn main() {
 //!     let server = http.listen(":8080");
-//!     loop {
-//!         let req = server.accept();
-//!         let path = req.path();
-//!         req.respond_text(200, "Hello from Hew!");
-//!     }
+//!     let req = server.accept();
+//!     req.respond_text(200, "Hello from Hew!");
+//!     server.close();
 //! }
 //! ```
 
@@ -23,7 +21,8 @@ import std::fs;
 /// An HTTP server bound to a TCP address.
 ///
 /// Created by calling `http.listen(addr)`. Use `accept()` to wait for
-/// incoming requests in a loop.
+/// incoming requests in a loop, then call `close()` before the value goes
+/// out of scope.
 type Server {}
 
 /// An incoming HTTP request.
@@ -40,7 +39,10 @@ trait ServerMethods {
     /// Block until a client connects and return the next `Request`.
     fn accept(srv: Server) -> Request;
 
-    /// Close the server and release the listening socket.
+    /// Canonical release path for `Server`.
+    ///
+    /// Callers MUST invoke `close()` before the value goes out of scope;
+    /// dropping without `close()` is a resource leak.
     fn close(srv: Server);
 }
 
@@ -49,7 +51,10 @@ impl ServerMethods for Server {
     fn accept(srv: Server) -> Request {
         unsafe { hew_http_server_recv(srv) }
     }
-    /// Close the server and release the listening socket.
+    /// Canonical release path for `Server`.
+    ///
+    /// Callers MUST invoke `close()` before the value goes out of scope;
+    /// dropping without `close()` is a resource leak.
     fn close(srv: Server) {
         unsafe { hew_http_server_close(srv) };
     }
@@ -207,13 +212,6 @@ impl Drop for Request {
     }
 }
 
-impl Drop for Server {
-    /// Close the server and release the listening socket.
-    fn drop(srv: Server) {
-        unsafe { hew_http_server_close(srv) };
-    }
-}
-
 // ── Module-level functions ────────────────────────────────────────────
 
 /// Create a new HTTP server listening on the given address.
@@ -225,7 +223,9 @@ impl Drop for Server {
 ///
 /// ```
 /// let server = http.listen(":8080");
+/// server.close();
 /// let server = http.listen("127.0.0.1:3000");
+/// server.close();
 /// ```
 pub fn listen(addr: String) -> Server {
     unsafe { hew_http_server_new(addr) }

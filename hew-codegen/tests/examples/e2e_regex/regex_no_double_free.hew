@@ -1,13 +1,5 @@
-// Regression: explicit `.free()` on a regex.Pattern must consume ownership so
-// that the scope-exit `impl Drop` does NOT double-free the same handle.
-//
-// Without the fix (unregisterDroppable after .free()), this program crashes
-// with heap corruption even without ASAN because macOS malloc aborts on
-// double-free ("pointer being freed was not allocated").  With ASAN the
-// abort is guaranteed on all platforms.
-//
-// The test is falsifiable: if the double-free regression is reintroduced,
-// the process exits non-zero and ctest marks it FAILED.
+// Regression: explicit `.free()` on a regex.Pattern must remain safe even when
+// the handle then goes out of scope.
 
 import std::text::regex;
 
@@ -15,7 +7,6 @@ fn do_explicit_free() -> bool {
     let re = regex.new("[0-9]+");
     let matched = re.is_match("x1y2");
     re.free();
-    // scope exit: impl Drop must NOT fire again for `re`
     matched
 }
 

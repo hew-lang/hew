@@ -1,0 +1,10 @@
+// Regression: explicitly closing an http.Server must remain safe when the
+// handle later goes out of scope.
+
+import std::net::http;
+
+fn main() {
+    let server = http.listen("127.0.0.1:18732");
+    server.close();
+    println("ok");
+}

@@ -983,8 +983,8 @@ mod tests {
         );
 
         assert!(
-            info.drop_types.contains(&"http.Server".to_string()),
-            "http.Server should be a drop type, got: {:?}",
+            !info.drop_types.contains(&"http.Server".to_string()),
+            "http.Server should not be a drop type, got: {:?}",
             info.drop_types
         );
     }
@@ -1007,14 +1007,25 @@ mod tests {
 
         let server_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Server");
         assert!(
-            server_drop.is_some(),
-            "http.Server should have a drop func, got: {:?}",
+            server_drop.is_none(),
+            "http.Server should not have a drop func, got: {:?}",
             info.drop_funcs
         );
-        assert_eq!(
-            server_drop.unwrap().1,
-            "hew_http_server_close",
-            "http.Server drop func should be hew_http_server_close"
+    }
+
+    #[test]
+    fn regex_module_no_drop_type_without_impl_drop() {
+        let info = load_module("std::text::regex", &test_root()).unwrap();
+
+        assert!(
+            !info.drop_types.contains(&"regex.Pattern".to_string()),
+            "regex.Pattern should not be a drop type, got: {:?}",
+            info.drop_types
+        );
+        assert!(
+            info.drop_funcs.iter().all(|(ty, _)| ty != "regex.Pattern"),
+            "regex.Pattern should not have a drop func, got: {:?}",
+            info.drop_funcs
         );
     }
 

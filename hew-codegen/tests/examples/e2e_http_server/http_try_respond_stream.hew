@@ -43,5 +43,6 @@ fn main() {
         resp.free();
     }
 
+    server.close();
     println("ok");
 }

@@ -13,7 +13,7 @@ fn main() {
     let re = regex.new("[a-z]+");
     let found = re.is_match("hello");
     println(found);
+    re.free();
 
-    // Both handle types are dropped here — exercises cross-module cleanup
     println("done");
 }

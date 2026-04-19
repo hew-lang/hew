@@ -64,6 +64,10 @@ pub struct TypeCheckOutput {
     pub warnings: Vec<TypeError>,
     pub type_defs: HashMap<String, TypeDef>,
     pub fn_sigs: HashMap<String, FnSig>,
+    /// Struct type names whose fields directly or transitively contain opaque
+    /// handle values. Used to enforce owned-handle accessor restrictions and
+    /// to thread proven-safe field-drop metadata into codegen.
+    pub handle_bearing_structs: HashSet<String>,
     /// Actor type names that participate in reference cycles.
     pub cycle_capable_actors: HashSet<String>,
     /// Module short names for user (non-stdlib) imports that have resolved items.
@@ -548,6 +552,7 @@ pub struct Checker {
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
+    pub(super) handle_bearing_structs: HashSet<String>,
     /// Qualified `Actor::method` names declared with `receive gen fn`.
     pub(super) receive_generator_methods: HashSet<String>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
@@ -705,6 +710,7 @@ impl Checker {
             assign_target_shapes: HashMap::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            handle_bearing_structs: HashSet::new(),
             receive_generator_methods: HashSet::new(),
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),

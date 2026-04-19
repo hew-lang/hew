@@ -52,10 +52,23 @@ def test_validate_covers_every_runtime_export_exactly_once() -> None:
     )
 
 
+def test_validate_reports_missing_symbol_with_classification_file_path() -> None:
+    errors = verify_ffi_symbols.validate_jit_symbol_classification(
+        {"hew_zzz_test_symbol"},
+        {"stable": set(), "internal": set()},
+    )
+    assert errors == [
+        "unclassified runtime exports (1): "
+        "hew_zzz_test_symbol "
+        f"(update {verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION})"
+    ]
+
+
 _TESTS = [
     test_classify_stable_outputs_sorted_names_only,
     test_classify_internal_outputs_sorted_names_only,
     test_validate_covers_every_runtime_export_exactly_once,
+    test_validate_reports_missing_symbol_with_classification_file_path,
 ]
 
 if __name__ == "__main__":

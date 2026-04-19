@@ -168,18 +168,25 @@ def validate_jit_symbol_classification(
     internal = classification["internal"]
     overlap = sorted(stable & internal)
     if overlap:
-        errors.append("symbols classified more than once: " + ", ".join(overlap))
+        errors.append(
+            "symbols classified more than once: "
+            + ", ".join(overlap)
+            + f" (update {JIT_SYMBOL_CLASSIFICATION})"
+        )
     classified = stable | internal
     missing = sorted(runtime_exports - classified)
     extra = sorted(classified - runtime_exports)
     if missing:
         errors.append(
-            f"unclassified runtime exports ({len(missing)}): " + ", ".join(missing)
+            f"unclassified runtime exports ({len(missing)}): "
+            + ", ".join(missing)
+            + f" (update {JIT_SYMBOL_CLASSIFICATION})"
         )
     if extra:
         errors.append(
             f"classification names not exported by hew-runtime ({len(extra)}): "
             + ", ".join(extra)
+            + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
         )
     return errors
 

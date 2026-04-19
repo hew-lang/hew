@@ -14,6 +14,7 @@ use std::mem;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{atomic::Ordering, LazyLock, RwLock};
 
+use crate::bytes::{self, BytesTriple};
 use crate::lifetime::poison_safe::PoisonSafe;
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
@@ -931,114 +932,197 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
     })
 }
 
-/// Read up to 8192 bytes from a TCP connection into a new `HewVec`.
+/// Read up to 8192 bytes from a TCP connection into a new [`BytesTriple`].
 ///
-/// Returns a pointer to a heap-allocated `HewVec` (i32 elements, one per byte).
-/// Returns an empty `HewVec` (not null) on EOF or error — callers detect
-/// disconnect by checking `is_empty()`.
+/// Returns an empty bytes value on EOF or error — callers detect disconnect by
+/// checking `len == 0`.
+// TODO(1238): classify this std::net export for JIT/native ABI tracking once the convention lands.
 #[no_mangle]
-pub extern "C" fn hew_tcp_read(conn: c_int) -> *mut crate::vec::HewVec {
-    // SAFETY: hew_vec_new allocates and returns a valid HewVec; we own it.
-    let v = unsafe { crate::vec::hew_vec_new() };
+pub extern "C" fn hew_tcp_read(conn: c_int) -> BytesTriple {
+    let empty = BytesTriple {
+        ptr: std::ptr::null_mut(),
+        offset: 0,
+        len: 0,
+    };
     let Some(mut stream) = tcp_clone_stream(conn) else {
-        return v;
+        return empty;
     };
     let mut buf = [0u8; 8192];
     match stream.read(&mut buf) {
-        Ok(0) | Err(_) => v,
+        Ok(0) | Err(_) => empty,
         Ok(n) => {
-            for &b in &buf[..n] {
-                // SAFETY: v was allocated by hew_vec_new and is non-null.
-                unsafe { crate::vec::hew_vec_push_i32(v, i32::from(b)) };
-            }
-            v
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "TCP reads are bounded by the 8192-byte stack buffer"
+            )]
+            let len = n as u32;
+            // SAFETY: `buf` is valid for `n` bytes and `len` matches `n`.
+            unsafe { bytes::hew_bytes_from_static(buf.as_ptr(), len) }
         }
     }
 }
 
-/// Write a bytes `HewVec` to a TCP connection.
+/// Write a bytes value to a TCP connection.
 ///
-/// Each i32 element in `vec` is written as one byte (low 8 bits).
-/// Does NOT append a newline.
-/// Returns number of bytes written, or -1 on error.
+/// Does NOT append a newline. Returns number of bytes written, or -1 on error.
 ///
 /// # Safety
 ///
-/// `vec` must be a valid, non-null pointer to a `HewVec` created by
-/// `hew_vec_new` (i32 elements).
+/// If `data.len > 0`, `data.ptr + data.offset` must be valid for `data.len`
+/// bytes and must follow the [`BytesTriple`] ownership contract.
+// TODO(1238): classify this std::net export for JIT/native ABI tracking once the convention lands.
 #[no_mangle]
-pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec) -> c_int {
-    cabi_guard!(vec.is_null(), -1);
+pub unsafe extern "C" fn hew_tcp_write(conn: c_int, data: BytesTriple) -> c_int {
+    cabi_guard!(data.len > 0 && data.ptr.is_null(), -1);
     let Some(mut stream) = tcp_clone_stream(conn) else {
         return -1;
     };
-    // SAFETY: caller guarantees `vec` is a valid HewVec pointer.
-    let len = unsafe { crate::vec::hew_vec_len(vec) };
-    #[expect(clippy::cast_sign_loss, reason = "vec len is always non-negative")]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "vec len fits in usize on all platforms"
-    )]
-    let mut data = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        // SAFETY: i < len, so index is in bounds.
-        let val = unsafe { crate::vec::hew_vec_get_i32(vec, i) };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "byte values fit in u8"
-        )]
-        data.push(val as u8);
-    }
-    if stream.write_all(&data).is_err() {
+    let payload = if data.len == 0 {
+        &[][..]
+    } else {
+        let offset = data.offset as usize;
+        let len = data.len as usize;
+        // SAFETY: caller guarantees the BytesTriple is valid for `data.len`
+        // bytes starting at `data.ptr + data.offset`.
+        unsafe { std::slice::from_raw_parts(data.ptr.add(offset).cast_const(), len) }
+    };
+    if stream.write_all(payload).is_err() {
         return -1;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "byte count returned as c_int; practical message sizes fit in i32"
-    )]
-    {
-        len as c_int
-    }
+    let Ok(written) = c_int::try_from(data.len) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_write: payload length exceeds c_int range".into(),
+            22, // EINVAL: Invalid argument
+        );
+        return -1;
+    };
+    written
 }
 
-/// Convert a bytes `HewVec` (Vec<i32>) to a NUL-terminated C string.
+/// Convert a bytes value to a NUL-terminated C string.
 ///
-/// Each i32 element is treated as a byte value (low 8 bits used).
 /// The returned pointer is heap-allocated and must be freed by the caller
 /// (or left to the Hew runtime's string GC).
 ///
 /// # Safety
 ///
-/// `vec` must be a valid, non-null pointer to a `HewVec` created by
-/// `hew_vec_new` (i32 elements). The returned pointer is valid until freed.
+/// If `data.len > 0`, `data.ptr + data.offset` must be valid for `data.len`
+/// bytes. The returned pointer is valid until freed.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *mut c_char {
-    if vec.is_null() {
-        return crate::cabi::str_to_malloc("");
+pub unsafe extern "C" fn hew_bytes_to_string(data: BytesTriple) -> *mut c_char {
+    // SAFETY: caller guarantees `data` is a valid bytes value.
+    unsafe { bytes::hew_bytes_to_str(data.ptr.cast_const(), data.offset, data.len) }
+        .cast_mut()
+        .cast::<c_char>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connected_streams() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let addr = listener.local_addr().expect("read listener addr");
+        let client = TcpStream::connect(addr).expect("connect loopback peer");
+        let (server, _) = listener.accept().expect("accept loopback peer");
+        (server, client)
     }
-    // SAFETY: caller guarantees `vec` is a valid HewVec pointer.
-    let len = unsafe { crate::vec::hew_vec_len(vec) };
-    #[expect(clippy::cast_sign_loss, reason = "vec len is always non-negative")]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "vec len fits in usize on all platforms"
-    )]
-    let mut bytes = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        // SAFETY: i < len, so index is in bounds.
-        let val = unsafe { crate::vec::hew_vec_get_i32(vec, i) };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "byte values fit in u8"
-        )]
-        bytes.push(val as u8);
+
+    fn register_stream(stream: TcpStream) -> c_int {
+        TCP_API_STATE.access(|state| {
+            let handle = state.alloc_handle();
+            state.streams.insert(handle, stream);
+            handle
+        })
     }
-    // Strip embedded NUL bytes before creating the C string.
-    bytes.retain(|&b| b != 0);
-    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
-    unsafe { crate::cabi::malloc_cstring(bytes.as_ptr(), bytes.len()) }
+
+    fn remove_stream(handle: c_int) {
+        TCP_API_STATE.access(|state| {
+            state.streams.remove(&handle);
+        });
+    }
+
+    fn allocs_for_read(payload: &[u8]) -> u64 {
+        let (server, mut client) = connected_streams();
+        let handle = register_stream(server);
+        client.write_all(payload).expect("send payload");
+        let before = crate::profiler::allocator::snapshot();
+        let triple = hew_tcp_read(handle);
+        let after = crate::profiler::allocator::snapshot();
+        // SAFETY: `hew_tcp_read` returns caller-owned bytes.
+        unsafe { crate::bytes::hew_bytes_drop(triple.ptr) };
+        remove_stream(handle);
+        after.alloc_count - before.alloc_count
+    }
+
+    #[test]
+    fn tcp_read_returns_bytes_triple() {
+        let _guard = crate::runtime_test_guard();
+        let payload = b"hello tcp";
+        let (server, mut client) = connected_streams();
+        let handle = register_stream(server);
+        client.write_all(payload).expect("send payload");
+
+        let triple = hew_tcp_read(handle);
+        assert_eq!(triple.offset, 0);
+        let expected_len = u32::try_from(payload.len()).expect("payload length fits in u32");
+        assert_eq!(triple.len, expected_len);
+        let triple_len = usize::try_from(triple.len).expect("bytes triple length fits in usize");
+        // SAFETY: `triple` was returned by `hew_tcp_read` and remains live until dropped below.
+        let data = unsafe { std::slice::from_raw_parts(triple.ptr, triple_len) };
+        assert_eq!(data, payload);
+
+        // SAFETY: `hew_tcp_read` transfers ownership of the buffer to the caller.
+        unsafe { crate::bytes::hew_bytes_drop(triple.ptr) };
+        remove_stream(handle);
+    }
+
+    #[test]
+    fn tcp_write_sends_bytes_triple_without_repacking() {
+        let _guard = crate::runtime_test_guard();
+        let payload = b"bytes over tcp";
+        let (server, mut client) = connected_streams();
+        let handle = register_stream(server);
+        // SAFETY: `payload` is valid for `payload.len()` bytes.
+        let triple = unsafe {
+            bytes::hew_bytes_from_static(
+                payload.as_ptr(),
+                u32::try_from(payload.len()).expect("payload length fits in u32"),
+            )
+        };
+
+        // SAFETY: `triple` is a valid caller-owned bytes value.
+        let written = unsafe { hew_tcp_write(handle, triple) };
+        let expected_written =
+            c_int::try_from(payload.len()).expect("payload length fits in c_int");
+        assert_eq!(written, expected_written);
+
+        let mut received = vec![0u8; payload.len()];
+        client
+            .read_exact(&mut received)
+            .expect("read back written payload");
+        assert_eq!(received, payload);
+
+        // SAFETY: `hew_bytes_from_static` returns caller-owned bytes.
+        unsafe { crate::bytes::hew_bytes_drop(triple.ptr) };
+        remove_stream(handle);
+    }
+
+    #[test]
+    fn tcp_read_allocator_cost_is_constant_across_payload_sizes() {
+        let _guard = crate::runtime_test_guard();
+        let small = allocs_for_read(b"x");
+        let large_payload = vec![b'x'; 4096];
+        let large = allocs_for_read(&large_payload);
+        assert_eq!(
+            small, large,
+            "tcp read allocator cost should stay constant across payload sizes"
+        );
+        assert!(
+            large <= 1,
+            "tcp read should use at most one Rust allocator call, saw {large}"
+        );
+    }
 }
 
 /// Broadcast one message to all open TCP connections except `exclude_conn`.

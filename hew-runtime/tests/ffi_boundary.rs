@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 // Re-export the C ABI functions under test.
 use hew_runtime::actor::{hew_actor_free, hew_actor_send, hew_actor_spawn};
+use hew_runtime::bytes::hew_bytes_drop;
 use hew_runtime::hashmap::{
     hew_hashmap_contains_key, hew_hashmap_free_impl, hew_hashmap_get_f64, hew_hashmap_get_i32,
     hew_hashmap_get_i64, hew_hashmap_get_str_impl, hew_hashmap_insert_f64, hew_hashmap_insert_i64,
@@ -2648,40 +2649,36 @@ mod utf8_string_tests {
     #[test]
     fn to_bytes_ascii() {
         let s = CString::new("hi").unwrap();
-        let v = unsafe { hew_string_to_bytes(s.as_ptr()) };
-        assert!(!v.is_null());
-        let vec = unsafe { &*v };
-        assert_eq!(vec.len, 2);
-        // Each byte is stored as an i32 element (matches hew_tcp_read convention).
-        let b0 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 0) };
-        let b1 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 1) };
-        assert_eq!(b0, i32::from(b'h'));
-        assert_eq!(b1, i32::from(b'i'));
-        unsafe { hew_runtime::vec::hew_vec_free(v) };
+        let bytes = unsafe { hew_string_to_bytes(s.as_ptr()) };
+        assert_eq!(bytes.offset, 0);
+        assert_eq!(bytes.len, 2);
+        let len = usize::try_from(bytes.len).expect("bytes length fits in usize");
+        // SAFETY: `hew_string_to_bytes` returned a live bytes buffer for `len` bytes.
+        let slice = unsafe { std::slice::from_raw_parts(bytes.ptr, len) };
+        assert_eq!(slice, b"hi");
+        unsafe { hew_bytes_drop(bytes.ptr) };
     }
 
     #[test]
     fn to_bytes_multibyte() {
         // "é" is 2 bytes: 0xC3 0xA9
         let s = CString::new("é").unwrap();
-        let v = unsafe { hew_string_to_bytes(s.as_ptr()) };
-        assert!(!v.is_null());
-        let vec = unsafe { &*v };
-        assert_eq!(vec.len, 2);
-        let b0 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 0) };
-        let b1 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 1) };
-        assert_eq!(b0, 0xC3);
-        assert_eq!(b1, 0xA9);
-        unsafe { hew_runtime::vec::hew_vec_free(v) };
+        let bytes = unsafe { hew_string_to_bytes(s.as_ptr()) };
+        assert_eq!(bytes.offset, 0);
+        assert_eq!(bytes.len, 2);
+        let len = usize::try_from(bytes.len).expect("bytes length fits in usize");
+        // SAFETY: `hew_string_to_bytes` returned a live bytes buffer for `len` bytes.
+        let slice = unsafe { std::slice::from_raw_parts(bytes.ptr, len) };
+        assert_eq!(slice, &[0xC3, 0xA9]);
+        unsafe { hew_bytes_drop(bytes.ptr) };
     }
 
     #[test]
     fn to_bytes_null() {
-        let v = unsafe { hew_string_to_bytes(ptr::null()) };
-        assert!(!v.is_null());
-        let vec = unsafe { &*v };
-        assert_eq!(vec.len, 0);
-        unsafe { hew_runtime::vec::hew_vec_free(v) };
+        let bytes = unsafe { hew_string_to_bytes(ptr::null()) };
+        assert!(bytes.ptr.is_null());
+        assert_eq!(bytes.offset, 0);
+        assert_eq!(bytes.len, 0);
     }
 }
 

@@ -13,7 +13,7 @@
 //! 3. **Terminate** — Force-stop any remaining actors and shut down the
 //!    scheduler.
 
-use crate::util::MutexExt;
+use crate::lifetime::poison_safe::PoisonSafe;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
@@ -58,8 +58,7 @@ struct SupervisorPtr(*mut crate::supervisor::HewSupervisor);
 unsafe impl Send for SupervisorPtr {}
 
 /// Registered top-level supervisors to stop during shutdown.
-static TOP_LEVEL_SUPERVISORS: std::sync::Mutex<Vec<SupervisorPtr>> =
-    std::sync::Mutex::new(Vec::new());
+static TOP_LEVEL_SUPERVISORS: PoisonSafe<Vec<SupervisorPtr>> = PoisonSafe::new(Vec::new());
 
 // ---------------------------------------------------------------------------
 // C ABI — Phase queries
@@ -105,10 +104,11 @@ pub unsafe extern "C" fn hew_shutdown_register_supervisor(
     if sup.is_null() {
         return;
     }
-    let mut sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
-    if !sups.iter().any(|s| s.0 == sup) {
-        sups.push(SupervisorPtr(sup));
-    }
+    TOP_LEVEL_SUPERVISORS.access(|sups| {
+        if !sups.iter().any(|s| s.0 == sup) {
+            sups.push(SupervisorPtr(sup));
+        }
+    });
 }
 
 /// Unregister a top-level supervisor from shutdown.
@@ -124,16 +124,14 @@ pub unsafe extern "C" fn hew_shutdown_unregister_supervisor(
     if sup.is_null() {
         return;
     }
-    let mut sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
-    sups.retain(|s| s.0 != sup);
+    TOP_LEVEL_SUPERVISORS.access(|sups| sups.retain(|s| s.0 != sup));
 }
 
 #[cfg(test)]
 pub(crate) fn is_supervisor_registered_for_test(
     sup: *mut crate::supervisor::HewSupervisor,
 ) -> bool {
-    let sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
-    sups.iter().any(|candidate| candidate.0 == sup)
+    TOP_LEVEL_SUPERVISORS.access(|sups| sups.iter().any(|candidate| candidate.0 == sup))
 }
 
 /// Free all registered top-level supervisors without waiting for actors.
@@ -144,8 +142,8 @@ pub(crate) fn is_supervisor_registered_for_test(
 /// spec resources (names, `init_state`).  Actors themselves are freed
 /// separately by [`crate::actor::cleanup_all_actors`].
 pub(crate) unsafe fn free_registered_supervisors() {
-    let mut sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
-    for s in sups.drain(..) {
+    let to_free = TOP_LEVEL_SUPERVISORS.access(std::mem::take);
+    for s in to_free {
         if !s.0.is_null() {
             // SAFETY: supervisor was registered and pointer is valid.
             unsafe { crate::supervisor::free_supervisor_resources(s.0) };
@@ -155,8 +153,7 @@ pub(crate) unsafe fn free_registered_supervisors() {
 
 #[cfg(feature = "profiler")]
 pub(crate) fn registered_supervisors_snapshot() -> Vec<*mut crate::supervisor::HewSupervisor> {
-    let sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
-    sups.iter().map(|sup| sup.0).collect()
+    TOP_LEVEL_SUPERVISORS.access(|sups| sups.iter().map(|sup| sup.0).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -396,12 +393,11 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     // Stop registered supervisors in reverse order (bottom-up).
     // Extract the supervisor list to avoid holding the mutex while stopping them.
     // This prevents deadlock when hew_supervisor_stop calls hew_shutdown_unregister_supervisor.
-    let supervisors_to_stop = {
-        let mut sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
+    let supervisors_to_stop = TOP_LEVEL_SUPERVISORS.access(|sups| {
         // Reverse: last registered (innermost) first.
         sups.reverse();
-        std::mem::take(&mut *sups) // Extract all supervisors, leaving empty vec
-    };
+        std::mem::take(sups) // Extract all supervisors, leaving empty vec
+    });
 
     // Stop supervisors without holding the mutex.
     for s in &supervisors_to_stop {
@@ -436,8 +432,8 @@ mod tests {
     fn reset_shutdown_state() {
         SHUTDOWN_PHASE.store(PHASE_RUNNING, Ordering::Release);
 
-        let mut supervisors = TOP_LEVEL_SUPERVISORS.lock_or_recover();
-        for supervisor in supervisors.drain(..) {
+        let to_stop = TOP_LEVEL_SUPERVISORS.access(std::mem::take);
+        for supervisor in to_stop {
             if !supervisor.0.is_null() {
                 // SAFETY: tests only store pointers returned by hew_supervisor_new
                 // and this cleanup runs after each test has finished using them.
@@ -770,11 +766,14 @@ mod tests {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
 
-        // Poison the mutex by panicking while holding it.
+        // Poison the mutex by panicking inside the closure.
         let _ = std::panic::catch_unwind(|| {
-            let _guard = TOP_LEVEL_SUPERVISORS.lock().unwrap();
-            panic!("intentional poison");
+            TOP_LEVEL_SUPERVISORS.access(|_| panic!("intentional poison"));
         });
+        assert!(
+            TOP_LEVEL_SUPERVISORS.is_poisoned_for_test(),
+            "mutex must be poisoned"
+        );
 
         // The mutex is now poisoned.  hew_shutdown_register_supervisor must
         // not silently skip — it must recover and register the supervisor.
@@ -812,11 +811,14 @@ mod tests {
         unsafe { hew_shutdown_register_supervisor(sup) };
         assert!(is_supervisor_registered_for_test(sup));
 
-        // Poison the mutex.
+        // Poison the mutex by panicking inside the closure.
         let _ = std::panic::catch_unwind(|| {
-            let _guard = TOP_LEVEL_SUPERVISORS.lock().unwrap();
-            panic!("intentional poison");
+            TOP_LEVEL_SUPERVISORS.access(|_| panic!("intentional poison"));
         });
+        assert!(
+            TOP_LEVEL_SUPERVISORS.is_poisoned_for_test(),
+            "mutex must be poisoned"
+        );
 
         // Unregister must recover from the poison and actually remove the entry.
         // SAFETY: sup is a valid pointer previously registered.
@@ -846,11 +848,14 @@ mod tests {
         // SAFETY: sup is a valid pointer.
         unsafe { hew_shutdown_register_supervisor(sup) };
 
-        // Poison the mutex.
+        // Poison the mutex by panicking inside the closure.
         let _ = std::panic::catch_unwind(|| {
-            let _guard = TOP_LEVEL_SUPERVISORS.lock().unwrap();
-            panic!("intentional poison");
+            TOP_LEVEL_SUPERVISORS.access(|_| panic!("intentional poison"));
         });
+        assert!(
+            TOP_LEVEL_SUPERVISORS.is_poisoned_for_test(),
+            "mutex must be poisoned"
+        );
 
         // SAFETY: worker threads are not running in this unit-test context;
         // calling free_registered_supervisors mirrors the cleanup call site.
@@ -883,9 +888,12 @@ mod tests {
 
         // Poison the mutex before the drain.
         let _ = std::panic::catch_unwind(|| {
-            let _guard = TOP_LEVEL_SUPERVISORS.lock().unwrap();
-            panic!("intentional poison");
+            TOP_LEVEL_SUPERVISORS.access(|_| panic!("intentional poison"));
         });
+        assert!(
+            TOP_LEVEL_SUPERVISORS.is_poisoned_for_test(),
+            "mutex must be poisoned"
+        );
 
         // Enter QUIESCE phase as if shutdown was initiated.
         SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);

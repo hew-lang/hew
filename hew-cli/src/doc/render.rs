@@ -1,6 +1,6 @@
 //! Render [`DocModule`] items to HTML fragments.
 
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::extract::{
     DocActor, DocConst, DocField, DocFunction, DocMethod, DocModule, DocTrait, DocType,
@@ -9,11 +9,29 @@ use super::extract::{
 use super::highlight;
 use super::template::{highlight_signature, html_escape};
 
+/// Shift a pulldown-cmark heading level by `offset`, clamping to 1–6.
+fn shift_level(level: HeadingLevel, offset: u8) -> HeadingLevel {
+    let n = level as u8;
+    let shifted = (n + offset).min(6);
+    match shifted {
+        1 => HeadingLevel::H1,
+        2 => HeadingLevel::H2,
+        3 => HeadingLevel::H3,
+        4 => HeadingLevel::H4,
+        5 => HeadingLevel::H5,
+        _ => HeadingLevel::H6,
+    }
+}
+
 /// Convert a Markdown doc comment to an HTML fragment.
+///
+/// `heading_offset` is added to every heading level so that `# Examples`
+/// inside a doc comment (which would normally emit `<h1>`) becomes `<h4>`
+/// when the item heading is `<h3>` (offset = 3).  Pass `0` for no shift.
 ///
 /// Code blocks with language `hew` (or no language) are highlighted using
 /// the lexer-based Shiki-compatible highlighter.
-fn markdown_to_html(md: &str) -> String {
+fn markdown_to_html(md: &str, heading_offset: u8) -> String {
     let opts =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_HEADING_ATTRIBUTES;
     let parser = Parser::new_ext(md, opts);
@@ -24,6 +42,30 @@ fn markdown_to_html(md: &str) -> String {
     let mut code_buf = String::new();
 
     for event in parser {
+        let event = match event {
+            // Shift heading start
+            Event::Start(Tag::Heading {
+                level,
+                id,
+                classes,
+                attrs,
+            }) => {
+                let new_level = shift_level(level, heading_offset);
+                Event::Start(Tag::Heading {
+                    level: new_level,
+                    id,
+                    classes,
+                    attrs,
+                })
+            }
+            // Shift heading end
+            Event::End(TagEnd::Heading(level)) => {
+                let new_level = shift_level(level, heading_offset);
+                Event::End(TagEnd::Heading(new_level))
+            }
+            other => other,
+        };
+
         match event {
             Event::Start(Tag::CodeBlock(kind)) => {
                 in_code_block = true;
@@ -61,7 +103,8 @@ fn markdown_to_html(md: &str) -> String {
 fn push_doc(out: &mut String, doc: Option<&String>) {
     if let Some(d) = doc {
         out.push_str("<div class=\"doc\">");
-        out.push_str(&markdown_to_html(d));
+        // Items are rendered under <h3>; shift doc `#` → <h4> (offset 3).
+        out.push_str(&markdown_to_html(d, 3));
         out.push_str("</div>\n");
     }
 }
@@ -69,7 +112,11 @@ fn push_doc(out: &mut String, doc: Option<&String>) {
 /// Render an inline doc fragment (used inside dl entries and method lists).
 fn render_inline_doc(doc: Option<&String>) -> String {
     if let Some(d) = doc {
-        format!("<div class=\"inline-doc\">{}</div>\n", markdown_to_html(d))
+        // Method/field docs sit inside an <h4> context; shift doc `#` → <h5> (offset 4).
+        format!(
+            "<div class=\"inline-doc\">{}</div>\n",
+            markdown_to_html(d, 4)
+        )
     } else {
         String::new()
     }
@@ -88,7 +135,7 @@ fn render_fields_dl(fields: &[DocField]) -> String {
         out.push_str("</span></dt>\n");
         if let Some(doc) = &field.doc {
             out.push_str("<dd>");
-            out.push_str(&markdown_to_html(doc));
+            out.push_str(&markdown_to_html(doc, 4));
             out.push_str("</dd>\n");
         }
     }
@@ -159,7 +206,7 @@ fn render_type(t: &DocType) -> String {
             out.push_str("</code></dt>\n");
             if let Some(doc) = &v.doc {
                 out.push_str("<dd>");
-                out.push_str(&markdown_to_html(doc));
+                out.push_str(&markdown_to_html(doc, 4));
                 out.push_str("</dd>\n");
             }
         }
@@ -241,7 +288,12 @@ pub fn render_module(module: &DocModule) -> String {
     body.push_str(&html_escape(&module.name));
     body.push_str("</code></h1>\n");
 
-    push_doc(&mut body, module.doc.as_ref());
+    // Module-level docs are under <h1>; shift doc `#` → <h2> (offset 1).
+    if let Some(d) = &module.doc {
+        body.push_str("<div class=\"doc\">");
+        body.push_str(&markdown_to_html(d, 1));
+        body.push_str("</div>\n");
+    }
 
     // Table of contents
     let has_items = !module.functions.is_empty()
@@ -516,7 +568,64 @@ pub type UserId = i64;
     #[test]
     fn markdown_renders_code_blocks() {
         let md = "Some text.\n\n```\nlet x = 1;\n```\n";
-        let html = markdown_to_html(md);
+        let html = markdown_to_html(md, 0);
         assert!(html.contains("<code>"));
+    }
+
+    // ── Feature 1: Markdown header demotion ──────────────────────────────────
+
+    /// Doc `#` inside an item (h3 context) must not produce <h1>.
+    #[test]
+    fn doc_heading_demoted_under_item() {
+        let source = r"/// # Examples
+///
+/// Some text.
+pub fn foo() {}
+";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+        // # Examples → <h4> (offset 3), never <h1>
+        assert!(
+            !html.contains("<h1>Examples</h1>"),
+            "h1 should not appear inside item doc"
+        );
+        assert!(
+            html.contains("<h4>Examples</h4>"),
+            "# Examples inside item doc must become <h4>"
+        );
+    }
+
+    /// Doc `##` inside an item must become <h5>.
+    #[test]
+    fn doc_subheading_demoted_under_item() {
+        let source = r"/// ## Sub
+pub fn bar() {}
+";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+        assert!(
+            html.contains("<h5>Sub</h5>"),
+            "## Sub inside item doc must become <h5>"
+        );
+    }
+
+    /// Module-level `#` doc heading must become <h2> (one below the page <h1>).
+    #[test]
+    fn module_doc_heading_demoted() {
+        let source = "//! # Overview\n\npub fn x() {}\n";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+        // Module docs get offset 1: # → <h2>
+        assert!(
+            !html.contains("<h1>Overview</h1>"),
+            "module-doc # must not produce h1"
+        );
+        assert!(
+            html.contains("<h2>Overview</h2>"),
+            "module-doc # must become <h2>"
+        );
     }
 }

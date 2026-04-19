@@ -1,6 +1,7 @@
 //! Render [`DocModule`] items to HTML fragments.
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::collections::HashMap;
 
 use super::extract::{
     DocActor, DocConst, DocField, DocFunction, DocMethod, DocModule, DocTrait, DocType,
@@ -143,11 +144,100 @@ fn render_fields_dl(fields: &[DocField]) -> String {
     out
 }
 
+/// Map from bare type name to its intra-page anchor href (`#type.Foo`).
+///
+/// Used by `link_signature_types` to wrap type-coloured tokens in signature
+/// HTML with clickable anchors. Only same-module types are indexed; bare names
+/// are always unique within one module so no disambiguation is needed.
+type TypeIndex = HashMap<String, String>;
+
+/// Build a type index for the current module: maps bare type name → anchor href.
+///
+/// Types (`#type.Foo`), actors (`#actor.Foo`), and traits (`#trait.Foo`) are
+/// all indexed. Same-module only; inter-module links are out of scope for this
+/// feature — following cross-module refs would require a multi-module index not
+/// available at per-module render time.
+fn build_type_index(module: &DocModule) -> TypeIndex {
+    let mut index = TypeIndex::new();
+    for t in &module.types {
+        index.insert(t.name.clone(), format!("#type.{}", t.name));
+    }
+    for a in &module.actors {
+        index.insert(a.name.clone(), format!("#actor.{}", a.name));
+    }
+    for t in &module.traits {
+        index.insert(t.name.clone(), format!("#trait.{}", t.name));
+    }
+    index
+}
+
+/// Post-process a highlighted signature HTML string, wrapping type-coloured
+/// tokens with intra-page anchor links when the type appears in `index`.
+///
+/// The highlight step emits `<span style="color:#2dd4bf">TypeName</span>` for
+/// `PascalCase` identifiers and built-in type names. This function scans for
+/// those spans and replaces them with
+/// `<a href="..."><span ...>TypeName</span></a>` when the unescaped content
+/// matches an indexed type name.
+fn link_signature_types(highlighted: &str, index: &TypeIndex) -> String {
+    // The colour emitted by highlight_signature / token_color for type tokens.
+    const TYPE_COLOR: &str = "#2dd4bf";
+    let open_tag = format!("<span style=\"color:{TYPE_COLOR}\">");
+
+    if index.is_empty() {
+        return highlighted.to_string();
+    }
+
+    let mut out = String::with_capacity(highlighted.len() + index.len() * 30);
+    let mut rest = highlighted;
+
+    while let Some(pos) = rest.find(&open_tag) {
+        out.push_str(&rest[..pos]);
+        let after_open = &rest[pos + open_tag.len()..];
+        // Find the matching </span>
+        if let Some(end) = after_open.find("</span>") {
+            let inner = &after_open[..end];
+            // Reverse HTML-escape to get the plain type name for index lookup
+            let name = inner
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"");
+            if let Some(href) = index.get(&name) {
+                out.push_str("<a href=\"");
+                out.push_str(href);
+                out.push_str("\">");
+                out.push_str(&open_tag);
+                out.push_str(inner);
+                out.push_str("</span></a>");
+            } else {
+                // Not in index — emit unchanged
+                out.push_str(&open_tag);
+                out.push_str(inner);
+                out.push_str("</span>");
+            }
+            rest = &after_open[end + "</span>".len()..];
+        } else {
+            // Malformed span — emit as-is
+            out.push_str(&rest[pos..]);
+            return out;
+        }
+    }
+
+    out.push_str(rest);
+    out
+}
+
 /// Render a list of methods or handlers under a named heading. `owner` is
 /// the parent item's name (trait or actor), used to namespace each
 /// method's HTML `id` so two traits on the same page can expose methods
 /// with overlapping names without colliding on the anchor.
-fn render_methods_list(heading: &str, owner: &str, methods: &[DocMethod]) -> String {
+fn render_methods_list(
+    heading: &str,
+    owner: &str,
+    methods: &[DocMethod],
+    index: &TypeIndex,
+) -> String {
     if methods.is_empty() {
         return String::new();
     }
@@ -159,7 +249,8 @@ fn render_methods_list(heading: &str, owner: &str, methods: &[DocMethod]) -> Str
         out.push_str(&html_escape(&m.name));
         out.push_str("\">\n");
         out.push_str("<span class=\"sig\">");
-        out.push_str(&highlight_signature(&m.signature));
+        let highlighted = highlight_signature(&m.signature);
+        out.push_str(&link_signature_types(&highlighted, index));
         out.push_str("</span>\n");
         out.push_str(&render_inline_doc(m.doc.as_ref()));
         out.push_str("</div>\n");
@@ -168,7 +259,7 @@ fn render_methods_list(heading: &str, owner: &str, methods: &[DocMethod]) -> Str
 }
 
 /// Render a function item.
-fn render_function(f: &DocFunction) -> String {
+fn render_function(f: &DocFunction, index: &TypeIndex) -> String {
     let mut out = String::from("<div class=\"item\" id=\"fn.");
     out.push_str(&html_escape(&f.name));
     out.push_str("\">\n");
@@ -176,7 +267,8 @@ fn render_function(f: &DocFunction) -> String {
     out.push_str(&html_escape(&f.name));
     out.push_str("</code></h3>\n");
     out.push_str("<span class=\"sig\">");
-    out.push_str(&highlight_signature(&f.signature));
+    let highlighted = highlight_signature(&f.signature);
+    out.push_str(&link_signature_types(&highlighted, index));
     out.push_str("</span>\n");
     push_doc(&mut out, f.doc.as_ref());
     out.push_str("</div>\n");
@@ -184,7 +276,7 @@ fn render_function(f: &DocFunction) -> String {
 }
 
 /// Render a type item (struct or enum).
-fn render_type(t: &DocType) -> String {
+fn render_type(t: &DocType, _index: &TypeIndex) -> String {
     let mut out = String::from("<div class=\"item\" id=\"type.");
     out.push_str(&html_escape(&t.name));
     out.push_str("\">\n");
@@ -217,7 +309,7 @@ fn render_type(t: &DocType) -> String {
 }
 
 /// Render an actor item.
-fn render_actor(a: &DocActor) -> String {
+fn render_actor(a: &DocActor, index: &TypeIndex) -> String {
     let mut out = String::from("<div class=\"item\" id=\"actor.");
     out.push_str(&html_escape(&a.name));
     out.push_str("\">\n");
@@ -226,13 +318,18 @@ fn render_actor(a: &DocActor) -> String {
     out.push_str("</code></h3>\n");
     push_doc(&mut out, a.doc.as_ref());
     out.push_str(&render_fields_dl(&a.fields));
-    out.push_str(&render_methods_list("Handlers", &a.name, &a.handlers));
+    out.push_str(&render_methods_list(
+        "Handlers",
+        &a.name,
+        &a.handlers,
+        index,
+    ));
     out.push_str("</div>\n");
     out
 }
 
 /// Render a trait item.
-fn render_trait(t: &DocTrait) -> String {
+fn render_trait(t: &DocTrait, index: &TypeIndex) -> String {
     let mut out = String::from("<div class=\"item\" id=\"trait.");
     out.push_str(&html_escape(&t.name));
     out.push_str("\">\n");
@@ -240,7 +337,7 @@ fn render_trait(t: &DocTrait) -> String {
     out.push_str(&html_escape(&t.name));
     out.push_str("</code></h3>\n");
     push_doc(&mut out, t.doc.as_ref());
-    out.push_str(&render_methods_list("Methods", &t.name, &t.methods));
+    out.push_str(&render_methods_list("Methods", &t.name, &t.methods, index));
     out.push_str("</div>\n");
     out
 }
@@ -281,6 +378,10 @@ fn render_type_alias(ta: &DocTypeAlias) -> String {
 
 /// Render a full module page body (without the outer HTML wrapper).
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "sequential rendering of each item kind"
+)]
 pub fn render_module(module: &DocModule) -> String {
     let mut body = String::new();
 
@@ -294,6 +395,9 @@ pub fn render_module(module: &DocModule) -> String {
         body.push_str(&markdown_to_html(d, 1));
         body.push_str("</div>\n");
     }
+
+    // Build the intra-page type index for cross-linking in signatures.
+    let index = build_type_index(module);
 
     // Table of contents
     let has_items = !module.functions.is_empty()
@@ -354,28 +458,28 @@ pub fn render_module(module: &DocModule) -> String {
     if !module.functions.is_empty() {
         body.push_str("<h2>Functions</h2>\n");
         for f in &module.functions {
-            body.push_str(&render_function(f));
+            body.push_str(&render_function(f, &index));
         }
     }
 
     if !module.types.is_empty() {
         body.push_str("<h2>Types</h2>\n");
         for t in &module.types {
-            body.push_str(&render_type(t));
+            body.push_str(&render_type(t, &index));
         }
     }
 
     if !module.actors.is_empty() {
         body.push_str("<h2>Actors</h2>\n");
         for a in &module.actors {
-            body.push_str(&render_actor(a));
+            body.push_str(&render_actor(a, &index));
         }
     }
 
     if !module.traits.is_empty() {
         body.push_str("<h2>Traits</h2>\n");
         for t in &module.traits {
-            body.push_str(&render_trait(t));
+            body.push_str(&render_trait(t, &index));
         }
     }
 
@@ -626,6 +730,49 @@ pub fn bar() {}
         assert!(
             html.contains("<h2>Overview</h2>"),
             "module-doc # must become <h2>"
+        );
+    }
+
+    // ── Feature 2: Cross-link types in signatures ─────────────────────────────
+
+    /// Types defined in the same module are hyperlinked in function signatures.
+    #[test]
+    fn signature_types_are_linked() {
+        let source = "pub type Value {}\npub fn stringify(val: Value) -> String;\n";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+        assert!(
+            html.contains("href=\"#type.Value\""),
+            "Value in signature should link to #type.Value"
+        );
+    }
+
+    /// Types not in the module are not given a (broken) link.
+    #[test]
+    fn unknown_type_not_linked() {
+        let source = "pub fn foo(x: i32) -> i32 {}\n";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+        // i32 is a built-in type coloured TY, but it's not in the module index
+        assert!(
+            !html.contains("href=\"#type.i32\""),
+            "built-in i32 must not get a broken link"
+        );
+    }
+
+    /// Types in trait method signatures are also linked.
+    #[test]
+    fn trait_method_signature_types_linked() {
+        let source = "pub type Foo {}\ntrait FooMethods { fn get(v: Foo) -> Foo; }\n";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+        // Both the param and return type should be linked
+        assert!(
+            html.contains("href=\"#type.Foo\""),
+            "Foo in trait method signature must be linked"
         );
     }
 }

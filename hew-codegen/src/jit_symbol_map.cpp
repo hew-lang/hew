@@ -14,7 +14,7 @@ std::size_t HewJitSymbolMap::stableSymbolCount() const {
 }
 
 bool HewJitSymbolMap::hasStableSymbol(std::string_view name) const {
-  return std::find(stableSymbols.begin(), stableSymbols.end(), name) != stableSymbols.end();
+  return std::binary_search(stableSymbols.begin(), stableSymbols.end(), name);
 }
 
 void HewJitSymbolMap::forEachStableSymbol(const StableSymbolVisitor &visitor) const {

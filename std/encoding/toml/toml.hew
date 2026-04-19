@@ -33,12 +33,15 @@ pub enum ParseError {
 /// An opaque TOML value.
 ///
 /// Represents any TOML type: string, integer, float, boolean, array,
-/// table, or datetime. Must be freed with `free()` when no longer needed.
+/// table, or datetime. The canonical shared wire tag prefix reserves
+/// `0` for null, even though TOML itself has no null value. Must be freed
+/// with `free()` when no longer needed.
 type Value {}
 
 /// Methods available on a TOML `Value`.
 trait ValueMethods {
-    /// Return the type tag (0=string, 1=int, 2=float, 3=bool, 4=array, 5=table, 6=datetime).
+    /// Return the type tag (0=null reserved, 1=bool, 2=int, 3=float,
+    /// 4=string, 5=array, 6=table, 7=datetime).
     fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the string value.
     fn get_string(val: Value) -> String;

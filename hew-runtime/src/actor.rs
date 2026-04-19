@@ -4,13 +4,11 @@
 //! actor state machine constants. The full actor API (spawn, send, activate)
 //! will be implemented in a future iteration.
 
-use crate::util::MutexExt;
+use crate::lifetime::live_actors;
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
-use std::sync::Mutex;
 
 use crate::internal::types::{AskError, HewActorState, HewError, HewOverflowPolicy};
 #[cfg(not(target_arch = "wasm32"))]
@@ -373,27 +371,12 @@ static NEXT_ACTOR_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 // PID is now unified with id — actors use location-transparent IDs everywhere.
 
-// ── Live actor tracking ────────────────────────────────────────────────
-
-/// Wrapper so `*mut HewActor` can be stored in a collection.
-#[derive(Debug)]
-struct ActorPtr(*mut HewActor);
-
-// SAFETY: Actor pointers are managed by the runtime and only freed
-// under controlled conditions (shutdown or explicit free).
-unsafe impl Send for ActorPtr {}
-
-/// Map from actor ID → pointer for O(1) lookups by ID.
-static LIVE_ACTORS: Mutex<Option<HashMap<u64, ActorPtr>>> = Mutex::new(None);
+// ── Live actor tracking (delegated to lifetime::live_actors) ──────────────
 
 #[cfg(not(target_arch = "wasm32"))]
 const TERMINATE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 #[cfg(not(target_arch = "wasm32"))]
 const TERMINATE_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
-
-#[cfg(not(target_arch = "wasm32"))]
-static DEFERRED_ACTOR_FREE_THREADS: Mutex<Vec<std::thread::JoinHandle<()>>> =
-    Mutex::new(Vec::new());
 
 #[cfg(test)]
 static TERMINATE_WAIT_POLL_TICKS: std::sync::atomic::AtomicUsize =
@@ -409,40 +392,27 @@ fn record_terminate_wait_poll_tick() {
 #[inline]
 fn record_terminate_wait_poll_tick() {}
 
-/// Register an actor in the live tracking map.
+/// Check whether an actor ID still maps to the expected live actor pointer.
 ///
-/// # Safety
-///
-/// `actor` must be a valid, fully initialised `HewActor` pointer whose
-/// `id` field is already set.
-fn track_actor(actor: *mut HewActor) {
-    // SAFETY: caller guarantees `actor` is valid and initialised.
-    let id = unsafe { (*actor).id };
-    let mut guard = LIVE_ACTORS.lock_or_recover();
-    guard
-        .get_or_insert_with(HashMap::new)
-        .insert(id, ActorPtr(actor));
+/// Delegates to [`live_actors::with_live_actor_by_id`].
+pub(crate) fn with_live_actor_by_id<R>(
+    actor_id: u64,
+    expected: *mut HewActor,
+    f: impl FnOnce(&HewActor) -> R,
+) -> Option<R> {
+    live_actors::with_live_actor_by_id(actor_id, expected, f)
 }
 
-/// Remove an actor from the live tracking map.
-///
-/// Returns `true` if the actor was present and removed, `false` if it
-/// was not found (e.g. already consumed by [`cleanup_all_actors`]).
-/// Only removes the entry if the stored pointer matches `actor`, guarding
-/// against the (unlikely) case of an ID collision after serial overflow.
-fn untrack_actor(actor: *mut HewActor) -> bool {
-    // SAFETY: caller guarantees `actor` is valid and not yet freed.
-    let id = unsafe { (*actor).id };
-    let mut guard = LIVE_ACTORS.lock_or_recover();
-    if let Some(map) = guard.as_mut() {
-        if let std::collections::hash_map::Entry::Occupied(entry) = map.entry(id) {
-            if entry.get().0 == actor {
-                entry.remove();
-                return true;
-            }
-        }
-    }
-    false
+/// Check whether an actor pointer is still live (tracked and not yet freed).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "supervisor and actor tests rely on the liveness probe"
+    )
+)]
+pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
+    live_actors::is_actor_live(actor)
 }
 
 #[inline]
@@ -472,24 +442,6 @@ fn free_deferred_actor(deferred: DeferredActorFree) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn drain_deferred_actor_free_threads() {
-    loop {
-        let handles = {
-            let mut guard = DEFERRED_ACTOR_FREE_THREADS.lock_or_recover();
-            if guard.is_empty() {
-                return;
-            }
-            std::mem::take(&mut *guard)
-        };
-        for handle in handles {
-            if handle.join().is_err() {
-                eprintln!("hew: warning: deferred actor free thread panicked");
-            }
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
     let deferred = DeferredActorFree(actor);
     let Ok(handle) = std::thread::Builder::new()
@@ -499,56 +451,8 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
         crate::set_last_error("hew_actor_free: failed to spawn deferred free thread");
         return -1;
     };
-    DEFERRED_ACTOR_FREE_THREADS.lock_or_recover().push(handle);
+    live_actors::push_deferred_actor_free_thread(handle);
     0
-}
-
-/// Check whether an actor pointer is still live (tracked and not yet freed).
-pub(crate) fn with_live_actor<R>(
-    actor: *mut HewActor,
-    f: impl FnOnce(&HewActor) -> R,
-) -> Option<R> {
-    let guard = LIVE_ACTORS.lock_or_recover();
-    if guard
-        .as_ref()
-        .is_some_and(|map| map.values().any(|ptr| ptr.0 == actor))
-    {
-        // SAFETY: `actor` is still tracked in LIVE_ACTORS, and concurrent
-        // frees must remove it from that map before reclaiming the allocation.
-        return Some(f(unsafe { &*actor }));
-    }
-    None
-}
-
-/// Check whether an actor ID still maps to the expected live actor pointer.
-pub(crate) fn with_live_actor_by_id<R>(
-    actor_id: u64,
-    expected: *mut HewActor,
-    f: impl FnOnce(&HewActor) -> R,
-) -> Option<R> {
-    let guard = LIVE_ACTORS.lock_or_recover();
-    if guard
-        .as_ref()
-        .and_then(|map| map.get(&actor_id))
-        .is_some_and(|ptr| ptr.0 == expected)
-    {
-        // SAFETY: `expected` is still tracked under `actor_id` in LIVE_ACTORS,
-        // and concurrent frees must remove that exact entry before reclaiming.
-        return Some(f(unsafe { &*expected }));
-    }
-    None
-}
-
-/// Check whether an actor pointer is still live (tracked and not yet freed).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "supervisor and actor tests rely on the liveness probe"
-    )
-)]
-pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
-    with_live_actor(actor, |_| ()).is_some()
 }
 
 /// Free all remaining tracked actors. Called during scheduler shutdown
@@ -560,17 +464,11 @@ pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
 /// or when no dispatch is in progress (WASM).
 pub(crate) unsafe fn cleanup_all_actors() {
     #[cfg(not(target_arch = "wasm32"))]
-    drain_deferred_actor_free_threads();
+    live_actors::drain_deferred_actor_free_threads();
 
-    let actors = {
-        let mut guard = LIVE_ACTORS.lock_or_recover();
-        match guard.as_mut() {
-            Some(map) => std::mem::take(map),
-            None => HashMap::new(),
-        }
-    };
+    let actors = live_actors::drain_all_for_cleanup();
 
-    for ActorPtr(actor) in actors.into_values() {
+    for live_actors::ActorPtr(actor) in actors.into_values() {
         if actor.is_null() {
             continue;
         }
@@ -590,7 +488,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
         #[cfg(not(target_arch = "wasm32"))]
         {
             crate::timer_periodic::cancel_all_timers_for_actor(actor);
-            // SAFETY: actor is valid (from LIVE_ACTORS set, not yet freed).
+            // SAFETY: actor is valid (from live tracking, not yet freed).
             let actor_id = unsafe { (*actor).id };
             crate::link::remove_all_links_for_actor(actor_id, actor);
             crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
@@ -1023,7 +921,8 @@ fn build_spawned_actor(
 
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) {
-    track_actor(raw);
+    // SAFETY: caller guarantees raw is valid and fully initialised.
+    unsafe { live_actors::track_actor(raw) };
     #[cfg(feature = "profiler")]
     // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
     unsafe {
@@ -1034,7 +933,8 @@ unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) {
 
 #[cfg(target_arch = "wasm32")]
 unsafe fn finalize_spawned_actor(raw: *mut HewActor, _actor_id: u64) {
-    track_actor(raw);
+    // SAFETY: caller guarantees raw is valid and fully initialised.
+    unsafe { live_actors::track_actor(raw) };
 }
 
 /// Shared implementation for all native actor spawn functions.
@@ -1372,13 +1272,7 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    let local_actor = {
-        let guard = LIVE_ACTORS.lock_or_recover();
-        guard
-            .as_ref()
-            .and_then(|map| map.get(&actor_id).map(|entry| entry.0))
-            .filter(|actor| !actor.is_null())
-    };
+    let local_actor = live_actors::get_actor_ptr_by_id(actor_id);
 
     if let Some(actor) = local_actor {
         // SAFETY: `LIVE_ACTORS` only proves that the pointer was live at
@@ -1599,7 +1493,7 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     // Remove from live tracking. If the actor was already consumed by
     // cleanup_all_actors (returns false), skip freeing to avoid
     // double-free.
-    if !untrack_actor(actor) {
+    if !live_actors::untrack_actor(actor) {
         crate::set_last_error("hew_actor_free: actor already freed or not tracked");
         return -1;
     }
@@ -2274,20 +2168,12 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
 
     // Look up actor and send with reply channel in the msg node field.
     // Capture the send error code (not just bool) for accurate error discrimination.
-    let send_result_code: Option<i32> = {
-        let guard = LIVE_ACTORS.lock_or_recover();
-        guard.as_ref().and_then(|map| {
-            let entry = map.get(&actor_id)?;
-            let actor = entry.0;
-            if actor.is_null() {
-                return None; // actor registered but pointer is null
-            }
-            // SAFETY: actor and data are valid while LIVE_ACTORS is locked.
-            let rc =
-                unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) };
-            Some(rc)
-        })
-    };
+    // The LIVE_ACTORS lock is held across the send so the actor cannot be freed
+    // between lookup and the send that commits the reply channel.
+    let send_result_code: Option<i32> = live_actors::with_actor_by_id_locked(actor_id, |actor| {
+        // SAFETY: actor and data are valid while LIVE_ACTORS is locked.
+        unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) }
+    });
 
     let send_ok = send_result_code.is_some_and(|rc| rc == HewError::Ok as i32);
 
@@ -3253,7 +3139,7 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     // SAFETY: the wait loop above ensures the actor is quiescent and not dispatching.
     unsafe { crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor) };
 
-    if !untrack_actor(actor) {
+    if !live_actors::untrack_actor(actor) {
         crate::set_last_error("hew_actor_free: actor already freed or not tracked");
         return -1;
     }
@@ -3495,7 +3381,8 @@ mod tests {
             prof_processing_time_ns: AtomicU64::new(0),
             arena: ptr::null_mut(),
         }));
-        track_actor(actor);
+        // SAFETY: actor is fully initialised above with a valid id field.
+        unsafe { live_actors::track_actor(actor) };
         actor
     }
 
@@ -4665,7 +4552,7 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         let actor = make_tracked_wasm_free_test_actor(HewActorState::Stopped);
         assert!(
-            untrack_actor(actor),
+            live_actors::untrack_actor(actor),
             "test precondition: actor should start tracked"
         );
         crate::hew_clear_error();
@@ -4744,7 +4631,8 @@ mod tests {
             // Wire up the real arena — same assignment as spawn_actor_internal (WASM).
             arena,
         }));
-        track_actor(actor);
+        // SAFETY: actor is fully initialised above with a valid id field.
+        unsafe { live_actors::track_actor(actor) };
 
         // Zero the thread-local witness immediately before the call under test.
         // Without this, a prior test on the same worker thread that freed an

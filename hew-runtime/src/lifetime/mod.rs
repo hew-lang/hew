@@ -15,10 +15,11 @@
 //! offer `try_access` for non-blocking attempts that distinguish
 //! contention (`None`) from poison (recovered transparently).
 
+pub(crate) mod live_actors;
 pub(crate) mod poison_safe;
 
 #[allow(
     unused_imports,
-    reason = "PoisonSafe (Mutex variant) is exported for future sweeps; current sweep wraps RwLock-backed globals only"
+    reason = "PoisonSafe (Mutex variant) used by live_actors; both re-exported here for crate-wide use"
 )]
 pub(crate) use poison_safe::{PoisonSafe, PoisonSafeRw};

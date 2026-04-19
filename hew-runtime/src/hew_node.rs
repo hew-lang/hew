@@ -3,13 +3,14 @@
 //! Integrates transport, connection manager, SWIM membership, and
 //! name/actor registry wiring.
 
-use crate::util::{CondvarExt, MutexExt, RwLockExt};
+use crate::lifetime::{PoisonSafe, PoisonSafeRw};
+use crate::util::{CondvarExt, MutexExt};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::set_last_error;
 use std::thread::{self, JoinHandle};
@@ -32,7 +33,7 @@ const _: () = assert!(
 ///
 /// Only one `HewNode` may be active per process. Starting a second node
 /// while one is running is undefined behaviour.
-static CURRENT_NODE: RwLock<usize> = RwLock::new(0);
+static CURRENT_NODE: PoisonSafeRw<usize> = PoisonSafeRw::new(0);
 
 #[derive(Clone, Copy)]
 struct KnownNodePtr(*mut HewNode);
@@ -43,7 +44,7 @@ unsafe impl Send for KnownNodePtr {}
 
 /// Tracks node allocations so actor teardown can unregister distributed names
 /// before the owning node is freed.
-static KNOWN_NODES: Mutex<Vec<KnownNodePtr>> = Mutex::new(Vec::new());
+static KNOWN_NODES: PoisonSafe<Vec<KnownNodePtr>> = PoisonSafe::new(Vec::new());
 
 // ---------------------------------------------------------------------------
 // Inbound ask worker bound
@@ -540,13 +541,14 @@ pub(crate) unsafe fn try_remote_send(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    let guard = CURRENT_NODE.read_or_recover();
-    if *guard == 0 {
-        return -1;
-    }
-    let node = *guard as *mut HewNode;
-    // SAFETY: read lock pins CURRENT_NODE pointer for this send.
-    unsafe { hew_node_send(node, target_pid, msg_type, data.cast::<u8>(), size) }
+    CURRENT_NODE.read_access(|guard| {
+        if *guard == 0 {
+            return -1;
+        }
+        let node = *guard as *mut HewNode;
+        // SAFETY: read lock pins CURRENT_NODE pointer for this send.
+        unsafe { hew_node_send(node, target_pid, msg_type, data.cast::<u8>(), size) }
+    })
 }
 
 /// Node-local distributed registry state.
@@ -605,15 +607,17 @@ impl std::fmt::Debug for HewNode {
 }
 
 fn remember_node(node: *mut HewNode) {
-    let mut known = KNOWN_NODES.lock_or_recover();
-    if !known.iter().any(|entry| entry.0 == node) {
-        known.push(KnownNodePtr(node));
-    }
+    KNOWN_NODES.access(|known| {
+        if !known.iter().any(|entry| entry.0 == node) {
+            known.push(KnownNodePtr(node));
+        }
+    });
 }
 
 fn forget_node(node: *mut HewNode) {
-    let mut known = KNOWN_NODES.lock_or_recover();
-    known.retain(|entry| entry.0 != node);
+    KNOWN_NODES.access(|known| {
+        known.retain(|entry| entry.0 != node);
+    });
 }
 
 fn take_registry_names_if<F>(registry: &HewRegistry, mut predicate: F) -> Vec<String>
@@ -671,34 +675,35 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
 /// local names after a named actor is freed or restarted.
 pub(crate) unsafe fn unregister_actor_names(actor_id: u64) {
     let owner_node_id = crate::pid::hew_pid_node(actor_id);
-    let known = KNOWN_NODES.lock_or_recover();
-    for entry in known.iter().copied() {
-        if entry.0.is_null() {
-            continue;
-        }
-        // SAFETY: KNOWN_NODES holds node allocations live until `forget_node`.
-        let node = unsafe { &*entry.0 };
-        if owner_node_id != 0 && node.node_id != owner_node_id {
-            continue;
-        }
-        if node.registry.is_null() {
-            continue;
-        }
+    KNOWN_NODES.access(|known| {
+        for entry in known.iter().copied() {
+            if entry.0.is_null() {
+                continue;
+            }
+            // SAFETY: KNOWN_NODES holds node allocations live until `forget_node`.
+            let node = unsafe { &*entry.0 };
+            if owner_node_id != 0 && node.node_id != owner_node_id {
+                continue;
+            }
+            if node.registry.is_null() {
+                continue;
+            }
 
-        // SAFETY: registry belongs to `node` for the node lifetime.
-        let registry = unsafe { &*node.registry };
-        let names =
-            take_registry_names_if(registry, |registered_actor| registered_actor == actor_id);
-        if names.is_empty() {
-            continue;
-        }
+            // SAFETY: registry belongs to `node` for the node lifetime.
+            let registry = unsafe { &*node.registry };
+            let names =
+                take_registry_names_if(registry, |registered_actor| registered_actor == actor_id);
+            if names.is_empty() {
+                continue;
+            }
 
-        let emit_gossip_remove =
-            node.state.load(Ordering::Acquire) == NODE_STATE_RUNNING && !node.cluster.is_null();
-        // SAFETY: KNOWN_NODES keeps `node` alive for the duration of this loop,
-        // and the node state check above excludes teardown in progress.
-        unsafe { unregister_names_from_node(node, names, emit_gossip_remove) };
-    }
+            let emit_gossip_remove =
+                node.state.load(Ordering::Acquire) == NODE_STATE_RUNNING && !node.cluster.is_null();
+            // SAFETY: KNOWN_NODES keeps `node` alive for the duration of this loop,
+            // and the node state check above excludes teardown in progress.
+            unsafe { unregister_names_from_node(node, names, emit_gossip_remove) };
+        }
+    });
 }
 
 // SAFETY: mutable shared fields are guarded by mutexes/atomics.
@@ -792,10 +797,18 @@ unsafe extern "C" fn node_inbound_router(
             return;
         };
         per_mgr_active.fetch_add(1, Ordering::AcqRel);
-        thread::spawn(move || {
-            // Guard decrements both INBOUND_ASK_ACTIVE and the per-manager
-            // counter on drop (including on panic).
-            let _guard = InboundAskGuard(per_mgr_active);
+        // Construct the guard *before* spawning so both counter decrements are
+        // covered regardless of whether spawn succeeds:
+        //   • spawn succeeds: guard moves into the closure; Drop runs when the
+        //     thread exits or panics.
+        //   • spawn fails (OOM): thread::spawn drops the closure, which calls
+        //     InboundAskGuard::drop and decrements both counters immediately.
+        // Previously the guard was created inside the closure body, leaving a
+        // window where a spawn failure would leak both INBOUND_ASK_ACTIVE and
+        // the per-manager counter.
+        let guard = InboundAskGuard(per_mgr_active);
+        let _ = thread::spawn(move || {
+            let _guard = guard;
             handle_inbound_ask(
                 target_actor_id,
                 msg_type,
@@ -915,51 +928,53 @@ fn send_rejection_reply(
         return;
     }
 
-    let guard = CURRENT_NODE.read_or_recover();
-    if *guard == 0 {
-        return;
-    }
-    if shutdown_started.load(Ordering::Acquire) {
-        return;
-    }
+    CURRENT_NODE.read_access(|guard| {
+        if *guard == 0 {
+            return;
+        }
+        if shutdown_started.load(Ordering::Acquire) {
+            return;
+        }
 
-    // SAFETY: conn_mgr is the manager that received the ask. The CURRENT_NODE
-    // read lock held above (guard) ensures it remains valid for this call.
-    let conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(conn_mgr, target_node_id) };
-    if conn_id < 0 {
-        return;
-    }
+        // SAFETY: conn_mgr is the manager that received the ask. The CURRENT_NODE
+        // read lock held above (guard) ensures it remains valid for this call.
+        let conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(conn_mgr, target_node_id) };
+        if conn_id < 0 {
+            return;
+        }
 
-    let mut reason_payload = [AskRejectionReasonCode::encode(reason)
-        .expect("remote ask rejection reason must use a supported rejection-reason code")];
-    // Encode the rejection envelope: request_id identifies the pending ask;
-    // source_node_id = 0 marks it as a reply; msg_type = HEW_REPLY_REJECT_MSG_TYPE
-    // distinguishes it from a normal (possibly void) success reply.
-    let env = crate::wire::HewWireEnvelope {
-        target_actor_id: 0,
-        source_actor_id: 0,
-        msg_type: HEW_REPLY_REJECT_MSG_TYPE,
-        payload_size: 1,
-        payload: reason_payload.as_mut_ptr(),
-        request_id,
-        source_node_id: 0,
-    };
-    // SAFETY: zeroed is valid for HewWireBuf.
-    let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
-    // SAFETY: wire_buf is a valid stack allocation.
-    unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
-    // SAFETY: wire_buf and env are valid stack locals.
-    if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0 {
+        let mut reason_payload = [AskRejectionReasonCode::encode(reason)
+            .expect("remote ask rejection reason must use a supported rejection-reason code")];
+        // Encode the rejection envelope: request_id identifies the pending ask;
+        // source_node_id = 0 marks it as a reply; msg_type = HEW_REPLY_REJECT_MSG_TYPE
+        // distinguishes it from a normal (possibly void) success reply.
+        let env = crate::wire::HewWireEnvelope {
+            target_actor_id: 0,
+            source_actor_id: 0,
+            msg_type: HEW_REPLY_REJECT_MSG_TYPE,
+            payload_size: 1,
+            payload: reason_payload.as_mut_ptr(),
+            request_id,
+            source_node_id: 0,
+        };
+        // SAFETY: zeroed is valid for HewWireBuf.
+        let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
+        // SAFETY: wire_buf is a valid stack allocation.
+        unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
+        // SAFETY: wire_buf and env are valid stack locals.
+        if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0
+        {
+            // SAFETY: wire_buf was initialised above.
+            unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
+            return;
+        }
+        // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
+        unsafe {
+            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
+        };
         // SAFETY: wire_buf was initialised above.
         unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-        return;
-    }
-    // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
-    unsafe {
-        connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
-    };
-    // SAFETY: wire_buf was initialised above.
-    unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
+    });
 }
 
 /// Encode and send a reply envelope back to the source node.
@@ -978,67 +993,69 @@ fn send_reply_envelope(
     }
 
     // Synchronize with `hew_node_stop` to prevent a use-after-free on
-    // `conn_mgr`.  `hew_node_stop` holds the CURRENT_NODE write lock while it
-    // clears the pointer to zero (and only frees `conn_mgr` afterward), so:
+    // `conn_mgr`.  `hew_node_stop` holds the `CURRENT_NODE` write lock while
+    // it clears the pointer to zero (and only frees `conn_mgr` afterward), so:
     //
     // * If this thread acquires the read lock first, stop is blocked until we
     //   release it — `conn_mgr` is guaranteed valid for this whole function.
-    // * If stop cleared CURRENT_NODE first, we see `*guard == 0` here and
+    // * If stop cleared `CURRENT_NODE` first, we see `*guard == 0` here and
     //   return before touching `conn_mgr`.
     //
-    // The guard must remain live until the end of the function so that the
-    // read lock is held for the entire duration of `conn_mgr` access.
-    let guard = CURRENT_NODE.read_or_recover();
-    if *guard == 0 {
-        return;
-    }
-    if shutdown_started.load(Ordering::Acquire) {
-        return;
-    }
+    // The read lock is held for the entire duration of `conn_mgr` access via
+    // the `read_access` closure.
+    CURRENT_NODE.read_access(|guard| {
+        if *guard == 0 {
+            return;
+        }
+        if shutdown_started.load(Ordering::Acquire) {
+            return;
+        }
 
-    // Find the connection back to the requesting node.
-    // SAFETY: conn_mgr is the manager that received the ask. The CURRENT_NODE
-    // read lock held above (guard) ensures it remains valid for this call.
-    let conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(conn_mgr, target_node_id) };
-    if conn_id < 0 {
-        return;
-    }
+        // Find the connection back to the requesting node.
+        // SAFETY: conn_mgr is the manager that received the ask. The CURRENT_NODE
+        // read lock held above (guard) ensures it remains valid for this call.
+        let conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(conn_mgr, target_node_id) };
+        if conn_id < 0 {
+            return;
+        }
 
-    // Encode the reply envelope with request_id set and source_node_id = 0
-    // to mark it as a reply (not a new request).
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "reply payload size bounded by wire buffer limits"
-    )]
-    let env = crate::wire::HewWireEnvelope {
-        target_actor_id: 0,
-        source_actor_id: 0,
-        msg_type: 0,
-        payload_size: reply_data.len() as u32,
-        payload: reply_data.as_ptr().cast_mut(),
-        request_id,
-        source_node_id: 0,
-    };
-    // SAFETY: zeroed is valid for HewWireBuf.
-    let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
-    // SAFETY: wire_buf is a valid stack allocation.
-    unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
-    // SAFETY: wire_buf and env are valid stack locals.
-    if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0 {
+        // Encode the reply envelope with request_id set and source_node_id = 0
+        // to mark it as a reply (not a new request).
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "reply payload size bounded by wire buffer limits"
+        )]
+        let env = crate::wire::HewWireEnvelope {
+            target_actor_id: 0,
+            source_actor_id: 0,
+            msg_type: 0,
+            payload_size: reply_data.len() as u32,
+            payload: reply_data.as_ptr().cast_mut(),
+            request_id,
+            source_node_id: 0,
+        };
+        // SAFETY: zeroed is valid for HewWireBuf.
+        let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
+        // SAFETY: wire_buf is a valid stack allocation.
+        unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
+        // SAFETY: wire_buf and env are valid stack locals.
+        if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0
+        {
+            // SAFETY: wire_buf was initialised above.
+            unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
+            return;
+        }
+
+        // Send via conn_mgr so noise encryption is applied when the connection
+        // is encrypted. This replaces the former raw transport send which would
+        // send unencrypted data over an encrypted connection.
+        // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
+        unsafe {
+            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
+        };
         // SAFETY: wire_buf was initialised above.
         unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-        return;
-    }
-
-    // Send via conn_mgr so noise encryption is applied when the connection
-    // is encrypted. This replaces the former raw transport send which would
-    // send unencrypted data over an encrypted connection.
-    // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
-    unsafe {
-        connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
-    };
-    // SAFETY: wire_buf was initialised above.
-    unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
+    });
 }
 
 /// Callback invoked by the cluster when a registry gossip event arrives
@@ -1410,15 +1427,12 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     node.state.store(NODE_STATE_RUNNING, Ordering::Release);
     // Atomically check-and-set CURRENT_NODE under write lock to avoid
     // the TOCTOU race where two threads both read 0 and both try to set.
-    {
-        let mut guard = CURRENT_NODE
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    CURRENT_NODE.access(|guard| {
         if *guard == 0 {
             *guard = ptr::from_mut(node) as usize;
             crate::pid::hew_pid_set_local_node(node.node_id);
         }
-    }
+    });
 
     // Start the profiler with distributed runtime context if HEW_PPROF is set.
     crate::profiler::maybe_start_with_context(node.cluster, node.conn_mgr, node.routing_table);
@@ -1440,125 +1454,130 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     // SAFETY: caller guarantees node pointer is valid.
     let node = unsafe { &mut *node };
     // Hold the node registry list across teardown so actor-free cleanup cannot
-    // race with cluster deallocation.
-    let _known_nodes = KNOWN_NODES.lock_or_recover();
-    if node.state.load(Ordering::Acquire) == NODE_STATE_STOPPED {
-        return 0;
-    }
+    // race with cluster deallocation. The `.access()` closure spans the
+    // entire teardown body; `unregister_actor_names` (called from actor-free
+    // paths) also acquires KNOWN_NODES and will block here until teardown
+    // completes.
+    KNOWN_NODES.access(|_known_nodes| {
+        if node.state.load(Ordering::Acquire) == NODE_STATE_STOPPED {
+            return 0;
+        }
 
-    node.state.store(NODE_STATE_STOPPING, Ordering::Release);
-    {
-        // Setting CURRENT_NODE to zero acts as a lifetime barrier for
-        // ask-handler threads spawned by `node_inbound_router`. Those
-        // threads acquire the CURRENT_NODE read lock in `send_reply_envelope`
-        // and bail out immediately if the value is 0. The write lock here
-        // blocks until every concurrent read-lock-holder (i.e. every
-        // in-flight reply send) has completed, so `conn_mgr` cannot be freed
-        // while any such thread is still running for the current node.
-        let mut guard = CURRENT_NODE.write_or_recover();
+        node.state.store(NODE_STATE_STOPPING, Ordering::Release);
+        {
+            // Setting CURRENT_NODE to zero acts as a lifetime barrier for
+            // ask-handler threads spawned by `node_inbound_router`. Those
+            // threads acquire the CURRENT_NODE read lock in `send_reply_envelope`
+            // and bail out immediately if the value is 0. The write lock here
+            // blocks until every concurrent read-lock-holder (i.e. every
+            // in-flight reply send) has completed, so `conn_mgr` cannot be freed
+            // while any such thread is still running for the current node.
+            CURRENT_NODE.access(|guard| {
+                if !node.conn_mgr.is_null() {
+                    // SAFETY: node owns this connection manager until teardown completes.
+                    unsafe { connection::hew_connmgr_mark_stopping(node.conn_mgr) };
+                }
+                if *guard == ptr::from_mut(node) as usize {
+                    *guard = 0;
+                    REPLY_TABLE.fail_all();
+                }
+            });
+        }
+        node.accept_stop.store(true, Ordering::Release);
+        {
+            let mut guard = node.accept_thread.lock_or_recover();
+            if let Some(handle) = guard.take() {
+                let _ = handle.join();
+            }
+        }
+
+        // Shutdown profiler threads before freeing node resources they might access.
+        crate::profiler::shutdown();
+
+        // Remove this node's published names from the local registry before the
+        // cluster state is torn down. Remote nodes drop cached names when the
+        // membership callback observes this node leaving or dying.
+        // SAFETY: `node` is valid for the duration of hew_node_stop, and KNOWN_NODES
+        // serialization above prevents concurrent actor cleanup from racing this teardown.
+        unsafe { unregister_local_names_for_node(node) };
+
+        // Capture the per-manager active counter before draining. We hold the Arc
+        // so the AtomicUsize remains alive across the wait and until conn_mgr is
+        // freed.
+        let inbound_active_arc = if node.conn_mgr.is_null() {
+            None
+        } else {
+            // SAFETY: conn_mgr is valid here and remains live until after the drain.
+            unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
+        };
+
+        // Postcondition: drain this conn_mgr's inbound-ask workers before freeing
+        // the manager itself.
+        //
+        // Every worker spawned by `node_inbound_router` holds a `SendConnMgr` raw
+        // pointer for the lifetime of `handle_inbound_ask`. The workers bail safely
+        // once teardown starts because `shutdown_started=true` closes the inbound
+        // spawn gate, but we still must not free conn_mgr while any worker thread
+        // holds that pointer. We drain the per-manager counter (not the global
+        // INBOUND_ASK_ACTIVE) so that stopping one node in a multi-node test does
+        // not wait for workers on a different node's manager.
+        //
+        // 5-second ceiling prevents a misbehaving actor dispatch from hanging stop
+        // indefinitely; in practice well-behaved nodes drain in microseconds.
+        if let Some(active) = inbound_active_arc {
+            const MAX_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
+            const POLL: std::time::Duration = std::time::Duration::from_millis(1);
+            let deadline = std::time::Instant::now() + MAX_DRAIN;
+            while active.load(Ordering::Acquire) > 0 {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                thread::sleep(POLL);
+            }
+        }
+
         if !node.conn_mgr.is_null() {
-            // SAFETY: node owns this connection manager until teardown completes.
-            unsafe { connection::hew_connmgr_mark_stopping(node.conn_mgr) };
+            #[cfg(test)]
+            NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.hit();
+            // SAFETY: valid manager pointer from hew_connmgr_new; all inbound ask
+            // workers that could still hold it have drained above.
+            unsafe { connection::hew_connmgr_free(node.conn_mgr) };
+            node.conn_mgr = ptr::null_mut();
         }
-        if *guard == ptr::from_mut(node) as usize {
-            *guard = 0;
-            REPLY_TABLE.fail_all();
+
+        if !node.routing_table.is_null() {
+            // SAFETY: valid routing table pointer from hew_routing_table_new.
+            unsafe { routing::hew_routing_table_free(node.routing_table) };
+            node.routing_table = ptr::null_mut();
         }
-    }
-    node.accept_stop.store(true, Ordering::Release);
-    {
-        let mut guard = node.accept_thread.lock_or_recover();
-        if let Some(handle) = guard.take() {
-            let _ = handle.join();
+
+        if !node.cluster.is_null() {
+            // SAFETY: valid cluster pointer.
+            unsafe { cluster::hew_cluster_leave(node.cluster) };
+            // SAFETY: valid cluster pointer from hew_cluster_new.
+            unsafe { cluster::hew_cluster_free(node.cluster) };
+            node.cluster = ptr::null_mut();
         }
-    }
 
-    // Shutdown profiler threads before freeing node resources they might access.
-    crate::profiler::shutdown();
-
-    // Remove this node's published names from the local registry before the
-    // cluster state is torn down. Remote nodes drop cached names when the
-    // membership callback observes this node leaving or dying.
-    // SAFETY: `node` is valid for the duration of hew_node_stop, and KNOWN_NODES
-    // serialization above prevents concurrent actor cleanup from racing this teardown.
-    unsafe { unregister_local_names_for_node(node) };
-
-    // Capture the per-manager active counter before draining. We hold the Arc
-    // so the AtomicUsize remains alive across the wait and until conn_mgr is
-    // freed.
-    let inbound_active_arc = if node.conn_mgr.is_null() {
-        None
-    } else {
-        // SAFETY: conn_mgr is valid here and remains live until after the drain.
-        unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
-    };
-
-    // Postcondition: drain this conn_mgr's inbound-ask workers before freeing
-    // the manager itself.
-    //
-    // Every worker spawned by `node_inbound_router` holds a `SendConnMgr` raw
-    // pointer for the lifetime of `handle_inbound_ask`. The workers bail safely
-    // once teardown starts because `shutdown_started=true` closes the inbound
-    // spawn gate, but we still must not free conn_mgr while any worker thread
-    // holds that pointer. We drain the per-manager counter (not the global
-    // INBOUND_ASK_ACTIVE) so that stopping one node in a multi-node test does
-    // not wait for workers on a different node's manager.
-    //
-    // 5-second ceiling prevents a misbehaving actor dispatch from hanging stop
-    // indefinitely; in practice well-behaved nodes drain in microseconds.
-    if let Some(active) = inbound_active_arc {
-        const MAX_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
-        const POLL: std::time::Duration = std::time::Duration::from_millis(1);
-        let deadline = std::time::Instant::now() + MAX_DRAIN;
-        while active.load(Ordering::Acquire) > 0 {
-            if std::time::Instant::now() >= deadline {
-                break;
+        if !node.transport.is_null() {
+            // SAFETY: valid transport pointer from constructor.
+            let transport = unsafe { &*node.transport };
+            // SAFETY: ops pointer is part of valid transport.
+            if let Some(ops) = unsafe { transport.ops.as_ref() } {
+                if let Some(destroy_fn) = ops.destroy {
+                    // SAFETY: transport impl belongs to this transport.
+                    unsafe { destroy_fn(transport.r#impl) };
+                }
             }
-            thread::sleep(POLL);
+            // SAFETY: transport was allocated by Box::into_raw.
+            let _ = unsafe { Box::from_raw(node.transport) };
+            node.transport = ptr::null_mut();
+            node.transport_ops = ptr::null();
         }
-    }
 
-    if !node.conn_mgr.is_null() {
-        #[cfg(test)]
-        NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.hit();
-        // SAFETY: valid manager pointer from hew_connmgr_new; all inbound ask
-        // workers that could still hold it have drained above.
-        unsafe { connection::hew_connmgr_free(node.conn_mgr) };
-        node.conn_mgr = ptr::null_mut();
-    }
-
-    if !node.routing_table.is_null() {
-        // SAFETY: valid routing table pointer from hew_routing_table_new.
-        unsafe { routing::hew_routing_table_free(node.routing_table) };
-        node.routing_table = ptr::null_mut();
-    }
-
-    if !node.cluster.is_null() {
-        // SAFETY: valid cluster pointer.
-        unsafe { cluster::hew_cluster_leave(node.cluster) };
-        // SAFETY: valid cluster pointer from hew_cluster_new.
-        unsafe { cluster::hew_cluster_free(node.cluster) };
-        node.cluster = ptr::null_mut();
-    }
-
-    if !node.transport.is_null() {
-        // SAFETY: valid transport pointer from constructor.
-        let transport = unsafe { &*node.transport };
-        // SAFETY: ops pointer is part of valid transport.
-        if let Some(ops) = unsafe { transport.ops.as_ref() } {
-            if let Some(destroy_fn) = ops.destroy {
-                // SAFETY: transport impl belongs to this transport.
-                unsafe { destroy_fn(transport.r#impl) };
-            }
-        }
-        // SAFETY: transport was allocated by Box::into_raw.
-        let _ = unsafe { Box::from_raw(node.transport) };
-        node.transport = ptr::null_mut();
-        node.transport_ops = ptr::null();
-    }
-
-    node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-    0
+        node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+        0
+    }) // KNOWN_NODES.access
 }
 
 /// Free a node runtime and all owned resources.
@@ -1887,15 +1906,16 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
 pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
     // Claim CURRENT_NODE under the write lock so exactly one caller owns the
     // stop/free sequence.
-    let ptr = {
-        let mut guard = CURRENT_NODE.write_or_recover();
+    let Some(ptr) = CURRENT_NODE.access(|guard| {
         let ptr = *guard as *mut HewNode;
         if ptr.is_null() {
-            return -1;
+            return None;
         }
         *guard = 0;
         REPLY_TABLE.fail_all();
-        ptr
+        Some(ptr)
+    }) else {
+        return -1;
     };
     // SAFETY: ptr is non-null and was created by hew_node_api_start.
     unsafe { hew_node_stop(ptr) };
@@ -1914,14 +1934,15 @@ pub unsafe extern "C" fn hew_node_api_connect(addr: *const c_char) -> c_int {
     if addr.is_null() {
         return -1;
     }
-    let guard = CURRENT_NODE.read_or_recover();
-    let node = *guard as *mut HewNode;
-    if node.is_null() {
-        set_last_error("Node::connect: no active node");
-        return -1;
-    }
-    // SAFETY: node and addr are non-null and validated above.
-    unsafe { hew_node_connect(node, addr) }
+    CURRENT_NODE.read_access(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            set_last_error("Node::connect: no active node");
+            return -1;
+        }
+        // SAFETY: node and addr are non-null and validated above.
+        unsafe { hew_node_connect(node, addr) }
+    })
 }
 
 /// `Node::register(name, actor_ptr)` — Register a named actor.
@@ -1940,14 +1961,15 @@ pub unsafe extern "C" fn hew_node_api_register(
     }
     // SAFETY: actor was null-checked above and is a valid HewActor pointer.
     let actor_id = unsafe { (*actor).pid };
-    let guard = CURRENT_NODE.read_or_recover();
-    let node = *guard as *mut HewNode;
-    if node.is_null() {
-        set_last_error("Node::register: no active node");
-        return -1;
-    }
-    // SAFETY: node, name, and actor_id are validated above.
-    unsafe { hew_node_register(node, name, actor_id) }
+    CURRENT_NODE.read_access(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            set_last_error("Node::register: no active node");
+            return -1;
+        }
+        // SAFETY: node, name, and actor_id are validated above.
+        unsafe { hew_node_register(node, name, actor_id) }
+    })
 }
 
 /// `Node::lookup(name)` — Look up a registered actor by name.
@@ -1960,13 +1982,14 @@ pub unsafe extern "C" fn hew_node_api_lookup(name: *const c_char) -> u64 {
     if name.is_null() {
         return 0;
     }
-    let guard = CURRENT_NODE.read_or_recover();
-    let node = *guard as *mut HewNode;
-    if node.is_null() {
-        return 0;
-    }
-    // SAFETY: node and name are non-null and validated above.
-    unsafe { hew_node_lookup(node, name) }
+    CURRENT_NODE.read_access(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            return 0;
+        }
+        // SAFETY: node and name are non-null and validated above.
+        unsafe { hew_node_lookup(node, name) }
+    })
 }
 
 /// `Node::set_transport(name)` — Set the transport type before starting.
@@ -2011,6 +2034,11 @@ const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
 #[cfg(test)]
 const REMOTE_ASK_TIMEOUT_MS: u64 = 250;
 
+enum RemoteAskSetupResult {
+    Ok((u64, Arc<PendingReply>)),
+    Error(AskError),
+}
+
 /// Perform a blocking ask against a PID, handling local and remote actors.
 ///
 /// If the PID targets the local node, delegates to `hew_actor_ask`.
@@ -2030,6 +2058,10 @@ const REMOTE_ASK_TIMEOUT_MS: u64 = 250;
 /// - `data` must point to at least `size` readable bytes, or be null when
 ///   `size` is 0.
 #[no_mangle]
+#[expect(
+    clippy::too_many_lines,
+    reason = "hew_node_api_ask is a complex remote RPC entrypoint with setup + wait stages"
+)]
 pub unsafe extern "C" fn hew_node_api_ask(
     pid: u64,
     msg_type: i32,
@@ -2055,71 +2087,80 @@ pub unsafe extern "C" fn hew_node_api_ask(
     }
 
     // Remote path: send message over mesh with request_id, wait for reply.
-    let guard = CURRENT_NODE.read_or_recover();
-    let node_ptr = *guard as *mut HewNode;
-    if node_ptr.is_null() {
-        return ask_null(AskError::NodeNotRunning);
-    }
-    // SAFETY: read lock pins CURRENT_NODE.
-    let node = unsafe { &*node_ptr };
-    if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING || node.conn_mgr.is_null() {
-        return ask_null(AskError::NodeNotRunning);
-    }
+    let result = CURRENT_NODE.read_access(|guard| {
+        let node_ptr = *guard as *mut HewNode;
+        if node_ptr.is_null() {
+            return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
+        }
+        // SAFETY: read lock pins CURRENT_NODE.
+        let node = unsafe { &*node_ptr };
+        if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING || node.conn_mgr.is_null() {
+            return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
+        }
 
-    // Look up the connection for the target node via the routing table.
-    // SAFETY: routing_table is valid while node is running.
-    let conn_id = unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
-    if conn_id < 0 {
-        return ask_null(AskError::RoutingFailed);
-    }
+        // Look up the connection for the target node via the routing table.
+        // SAFETY: routing_table is valid while node is running.
+        let conn_id = unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
+        if conn_id < 0 {
+            return RemoteAskSetupResult::Error(AskError::RoutingFailed);
+        }
 
-    // Register a pending reply slot.
-    let (request_id, pending) =
-        REPLY_TABLE.register(ConnectionKey::new(node.conn_mgr.cast_const(), conn_id));
+        // Register a pending reply slot.
+        let (request_id, pending) =
+            REPLY_TABLE.register(ConnectionKey::new(node.conn_mgr.cast_const(), conn_id));
 
-    // Encode the ask envelope with request_id and source_node_id.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "payload size bounded by wire buffer limits"
-    )]
-    let env = crate::wire::HewWireEnvelope {
-        target_actor_id: pid,
-        source_actor_id: 0,
-        msg_type,
-        payload_size: size as u32,
-        payload: data.cast::<u8>(),
-        request_id,
-        source_node_id: node.node_id,
-    };
-    // SAFETY: HewWireBuf is a plain-old-data struct; zeroing is valid initialisation.
-    let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
-    // SAFETY: wire_buf is a valid stack allocation.
-    unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
-    // SAFETY: wire_buf and env are valid stack locals.
-    if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0 {
+        // Encode the ask envelope with request_id and source_node_id.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "payload size bounded by wire buffer limits"
+        )]
+        let env = crate::wire::HewWireEnvelope {
+            target_actor_id: pid,
+            source_actor_id: 0,
+            msg_type,
+            payload_size: size as u32,
+            payload: data.cast::<u8>(),
+            request_id,
+            source_node_id: node.node_id,
+        };
+        // SAFETY: HewWireBuf is a plain-old-data struct; zeroing is valid initialisation.
+        let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
+        // SAFETY: wire_buf is a valid stack allocation.
+        unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
+        // SAFETY: wire_buf and env are valid stack locals.
+        if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0
+        {
+            // SAFETY: wire_buf was initialised above.
+            unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
+            REPLY_TABLE.remove(request_id);
+            return RemoteAskSetupResult::Error(AskError::EncodeFailed);
+        }
+
+        // Send the encoded envelope through the connection manager so noise
+        // encryption is applied when the connection is encrypted.
+        // SAFETY: conn_mgr is valid while node is running; wire_buf is valid.
+        let send_ok = unsafe {
+            connection::hew_connmgr_send_preencoded(
+                node.conn_mgr,
+                conn_id,
+                wire_buf.data,
+                wire_buf.len,
+            ) == 0
+        };
         // SAFETY: wire_buf was initialised above.
         unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-        REPLY_TABLE.remove(request_id);
-        return ask_null(AskError::EncodeFailed);
-    }
 
-    // Send the encoded envelope through the connection manager so noise
-    // encryption is applied when the connection is encrypted.
-    // SAFETY: conn_mgr is valid while node is running; wire_buf is valid.
-    let send_ok = unsafe {
-        connection::hew_connmgr_send_preencoded(node.conn_mgr, conn_id, wire_buf.data, wire_buf.len)
-            == 0
+        if !send_ok {
+            REPLY_TABLE.remove(request_id);
+            return RemoteAskSetupResult::Error(AskError::SendFailed);
+        }
+
+        RemoteAskSetupResult::Ok((request_id, pending))
+    });
+    let (request_id, pending) = match result {
+        RemoteAskSetupResult::Ok(pair) => pair,
+        RemoteAskSetupResult::Error(e) => return ask_null(e),
     };
-    // SAFETY: wire_buf was initialised above.
-    unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-
-    if !send_ok {
-        REPLY_TABLE.remove(request_id);
-        return ask_null(AskError::SendFailed);
-    }
-
-    // Drop the read lock before blocking so other threads can use the node.
-    drop(guard);
 
     // Block until the reply arrives or the timeout elapses.
     let deadline =
@@ -2173,8 +2214,9 @@ mod tests {
 
     impl Drop for ResetCurrentNode {
         fn drop(&mut self) {
-            let mut current = CURRENT_NODE.write_or_recover();
-            *current = self.0;
+            CURRENT_NODE.access(|current| {
+                *current = self.0;
+            });
         }
     }
 
@@ -2289,7 +2331,9 @@ mod tests {
             1,
             "the losing shutdown caller must observe that no node remains"
         );
-        assert_eq!(*CURRENT_NODE.read_or_recover(), 0);
+        CURRENT_NODE.read_access(|current| {
+            assert_eq!(*current, 0);
+        });
     }
 
     #[test]
@@ -2543,12 +2587,11 @@ mod tests {
     fn remote_ask_without_active_node_returns_null_for_nonvoid_reply() {
         let _guard = crate::runtime_test_guard();
 
-        let saved_current_node = {
-            let mut current = CURRENT_NODE.write_or_recover();
+        let saved_current_node = CURRENT_NODE.access(|current| {
             let saved = *current;
             *current = 0;
             saved
-        };
+        });
         let _reset_current_node = ResetCurrentNode(saved_current_node);
 
         let local_node_id = crate::pid::hew_pid_local_node();

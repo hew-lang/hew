@@ -1066,6 +1066,32 @@ pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *m
 mod tests {
     use super::*;
 
+    fn run_in_isolated_test_process(test_name: &str, env_key: &str, body: impl FnOnce()) {
+        if std::env::var_os(env_key).is_some() {
+            body();
+            return;
+        }
+
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("resolve current test binary"),
+        )
+        .arg(test_name)
+        .arg("--exact")
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env(env_key, "1")
+        .output()
+        .expect("spawn isolated test process");
+
+        assert!(
+            output.status.success(),
+            "isolated test process failed for {test_name} (status: {:?})\nstdout:\n{}\nstderr:\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
     fn connected_streams() -> (TcpStream, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
         let addr = listener.local_addr().expect("read listener addr");
@@ -1134,55 +1160,67 @@ mod tests {
 
     #[test]
     fn tcp_write_streams_hwvec_without_rust_allocating() {
-        let _guard = crate::runtime_test_guard();
-        let payload = b"bytes over tcp";
-        let (server, mut client) = connected_streams();
-        let handle = register_stream(server);
-        // SAFETY: `payload` is valid for `payload.len()` bytes.
-        let bytes = unsafe {
-            crate::vec::hew_vec_from_u8_data(
-                payload.as_ptr(),
-                u32::try_from(payload.len()).expect("payload length fits in u32"),
-            )
-        };
+        run_in_isolated_test_process(
+            "transport::tests::tcp_write_streams_hwvec_without_rust_allocating",
+            "HEW_RUNTIME_TCP_WRITE_ALLOC_TEST",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let payload = b"bytes over tcp";
+                let (server, mut client) = connected_streams();
+                let handle = register_stream(server);
+                // SAFETY: `payload` is valid for `payload.len()` bytes.
+                let bytes = unsafe {
+                    crate::vec::hew_vec_from_u8_data(
+                        payload.as_ptr(),
+                        u32::try_from(payload.len()).expect("payload length fits in u32"),
+                    )
+                };
 
-        let before = crate::profiler::allocator::snapshot();
-        // SAFETY: `bytes` is a valid caller-owned HewVec.
-        let written = unsafe { hew_tcp_write(handle, bytes) };
-        let after = crate::profiler::allocator::snapshot();
-        let expected_written =
-            c_int::try_from(payload.len()).expect("payload length fits in c_int");
-        assert_eq!(written, expected_written);
-        assert_eq!(
-            after.alloc_count - before.alloc_count,
-            0,
-            "tcp write should not allocate Rust heap scratch buffers"
+                let before = crate::profiler::allocator::snapshot();
+                // SAFETY: `bytes` is a valid caller-owned HewVec.
+                let written = unsafe { hew_tcp_write(handle, bytes) };
+                let after = crate::profiler::allocator::snapshot();
+                let expected_written =
+                    c_int::try_from(payload.len()).expect("payload length fits in c_int");
+                assert_eq!(written, expected_written);
+                assert_eq!(
+                    after.alloc_count - before.alloc_count,
+                    0,
+                    "tcp write should not allocate Rust heap scratch buffers"
+                );
+
+                let mut received = vec![0u8; payload.len()];
+                client
+                    .read_exact(&mut received)
+                    .expect("read back written payload");
+                assert_eq!(received, payload);
+
+                // SAFETY: `bytes` is the caller-owned HewVec allocated above.
+                unsafe { crate::vec::hew_vec_free(bytes) };
+                remove_stream(handle);
+            },
         );
-
-        let mut received = vec![0u8; payload.len()];
-        client
-            .read_exact(&mut received)
-            .expect("read back written payload");
-        assert_eq!(received, payload);
-
-        // SAFETY: `bytes` is the caller-owned HewVec allocated above.
-        unsafe { crate::vec::hew_vec_free(bytes) };
-        remove_stream(handle);
     }
 
     #[test]
     fn tcp_read_stays_at_zero_rust_allocs_across_payload_sizes() {
-        let _guard = crate::runtime_test_guard();
-        let small = read_rust_allocs(b"x");
-        let large_payload = vec![b'x'; 4096];
-        let large = read_rust_allocs(&large_payload);
-        assert_eq!(
-            small, large,
-            "tcp read Rust allocator cost should stay constant across payload sizes"
-        );
-        assert!(
-            large == 0,
-            "tcp read should stay at zero Rust allocator calls, saw {large}"
+        run_in_isolated_test_process(
+            "transport::tests::tcp_read_stays_at_zero_rust_allocs_across_payload_sizes",
+            "HEW_RUNTIME_TCP_READ_ALLOC_TEST",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let small = read_rust_allocs(b"x");
+                let large_payload = vec![b'x'; 4096];
+                let large = read_rust_allocs(&large_payload);
+                assert_eq!(
+                    small, large,
+                    "tcp read Rust allocator cost should stay constant across payload sizes"
+                );
+                assert!(
+                    large == 0,
+                    "tcp read should stay at zero Rust allocator calls, saw {large}"
+                );
+            },
         );
     }
 }

@@ -37,6 +37,7 @@ use std::sync::{Mutex, PoisonError, RwLock, TryLockError};
     dead_code,
     reason = "Mutex variant ships alongside PoisonSafeRw; first callers land with the next sweep (LIVE_ACTORS, MONITOR_TABLE, ...)"
 )]
+#[derive(Debug)]
 pub(crate) struct PoisonSafe<T>(Mutex<T>);
 
 #[allow(

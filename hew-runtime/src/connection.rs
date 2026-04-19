@@ -41,6 +41,7 @@ use rand::rng;
 use rand::RngExt;
 
 use crate::cluster::HewCluster;
+use crate::lifetime::poison_safe::PoisonSafe;
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
@@ -181,8 +182,8 @@ struct ConnectionActor {
 /// with a growable `Vec` of per-connection actors.
 #[derive(Debug)]
 pub struct HewConnMgr {
-    /// Active connections (protected by mutex for concurrent add/remove).
-    connections: Mutex<Vec<ConnectionActor>>,
+    /// Active connections (protected by [`PoisonSafe`] for concurrent add/remove).
+    connections: PoisonSafe<Vec<ConnectionActor>>,
     /// Transport used for I/O operations.
     pub(crate) transport: *mut HewTransport,
     /// Callback for routing inbound messages to local actors.
@@ -206,7 +207,7 @@ pub struct HewConnMgr {
     /// drain workers before freeing node resources.
     pub(crate) inbound_ask_active: Arc<AtomicUsize>,
     /// Background reconnect worker handles.
-    reconnect_workers: Mutex<Vec<JoinHandle<()>>>,
+    reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
     /// Monotonic token generator for connection-lifecycle publications.
     next_publication_token: AtomicU64,
     /// The node ID advertised in the handshake for this manager's node.
@@ -332,7 +333,6 @@ struct ConnectionInstallPublication {
 }
 
 enum ConnectionInstallError {
-    MutexPoisoned,
     Shutdown,
     Duplicate,
 }
@@ -389,16 +389,17 @@ fn sleep_until_retry(shutdown: &AtomicBool, delay_ms: u64) -> bool {
 }
 
 fn collect_finished_reconnect_workers(mgr: &HewConnMgr) {
-    let mut workers = mgr.reconnect_workers.lock_or_recover();
-    let mut idx = 0usize;
-    while idx < workers.len() {
-        if workers[idx].is_finished() {
-            let handle = workers.swap_remove(idx);
-            let _ = handle.join();
-        } else {
-            idx += 1;
+    mgr.reconnect_workers.access(|workers| {
+        let mut idx = 0usize;
+        while idx < workers.len() {
+            if workers[idx].is_finished() {
+                let handle = workers.swap_remove(idx);
+                let _ = handle.join();
+            } else {
+                idx += 1;
+            }
         }
-    }
+    });
 }
 
 fn next_publication_token(mgr: &HewConnMgr) -> u64 {
@@ -487,12 +488,13 @@ fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
     {
         return None;
     }
-    let conns = mgr.connections.lock_or_recover();
-    let conn = conns.iter().find(|c| c.conn_id == conn_id)?;
-    let reconnect = conn.reconnect.as_ref()?;
-    Some(ReconnectPlan {
-        target_addr: reconnect.target_addr.clone(),
-        max_retries: reconnect.max_retries.max(1),
+    mgr.connections.access(|conns| {
+        let conn = conns.iter().find(|c| c.conn_id == conn_id)?;
+        let reconnect = conn.reconnect.as_ref()?;
+        Some(ReconnectPlan {
+            target_addr: reconnect.target_addr.clone(),
+            max_retries: reconnect.max_retries.max(1),
+        })
     })
 }
 
@@ -540,8 +542,9 @@ fn spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan: ReconnectP
     });
     match handle {
         Ok(worker) => {
-            let mut workers = mgr_ref.reconnect_workers.lock_or_recover();
-            workers.push(worker);
+            mgr_ref
+                .reconnect_workers
+                .access(|workers| workers.push(worker));
         }
         Err(_) => {
             set_last_error(format!(
@@ -814,31 +817,28 @@ fn install_connection_actor(
 ) -> Result<ConnectionInstallPublication, ConnectionInstallError> {
     let conn_id = actor.conn_id;
     let mut actor = Some(actor);
-    let install = match mgr.connections.lock() {
-        Ok(mut conns) => {
-            if mgr.reconnect_shutdown.load(Ordering::Acquire) {
-                Err(ConnectionInstallError::Shutdown)
-            } else if conns.iter().any(|c| c.conn_id == conn_id) {
-                Err(ConnectionInstallError::Duplicate)
-            } else {
-                let actor_ref = actor
-                    .as_ref()
-                    .expect("actor should remain available until install succeeds");
-                let publication = ConnectionInstallPublication {
-                    token: actor_ref.publication_token,
-                    sync: Arc::clone(&actor_ref.publication_sync),
-                    removed: Arc::clone(&actor_ref.publication_removed),
-                };
-                conns.push(
-                    actor
-                        .take()
-                        .expect("actor should be consumed exactly once during install"),
-                );
-                Ok(publication)
-            }
+    let install = mgr.connections.access(|conns| {
+        if mgr.reconnect_shutdown.load(Ordering::Acquire) {
+            Err(ConnectionInstallError::Shutdown)
+        } else if conns.iter().any(|c| c.conn_id == conn_id) {
+            Err(ConnectionInstallError::Duplicate)
+        } else {
+            let actor_ref = actor
+                .as_ref()
+                .expect("actor should remain available until install succeeds");
+            let publication = ConnectionInstallPublication {
+                token: actor_ref.publication_token,
+                sync: Arc::clone(&actor_ref.publication_sync),
+                removed: Arc::clone(&actor_ref.publication_removed),
+            };
+            conns.push(
+                actor
+                    .take()
+                    .expect("actor should be consumed exactly once during install"),
+            );
+            Ok(publication)
         }
-        Err(_) => Err(ConnectionInstallError::MutexPoisoned),
-    };
+    });
     if install.is_err() {
         // Mark the actor's transport as closed so Drop does not double-close
         // after the explicit close_transport_conn below.
@@ -1177,7 +1177,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
 ) -> *mut HewConnMgr {
     cabi_guard!(transport.is_null(), std::ptr::null_mut());
     let mgr = Box::new(HewConnMgr {
-        connections: Mutex::new(Vec::with_capacity(16)),
+        connections: PoisonSafe::new(Vec::with_capacity(16)),
         transport,
         inbound_router: router,
         routing_table,
@@ -1186,7 +1186,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
         reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
         reconnect_shutdown: Arc::new(AtomicBool::new(false)),
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
-        reconnect_workers: Mutex::new(Vec::new()),
+        reconnect_workers: PoisonSafe::new(Vec::new()),
         next_publication_token: AtomicU64::new(1),
         local_node_id,
     });
@@ -1207,18 +1207,10 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         mgr.reconnect_shutdown.store(true, Ordering::Release);
         let transport = mgr.transport;
 
-        // Close all connections via transport. We need to drain the
-        // connections while the mutex guard is live, then explicitly
-        // drop the drained items and guard before the Box drops.
-        let drained: Vec<ConnectionActor> = {
-            let Ok(mut conns) = mgr.connections.lock() else {
-                // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-                // means connection registry is corrupted; report error and bail.
-                set_last_error("hew_connmgr_free: connections mutex poisoned (a thread panicked)");
-                return;
-            };
-            conns.drain(..).collect()
-        };
+        // Drain the connection list and close each transport connection.
+        // The closure scope releases the lock before the actors are dropped,
+        // so Drop does not race the explicit close below.
+        let drained: Vec<ConnectionActor> = mgr.connections.access(std::mem::take);
 
         for conn in drained {
             // Mark closed before the explicit close so Drop does not
@@ -1236,17 +1228,7 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
             }
             // ConnectionActor::drop signals reader thread to stop and joins.
         }
-        let workers = {
-            let Ok(mut guard) = mgr.reconnect_workers.lock() else {
-                // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-                // means reconnect registry is corrupted; report error and bail.
-                set_last_error(
-                    "hew_connmgr_free: reconnect_workers mutex poisoned (a thread panicked)",
-                );
-                return;
-            };
-            guard.drain(..).collect::<Vec<_>>()
-        };
+        let workers: Vec<JoinHandle<()>> = mgr.reconnect_workers.access(std::mem::take);
         for worker in workers {
             let _ = worker.join();
         }
@@ -1338,42 +1320,48 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
     }
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
-    let Ok(mut conns) = mgr.connections.lock() else {
-        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-        // means connection registry is corrupted; report error and bail.
-        set_last_error("hew_connmgr_configure_reconnect: mutex poisoned (a thread panicked)");
-        return -1;
+
+    // Validate target_addr before acquiring the lock to avoid holding the
+    // connections lock while calling into C string parsing helpers.
+    let target_owned: Option<String> = if enabled != 0 {
+        // SAFETY: caller guarantees target_addr is a valid C string (or null).
+        let Some(target) =
+            (unsafe { crate::util::cstr_to_str(target_addr, "hew_connmgr_configure_reconnect") })
+        else {
+            return -1;
+        };
+        if target.is_empty() {
+            set_last_error("hew_connmgr_configure_reconnect: target_addr is empty");
+            return -1;
+        }
+        Some(target.to_owned())
+    } else {
+        None
     };
-    let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) else {
-        set_last_error(format!(
-            "hew_connmgr_configure_reconnect: connection {conn_id} not found"
-        ));
-        return -1;
-    };
-    if enabled == 0 {
-        conn.reconnect = None;
-        return 0;
-    }
-    // SAFETY: caller guarantees target_addr is a valid C string (or null).
-    let Some(target) =
-        (unsafe { crate::util::cstr_to_str(target_addr, "hew_connmgr_configure_reconnect") })
-    else {
-        return -1;
-    };
-    if target.is_empty() {
-        set_last_error("hew_connmgr_configure_reconnect: target_addr is empty");
-        return -1;
-    }
+
     let retries = if max_retries > 0 {
         normalize_max_retries(max_retries)
     } else {
         mgr.reconnect_max_retries.load(Ordering::Acquire).max(1)
     };
-    conn.reconnect = Some(ReconnectSettings {
-        target_addr: target.to_owned(),
-        max_retries: retries,
-    });
-    0
+
+    mgr.connections.access(|conns| {
+        let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) else {
+            set_last_error(format!(
+                "hew_connmgr_configure_reconnect: connection {conn_id} not found"
+            ));
+            return -1;
+        };
+        if enabled == 0 {
+            conn.reconnect = None;
+            return 0;
+        }
+        conn.reconnect = Some(ReconnectSettings {
+            target_addr: target_owned.clone().unwrap_or_default(),
+            max_retries: retries,
+        });
+        0
+    })
 }
 
 /// Add a connection to the manager. Spawns a reader thread for inbound
@@ -1416,16 +1404,10 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     }
 
     {
-        let Ok(conns) = mgr.connections.lock() else {
-            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-            // means connection registry is corrupted; report error and bail.
-            // SAFETY: conn_id is a valid transport handle; hew_connmgr_add
-            // owns cleanup for all failure paths after entry.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
-            set_last_error("hew_connmgr_add: mutex poisoned (a thread panicked)");
-            return -1;
-        };
-        if conns.iter().any(|c| c.conn_id == conn_id) {
+        let already_exists = mgr
+            .connections
+            .access(|conns| conns.iter().any(|c| c.conn_id == conn_id));
+        if already_exists {
             // SAFETY: conn_id is a new transport handle that cannot be installed;
             // close it so the caller does not need to clean up on failure.
             unsafe { close_transport_conn(mgr.transport, conn_id) };
@@ -1588,12 +1570,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         removed: publication_removed,
     } = match install_connection_actor(mgr, actor) {
         Ok(publication) => publication,
-        Err(ConnectionInstallError::MutexPoisoned) => {
-            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-            // means connection registry is corrupted; report error and bail.
-            set_last_error("hew_connmgr_add: mutex poisoned (a thread panicked)");
-            return -1;
-        }
         Err(ConnectionInstallError::Shutdown) => {
             set_last_error(format!(
                 "hew_connmgr_add: manager shutdown won install race for conn {conn_id}"
@@ -1636,35 +1612,32 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
 
-    let (conn, peer_node_id, publication_token, publication_sync, publication_removed) = {
-        let Ok(mut conns) = mgr.connections.lock() else {
-            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-            // means connection registry is corrupted; report error and bail.
-            set_last_error("hew_connmgr_remove: mutex poisoned (a thread panicked)");
-            return -1;
-        };
-
+    let removed = mgr.connections.access(|conns| {
         let idx = conns.iter().position(|c| c.conn_id == conn_id);
         let Some(idx) = idx else {
             set_last_error(format!(
                 "hew_connmgr_remove: connection {conn_id} not found"
             ));
-            return -1;
+            return None;
         };
-
         let conn = conns.swap_remove(idx);
         let peer_node_id = conn.peer_node_id;
         let publication_token = conn.publication_token;
         let publication_sync = Arc::clone(&conn.publication_sync);
         let publication_removed = Arc::clone(&conn.publication_removed);
         conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
-        (
+        Some((
             conn,
             peer_node_id,
             publication_token,
             publication_sync,
             publication_removed,
-        )
+        ))
+    });
+    let Some((conn, peer_node_id, publication_token, publication_sync, publication_removed)) =
+        removed
+    else {
+        return -1;
     };
 
     // Release the registry lock before waking the reader. The reader cleanup
@@ -1746,24 +1719,30 @@ pub unsafe extern "C" fn hew_connmgr_send(
     #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
-        let Ok(conns) = mgr_ref.connections.lock() else {
-            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-            // means connection registry is corrupted; report error and bail.
-            set_last_error("hew_connmgr_send: mutex poisoned (a thread panicked)");
-            return -1;
-        };
-        let conn = conns.iter().find(|c| c.conn_id == conn_id);
-        match conn {
-            Some(c)
-                if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
-                    && (target_node_id == 0 || c.peer_node_id == target_node_id) =>
-            {
-                #[cfg(feature = "encryption")]
+        #[cfg(feature = "encryption")]
+        let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
+        let ok = mgr_ref.connections.access(|conns| {
+            let conn = conns.iter().find(|c| c.conn_id == conn_id);
+            match conn {
+                Some(c)
+                    if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                        && (target_node_id == 0 || c.peer_node_id == target_node_id) =>
                 {
-                    maybe_noise = Some(Arc::clone(&c.noise_transport));
+                    #[cfg(feature = "encryption")]
+                    {
+                        noise_out = Some(Arc::clone(&c.noise_transport));
+                    }
+                    true
                 }
+                _ => false,
             }
-            _ => return -1,
+        });
+        if !ok {
+            return -1;
+        }
+        #[cfg(feature = "encryption")]
+        {
+            maybe_noise = noise_out;
         }
     }
 
@@ -1849,17 +1828,27 @@ pub(crate) unsafe fn hew_connmgr_send_preencoded(
     #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
-        let Ok(conns) = mgr_ref.connections.lock() else {
+        #[cfg(feature = "encryption")]
+        let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
+        let ok =
+            mgr_ref
+                .connections
+                .access(|conns| match conns.iter().find(|c| c.conn_id == conn_id) {
+                    Some(c) if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE => {
+                        #[cfg(feature = "encryption")]
+                        {
+                            noise_out = Some(Arc::clone(&c.noise_transport));
+                        }
+                        true
+                    }
+                    _ => false,
+                });
+        if !ok {
             return -1;
-        };
-        match conns.iter().find(|c| c.conn_id == conn_id) {
-            Some(c) if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE => {
-                #[cfg(feature = "encryption")]
-                {
-                    maybe_noise = Some(Arc::clone(&c.noise_transport));
-                }
-            }
-            _ => return -1,
+        }
+        #[cfg(feature = "encryption")]
+        {
+            maybe_noise = noise_out;
         }
     }
 
@@ -1920,15 +1909,14 @@ pub(crate) unsafe fn hew_connmgr_conn_id_for_node(mgr: *const HewConnMgr, node_i
     }
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
-    let Ok(conns) = mgr_ref.connections.lock() else {
-        return -1;
-    };
-    for c in conns.iter() {
-        if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
-            return c.conn_id;
+    mgr_ref.connections.access(|conns| {
+        for c in conns.iter() {
+            if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
+                return c.conn_id;
+            }
         }
-    }
-    -1
+        -1
+    })
 }
 
 /// Return the negotiated feature flags for the active connection to `node_id`,
@@ -1949,15 +1937,14 @@ pub(crate) unsafe fn hew_connmgr_feature_flags_for_node(
     }
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
-    let Ok(conns) = mgr_ref.connections.lock() else {
-        return 0;
-    };
-    for c in conns.iter() {
-        if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
-            return c.peer_feature_flags;
+    mgr_ref.connections.access(|conns| {
+        for c in conns.iter() {
+            if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
+                return c.peer_feature_flags;
+            }
         }
-    }
-    0
+        0
+    })
 }
 
 /// Overwrite the recorded feature flags for the active connection to `node_id`.
@@ -1978,14 +1965,13 @@ pub(crate) unsafe fn hew_connmgr_force_peer_flags_for_node(
     }
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
-    let Ok(mut conns) = mgr_ref.connections.lock() else {
-        return;
-    };
-    for c in conns.iter_mut() {
-        if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
-            c.peer_feature_flags = flags;
+    mgr_ref.connections.access(|conns| {
+        for c in conns.iter_mut() {
+            if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE && c.peer_node_id == node_id {
+                c.peer_feature_flags = flags;
+            }
         }
-    }
+    });
 }
 
 /// Return the number of active connections.
@@ -2001,19 +1987,14 @@ pub unsafe extern "C" fn hew_connmgr_count(mgr: *mut HewConnMgr) -> c_int {
     }
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
-    let Ok(conns) = mgr.connections.lock() else {
-        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-        // means connection registry is corrupted; report error and bail.
-        set_last_error("hew_connmgr_count: mutex poisoned (a thread panicked)");
-        return -1;
-    };
+    let count = mgr.connections.access(|conns| conns.len());
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
         reason = "connection count will not exceed c_int range in practice"
     )]
     {
-        conns.len() as c_int
+        count as c_int
     }
 }
 
@@ -2038,19 +2019,13 @@ pub unsafe extern "C" fn hew_connmgr_broadcast(
     let mgr_ref = unsafe { &*mgr };
 
     // Collect active connection IDs under the lock.
-    let conn_ids: Vec<c_int> = {
-        let Ok(conns) = mgr_ref.connections.lock() else {
-            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-            // means connection registry is corrupted; report error and bail.
-            set_last_error("hew_connmgr_broadcast: mutex poisoned (a thread panicked)");
-            return 0;
-        };
+    let conn_ids: Vec<c_int> = mgr_ref.connections.access(|conns| {
         conns
             .iter()
             .filter(|c| c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE)
             .map(|c| c.conn_id)
             .collect()
-    };
+    });
 
     let mut success_count: c_int = 0;
     for cid in conn_ids {
@@ -2076,16 +2051,12 @@ pub unsafe extern "C" fn hew_connmgr_last_activity(mgr: *mut HewConnMgr, conn_id
     cabi_guard!(mgr.is_null(), 0);
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
-    let Ok(conns) = mgr.connections.lock() else {
-        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-        // means connection registry is corrupted; report error and bail.
-        set_last_error("hew_connmgr_last_activity: mutex poisoned (a thread panicked)");
-        return 0;
-    };
-    conns
-        .iter()
-        .find(|c| c.conn_id == conn_id)
-        .map_or(0, |c| c.last_activity_ms.load(Ordering::Acquire))
+    mgr.connections.access(|conns| {
+        conns
+            .iter()
+            .find(|c| c.conn_id == conn_id)
+            .map_or(0, |c| c.last_activity_ms.load(Ordering::Acquire))
+    })
 }
 
 /// Get the state of a connection.
@@ -2100,16 +2071,12 @@ pub unsafe extern "C" fn hew_connmgr_conn_state(mgr: *mut HewConnMgr, conn_id: c
     cabi_guard!(mgr.is_null(), CONN_STATE_CLOSED);
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
-    let Ok(conns) = mgr.connections.lock() else {
-        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
-        // means connection registry is corrupted; report error and bail.
-        set_last_error("hew_connmgr_conn_state: mutex poisoned (a thread panicked)");
-        return CONN_STATE_CLOSED;
-    };
-    conns
-        .iter()
-        .find(|c| c.conn_id == conn_id)
-        .map_or(CONN_STATE_CLOSED, |c| c.state.load(Ordering::Acquire))
+    mgr.connections.access(|conns| {
+        conns
+            .iter()
+            .find(|c| c.conn_id == conn_id)
+            .map_or(CONN_STATE_CLOSED, |c| c.state.load(Ordering::Acquire))
+    })
 }
 
 // ── Profiler snapshot ───────────────────────────────────────────────────
@@ -2121,23 +2088,23 @@ pub unsafe extern "C" fn hew_connmgr_conn_state(mgr: *mut HewConnMgr, conn_id: c
 pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
     use std::fmt::Write as _;
 
-    let connections = mgr.connections.lock_or_recover();
-
-    crate::util::json_array(connections.iter(), |json, c| {
-        let state_val = c.state.load(Ordering::Acquire);
-        let state_str = match state_val {
-            CONN_STATE_CONNECTING => "connecting",
-            CONN_STATE_ACTIVE => "active",
-            CONN_STATE_DRAINING => "draining",
-            CONN_STATE_CLOSED => "closed",
-            _ => "unknown",
-        };
-        let last_activity = c.last_activity_ms.load(Ordering::Acquire);
-        let _ = write!(
-            json,
-            r#"{{"conn_id":{},"peer_node_id":{},"state":"{}","last_activity_ms":{}}}"#,
-            c.conn_id, c.peer_node_id, state_str, last_activity,
-        );
+    mgr.connections.access(|connections| {
+        crate::util::json_array(connections.iter(), |json, c| {
+            let state_val = c.state.load(Ordering::Acquire);
+            let state_str = match state_val {
+                CONN_STATE_CONNECTING => "connecting",
+                CONN_STATE_ACTIVE => "active",
+                CONN_STATE_DRAINING => "draining",
+                CONN_STATE_CLOSED => "closed",
+                _ => "unknown",
+            };
+            let last_activity = c.last_activity_ms.load(Ordering::Acquire);
+            let _ = write!(
+                json,
+                r#"{{"conn_id":{},"peer_node_id":{},"state":"{}","last_activity_ms":{}}}"#,
+                c.conn_id, c.peer_node_id, state_str, last_activity,
+            );
+        })
     })
 }
 
@@ -2160,7 +2127,7 @@ mod tests {
         draining.last_activity_ms.store(456, Ordering::Relaxed);
 
         let mgr = HewConnMgr {
-            connections: Mutex::new(vec![active, draining]),
+            connections: PoisonSafe::new(vec![active, draining]),
             transport: std::ptr::null_mut(),
             inbound_router: None,
             routing_table: std::ptr::null_mut(),
@@ -2169,7 +2136,7 @@ mod tests {
             reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
             reconnect_shutdown: Arc::new(AtomicBool::new(false)),
             inbound_ask_active: Arc::new(AtomicUsize::new(0)),
-            reconnect_workers: Mutex::new(Vec::new()),
+            reconnect_workers: PoisonSafe::new(Vec::new()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 0,
         };
@@ -2339,20 +2306,14 @@ mod tests {
             close_rx.recv().expect("reader should observe close");
             // SAFETY: mgr points at the live manager under test until the outer
             // remove call drops and joins this thread.
-            let could_lock = unsafe { (&*mgr.0).connections.try_lock().is_ok() };
+            let could_lock = unsafe { (&*mgr.0).connections.try_access(|_| ()).is_some() };
             lock_result_tx
                 .send(could_lock)
                 .expect("reader should report lock availability");
         }));
 
         // SAFETY: mgr is a live manager allocated by hew_connmgr_new above.
-        unsafe {
-            let mut conns = (&*mgr)
-                .connections
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            conns.push(actor);
-        }
+        unsafe { (&*mgr).connections.access(|conns| conns.push(actor)) };
 
         // SAFETY: mgr is still valid and owns the test connection above.
         assert_eq!(unsafe { hew_connmgr_remove(mgr, 41) }, 0);
@@ -2426,7 +2387,7 @@ mod tests {
             let mgr = mgr_send;
             let conn_id = close_rx.recv().expect("reader should observe close");
             // SAFETY: mgr remains live until install_connection_actor returns and teardown runs.
-            let could_lock = unsafe { (&*mgr.0).connections.try_lock().is_ok() };
+            let could_lock = unsafe { (&*mgr.0).connections.try_access(|_| ()).is_some() };
             lock_result_tx
                 .send((conn_id, could_lock))
                 .expect("reader should report lock availability");
@@ -2622,11 +2583,7 @@ mod tests {
             }));
             let old_publication_sync = Arc::clone(&old_actor.publication_sync);
             let old_publication_removed = Arc::clone(&old_actor.publication_removed);
-            (&*mgr)
-                .connections
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(old_actor);
+            (&*mgr).connections.access(|conns| conns.push(old_actor));
             publish_connection_established(
                 &*mgr,
                 2,
@@ -2672,26 +2629,23 @@ mod tests {
                 .as_ref()
                 .map(|actor| Arc::clone(&actor.publication_removed))
                 .expect("replacement removed flag should be set before install");
-            let replacement_installed = (0..50).any(|_| match (&*mgr).connections.try_lock() {
-                Ok(mut conns) => {
-                    conns.push(
-                        replacement_actor
-                            .take()
-                            .expect("replacement should install once"),
-                    );
+            let replacement_installed = (0..50).any(|_| {
+                if (&*mgr)
+                    .connections
+                    .try_access(|conns| {
+                        conns.push(
+                            replacement_actor
+                                .take()
+                                .expect("replacement should install once"),
+                        );
+                    })
+                    .is_some()
+                {
                     true
-                }
-                Err(std::sync::TryLockError::WouldBlock) => {
+                } else {
+                    // Lock is held by the remove path; retry after a brief sleep.
                     std::thread::sleep(std::time::Duration::from_millis(10));
                     false
-                }
-                Err(std::sync::TryLockError::Poisoned(err)) => {
-                    err.into_inner().push(
-                        replacement_actor
-                            .take()
-                            .expect("replacement should install once"),
-                    );
-                    true
                 }
             });
             assert!(
@@ -2799,11 +2753,7 @@ mod tests {
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             let publication_sync = Arc::clone(&actor.publication_sync);
             let publication_removed = Arc::clone(&actor.publication_removed);
-            (&*mgr)
-                .connections
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(actor);
+            (&*mgr).connections.access(|conns| conns.push(actor));
             publish_connection_established(
                 &*mgr,
                 2,
@@ -2931,11 +2881,7 @@ mod tests {
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             let publication_sync = Arc::clone(&actor.publication_sync);
             let publication_removed = Arc::clone(&actor.publication_removed);
-            (&*mgr)
-                .connections
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(actor);
+            (&*mgr).connections.access(|conns| conns.push(actor));
 
             let (lost_done_tx, lost_done_rx) = std::sync::mpsc::channel::<()>();
             let lost_cluster = SendCluster(cluster);
@@ -3141,11 +3087,7 @@ mod tests {
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
             let publication_sync = Arc::clone(&actor.publication_sync);
             let publication_removed = Arc::clone(&actor.publication_removed);
-            (&*mgr)
-                .connections
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(actor);
+            (&*mgr).connections.access(|conns| conns.push(actor));
 
             publish_connection_established(
                 &*mgr,

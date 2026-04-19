@@ -84,7 +84,11 @@ SRC="hew-runtime/src"
 #   KNOWN_NODES, CURRENT_NODE — Stage 3 part 2
 #   TOP_LEVEL_SUPERVISORS — Stage 5
 #   TCP_API_STATE — Stage 5 continuation
-GLOBALS='LINK_TABLE|ENV_LOCK|LIVE_ACTORS|DEFERRED_ACTOR_FREE_THREADS|MONITOR_TABLE|KNOWN_NODES|CURRENT_NODE|TOP_LEVEL_SUPERVISORS|TCP_API_STATE'
+#   ACTIVATE_PRE_REENQUEUE_HOOK — scheduler (#[cfg(test)] static)
+# Note: Scheduler::worker_handles, HewConnMgr::connections, and
+# HewConnMgr::reconnect_workers are struct fields, not named statics;
+# they are not tracked here but are fully converted to PoisonSafe.
+GLOBALS='LINK_TABLE|ENV_LOCK|LIVE_ACTORS|DEFERRED_ACTOR_FREE_THREADS|MONITOR_TABLE|KNOWN_NODES|CURRENT_NODE|TOP_LEVEL_SUPERVISORS|TCP_API_STATE|ACTIVATE_PRE_REENQUEUE_HOOK'
 
 # All raw locking method variants that bypass PoisonSafe/PoisonSafeRw.
 LOCK_METHODS='lock|read|write|try_lock|try_read|try_write|lock_or_recover|read_or_recover|write_or_recover'

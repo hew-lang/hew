@@ -5,6 +5,110 @@
 use super::*;
 
 impl Checker {
+    fn refresh_handle_bearing_structs(&mut self) {
+        let struct_names: Vec<String> = self
+            .type_defs
+            .iter()
+            .filter_map(|(name, type_def)| {
+                (type_def.kind == TypeDefKind::Struct).then_some(name.clone())
+            })
+            .collect();
+
+        self.handle_bearing_structs = struct_names
+            .into_iter()
+            .filter(|name| self.type_name_contains_owned_handle(name, &mut HashSet::new()))
+            .collect();
+    }
+
+    fn type_name_contains_owned_handle(
+        &self,
+        type_name: &str,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        let Some(lookup_name) = self.registered_type_def_name(type_name) else {
+            return false;
+        };
+        if !visiting.insert(lookup_name.clone()) {
+            return false;
+        }
+        let contains_owned_handle = self.type_defs.get(&lookup_name).is_some_and(|type_def| {
+            type_def.kind == TypeDefKind::Struct
+                && type_def
+                    .fields
+                    .values()
+                    .any(|field_ty| self.ty_contains_owned_handle(field_ty, visiting))
+        });
+        visiting.remove(&lookup_name);
+        contains_owned_handle
+    }
+
+    fn ty_contains_owned_handle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        match ty {
+            Ty::Tuple(items) => items
+                .iter()
+                .any(|item_ty| self.ty_contains_owned_handle(item_ty, visiting)),
+            Ty::Array(element_ty, _) | Ty::Slice(element_ty) => {
+                self.ty_contains_owned_handle(element_ty, visiting)
+            }
+            Ty::Named { name, args } => {
+                self.canonical_owned_handle_type_name(name).is_some()
+                    || args
+                        .iter()
+                        .any(|arg_ty| self.ty_contains_owned_handle(arg_ty, visiting))
+                    || self.type_name_contains_owned_handle(name, visiting)
+            }
+            Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::F32
+            | Ty::F64
+            | Ty::IntLiteral
+            | Ty::FloatLiteral
+            | Ty::Bool
+            | Ty::Char
+            | Ty::String
+            | Ty::Bytes
+            | Ty::Duration
+            | Ty::Unit
+            | Ty::Never
+            | Ty::Var(_)
+            | Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::Pointer { .. }
+            | Ty::TraitObject { .. }
+            | Ty::Error => false,
+        }
+    }
+
+    pub(super) fn canonical_owned_handle_type_name(&self, type_name: &str) -> Option<String> {
+        if self.module_registry.drop_func_for(type_name).is_some()
+            || self.module_registry.is_drop_type(type_name)
+            || self.module_registry.is_handle_type(type_name)
+        {
+            return Some(type_name.to_string());
+        }
+
+        let qualified = self.module_registry.qualify_handle_type(type_name)?;
+        (self.module_registry.drop_func_for(&qualified).is_some()
+            || self.module_registry.is_drop_type(&qualified)
+            || self.module_registry.is_handle_type(&qualified))
+        .then_some(qualified)
+    }
+
+    fn registered_type_def_name(&self, name: &str) -> Option<String> {
+        if self.type_defs.contains_key(name) {
+            return Some(name.to_string());
+        }
+        self.strip_module_prefix(name)
+            .filter(|unqualified| self.type_defs.contains_key(*unqualified))
+            .map(str::to_string)
+    }
+
     fn register_rcfree_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
         let mut member_types: Vec<Ty> = type_def.fields.values().cloned().collect();
         for variant in type_def.variants.values() {
@@ -509,6 +613,7 @@ impl Checker {
         self.register_rcfree_members_for_type(&td.name, &type_def);
         self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
+        self.refresh_handle_bearing_structs();
     }
 
     pub(super) fn register_type_namespace_name(&mut self, name: &str, span: &Span) -> bool {
@@ -675,6 +780,7 @@ impl Checker {
 
         self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
+        self.refresh_handle_bearing_structs();
 
         // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
         if let Some(ref wire) = td.wire {
@@ -2887,6 +2993,7 @@ impl Checker {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified, span);
             }
+            self.refresh_handle_bearing_structs();
         }
     }
 }

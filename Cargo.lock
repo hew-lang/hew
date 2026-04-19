@@ -1448,6 +1448,7 @@ dependencies = [
 name = "hew-astgen"
 version = "0.3.0"
 dependencies = [
+ "hew-parser",
  "hew-serialize",
  "proc-macro2",
  "quote",

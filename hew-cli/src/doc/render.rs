@@ -275,8 +275,51 @@ fn render_function(f: &DocFunction, index: &TypeIndex) -> String {
     out
 }
 
+/// Extract the type name of the first parameter from a formatted trait method
+/// signature string such as `fn foo(val: Value, key: String) -> i32`.
+///
+/// Returns `None` when the parameter list is empty.  Used by
+/// `traits_for_type` to decide whether a trait "belongs to" a given type.
+fn first_param_type(sig: &str) -> Option<&str> {
+    // Skip past 'fn name(' to the parameter list.
+    let after_paren = sig.find('(').map(|i| &sig[i + 1..])?;
+    // First param may be "name: Type" or just "Type".
+    let (_, ty_part) = after_paren.split_once(':').unwrap_or(("", after_paren));
+    // Take the first identifier token (stops at whitespace/punct).
+    let ty_name = ty_part
+        .trim_start()
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()?;
+    if ty_name.is_empty() {
+        None
+    } else {
+        Some(ty_name)
+    }
+}
+
+/// Return the subset of `traits` whose methods have `type_name` as the type
+/// of their first parameter.
+///
+/// This is the same-module heuristic used to surface trait methods directly
+/// on an opaque type's entry.  Only same-module traits are considered; no
+/// cross-module lookup is performed.
+fn traits_for_type<'a>(traits: &'a [DocTrait], type_name: &str) -> Vec<&'a DocTrait> {
+    traits
+        .iter()
+        .filter(|tr| {
+            tr.methods
+                .iter()
+                .any(|m| first_param_type(&m.signature) == Some(type_name))
+        })
+        .collect()
+}
+
 /// Render a type item (struct or enum).
-fn render_type(t: &DocType, _index: &TypeIndex) -> String {
+///
+/// When same-module traits expose methods that take this type as their first
+/// parameter, a "Methods" block is rendered on the type's entry so users do
+/// not need to navigate to a separate `Trait FooMethods` section.
+fn render_type(t: &DocType, index: &TypeIndex, module_traits: &[DocTrait]) -> String {
     let mut out = String::from("<div class=\"item\" id=\"type.");
     out.push_str(&html_escape(&t.name));
     out.push_str("\">\n");
@@ -304,6 +347,39 @@ fn render_type(t: &DocType, _index: &TypeIndex) -> String {
         }
         out.push_str("</dl>\n");
     }
+
+    // Surface methods from same-module traits whose first parameter is this type.
+    let implementors = traits_for_type(module_traits, &t.name);
+    if !implementors.is_empty() {
+        out.push_str("<h4>Methods</h4>\n");
+        for tr in implementors {
+            let applicable: Vec<&DocMethod> = tr
+                .methods
+                .iter()
+                .filter(|m| first_param_type(&m.signature) == Some(t.name.as_str()))
+                .collect();
+            if !applicable.is_empty() {
+                out.push_str("<p class=\"trait-ref\">via <a href=\"#trait.");
+                out.push_str(&html_escape(&tr.name));
+                out.push_str("\"><code>");
+                out.push_str(&html_escape(&tr.name));
+                out.push_str("</code></a></p>\n");
+                for m in applicable {
+                    out.push_str("<div class=\"method\" id=\"method.");
+                    out.push_str(&html_escape(&tr.name));
+                    out.push('.');
+                    out.push_str(&html_escape(&m.name));
+                    out.push_str("\">\n<span class=\"sig\">");
+                    let highlighted = highlight_signature(&m.signature);
+                    out.push_str(&link_signature_types(&highlighted, index));
+                    out.push_str("</span>\n");
+                    out.push_str(&render_inline_doc(m.doc.as_ref()));
+                    out.push_str("</div>\n");
+                }
+            }
+        }
+    }
+
     out.push_str("</div>\n");
     out
 }
@@ -465,7 +541,7 @@ pub fn render_module(module: &DocModule) -> String {
     if !module.types.is_empty() {
         body.push_str("<h2>Types</h2>\n");
         for t in &module.types {
-            body.push_str(&render_type(t, &index));
+            body.push_str(&render_type(t, &index, &module.traits));
         }
     }
 
@@ -773,6 +849,90 @@ pub fn bar() {}
         assert!(
             html.contains("href=\"#type.Foo\""),
             "Foo in trait method signature must be linked"
+        );
+    }
+
+    // ── Feature 3: Methods on opaque types ────────────────────────────────────
+
+    /// A `Methods` block appears on a type's entry when a same-module trait
+    /// takes that type as the first parameter of its methods.
+    #[test]
+    fn opaque_type_surfaces_trait_methods() {
+        let source = r"/// An opaque value.
+pub type Value {}
+/// Methods on Value.
+trait ValueMethods {
+    /// Serialize to JSON.
+    fn stringify(val: Value) -> String;
+    /// Extract integer.
+    fn get_int(val: Value) -> int;
+}
+";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+
+        let type_pos = html
+            .find("id=\"type.Value\"")
+            .expect("type.Value anchor missing");
+        let type_section = &html[type_pos..];
+        assert!(
+            type_section.contains("<h4>Methods</h4>"),
+            "Methods heading must appear on the Value type entry"
+        );
+        assert!(
+            type_section.contains("stringify"),
+            "stringify must be listed"
+        );
+        assert!(type_section.contains("get_int"), "get_int must be listed");
+        assert!(
+            type_section.contains("href=\"#trait.ValueMethods\""),
+            "back-link to ValueMethods trait must be present"
+        );
+    }
+
+    /// A trait whose methods do NOT take the type as first param does not
+    /// produce a Methods block on that type.
+    #[test]
+    fn unrelated_trait_not_surfaced_on_type() {
+        let source = r"pub type Foo {}
+trait Other {
+    fn helper(x: i32) -> i32;
+}
+";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+
+        let type_pos = html
+            .find("id=\"type.Foo\"")
+            .expect("type.Foo anchor missing");
+        // The next top-level </div> closes the type item.
+        let end = html[type_pos..]
+            .find("</div>")
+            .unwrap_or(html.len() - type_pos);
+        let type_div = &html[type_pos..type_pos + end];
+        assert!(
+            !type_div.contains("<h4>Methods</h4>"),
+            "unrelated trait must not produce a Methods block on Foo"
+        );
+    }
+
+    /// `first_param_type` correctly extracts the type name from various signatures.
+    #[test]
+    fn first_param_type_extraction() {
+        assert_eq!(
+            first_param_type("fn foo(val: Value) -> String"),
+            Some("Value")
+        );
+        assert_eq!(
+            first_param_type("fn bar(x: i32, y: i32) -> i32"),
+            Some("i32")
+        );
+        assert_eq!(first_param_type("fn baz()"), None);
+        assert_eq!(
+            first_param_type("fn qux(obj: Result) -> bool"),
+            Some("Result")
         );
     }
 }

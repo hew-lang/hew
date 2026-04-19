@@ -1,11 +1,5 @@
-// Regression: actor receive handler with regex.Pattern parameter must
-// register the param for drop so hew_regex_free is called at scope exit.
-// Before the fix the handler leaked the Pattern (sender relinquishes
-// ownership but the receiver never freed it).  With LSAN this shows as a
-// leak; without it the allocation silently escapes.
-//
-// No explicit `.free()` call is made inside the handler — the drop must be
-// emitted automatically by the code generator.
+// Regression: actor receive handlers that take regex.Pattern ownership must
+// explicitly call `.free()` before returning so the handle does not leak.
 
 import std::text::regex;
 
@@ -13,7 +7,7 @@ actor Matcher {
     receive fn check(pat: Pattern) {
         println(pat.is_match("hello123"));
         println(pat.is_match("no digits"));
-        // `pat` is freed here via hew_regex_free (registered drop)
+        pat.free();
     }
 }
 

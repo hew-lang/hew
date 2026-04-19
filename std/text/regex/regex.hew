@@ -13,14 +13,14 @@
 //!         let m = re.find("abc123");
 //!         println(m);  // "123"
 //!     }
-//!     // Pattern is released automatically at scope exit via `impl Drop`.
+//!     re.free();
 //! }
 //! ```
 
 /// A compiled regular expression pattern.
 ///
-/// Created by `regex.new(pattern)`. Released automatically at scope exit via
-/// `impl Drop`, or explicitly with `free()` when fine-grained control is needed.
+/// Created by `regex.new(pattern)`. Call `free()` before the value goes out of
+/// scope; dropping without `free()` is a resource leak.
 type Pattern {}
 
 /// Methods available on a compiled `Pattern`.
@@ -32,6 +32,7 @@ trait PatternMethods {
     /// ```
     /// let re = regex.new("^[a-z]+$");
     /// assert(re.is_match("hello"));
+    /// re.free();
     /// ```
     fn is_match(pat: Pattern, input: String) -> bool;
 
@@ -48,6 +49,7 @@ trait PatternMethods {
     /// let re = regex.new("[0-9]+");
     /// let result = re.replace("abc123def456", "N");
     /// // result == "abcNdefN"
+    /// re.free();
     /// ```
     fn replace(pat: Pattern, input: String, replacement: String) -> String;
 
@@ -56,7 +58,10 @@ trait PatternMethods {
     /// Each clone must be dropped or freed independently.
     fn clone(pat: Pattern) -> Pattern;
 
-    /// Release the compiled pattern resources.
+    /// Canonical release path for `Pattern`.
+    ///
+    /// Callers MUST invoke `free()` before the value goes out of scope;
+    /// dropping without `free()` is a resource leak.
     fn free(pat: Pattern);
 }
 
@@ -71,15 +76,11 @@ impl PatternMethods for Pattern {
     }
     /// Clone the compiled pattern, producing an independent copy.
     fn clone(pat: Pattern) -> Pattern { unsafe { hew_regex_clone(pat) } }
-    /// Release the compiled pattern resources.
+    /// Canonical release path for `Pattern`.
+    ///
+    /// Callers MUST invoke `free()` before the value goes out of scope;
+    /// dropping without `free()` is a resource leak.
     fn free(pat: Pattern) { unsafe { hew_regex_free(pat) }; }
-}
-
-impl Drop for Pattern {
-    /// Release the compiled pattern resources at scope exit.
-    fn drop(pat: Pattern) {
-        unsafe { hew_regex_free(pat) };
-    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -92,6 +93,7 @@ impl Drop for Pattern {
 ///
 /// ```
 /// let email_re = regex.new("[a-z]+@[a-z]+\\.[a-z]+");
+/// email_re.free();
 /// ```
 pub fn new(pattern: String) -> Pattern {
     unsafe { hew_regex_new(pattern) }

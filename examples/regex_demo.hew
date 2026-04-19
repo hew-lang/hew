@@ -10,46 +10,66 @@
 fn main() {
     println("=== Regex Demo ===");
 
+    let email_re = re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$";
+    let url_re = re"^https?://";
+    let comment_re = re"^//";
+    let phone_re = re"^[0-9]{3}-[0-9]{3}-[0-9]{4}$";
+    let capitalized_name_re = re"^[A-Z][a-z]+$";
+    let digit_re = re"[0-9]";
+    let request_line_re = re"^(GET|POST|PUT|DELETE) ";
+    let read_only_re = re"^(GET|HEAD) ";
+    let mutating_re = re"^(POST|PUT|PATCH|DELETE) ";
+
     // Basic match with =~
     let email = "user@example.com";
-    if email =~ re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$" {
+    if email =~ email_re {
         println(f"'{email}' is a valid email");
     }
     // URL detection
     let url = "https://hew.sh";
-    if url =~ re"^https?://" {
+    if url =~ url_re {
         println(f"'{url}' is a URL");
     }
     // Negation with !~
     let code = "let x = 42;";
-    if code !~ re"^//" {
+    if code !~ comment_re {
         println(f"'{code}' is code, not a comment");
     }
     // Phone number validation
     let phone = "555-123-4567";
-    if phone =~ re"^[0-9]{3}-[0-9]{3}-[0-9]{4}$" {
+    if phone =~ phone_re {
         println(f"'{phone}' is a valid phone number");
     }
     // Combining match and non-match
     let name = "Alice";
-    if name =~ re"^[A-Z][a-z]+$" {
+    if name =~ capitalized_name_re {
         println(f"'{name}' is a capitalized name");
     }
-    if name !~ re"[0-9]" {
+    if name !~ digit_re {
         println(f"'{name}' contains no digits");
     }
     // Pattern matching in conditions
     let input = "GET /api/users HTTP/1.1";
-    if input =~ re"^(GET|POST|PUT|DELETE) " {
+    if input =~ request_line_re {
         println(f"'{input}' is an HTTP request line");
     }
 
     let route = "POST /api/users";
     match route {
-        line if line =~ re"^(GET|HEAD) " => println(f"'{line}' is read-only"),
-        line if line =~ re"^(POST|PUT|PATCH|DELETE) " => println(f"'{line}' mutates state"),
+        line if line =~ read_only_re => println(f"'{line}' is read-only"),
+        line if line =~ mutating_re => println(f"'{line}' mutates state"),
         _ => println(f"'{route}' is another command"),
     }
+
+    email_re.free();
+    url_re.free();
+    comment_re.free();
+    phone_re.free();
+    capitalized_name_re.free();
+    digit_re.free();
+    request_line_re.free();
+    read_only_re.free();
+    mutating_re.free();
 
     println("All regex demos passed!");
 }

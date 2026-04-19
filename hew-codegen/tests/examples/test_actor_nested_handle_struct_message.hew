@@ -1,8 +1,7 @@
 // Regression test: nested struct containing only a handle field passed as an
 // actor receive fn parameter. The inner regex.Pattern must transfer ownership
 // to the receiver, be nulled in the sender recursively through the outer
-// struct wrapper, and subsequent reads of the sender binding must observe the
-// cleared handle rather than the stale pre-transfer pointer.
+// struct wrapper, and then be explicitly freed by the receiver.
 
 import std::text::regex;
 
@@ -21,6 +20,7 @@ actor Matcher {
     receive fn check(msg: Outer) {
         matched = msg.inner.pat.is_match("hello123");
         missed = msg.inner.pat.is_match("no digits");
+        msg.inner.pat.free();
     }
 
     receive fn get_matched() -> bool {
@@ -38,8 +38,7 @@ fn main() {
         let msg = Outer { inner: Inner { pat: re"[0-9]+" } };
         m.check(msg);
         // msg was moved into check(); accessing msg.inner.pat after the move
-        // is a compile-time use-of-moved-value error now that regex.Pattern
-        // has impl Drop (ownership tracking).  The actor results below verify
+        // is a compile-time use-of-moved-value error. The actor results below verify
         // the pattern was correctly transferred and used inside the actor.
     };
     println(await m.get_matched());

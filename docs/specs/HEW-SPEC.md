@@ -721,6 +721,8 @@ let exists = fs.exists("output.txt");       // Returns bool
 let line = io.read_line();                  // Preferred stdin surface
 let re = regex.new("[a-z]+");
 let matched = regex.is_match(re, input);    // Returns bool
+server.close();
+re.free();
 ```
 
 This provides clean, namespaced access to stdlib functionality. The module name acts as a qualifier, avoiding verbose function names like `hew_http_server_new()`.
@@ -2095,11 +2097,12 @@ These provide type-safe method access:
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)` |
 | `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `.close()`                                                                                                      |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()`, `.write(data)`, `.close()`                                                                                                           |
-| `regex.Pattern`  | `re"pattern"` or `regex.new(pattern)`      | `.is_match(text)`, `.find(text)`, `.replace(text, replacement)`                                                                                 |
+| `regex.Pattern`  | `re"pattern"` or `regex.new(pattern)`      | `.is_match(text)`, `.find(text)`, `.replace(text, replacement)`, `.free()`                                                                      |
 | `process.Child`  | `process.start(cmd)`                       | `.wait()`, `.kill()`                                                                                                                            |
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and returned from functions.
+`http.Server` and `regex.Pattern` must be released explicitly with `close()` / `free()` before they go out of scope.
 
 #### 3.10.8 Regular Expressions
 
@@ -2109,15 +2112,19 @@ Regex is a first-class type in Hew. Regex patterns are compiled at runtime.
 
 ```hew
 let re = re"^hello\s+world$";
+re.free();
 ```
 
 The `re"..."` syntax creates a `regex.Pattern` value. Standard regex escape sequences apply.
+When you bind one to a variable, call `free()` before it goes out of scope.
 
 **Match operators:**
 
 ```hew
-if text =~ re"pattern" { ... }   // matches
-if text !~ re"pattern" { ... }   // does not match
+let pat = re"pattern";
+if text =~ pat { ... }   // matches
+if text !~ pat { ... }   // does not match
+pat.free();
 ```
 
 The `=~` operator returns `true` if the string matches the pattern.
@@ -2132,6 +2139,7 @@ let re = re"[0-9]+";
 re.is_match("abc123")              // true
 re.find("hello 42 world")         // "42"
 re.replace("hello 42", "NUM")     // "hello NUM"
+re.free();
 ```
 
 **Regex as first-class values:**
@@ -2140,7 +2148,10 @@ Regex values can be stored, passed, and reused:
 
 ```hew
 fn is_valid_email(s: string) -> bool {
-    s =~ re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    let email_re = re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$";
+    let ok = s =~ email_re;
+    email_re.free();
+    ok
 }
 ```
 

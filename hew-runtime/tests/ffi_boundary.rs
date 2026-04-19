@@ -2652,7 +2652,6 @@ mod utf8_string_tests {
         assert!(!v.is_null());
         let vec = unsafe { &*v };
         assert_eq!(vec.len, 2);
-        // Each byte is stored as an i32 element (matches hew_tcp_read convention).
         let b0 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 0) };
         let b1 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 1) };
         assert_eq!(b0, i32::from(b'h'));

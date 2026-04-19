@@ -1267,14 +1267,14 @@ pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const c_char) -> *mut c_cha
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> *mut crate::vec::HewVec {
     // SAFETY: hew_vec_new creates a Vec<i32>-style HewVec, matching what
-    // SAFETY: hew_tcp_write / hew_bytes_to_string expect (i32-element vecs).
+    // hew_tcp_write / hew_bytes_to_string expect (i32-element vecs).
     let v = unsafe { crate::vec::hew_vec_new() };
     cabi_guard!(s.is_null(), v);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     for &b in bytes {
         // SAFETY: v is a valid HewVec; push each byte as i32 to match
-        // SAFETY: the convention used by hew_tcp_read and hew_bytes_to_string.
+        // the convention used by hew_tcp_read and hew_bytes_to_string.
         unsafe {
             crate::vec::hew_vec_push_i32(v, i32::from(b));
         };

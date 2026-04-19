@@ -1,0 +1,69 @@
+//! Behavioural tests for std::encoding::base64.
+
+import std::encoding::base64;
+import std::testing;
+
+fn assert_bytes_eq(actual: bytes, expected: bytes) {
+    testing.assert_eq(actual.len(), expected.len());
+    for i in 0 .. expected.len() {
+        testing.assert_eq(actual.get(i), expected.get(i));
+    }
+}
+
+// ── Happy-path ────────────────────────────────────────────────────────
+
+#[test]
+fn test_encode_known_value() {
+    // "Hi" = bytes [72, 105] → Base64 "SGk="
+    let data = bytes [72, 105];
+    testing.assert_eq_str(base64.encode(data), "SGk=");
+}
+
+#[test]
+fn test_decode_known_value() {
+    let result = base64.decode("SGk=");
+    assert_bytes_eq(result, bytes [72, 105]);
+}
+
+// ── Property round-trip ───────────────────────────────────────────────
+
+#[test]
+fn test_round_trip_nonempty() {
+    // decode(encode(x)) == x for a representative input
+    let original = bytes [1, 2, 3, 4, 5];
+    let encoded = base64.encode(original);
+    let decoded = base64.decode(encoded);
+    assert_bytes_eq(decoded, original);
+}
+
+#[test]
+fn test_round_trip_empty() {
+    let original = bytes [];
+    let encoded = base64.encode(original);
+    let decoded = base64.decode(encoded);
+    assert_bytes_eq(decoded, original);
+}
+
+// ── Error / boundary ─────────────────────────────────────────────────
+
+#[test]
+fn test_decode_invalid_returns_empty() {
+    // Characters outside the Base64 alphabet → empty bytes
+    let result = base64.decode("!!!!");
+    testing.assert_eq(result.len(), 0);
+}
+
+#[test]
+fn test_encode_url_safe_differs_from_standard() {
+    // Bytes that produce '+' or '/' in standard, '-' or '_' in URL-safe
+    // 0xFB = 1111 1011 → standard chars end with '+' or '/'
+    let data = bytes [251, 255];
+    let standard = base64.encode(data);
+    let url_safe = base64.encode_url(data);
+    // Round-trip: decode accepts both alphabets, so url-safe encoded data must
+    // decode back to the original bytes.
+    let decoded = base64.decode(url_safe);
+    assert_bytes_eq(decoded, data);
+    // Sanity: the two encodings differ for inputs that produce '+'/'-' or '/''_'
+    testing.assert_false(standard == url_safe);
+}

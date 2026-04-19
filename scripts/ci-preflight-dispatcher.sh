@@ -290,6 +290,37 @@ if (( DRY_RUN == 1 )); then
     exit 0
 fi
 
+# ── grep-gate: no string-matched error classification in std/ ──────────────
+# Asserts that no string-matched OS error patterns remain in std/ — these
+# indicate classification via message text which was replaced with errno-based
+# IoError population in #1241 and #1266.  If this fires, you have introduced a
+# regression; remove the string match and use io_error_from_errno instead.
+#
+# Caught patterns:
+#   "os error"           — Rust std error prefix (legacy classification)
+#   "Connection refused" — OS message string used for classify-by-text
+#   "Permission denied"  — OS message string used for classify-by-text
+#   "timed out"          — OS message string used for classify-by-text
+echo "==> grep-gate: checking for banned string-match error patterns in std/"
+grep_failed=0
+if grep --include="*.hew" -r "os error" std/ 2>/dev/null | grep -qv "^Binary"; then
+    echo "error: 'os error' string patterns found in std/ — use errno-based error classification instead:" >&2
+    grep --include="*.hew" -r "os error" std/ >&2
+    grep_failed=1
+fi
+for _banned_msg in "Connection refused" "Permission denied" "timed out"; do
+    if grep --include="*.hew" -r "contains(\"${_banned_msg}" std/ 2>/dev/null | grep -qv "^Binary"; then
+        echo "error: OS message string '${_banned_msg}' used in .contains() in std/ — use errno-based error classification instead:" >&2
+        grep --include="*.hew" -r "contains(\"${_banned_msg}" std/ >&2
+        grep_failed=1
+    fi
+done
+if (( grep_failed == 1 )); then
+    exit 1
+fi
+echo "grep-gate passed: no string-match error patterns in std/"
+# ──────────────────────────────────────────────────────────────────────────────
+
 for cmd in "${COMMANDS[@]}"; do
     echo "==> $cmd"
     bash -lc "$cmd"

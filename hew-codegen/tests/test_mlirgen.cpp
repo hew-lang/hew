@@ -8041,6 +8041,176 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Char and Duration fields use dedicated serial helpers (issue #1272)
+// ============================================================================
+//
+// A wire struct with `char` and `duration` fields must emit
+// `hew_{format}_object_set_char` / `hew_{format}_object_set_duration` in
+// the to_json/to_yaml helpers and `hew_{format}_get_char` /
+// `hew_{format}_get_duration` in the from_json/from_yaml helpers.
+// These calls must NOT route through the generic `set_int` / `get_int` path.
+// This test is the regression for issue #1272.
+static void test_wire_char_duration_use_dedicated_serial_helpers() {
+  TEST(wire_char_duration_use_dedicated_serial_helpers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+wire type Event {
+    code: char @1;
+    elapsed: duration @2;
+}
+
+fn main() -> int {
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto toJsonFn = module.lookupSymbol<mlir::func::FuncOp>("Event_to_json");
+  auto fromJsonFn = module.lookupSymbol<mlir::func::FuncOp>("Event_from_json");
+  auto toYamlFn = module.lookupSymbol<mlir::func::FuncOp>("Event_to_yaml");
+  auto fromYamlFn = module.lookupSymbol<mlir::func::FuncOp>("Event_from_yaml");
+
+  if (!toJsonFn || !fromJsonFn || !toYamlFn || !fromYamlFn) {
+    FAIL("expected Event wire serial helpers to be generated");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // set_char / set_duration must appear; set_int must not.
+  if (countRuntimeCallsByCallee(toJsonFn, "hew_json_object_set_char") != 1 ||
+      countRuntimeCallsByCallee(toJsonFn, "hew_json_object_set_duration") != 1 ||
+      countRuntimeCallsByCallee(toJsonFn, "hew_json_object_set_int") != 0) {
+    FAIL("Event_to_json should use set_char and set_duration, not set_int");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // get_char / get_duration must appear; get_int must not.
+  if (countRuntimeCallsByCallee(fromJsonFn, "hew_json_get_char") != 1 ||
+      countRuntimeCallsByCallee(fromJsonFn, "hew_json_get_duration") != 1 ||
+      countRuntimeCallsByCallee(fromJsonFn, "hew_json_get_int") != 0) {
+    FAIL("Event_from_json should use get_char and get_duration, not get_int");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // Same assertions for YAML.
+  if (countRuntimeCallsByCallee(toYamlFn, "hew_yaml_object_set_char") != 1 ||
+      countRuntimeCallsByCallee(toYamlFn, "hew_yaml_object_set_duration") != 1 ||
+      countRuntimeCallsByCallee(toYamlFn, "hew_yaml_object_set_int") != 0) {
+    FAIL("Event_to_yaml should use set_char and set_duration, not set_int");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(fromYamlFn, "hew_yaml_get_char") != 1 ||
+      countRuntimeCallsByCallee(fromYamlFn, "hew_yaml_get_duration") != 1 ||
+      countRuntimeCallsByCallee(fromYamlFn, "hew_yaml_get_int") != 0) {
+    FAIL("Event_from_yaml should use get_char and get_duration, not get_int");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Wire enum with Char and Duration variant payloads uses dedicated serializers
+// ============================================================================
+static void test_wire_enum_char_duration_variant_serializers() {
+  TEST(wire_enum_char_duration_variant_serializers);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+wire enum Event {
+    CharEvent(char);
+    DurationEvent(duration);
+}
+
+fn main() -> int {
+    0
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  // Verify to_json uses dedicated set_char and set_duration, not set_int.
+  auto toJsonFn = module.lookupSymbol<mlir::func::FuncOp>("Event_to_json");
+  if (!toJsonFn) {
+    FAIL("expected Event_to_json helper to be generated");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(toJsonFn, "hew_json_object_set_char") != 1 ||
+      countRuntimeCallsByCallee(toJsonFn, "hew_json_object_set_duration") != 1 ||
+      countRuntimeCallsByCallee(toJsonFn, "hew_json_object_set_int") != 0) {
+    FAIL("Event_to_json should use set_char and set_duration for enum variant payloads, not "
+         "set_int");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // Verify from_json uses dedicated get_char and get_duration, not get_int.
+  auto fromJsonFn = module.lookupSymbol<mlir::func::FuncOp>("Event_from_json");
+  if (!fromJsonFn) {
+    FAIL("expected Event_from_json helper to be generated");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(fromJsonFn, "hew_json_get_char") != 1 ||
+      countRuntimeCallsByCallee(fromJsonFn, "hew_json_get_duration") != 1 ||
+      countRuntimeCallsByCallee(fromJsonFn, "hew_json_get_int") != 0) {
+    FAIL("Event_from_json should use get_char and get_duration for enum variant payloads, not "
+         "get_int");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // Same assertions for YAML.
+  auto toYamlFn = module.lookupSymbol<mlir::func::FuncOp>("Event_to_yaml");
+  auto fromYamlFn = module.lookupSymbol<mlir::func::FuncOp>("Event_from_yaml");
+  if (!toYamlFn || !fromYamlFn) {
+    FAIL("expected Event YAML helpers to be generated");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(toYamlFn, "hew_yaml_object_set_char") != 1 ||
+      countRuntimeCallsByCallee(toYamlFn, "hew_yaml_object_set_duration") != 1 ||
+      countRuntimeCallsByCallee(toYamlFn, "hew_yaml_object_set_int") != 0) {
+    FAIL("Event_to_yaml should use set_char and set_duration for enum variant payloads, not "
+         "set_int");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countRuntimeCallsByCallee(fromYamlFn, "hew_yaml_get_char") != 1 ||
+      countRuntimeCallsByCallee(fromYamlFn, "hew_yaml_get_duration") != 1 ||
+      countRuntimeCallsByCallee(fromYamlFn, "hew_yaml_get_int") != 0) {
+    FAIL("Event_from_yaml should use get_char and get_duration for enum variant payloads, not "
+         "get_int");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Test: Mixed-payload wire enum uses ABI-safe payload layout
 // ============================================================================
 static void test_wire_enum_mixed_payload_layout() {
@@ -13791,6 +13961,8 @@ int main() {
   test_unresolved_named_type_fails();
   test_wire_encode_uses_heap_buffer();
   test_wire_bytes_use_base64_serial_helpers();
+  test_wire_char_duration_use_dedicated_serial_helpers();
+  test_wire_enum_char_duration_variant_serializers();
   test_wire_enum_mixed_payload_layout();
   test_wire_enum_typedecl_preserves_variants();
   test_wire_struct_typedecl_missing_field_metadata_rejects();

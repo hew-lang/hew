@@ -617,6 +617,7 @@ struct ConstDecl {
   Spanned<TypeExpr> ty;
   Spanned<Expr> value;
   Visibility visibility = Visibility::Private;
+  std::optional<std::string> doc_comment;
 };
 
 // ── Type declarations ─────────────────────────────────────────────────────
@@ -713,6 +714,7 @@ struct TypeAliasDecl {
   Visibility visibility = Visibility::Private;
   std::string name;
   Spanned<TypeExpr> ty;
+  std::optional<std::string> doc_comment;
 };
 
 // ── Traits ────────────────────────────────────────────────────────────────
@@ -726,6 +728,7 @@ struct TraitMethod {
   std::optional<WhereClause> where_clause;
   std::optional<Block> body;
   std::optional<Span> span;
+  std::optional<std::string> doc_comment;
 };
 
 struct TraitItemMethod {
@@ -812,6 +815,7 @@ struct ExternBlock {
 struct FieldDecl {
   std::string name;
   Spanned<TypeExpr> ty;
+  std::optional<std::string> doc_comment;
 };
 
 struct ReceiveFnDecl {

@@ -2883,7 +2883,10 @@ impl Checker {
     pub(super) fn register_qualified_type_alias(&mut self, module_short: &str, name: &str) {
         let qualified = format!("{module_short}.{name}");
         if let Some(def) = self.type_defs.get(name).cloned() {
-            self.type_defs.insert(qualified, def);
+            self.type_defs.insert(qualified.clone(), def);
+            if let Some(span) = self.type_def_spans.get(name).cloned() {
+                self.type_def_spans.insert(qualified, span);
+            }
         }
     }
 }

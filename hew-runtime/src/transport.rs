@@ -12,7 +12,9 @@ use std::ffi::{c_char, c_int, c_void, CStr};
 use std::io::{Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::{atomic::Ordering, LazyLock, Mutex, RwLock};
+use std::sync::{atomic::Ordering, LazyLock, RwLock};
+
+use crate::lifetime::poison_safe::PoisonSafe;
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
@@ -705,17 +707,15 @@ impl TcpApiState {
     }
 }
 
-static TCP_API_STATE: LazyLock<Mutex<TcpApiState>> =
-    LazyLock::new(|| Mutex::new(TcpApiState::new()));
+static TCP_API_STATE: LazyLock<PoisonSafe<TcpApiState>> =
+    LazyLock::new(|| PoisonSafe::new(TcpApiState::new()));
 
 fn tcp_clone_listener(handle: c_int) -> Option<TcpListener> {
-    let state = TCP_API_STATE.lock().ok()?;
-    state.listeners.get(&handle)?.try_clone().ok()
+    TCP_API_STATE.access(|state| state.listeners.get(&handle)?.try_clone().ok())
 }
 
 fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
-    let state = TCP_API_STATE.lock().ok()?;
-    state.streams.get(&handle)?.try_clone().ok()
+    TCP_API_STATE.access(|state| state.streams.get(&handle)?.try_clone().ok())
 }
 
 /// Open a TCP listener at `addr` (`host:port`).
@@ -743,16 +743,18 @@ pub unsafe extern "C" fn hew_tcp_listen(addr: *const c_char) -> c_int {
     let listener = match TcpListener::bind(bind_addr) {
         Ok(l) => l,
         Err(e) => {
-            hew_cabi::sink::set_last_error(format!("hew_tcp_listen: {e}"));
+            hew_cabi::sink::set_last_error_with_errno(
+                format!("hew_tcp_listen: {e}"),
+                e.raw_os_error().unwrap_or(0),
+            );
             return -1;
         }
     };
-    let Ok(mut state) = TCP_API_STATE.lock() else {
-        return -1;
-    };
-    let handle = state.alloc_handle();
-    state.listeners.insert(handle, listener);
-    handle
+    TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.listeners.insert(handle, listener);
+        handle
+    })
 }
 
 /// Accept one incoming TCP connection from a listener handle.
@@ -767,12 +769,11 @@ pub extern "C" fn hew_tcp_accept(listener: c_int) -> c_int {
         return -1;
     };
     let _ = stream.set_nodelay(true);
-    let Ok(mut state) = TCP_API_STATE.lock() else {
-        return -1;
-    };
-    let handle = state.alloc_handle();
-    state.streams.insert(handle, stream);
-    handle
+    TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.streams.insert(handle, stream);
+        handle
+    })
 }
 
 /// Connect to a TCP endpoint at `addr` (`host:port`).
@@ -800,17 +801,19 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
     let stream = match TcpStream::connect(connect_addr) {
         Ok(s) => s,
         Err(e) => {
-            hew_cabi::sink::set_last_error(format!("hew_tcp_connect: {e}"));
+            hew_cabi::sink::set_last_error_with_errno(
+                format!("hew_tcp_connect: {e}"),
+                e.raw_os_error().unwrap_or(0),
+            );
             return -1;
         }
     };
     let _ = stream.set_nodelay(true);
-    let Ok(mut state) = TCP_API_STATE.lock() else {
-        return -1;
-    };
-    let handle = state.alloc_handle();
-    state.streams.insert(handle, stream);
-    handle
+    TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.streams.insert(handle, stream);
+        handle
+    })
 }
 
 /// Set read timeout on a TCP connection handle.
@@ -820,17 +823,29 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
 #[no_mangle]
 pub extern "C" fn hew_tcp_set_read_timeout(fd: c_int, timeout_ms: c_int) -> c_int {
     let Some(stream) = tcp_clone_stream(fd) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_set_read_timeout: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
         return -1;
     };
     let timeout = if timeout_ms < 0 {
         None
     } else {
         let Ok(timeout_ms) = u64::try_from(timeout_ms) else {
+            hew_cabi::sink::set_last_error_with_errno(
+                "hew_tcp_set_read_timeout: invalid timeout value".into(),
+                22, // EINVAL: Invalid argument
+            );
             return -1;
         };
         Some(std::time::Duration::from_millis(timeout_ms))
     };
-    if stream.set_read_timeout(timeout).is_err() {
+    if let Err(e) = stream.set_read_timeout(timeout) {
+        hew_cabi::sink::set_last_error_with_errno(
+            format!("hew_tcp_set_read_timeout: {e}"),
+            e.raw_os_error().unwrap_or(0),
+        );
         return -1;
     }
     0
@@ -843,17 +858,29 @@ pub extern "C" fn hew_tcp_set_read_timeout(fd: c_int, timeout_ms: c_int) -> c_in
 #[no_mangle]
 pub extern "C" fn hew_tcp_set_write_timeout(fd: c_int, timeout_ms: c_int) -> c_int {
     let Some(stream) = tcp_clone_stream(fd) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_set_write_timeout: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
         return -1;
     };
     let timeout = if timeout_ms < 0 {
         None
     } else {
         let Ok(timeout_ms) = u64::try_from(timeout_ms) else {
+            hew_cabi::sink::set_last_error_with_errno(
+                "hew_tcp_set_write_timeout: invalid timeout value".into(),
+                22, // EINVAL: Invalid argument
+            );
             return -1;
         };
         Some(std::time::Duration::from_millis(timeout_ms))
     };
-    if stream.set_write_timeout(timeout).is_err() {
+    if let Err(e) = stream.set_write_timeout(timeout) {
+        hew_cabi::sink::set_last_error_with_errno(
+            format!("hew_tcp_set_write_timeout: {e}"),
+            e.raw_os_error().unwrap_or(0),
+        );
         return -1;
     }
     0
@@ -897,12 +924,11 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
         return -1;
     };
     let _ = stream.set_nodelay(true);
-    let Ok(mut state) = TCP_API_STATE.lock() else {
-        return -1;
-    };
-    let handle = state.alloc_handle();
-    state.streams.insert(handle, stream);
-    handle
+    TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.streams.insert(handle, stream);
+        handle
+    })
 }
 
 /// Read up to 8192 bytes from a TCP connection into a new `HewVec`.
@@ -1028,41 +1054,50 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
     exclude_conn: c_int,
     msg: *const c_char,
 ) -> c_int {
-    cabi_guard!(msg.is_null(), -1);
+    cabi_guard!(msg.is_null(), {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_broadcast_except: null message pointer".into(),
+            22, // EINVAL: Invalid argument
+        );
+        -1
+    });
     // SAFETY: caller guarantees `msg` is a valid C string.
     let Ok(text) = unsafe { CStr::from_ptr(msg) }.to_str() else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_broadcast_except: invalid UTF-8 in message".into(),
+            22, // EINVAL: Invalid argument
+        );
         return -1;
     };
-    let mut recipients = 0usize;
-    let Ok(state) = TCP_API_STATE.lock() else {
-        return -1;
-    };
-    for (conn, stream) in &state.streams {
-        if *conn == exclude_conn {
-            continue;
+    TCP_API_STATE.access(|state| {
+        let mut recipients = 0usize;
+        for (conn, stream) in &state.streams {
+            if *conn == exclude_conn {
+                continue;
+            }
+            let Ok(mut cloned) = stream.try_clone() else {
+                continue;
+            };
+            if cloned.write_all(text.as_bytes()).is_err() {
+                continue;
+            }
+            if !text.ends_with('\n') && cloned.write_all(b"\n").is_err() {
+                continue;
+            }
+            recipients += 1;
         }
-        let Ok(mut cloned) = stream.try_clone() else {
-            continue;
-        };
-        if cloned.write_all(text.as_bytes()).is_err() {
-            continue;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "recipient count is small in demos"
+        )]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "recipient count is small in demos"
+        )]
+        {
+            recipients as c_int
         }
-        if !text.ends_with('\n') && cloned.write_all(b"\n").is_err() {
-            continue;
-        }
-        recipients += 1;
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "recipient count is small in demos"
-    )]
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "recipient count is small in demos"
-    )]
-    {
-        recipients as c_int
-    }
+    })
 }
 
 /// Close either a TCP connection handle or listener handle.
@@ -1070,17 +1105,16 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
 /// Returns 0 on success, -1 if handle is unknown.
 #[no_mangle]
 pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
-    let Ok(mut state) = TCP_API_STATE.lock() else {
-        return -1;
-    };
-    if let Some(stream) = state.streams.remove(&handle) {
-        let _ = stream.shutdown(Shutdown::Both);
-        return 0;
-    }
-    if state.listeners.remove(&handle).is_some() {
-        return 0;
-    }
-    -1
+    TCP_API_STATE.access(|state| {
+        if let Some(stream) = state.streams.remove(&handle) {
+            let _ = stream.shutdown(Shutdown::Both);
+            return 0;
+        }
+        if state.listeners.remove(&handle).is_some() {
+            return 0;
+        }
+        -1
+    })
 }
 
 /// Close a TCP listener handle.

@@ -143,6 +143,15 @@ impl std::fmt::Debug for HewActorMeta {
 /// Combined metadata registry + cache state.
 struct MetaState {
     registry: HashMap<String, ActorMetaEntry>,
+    /// `msg_type → "ActorName::handler_name"` side table for trace attribution.
+    ///
+    /// Populated at registration time by [`hew_wasm_register_actor_meta`].
+    ///
+    /// NOTE: if two actor types register the same `msg_type` integer, the
+    /// last-registered wins.  This is a pre-existing ambiguity in the bridge
+    /// model for AOT programs; collision is a codegen concern tracked
+    /// separately.  See [`resolve_handler_name`] for the lookup path.
+    handler_names: HashMap<i32, String>,
     cache_all: Option<String>,
 }
 
@@ -176,11 +185,26 @@ fn meta_state() -> MutexGuard<'static, MetaState> {
         .get_or_init(|| {
             Mutex::new(MetaState {
                 registry: HashMap::new(),
+                handler_names: HashMap::new(),
                 cache_all: None,
             })
         })
         .lock()
         .unwrap()
+}
+
+/// Resolve a `msg_type` integer to its fully-qualified handler name.
+///
+/// Returns `Some("ActorName::handler_name")` when the `msg_type` was
+/// previously registered via [`hew_wasm_register_actor_meta`], or `None`
+/// if registration has not yet occurred for this `msg_type` (e.g. a trace
+/// event arrived before registration completed).
+///
+/// NOTE: last-registered wins on `msg_type` collision across actor types.
+/// This is a pre-existing ambiguity in the AOT model — see the `handler_names`
+/// field documentation on [`MetaState`] for details.
+pub(crate) fn resolve_handler_name(msg_type: i32) -> Option<String> {
+    meta_state().handler_names.get(&msg_type).cloned()
 }
 
 // ── Host → WASM: send a message to a named actor ───────────────────────
@@ -517,6 +541,13 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
     }
 
     let mut state = meta_state();
+    // Populate the msg_type → "ActorName::handler_name" side table used by
+    // drain_events_json for span-level trace attribution.
+    for h in &handlers {
+        state
+            .handler_names
+            .insert(h.msg_type, format!("{}::{}", name, h.name));
+    }
     state
         .registry
         .insert(name.clone(), ActorMetaEntry { name, handlers });
@@ -708,6 +739,7 @@ pub fn bridge_init() {
     let _ = META_STATE.get_or_init(|| {
         Mutex::new(MetaState {
             registry: HashMap::new(),
+            handler_names: HashMap::new(),
             cache_all: None,
         })
     });
@@ -722,6 +754,75 @@ pub fn bridge_shutdown() {
     outbound_queue().clear();
     let mut state = meta_state();
     state.registry.clear();
+    // SHIM: JIT reload must also clear `handler_names`; see #1226 M2.
+    // For AOT the map is populated once at startup and outlives the session.
+    // When #1226 M2 lands, add `state.handler_names.clear()` here.
+    state.cache_all = None;
+}
+
+// ── WASM stubs for actor type registration (imported via env namespace) ──
+
+/// WASM-exported no-op stub for `hew_actor_register_type`.
+///
+/// The generated WASM code emits calls to this function at startup. In WASM,
+/// there is no profiler registry, so this is always a no-op. The symbol is
+/// exported so it can be satisfied as an import from the `env` namespace.
+///
+/// Signature: `hew_actor_register_type(dispatch: *const c_void, name: *const c_char)`
+///
+/// # Safety
+///
+/// This is a no-op and does not dereference its parameters, so any pointer
+/// values are safe.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_register_type(
+    _dispatch: *const c_void,
+    _name: *const std::ffi::c_char,
+) {
+}
+
+/// WASM-exported no-op stub for `hew_register_handler_name`.
+///
+/// The generated WASM code emits calls to this function at startup. In WASM,
+/// there is no profiler registry, so this is always a no-op. The symbol is
+/// exported so it can be satisfied as an import from the `env` namespace.
+///
+/// Signature: `hew_register_handler_name(dispatch: *const c_void, msg_type: i32, name: *const c_char)`
+///
+/// # Safety
+///
+/// This is a no-op and does not dereference its parameters, so any pointer
+/// values are safe.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_register_handler_name(
+    _dispatch: *const c_void,
+    _msg_type: i32,
+    _name: *const std::ffi::c_char,
+) {
+}
+
+// ── Test helpers (pub(crate) so tracing.rs tests can share the lock) ───
+
+/// Serialisation lock for bridge tests; also acquired by `tracing.rs` tests
+/// that call into bridge globals so all bridge-touching tests run serially.
+///
+/// Only compiled under `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) static BRIDGE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Clear all bridge state: outbound queue, metadata registry, handler-name
+/// side table, and JSON cache.  Full reset including `handler_names`, which
+/// [`bridge_shutdown`] intentionally skips for AOT semantics.
+///
+/// Only compiled under `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) fn reset_bridge_full() {
+    outbound_queue().clear();
+    let mut state = meta_state();
+    state.registry.clear();
+    state.handler_names.clear();
     state.cache_all = None;
 }
 
@@ -730,15 +831,13 @@ pub fn bridge_shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Serialize tests to avoid inter-test mutation races on shared globals.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    // Tests within this module use BRIDGE_TEST_LOCK (pub(crate) above);
+    // tracing.rs tests that touch bridge globals acquire the same lock,
+    // so all bridge-global-touching tests run serially regardless of module.
+    use super::BRIDGE_TEST_LOCK as TEST_LOCK;
 
     fn reset_bridge() {
-        outbound_queue().clear();
-        let mut state = meta_state();
-        state.registry.clear();
-        state.cache_all = None;
+        reset_bridge_full();
     }
 
     #[test]
@@ -1168,5 +1267,41 @@ mod tests {
         );
         // SAFETY: ptr was allocated by hew_wasm_query_meta.
         unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
+    }
+
+    #[test]
+    fn handler_name_side_table_populated_on_registration() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_bridge();
+
+        // Before registration, no mapping exists.
+        assert_eq!(resolve_handler_name(42), None);
+
+        // Build a minimal HewActorMeta with one handler.
+        let handler_name = b"handle_bar\0";
+        let actor_name = b"Foo\0";
+        let handler = HewHandlerMeta {
+            name: handler_name.as_ptr().cast(),
+            msg_type: 42,
+            params: std::ptr::null(),
+            param_count: 0,
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let actor_meta = HewActorMeta {
+            name: actor_name.as_ptr().cast(),
+            handlers: &raw const handler,
+            handler_count: 1,
+        };
+
+        // SAFETY: all pointers are valid for this stack frame's lifetime;
+        // hew_wasm_register_actor_meta copies the strings.
+        unsafe {
+            hew_wasm_register_actor_meta(&raw const actor_meta);
+        }
+
+        assert_eq!(resolve_handler_name(42), Some("Foo::handle_bar".to_owned()));
+        // Unknown msg_type still returns None.
+        assert_eq!(resolve_handler_name(99), None);
     }
 }

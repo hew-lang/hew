@@ -308,6 +308,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_const(&mut self, decl: &ConstDecl) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("const ");
@@ -320,6 +321,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_type_alias(&mut self, decl: &TypeAliasDecl) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
         self.write("type ");
         self.write(&decl.name);
@@ -350,7 +352,13 @@ impl<'a> Formatter<'a> {
         self.indent += 1;
         for item in &decl.body {
             match item {
-                TypeBodyItem::Field { name, ty, .. } => {
+                TypeBodyItem::Field {
+                    name,
+                    ty,
+                    doc_comment,
+                    ..
+                } => {
+                    self.write_outer_doc(doc_comment.as_ref());
                     self.write_indent();
                     self.write(name);
                     self.write(": ");
@@ -492,6 +500,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_variant(&mut self, v: &VariantDecl, trailing_semicolon: bool) {
+        self.write_outer_doc(v.doc_comment.as_ref());
         self.write_indent();
         self.write(&v.name);
         match &v.kind {
@@ -574,6 +583,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_trait_method(&mut self, m: &TraitMethod) {
+        self.write_outer_doc(m.doc_comment.as_ref());
         self.write_indent();
         if m.is_pure {
             self.write("pure ");
@@ -991,6 +1001,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_field_decl(&mut self, f: &FieldDecl) {
+        self.write_outer_doc(f.doc_comment.as_ref());
         self.write_indent();
         self.write("let ");
         self.write(&f.name);
@@ -1044,6 +1055,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_receive_fn(&mut self, recv: &ReceiveFnDecl, scope_end: usize) {
+        self.write_outer_doc(recv.doc_comment.as_ref());
         self.format_attributes(&recv.attributes);
         self.write_indent();
         if recv.is_pure {
@@ -2329,6 +2341,12 @@ struct Comment {
 }
 
 /// Scan source text and extract all comments with their byte positions.
+///
+/// Doc-comments (`///` and `//!`) are intentionally skipped: the parser
+/// captures their content into AST fields (`doc_comment` / `module_doc`),
+/// and the formatter re-emits them via `write_outer_doc` /
+/// `format_program`. Including them here as raw comments would cause
+/// double emission and break AST round-trip.
 fn extract_comments(source: &str) -> Vec<Comment> {
     let mut comments = Vec::new();
     let bytes = source.as_bytes();
@@ -2338,14 +2356,18 @@ fn extract_comments(source: &str) -> Vec<Comment> {
             b'/' if i + 1 < bytes.len() => match bytes[i + 1] {
                 b'/' => {
                     let start = i;
+                    let is_doc_comment =
+                        i + 2 < bytes.len() && (bytes[i + 2] == b'/' || bytes[i + 2] == b'!');
                     i += 2;
                     while i < bytes.len() && bytes[i] != b'\n' {
                         i += 1;
                     }
-                    comments.push(Comment {
-                        text: source[start..i].to_string(),
-                        span: start..i,
-                    });
+                    if !is_doc_comment {
+                        comments.push(Comment {
+                            text: source[start..i].to_string(),
+                            span: start..i,
+                        });
+                    }
                 }
                 b'*' => {
                     let start = i;

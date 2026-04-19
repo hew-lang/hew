@@ -32,7 +32,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 
 // ── Trace context ──────────────────────────────────────────────────────
 
@@ -450,6 +450,25 @@ pub extern "C" fn hew_trace_clear() {
     events.clear();
 }
 
+/// Register `hew_trace_reset` as a session reset hook.
+///
+/// Safe to call multiple times; the registration is guarded by a `Once` so
+/// the hook is added to the registry exactly once per process lifetime.
+/// Called from `scheduler::hew_sched_init` (native) and
+/// `scheduler_wasm::hew_sched_init` (WASM) so trace events are cleared on
+/// every `session_reset()` regardless of target.
+pub(crate) fn register_trace_reset_hook() {
+    // Wrapper converts the extern "C" fn to a plain Rust fn() as required by
+    // the ResetHook type alias.
+    fn trace_reset_hook() {
+        hew_trace_reset();
+    }
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        crate::session::register_reset_hook(trace_reset_hook);
+    });
+}
+
 /// Reset all tracing state (disable + clear events + reset context).
 #[no_mangle]
 pub extern "C" fn hew_trace_reset() {
@@ -463,7 +482,33 @@ pub extern "C" fn hew_trace_reset() {
 
 /// Drain up to 256 trace events and return them as a JSON array.
 ///
-/// Each element: `{"trace_id":"HEX32","span_id":N,"parent_span_id":N,"actor_id":N,"event_type":"S","msg_type":N,"timestamp_ns":N}`
+/// Each element:
+/// ```json
+/// {
+///   "trace_id": "HEX32",
+///   "span_id": N,
+///   "parent_span_id": N,
+///   "actor_id": N,
+///   "actor_type_id": N,
+///   "actor_type": "TypeName"|null,
+///   "event_type": "begin"|"end"|"spawn"|"crash"|"stop"|"send",
+///   "msg_type": N,
+///   "timestamp_ns": N,
+///   "handler_name": "ActorType::handler_name"|null
+/// }
+/// ```
+///
+/// `actor_type_id` is the dispatch function pointer cast to `u64`.  It is `0`
+/// when the actor is no longer live at drain time (short-lived actors may have
+/// been freed before the drain runs).
+///
+/// `actor_type` is the registered Hew type name (e.g. `"Counter"`).  It is
+/// `null` when the dispatch pointer has not been registered via
+/// `hew_actor_register_type` (which requires codegen emission — see #1258).
+///
+/// `handler_name` is non-null on native builds when `hew_register_handler_name`
+/// has been called for the `(dispatch_fn, msg_type)` pair (requires codegen
+/// emission — see #1259).  On WASM builds the bridge metadata registry is used.
 #[cfg(feature = "profiler")]
 pub fn drain_events_json() -> String {
     use std::fmt::Write as _;
@@ -486,17 +531,65 @@ pub fn drain_events_json() -> String {
                 SPAN_SEND => "send",
                 _ => "unknown",
             };
+
+            // Resolve actor_type_id and actor_type via the profiler actor registry.
+            // Option B from #1260: drain-time lookup avoids adding a dispatch-fn
+            // pointer field to HewTraceEvent (which would break the C ABI).
+            //
+            // SHIM: WHY: HewTraceEvent is #[repr(C)]; adding fields would break
+            //       hew_trace_drain callers.  Drain-time lookup is the zero-ABI-
+            //       impact path.
+            //       WHEN: Remove this lookup if a future ABI revision embeds
+            //       actor_type_id directly in HewTraceEvent.
+            //       REAL: Store dispatch_fn in HewTraceEvent when the C ABI is versioned.
+            #[cfg(not(any(target_arch = "wasm32", test)))]
+            let (actor_type_id, actor_type_str, handler_name) = {
+                let dispatch_ptr =
+                    crate::profiler::actor_registry::lookup_dispatch_for_actor_id(ev.actor_id)
+                        .unwrap_or(0);
+                let type_id = dispatch_ptr as u64;
+                let type_name =
+                    crate::profiler::actor_registry::lookup_dispatch_type_by_ptr(dispatch_ptr);
+                let hname = crate::profiler::actor_registry::lookup_handler_name_by_ptr(
+                    dispatch_ptr,
+                    ev.msg_type,
+                );
+                (type_id, type_name, hname)
+            };
+
+            // WASM and test builds use the bridge metadata registry for handler
+            // names; actor_type_id and actor_type are not yet populated in those
+            // paths (WASM codegen registration is a separate follow-up).
+            #[cfg(any(target_arch = "wasm32", test))]
+            let (actor_type_id, actor_type_str, handler_name): (
+                u64,
+                &'static str,
+                Option<String>,
+            ) = (0, "Actor", crate::bridge::resolve_handler_name(ev.msg_type));
+
+            let actor_type_json = if actor_type_str == "Actor" && actor_type_id == 0 {
+                "null".to_owned()
+            } else {
+                format!("\"{actor_type_str}\"")
+            };
+            let handler_name_json = match &handler_name {
+                Some(name) => format!("\"{name}\""),
+                None => "null".to_owned(),
+            };
             let _ = write!(
                 json,
-                r#"{{"trace_id":"{:016x}{:016x}","span_id":{},"parent_span_id":{},"actor_id":{},"event_type":"{}","msg_type":{},"timestamp_ns":{}}}"#,
+                r#"{{"trace_id":"{:016x}{:016x}","span_id":{},"parent_span_id":{},"actor_id":{},"actor_type_id":{},"actor_type":{},"event_type":"{}","msg_type":{},"timestamp_ns":{},"handler_name":{}}}"#,
                 ev.trace_id_hi,
                 ev.trace_id_lo,
                 ev.span_id,
                 ev.parent_span_id,
                 ev.actor_id,
+                actor_type_id,
+                actor_type_json,
                 event_type_str,
                 ev.msg_type,
                 ev.timestamp_ns,
+                handler_name_json,
             );
         }
     }
@@ -673,5 +766,158 @@ mod tests {
         assert_eq!(hew_trace_event_count(), 7); // 10 - 3 drained
 
         hew_trace_reset();
+    }
+
+    /// Verify that `drain_events_json` emits `"handler_name":"ActorType::handler"`
+    /// for a registered `msg_type` and `"handler_name":null` for an unknown one.
+    ///
+    /// This test exercises the bridge registration path together with the tracing
+    /// JSON emission path. It acquires the shared `BRIDGE_TEST_LOCK` so it
+    /// serialises against all other bridge-global-touching tests.
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn drain_events_json_includes_handler_name() {
+        use crate::bridge::{
+            hew_wasm_register_actor_meta, reset_bridge_full, HewActorMeta, HewHandlerMeta,
+            BRIDGE_TEST_LOCK,
+        };
+
+        // Acquire both locks in a consistent order (bridge first, then tracing)
+        // to avoid deadlocks with concurrent bridge tests.
+        let _bridge_guard = BRIDGE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _trace_guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Full reset of both subsystems.
+        reset_bridge_full();
+        hew_trace_reset();
+        hew_trace_enable(1);
+
+        // Register a synthetic actor: "TestActor" with handler "on_ping" at msg_type 77.
+        let actor_name = b"TestActor\0";
+        let handler_name = b"on_ping\0";
+        let handler = HewHandlerMeta {
+            name: handler_name.as_ptr().cast(),
+            msg_type: 77,
+            params: std::ptr::null(),
+            param_count: 0,
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let actor_meta = HewActorMeta {
+            name: actor_name.as_ptr().cast(),
+            handlers: &raw const handler,
+            handler_count: 1,
+        };
+        // SAFETY: all pointers are valid stack pointers with lifetimes that
+        // outlast this call; hew_wasm_register_actor_meta copies the strings.
+        unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
+
+        // Emit two trace events: one with the registered msg_type, one unknown.
+        hew_trace_begin(42, 77); // known msg_type
+        hew_trace_begin(42, 99); // unknown msg_type
+
+        let json = crate::tracing::drain_events_json();
+
+        // The known msg_type must carry "handler_name":"TestActor::on_ping".
+        assert!(
+            json.contains(r#""handler_name":"TestActor::on_ping""#),
+            "expected handler_name for known msg_type in: {json}"
+        );
+        // The unknown msg_type must carry "handler_name":null.
+        assert!(
+            json.contains(r#""handler_name":null"#),
+            "expected null handler_name for unknown msg_type in: {json}"
+        );
+
+        // Cleanup.
+        reset_bridge_full();
+        hew_trace_reset();
+    }
+
+    /// Regression test for #1260: `drain_events_json` must always emit
+    /// `"actor_type_id"` and `"actor_type"` fields on every event, even when
+    /// the actor registry has not been populated (they emit 0 / null in that
+    /// case).  This verifies the JSON schema shape is present regardless of
+    /// whether actor-type registration codegen emission has run.
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn drain_events_json_includes_actor_type_fields() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        hew_trace_reset();
+        hew_trace_enable(1);
+
+        // Emit a single trace event.
+        hew_trace_begin(123, 0);
+
+        let json = crate::tracing::drain_events_json();
+
+        // Both new fields must be present in every event.
+        assert!(
+            json.contains(r#""actor_type_id":"#),
+            "drain_events_json must always emit actor_type_id field; got: {json}"
+        );
+        assert!(
+            json.contains(r#""actor_type":"#),
+            "drain_events_json must always emit actor_type field; got: {json}"
+        );
+
+        hew_trace_reset();
+    }
+
+    // Hook wrapper used by session_reset_clears_trace_state_via_hook.
+    // Defined at module level to satisfy the items-after-statements lint.
+    fn trace_reset_hook_for_test() {
+        hew_trace_reset();
+    }
+
+    /// Verifies that when a trace-reset hook is registered in `RESET_HOOKS`,
+    /// calling `session_reset()` clears trace events and disables tracing.
+    ///
+    /// Acquires `SESSION_TEST_LOCK` first and the local `TEST_LOCK` second so
+    /// that concurrent session tests cannot clear the hook list mid-test.  The
+    /// `SESSION_TEST_LOCK`-first acquisition order must match any other test
+    /// that holds both locks.
+    #[test]
+    fn session_reset_clears_trace_state_via_hook() {
+        // Acquire session lock first, tracing lock second (consistent order).
+        let _session_guard = crate::session::reset_hooks_for_test();
+        let _trace_guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Reset tracing state to a known baseline.
+        hew_trace_reset();
+
+        // Register the trace reset hook directly for this test (bypassing the
+        // production Once guard so the test is self-contained even if the Once
+        // already fired in an earlier test run).
+        crate::session::register_reset_hook(trace_reset_hook_for_test);
+
+        // Enable tracing and record an event.
+        hew_trace_enable(1);
+        hew_trace_lifecycle(42, SPAN_SPAWN);
+        assert_eq!(hew_trace_event_count(), 1);
+        assert_eq!(hew_trace_is_enabled(), 1);
+
+        // Fire all session hooks — must invoke the registered trace_reset_hook.
+        crate::session::session_reset();
+
+        assert_eq!(
+            hew_trace_event_count(),
+            0,
+            "trace events must be empty after session_reset"
+        );
+        assert_eq!(
+            hew_trace_is_enabled(),
+            0,
+            "tracing must be disabled after session_reset"
+        );
     }
 }

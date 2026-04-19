@@ -31,8 +31,13 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
             return Some(crate::util::find_name_span(source, span.start, word));
         }
 
-        // Search inside actors for receive methods and methods.
+        // Search inside actors for fields, receive methods, and methods.
         if let Item::Actor(a) = item {
+            for field in &a.fields {
+                if field.name == word {
+                    return Some(crate::util::find_name_span(source, span.start, word));
+                }
+            }
             for recv in &a.receive_fns {
                 if recv.name == word {
                     // Use the receive fn's own span when available; fall back to
@@ -729,5 +734,16 @@ mod tests {
         let pr = parse(source);
         let offset = source.rfind("1 }").expect("usage should exist");
         assert!(find_param_definition(&pr, "x", offset).is_none());
+    }
+
+    #[test]
+    fn definition_actor_field_found() {
+        // Actor fields are top-level names inside the actor; find_definition must
+        // resolve them so that detect_conflicts can produce ShadowsTopLevel when a
+        // rename target collides with a field name.
+        let source = "actor Counter { count: i64; receive fn inc() {} }";
+        let pr = parse(source);
+        let result = find_definition(source, &pr, "count").expect("should find actor field");
+        assert_eq!(&source[result.start..result.end], "count");
     }
 }

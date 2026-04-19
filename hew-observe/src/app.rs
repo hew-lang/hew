@@ -1089,27 +1089,36 @@ impl App {
             span_id: 1,
             parent_span_id: 0,
             actor_id: (1u64 << 48) | 1,
+            actor_type_id: 0,
+            actor_type: None,
             event_type: "spawn".into(),
             msg_type: 0,
             timestamp_ns: base_ns,
+            handler_name: None,
         });
         traces.push(TraceEvent {
             trace_id: "0002".into(),
             span_id: 2,
             parent_span_id: 0,
             actor_id: (2u64 << 48) | 0x65,
+            actor_type_id: 0,
+            actor_type: None,
             event_type: "spawn".into(),
             msg_type: 0,
             timestamp_ns: base_ns + 100_000_000,
+            handler_name: None,
         });
         traces.push(TraceEvent {
             trace_id: "0003".into(),
             span_id: 3,
             parent_span_id: 0,
             actor_id: (3u64 << 48) | 0xC9,
+            actor_type_id: 0,
+            actor_type: None,
             event_type: "spawn".into(),
             msg_type: 0,
             timestamp_ns: base_ns + 200_000_000,
+            handler_name: None,
         });
         // Message sends between nodes
         for i in 0..20u64 {
@@ -1118,9 +1127,12 @@ impl App {
                 span_id: 100 + i,
                 parent_span_id: 0,
                 actor_id: (1u64 << 48) | 1,
+                actor_type_id: 0,
+                actor_type: None,
                 event_type: "send".into(),
                 msg_type: 3,
                 timestamp_ns: base_ns + 1_000_000_000 + i * 200_000_000,
+                handler_name: None,
             });
         }
         for i in 0..15u64 {
@@ -1129,9 +1141,12 @@ impl App {
                 span_id: 200 + i,
                 parent_span_id: 0,
                 actor_id: (2u64 << 48) | 0x65,
+                actor_type_id: 0,
+                actor_type: None,
                 event_type: "send".into(),
                 msg_type: 7,
                 timestamp_ns: base_ns + 1_100_000_000 + i * 300_000_000,
+                handler_name: None,
             });
         }
         for i in 0..5u64 {
@@ -1140,9 +1155,12 @@ impl App {
                 span_id: 300 + i,
                 parent_span_id: 0,
                 actor_id: (3u64 << 48) | 0xC9,
+                actor_type_id: 0,
+                actor_type: None,
                 event_type: "send".into(),
                 msg_type: 5,
                 timestamp_ns: base_ns + 500_000_000 + i * 500_000_000,
+                handler_name: None,
             });
         }
         // Crash on node 3
@@ -1151,9 +1169,12 @@ impl App {
             span_id: 400,
             parent_span_id: 0,
             actor_id: (3u64 << 48) | 0xC9,
+            actor_type_id: 0,
+            actor_type: None,
             event_type: "crash".into(),
             msg_type: 0,
             timestamp_ns: base_ns + 8_000_000_000,
+            handler_name: None,
         });
         // Sort by timestamp
         traces.sort_by_key(|t| t.timestamp_ns);

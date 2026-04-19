@@ -692,6 +692,7 @@ pub struct ConstDecl {
     pub name: String,
     pub ty: Spanned<TypeExpr>,
     pub value: Spanned<Expr>,
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -718,6 +719,7 @@ pub struct TypeAliasDecl {
     pub visibility: Visibility,
     pub name: String,
     pub ty: Spanned<TypeExpr>,
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -763,6 +765,8 @@ pub enum TypeBodyItem {
         ty: Spanned<TypeExpr>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attributes: Vec<Attribute>,
+        #[serde(default)]
+        doc_comment: Option<String>,
     },
     Variant(VariantDecl),
     Method(FnDecl),
@@ -772,6 +776,8 @@ pub enum TypeBodyItem {
 pub struct VariantDecl {
     pub name: String,
     pub kind: VariantKind,
+    #[serde(default)]
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -814,6 +820,8 @@ pub struct TraitMethod {
     /// Byte span from the `fn` keyword through the byte after the closing `}` or `;`.
     #[serde(default)]
     pub span: Span,
+    #[serde(default)]
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -881,6 +889,7 @@ impl WireDecl {
                     0..0,
                 ),
                 attributes: Vec::new(),
+                doc_comment: None,
             })
             .chain(
                 self.variants
@@ -1051,6 +1060,8 @@ pub struct ActorTerminate {
 pub struct FieldDecl {
     pub name: String,
     pub ty: Spanned<TypeExpr>,
+    #[serde(default)]
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1067,6 +1078,8 @@ pub struct ReceiveFnDecl {
     /// Attributes such as `#[every(5s)]` for periodic scheduling.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributes: Vec<Attribute>,
+    #[serde(default)]
+    pub doc_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

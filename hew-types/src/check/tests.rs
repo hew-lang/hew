@@ -739,6 +739,7 @@ fn test_receive_gen_fn_returns_stream() {
         },
         span: 0..0,
         attributes: vec![],
+        doc_comment: None,
     };
 
     let actor = ActorDecl {
@@ -1416,6 +1417,7 @@ fn typecheck_actor_receive_fn_registered() {
         where_clause: None,
         span: 0..0,
         attributes: vec![],
+        doc_comment: None,
     };
     let actor = ActorDecl {
         visibility: Visibility::Pub,
@@ -3705,6 +3707,7 @@ fn user_module_registers_pub_consts() {
             0..0,
         ),
         value: make_int_literal(100, 0..3),
+        doc_comment: None,
     };
     let priv_const = ConstDecl {
         visibility: Visibility::Private,
@@ -3717,6 +3720,7 @@ fn user_module_registers_pub_consts() {
             0..0,
         ),
         value: make_int_literal(42, 0..2),
+        doc_comment: None,
     };
     let import = make_user_import(
         &["myapp", "config"],
@@ -3769,6 +3773,7 @@ fn user_module_const_bare_import_qualified_only() {
             0..0,
         ),
         value: make_int_literal(50, 0..2),
+        doc_comment: None,
     };
     let import = make_user_import(
         &["myapp", "config"],
@@ -3814,6 +3819,7 @@ fn user_module_registers_types() {
                 0..0,
             ),
             attributes: Vec::new(),
+            doc_comment: None,
         }],
         doc_comment: None,
         wire: None,
@@ -4342,6 +4348,7 @@ fn import_trait_from_module_glob() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -4382,6 +4389,7 @@ fn import_private_trait_not_registered() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -4522,6 +4530,7 @@ fn test_file_import_private_items_not_visible() {
             }),
             0..0,
         ),
+        doc_comment: None,
     });
 
     let private_type = Item::TypeDecl(TypeDecl {
@@ -6199,6 +6208,7 @@ fn const_default_width_registers_in_const_values() {
             0..0,
         ),
         value: make_int_literal(100, 0..3),
+        doc_comment: None,
     };
     checker.check_const(&decl, &(0..3));
 
@@ -6231,6 +6241,7 @@ fn const_explicit_width_not_in_const_values_widening_ok() {
             0..0,
         ),
         value: make_int_literal(100, 0..3),
+        doc_comment: None,
     };
     checker.check_const(&decl, &(0..3));
 
@@ -6801,6 +6812,7 @@ fn make_checker_with_trait(
                 where_clause: None,
                 body: None,
                 span: 0..0,
+                doc_comment: None,
             })
         })
         .collect();
@@ -8128,6 +8140,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 where_clause: None,
                 body: None,
                 span: 0..0,
+                doc_comment: None,
             }),
         ],
         doc_comment: None,
@@ -8165,6 +8178,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -8216,6 +8230,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -8251,6 +8266,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             where_clause: None,
             body: None,
             span: 0..0,
+            doc_comment: None,
         })],
         doc_comment: None,
     };
@@ -8790,6 +8806,7 @@ mod non_root_module_inference_scope {
                     trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
                 }),
                 span: 0..0,
+                doc_comment: None,
             })],
             doc_comment: None,
         };
@@ -8831,6 +8848,7 @@ mod non_root_module_inference_scope {
                     trailing_expr: Some(Box::new((Expr::Identifier("None".to_string()), 20..24))),
                 }),
                 span: 0..0,
+                doc_comment: None,
             })],
             doc_comment: None,
         };
@@ -8889,6 +8907,7 @@ mod non_root_module_inference_scope {
                     trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
                 }),
                 span: 0..0,
+                doc_comment: None,
             })],
             doc_comment: None,
         };
@@ -9400,6 +9419,7 @@ fn module_graph_body_private_local_type_is_available() {
                 0..1,
             ),
             attributes: Vec::new(),
+            doc_comment: None,
         }],
         is_indirect: false,
         doc_comment: None,
@@ -10705,7 +10725,7 @@ mod warning_source_attribution {
         );
     }
 
-    // ── Wave 13 Ty::Error return-context seeding regressions ───────────────────
+    // ── Ty::Error return-context seeding regressions ──────────────────────────
     //
     // When a function's return-type annotation cannot be resolved (e.g.
     // `UnknownType`), `resolve_type_expr` produces `Ty::Error`.  Before this
@@ -11585,6 +11605,248 @@ mod wasm_rejects {
             !has_platform_limitation_error(&output),
             "Stream<T>::next should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
+        );
+    }
+
+    // ── TLS / QUIC / DNS / OS reject + CryptoRandom warn ───────────────────
+
+    fn check_wasm_with_registry(source: &str) -> TypeCheckOutput {
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors in wasm_rejects test: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        checker.check_program(&result.program)
+    }
+
+    #[test]
+    fn wasm_rejects_tls_module_call() {
+        let source = concat!(
+            "import std::net::tls;\n",
+            "fn main() { tls.connect(\"host\", 443); }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "tls.connect should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "std::net::tls"),
+            "error message should mention TLS feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_quic_module_call() {
+        let source = concat!(
+            "import std::net::quic;\n",
+            "fn main() { quic.new_client(); }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "quic.* should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "std::net::quic"),
+            "error message should mention QUIC feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_dns_module_call() {
+        let source = concat!(
+            "import std::net::dns;\n",
+            "fn main() { dns.resolve(\"example.com\"); }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "dns.resolve should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "std::net::dns"),
+            "error message should mention DNS feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_os_module_call() {
+        let source = concat!("import std::os;\n", "fn main() { os.env(\"HOME\"); }\n",);
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "os.* should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "std::os"),
+            "error message should mention OS feature; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_warns_crypto_random_bytes() {
+        // crypto.random_bytes is a WARNING, not an error, because the wasm32
+        // implementation falls back to a seeded non-cryptographic PRNG.
+        let source = concat!(
+            "import std::crypto::crypto;\n",
+            "fn main() { crypto.random_bytes(16); }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_warning(&output),
+            "crypto.random_bytes should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
+            output.warnings
+        );
+        assert!(
+            platform_warning_contains(&output, "random_bytes"),
+            "warning message should mention crypto.random_bytes; got: {:?}",
+            output.warnings
+        );
+        assert!(
+            !has_platform_limitation_error(&output),
+            "crypto.random_bytes should NOT be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    // ── Native sibling tests: no platform error on non-wasm target ────────
+
+    #[test]
+    fn native_tls_no_platform_error() {
+        let source = concat!(
+            "import std::net::tls;\n",
+            "fn main() { tls.connect(\"host\", 443); }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "tls.connect should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "tls.connect should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn native_quic_no_platform_error() {
+        let source = concat!(
+            "import std::net::quic;\n",
+            "fn main() { quic.new_client(); }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "quic.* should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "quic.* should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn native_dns_no_platform_error() {
+        let source = concat!(
+            "import std::net::dns;\n",
+            "fn main() { dns.resolve(\"example.com\"); }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "dns.resolve should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "dns.resolve should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn native_os_no_platform_error() {
+        let source = concat!("import std::os;\n", "fn main() { os.env(\"HOME\"); }\n",);
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "os.* should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "os.* should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn native_crypto_random_bytes_no_platform_error() {
+        let source = concat!(
+            "import std::crypto::crypto;\n",
+            "fn main() { crypto.random_bytes(16); }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "crypto.random_bytes should not emit PlatformLimitation error on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "crypto.random_bytes should not emit PlatformLimitation warning on native target; got: {:?}",
+            output.warnings
         );
     }
 

@@ -22,6 +22,33 @@ git checkout main && git pull --ff-only
 git log --oneline -5  # confirm expected HEAD
 ```
 
+## Breaking change discipline (pre-1.0)
+
+**Recognizing breaking public-API changes:**
+
+- Adding a variant to a `pub enum` without `#[non_exhaustive]` breaks exhaustive-match callers.
+- Changing the signature of a `pub fn` (parameter count, order, type, or return type).
+- Removing or renaming an exported `pub` item.
+- Narrowing the visibility of a previously public item.
+
+**Handling breaks (pre-1.0):**
+
+1. **In the PR:** add `#[non_exhaustive]` to the enum before adding variants, or mark the whole surface `#[deprecated]` if a complete replacement is preferred. If adding enum variants or changing signatures is unavoidable without `#[non_exhaustive]`, document the migration in a comment.
+2. **In-tree callers:** update all tests, examples, probes, and docs in the same PR — never carry forward compatibility aliases. The break is immediate and clean.
+3. **CHANGELOG entry:** in the `[Unreleased]` section, add a `### Changed` entry listing the affected module paths, the old shape, and the new shape with a one-line migration note. Example:
+
+   ```
+   ### Changed
+   
+   - **stdlib vec: `index_of` now returns `int`:** changed from `fn index_of(elem: T) -> Option<int>` 
+     to `fn index_of(elem: T) -> int` (returning `-1` if not found). Update call sites to 
+     check `result < 0` instead of matching `Option`.
+   ```
+
+4. **Version bump:** breaking changes trigger a **minor version bump** (e.g., 0.3.0 → 0.4.0).
+
+**Rationale:** pre-1.0, breaking changes allow rapid stdlib refinement without long deprecation cycles. All in-tree code must be updated in the same PR so the break is visible at a glance. `#[non_exhaustive]` protects downstream code from silent miscompilation.
+
 ## Phase 2 — Version bump
 
 ```bash

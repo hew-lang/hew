@@ -219,12 +219,30 @@ pub struct TraceEvent {
     pub parent_span_id: u64,
     #[serde(default)]
     pub actor_id: u64,
+    /// Dispatch function pointer cast to `u64` — the de-facto actor type
+    /// identifier.  `0` when the actor was freed before the drain ran, or when
+    /// the profiler actor registry has not been populated.  Use together with
+    /// `actor_type` for display; use the raw value to group or compare actor
+    /// types programmatically.
+    #[serde(default)]
+    pub actor_type_id: u64,
+    /// Registered Hew type name for this actor (e.g. `"Counter"`), or `None`
+    /// when the dispatch function has not been registered via
+    /// `hew_actor_register_type` (requires MLIR codegen emission — see #1258).
+    #[serde(default)]
+    pub actor_type: Option<String>,
     #[serde(default)]
     pub event_type: String,
     #[serde(default)]
     pub msg_type: i32,
     #[serde(default)]
     pub timestamp_ns: u64,
+    /// Fully-qualified handler name (`"ActorType::handler_name"`), or `None`
+    /// when the runtime's metadata registry has not been populated for this
+    /// `(actor_type, msg_type)` pair.  Populated on native builds once
+    /// `hew_register_handler_name` codegen emission lands (see #1259).
+    #[serde(default)]
+    pub handler_name: Option<String>,
 }
 
 impl TraceEvent {

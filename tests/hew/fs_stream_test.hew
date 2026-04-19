@@ -244,3 +244,45 @@ fn test_stream_try_from_file_and_try_to_file_use_ioerror() {
 
     cleanup_file(file_path);
 }
+
+// ── IoError network variants ──────────────────────────────────────────
+
+#[test]
+fn test_io_error_from_errno_network_variants() {
+    // ECONNREFUSED: Linux=111, macOS=61
+    match fs.io_error_from_errno(111) {
+        IoError::ConnectionRefused(code) => testing.assert_eq(code, 111),
+        _ => panic("expected IoError::ConnectionRefused for errno 111"),
+    }
+    match fs.io_error_from_errno(61) {
+        IoError::ConnectionRefused(code) => testing.assert_eq(code, 61),
+        _ => panic("expected IoError::ConnectionRefused for errno 61"),
+    }
+    // EADDRINUSE: Linux=98, macOS=48
+    match fs.io_error_from_errno(98) {
+        IoError::AddressInUse(code) => testing.assert_eq(code, 98),
+        _ => panic("expected IoError::AddressInUse for errno 98"),
+    }
+    // ETIMEDOUT: Linux=110, macOS=60
+    match fs.io_error_from_errno(110) {
+        IoError::TimedOut(code) => testing.assert_eq(code, 110),
+        _ => panic("expected IoError::TimedOut for errno 110"),
+    }
+    // EADDRNOTAVAIL: Linux=99, macOS=49
+    match fs.io_error_from_errno(99) {
+        IoError::AddressNotAvailable(code) => testing.assert_eq(code, 99),
+        _ => panic("expected IoError::AddressNotAvailable for errno 99"),
+    }
+}
+
+#[test]
+fn test_io_error_message_formats_all_variants() {
+    testing.assert_eq_str(fs.io_error_message(IoError::NotFound(2)), "NotFound(2)");
+    testing.assert_eq_str(fs.io_error_message(IoError::PermissionDenied(13)), "PermissionDenied(13)");
+    testing.assert_eq_str(fs.io_error_message(IoError::AlreadyExists(17)), "AlreadyExists(17)");
+    testing.assert_eq_str(fs.io_error_message(IoError::ConnectionRefused(111)), "ConnectionRefused(111)");
+    testing.assert_eq_str(fs.io_error_message(IoError::AddressInUse(98)), "AddressInUse(98)");
+    testing.assert_eq_str(fs.io_error_message(IoError::TimedOut(110)), "TimedOut(110)");
+    testing.assert_eq_str(fs.io_error_message(IoError::AddressNotAvailable(99)), "AddressNotAvailable(99)");
+    testing.assert_eq_str(fs.io_error_message(IoError::Other(0)), "Other(0)");
+}

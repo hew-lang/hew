@@ -1,0 +1,65 @@
+//! Behavioural tests for std::encoding::hex.
+
+import std::encoding::hex;
+import std::testing;
+
+fn assert_bytes_eq(actual: bytes, expected: bytes) {
+    testing.assert_eq(actual.len(), expected.len());
+    for i in 0 .. expected.len() {
+        testing.assert_eq(actual.get(i), expected.get(i));
+    }
+}
+
+// ── Happy-path ────────────────────────────────────────────────────────
+
+#[test]
+fn test_encode_known_value() {
+    // [0xDE, 0xAD] → "dead"
+    let data = bytes [222, 173];
+    testing.assert_eq_str(hex.encode(data), "dead");
+}
+
+#[test]
+fn test_encode_upper_known_value() {
+    let data = bytes [222, 173];
+    testing.assert_eq_str(hex.encode_upper(data), "DEAD");
+}
+
+#[test]
+fn test_decode_known_value() {
+    let result = hex.decode("dead");
+    assert_bytes_eq(result, bytes [222, 173]);
+}
+
+// ── Property round-trip ───────────────────────────────────────────────
+
+#[test]
+fn test_round_trip_nonempty() {
+    let original = bytes [0, 127, 255];
+    let encoded = hex.encode(original);
+    let decoded = hex.decode(encoded);
+    assert_bytes_eq(decoded, original);
+}
+
+#[test]
+fn test_round_trip_empty() {
+    let original = bytes [];
+    let encoded = hex.encode(original);
+    let decoded = hex.decode(encoded);
+    assert_bytes_eq(decoded, original);
+}
+
+// ── Error / boundary ─────────────────────────────────────────────────
+
+#[test]
+fn test_decode_invalid_chars_returns_empty() {
+    let result = hex.decode("zzzz");
+    testing.assert_eq(result.len(), 0);
+}
+
+#[test]
+fn test_decode_odd_length_returns_empty() {
+    // Odd number of hex digits is not valid
+    let result = hex.decode("abc");
+    testing.assert_eq(result.len(), 0);
+}

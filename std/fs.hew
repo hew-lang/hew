@@ -36,10 +36,14 @@ import std::path;
 
 // ── Error type ───────────────────────────────────────────────────────
 
-/// Structured error type for file-system operations.
+/// Structured error type for file-system and network operations.
 ///
 /// Define `Result<T, IoError>` return types in your own functions for
 /// structured error handling with the `?` operator.
+///
+/// Variants below cover both file-system and TCP/network failure codes so
+/// callers can handle connection errors uniformly across `fs`, `net`, `quic`,
+/// `http`, `tls`, `dns`, and `websocket` modules.
 pub enum IoError {
     // The target path does not exist.
     NotFound(int);
@@ -47,32 +51,74 @@ pub enum IoError {
     PermissionDenied(int);
     // A file or directory already exists at the target path.
     AlreadyExists(int);
+    // The remote host actively refused the connection (ECONNREFUSED).
+    ConnectionRefused(int);
+    // The local address is already in use (EADDRINUSE).
+    AddressInUse(int);
+    // The connection attempt or I/O operation timed out (ETIMEDOUT).
+    TimedOut(int);
+    // The address or hostname could not be resolved (EADDRNOTAVAIL).
+    AddressNotAvailable(int);
     // Any other OS-level I/O failure.
     Other(int);
 }
 
-const IO_ERROR_OTHER: int = 1;
-const IO_ERROR_NOT_FOUND: int = 2;
-const IO_ERROR_PERMISSION_DENIED: int = 13;
-const IO_ERROR_ALREADY_EXISTS: int = 17;
-
-pub fn io_error_from_message(message: String) -> IoError {
-    if message.contains("os error 2") || message.contains("No such file") || message.contains("no such file") {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
-    } else if message.contains("os error 13")
-        || message.contains("Permission denied")
-        || message.contains("permission denied")
-    {
-        IoError::PermissionDenied(IO_ERROR_PERMISSION_DENIED)
-    } else if message.contains("os error 17")
-        || message.contains("Already exists")
-        || message.contains("already exists")
-        || message.contains("File exists")
-        || message.contains("file exists")
-    {
-        IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS)
+/// Map an OS errno integer to a structured `IoError` variant.
+///
+/// The int payload carried in each variant is the raw OS errno so callers
+/// can inspect the platform value. errno=0 (no OS error) maps to `Other(0)`.
+///
+/// Covers both file-system and network errno values so this function can be
+/// shared across `fs`, `net`, `stream`, `http`, `tls`, `quic`, `dns`, and
+/// `websocket` modules.
+pub fn io_error_from_errno(errno: int) -> IoError {
+    // ENOENT: Linux=2, macOS=2
+    if errno == 2 {
+        IoError::NotFound(errno)
+    // EACCES: Linux=13, macOS=13
+    } else if errno == 13 {
+        IoError::PermissionDenied(errno)
+    // EEXIST: Linux=17, macOS=17
+    } else if errno == 17 {
+        IoError::AlreadyExists(errno)
+    // ECONNREFUSED: Linux=111, macOS=61
+    } else if errno == 111 || errno == 61 {
+        IoError::ConnectionRefused(errno)
+    // EADDRINUSE: Linux=98, macOS=48
+    } else if errno == 98 || errno == 48 {
+        IoError::AddressInUse(errno)
+    // ETIMEDOUT: Linux=110, macOS=60
+    } else if errno == 110 || errno == 60 {
+        IoError::TimedOut(errno)
+    // EADDRNOTAVAIL: Linux=99, macOS=49
+    } else if errno == 99 || errno == 49 {
+        IoError::AddressNotAvailable(errno)
     } else {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(errno)
+    }
+}
+
+/// Return a human-readable description of an `IoError`.
+///
+/// The returned string includes the variant name and the raw OS errno so
+/// callers can log or surface structured errors without matching on every arm:
+///
+/// ```
+/// match result {
+///     Err(e) => panic("operation failed: " + fs.io_error_message(e)),
+///     Ok(_) => {},
+/// }
+/// ```
+pub fn io_error_message(e: IoError) -> String {
+    match e {
+        IoError::NotFound(code)            => f"NotFound({code})",
+        IoError::PermissionDenied(code)    => f"PermissionDenied({code})",
+        IoError::AlreadyExists(code)       => f"AlreadyExists({code})",
+        IoError::ConnectionRefused(code)   => f"ConnectionRefused({code})",
+        IoError::AddressInUse(code)        => f"AddressInUse({code})",
+        IoError::TimedOut(code)            => f"TimedOut({code})",
+        IoError::AddressNotAvailable(code) => f"AddressNotAvailable({code})",
+        IoError::Other(code)               => f"Other({code})",
     }
 }
 
@@ -83,37 +129,54 @@ fn missing_parent(target: String) -> bool {
 
 fn write_error(target: String) -> IoError {
     if missing_parent(target) {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
     } else {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(0)
     }
 }
 
 fn missing_path_error(target: String) -> IoError {
     if exists(target) {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(0)
     } else {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
+    }
+}
+
+/// Classify a raw error message string from hew_file_read_bytes into an IoError.
+///
+/// `hew_file_read_bytes` sets the error as `"hew_file_read_bytes: <OS message>"`.
+/// The OS message for permission denied always contains "permission denied" (Rust
+/// formats std::io::Error this way on Linux and macOS).  When no message keyword
+/// matches, fall back to a stat-based path-existence check so NotFound is still
+/// preferred over Other for missing files.
+fn classify_file_error(error: String, file_path: String) -> IoError {
+    if error.contains("permission denied") {
+        IoError::PermissionDenied(0)
+    } else if error.contains("already exists") {
+        IoError::AlreadyExists(0)
+    } else {
+        missing_path_error(file_path)
     }
 }
 
 fn mkdir_error(target: String) -> IoError {
     if exists(target) {
-        IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS)
+        IoError::AlreadyExists(0)
     } else if missing_parent(target) {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
     } else {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(0)
     }
 }
 
 fn move_copy_error(source: String, target: String) -> IoError {
     if !exists(source) {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
     } else if missing_parent(target) {
-        IoError::NotFound(IO_ERROR_NOT_FOUND)
+        IoError::NotFound(0)
     } else {
-        IoError::Other(IO_ERROR_OTHER)
+        IoError::Other(0)
     }
 }
 
@@ -148,7 +211,9 @@ pub fn try_read(file_path: String) -> Result<String, IoError> {
         if hew_stream_is_valid(file) {
             Ok(hew_stream_collect_string(file))
         } else {
-            Err(io_error_from_message(hew_stream_last_error()))
+            let errno = hew_stream_last_errno();
+            let _ = hew_stream_last_error();
+            Err(io_error_from_errno(errno))
         }
     }
 }
@@ -262,7 +327,15 @@ pub fn try_read_bytes(file_path: String) -> Result<bytes, IoError> {
         let data = hew_file_read_bytes(file_path);
         let error = hew_file_last_error();
         if error != "" {
-            Err(io_error_from_message(error))
+            // SHIM: WHY — hew_file_read_bytes has no errno channel (uses set_last_error,
+            //   not set_last_error_with_errno), so io_error_from_errno cannot be used.
+            //   classify_file_error inspects the OS message string to recover PermissionDenied
+            //   and AlreadyExists; for other failures it falls back to path-existence stat.
+            // WHEN — remove when hew-runtime wires errno through hew_file_read_bytes
+            //   via set_last_error_with_errno (tracked in issue #1241-follow-up).
+            // WHAT — switch to: let errno = hew_stream_last_errno(); Err(io_error_from_errno(errno))
+            //   once the runtime-side counterpart lands.
+            Err(classify_file_error(error, file_path))
         } else {
             Ok(clone_bytes(data))
         }
@@ -320,9 +393,9 @@ pub fn try_mkdir_all(dir_path: String) -> Result<int, IoError> {
         0 => Ok(0),
         _ => {
             if exists(dir_path) {
-                Err(IoError::AlreadyExists(IO_ERROR_ALREADY_EXISTS))
+                Err(IoError::AlreadyExists(0))
             } else {
-                Err(IoError::Other(IO_ERROR_OTHER))
+                Err(IoError::Other(0))
             }
         },
     }
@@ -350,10 +423,10 @@ pub fn list_dir(path: String) -> Vec<String> {
 /// Distinguishes missing and non-directory paths from a successful listing.
 pub fn try_list_dir(dir_path: String) -> Result<Vec<String>, IoError> {
     if !exists(dir_path) {
-        return Err(IoError::NotFound(IO_ERROR_NOT_FOUND));
+        return Err(IoError::NotFound(0));
     }
     if !is_dir(dir_path) {
-        return Err(IoError::Other(IO_ERROR_OTHER));
+        return Err(IoError::Other(0));
     }
     Ok(unsafe { hew_fs_list_dir(dir_path) })
 }
@@ -420,5 +493,6 @@ extern "C" {
     fn hew_stream_from_file_read(path: String) -> FileReadStream;
     fn hew_stream_is_valid(stream: FileReadStream) -> bool;
     fn hew_stream_last_error() -> String;
+    fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
     fn hew_stream_collect_string(stream: FileReadStream) -> String;
 }

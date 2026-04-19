@@ -299,6 +299,15 @@ impl ModuleRegistry {
         self.qualify_handle_type(handle_type)
             .and_then(|qualified| self.resolve_handle_method_sig(&qualified, method))
     }
+
+    /// Seed a fully-qualified handle type name for unit tests.
+    ///
+    /// Bypasses module loading so tests can populate `handle_types` without
+    /// requiring real `.hew` module files on disk.
+    #[cfg(test)]
+    pub(crate) fn insert_handle_type_for_test(&mut self, qualified_name: String) {
+        self.handle_types.insert(qualified_name);
+    }
 }
 
 #[cfg(test)]

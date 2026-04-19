@@ -112,7 +112,7 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
 
     // Interactive REPL is not supported for explicit WASI targets.
     // Each WASI execution is compile-per-input via wasmtime; a persistent
-    // session loop is intentionally out of scope for this bounded lane.
+    // session loop is intentionally out of scope here.
     if target_spec.is_some() && args.file.is_none() && args.expr.is_empty() {
         eprintln!(
             "Error: interactive REPL is not supported for --target {}. \

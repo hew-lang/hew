@@ -495,6 +495,10 @@ pub extern "C" fn hew_sched_init() -> c_int {
         INITIALIZED = true;
     }
     crate::bridge::bridge_init();
+    // Register the tracing reset hook so session_reset() clears trace events
+    // on WASM just as it does on the native path.  Without this the hook list
+    // stays empty and session_reset() in hew_sched_shutdown is a no-op.
+    crate::tracing::register_trace_reset_hook();
     0
 }
 
@@ -571,6 +575,12 @@ pub extern "C" fn hew_sched_shutdown() {
     }
 
     crate::bridge::bridge_shutdown();
+
+    // Fire all registered session reset hooks (tracing clear, profiler registry
+    // clear on native, etc.).  Actor drain has completed; bridge state is
+    // cleared; hooks run before scheduler statics are zeroed so that any hook
+    // that inspects scheduler state sees a quiesced but not-yet-cleared runtime.
+    crate::session::session_reset();
 
     // SAFETY: Single-threaded on WASM.
     unsafe {

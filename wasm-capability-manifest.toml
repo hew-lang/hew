@@ -314,58 +314,68 @@ tracking_label = "WASM-TODO: process-execution"
 
 [[feature]]
 id = "tls"
-label = "`std::net::tls.connect/read/write/close`, `TlsStream.*`"
-checker = "todo"
+enum_variant = "Tls"
+label = "`std::net::tls.connect/read/write/close`, `tls.TlsStream.*`"
+prose_label = "`std::net::tls.connect/read/write/close`, `tls.TlsStream.*`"
+reason = "the std::net::tls transport is backed by rustls over native sockets; no wasm32 TLS bridge exists yet"
+checker = "reject"
 runtime = "native-only"
-runtime_status = "Native TLS-over-TCP stack today; no documented wasm32 path"
+runtime_status = "Native TLS-over-TCP stack; not compiled for wasm32"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO: tls"
-note = "The TLS surface sits on top of native transport; there is no documented wasm32 runtime path yet."
 
 [[feature]]
 id = "quic"
-label = "`std::net::quic.*`, `QUICEndpoint/Connection/Stream/Event.*`"
-checker = "todo"
+enum_variant = "Quic"
+label = "`std::net::quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`"
+prose_label = "`std::net::quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`"
+reason = "the std::net::quic transport is backed by quinn over native sockets; no wasm32 QUIC bridge exists yet"
+checker = "reject"
 runtime = "native-only"
-runtime_status = "`quic_transport` is feature-gated and not compiled for wasm32"
+runtime_status = "`quic_transport` feature-gated; not compiled for wasm32"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO: quic"
-note = "`quic_transport` is explicitly gated out on wasm32."
 
 [[feature]]
 id = "dns"
+enum_variant = "Dns"
 label = "`std::net::dns.resolve`, `dns.lookup_host`"
-checker = "todo"
-runtime = "host-dependent"
-runtime_status = "`wasm32-wasip1` resolver behavior still needs runtime confirmation"
+prose_label = "`std::net::dns.resolve`, `dns.lookup_host`"
+reason = "the std::net::dns resolver uses the native OS resolver; no wasm32 implementation exists yet"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native OS resolver; not compiled for wasm32"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO: dns"
-note = "Scout work found the resolver path needs a direct `wasm32-wasip1` runtime probe before Hew can claim either support or an explicit reject."
 
 [[feature]]
 id = "std-os"
+enum_variant = "OsEnv"
 label = "`std::os.*`"
-checker = "todo"
+prose_label = "`std::os.*` (args, env, cwd, home, hostname, pid, temp-dir)"
+reason = "the std::os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32"
+checker = "reject"
 runtime = "native-only"
-runtime_status = "Hew OS/env helpers are native-only today even where WASI may offer host data"
+runtime_status = "Native POSIX helpers; not compiled for wasm32"
 categories = ["stdlib", "os"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO: os"
-note = "Current Hew args/env/cwd/home/hostname/pid/temp-dir helpers route through native runtime shims; until Hew ships WASI-backed shims this surface stays in the backlog."
 
 [[feature]]
 id = "crypto-random"
+enum_variant = "CryptoRandom"
 label = "`std::crypto::crypto.random_bytes`"
-checker = "todo"
-runtime = "unresolved"
-runtime_status = "wasm32 secure-entropy story is unresolved; do not assume cryptographic randomness"
+prose_label = "`std::crypto::crypto.random_bytes`"
+reason = "on wasm32 crypto.random_bytes falls back to a seeded PRNG without host entropy and is not cryptographically secure; the result is suitable for test data but not for key material"
+checker = "warn"
+runtime = "degraded"
+runtime_status = "Seeded PRNG fallback on wasm32; not cryptographically secure"
 categories = ["stdlib", "crypto"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO: crypto-random"
-note = "The wasm32 secure-entropy path is not yet grounded well enough to claim support. The non-crypto runtime PRNG in `hew-runtime/src/random.rs` uses a fixed seed on wasm32, so callers should not infer native entropy guarantees."
 
 [[feature]]
 id = "generators-on-wasm"
@@ -432,8 +442,8 @@ tracking_label = "WASM-TODO: quic"
 
 [[backlog]]
 id = "dns"
-gap = "DNS resolution classification"
-blocker = "Confirm actual `wasm32-wasip1` resolver behavior before declaring pass vs reject"
+gap = "DNS resolver parity"
+blocker = "WASI-backed resolver shim; current native OS resolver is not compiled for wasm32"
 tracking_label = "WASM-TODO: dns"
 
 [[backlog]]

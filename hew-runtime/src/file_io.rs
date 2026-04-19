@@ -6,6 +6,7 @@
 //! caller owns the returned pointer and must free it with `libc::free`.
 
 use crate::cabi::str_to_malloc;
+use hew_cabi::sink::set_last_error_with_errno;
 use std::ffi::{c_char, CStr, CString};
 
 /// Read an entire file and return a `malloc`-allocated, NUL-terminated C string.
@@ -233,6 +234,12 @@ pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
 pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate::vec::HewVec {
     // SAFETY: `path` is the caller-provided C string pointer for this ABI entrypoint.
     let Some(rust_path) = (unsafe { crate::util::cstr_to_str(path, "hew_file_read_bytes") }) else {
+        let msg = "hew_file_read_bytes: invalid path string";
+        crate::set_last_error(msg);
+        set_last_error_with_errno(
+            msg.into(),
+            22, // EINVAL: Invalid argument
+        );
         // SAFETY: hew_vec_new allocates a valid empty HewVec.
         return unsafe { crate::vec::hew_vec_new() };
     };
@@ -243,7 +250,9 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
             unsafe { crate::vec::u8_to_hwvec(&data) }
         }
         Err(error) => {
-            crate::set_last_error(format!("hew_file_read_bytes: {error}"));
+            let msg = format!("hew_file_read_bytes: {error}");
+            crate::set_last_error(&msg);
+            set_last_error_with_errno(msg, error.raw_os_error().unwrap_or(0));
             // SAFETY: hew_vec_new allocates a valid empty HewVec.
             unsafe { crate::vec::hew_vec_new() }
         }

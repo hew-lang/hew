@@ -89,6 +89,8 @@
 //! }
 //! ```
 
+import std::fs;
+
 /// A QUIC endpoint bound to a local UDP address.
 ///
 /// An endpoint can operate as a client (dial outgoing connections) or as
@@ -214,8 +216,8 @@ trait QUICConnectionMethods {
 
     /// Gracefully close this connection and release its resources.
     ///
-    /// Returns `Ok(())` on success or `Err(String)` with the last QUIC error.
-    fn disconnect(conn: QUICConnection) -> Result<(), String>;
+    /// Returns `Ok(())` on success or `Err(fs.IoError)` on failure.
+    fn disconnect(conn: QUICConnection) -> Result<(), fs.IoError>;
 
     /// Block until the next queued QUIC event on this connection.
     ///
@@ -234,7 +236,7 @@ impl QUICConnectionMethods for QUICConnection {
     fn accept_stream(conn: QUICConnection) -> QUICStream {
         unsafe { hew_quic_conn_accept_stream(conn) }
     }
-    fn disconnect(conn: QUICConnection) -> Result<(), String> {
+    fn disconnect(conn: QUICConnection) -> Result<(), fs.IoError> {
         connection_disconnect(conn)
     }
     fn on_event(conn: QUICConnection) -> QUICEvent {
@@ -251,8 +253,8 @@ impl QUICConnectionMethods for QUICConnection {
 trait QUICStreamMethods {
     /// Send raw bytes on this stream.
     ///
-    /// Returns `Ok(())` on success or `Err(String)` with the last QUIC error.
-    fn send(strm: QUICStream, data: bytes) -> Result<(), String>;
+    /// Returns `Ok(())` on success or `Err(fs.IoError)` on failure.
+    fn send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError>;
 
     /// Block until data arrives and return the received bytes.
     ///
@@ -264,15 +266,15 @@ trait QUICStreamMethods {
     /// The receive side of the remote peer will see EOF after all buffered
     /// data has been delivered. This does not release the local stream handle;
     /// call `close()` when you are finished with the stream. Returns `Ok(())`
-    /// on success or `Err(String)` with the last QUIC error.
-    fn finish(strm: QUICStream) -> Result<(), String>;
+    /// on success or `Err(fs.IoError)` on failure.
+    fn finish(strm: QUICStream) -> Result<(), fs.IoError>;
 
     /// Abruptly stop this stream with an application-defined error code.
     ///
     /// Unlike `finish`, pending data is discarded. Call `close()` afterwards to
     /// release the local stream handle. Returns `Ok(())` on success or
-    /// `Err(String)` with the last QUIC error.
-    fn stop(strm: QUICStream, error_code: int) -> Result<(), String>;
+    /// `Err(fs.IoError)` on failure.
+    fn stop(strm: QUICStream, error_code: int) -> Result<(), fs.IoError>;
 
     /// Release the local stream handle.
     ///
@@ -282,8 +284,8 @@ trait QUICStreamMethods {
     /// Send a UTF-8 string on this stream.
     ///
     /// Convenience wrapper around `send` that converts `msg` to bytes first.
-    /// Returns `Ok(())` on success or `Err(String)` with the last QUIC error.
-    fn send_string(strm: QUICStream, msg: String) -> Result<(), String>;
+    /// Returns `Ok(())` on success or `Err(fs.IoError)` on failure.
+    fn send_string(strm: QUICStream, msg: String) -> Result<(), fs.IoError>;
 
     /// Block until data arrives and return it as a UTF-8 string.
     ///
@@ -296,20 +298,20 @@ trait QUICStreamMethods {
 }
 
 impl QUICStreamMethods for QUICStream {
-    fn send(strm: QUICStream, data: bytes) -> Result<(), String> {
+    fn send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError> {
         stream_send(strm, data)
     }
     fn recv(strm: QUICStream) -> bytes { unsafe { hew_quic_stream_recv(strm) } }
-    fn finish(strm: QUICStream) -> Result<(), String> {
+    fn finish(strm: QUICStream) -> Result<(), fs.IoError> {
         stream_finish(strm)
     }
-    fn stop(strm: QUICStream, error_code: int) -> Result<(), String> {
+    fn stop(strm: QUICStream, error_code: int) -> Result<(), fs.IoError> {
         stream_stop(strm, error_code)
     }
     fn close(strm: QUICStream) {
         unsafe { hew_quic_stream_close(strm) };
     }
-    fn send_string(strm: QUICStream, msg: String) -> Result<(), String> {
+    fn send_string(strm: QUICStream, msg: String) -> Result<(), fs.IoError> {
         stream_send_string(strm, msg)
     }
     fn recv_string(strm: QUICStream) -> String {
@@ -419,11 +421,12 @@ pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
     }
 }
 
-pub fn connection_disconnect(conn: QUICConnection) -> Result<(), String> {
+pub fn connection_disconnect(conn: QUICConnection) -> Result<(), fs.IoError> {
+    // QUIC errors carry no OS errno; error string available via conn.observe().last_error
     unsafe {
         let status = hew_quic_conn_disconnect(conn);
         if status < 0 {
-            Err(hew_quic_conn_last_error(conn))
+            Err(fs.io_error_from_errno(0))
         } else {
             Ok(())
         }
@@ -440,33 +443,36 @@ pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
     }
 }
 
-pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), String> {
+pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError> {
+    // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
         let status = hew_quic_stream_send(strm, data);
         if status < 0 {
-            Err(hew_quic_stream_last_error(strm))
+            Err(fs.io_error_from_errno(0))
         } else {
             Ok(())
         }
     }
 }
 
-pub fn stream_finish(strm: QUICStream) -> Result<(), String> {
+pub fn stream_finish(strm: QUICStream) -> Result<(), fs.IoError> {
+    // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
         let status = hew_quic_stream_finish(strm);
         if status < 0 {
-            Err(hew_quic_stream_last_error(strm))
+            Err(fs.io_error_from_errno(0))
         } else {
             Ok(())
         }
     }
 }
 
-pub fn stream_stop(strm: QUICStream, error_code: int) -> Result<(), String> { // INTERNAL-ABI: QUIC protocol mandates 62-bit error codes; int is 64-bit i64 so no narrowing needed
+pub fn stream_stop(strm: QUICStream, error_code: int) -> Result<(), fs.IoError> { // INTERNAL-ABI: QUIC protocol mandates 62-bit error codes; int is 64-bit i64 so no narrowing needed
+    // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
         let status = hew_quic_stream_stop(strm, error_code);
         if status < 0 {
-            Err(hew_quic_stream_last_error(strm))
+            Err(fs.io_error_from_errno(0))
         } else {
             Ok(())
         }
@@ -477,7 +483,7 @@ pub fn stream_stop(strm: QUICStream, error_code: int) -> Result<(), String> { //
 ///
 /// Converts `msg` to bytes using the runtime string helper, then delegates
 /// to the underlying `hew_quic_stream_send` FFI.
-pub fn stream_send_string(strm: QUICStream, msg: String) -> Result<(), String> {
+pub fn stream_send_string(strm: QUICStream, msg: String) -> Result<(), fs.IoError> {
     unsafe {
         let payload = hew_string_to_bytes(msg);
         stream_send(strm, payload)

@@ -799,6 +799,15 @@ if(TEST wasm_e2e_yaml_yaml_try_parse)
     ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
 endif()
 
+# http_try_respond_stream exercises the new IoError variants and the
+# hew_sink_is_valid null-check wired into try_respond_stream.  Point
+# HEW_STD at the worktree std so the new IoError network variants are
+# available.
+if(TEST e2e_http_server_http_try_respond_stream)
+  set_tests_properties(e2e_http_server_http_try_respond_stream PROPERTIES
+    ENVIRONMENT "HEW_STD=${CMAKE_CURRENT_SOURCE_DIR}/../../std")
+endif()
+
 # ── Sorted-output E2E tests (non-deterministic output ordering) ───────────────
 add_e2e_file_test_sorted(scheduler_rr        e2e_concurrency scheduler_round_robin)
 add_e2e_file_test_sorted(scope_structured    e2e_concurrency scope_structured)

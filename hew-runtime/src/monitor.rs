@@ -4,16 +4,16 @@
 //! monitors actor B, if B dies, A receives a DOWN message but does NOT crash.
 //! This module implements the monitor table and death notification logic.
 
-use crate::util::RwLockExt;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::LazyLock;
 #[cfg(test)]
 use std::sync::{Arc, Barrier, Mutex};
-use std::sync::{LazyLock, RwLock};
 
 use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
+use crate::lifetime::poison_safe::PoisonSafeRw;
 use crate::mailbox;
 use crate::supervisor::SYS_MSG_DOWN;
 
@@ -46,17 +46,21 @@ struct MonitorShard {
     terminal_reasons: HashMap<u64, i32>,
 }
 
-/// Global sharded monitor table.
-/// We use usize to store actor pointers to make it Send+Sync safe.
-static MONITOR_TABLE: LazyLock<[RwLock<MonitorShard>; MONITOR_SHARDS]> = LazyLock::new(|| {
-    std::array::from_fn(|_| {
-        RwLock::new(MonitorShard {
-            monitors: HashMap::new(),
-            ref_to_monitor: HashMap::new(),
-            terminal_reasons: HashMap::new(),
+/// Global sharded monitor table — migrated from `[RwLock<MonitorShard>; 16]`
+/// to `[PoisonSafeRw<MonitorShard>; 16]`.
+///
+/// The `terminal_reasons` field inside each `MonitorShard` was added by #1202
+/// and is preserved intact by this migration.
+static MONITOR_TABLE: LazyLock<[PoisonSafeRw<MonitorShard>; MONITOR_SHARDS]> =
+    LazyLock::new(|| {
+        std::array::from_fn(|_| {
+            PoisonSafeRw::new(MonitorShard {
+                monitors: HashMap::new(),
+                ref_to_monitor: HashMap::new(),
+                terminal_reasons: HashMap::new(),
+            })
         })
-    })
-});
+    });
 
 /// Get shard index for an actor ID.
 fn get_shard_index(actor_id: u64) -> usize {
@@ -167,8 +171,7 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
     };
 
     let shard_index = get_shard_index(target_id);
-    let terminal_reason = {
-        let mut shard = MONITOR_TABLE[shard_index].write_or_recover();
+    let terminal_reason = MONITOR_TABLE[shard_index].access(|shard| {
         if let Some(&reason) = shard.terminal_reasons.get(&target_id) {
             Some(reason)
         } else if let Some(reason) =
@@ -188,7 +191,7 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
                 .insert(ref_id, (target_id, watcher as usize));
             None
         }
-    };
+    });
 
     if let Some(reason) = terminal_reason {
         send_down_notification(&monitor_entry, target_id, reason);
@@ -207,16 +210,21 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
     // Find which shard contains this ref_id by checking all shards.
     // This is not optimal but monitors are typically rare operations.
     for shard_index in 0..MONITOR_SHARDS {
-        let mut shard = MONITOR_TABLE[shard_index].write_or_recover();
-
-        if let Some((target_id, _watcher_addr)) = shard.ref_to_monitor.remove(&ref_id) {
-            // Remove from monitors list
-            if let Some(monitor_list) = shard.monitors.get_mut(&target_id) {
-                monitor_list.retain(|entry| entry.ref_id != ref_id);
-                if monitor_list.is_empty() {
-                    shard.monitors.remove(&target_id);
+        let removed = MONITOR_TABLE[shard_index].access(|shard| {
+            if let Some((target_id, _watcher_addr)) = shard.ref_to_monitor.remove(&ref_id) {
+                // Remove from monitors list
+                if let Some(monitor_list) = shard.monitors.get_mut(&target_id) {
+                    monitor_list.retain(|entry| entry.ref_id != ref_id);
+                    if monitor_list.is_empty() {
+                        shard.monitors.remove(&target_id);
+                    }
                 }
+                true
+            } else {
+                false
             }
+        });
+        if removed {
             return;
         }
     }
@@ -231,8 +239,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
     let shard_index = get_shard_index(actor_id);
 
     // Take all monitors for this actor ID.
-    let monitors = {
-        let mut shard = MONITOR_TABLE[shard_index].write_or_recover();
+    let monitors = MONITOR_TABLE[shard_index].access(|shard| {
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
         shard.terminal_reasons.insert(actor_id, reason);
 
@@ -242,7 +249,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
         }
 
         monitors
-    };
+    });
 
     // Send DOWN messages to all monitoring actors.
     for monitor in monitors {
@@ -306,36 +313,36 @@ pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, actor_addr: *mut HewA
 
     // Remove any monitors-on-this-actor entry from its shard.
     let own_shard = get_shard_index(actor_id);
-    {
-        let mut shard = MONITOR_TABLE[own_shard].write_or_recover();
+    MONITOR_TABLE[own_shard].access(|shard| {
         shard.terminal_reasons.remove(&actor_id);
         if let Some(monitors) = shard.monitors.remove(&actor_id) {
             for m in &monitors {
                 shard.ref_to_monitor.remove(&m.ref_id);
             }
         }
-    }
+    });
 
     // Scan all shards and remove this actor's address from other actors'
     // monitor watcher lists (where this actor was the watcher).
     for shard_rw in MONITOR_TABLE.iter() {
-        let mut shard = shard_rw.write_or_recover();
-        let mut refs_to_remove = Vec::new();
-        for monitor_list in shard.monitors.values_mut() {
-            monitor_list.retain(|entry| {
-                if entry.monitoring_actor == actor_usize {
-                    refs_to_remove.push(entry.ref_id);
-                    false
-                } else {
-                    true
-                }
-            });
-        }
-        // Clean up empty entries and ref lookups.
-        shard.monitors.retain(|_id, list| !list.is_empty());
-        for ref_id in refs_to_remove {
-            shard.ref_to_monitor.remove(&ref_id);
-        }
+        shard_rw.access(|shard| {
+            let mut refs_to_remove = Vec::new();
+            for monitor_list in shard.monitors.values_mut() {
+                monitor_list.retain(|entry| {
+                    if entry.monitoring_actor == actor_usize {
+                        refs_to_remove.push(entry.ref_id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            // Clean up empty entries and ref lookups.
+            shard.monitors.retain(|_id, list| !list.is_empty());
+            for ref_id in refs_to_remove {
+                shard.ref_to_monitor.remove(&ref_id);
+            }
+        });
     }
 }
 
@@ -357,19 +364,23 @@ struct DownMessage {
 pub(crate) fn has_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> bool {
     let actor_usize = actor_addr as usize;
     let own_shard = get_shard_index(actor_id);
-    {
-        let shard = MONITOR_TABLE[own_shard].read().unwrap();
-        if shard.monitors.contains_key(&actor_id) {
-            return true;
-        }
+
+    let found_as_target =
+        MONITOR_TABLE[own_shard].read_access(|shard| shard.monitors.contains_key(&actor_id));
+    if found_as_target {
+        return true;
     }
+
     // Check if this actor appears as a watcher in any shard.
     for shard_rw in MONITOR_TABLE.iter() {
-        let shard = shard_rw.read().unwrap();
-        for monitors in shard.monitors.values() {
-            if monitors.iter().any(|m| m.monitoring_actor == actor_usize) {
-                return true;
-            }
+        let found = shard_rw.read_access(|shard| {
+            shard
+                .monitors
+                .values()
+                .any(|monitors| monitors.iter().any(|m| m.monitoring_actor == actor_usize))
+        });
+        if found {
+            return true;
         }
     }
     false
@@ -379,7 +390,6 @@ pub(crate) fn has_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) -
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr};
-    use std::time::Duration;
 
     unsafe extern "C" fn noop_dispatch(
         _state: *mut c_void,
@@ -439,8 +449,7 @@ mod tests {
 
         // Verify monitor exists
         let shard_index = get_shard_index(target_id);
-        {
-            let shard = MONITOR_TABLE[shard_index].read().unwrap();
+        MONITOR_TABLE[shard_index].read_access(|shard| {
             let monitors = shard
                 .monitors
                 .get(&target_id)
@@ -450,16 +459,14 @@ mod tests {
             assert!(our_monitor.is_some(), "our monitor entry should exist");
             assert_eq!(our_monitor.unwrap().monitoring_actor, watcher_ptr as usize);
             assert_eq!(our_monitor.unwrap().monitoring_actor_id, watcher_id);
-
             assert!(shard.ref_to_monitor.contains_key(&ref_id));
-        }
+        });
 
         // Remove monitor
         hew_actor_demonitor(ref_id);
 
         // Verify monitor is removed
-        {
-            let shard = MONITOR_TABLE[shard_index].read().unwrap();
+        MONITOR_TABLE[shard_index].read_access(|shard| {
             assert!(
                 !shard.monitors.contains_key(&target_id)
                     || shard
@@ -468,7 +475,7 @@ mod tests {
                         .is_none_or(std::vec::Vec::is_empty)
             );
             assert!(!shard.ref_to_monitor.contains_key(&ref_id));
-        }
+        });
     }
 
     #[test]
@@ -492,32 +499,29 @@ mod tests {
 
         // Verify both monitors exist
         let shard_index = get_shard_index(20_200);
-        {
-            let shard = MONITOR_TABLE[shard_index].read().unwrap();
+        MONITOR_TABLE[shard_index].read_access(|shard| {
             let monitors = shard.monitors.get(&20_200).expect("monitors should exist");
             assert_eq!(monitors.len(), 2);
-        }
+        });
 
         // Remove first monitor
         hew_actor_demonitor(ref_id1);
 
         // Verify only second monitor remains
-        {
-            let shard = MONITOR_TABLE[shard_index].read().unwrap();
+        MONITOR_TABLE[shard_index].read_access(|shard| {
             let monitors = shard
                 .monitors
                 .get(&20_200)
                 .expect("one monitor should remain");
             assert_eq!(monitors.len(), 1);
             assert_eq!(monitors[0].ref_id, ref_id2);
-        }
+        });
 
         // Remove second monitor
         hew_actor_demonitor(ref_id2);
 
         // Verify all monitors removed
-        {
-            let shard = MONITOR_TABLE[shard_index].read().unwrap();
+        MONITOR_TABLE[shard_index].read_access(|shard| {
             assert!(
                 !shard.monitors.contains_key(&20_200)
                     || shard
@@ -525,7 +529,7 @@ mod tests {
                         .get(&20_200)
                         .is_none_or(std::vec::Vec::is_empty)
             );
-        }
+        });
     }
 
     #[test]
@@ -591,12 +595,13 @@ mod tests {
 
         // Watcher's address should be purged from target's monitor list.
         let shard = get_shard_index(41_200);
-        let table = MONITOR_TABLE[shard].read().unwrap();
-        let remaining = table.monitors.get(&41_200);
-        assert!(
-            remaining.is_none() || remaining.unwrap().is_empty(),
-            "target's monitor list should no longer contain the freed watcher"
-        );
+        MONITOR_TABLE[shard].read_access(|table| {
+            let remaining = table.monitors.get(&41_200);
+            assert!(
+                remaining.is_none() || remaining.unwrap().is_empty(),
+                "target's monitor list should no longer contain the freed watcher"
+            );
+        });
     }
 
     #[test]
@@ -607,6 +612,7 @@ mod tests {
         assert!(!has_monitors_for_actor(40_300, ptr));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn notify_monitors_keeps_actor_live_through_sys_send() {
         let _guard = crate::runtime_test_guard();
@@ -640,8 +646,8 @@ mod tests {
                 std::sync::atomic::Ordering::Release,
             );
 
-            let free_started = Arc::new(AtomicBool::new(false));
-            let free_done = Arc::new(AtomicBool::new(false));
+            let free_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let free_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let watcher_addr = watcher as usize;
             let free_started_thread = Arc::clone(&free_started);
             let free_done_thread = Arc::clone(&free_done);
@@ -666,7 +672,7 @@ mod tests {
             assert_eq!(payload.reason, 77);
             mailbox::hew_msg_node_free(node);
 
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(50));
             assert!(
                 !free_done.load(std::sync::atomic::Ordering::Acquire),
                 "hew_actor_free must wait until notify_monitors_on_death releases LIVE_ACTORS"

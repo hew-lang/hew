@@ -43,7 +43,9 @@ impl IntegerBounds {
                 min: i64::from(i32::MIN),
                 max: u64::try_from(i64::from(i32::MAX)).unwrap_or(0),
             }),
-            PrimitiveWireKind::I64 => Some(Self {
+            // Duration stores nanoseconds as i64 (negative = past), so it
+            // shares I64's signed range rather than U64's unsigned range.
+            PrimitiveWireKind::I64 | PrimitiveWireKind::Duration => Some(Self {
                 min: i64::MIN,
                 max: u64::try_from(i64::MAX).unwrap_or(u64::MAX),
             }),
@@ -62,7 +64,7 @@ impl IntegerBounds {
                 min: 0,
                 max: u64::from(u32::MAX),
             }),
-            PrimitiveWireKind::U64 | PrimitiveWireKind::Duration => Some(Self {
+            PrimitiveWireKind::U64 => Some(Self {
                 min: 0,
                 max: u64::MAX,
             }),
@@ -165,6 +167,34 @@ impl WireCodecPlan {
         match &self.shape {
             WireShape::Enum { variants } => Some(variants),
             WireShape::Struct { .. } => None,
+        }
+    }
+
+    /// Fold the plan's shape into a `(fields, variants)` pair by applying
+    /// `on_field` to every non-reserved struct field, or collecting variant
+    /// names for an enum.
+    ///
+    /// This is the single traversal helper shared by all codec descriptors
+    /// (`JsonCodecDesc`, `YamlCodecDesc`, `MsgpackCodecDesc`) so that the
+    /// reserved-field filter and shape dispatch never diverge.
+    #[must_use]
+    pub fn fold_shape<T, F>(&self, on_field: F) -> (Vec<T>, Vec<String>)
+    where
+        F: Fn(&FieldPlan) -> T,
+    {
+        match &self.shape {
+            WireShape::Struct { fields } => (
+                fields
+                    .iter()
+                    .filter(|f| !f.modifiers.is_reserved)
+                    .map(on_field)
+                    .collect(),
+                Vec::new(),
+            ),
+            WireShape::Enum { variants } => (
+                Vec::new(),
+                variants.iter().map(|v| v.name.clone()).collect(),
+            ),
         }
     }
 }
@@ -484,5 +514,79 @@ mod tests {
         );
         assert_eq!(IntegerBounds::for_kind(&PrimitiveWireKind::F32), None);
         assert_eq!(IntegerBounds::for_kind(&PrimitiveWireKind::String), None);
+    }
+
+    #[test]
+    fn duration_bounds_permit_negative_nanoseconds() {
+        let bounds = IntegerBounds::for_kind(&PrimitiveWireKind::Duration)
+            .expect("Duration must have bounds");
+        // Duration stores nanoseconds as i64 — negative values mean "time in
+        // the past". The plan bounds must cover i64::MIN so that negative
+        // Duration values are not rejected by the encode guard.
+        assert_eq!(bounds.min, i64::MIN);
+        assert_eq!(bounds.max, u64::try_from(i64::MAX).unwrap());
+    }
+
+    #[test]
+    fn fold_shape_filters_reserved_and_maps_fields() {
+        use crate::kind::PrimitiveWireKind;
+        let reserved = FieldPlan {
+            name: "_pad".into(),
+            number: 2,
+            json_name: "_pad".into(),
+            yaml_name: "_pad".into(),
+            kind: PrimitiveWireKind::I32,
+            modifiers: FieldModifiers {
+                is_reserved: true,
+                ..FieldModifiers::default()
+            },
+            narrowing: None,
+        };
+        let active = FieldPlan {
+            name: "x".into(),
+            number: 1,
+            json_name: "x".into(),
+            yaml_name: "x".into(),
+            kind: PrimitiveWireKind::I64,
+            modifiers: FieldModifiers::default(),
+            narrowing: IntegerBounds::for_kind(&PrimitiveWireKind::I64),
+        };
+        let plan = WireCodecPlan {
+            name: "S".into(),
+            shape: WireShape::Struct {
+                fields: vec![active.clone(), reserved],
+            },
+            json_case: None,
+            yaml_case: None,
+        };
+        let (fields, variants) = plan.fold_shape(|f| f.name.clone());
+        assert_eq!(
+            fields,
+            vec!["x".to_string()],
+            "reserved field must be excluded"
+        );
+        assert!(variants.is_empty());
+    }
+
+    #[test]
+    fn fold_shape_enum_returns_variant_names() {
+        let plan = WireCodecPlan {
+            name: "E".into(),
+            shape: WireShape::Enum {
+                variants: vec![
+                    VariantPlan {
+                        name: "Alpha".into(),
+                    },
+                    VariantPlan {
+                        name: "Beta".into(),
+                    },
+                ],
+            },
+            json_case: None,
+            yaml_case: None,
+        };
+        let (fields, variants) = plan.fold_shape(|f| f.name.clone());
+        assert!(fields.is_empty());
+        assert_eq!(variants, vec!["Alpha".to_string(), "Beta".to_string()]);
     }
 }

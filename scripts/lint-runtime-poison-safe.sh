@@ -81,10 +81,10 @@ SRC="hew-runtime/src"
 # Migrated globals (must remain listed; never delete an entry):
 #   LINK_TABLE, ENV_LOCK — landed in #1225
 #   LIVE_ACTORS, DEFERRED_ACTOR_FREE_THREADS, MONITOR_TABLE — Stage 3
+#   KNOWN_NODES, CURRENT_NODE — Stage 3 part 2
 # Pending migration (add immediately after PoisonSafe/PoisonSafeRw lands):
-#   KNOWN_NODES, CURRENT_NODE — Stage 4
 #   TOP_LEVEL_SUPERVISORS — Stage 5
-GLOBALS='LINK_TABLE|ENV_LOCK|LIVE_ACTORS|DEFERRED_ACTOR_FREE_THREADS|MONITOR_TABLE'
+GLOBALS='LINK_TABLE|ENV_LOCK|LIVE_ACTORS|DEFERRED_ACTOR_FREE_THREADS|MONITOR_TABLE|KNOWN_NODES|CURRENT_NODE'
 
 # All raw locking method variants that bypass PoisonSafe/PoisonSafeRw.
 LOCK_METHODS='lock|read|write|try_lock|try_read|try_write|lock_or_recover|read_or_recover|write_or_recover'

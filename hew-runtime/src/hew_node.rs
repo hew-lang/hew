@@ -3,7 +3,7 @@
 //! Integrates transport, connection manager, SWIM membership, and
 //! name/actor registry wiring.
 
-use crate::lifetime::poison_safe::{PoisonSafe, PoisonSafeRw};
+use crate::lifetime::{PoisonSafe, PoisonSafeRw};
 use crate::util::{CondvarExt, MutexExt};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -1427,8 +1427,6 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     node.state.store(NODE_STATE_RUNNING, Ordering::Release);
     // Atomically check-and-set CURRENT_NODE under write lock to avoid
     // the TOCTOU race where two threads both read 0 and both try to set.
-    // Atomically check-and-set CURRENT_NODE under write lock to avoid
-    // the TOCTOU race where two threads both read 0 and both try to set.
     CURRENT_NODE.access(|guard| {
         if *guard == 0 {
             *guard = ptr::from_mut(node) as usize;
@@ -2036,6 +2034,11 @@ const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
 #[cfg(test)]
 const REMOTE_ASK_TIMEOUT_MS: u64 = 250;
 
+enum RemoteAskSetupResult {
+    Ok((u64, Arc<PendingReply>)),
+    Error(AskError),
+}
+
 /// Perform a blocking ask against a PID, handling local and remote actors.
 ///
 /// If the PID targets the local node, delegates to `hew_actor_ask`.
@@ -2055,6 +2058,10 @@ const REMOTE_ASK_TIMEOUT_MS: u64 = 250;
 /// - `data` must point to at least `size` readable bytes, or be null when
 ///   `size` is 0.
 #[no_mangle]
+#[expect(
+    clippy::too_many_lines,
+    reason = "hew_node_api_ask is a complex remote RPC entrypoint with setup + wait stages"
+)]
 pub unsafe extern "C" fn hew_node_api_ask(
     pid: u64,
     msg_type: i32,
@@ -2080,22 +2087,22 @@ pub unsafe extern "C" fn hew_node_api_ask(
     }
 
     // Remote path: send message over mesh with request_id, wait for reply.
-    let Some((request_id, pending)) = CURRENT_NODE.read_access(|guard| {
+    let result = CURRENT_NODE.read_access(|guard| {
         let node_ptr = *guard as *mut HewNode;
         if node_ptr.is_null() {
-            return None;
+            return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
         }
         // SAFETY: read lock pins CURRENT_NODE.
         let node = unsafe { &*node_ptr };
         if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING || node.conn_mgr.is_null() {
-            return None;
+            return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
         }
 
         // Look up the connection for the target node via the routing table.
         // SAFETY: routing_table is valid while node is running.
         let conn_id = unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
         if conn_id < 0 {
-            return None;
+            return RemoteAskSetupResult::Error(AskError::RoutingFailed);
         }
 
         // Register a pending reply slot.
@@ -2126,7 +2133,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
             // SAFETY: wire_buf was initialised above.
             unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
             REPLY_TABLE.remove(request_id);
-            return None;
+            return RemoteAskSetupResult::Error(AskError::EncodeFailed);
         }
 
         // Send the encoded envelope through the connection manager so noise
@@ -2145,12 +2152,14 @@ pub unsafe extern "C" fn hew_node_api_ask(
 
         if !send_ok {
             REPLY_TABLE.remove(request_id);
-            return None;
+            return RemoteAskSetupResult::Error(AskError::SendFailed);
         }
 
-        Some((request_id, pending))
-    }) else {
-        return ask_null(AskError::NodeNotRunning);
+        RemoteAskSetupResult::Ok((request_id, pending))
+    });
+    let (request_id, pending) = match result {
+        RemoteAskSetupResult::Ok(pair) => pair,
+        RemoteAskSetupResult::Error(e) => return ask_null(e),
     };
 
     // Block until the reply arrives or the timeout elapses.

@@ -8,8 +8,13 @@ class Hew < Formula
   # Run: sha256sum hew-v#{version}-{darwin,linux}-{x86_64,aarch64}.tar.gz
 
   on_macos do
-    url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-darwin-aarch64.tar.gz"
-    sha256 "__SHA256_DARWIN_AARCH64__"
+    if Hardware::CPU.arm?
+      url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-darwin-aarch64.tar.gz"
+      sha256 "__SHA256_DARWIN_AARCH64__"
+    else
+      url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-darwin-x86_64.tar.gz"
+      sha256 "__SHA256_DARWIN_X86_64__"
+    end
   end
 
   on_linux do
@@ -30,7 +35,11 @@ class Hew < Formula
 
     # Install target-specific lib subtree so find_hew_lib() can probe
     # lib/<triple>/libhew.a before falling back to the flat path.
-    triple = Hardware::CPU.arm? ? "aarch64-apple-darwin" : "x86_64-apple-darwin"
+    triple = if OS.mac?
+      Hardware::CPU.arm? ? "aarch64-apple-darwin" : "x86_64-apple-darwin"
+    else
+      Hardware::CPU.arm? ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu"
+    end
     if (buildpath/"lib"/triple/"libhew.a").exist?
       (lib/triple).mkpath
       (lib/triple).install "lib/#{triple}/libhew.a"

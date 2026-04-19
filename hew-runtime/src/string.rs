@@ -4,7 +4,6 @@
 //! All returned strings are allocated with `libc::malloc` so callers can free
 //! them with `libc::free`.
 
-use crate::bytes::{self, BytesTriple};
 use crate::cabi::{cstr_to_str, malloc_cstring};
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -1257,47 +1256,25 @@ pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const c_char) -> *mut c_cha
     unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
 }
 
-/// Convert a string to a bytes value.
-///
-/// Returns an empty bytes value for null input.
-///
-/// # Safety
-///
-/// `s` must be a valid NUL-terminated C string (or null).
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> BytesTriple {
-    cabi_guard!(
-        s.is_null(),
-        BytesTriple {
-            ptr: std::ptr::null_mut(),
-            offset: 0,
-            len: 0,
-        }
-    );
-    // SAFETY: `s` is a valid NUL-terminated C string per caller contract.
-    unsafe { bytes::hew_bytes_from_str(s.cast::<u8>()) }
-}
-
-/// Convert a string to a bytes vec on wasm targets.
+/// Convert a string to a `HewVec` of raw bytes (`u8`). Caller must free the
+/// returned vec with [`crate::vec::hew_vec_free`].
 ///
 /// Returns an empty vec for null input.
 ///
 /// # Safety
 ///
 /// `s` must be a valid NUL-terminated C string (or null).
-#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> *mut crate::vec::HewVec {
-    // SAFETY: hew_vec_new creates a Vec<i32>-style HewVec, matching the wasm
-    // bytes shim in `hew_bytes_to_string`.
+    // SAFETY: hew_vec_new creates a Vec<i32>-style HewVec, matching what
+    // hew_tcp_write / hew_bytes_to_string expect (i32-element vecs).
     let v = unsafe { crate::vec::hew_vec_new() };
     cabi_guard!(s.is_null(), v);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     for &b in bytes {
-        // SAFETY: v is a valid HewVec; push each byte as i32 to match the wasm
-        // bytes shim ABI.
+        // SAFETY: v is a valid HewVec; push each byte as i32 to match
+        // the convention used by hew_tcp_read and hew_bytes_to_string.
         unsafe {
             crate::vec::hew_vec_push_i32(v, i32::from(b));
         };

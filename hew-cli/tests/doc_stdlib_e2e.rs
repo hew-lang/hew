@@ -72,8 +72,9 @@ fn enum_variants_render_in_stdlib_docs() {
 #[test]
 fn trait_method_docstrings_render_in_stdlib_docs() {
     let json = read_module("std.encoding.json.html");
-    // `ValueMethods::stringify` has `/// Serialize the value back to a JSON string.`
-    // in the source — verify the docstring reaches the rendered HTML.
+    // `ValueMethods::stringify` keeps the JSON-facing docstring while extending
+    // the shared canonical Value contract. Verify the docstring reaches the
+    // rendered HTML.
     assert!(
         json.contains("Serialize the value back to a JSON string."),
         "trait method docstring missing from std::encoding::json HTML",

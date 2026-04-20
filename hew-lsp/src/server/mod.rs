@@ -8,6 +8,8 @@ mod navigation;
 mod workspace;
 
 #[cfg(test)]
+use self::handlers::navigation::rename_error_to_jsonrpc;
+#[cfg(test)]
 use self::handlers::text_sync::build_initialize_result_from_caps_json;
 // Items used by the LanguageServer impl handlers.
 use self::analysis::{close_document_and_dependents, refresh_document_and_dependents};
@@ -470,43 +472,6 @@ fn lsp_code_actions_for_diagnostic(
     lsp_actions
 }
 
-/// Translate a [`hew_analysis::RenameError`] into a user-facing LSP
-/// JSON-RPC error. The JSON-RPC error message is what editors render
-/// in the rename-refusal popup (VS Code, Helix, Neovim), so the
-/// message must be concise and actionable.
-fn rename_error_to_jsonrpc(err: &hew_analysis::RenameError) -> tower_lsp::jsonrpc::Error {
-    use tower_lsp::jsonrpc::{Error, ErrorCode};
-    let message: String = match err {
-        hew_analysis::RenameError::InvalidIdentifier { message, .. }
-        | hew_analysis::RenameError::Builtin { message, .. } => message.clone(),
-        hew_analysis::RenameError::Conflicts { conflicts } => {
-            // Show the first conflict verbatim plus a count when there
-            // are more; editors typically truncate long rename error
-            // popups anyway.
-            let first = conflicts
-                .first()
-                .map_or_else(|| "rename conflict".to_string(), |c| c.message.clone());
-            if conflicts.len() > 1 {
-                format!("{first} (+{} more)", conflicts.len() - 1)
-            } else {
-                first
-            }
-        }
-        hew_analysis::RenameError::Io { path, message } => {
-            format!("rename failed: {path}: {message}")
-        }
-        _ => "rename failed".to_string(),
-    };
-    // LSP 3.17 §3.16.3: semantic refusals of well-formed requests use
-    // RequestFailed (-32803); InvalidParams (-32602) is reserved for
-    // malformed JSON-RPC parameter objects.
-    Error {
-        code: ErrorCode::ServerError(-32803),
-        message: message.into(),
-        data: None,
-    }
-}
-
 // ── Server ───────────────────────────────────────────────────────────
 
 /// Hew language server providing IDE features via LSP.
@@ -706,95 +671,7 @@ impl LanguageServer for HewLanguageServer {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let Some(word) = word_at_offset(&doc.source, offset) else {
-            return Ok(None);
-        };
-
-        // Route the intra-file resolution through the shared resolver. The
-        // LSP layer retains the qualified-name and cross-file fallbacks
-        // until those paths migrate into the database in later stages.
-        if let Some(resolution) = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            uri.as_str(),
-            offset,
-        ) {
-            if let Some((_res_uri, span)) = resolution.def_location() {
-                let range =
-                    offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
-                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: uri.clone(),
-                    range,
-                })));
-            }
-            // ModuleQualified and Unknown fall through to the qualified /
-            // cross-file fallbacks below.
-        }
-
-        // For qualified names like `c.increment` or `Counter::increment`,
-        // try the method part alone.
-        for separator in [".", "::"] {
-            if let Some(method) = word.rsplit(separator).next() {
-                if method != word {
-                    if let Some(range) = find_definition_in_ast(
-                        &doc.source,
-                        &doc.line_offsets,
-                        &doc.parse_result,
-                        method,
-                    ) {
-                        return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                            uri: uri.clone(),
-                            range,
-                        })));
-                    }
-                }
-            }
-        }
-
-        // Collect the current file's imports as owned data before releasing the
-        // DashMap borrow so the cross-file search can acquire other entries.
-        let imports: Vec<hew_parser::ast::ImportDecl> = collect_import_items(&doc.parse_result)
-            .into_iter()
-            .map(|(import, _)| import)
-            .collect();
-        drop(doc);
-
-        // Cross-file: search files that the current file imports.
-        if let Some((target_uri, range)) =
-            find_cross_file_definition(uri, &imports, &word, &self.documents)
-        {
-            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                uri: target_uri,
-                range,
-            })));
-        }
-
-        // For qualified names (`Counter::new`), also try the type-name prefix
-        // cross-file as a best-effort fallback: navigate to `Counter` in its
-        // defining file even if the method itself cannot be resolved yet.
-        for separator in [".", "::"] {
-            if let Some((prefix, _)) = word.split_once(separator) {
-                if let Some((target_uri, range)) =
-                    find_cross_file_definition(uri, &imports, prefix, &self.documents)
-                {
-                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: target_uri,
-                        range,
-                    })));
-                }
-            }
-        }
-
-        Ok(None)
+        Ok(handlers::navigation::goto_definition(self, &params))
     }
 
     async fn document_symbol(
@@ -907,55 +784,18 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-        let uri = &params.text_document_position.text_document.uri;
-        let position = params.text_document_position.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let include_declaration = params.context.include_declaration;
-        let locations =
-            build_reference_locations(uri, &doc, offset, include_declaration, &self.documents);
-        Ok(non_empty(locations))
+        Ok(handlers::navigation::references(self, &params))
     }
 
     async fn prepare_rename(
         &self,
         params: tower_lsp::lsp_types::TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
-        let uri = &params.text_document.uri;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, params.position);
-        Ok(build_prepare_rename_response(
-            uri,
-            &doc,
-            offset,
-            &self.documents,
-        ))
+        Ok(handlers::navigation::prepare_rename(self, &params))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        let uri = &params.text_document_position.text_document.uri;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(
-            &doc.source,
-            &doc.line_offsets,
-            params.text_document_position.position,
-        );
-        match plan_workspace_rename(uri, &doc, offset, &params.new_name, &self.documents) {
-            Ok(edit) => Ok(edit),
-            Err(err) => Err(rename_error_to_jsonrpc(&err)),
-        }
+        handlers::navigation::rename(self, &params)
     }
 
     async fn prepare_call_hierarchy(

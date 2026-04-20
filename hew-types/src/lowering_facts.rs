@@ -60,28 +60,31 @@ impl LoweringFact {
     /// [`LoweringFactError::UnsupportedHashSetElementType`] for element types
     /// that the runtime lowering lane does not support.
     pub fn from_hashset_element_type(element_ty: &Ty) -> Result<Self, LoweringFactError> {
-        match element_ty {
-            Ty::I64 | Ty::IntLiteral => Ok(Self {
+        if matches!(element_ty, Ty::Var(_) | Ty::Error) {
+            return Err(LoweringFactError::UnresolvedHashSetElementType);
+        }
+
+        match element_ty.hashset_lowering_type_key() {
+            Some(crate::ty::HashSetLoweringTypeKey::I64) => Ok(Self {
                 kind: LoweringKind::HashSet,
                 element_type: HashSetElementType::I64,
                 abi_variant: HashSetAbi::Int64,
                 drop_kind: DropKind::HashSetFree,
             }),
-            Ty::U64 => Ok(Self {
+            Some(crate::ty::HashSetLoweringTypeKey::U64) => Ok(Self {
                 kind: LoweringKind::HashSet,
                 element_type: HashSetElementType::U64,
                 abi_variant: HashSetAbi::Int64,
                 drop_kind: DropKind::HashSetFree,
             }),
-            Ty::String => Ok(Self {
+            Some(crate::ty::HashSetLoweringTypeKey::String) => Ok(Self {
                 kind: LoweringKind::HashSet,
                 element_type: HashSetElementType::Str,
                 abi_variant: HashSetAbi::String,
                 drop_kind: DropKind::HashSetFree,
             }),
-            Ty::Var(_) | Ty::Error => Err(LoweringFactError::UnresolvedHashSetElementType),
-            other => Err(LoweringFactError::UnsupportedHashSetElementType {
-                ty: other.user_facing().to_string(),
+            None => Err(LoweringFactError::UnsupportedHashSetElementType {
+                ty: element_ty.user_facing().to_string(),
             }),
         }
     }

@@ -1,6 +1,6 @@
 //! Bidirectional type checker for Hew programs.
 
-use crate::builtin_names::builtin_named_type;
+use crate::builtin_names::{builtin_named_type, builtin_named_types, BuiltinMethodRuntime};
 use crate::error::{TypeError, TypeErrorKind};
 use crate::module_registry::ModuleError;
 use crate::traits::MarkerTrait;
@@ -14,6 +14,7 @@ use hew_parser::ast::{
     TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
 };
 use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::sync::OnceLock;
 
 pub(crate) mod admissibility;
 mod calls;
@@ -49,6 +50,55 @@ use self::util::{
     lookup_scoped_item, scoped_module_item_name,
 };
 use crate::lowering_facts::{LoweringFact, LoweringFactError};
+
+static BUILTIN_FUNCTION_NAMES: OnceLock<HashSet<String>> = OnceLock::new();
+
+#[must_use]
+pub fn builtin_function_names() -> &'static HashSet<String> {
+    BUILTIN_FUNCTION_NAMES.get_or_init(|| {
+        let mut checker = Checker::default();
+        checker.register_builtins();
+        let mut names: HashSet<String> = checker
+            .fn_sigs
+            .keys()
+            .filter(|name| !name.contains('.') && !name.contains("::"))
+            .cloned()
+            .collect();
+        for builtin in builtin_named_types() {
+            for method in builtin.methods {
+                match method.runtime {
+                    BuiltinMethodRuntime::None => {}
+                    BuiltinMethodRuntime::Fixed(symbol) => {
+                        if !symbol.contains('.') && !symbol.contains("::") {
+                            names.insert(symbol.to_string());
+                        }
+                    }
+                    BuiltinMethodRuntime::IntegerOverload {
+                        default_symbol,
+                        integer_symbol,
+                    } => {
+                        for symbol in [default_symbol, integer_symbol] {
+                            if !symbol.contains('.') && !symbol.contains("::") {
+                                names.insert(symbol.to_string());
+                            }
+                        }
+                    }
+                    BuiltinMethodRuntime::ElementOverload {
+                        string_symbol,
+                        bytes_symbol,
+                    } => {
+                        for symbol in [string_symbol, bytes_symbol] {
+                            if !symbol.contains('.') && !symbol.contains("::") {
+                                names.insert(symbol.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        names
+    })
+}
 
 fn resolve_builtin_result_output_type_args(ok_ty: Ty, err_ty: Ty) -> Option<(Ty, Ty)> {
     let ok_unresolved = ok_ty.has_inference_var();

@@ -6,16 +6,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::builtin_names::{builtin_named_type, BuiltinNamedType};
-use crate::check::{FnSig, TypeDef, TypeDefKind};
+use crate::builtin_names::{builtin_named_type, builtin_type_def as builtin_named_type_def};
+#[cfg(test)]
+use crate::check::TypeDefKind;
+use crate::check::{FnSig, TypeDef};
 use crate::Ty;
-
-fn generic_ty(name: &str) -> Ty {
-    Ty::Named {
-        name: name.to_string(),
-        args: vec![],
-    }
-}
 
 fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_args: &[Ty]) -> FnSig {
     for (type_param, type_arg) in type_params.iter().zip(type_args.iter()) {
@@ -50,183 +45,6 @@ fn lookup_user_fn_sig<'a>(fn_sigs: &'a HashMap<String, FnSig>, key: &str) -> Opt
         let (_, short) = type_name.rsplit_once('.')?;
         fn_sigs.get(&format!("{short}::{method_name}"))
     })
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "builtin method table stays clearer when each intrinsic signature is listed inline"
-)]
-fn builtin_methods(kind: BuiltinNamedType) -> HashMap<String, FnSig> {
-    let item_ty = generic_ty("T");
-    let option_item_ty = Ty::option(item_ty.clone());
-    let item_fn = Ty::Function {
-        params: vec![item_ty.clone()],
-        ret: Box::new(item_ty.clone()),
-    };
-    let item_predicate = Ty::Function {
-        params: vec![item_ty.clone()],
-        ret: Box::new(Ty::Bool),
-    };
-
-    let entries: &[(&str, FnSig)] = match kind {
-        BuiltinNamedType::Sender => &[
-            (
-                "send",
-                FnSig {
-                    param_names: vec!["value".to_string()],
-                    params: vec![item_ty.clone()],
-                    return_type: Ty::Unit,
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "clone",
-                FnSig {
-                    return_type: Ty::sender(item_ty.clone()),
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "close",
-                FnSig {
-                    return_type: Ty::Unit,
-                    ..FnSig::default()
-                },
-            ),
-        ],
-        BuiltinNamedType::Receiver => &[
-            (
-                "recv",
-                FnSig {
-                    return_type: option_item_ty.clone(),
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "try_recv",
-                FnSig {
-                    return_type: option_item_ty,
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "close",
-                FnSig {
-                    return_type: Ty::Unit,
-                    ..FnSig::default()
-                },
-            ),
-        ],
-        BuiltinNamedType::Stream => &[
-            (
-                "next",
-                FnSig {
-                    return_type: Ty::option(item_ty.clone()),
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "collect",
-                FnSig {
-                    return_type: Ty::String,
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "close",
-                FnSig {
-                    return_type: Ty::Unit,
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "lines",
-                FnSig {
-                    return_type: Ty::stream(Ty::String),
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "chunks",
-                FnSig {
-                    param_names: vec!["size".to_string()],
-                    params: vec![Ty::I64],
-                    return_type: Ty::stream(item_ty.clone()),
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "take",
-                FnSig {
-                    param_names: vec!["count".to_string()],
-                    params: vec![Ty::I64],
-                    return_type: Ty::stream(item_ty.clone()),
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "map",
-                FnSig {
-                    param_names: vec!["mapper".to_string()],
-                    params: vec![item_fn],
-                    return_type: Ty::stream(item_ty.clone()),
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "filter",
-                FnSig {
-                    param_names: vec!["predicate".to_string()],
-                    params: vec![item_predicate],
-                    return_type: Ty::stream(item_ty),
-                    ..FnSig::default()
-                },
-            ),
-        ],
-        BuiltinNamedType::Sink => &[
-            (
-                "write",
-                FnSig {
-                    param_names: vec!["value".to_string()],
-                    params: vec![item_ty],
-                    return_type: Ty::Unit,
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "flush",
-                FnSig {
-                    return_type: Ty::Unit,
-                    ..FnSig::default()
-                },
-            ),
-            (
-                "close",
-                FnSig {
-                    return_type: Ty::Unit,
-                    ..FnSig::default()
-                },
-            ),
-        ],
-    };
-
-    entries
-        .iter()
-        .map(|(name, sig)| ((*name).to_string(), sig.clone()))
-        .collect()
-}
-
-fn builtin_type_def_for(kind: BuiltinNamedType) -> TypeDef {
-    TypeDef {
-        kind: TypeDefKind::Struct,
-        name: kind.canonical_name().to_string(),
-        type_params: vec!["T".to_string()],
-        fields: HashMap::new(),
-        variants: HashMap::new(),
-        methods: builtin_methods(kind),
-        doc_comment: None,
-        is_indirect: false,
-    }
 }
 
 fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
@@ -302,7 +120,7 @@ pub fn lookup_named_method_sig(
 #[must_use]
 pub fn lookup_builtin_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig> {
     let (type_name, type_args) = named_receiver_parts(receiver_ty)?;
-    let builtin = builtin_type_def(type_name)?;
+    let builtin = builtin_named_type_def(builtin_named_type(type_name)?);
     let sig = builtin.methods.get(method).cloned()?;
     Some(instantiate_named_method_sig(
         sig,
@@ -328,7 +146,7 @@ pub fn lookup_method_sig(
 /// Synthesize a type definition for a builtin type name.
 #[must_use]
 pub fn builtin_type_def(type_name: &str) -> Option<TypeDef> {
-    builtin_named_type(type_name).map(builtin_type_def_for)
+    builtin_named_type(type_name).map(|kind| builtin_named_type_def(kind).clone())
 }
 
 /// Look up a type definition, augmenting builtin placeholders with builtin methods.

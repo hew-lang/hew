@@ -314,12 +314,20 @@ impl Checker {
                         c_symbol: c_symbol.to_string(),
                     },
                 );
+            } else {
+                let mut err = crate::error::TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span_key.start..span_key.end,
+                    format!(
+                        "internal compiler error: builtin {}::{} is missing runtime rewrite metadata",
+                        entry.handle_kind, entry.method
+                    ),
+                );
+                if let Some(module) = &entry.source_module {
+                    err = err.with_source_module(module.clone());
+                }
+                new_errors.push(err);
             }
-            // resolve_channel_method returning None for a concrete, supported
-            // type would be a compiler bug — the match table in stdlib.rs is
-            // exhaustive for the (Sender|Receiver, method, is_int) combinations
-            // we produce.  No else-branch needed; the span stays absent and
-            // codegen fails closed, which is the desired invariant.
         }
 
         self.errors.extend(new_errors);
@@ -365,6 +373,48 @@ impl Checker {
                 c_symbol: c_symbol.into(),
             },
         );
+    }
+
+    fn missing_builtin_contract_error(
+        &mut self,
+        span: &Span,
+        builtin: &str,
+        method: &str,
+        item: &str,
+    ) {
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "internal compiler error: builtin {builtin}::{method} is missing {item} metadata"
+            ),
+        );
+    }
+
+    fn require_builtin_runtime_symbol(
+        &mut self,
+        span: &Span,
+        builtin: &str,
+        method: &str,
+        symbol: Option<&'static str>,
+    ) -> Option<&'static str> {
+        symbol.or_else(|| {
+            self.missing_builtin_contract_error(span, builtin, method, "runtime rewrite");
+            None
+        })
+    }
+
+    fn require_builtin_method_sig(
+        &mut self,
+        span: &Span,
+        receiver_ty: &Ty,
+        builtin: &str,
+        method: &str,
+    ) -> Option<FnSig> {
+        lookup_builtin_method_sig(receiver_ty, method).or_else(|| {
+            self.missing_builtin_contract_error(span, builtin, method, "type signature");
+            None
+        })
     }
 
     fn record_module_qualified_method_call_rewrite(
@@ -690,12 +740,18 @@ impl Checker {
         let resolved_inner = self.subst.resolve(&inner);
         match method {
             "next" | "close" => {
-                let c_symbol = crate::stdlib::resolve_stream_method(
+                let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                    span,
                     BuiltinNamedType::Stream.canonical_name(),
                     method,
-                    Self::runtime_stream_element_name(&resolved_inner),
-                )
-                .unwrap_or_else(|| unreachable!("builtin Stream::{method} rewrite missing"));
+                    crate::stdlib::resolve_stream_method(
+                        BuiltinNamedType::Stream.canonical_name(),
+                        method,
+                        Self::runtime_stream_element_name(&resolved_inner),
+                    ),
+                ) else {
+                    return Ty::Error;
+                };
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
@@ -711,12 +767,18 @@ impl Checker {
                         ),
                     );
                 }
-                let c_symbol = crate::stdlib::resolve_stream_method(
+                let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                    span,
                     BuiltinNamedType::Stream.canonical_name(),
                     method,
-                    None,
-                )
-                .unwrap_or_else(|| unreachable!("builtin Stream::{method} rewrite missing"));
+                    crate::stdlib::resolve_stream_method(
+                        BuiltinNamedType::Stream.canonical_name(),
+                        method,
+                        None,
+                    ),
+                ) else {
+                    return Ty::Error;
+                };
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
@@ -732,12 +794,18 @@ impl Checker {
                         ),
                     );
                 }
-                let c_symbol = crate::stdlib::resolve_stream_method(
+                let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                    span,
                     BuiltinNamedType::Stream.canonical_name(),
                     method,
-                    None,
-                )
-                .unwrap_or_else(|| unreachable!("builtin Stream::{method} rewrite missing"));
+                    crate::stdlib::resolve_stream_method(
+                        BuiltinNamedType::Stream.canonical_name(),
+                        method,
+                        None,
+                    ),
+                ) else {
+                    return Ty::Error;
+                };
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
@@ -748,12 +816,18 @@ impl Checker {
                         self.check_against(expr, sp, param_ty);
                     }
                 }
-                let c_symbol = crate::stdlib::resolve_stream_method(
+                let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                    span,
                     BuiltinNamedType::Stream.canonical_name(),
                     method,
-                    None,
-                )
-                .unwrap_or_else(|| unreachable!("builtin Stream::{method} rewrite missing"));
+                    crate::stdlib::resolve_stream_method(
+                        BuiltinNamedType::Stream.canonical_name(),
+                        method,
+                        None,
+                    ),
+                ) else {
+                    return Ty::Error;
+                };
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
@@ -1751,38 +1825,58 @@ impl Checker {
                 let receiver_ty = Ty::sink(inner.clone());
                 match method {
                     "write" => {
-                        let sig =
-                            lookup_builtin_method_sig(&receiver_ty, method).unwrap_or_else(|| {
-                                unreachable!("builtin Sink::write signature missing")
-                            });
+                        let Some(sig) = self.require_builtin_method_sig(
+                            span,
+                            &receiver_ty,
+                            BuiltinNamedType::Sink.canonical_name(),
+                            method,
+                        ) else {
+                            return Ty::Error;
+                        };
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             if let Some(param_ty) = sig.params.first() {
                                 self.check_against(expr, sp, param_ty);
                             }
                         }
-                        let c_symbol = crate::stdlib::resolve_stream_method(
+                        let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                            span,
                             BuiltinNamedType::Sink.canonical_name(),
                             method,
-                            Self::runtime_stream_element_name(&self.subst.resolve(&inner)),
-                        )
-                        .unwrap_or_else(|| unreachable!("builtin Sink::write rewrite missing"));
+                            crate::stdlib::resolve_stream_method(
+                                BuiltinNamedType::Sink.canonical_name(),
+                                method,
+                                Self::runtime_stream_element_name(&self.subst.resolve(&inner)),
+                            ),
+                        ) else {
+                            return Ty::Error;
+                        };
                         self.record_runtime_method_call_rewrite(span, c_symbol);
                         sig.return_type
                     }
                     "close" | "flush" => {
-                        let c_symbol = crate::stdlib::resolve_stream_method(
+                        let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                            span,
                             BuiltinNamedType::Sink.canonical_name(),
                             method,
-                            None,
-                        )
-                        .unwrap_or_else(|| unreachable!("builtin Sink::{method} rewrite missing"));
+                            crate::stdlib::resolve_stream_method(
+                                BuiltinNamedType::Sink.canonical_name(),
+                                method,
+                                None,
+                            ),
+                        ) else {
+                            return Ty::Error;
+                        };
                         self.record_runtime_method_call_rewrite(span, c_symbol);
-                        lookup_builtin_method_sig(&receiver_ty, method)
-                            .unwrap_or_else(|| {
-                                unreachable!("builtin Sink::{method} signature missing")
-                            })
-                            .return_type
+                        let Some(sig) = self.require_builtin_method_sig(
+                            span,
+                            &receiver_ty,
+                            BuiltinNamedType::Sink.canonical_name(),
+                            method,
+                        ) else {
+                            return Ty::Error;
+                        };
+                        sig.return_type
                     }
                     _ => {
                         for arg in args {
@@ -1815,10 +1909,14 @@ impl Checker {
                 let resolved_inner = self.subst.resolve(&inner);
                 match method {
                     "send" => {
-                        let sig =
-                            lookup_builtin_method_sig(&receiver_ty, method).unwrap_or_else(|| {
-                                unreachable!("builtin Sender::send signature missing")
-                            });
+                        let Some(sig) = self.require_builtin_method_sig(
+                            span,
+                            &receiver_ty,
+                            BuiltinNamedType::Sender.canonical_name(),
+                            method,
+                        ) else {
+                            return Ty::Error;
+                        };
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             if let Some(param_ty) = sig.params.first() {
@@ -1854,33 +1952,45 @@ impl Checker {
                                 inner.clone(),
                             );
                         } else {
-                            let c_symbol = crate::stdlib::resolve_channel_method(
+                            let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                                span,
                                 BuiltinNamedType::Sender.canonical_name(),
                                 method,
-                                Some(&resolved_inner),
-                            )
-                            .unwrap_or_else(|| {
-                                unreachable!("builtin Sender::send rewrite missing")
-                            });
+                                crate::stdlib::resolve_channel_method(
+                                    BuiltinNamedType::Sender.canonical_name(),
+                                    method,
+                                    Some(&resolved_inner),
+                                ),
+                            ) else {
+                                return Ty::Error;
+                            };
                             self.record_runtime_method_call_rewrite(span, c_symbol);
                         }
                         sig.return_type
                     }
                     "clone" | "close" => {
-                        let c_symbol = crate::stdlib::resolve_channel_method(
+                        let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                            span,
                             BuiltinNamedType::Sender.canonical_name(),
                             method,
-                            Some(&resolved_inner),
-                        )
-                        .unwrap_or_else(|| {
-                            unreachable!("builtin Sender::{method} rewrite missing")
-                        });
+                            crate::stdlib::resolve_channel_method(
+                                BuiltinNamedType::Sender.canonical_name(),
+                                method,
+                                Some(&resolved_inner),
+                            ),
+                        ) else {
+                            return Ty::Error;
+                        };
                         self.record_runtime_method_call_rewrite(span, c_symbol);
-                        lookup_builtin_method_sig(&receiver_ty, method)
-                            .unwrap_or_else(|| {
-                                unreachable!("builtin Sender::{method} signature missing")
-                            })
-                            .return_type
+                        let Some(sig) = self.require_builtin_method_sig(
+                            span,
+                            &receiver_ty,
+                            BuiltinNamedType::Sender.canonical_name(),
+                            method,
+                        ) else {
+                            return Ty::Error;
+                        };
+                        sig.return_type
                     }
                     _ => {
                         self.check_named_method_fallback(&resolved, method, args, span, "Sender<T>")
@@ -1917,10 +2027,14 @@ impl Checker {
                 match method {
                     "recv" => {
                         self.reject_wasm_feature(span, WasmUnsupportedFeature::BlockingChannelRecv);
-                        let sig =
-                            lookup_builtin_method_sig(&receiver_ty, method).unwrap_or_else(|| {
-                                unreachable!("builtin Receiver::recv signature missing")
-                            });
+                        let Some(sig) = self.require_builtin_method_sig(
+                            span,
+                            &receiver_ty,
+                            BuiltinNamedType::Receiver.canonical_name(),
+                            method,
+                        ) else {
+                            return Ty::Error;
+                        };
                         self.warn_if_blocking_in_receive_fn("Receiver::recv", span);
                         if matches!(resolved_inner, Ty::Var(_)) {
                             // No argument to unify against — the return-type
@@ -1935,14 +2049,18 @@ impl Checker {
                                 inner.clone(),
                             );
                         } else {
-                            let c_symbol = crate::stdlib::resolve_channel_method(
+                            let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                                span,
                                 BuiltinNamedType::Receiver.canonical_name(),
                                 method,
-                                Some(&resolved_inner),
-                            )
-                            .unwrap_or_else(|| {
-                                unreachable!("builtin Receiver::recv rewrite missing")
-                            });
+                                crate::stdlib::resolve_channel_method(
+                                    BuiltinNamedType::Receiver.canonical_name(),
+                                    method,
+                                    Some(&resolved_inner),
+                                ),
+                            ) else {
+                                return Ty::Error;
+                            };
                             self.record_runtime_method_call_rewrite(span, c_symbol);
                         }
                         sig.return_type
@@ -1956,36 +2074,54 @@ impl Checker {
                                 inner.clone(),
                             );
                         } else {
-                            let c_symbol = crate::stdlib::resolve_channel_method(
+                            let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                                span,
                                 BuiltinNamedType::Receiver.canonical_name(),
                                 method,
-                                Some(&resolved_inner),
-                            )
-                            .unwrap_or_else(|| {
-                                unreachable!("builtin Receiver::try_recv rewrite missing")
-                            });
+                                crate::stdlib::resolve_channel_method(
+                                    BuiltinNamedType::Receiver.canonical_name(),
+                                    method,
+                                    Some(&resolved_inner),
+                                ),
+                            ) else {
+                                return Ty::Error;
+                            };
                             self.record_runtime_method_call_rewrite(span, c_symbol);
                         }
-                        lookup_builtin_method_sig(&receiver_ty, method)
-                            .unwrap_or_else(|| {
-                                unreachable!("builtin Receiver::try_recv signature missing")
-                            })
-                            .return_type
+                        let Some(sig) = self.require_builtin_method_sig(
+                            span,
+                            &receiver_ty,
+                            BuiltinNamedType::Receiver.canonical_name(),
+                            method,
+                        ) else {
+                            return Ty::Error;
+                        };
+                        sig.return_type
                     }
                     "close" => {
                         // `close` maps to a single type-independent symbol.
-                        let c_symbol = crate::stdlib::resolve_channel_method(
+                        let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                            span,
                             BuiltinNamedType::Receiver.canonical_name(),
                             method,
-                            Some(&resolved_inner),
-                        )
-                        .unwrap_or_else(|| unreachable!("builtin Receiver::close rewrite missing"));
+                            crate::stdlib::resolve_channel_method(
+                                BuiltinNamedType::Receiver.canonical_name(),
+                                method,
+                                Some(&resolved_inner),
+                            ),
+                        ) else {
+                            return Ty::Error;
+                        };
                         self.record_runtime_method_call_rewrite(span, c_symbol);
-                        lookup_builtin_method_sig(&receiver_ty, method)
-                            .unwrap_or_else(|| {
-                                unreachable!("builtin Receiver::close signature missing")
-                            })
-                            .return_type
+                        let Some(sig) = self.require_builtin_method_sig(
+                            span,
+                            &receiver_ty,
+                            BuiltinNamedType::Receiver.canonical_name(),
+                            method,
+                        ) else {
+                            return Ty::Error;
+                        };
+                        sig.return_type
                     }
                     _ => self.check_named_method_fallback(
                         &resolved,

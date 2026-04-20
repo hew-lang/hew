@@ -127,109 +127,149 @@ fn cmd_build(a: &args::BuildArgs) {
 
 fn cmd_run(a: &args::RunArgs) {
     let input = a.input.display().to_string();
-    let timeout = a
-        .timeout
+    let timeout = resolve_optional_timeout(a.timeout);
+    let options = a.to_compile_options();
+    let target = resolve_run_target(options.target.as_deref(), a.profile);
+    let artifact = compile_temp_run_artifact(&input, &options, &target);
+
+    if target.is_wasi() {
+        exit_after_wasi_run(artifact, &a.program_args, timeout);
+    }
+
+    exit_after_native_run(artifact, &a.program_args, timeout, a.profile);
+}
+
+fn resolve_optional_timeout(seconds: Option<u64>) -> Option<std::time::Duration> {
+    seconds
         .map(crate::process::timeout_from_seconds)
         .transpose()
         .unwrap_or_else(|e| {
             eprintln!("Error: {e}");
             std::process::exit(1);
-        });
-    let options = a.to_compile_options();
-    let target_spec =
-        target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|e| {
-            eprintln!("{e}");
-            std::process::exit(1);
-        });
+        })
+}
 
-    if target_spec.is_wasm() && a.profile {
+fn resolve_run_target(requested: Option<&str>, profile: bool) -> target::ExecutionTarget {
+    let target = target::ExecutionTarget::from_requested(requested).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
+
+    if target.is_wasi() && profile {
         eprintln!("Error: `hew run --profile` is not supported for wasm32-wasi targets yet");
         std::process::exit(1);
     }
 
-    if !target_spec.is_wasm() && !target_spec.can_run_on_host() {
-        eprintln!("{}", target_spec.cross_target_run_error("run"));
+    if target.is_native() && !target.can_run_on_host() {
+        eprintln!("{}", target.cross_target_run_error("run"));
         std::process::exit(1);
     }
 
-    let tmp_path = compile_temp_run_artifact(&input, &options, &target_spec);
+    target
+}
 
-    if target_spec.is_wasm() {
-        exit_after_wasi_run(tmp_path, &a.program_args, timeout);
+struct CompiledTempExecutable {
+    path: std::path::PathBuf,
+    _cleanup: TempExecutableCleanup,
+}
+
+enum TempExecutableCleanup {
+    TempPath { _temp_path: tempfile::TempPath },
+    TempDir { _temp_dir: tempfile::TempDir },
+}
+
+impl CompiledTempExecutable {
+    fn path(&self) -> &Path {
+        &self.path
     }
 
-    let tmp_bin = tmp_path.display().to_string();
+    fn path_string(&self) -> String {
+        self.path.display().to_string()
+    }
+}
 
-    let mut cmd = std::process::Command::new(&tmp_bin);
-    cmd.args(&a.program_args);
+fn compile_temp_run_artifact(
+    input: &str,
+    options: &compile::CompileOptions,
+    target: &target::ExecutionTarget,
+) -> CompiledTempExecutable {
+    compile_temp_artifact(input, create_run_temp_artifact(target), options)
+}
 
-    // --profile: enable the built-in runtime profiler by setting HEW_PPROF
-    // on the child process. Only injected when HEW_PPROF is not already set.
-    // "auto" on Unix → per-user unix socket + auto-discovery for hew-observe.
-    // ":6060" on non-Unix → TCP listener; "auto" is rejected by the runtime on
-    // non-Unix (returns None / no-op), so we must use an explicit address there.
-    if a.profile && std::env::var_os("HEW_PPROF").is_none() {
-        #[cfg(unix)]
-        {
-            cmd.env("HEW_PPROF", "auto");
-            eprintln!("[hew] profiler enabled (unix socket) — run `hew-observe` to attach");
-        }
-        #[cfg(not(unix))]
-        {
-            cmd.env("HEW_PPROF", ":6060");
-            eprintln!("[hew] profiler enabled on :6060 — run `hew-observe --addr localhost:6060` to attach");
+fn compile_temp_debug_artifact(
+    input: &str,
+    options: &compile::CompileOptions,
+    target: &target::ExecutionTarget,
+) -> CompiledTempExecutable {
+    compile_temp_artifact(input, create_debug_temp_artifact(target), options)
+}
+
+fn compile_temp_artifact(
+    input: &str,
+    artifact: CompiledTempExecutable,
+    options: &compile::CompileOptions,
+) -> CompiledTempExecutable {
+    let output = artifact.path_string();
+
+    match compile::compile(input, Some(&output), false, options) {
+        Ok(_) => artifact,
+        Err(e) => {
+            eprintln!("{e}");
+            drop(artifact);
+            // Exit 125 = compile failure (sentinel used by the playground to
+            // distinguish compile errors from program exit codes).
+            std::process::exit(125);
         }
     }
+}
 
-    // Two execution paths depending on whether a timeout was requested:
-    //
-    // • No timeout  — bare spawn preserves interactive behavior (inherits the
-    //   parent's process group so terminal job control and signal forwarding
-    //   work as users expect).  Signal forwarding is still set up so that
-    //   SIGTERM/SIGINT sent to `hew run` also reaches the compiled program.
-    //
-    // • With timeout — spawn inside a new process group via `BoundedChild` so
-    //   that the entire child process tree (grandchildren included) is killed
-    //   when the deadline is reached.  Without process-group isolation, only
-    //   the direct child would be killed and grandchildren would leak.
-    let status: Result<crate::process::ChildWaitOutcome, String> = match timeout {
-        None => {
-            let mut child = match cmd.spawn() {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("Error: cannot run compiled binary: {e}");
-                    drop(tmp_path);
-                    std::process::exit(1);
-                }
-            };
-            // Forward SIGTERM/SIGINT to the child so that signals sent directly
-            // to the wrapper also terminate the compiled program.
-            #[cfg(unix)]
-            signal::forward_signals_to_child(child.id());
-            child
-                .wait()
-                .map(crate::process::ChildWaitOutcome::Exited)
-                .map_err(|e| format!("cannot wait for child process: {e}"))
-        }
-        Some(t) => {
-            let mut bounded = match crate::process::BoundedChild::spawn(&mut cmd) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("Error: cannot run compiled binary: {e}");
-                    drop(tmp_path);
-                    std::process::exit(1);
-                }
-            };
-            // Forward signals to the child PID; the process-group kill on
-            // timeout handles the broader tree teardown.
-            #[cfg(unix)]
-            signal::forward_signals_to_child(bounded.id());
-            bounded.wait_with_timeout(t)
-        }
-    };
+fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
+    let temp_path = tempfile::Builder::new()
+        .prefix("hew_run_")
+        .suffix(target.executable_suffix())
+        .tempfile()
+        .unwrap_or_else(|e| {
+            eprintln!("Error: cannot create temp file: {e}");
+            std::process::exit(1);
+        })
+        .into_temp_path();
+    let path = temp_path.to_path_buf();
 
-    // Drop TempPath to clean up before exit (std::process::exit skips destructors)
-    drop(tmp_path);
+    CompiledTempExecutable {
+        path,
+        _cleanup: TempExecutableCleanup::TempPath {
+            _temp_path: temp_path,
+        },
+    }
+}
+
+fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
+    let tmp_dir = tempfile::tempdir().unwrap_or_else(|e| {
+        eprintln!("Error: cannot create temp dir: {e}");
+        std::process::exit(1);
+    });
+    let path = tmp_dir
+        .path()
+        .join(format!("hew_debug_bin{}", target.executable_suffix()));
+
+    CompiledTempExecutable {
+        path,
+        _cleanup: TempExecutableCleanup::TempDir { _temp_dir: tmp_dir },
+    }
+}
+
+fn exit_after_native_run(
+    artifact: CompiledTempExecutable,
+    program_args: &[String],
+    timeout: Option<std::time::Duration>,
+    profile: bool,
+) -> ! {
+    let mut cmd = std::process::Command::new(artifact.path());
+    cmd.args(program_args);
+    configure_profiler_env(&mut cmd, profile);
+
+    let status = run_native_binary(&mut cmd, timeout);
+    drop(artifact);
 
     match (timeout, status) {
         (_, Ok(crate::process::ChildWaitOutcome::Exited(status))) => {
@@ -246,47 +286,71 @@ fn cmd_run(a: &args::RunArgs) {
             unreachable!("timeout outcome requires an explicit timeout")
         }
         (_, Err(e)) => {
-            eprintln!("Error: cannot run compiled binary: {e}");
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
     }
 }
 
-fn compile_temp_run_artifact(
-    input: &str,
-    options: &compile::CompileOptions,
-    target_spec: &target::TargetSpec,
-) -> tempfile::TempPath {
-    let tmp_path = tempfile::Builder::new()
-        .prefix("hew_run_")
-        .suffix(target_spec.executable_suffix())
-        .tempfile()
-        .unwrap_or_else(|e| {
-            eprintln!("Error: cannot create temp file: {e}");
-            std::process::exit(1);
-        })
-        .into_temp_path();
-    let tmp_bin = tmp_path.display().to_string();
-
-    match compile::compile(input, Some(&tmp_bin), false, options) {
-        Ok(_) => tmp_path,
-        Err(e) => {
-            eprintln!("{e}");
-            drop(tmp_path);
-            // Exit 125 = compile failure (sentinel used by the playground to
-            // distinguish compile errors from program exit codes).
-            std::process::exit(125);
+fn run_native_binary(
+    cmd: &mut std::process::Command,
+    timeout: Option<std::time::Duration>,
+) -> Result<crate::process::ChildWaitOutcome, String> {
+    match timeout {
+        None => {
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("cannot run compiled binary: {e}"))?;
+            // Forward SIGTERM/SIGINT to the child so that signals sent directly
+            // to the wrapper also terminate the compiled program.
+            #[cfg(unix)]
+            signal::forward_signals_to_child(child.id());
+            child
+                .wait()
+                .map(crate::process::ChildWaitOutcome::Exited)
+                .map_err(|e| format!("cannot wait for child process: {e}"))
         }
+        Some(timeout) => {
+            let mut bounded = crate::process::BoundedChild::spawn(cmd)
+                .map_err(|e| format!("cannot run compiled binary: {e}"))?;
+            // Forward signals to the child PID; the process-group kill on
+            // timeout handles the broader tree teardown.
+            #[cfg(unix)]
+            signal::forward_signals_to_child(bounded.id());
+            bounded.wait_with_timeout(timeout)
+        }
+    }
+}
+
+fn configure_profiler_env(cmd: &mut std::process::Command, profile: bool) {
+    if !profile || std::env::var_os("HEW_PPROF").is_some() {
+        return;
+    }
+
+    // --profile: enable the built-in runtime profiler by setting HEW_PPROF on
+    // the child process. "auto" on Unix → per-user unix socket +
+    // auto-discovery for hew-observe. ":6060" on non-Unix → TCP listener.
+    #[cfg(unix)]
+    {
+        cmd.env("HEW_PPROF", "auto");
+        eprintln!("[hew] profiler enabled (unix socket) — run `hew-observe` to attach");
+    }
+    #[cfg(not(unix))]
+    {
+        cmd.env("HEW_PPROF", ":6060");
+        eprintln!(
+            "[hew] profiler enabled on :6060 — run `hew-observe --addr localhost:6060` to attach"
+        );
     }
 }
 
 fn exit_after_wasi_run(
-    tmp_path: tempfile::TempPath,
+    artifact: CompiledTempExecutable,
     program_args: &[String],
     timeout: Option<std::time::Duration>,
 ) -> ! {
-    let status = wasi_runner::run_module(tmp_path.as_ref(), program_args, timeout);
-    drop(tmp_path);
+    let status = wasi_runner::run_module(artifact.path(), program_args, timeout);
+    drop(artifact);
 
     match (timeout, status) {
         (_, Ok(wasi_runner::WasiRunOutcome::Exited(status))) => {
@@ -326,36 +390,35 @@ fn cmd_check(a: &args::CheckArgs) {
 fn cmd_debug(a: &args::DebugArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
-    let target_spec =
-        target::TargetSpec::from_requested(options.target.as_deref()).unwrap_or_else(|e| {
-            eprintln!("{e}");
-            std::process::exit(1);
-        });
+    let target = resolve_debug_target(options.target.as_deref());
+    let artifact = compile_temp_debug_artifact(&input, &options, &target);
+    let (debugger, debugger_args) = resolve_debugger_invocation(artifact.path(), &a.program_args);
 
-    if !target_spec.can_run_on_host() {
-        eprintln!("{}", target_spec.cross_target_run_error("debug"));
-        std::process::exit(1);
-    }
+    eprintln!("Launching {debugger} with debug build of {input}...");
+    exit_after_debugger_run(&debugger, &debugger_args, artifact);
+}
 
-    // Compile to a temporary binary with debug info
-    let tmp_dir = tempfile::tempdir().unwrap_or_else(|e| {
-        eprintln!("Error: cannot create temp dir: {e}");
+fn resolve_debug_target(requested: Option<&str>) -> target::ExecutionTarget {
+    let target = target::ExecutionTarget::from_requested(requested).unwrap_or_else(|e| {
+        eprintln!("{e}");
         std::process::exit(1);
     });
-    let debug_bin_name = format!("hew_debug_bin{}", target_spec.executable_suffix());
-    let tmp_bin = tmp_dir.path().join(debug_bin_name);
-    let tmp_bin_str = tmp_bin.display().to_string();
 
-    match compile::compile(&input, Some(&tmp_bin_str), false, &options) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(125);
-        }
+    if !target.can_run_on_host() {
+        eprintln!("{}", target.cross_target_run_error("debug"));
+        std::process::exit(1);
     }
 
-    // Find a debugger: prefer gdb, fall back to lldb
-    let (debugger, debugger_args) = if which_exists("gdb") {
+    target
+}
+
+fn resolve_debugger_invocation(
+    program_path: &Path,
+    program_args: &[String],
+) -> (String, Vec<String>) {
+    let program = program_path.display().to_string();
+
+    if which_exists("gdb") {
         // Load the Hew GDB helper script if it exists
         let gdb_script = find_debug_script("hew-gdb.py");
         let mut gdb_args = Vec::new();
@@ -364,8 +427,8 @@ fn cmd_debug(a: &args::DebugArgs) {
             gdb_args.push(script.clone());
         }
         gdb_args.push("--args".to_string());
-        gdb_args.push(tmp_bin_str.clone());
-        gdb_args.extend(a.program_args.iter().cloned());
+        gdb_args.push(program);
+        gdb_args.extend(program_args.iter().cloned());
         ("gdb".to_string(), gdb_args)
     } else if which_exists("lldb") {
         let lldb_script = find_debug_script("hew_lldb.py");
@@ -375,25 +438,27 @@ fn cmd_debug(a: &args::DebugArgs) {
             lldb_args.push(format!("command script import {script}"));
         }
         lldb_args.push("--".to_string());
-        lldb_args.push(tmp_bin_str.clone());
-        lldb_args.extend(a.program_args.iter().cloned());
+        lldb_args.push(program);
+        lldb_args.extend(program_args.iter().cloned());
         ("lldb".to_string(), lldb_args)
     } else {
         eprintln!("Error: no debugger found. Install gdb or lldb.");
         std::process::exit(1);
-    };
+    }
+}
 
-    eprintln!("Launching {debugger} with debug build of {input}...");
-
-    let status = std::process::Command::new(&debugger)
-        .args(&debugger_args)
+fn exit_after_debugger_run(
+    debugger: &str,
+    debugger_args: &[String],
+    artifact: CompiledTempExecutable,
+) -> ! {
+    let status = std::process::Command::new(debugger)
+        .args(debugger_args)
         .status();
-
-    // Clean up
-    drop(tmp_dir);
+    drop(artifact);
 
     match status {
-        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("Error: cannot launch {debugger}: {e}");
             std::process::exit(1);

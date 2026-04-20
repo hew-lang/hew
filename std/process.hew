@@ -2,6 +2,10 @@
 //!
 //! Run external commands and manage child processes.
 //!
+//! `process.Child` is an owned handle. Dropping a `Child` reaps the OS
+//! process handle: if the child has already exited, drop performs the final
+//! wait; if it is still running, drop kills it and waits for it to exit.
+//!
 //! # Examples
 //!
 //! ```
@@ -31,7 +35,9 @@ type ProcessResultHandle {}
 /// A handle to a running child process.
 ///
 /// Created by `process.start(cmd)`. Use `wait()` to block until
-/// the process exits, or `kill()` to terminate it.
+/// the process exits, or `kill()` to terminate it. Dropping the
+/// handle reaps it automatically; a still-running child is killed
+/// and waited on at scope exit.
 type Child {}
 
 /// Captured output from a completed command.
@@ -65,6 +71,17 @@ impl ChildMethods for Child {
     fn wait(child: Child) -> int { unsafe { hew_process_wait(child) as int } }
     /// Terminate the child process.
     fn kill(child: Child) -> int { unsafe { hew_process_kill(child) as int } }
+}
+
+impl Drop for Child {
+    /// Reap the child handle at scope exit.
+    ///
+    /// Drop performs a non-blocking check first. If the child is still
+    /// running, drop kills it and waits for it to exit so leaked `Child`
+    /// values do not leave OS processes or zombie handles behind.
+    fn drop(child: Child) {
+        unsafe { hew_process_drop(child) };
+    }
 }
 
 fn empty_output() -> CommandOutput {
@@ -253,6 +270,7 @@ extern "C" {
     fn hew_process_spawn(command: String) -> Child;
     fn hew_process_wait(handle: Child) -> i32;
     fn hew_process_kill(handle: Child) -> i32;
+    fn hew_process_drop(handle: Child);
     fn hew_process_last_error() -> String;
     fn hew_clear_error();
 }

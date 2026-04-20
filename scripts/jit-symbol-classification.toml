@@ -321,6 +321,7 @@ stable = [
   "hew_pool_select",
   "hew_pool_size",
   "hew_print_value",
+  "hew_process_drop",
   "hew_process_free",
   "hew_process_kill",
   "hew_process_last_error",

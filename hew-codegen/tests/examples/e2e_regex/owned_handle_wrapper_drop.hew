@@ -1,0 +1,19 @@
+import std::text::regex;
+
+type PatternWrapper {
+    pattern: regex.Pattern
+}
+
+fn consume(wrapper: PatternWrapper) -> bool {
+    wrapper.pattern.is_match("a1")
+}
+
+fn make_wrapper() -> PatternWrapper {
+    PatternWrapper { pattern: regex.new("[0-9]+") }
+}
+
+fn main() {
+    println(consume(make_wrapper()));
+    println(consume(make_wrapper()));
+    println("owned handle drop ok");
+}

@@ -786,6 +786,8 @@ private:
   /// Handle type name → MLIR representation. Non-default entries only
   /// (e.g., "net.Listener" → "i32"). Types not in this map use HandleType.
   std::unordered_map<std::string, std::string> handleTypeRepr;
+  /// Struct type names whose fields directly or transitively contain owned handles.
+  std::unordered_set<std::string> handleBearingStructs;
 
   // Counter for anonymous lambda actor names
   unsigned lambdaActorCounter = 0;
@@ -977,6 +979,7 @@ private:
   /// Returns true if the named struct has at least one owned field (String,
   /// Vec, HashMap, etc.) that requires drop at scope exit.
   bool structHasOwnedFields(const std::string &name) const;
+  bool isHandleBearingStruct(const std::string &name) const;
   void pushDropScope();
   void popDropScope();
   mlir::Value resolveCurrentBindingIdentity(llvm::StringRef name);

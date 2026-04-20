@@ -39,7 +39,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard, Once, OnceLock};
 
 use hew_cabi::cabi::cstr_to_string_lossy;
 
@@ -191,6 +191,34 @@ fn meta_state() -> MutexGuard<'static, MetaState> {
         })
         .lock()
         .unwrap()
+}
+
+/// Clear the `msg_type → handler_name` side table at a session boundary.
+///
+/// `bridge_shutdown()` already clears the actor metadata registry and JSON cache
+/// before `session_reset()` fires. The side table stays populated until the
+/// reset hook runs so AOT metadata remains stable for the rest of the session,
+/// but a subsequent JIT/AOT reload cycle starts from a clean slate.
+fn clear_handler_names_for_session_reset() {
+    let Some(state) = META_STATE.get() else {
+        return;
+    };
+    let mut state = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.handler_names.clear();
+}
+
+/// Register the bridge-owned session reset hook once per process.
+///
+/// This keeps the bridge's handler-name side table aligned with the shared
+/// session lifecycle introduced in `session.rs` without changing the
+/// `HewTraceEvent` wire layout.
+pub(crate) fn register_bridge_reset_hook() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        crate::session::register_reset_hook(clear_handler_names_for_session_reset);
+    });
 }
 
 /// Resolve a `msg_type` integer to its fully-qualified handler name.
@@ -743,6 +771,7 @@ pub fn bridge_init() {
             cache_all: None,
         })
     });
+    register_bridge_reset_hook();
 }
 
 /// Shut down the bridge, draining queues and clearing metadata.
@@ -754,9 +783,9 @@ pub fn bridge_shutdown() {
     outbound_queue().clear();
     let mut state = meta_state();
     state.registry.clear();
-    // SHIM: JIT reload must also clear `handler_names`; see #1226 M2.
-    // For AOT the map is populated once at startup and outlives the session.
-    // When #1226 M2 lands, add `state.handler_names.clear()` here.
+    // `handler_names` is intentionally left intact here; the shared
+    // session-reset hook clears it immediately after bridge shutdown so the
+    // rest of the session can still observe a stable AOT mapping.
     state.cache_all = None;
 }
 
@@ -1271,6 +1300,7 @@ mod tests {
 
     #[test]
     fn handler_name_side_table_populated_on_registration() {
+        let _runtime_guard = crate::runtime_test_guard();
         let _guard = TEST_LOCK.lock().unwrap();
         reset_bridge();
 
@@ -1303,5 +1333,49 @@ mod tests {
         assert_eq!(resolve_handler_name(42), Some("Foo::handle_bar".to_owned()));
         // Unknown msg_type still returns None.
         assert_eq!(resolve_handler_name(99), None);
+    }
+
+    #[test]
+    fn session_reset_clears_handler_name_side_table_via_hook() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _session_guard = crate::session::reset_hooks_for_test();
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_bridge();
+
+        crate::session::register_reset_hook(clear_handler_names_for_session_reset);
+
+        let handler = HewHandlerMeta {
+            name: c"ping".as_ptr().cast(),
+            msg_type: 7,
+            param_count: 0,
+            params: std::ptr::null(),
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let actor_meta = HewActorMeta {
+            name: c"ResetActor".as_ptr().cast(),
+            handler_count: 1,
+            handlers: &raw const handler,
+        };
+
+        // SAFETY: actor_meta is a valid stack-allocated struct with valid C strings.
+        unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
+
+        assert_eq!(resolve_handler_name(7), Some("ResetActor::ping".to_owned()));
+
+        bridge_shutdown();
+        assert_eq!(
+            resolve_handler_name(7),
+            Some("ResetActor::ping".to_owned()),
+            "bridge_shutdown keeps handler_names until session_reset runs"
+        );
+
+        crate::session::session_reset();
+
+        assert_eq!(
+            resolve_handler_name(7),
+            None,
+            "session_reset must clear the handler-name side table"
+        );
     }
 }

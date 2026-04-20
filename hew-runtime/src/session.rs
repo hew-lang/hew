@@ -20,10 +20,13 @@
 //!
 //! Hooks run in the order they were registered.  The intended order is:
 //! 1. Tracing (`hew_trace_reset`)           — disable + clear events first.
-//! 2. Profiler dispatch-registry clear      — clear type-name side-table second.
+//! 2. Bridge handler-name clear             — clear the WASM/test msg-type side-table.
+//! 3. Profiler dispatch-registry clear      — clear native profiler side-tables last.
 //!
 //! This ordering is enforced by the init call sites: tracing registers from
-//! `scheduler::hew_sched_init`; profiler registers from `profiler::register_reset_hooks`.
+//! `scheduler::hew_sched_init` / `scheduler_wasm::hew_sched_init`, bridge
+//! registers from `bridge::bridge_init`, and profiler registers from
+//! `profiler::register_reset_hooks`.
 
 use crate::util::MutexExt;
 use std::sync::Mutex;

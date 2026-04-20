@@ -7,6 +7,8 @@
 use crate::cabi::malloc_cstring;
 use crate::lifetime::PoisonSafeRw;
 use std::ffi::{c_char, CStr};
+#[cfg(any(target_os = "freebsd", test))]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Global lock for environment variable access synchronization.
 ///
@@ -135,7 +137,9 @@ pub unsafe extern "C" fn hew_env_has(key: *const c_char) -> i32 {
 fn read_process_args() -> Vec<String> {
     #[cfg(target_os = "freebsd")]
     {
-        freebsd_args().unwrap_or_default()
+        // FreeBSD relies on `kern.proc.args`; if that sysctl fails, prefer an
+        // observable fallback over silently turning argv into `[]`.
+        read_process_args_with_freebsd(&FreeBsdSysctl, || std::env::args().collect())
     }
     #[cfg(not(target_os = "freebsd"))]
     {
@@ -145,57 +149,195 @@ fn read_process_args() -> Vec<String> {
     }
 }
 
+#[cfg(any(target_os = "freebsd", test))]
+static FREEBSD_ARGV_SYSCTL_WARNED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(any(target_os = "freebsd", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FreeBsdArgvError {
+    SysctlFailed {
+        phase: &'static str,
+        errno: i32,
+        message: String,
+    },
+    EmptyBuffer {
+        phase: &'static str,
+    },
+    TruncatedBuffer {
+        expected: usize,
+        actual: usize,
+    },
+}
+
+#[cfg(any(target_os = "freebsd", test))]
+impl std::fmt::Display for FreeBsdArgvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SysctlFailed {
+                phase,
+                errno,
+                message,
+            } => {
+                write!(f, "freebsd argv sysctl {phase} failed (errno {errno}): {message}")
+            }
+            Self::EmptyBuffer { phase } => {
+                write!(f, "freebsd argv sysctl {phase} returned an empty buffer")
+            }
+            Self::TruncatedBuffer { expected, actual } => write!(
+                f,
+                "freebsd argv sysctl returned a truncated buffer (capacity {expected}, actual {actual})"
+            ),
+        }
+    }
+}
+
+#[cfg(any(target_os = "freebsd", test))]
+trait FreeBsdArgvReader {
+    fn query_len(&self) -> Result<usize, FreeBsdArgvError>;
+    fn fill_buffer(&self, buffer: &mut [u8]) -> Result<usize, FreeBsdArgvError>;
+}
+
+#[cfg(any(target_os = "freebsd", test))]
+fn read_process_args_with_freebsd<R, F>(reader: &R, fallback: F) -> Vec<String>
+where
+    R: FreeBsdArgvReader,
+    F: FnOnce() -> Vec<String>,
+{
+    match freebsd_args_with(reader) {
+        Ok(args) => args,
+        Err(err) => {
+            crate::set_last_error(err.to_string());
+            warn_freebsd_argv_fallback(&err);
+            fallback()
+        }
+    }
+}
+
+#[cfg(any(target_os = "freebsd", test))]
+fn freebsd_args_with<R: FreeBsdArgvReader>(reader: &R) -> Result<Vec<String>, FreeBsdArgvError> {
+    let len = reader.query_len()?;
+    if len == 0 {
+        return Err(FreeBsdArgvError::EmptyBuffer {
+            phase: "size query",
+        });
+    }
+
+    let mut buf = vec![0u8; len];
+    let actual = reader.fill_buffer(&mut buf)?;
+    if actual == 0 {
+        return Err(FreeBsdArgvError::EmptyBuffer {
+            phase: "buffer fill",
+        });
+    }
+    if actual > buf.len() {
+        return Err(FreeBsdArgvError::TruncatedBuffer {
+            expected: buf.len(),
+            actual,
+        });
+    }
+
+    buf.truncate(actual);
+    Ok(parse_freebsd_args(&buf))
+}
+
+#[cfg(any(target_os = "freebsd", test))]
+fn parse_freebsd_args(buf: &[u8]) -> Vec<String> {
+    buf.split(|&b| b == 0)
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| String::from_utf8_lossy(segment).into_owned())
+        .collect()
+}
+
+#[cfg(any(target_os = "freebsd", test))]
+fn warn_freebsd_argv_fallback(err: &FreeBsdArgvError) {
+    if FREEBSD_ARGV_SYSCTL_WARNED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        tracing::warn!(
+            error = %err,
+            "freebsd argv sysctl failed; falling back to std::env::args()"
+        );
+    }
+}
+
+#[cfg(test)]
+fn reset_freebsd_argv_warning_for_tests() {
+    FREEBSD_ARGV_SYSCTL_WARNED.store(false, Ordering::Relaxed);
+}
+
 /// Read process arguments via FreeBSD's `kern.proc.args` sysctl.
 #[cfg(target_os = "freebsd")]
-fn freebsd_args() -> Option<Vec<String>> {
-    use std::mem;
+fn freebsd_args() -> Result<Vec<String>, FreeBsdArgvError> {
+    freebsd_args_with(&FreeBsdSysctl)
+}
 
-    // CTL_KERN=1, KERN_PROC=14, KERN_PROC_ARGS=7
-    let pid = std::process::id() as libc::c_int;
-    let mut mib: [libc::c_int; 4] = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ARGS, pid];
+#[cfg(target_os = "freebsd")]
+struct FreeBsdSysctl;
 
-    // First call: get required buffer size.
-    let mut len: libc::size_t = 0;
-    // SAFETY: sysctl with null oldp and valid &mut len returns the buffer size.
-    let rc = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            4,
-            std::ptr::null_mut(),
-            &mut len,
-            std::ptr::null(),
-            0,
-        )
-    };
-    if rc != 0 || len == 0 {
-        return None;
+#[cfg(target_os = "freebsd")]
+impl FreeBsdSysctl {
+    fn current_process_mib() -> [libc::c_int; 4] {
+        let pid = std::process::id() as libc::c_int;
+        [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ARGS, pid]
     }
 
-    // Second call: fill buffer.
-    let mut buf: Vec<u8> = vec![0u8; len];
-    // SAFETY: buf is large enough and mib is valid.
-    let rc = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            4,
-            buf.as_mut_ptr().cast(),
-            &mut len,
-            std::ptr::null(),
-            0,
-        )
-    };
-    if rc != 0 {
-        return None;
+    fn sysctl_failed(phase: &'static str) -> FreeBsdArgvError {
+        let os_error = std::io::Error::last_os_error();
+        FreeBsdArgvError::SysctlFailed {
+            phase,
+            errno: os_error.raw_os_error().unwrap_or(0),
+            message: os_error.to_string(),
+        }
     }
-    buf.truncate(len);
+}
 
-    // The buffer is NUL-separated C strings.  Split on NUL, skip empty trailing.
-    let args: Vec<String> = buf
-        .split(|&b| b == 0)
-        .filter(|s| !s.is_empty())
-        .map(|s| String::from_utf8_lossy(s).into_owned())
-        .collect();
-    Some(args)
+#[cfg(target_os = "freebsd")]
+impl FreeBsdArgvReader for FreeBsdSysctl {
+    fn query_len(&self) -> Result<usize, FreeBsdArgvError> {
+        // CTL_KERN=1, KERN_PROC=14, KERN_PROC_ARGS=7
+        let mut mib = Self::current_process_mib();
+
+        // SAFETY: sysctl with null oldp and valid &mut len returns the buffer size.
+        let mut len: libc::size_t = 0;
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                4,
+                std::ptr::null_mut(),
+                &mut len,
+                std::ptr::null(),
+                0,
+            )
+        };
+        if rc != 0 {
+            return Err(Self::sysctl_failed("size query"));
+        }
+
+        Ok(len)
+    }
+
+    fn fill_buffer(&self, buffer: &mut [u8]) -> Result<usize, FreeBsdArgvError> {
+        let mut mib = Self::current_process_mib();
+        let mut len = buffer.len();
+
+        // SAFETY: `buffer` is valid for `buffer.len()` bytes and `mib` is initialized.
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                4,
+                buffer.as_mut_ptr().cast(),
+                &mut len,
+                std::ptr::null(),
+                0,
+            )
+        };
+        if rc != 0 {
+            return Err(Self::sysctl_failed("buffer fill"));
+        }
+
+        Ok(len)
+    }
 }
 
 /// Return the number of command-line arguments.
@@ -349,6 +491,118 @@ pub unsafe extern "C" fn hew_pid() -> i32 {
 mod tests {
     use super::*;
     use std::ffi::CString;
+    use std::io;
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    #[derive(Clone, Default)]
+    struct TestLogBuffer {
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl TestLogBuffer {
+        fn contents(&self) -> String {
+            let bytes = self.bytes.lock().unwrap_or_else(PoisonError::into_inner);
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    }
+
+    struct TestLogWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl io::Write for TestLogWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TestLogBuffer {
+        type Writer = TestLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            TestLogWriter {
+                bytes: Arc::clone(&self.bytes),
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct FakeFreeBsdArgvReader {
+        query_len: Result<usize, FreeBsdArgvError>,
+        fill_buffer: Result<(usize, Vec<u8>), FreeBsdArgvError>,
+    }
+
+    impl FakeFreeBsdArgvReader {
+        fn success(args: &[&str]) -> Self {
+            let mut payload = Vec::new();
+            for arg in args {
+                payload.extend_from_slice(arg.as_bytes());
+                payload.push(0);
+            }
+            let len = payload.len();
+            Self {
+                query_len: Ok(len),
+                fill_buffer: Ok((len, payload)),
+            }
+        }
+
+        fn query_failure(errno: i32) -> Self {
+            Self {
+                query_len: Err(FreeBsdArgvError::SysctlFailed {
+                    phase: "size query",
+                    errno,
+                    message: std::io::Error::from_raw_os_error(errno).to_string(),
+                }),
+                fill_buffer: Ok((0, Vec::new())),
+            }
+        }
+
+        fn truncated(expected: usize, actual: usize) -> Self {
+            Self {
+                query_len: Ok(expected),
+                fill_buffer: Ok((actual, vec![0; expected])),
+            }
+        }
+    }
+
+    impl FreeBsdArgvReader for FakeFreeBsdArgvReader {
+        fn query_len(&self) -> Result<usize, FreeBsdArgvError> {
+            self.query_len.clone()
+        }
+
+        fn fill_buffer(&self, buffer: &mut [u8]) -> Result<usize, FreeBsdArgvError> {
+            match &self.fill_buffer {
+                Ok((actual, payload)) => {
+                    let copy_len = payload.len().min(buffer.len());
+                    buffer[..copy_len].copy_from_slice(&payload[..copy_len]);
+                    Ok(*actual)
+                }
+                Err(err) => Err(err.clone()),
+            }
+        }
+    }
+
+    fn last_error_string() -> Option<String> {
+        let ptr = crate::hew_last_error();
+        if ptr.is_null() {
+            return None;
+        }
+        Some(
+            // SAFETY: `hew_last_error` returns a NUL-terminated pointer valid until
+            // the next error update on this thread.
+            unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
 
     /// Helper to read a malloc'd C string and free it.
     ///
@@ -439,6 +693,80 @@ mod tests {
         // SAFETY: no preconditions.
         let pid = unsafe { hew_pid() };
         assert!(pid > 0);
+    }
+
+    #[test]
+    fn test_injected_freebsd_sysctl_happy_path_parses_args() {
+        let args = freebsd_args_with(&FakeFreeBsdArgvReader::success(&[
+            "hew",
+            "--flag",
+            "spaced arg",
+        ]))
+        .expect("fake sysctl should succeed");
+        assert_eq!(args, vec!["hew", "--flag", "spaced arg"]);
+    }
+
+    #[cfg(target_os = "freebsd")]
+    #[test]
+    fn test_freebsd_sysctl_happy_path_matches_std_env_args() {
+        crate::hew_clear_error();
+        let args = freebsd_args().expect("real freebsd sysctl should read argv");
+        assert_eq!(args, std::env::args().collect::<Vec<_>>());
+        assert!(crate::hew_last_error().is_null());
+    }
+
+    #[test]
+    fn test_injected_freebsd_sysctl_truncation_surfaces_error() {
+        let err = freebsd_args_with(&FakeFreeBsdArgvReader::truncated(4, 8))
+            .expect_err("oversized sysctl result should be rejected");
+        assert_eq!(
+            err,
+            FreeBsdArgvError::TruncatedBuffer {
+                expected: 4,
+                actual: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn test_injected_freebsd_sysctl_failure_falls_back_and_warns_once() {
+        crate::hew_clear_error();
+        reset_freebsd_argv_warning_for_tests();
+
+        let logs = TestLogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_writer(logs.clone())
+            .finish();
+        let fallback = vec!["hew".to_owned(), "--fallback".to_owned()];
+        let reader = FakeFreeBsdArgvReader::query_failure(libc::ENOMEM);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let first = read_process_args_with_freebsd(&reader, || fallback.clone());
+            let second = read_process_args_with_freebsd(&reader, || fallback.clone());
+            assert_eq!(first, fallback);
+            assert_eq!(second, fallback);
+        });
+
+        let last_error =
+            last_error_string().expect("freebsd sysctl failure should populate hew_last_error");
+        assert!(
+            last_error.contains("freebsd argv sysctl size query failed"),
+            "unexpected last error: {last_error}"
+        );
+        let log_output = logs.contents();
+        assert_eq!(
+            log_output
+                .matches("freebsd argv sysctl failed; falling back to std::env::args()")
+                .count(),
+            1,
+            "fallback warning should be logged once, saw logs:\n{log_output}"
+        );
+
+        crate::hew_clear_error();
+        reset_freebsd_argv_warning_for_tests();
     }
 
     #[test]

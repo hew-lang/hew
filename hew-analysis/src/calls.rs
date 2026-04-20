@@ -4,7 +4,8 @@
 //! Returns parser-level `Span` values so callers can convert to LSP ranges
 //! without an extra allocation layer.
 
-use hew_parser::ast::{Block, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem};
+use crate::ast_visit::{self, AstVisitor};
+use hew_parser::ast::{Block, Expr, Item, Span, Stmt, StringPart};
 use hew_parser::ParseResult;
 
 /// A single call site found in the AST.
@@ -19,70 +20,24 @@ pub struct CallSite {
 /// Collect all call sites across every item body in the parse result.
 #[must_use]
 pub fn collect_calls_in_parse_result(parse_result: &ParseResult) -> Vec<CallSite> {
-    let mut calls = Vec::new();
-    for (item, _) in &parse_result.program.items {
-        collect_calls_in_item(item, &mut calls);
-    }
-    calls
+    let mut visitor = CallCollector::default();
+    ast_visit::walk_parse_result(None, parse_result, &mut visitor);
+    visitor.calls
 }
 
 /// Collect all call sites reachable from a single top-level item.
 pub fn collect_calls_in_item(item: &Item, calls: &mut Vec<CallSite>) {
-    match item {
-        Item::Function(f) => collect_calls_in_block(&f.body, calls),
-        Item::Actor(a) => {
-            if let Some(init) = &a.init {
-                collect_calls_in_block(&init.body, calls);
-            }
-            if let Some(term) = &a.terminate {
-                collect_calls_in_block(&term.body, calls);
-            }
-            for recv in &a.receive_fns {
-                collect_calls_in_block(&recv.body, calls);
-            }
-            for method in &a.methods {
-                collect_calls_in_block(&method.body, calls);
-            }
-        }
-        Item::TypeDecl(td) => {
-            for body_item in &td.body {
-                if let TypeBodyItem::Method(m) = body_item {
-                    collect_calls_in_block(&m.body, calls);
-                }
-            }
-        }
-        Item::Impl(i) => {
-            for method in &i.methods {
-                collect_calls_in_block(&method.body, calls);
-            }
-        }
-        Item::Trait(t) => {
-            for trait_item in &t.items {
-                if let TraitItem::Method(m) = trait_item {
-                    if let Some(body) = &m.body {
-                        collect_calls_in_block(body, calls);
-                    }
-                }
-            }
-        }
-        Item::Const(c) => collect_calls_in_expr(&c.value, calls),
-        Item::Supervisor(s) => {
-            for child in &s.children {
-                for arg in &child.args {
-                    collect_calls_in_expr(arg, calls);
-                }
-            }
-        }
-        Item::Machine(m) => {
-            for transition in &m.transitions {
-                if let Some(guard) = &transition.guard {
-                    collect_calls_in_expr(guard, calls);
-                }
-                collect_calls_in_expr(&transition.body, calls);
-            }
-        }
-        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
-    }
+    let mut visitor = CallCollector::default();
+    let parse_result = ParseResult {
+        program: hew_parser::ast::Program {
+            items: vec![(item.clone(), 0..0)],
+            module_doc: None,
+            module_graph: None,
+        },
+        errors: Vec::new(),
+    };
+    ast_visit::walk_parse_result(None, &parse_result, &mut visitor);
+    calls.extend(visitor.calls);
 }
 
 /// Collect call sites from the specific named body within an item.
@@ -103,72 +58,51 @@ pub fn collect_calls_in_named_body(
     body_name: &str,
     calls: &mut Vec<CallSite>,
 ) -> bool {
-    match item {
-        // Single-body items: match on the item name, then delegate to the
-        // existing whole-item walker.
-        Item::Function(f) if f.name == body_name => {
-            collect_calls_in_item(item, calls);
-            true
-        }
-        Item::Const(c) if c.name == body_name => {
-            collect_calls_in_item(item, calls);
-            true
-        }
-        Item::Supervisor(s) if s.name == body_name => {
-            collect_calls_in_item(item, calls);
-            true
-        }
-        Item::Machine(m) if m.name == body_name => {
-            collect_calls_in_item(item, calls);
-            true
-        }
+    let mut visitor = CallCollector::default();
+    let found = ast_visit::walk_named_body(None, item, body_name, &mut visitor);
+    calls.extend(visitor.calls);
+    found
+}
 
-        // Multi-body items: walk only the sub-body that matches.
-        Item::Actor(a) => {
-            if let Some(recv) = a.receive_fns.iter().find(|r| r.name == body_name) {
-                collect_calls_in_block(&recv.body, calls);
-                return true;
-            }
-            if let Some(method) = a.methods.iter().find(|m| m.name == body_name) {
-                collect_calls_in_block(&method.body, calls);
-                return true;
-            }
-            false
-        }
-        Item::Impl(i) => {
-            if let Some(method) = i.methods.iter().find(|m| m.name == body_name) {
-                collect_calls_in_block(&method.body, calls);
-                true
-            } else {
-                false
-            }
-        }
-        Item::TypeDecl(td) => {
-            for body_item in &td.body {
-                if let TypeBodyItem::Method(m) = body_item {
-                    if m.name == body_name {
-                        collect_calls_in_block(&m.body, calls);
-                        return true;
-                    }
+#[derive(Default)]
+struct CallCollector {
+    calls: Vec<CallSite>,
+}
+
+impl<'ast> AstVisitor<'ast> for CallCollector {
+    fn visit_expr(
+        &mut self,
+        expr: &'ast Expr,
+        span: &'ast Span,
+        _ctx: crate::ast_visit::VisitContext<'ast>,
+    ) {
+        match expr {
+            Expr::Call { function, .. } => {
+                if let Expr::Identifier(name) = &function.0 {
+                    self.calls.push(CallSite {
+                        name: name.clone(),
+                        span: span.clone(),
+                    });
                 }
             }
-            false
-        }
-        Item::Trait(t) => {
-            for trait_item in &t.items {
-                if let TraitItem::Method(m) = trait_item {
-                    if m.name == body_name {
-                        if let Some(body) = &m.body {
-                            collect_calls_in_block(body, calls);
-                        }
-                        return true;
-                    }
-                }
+            Expr::MethodCall { method, .. } => {
+                self.calls.push(CallSite {
+                    name: method.clone(),
+                    span: span.clone(),
+                });
             }
-            false
+            Expr::Send { target, .. } => {
+                let send_name = match &target.0 {
+                    Expr::Identifier(name) => format!("{name}.send"),
+                    _ => "send".to_string(),
+                };
+                self.calls.push(CallSite {
+                    name: send_name,
+                    span: span.clone(),
+                });
+            }
+            _ => {}
         }
-
-        _ => false,
     }
 }
 

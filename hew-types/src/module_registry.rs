@@ -468,6 +468,11 @@ mod tests {
             reg.is_drop_type("http.Request"),
             "http.Request should be a drop type"
         );
+        reg.load("std::process").unwrap();
+        assert!(
+            reg.is_drop_type("process.Child"),
+            "process.Child should be a drop type"
+        );
         assert!(
             !reg.is_drop_type("http.Server"),
             "http.Server should not be a drop type"
@@ -493,6 +498,12 @@ mod tests {
             reg.drop_func_for("http.Request"),
             Some("hew_http_request_free"),
             "http.Request drop func should be hew_http_request_free"
+        );
+        reg.load("std::process").unwrap();
+        assert_eq!(
+            reg.drop_func_for("process.Child"),
+            Some("hew_process_drop"),
+            "process.Child drop func should be hew_process_drop"
         );
         assert_eq!(
             reg.drop_func_for("http.Server"),

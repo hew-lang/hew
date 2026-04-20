@@ -753,6 +753,18 @@ mod tests {
                 "process module should retain legacy `{name}` wrapper for compatibility"
             );
         }
+        assert!(
+            info.drop_types.contains(&"process.Child".to_string()),
+            "process module should mark process.Child as a drop type"
+        );
+        assert_eq!(
+            info.drop_funcs
+                .iter()
+                .find(|(ty, _)| ty == "process.Child")
+                .map(|(_, func)| func.as_str()),
+            Some("hew_process_drop"),
+            "process.Child drop func should be hew_process_drop"
+        );
     }
 
     #[test]

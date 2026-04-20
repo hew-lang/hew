@@ -1,7 +1,36 @@
 //! Tests for std::process argument handling.
 
+import std::fs;
 import std::process;
+import std::string;
 import std::testing;
+import std::time::datetime;
+
+fn cleanup_file(file_path: String) {
+    if fs.exists(file_path) {
+        fs.delete(file_path);
+    }
+}
+
+fn kill_zero_exit_code(pid: String) -> int {
+    let args: Vec<String> = Vec::new();
+    args.push("-0");
+    args.push(pid);
+    process.run_argv("kill", args).exit_code
+}
+
+fn read_pid_with_retry(pid_path: String) -> String {
+    var attempts = 0;
+    while attempts < 50 {
+        if fs.exists(pid_path) {
+            return string.trim(fs.read(pid_path));
+        }
+        sleep_ms(100);
+        attempts = attempts + 1;
+    }
+    panic("expected child to write its pid file");
+    ""
+}
 
 #[test]
 fn test_try_run_argv_preserves_spaced_and_empty_arguments() {
@@ -59,4 +88,31 @@ fn test_try_run_argv_missing_command_returns_launch_failed() {
             _ => panic("expected ProcessError::LaunchFailed"),
         },
     }
+}
+
+#[test]
+fn test_child_drop_reaps_running_process() {
+    let pid_path = f"tests/hew/_process_drop_{datetime.now_nanos()}.pid";
+    cleanup_file(pid_path);
+
+    {
+        let child = process.start(f"echo $$ > {pid_path}; sleep 60");
+        let pid = read_pid_with_retry(pid_path);
+        testing.assert_true(kill_zero_exit_code(pid) == 0);
+    }
+
+    let pid = string.trim(fs.read(pid_path));
+    var attempts = 0;
+    var reaped = false;
+    while attempts < 50 {
+        if kill_zero_exit_code(pid) != 0 {
+            reaped = true;
+            break;
+        }
+        sleep_ms(100);
+        attempts = attempts + 1;
+    }
+
+    cleanup_file(pid_path);
+    testing.assert_true(reaped);
 }

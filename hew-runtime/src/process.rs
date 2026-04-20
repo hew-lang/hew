@@ -23,6 +23,7 @@ pub struct HewProcessResult {
 /// Handle to a running child process.
 pub struct HewProcess {
     inner: std::process::Child,
+    reaped: bool,
 }
 
 impl std::fmt::Debug for HewProcess {
@@ -60,6 +61,46 @@ fn output_to_result(output: std::process::Output) -> *mut HewProcessResult {
         stdout,
         stderr,
     }))
+}
+
+fn mark_reaped(proc: &mut HewProcess) {
+    proc.reaped = true;
+}
+
+fn reap_process_for_drop(proc: &mut HewProcess) {
+    if proc.reaped {
+        crate::hew_clear_error();
+        return;
+    }
+
+    match proc.inner.try_wait() {
+        Ok(Some(_status)) => {
+            mark_reaped(proc);
+            crate::hew_clear_error();
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            crate::set_last_error(format!("hew_process_drop: {error}"));
+        }
+    }
+
+    let kill_error = proc.inner.kill().err();
+    match proc.inner.wait() {
+        Ok(_status) => {
+            mark_reaped(proc);
+            crate::hew_clear_error();
+        }
+        Err(wait_error) => {
+            if let Some(kill_error) = kill_error {
+                crate::set_last_error(format!(
+                    "hew_process_drop: kill failed: {kill_error}; wait failed: {wait_error}"
+                ));
+            } else {
+                crate::set_last_error(format!("hew_process_drop: {wait_error}"));
+            }
+        }
+    }
 }
 
 /// Execute a prepared [`Command`] and convert its output into a Hew result.
@@ -256,7 +297,10 @@ pub unsafe extern "C" fn hew_process_spawn(cmd: *const c_char) -> *mut HewProces
     match Command::new("sh").arg("-c").arg(cmd_str).spawn() {
         Ok(child) => {
             crate::hew_clear_error();
-            Box::into_raw(Box::new(HewProcess { inner: child }))
+            Box::into_raw(Box::new(HewProcess {
+                inner: child,
+                reaped: false,
+            }))
         }
         Err(error) => {
             crate::set_last_error(format!(
@@ -281,6 +325,7 @@ pub unsafe extern "C" fn hew_process_wait(proc: *mut HewProcess) -> i32 {
     let p = unsafe { &mut *proc };
     match p.inner.wait() {
         Ok(status) => {
+            mark_reaped(p);
             crate::hew_clear_error();
             status.code().unwrap_or(-1)
         }
@@ -289,6 +334,24 @@ pub unsafe extern "C" fn hew_process_wait(proc: *mut HewProcess) -> i32 {
             -1
         }
     }
+}
+
+/// Reap a [`HewProcess`] handle at scope exit.
+///
+/// If the child is still running, this kills it and waits for exit before
+/// releasing the owned handle. If it has already exited, this performs the
+/// final reap without sending a signal.
+///
+/// # Safety
+///
+/// `p` must be a pointer previously returned by [`hew_process_spawn`],
+/// and must not have been freed already. Null is accepted (no-op).
+#[no_mangle]
+pub unsafe extern "C" fn hew_process_drop(p: *mut HewProcess) {
+    cabi_guard!(p.is_null());
+    // SAFETY: p was allocated with Box::into_raw and has not been freed.
+    let mut proc = unsafe { Box::from_raw(p) };
+    reap_process_for_drop(&mut proc);
 }
 
 /// Kill a spawned process.
@@ -404,9 +467,9 @@ pub unsafe extern "C" fn hew_process_result_free(r: *mut HewProcessResult) {
 /// and must not have been freed already. Null is accepted (no-op).
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_free(p: *mut HewProcess) {
-    cabi_guard!(p.is_null());
-    // SAFETY: p was allocated with Box::into_raw and has not been freed.
-    drop(unsafe { Box::from_raw(p) });
+    // SAFETY: same contract as `hew_process_drop`; preserve the legacy symbol as
+    // the canonical release path for raw FFI callers.
+    unsafe { hew_process_drop(p) };
 }
 
 // ---------------------------------------------------------------------------

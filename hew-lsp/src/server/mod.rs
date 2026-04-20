@@ -2,10 +2,22 @@
 
 mod analysis;
 mod convert;
+mod handlers;
 mod hierarchy;
 mod navigation;
 mod workspace;
 
+#[cfg(test)]
+use self::handlers::language_features::{
+    lsp_code_actions_for_diagnostic, lsp_inlay_hint_from_analysis,
+    lsp_signature_help_from_analysis, remove_unused_imports_kind,
+};
+#[cfg(test)]
+use self::handlers::navigation::rename_error_to_jsonrpc;
+#[cfg(test)]
+use self::handlers::text_sync::build_initialize_result_from_caps_json;
+#[cfg(test)]
+use self::handlers::workspace::extract_run_test_name;
 // Items used by the LanguageServer impl handlers.
 use self::analysis::{close_document_and_dependents, refresh_document_and_dependents};
 use self::convert::{analysis_tokens_to_lsp, symbol_info_to_doc_symbol, to_lsp_completion};
@@ -62,28 +74,27 @@ use tower_lsp::lsp_types::{
     WorkspaceSymbolParams,
 };
 use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
-    ExecuteCommandParams, FoldingRange, FoldingRangeKind, FoldingRangeParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    MessageType, OneOf, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
+    CodeActionKind, CodeActionParams, CodeActionResponse, CompletionOptions, CompletionParams,
+    CompletionResponse, Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
+    ExecuteCommandParams, FoldingRange, FoldingRangeParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, Location, MessageType, OneOf, Position,
+    PrepareRenameResponse, Range, ReferenceParams, RenameParams, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
 #[cfg(test)]
 use tower_lsp::lsp_types::{
-    CompletionItemKind, DiagnosticSeverity, InsertTextFormat, SemanticToken, SymbolKind,
+    CodeActionOrCommand, CompletionItemKind, DiagnosticSeverity, DocumentSymbol, InlayHintTooltip,
+    InsertTextFormat, SemanticToken, SymbolKind,
 };
 use tower_lsp::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
 use tower_lsp::lsp_types::{
-    InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
-    InlayHintServerCapabilities, InlayHintTooltip, ParameterInformation, ParameterLabel,
-    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
+    InlayHint, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams,
 };
 use tower_lsp::lsp_types::{
     TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
@@ -229,71 +240,8 @@ fn build_server_capabilities() -> ServerCapabilities {
     }
 }
 
-fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
-    let mut roots = Vec::with_capacity(params.workspace_folders.as_ref().map_or(1, Vec::len));
-    if let Some(folders) = &params.workspace_folders {
-        for folder in folders {
-            if let Ok(path) = folder.uri.to_file_path() {
-                roots.push(normalize_workspace_root(path));
-            }
-        }
-    }
-    if roots.is_empty() {
-        if let Some(root_uri) = &params.root_uri {
-            if let Ok(path) = root_uri.to_file_path() {
-                roots.push(normalize_workspace_root(path));
-            }
-        }
-    }
-    #[expect(deprecated, reason = "LSP root_path is a fallback for older clients")]
-    if roots.is_empty() {
-        if let Some(root_path) = &params.root_path {
-            roots.push(normalize_workspace_root(PathBuf::from(root_path)));
-        }
-    }
-    roots.sort();
-    roots.dedup();
-    roots
-}
-
 fn normalize_workspace_root(path: PathBuf) -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
-}
-
-fn decode_server_capabilities(caps_json: Value) -> std::result::Result<ServerCapabilities, String> {
-    serde_json::from_value(caps_json).map_err(|error| error.to_string())
-}
-
-fn build_initialize_result(capabilities: &ServerCapabilities) -> Result<InitializeResult> {
-    use tower_lsp::jsonrpc::{Error, ErrorCode};
-
-    // lsp-types 0.94.1 doesn't have typeHierarchyProvider in ServerCapabilities,
-    // but the LSP 3.17 protocol requires it for clients to discover the feature.
-    // Inject it via JSON serialization.
-    let mut caps_json = serde_json::to_value(capabilities).map_err(|error| Error {
-        code: ErrorCode::InternalError,
-        message: format!("failed to encode LSP server capabilities: {error}").into(),
-        data: None,
-    })?;
-    if let serde_json::Value::Object(ref mut map) = caps_json {
-        map.insert("typeHierarchyProvider".to_string(), serde_json::json!(true));
-    }
-    build_initialize_result_from_caps_json(caps_json)
-}
-
-fn build_initialize_result_from_caps_json(caps_json: Value) -> Result<InitializeResult> {
-    use tower_lsp::jsonrpc::{Error, ErrorCode};
-
-    let capabilities = decode_server_capabilities(caps_json).map_err(|error| Error {
-        code: ErrorCode::InternalError,
-        message: format!("failed to decode LSP server capabilities: {error}").into(),
-        data: None,
-    })?;
-
-    Ok(InitializeResult {
-        capabilities,
-        ..Default::default()
-    })
 }
 
 fn internal_error(message: impl Into<String>) -> tower_lsp::jsonrpc::Error {
@@ -338,19 +286,6 @@ async fn wait_for_output_task(
     Ok(())
 }
 
-fn extract_run_test_name(arguments: &[Value]) -> Option<String> {
-    let first = arguments.first()?;
-    match first {
-        Value::String(name) if !name.is_empty() => Some(name.clone()),
-        Value::Object(map) => map
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-            .map(str::to_string),
-        _ => None,
-    }
-}
-
 fn hew_cli_executable() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_hew") {
         return PathBuf::from(path);
@@ -378,193 +313,6 @@ fn build_run_test_invocation(test_name: &str, workspace_root: &Path) -> (PathBuf
             workspace_root.display().to_string(),
         ],
     )
-}
-
-fn remove_unused_imports_kind() -> CodeActionKind {
-    CodeActionKind::from(REMOVE_UNUSED_IMPORTS_KIND)
-}
-
-fn code_action_kind_matches_filter(
-    kind: &CodeActionKind,
-    requested_kinds: Option<&[CodeActionKind]>,
-) -> bool {
-    let Some(requested_kinds) = requested_kinds else {
-        return true;
-    };
-    requested_kinds.iter().any(|requested| {
-        kind.as_str() == requested.as_str()
-            || (kind.as_str().starts_with(requested.as_str())
-                && kind.as_str().as_bytes().get(requested.as_str().len()) == Some(&b'.'))
-    })
-}
-
-fn lsp_inlay_hint_from_analysis(
-    source: &str,
-    line_offsets: &[usize],
-    hint: hew_analysis::InlayHint,
-) -> InlayHint {
-    let (line, col) = offset_to_line_col(source, line_offsets, hint.offset);
-    let tooltip = hint.label.clone();
-    InlayHint {
-        position: Position::new(
-            u32::try_from(line).expect("line offsets fit in u32"),
-            u32::try_from(col).expect("column offsets fit in u32"),
-        ),
-        label: InlayHintLabel::String(hint.label),
-        kind: Some(match hint.kind {
-            hew_analysis::InlayHintKind::Type => InlayHintKind::TYPE,
-            hew_analysis::InlayHintKind::Parameter => InlayHintKind::PARAMETER,
-        }),
-        text_edits: None,
-        tooltip: Some(InlayHintTooltip::String(tooltip)),
-        padding_left: if hint.padding_left { Some(true) } else { None },
-        padding_right: None,
-        data: None,
-    }
-}
-
-fn lsp_signature_help_from_analysis(result: hew_analysis::SignatureHelpResult) -> SignatureHelp {
-    let active_parameter = result.active_parameter;
-    let active_signature = result.active_signature;
-    let signatures = result
-        .signatures
-        .into_iter()
-        .map(|sig| {
-            let params = sig
-                .parameters
-                .into_iter()
-                .map(|p| ParameterInformation {
-                    label: ParameterLabel::LabelOffsets([p.label_start, p.label_end]),
-                    documentation: None,
-                })
-                .collect();
-            SignatureInformation {
-                label: sig.label,
-                documentation: None,
-                parameters: Some(params),
-                active_parameter,
-            }
-        })
-        .collect();
-    SignatureHelp {
-        signatures,
-        active_signature,
-        active_parameter,
-    }
-}
-
-fn lsp_code_actions_for_diagnostic(
-    uri: &Url,
-    doc: &DocumentState,
-    diag: &Diagnostic,
-    requested_kinds: Option<&[CodeActionKind]>,
-) -> Vec<CodeActionOrCommand> {
-    let kind = diag
-        .data
-        .as_ref()
-        .and_then(|d| d.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        .map(String::from);
-    let suggestions = diag
-        .data
-        .as_ref()
-        .and_then(|d| d.get("suggestions"))
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_default();
-    let start = position_to_offset(&doc.source, &doc.line_offsets, diag.range.start);
-    let end = position_to_offset(&doc.source, &doc.line_offsets, diag.range.end);
-    let info = hew_analysis::code_actions::DiagnosticInfo {
-        kind: kind.clone(),
-        message: diag.message.clone(),
-        span: hew_analysis::OffsetSpan { start, end },
-        suggestions,
-    };
-    let actions = hew_analysis::code_actions::build_code_actions(&doc.source, &[info]);
-    let mut lsp_actions = Vec::new();
-
-    for action in actions {
-        let text_edits: Vec<TextEdit> = action
-            .edits
-            .iter()
-            .map(|e| TextEdit {
-                range: offset_range_to_lsp(
-                    &doc.source,
-                    &doc.line_offsets,
-                    e.span.start,
-                    e.span.end,
-                ),
-                new_text: e.new_text.clone(),
-            })
-            .collect();
-        let mut changes = HashMap::new();
-        changes.insert(uri.clone(), text_edits);
-        let edit = WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        };
-
-        if code_action_kind_matches_filter(&CodeActionKind::QUICKFIX, requested_kinds) {
-            lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: action.title.clone(),
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(vec![diag.clone()]),
-                edit: Some(edit.clone()),
-                ..Default::default()
-            }));
-        }
-
-        if kind.as_deref() == Some("UnusedImport")
-            && action.title == "Remove unused import"
-            && code_action_kind_matches_filter(&remove_unused_imports_kind(), requested_kinds)
-        {
-            lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: action.title,
-                kind: Some(remove_unused_imports_kind()),
-                diagnostics: Some(vec![diag.clone()]),
-                edit: Some(edit),
-                ..Default::default()
-            }));
-        }
-    }
-
-    lsp_actions
-}
-
-/// Translate a [`hew_analysis::RenameError`] into a user-facing LSP
-/// JSON-RPC error. The JSON-RPC error message is what editors render
-/// in the rename-refusal popup (VS Code, Helix, Neovim), so the
-/// message must be concise and actionable.
-fn rename_error_to_jsonrpc(err: &hew_analysis::RenameError) -> tower_lsp::jsonrpc::Error {
-    use tower_lsp::jsonrpc::{Error, ErrorCode};
-    let message: String = match err {
-        hew_analysis::RenameError::InvalidIdentifier { message, .. }
-        | hew_analysis::RenameError::Builtin { message, .. } => message.clone(),
-        hew_analysis::RenameError::Conflicts { conflicts } => {
-            // Show the first conflict verbatim plus a count when there
-            // are more; editors typically truncate long rename error
-            // popups anyway.
-            let first = conflicts
-                .first()
-                .map_or_else(|| "rename conflict".to_string(), |c| c.message.clone());
-            if conflicts.len() > 1 {
-                format!("{first} (+{} more)", conflicts.len() - 1)
-            } else {
-                first
-            }
-        }
-        hew_analysis::RenameError::Io { path, message } => {
-            format!("rename failed: {path}: {message}")
-        }
-        _ => "rename failed".to_string(),
-    };
-    // LSP 3.17 §3.16.3: semantic refusals of well-formed requests use
-    // RequestFailed (-32803); InvalidParams (-32602) is reserved for
-    // malformed JSON-RPC parameter objects.
-    Error {
-        code: ErrorCode::ServerError(-32803),
-        message: message.into(),
-        data: None,
-    }
 }
 
 // ── Server ───────────────────────────────────────────────────────────
@@ -688,541 +436,149 @@ impl HewLanguageServer {
 #[tower_lsp::async_trait]
 impl LanguageServer for HewLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        if let Ok(mut roots) = self.workspace_roots.write() {
-            *roots = extract_workspace_roots(&params);
-        }
-        let capabilities = build_server_capabilities();
-        build_initialize_result(&capabilities)
+        handlers::text_sync::initialize(self, &params)
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        self.client
-            .log_message(MessageType::INFO, "Hew language server initialized")
-            .await;
+        handlers::text_sync::initialized(self).await;
     }
 
     async fn shutdown(&self) -> Result<()> {
+        handlers::text_sync::shutdown(self);
         Ok(())
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let uri = params.text_document.uri;
-        let source = params.text_document.text;
-        self.reanalyze(&uri, &source).await;
+        handlers::text_sync::did_open(self, params).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri;
-        if let Some(change) = params.content_changes.into_iter().last() {
-            self.reanalyze(&uri, &change.text).await;
-        }
+        handlers::text_sync::did_change(self, params).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        for (updated_uri, diagnostics) in
-            close_document_and_dependents(&params.text_document.uri, &self.documents)
-        {
-            self.client
-                .publish_diagnostics(updated_uri, diagnostics, None)
-                .await;
-        }
+        handlers::text_sync::did_close(self, params).await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let uri = &params.text_document_position.text_document.uri;
-        let position = params.text_document_position.position;
-        let items = match self.documents.get(uri) {
-            Some(doc) => {
-                let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-                let analysis_items = hew_analysis::completions::complete(
-                    &doc.source,
-                    &doc.parse_result,
-                    doc.type_output.as_ref(),
-                    offset,
-                );
-                analysis_items.into_iter().map(to_lsp_completion).collect()
-            }
-            None => vec![],
-        };
-        Ok(Some(CompletionResponse::Array(items)))
+        Ok(Some(handlers::language_features::completion(self, &params)))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-
-        let result = hew_analysis::hover::hover(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            offset,
-        );
-
-        Ok(result.map(|hr| {
-            let range = hr
-                .span
-                .map(|s| offset_range_to_lsp(&doc.source, &doc.line_offsets, s.start, s.end));
-            Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: hr.contents,
-                }),
-                range,
-            }
-        }))
+        Ok(handlers::language_features::hover(self, &params))
     }
 
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let Some(word) = word_at_offset(&doc.source, offset) else {
-            return Ok(None);
-        };
-
-        // Route the intra-file resolution through the shared resolver. The
-        // LSP layer retains the qualified-name and cross-file fallbacks
-        // until those paths migrate into the database in later stages.
-        if let Some(resolution) = hew_analysis::resolver::resolve_symbol_at_raw(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            uri.as_str(),
-            offset,
-        ) {
-            if let Some((_res_uri, span)) = resolution.def_location() {
-                let range =
-                    offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
-                return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: uri.clone(),
-                    range,
-                })));
-            }
-            // ModuleQualified and Unknown fall through to the qualified /
-            // cross-file fallbacks below.
-        }
-
-        // For qualified names like `c.increment` or `Counter::increment`,
-        // try the method part alone.
-        for separator in [".", "::"] {
-            if let Some(method) = word.rsplit(separator).next() {
-                if method != word {
-                    if let Some(range) = find_definition_in_ast(
-                        &doc.source,
-                        &doc.line_offsets,
-                        &doc.parse_result,
-                        method,
-                    ) {
-                        return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                            uri: uri.clone(),
-                            range,
-                        })));
-                    }
-                }
-            }
-        }
-
-        // Collect the current file's imports as owned data before releasing the
-        // DashMap borrow so the cross-file search can acquire other entries.
-        let imports: Vec<hew_parser::ast::ImportDecl> = collect_import_items(&doc.parse_result)
-            .into_iter()
-            .map(|(import, _)| import)
-            .collect();
-        drop(doc);
-
-        // Cross-file: search files that the current file imports.
-        if let Some((target_uri, range)) =
-            find_cross_file_definition(uri, &imports, &word, &self.documents)
-        {
-            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                uri: target_uri,
-                range,
-            })));
-        }
-
-        // For qualified names (`Counter::new`), also try the type-name prefix
-        // cross-file as a best-effort fallback: navigate to `Counter` in its
-        // defining file even if the method itself cannot be resolved yet.
-        for separator in [".", "::"] {
-            if let Some((prefix, _)) = word.split_once(separator) {
-                if let Some((target_uri, range)) =
-                    find_cross_file_definition(uri, &imports, prefix, &self.documents)
-                {
-                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: target_uri,
-                        range,
-                    })));
-                }
-            }
-        }
-
-        Ok(None)
+        Ok(handlers::navigation::goto_definition(self, &params))
     }
 
     async fn document_symbol(
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let analysis_symbols =
-            hew_analysis::symbols::build_document_symbols(&doc.source, &doc.parse_result);
-        let symbols: Vec<DocumentSymbol> = analysis_symbols
-            .into_iter()
-            .map(|s| symbol_info_to_doc_symbol(&doc.source, &doc.line_offsets, s))
-            .collect();
-        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        Ok(handlers::language_features::document_symbol(self, &params))
     }
 
     async fn semantic_tokens_full(
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(&doc.source);
-        let tokens = analysis_tokens_to_lsp(&doc.source, &doc.line_offsets, &analysis_tokens)
-            .map_err(|error| internal_error(error.message()))?;
-        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-            result_id: None,
-            data: tokens,
-        })))
+        handlers::language_features::semantic_tokens_full(self, &params)
     }
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let links = build_document_links(uri, &doc.source, &doc.line_offsets, &doc.parse_result);
-        Ok(non_empty(links))
+        Ok(handlers::language_features::document_link(self, &params))
     }
 
     async fn prepare_type_hierarchy(
         &self,
         params: TypeHierarchyPrepareParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let Some(word) = word_at_offset(&doc.source, offset) else {
-            return Ok(None);
-        };
-
-        let item = find_type_hierarchy_item(
-            uri,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-            &word,
-        );
-        Ok(item.map(|i| vec![i]))
+        Ok(handlers::hierarchy::prepare_type_hierarchy(self, &params))
     }
 
     async fn supertypes(
         &self,
         params: TypeHierarchySupertypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let item = &params.item;
-        let Some(doc) = self.documents.get(&item.uri) else {
-            return Ok(None);
-        };
-
-        let supers = collect_supertypes(
-            &item.uri,
-            &item.name,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-        );
-        Ok(non_empty(supers))
+        Ok(handlers::hierarchy::supertypes(self, &params))
     }
 
     async fn subtypes(
         &self,
         params: TypeHierarchySubtypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let item = &params.item;
-        let Some(doc) = self.documents.get(&item.uri) else {
-            return Ok(None);
-        };
-
-        let subs = collect_subtypes(
-            &item.uri,
-            &item.name,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-        );
-        Ok(non_empty(subs))
+        Ok(handlers::hierarchy::subtypes(self, &params))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-        let uri = &params.text_document_position.text_document.uri;
-        let position = params.text_document_position.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let include_declaration = params.context.include_declaration;
-        let locations =
-            build_reference_locations(uri, &doc, offset, include_declaration, &self.documents);
-        Ok(non_empty(locations))
+        Ok(handlers::navigation::references(self, &params))
     }
 
     async fn prepare_rename(
         &self,
         params: tower_lsp::lsp_types::TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
-        let uri = &params.text_document.uri;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, params.position);
-        Ok(build_prepare_rename_response(
-            uri,
-            &doc,
-            offset,
-            &self.documents,
-        ))
+        Ok(handlers::navigation::prepare_rename(self, &params))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-        let uri = &params.text_document_position.text_document.uri;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(
-            &doc.source,
-            &doc.line_offsets,
-            params.text_document_position.position,
-        );
-        match plan_workspace_rename(uri, &doc, offset, &params.new_name, &self.documents) {
-            Ok(edit) => Ok(edit),
-            Err(err) => Err(rename_error_to_jsonrpc(&err)),
-        }
+        handlers::navigation::rename(self, &params)
     }
 
     async fn prepare_call_hierarchy(
         &self,
         params: CallHierarchyPrepareParams,
     ) -> Result<Option<Vec<CallHierarchyItem>>> {
-        let uri = params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-        let Some(doc) = self.documents.get(&uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, pos);
-        let word = word_at_offset(&doc.source, offset);
-        let Some(word) = word else {
-            return Ok(None);
-        };
-
-        let item = find_callable_at(
-            &uri,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-            &word,
-        );
-        Ok(item.map(|it| vec![it]))
+        Ok(handlers::hierarchy::prepare_call_hierarchy(self, &params))
     }
 
     async fn incoming_calls(
         &self,
         params: CallHierarchyIncomingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
-        let item = &params.item;
-        let Some(doc) = self.documents.get(&item.uri) else {
-            return Ok(None);
-        };
-
-        let calls = find_incoming_calls(
-            &item.uri,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-            &item.name,
-        );
-        Ok(non_empty(calls))
+        Ok(handlers::hierarchy::incoming_calls(self, &params))
     }
 
     async fn outgoing_calls(
         &self,
         params: CallHierarchyOutgoingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
-        let item = &params.item;
-        let Some(doc) = self.documents.get(&item.uri) else {
-            return Ok(None);
-        };
-
-        let calls = find_outgoing_calls(
-            &item.uri,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-            &item.name,
-        );
-        Ok(non_empty(calls))
+        Ok(handlers::hierarchy::outgoing_calls(self, &params))
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
-        let uri = params.text_document.uri;
-        let Some(doc) = self.documents.get(&uri) else {
-            return Ok(None);
-        };
-
-        let lenses = build_code_lenses(&doc.source, &doc.line_offsets, &doc.parse_result);
-        Ok(non_empty(lenses))
+        Ok(handlers::workspace::code_lens(self, &params))
     }
 
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
-        let roots = self
-            .workspace_roots
-            .read()
-            .map_or_else(|_| Vec::new(), |roots| roots.clone());
-        let symbols = collect_project_workspace_symbols(&self.documents, &roots, &params.query);
-        Ok(non_empty(symbols))
+        Ok(handlers::workspace::symbol(self, &params))
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-        let Some(tc) = &doc.type_output else {
-            return Ok(None);
-        };
-        let analysis_hints =
-            hew_analysis::inlay_hints::build_inlay_hints(&doc.source, &doc.parse_result, tc);
-        let lsp_hints: Vec<InlayHint> = analysis_hints
-            .into_iter()
-            .map(|hint| lsp_inlay_hint_from_analysis(&doc.source, &doc.line_offsets, hint))
-            .collect();
-        Ok(non_empty(lsp_hints))
+        Ok(handlers::language_features::inlay_hint(self, &params))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-        let Some(tc) = &doc.type_output else {
-            return Ok(None);
-        };
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let Some(result) =
-            hew_analysis::signature_help::build_signature_help(&doc.source, tc, offset)
-        else {
-            return Ok(None);
-        };
-        Ok(Some(lsp_signature_help_from_analysis(result)))
+        Ok(handlers::language_features::signature_help(self, &params))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let mut lsp_actions = Vec::new();
-        for diag in &params.context.diagnostics {
-            lsp_actions.extend(lsp_code_actions_for_diagnostic(
-                uri,
-                &doc,
-                diag,
-                params.context.only.as_deref(),
-            ));
-        }
-        Ok(non_empty(lsp_actions))
+        Ok(handlers::language_features::code_action(self, &params))
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
-        match params.command.as_str() {
-            RUN_TEST_COMMAND => {
-                let Some(test_name) = extract_run_test_name(&params.arguments) else {
-                    self.client
-                        .show_message(
-                            MessageType::ERROR,
-                            "Cannot run Hew test: missing test name argument.",
-                        )
-                        .await;
-                    return Ok(None);
-                };
-                self.run_test_command(&test_name).await
-            }
-            other => {
-                self.client
-                    .log_message(
-                        MessageType::WARNING,
-                        format!("Unsupported command `{other}`"),
-                    )
-                    .await;
-                Ok(None)
-            }
-        }
+        handlers::workspace::execute_command(self, params).await
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let analysis_ranges =
-            hew_analysis::folding::build_folding_ranges(&doc.source, &doc.parse_result);
-        let lsp_ranges: Vec<FoldingRange> = analysis_ranges
-            .into_iter()
-            .map(|r| FoldingRange {
-                start_line: r.start_line,
-                start_character: None,
-                end_line: r.end_line,
-                end_character: None,
-                kind: Some(match r.kind {
-                    hew_analysis::FoldingKind::Region => FoldingRangeKind::Region,
-                    hew_analysis::FoldingKind::Imports => FoldingRangeKind::Imports,
-                    hew_analysis::FoldingKind::Comment => FoldingRangeKind::Comment,
-                }),
-                collapsed_text: None,
-            })
-            .collect();
-        Ok(non_empty(lsp_ranges))
+        Ok(handlers::language_features::folding_range(self, &params))
     }
 }
 

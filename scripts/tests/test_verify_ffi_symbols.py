@@ -1,10 +1,20 @@
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "verify-ffi-symbols.py"
+IO_RUNTIME_FFI_FILES = (
+    "connection.rs",
+    "stream.rs",
+    "file_io.rs",
+    "process.rs",
+    "quic_transport.rs",
+    "io_time.rs",
+    "transport.rs",
+)
 
 spec = importlib.util.spec_from_file_location("verify_ffi_symbols", SCRIPT)
 verify_ffi_symbols = importlib.util.module_from_spec(spec)
@@ -64,11 +74,32 @@ def test_validate_reports_missing_symbol_with_classification_file_path() -> None
     ]
 
 
+def test_io_runtime_exports_are_jit_stable() -> None:
+    classification = verify_ffi_symbols.load_jit_symbol_classification()
+    pattern = re.compile(
+        r"#\[no_mangle\]"
+        r"(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*"
+        r'\s*(?:pub\s+)?(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
+        r"(hew_\w+)",
+        re.DOTALL,
+    )
+    io_exports: set[str] = set()
+    for file_name in IO_RUNTIME_FFI_FILES:
+        source = (ROOT / "hew-runtime" / "src" / file_name).read_text()
+        io_exports.update(pattern.findall(source))
+
+    assert io_exports
+    assert not (io_exports & classification["internal"])
+    assert io_exports <= classification["stable"]
+    assert "hew_shutdown_initiate" in classification["internal"]
+
+
 _TESTS = [
     test_classify_stable_outputs_sorted_names_only,
     test_classify_internal_outputs_sorted_names_only,
     test_validate_covers_every_runtime_export_exactly_once,
     test_validate_reports_missing_symbol_with_classification_file_path,
+    test_io_runtime_exports_are_jit_stable,
 ]
 
 if __name__ == "__main__":

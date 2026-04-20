@@ -2,10 +2,13 @@
 
 mod analysis;
 mod convert;
+mod handlers;
 mod hierarchy;
 mod navigation;
 mod workspace;
 
+#[cfg(test)]
+use self::handlers::text_sync::build_initialize_result_from_caps_json;
 // Items used by the LanguageServer impl handlers.
 use self::analysis::{close_document_and_dependents, refresh_document_and_dependents};
 use self::convert::{analysis_tokens_to_lsp, symbol_info_to_doc_symbol, to_lsp_completion};
@@ -229,71 +232,8 @@ fn build_server_capabilities() -> ServerCapabilities {
     }
 }
 
-fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
-    let mut roots = Vec::with_capacity(params.workspace_folders.as_ref().map_or(1, Vec::len));
-    if let Some(folders) = &params.workspace_folders {
-        for folder in folders {
-            if let Ok(path) = folder.uri.to_file_path() {
-                roots.push(normalize_workspace_root(path));
-            }
-        }
-    }
-    if roots.is_empty() {
-        if let Some(root_uri) = &params.root_uri {
-            if let Ok(path) = root_uri.to_file_path() {
-                roots.push(normalize_workspace_root(path));
-            }
-        }
-    }
-    #[expect(deprecated, reason = "LSP root_path is a fallback for older clients")]
-    if roots.is_empty() {
-        if let Some(root_path) = &params.root_path {
-            roots.push(normalize_workspace_root(PathBuf::from(root_path)));
-        }
-    }
-    roots.sort();
-    roots.dedup();
-    roots
-}
-
 fn normalize_workspace_root(path: PathBuf) -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
-}
-
-fn decode_server_capabilities(caps_json: Value) -> std::result::Result<ServerCapabilities, String> {
-    serde_json::from_value(caps_json).map_err(|error| error.to_string())
-}
-
-fn build_initialize_result(capabilities: &ServerCapabilities) -> Result<InitializeResult> {
-    use tower_lsp::jsonrpc::{Error, ErrorCode};
-
-    // lsp-types 0.94.1 doesn't have typeHierarchyProvider in ServerCapabilities,
-    // but the LSP 3.17 protocol requires it for clients to discover the feature.
-    // Inject it via JSON serialization.
-    let mut caps_json = serde_json::to_value(capabilities).map_err(|error| Error {
-        code: ErrorCode::InternalError,
-        message: format!("failed to encode LSP server capabilities: {error}").into(),
-        data: None,
-    })?;
-    if let serde_json::Value::Object(ref mut map) = caps_json {
-        map.insert("typeHierarchyProvider".to_string(), serde_json::json!(true));
-    }
-    build_initialize_result_from_caps_json(caps_json)
-}
-
-fn build_initialize_result_from_caps_json(caps_json: Value) -> Result<InitializeResult> {
-    use tower_lsp::jsonrpc::{Error, ErrorCode};
-
-    let capabilities = decode_server_capabilities(caps_json).map_err(|error| Error {
-        code: ErrorCode::InternalError,
-        message: format!("failed to decode LSP server capabilities: {error}").into(),
-        data: None,
-    })?;
-
-    Ok(InitializeResult {
-        capabilities,
-        ..Default::default()
-    })
 }
 
 fn internal_error(message: impl Into<String>) -> tower_lsp::jsonrpc::Error {
@@ -688,44 +628,28 @@ impl HewLanguageServer {
 #[tower_lsp::async_trait]
 impl LanguageServer for HewLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        if let Ok(mut roots) = self.workspace_roots.write() {
-            *roots = extract_workspace_roots(&params);
-        }
-        let capabilities = build_server_capabilities();
-        build_initialize_result(&capabilities)
+        handlers::text_sync::initialize(self, &params)
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        self.client
-            .log_message(MessageType::INFO, "Hew language server initialized")
-            .await;
+        handlers::text_sync::initialized(self).await;
     }
 
     async fn shutdown(&self) -> Result<()> {
+        handlers::text_sync::shutdown(self);
         Ok(())
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let uri = params.text_document.uri;
-        let source = params.text_document.text;
-        self.reanalyze(&uri, &source).await;
+        handlers::text_sync::did_open(self, params).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri;
-        if let Some(change) = params.content_changes.into_iter().last() {
-            self.reanalyze(&uri, &change.text).await;
-        }
+        handlers::text_sync::did_change(self, params).await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        for (updated_uri, diagnostics) in
-            close_document_and_dependents(&params.text_document.uri, &self.documents)
-        {
-            self.client
-                .publish_diagnostics(updated_uri, diagnostics, None)
-                .await;
-        }
+        handlers::text_sync::did_close(self, params).await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {

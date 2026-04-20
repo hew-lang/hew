@@ -12,165 +12,236 @@
 //! - **Editing** — completions, signature help, code actions.
 //! - **Presentation** — semantic tokens, document symbols, inlay hints, folding ranges.
 
-use serde::Serialize;
-use wasm_bindgen::prelude::*;
+use std::fmt;
 
-#[derive(Serialize)]
-struct RefsResult {
-    name: String,
-    spans: Vec<hew_analysis::OffsetSpan>,
-}
+use serde::{de::DeserializeOwned, Serialize};
+use wasm_bindgen::prelude::*;
 
 // ── Diagnostics API ──────────────────────────────────────────────────────
 
 /// Analyze Hew source code and return diagnostics, tokens, and symbols as JSON.
 ///
 /// This is analysis-only and does not execute the program.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the analysis result cannot be serialized.
 #[wasm_bindgen]
-pub fn analyze(source: &str) -> String {
-    let result = run_analysis(source);
-    serde_json::to_string(&result).unwrap_or_default()
+pub fn analyze(source: &str) -> Result<String, JsValue> {
+    export_json("analyze", || Ok(run_analysis(source)))
 }
 
 /// Get the list of Hew keywords for editor completion.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the keyword list cannot be serialized.
 #[wasm_bindgen]
-pub fn get_keywords() -> String {
-    serde_json::to_string(&hew_lexer::ALL_KEYWORDS).unwrap_or_default()
+pub fn get_keywords() -> Result<String, JsValue> {
+    export_json("get_keywords", || Ok(hew_lexer::ALL_KEYWORDS))
 }
 
 /// Get hover information for a position in the source.
 ///
-/// Returns JSON `{ contents, span? }` or `null` if nothing to display.
-#[must_use]
+/// Returns JSON `{ contents, span? }` or an empty string if nothing to display.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the hover payload cannot be serialized.
 #[wasm_bindgen]
-pub fn hover(source: &str, offset: usize) -> String {
-    let analysis = parse_and_type_check(source);
-    let hover = hew_analysis::hover::hover(
-        source,
-        &analysis.parse_result,
-        analysis.type_output.as_ref(),
-        offset,
-    );
-    encode_optional_json(hover.as_ref())
+pub fn hover(source: &str, offset: usize) -> Result<String, JsValue> {
+    export_optional_json("hover", || {
+        let analysis = parse_and_type_check(source);
+        Ok(hew_analysis::hover::hover(
+            source,
+            &analysis.parse_result,
+            analysis.type_output.as_ref(),
+            offset,
+        ))
+    })
 }
 
 // ── Completions ──────────────────────────────────────────────────────────
 
 /// Get completions at byte offset. Returns JSON array of `CompletionItem`.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the completion list cannot be serialized.
 #[wasm_bindgen]
-pub fn complete(source: &str, offset: usize) -> String {
-    let analysis = parse_and_type_check(source);
-    let items = hew_analysis::completions::complete(
-        source,
-        &analysis.parse_result,
-        analysis.type_output.as_ref(),
-        offset,
-    );
-    serde_json::to_string(&items).unwrap_or_default()
+pub fn complete(source: &str, offset: usize) -> Result<String, JsValue> {
+    export_json("complete", || {
+        let analysis = parse_and_type_check(source);
+        Ok(hew_analysis::completions::complete(
+            source,
+            &analysis.parse_result,
+            analysis.type_output.as_ref(),
+            offset,
+        ))
+    })
 }
 
 // ── Navigation ───────────────────────────────────────────────────────────
 
-/// Go to definition. Returns JSON `{ start, end }` or `null`.
-#[must_use]
+/// Go to definition. Returns JSON `{ start, end }` or empty string.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the definition span cannot be serialized.
 #[wasm_bindgen]
-pub fn goto_definition(source: &str, offset: usize) -> String {
-    let parse_result = hew_parser::parse(source);
-    let Some(word) = hew_analysis::util::word_at_offset(source, offset) else {
-        return encode_optional_json::<hew_analysis::OffsetSpan>(None);
-    };
-    let definition = hew_analysis::definition::find_definition(source, &parse_result, &word);
-    encode_optional_json(definition.as_ref())
+pub fn goto_definition(source: &str, offset: usize) -> Result<String, JsValue> {
+    export_optional_json("goto_definition", || {
+        let parse_result = hew_parser::parse(source);
+        let Some(word) = hew_analysis::util::word_at_offset(source, offset) else {
+            return Ok(None);
+        };
+        Ok(hew_analysis::definition::find_definition(
+            source,
+            &parse_result,
+            &word,
+        ))
+    })
 }
 
-/// Find all references at offset. Returns JSON `{ name, spans }` or `null`.
-#[must_use]
+/// Find all references at offset. Returns JSON `{ name, spans }` or empty string.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the references result cannot be serialized.
 #[wasm_bindgen]
-pub fn find_references(source: &str, offset: usize) -> String {
-    let parse_result = hew_parser::parse(source);
-    encode_optional_json(
-        hew_analysis::references::find_all_references(source, &parse_result, offset)
-            .map(|(name, spans)| RefsResult { name, spans })
-            .as_ref(),
-    )
+pub fn find_references(source: &str, offset: usize) -> Result<String, JsValue> {
+    export_optional_json("find_references", || {
+        let parse_result = hew_parser::parse(source);
+        Ok(
+            hew_analysis::references::find_all_references(source, &parse_result, offset)
+                .map(|(name, spans)| RefsResult { name, spans }),
+        )
+    })
 }
 
 // ── Rename ───────────────────────────────────────────────────────────────
 
-/// Prepare rename at offset. Returns JSON `{ start, end }` or `null`.
-#[must_use]
+/// Prepare rename at offset. Returns JSON `{ start, end }` or empty string.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the rename span cannot be serialized.
 #[wasm_bindgen]
-pub fn prepare_rename(source: &str, offset: usize) -> String {
-    let parse_result = hew_parser::parse(source);
-    let rename_span = hew_analysis::rename::prepare_rename(source, &parse_result, offset);
-    encode_optional_json(rename_span.as_ref())
+pub fn prepare_rename(source: &str, offset: usize) -> Result<String, JsValue> {
+    export_optional_json("prepare_rename", || {
+        let parse_result = hew_parser::parse(source);
+        Ok(hew_analysis::rename::prepare_rename(
+            source,
+            &parse_result,
+            offset,
+        ))
+    })
 }
 
-/// Compute rename edits. Returns JSON array of `{ span, new_text }` or `null`.
-#[must_use]
+/// Compute rename edits. Returns JSON array of `{ span, new_text }` or empty string.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the rename edits cannot be serialized.
 #[wasm_bindgen]
-pub fn rename(source: &str, offset: usize, new_name: &str) -> String {
-    let parse_result = hew_parser::parse(source);
-    let edits = hew_analysis::rename::rename(source, &parse_result, offset, new_name);
-    encode_optional_json(edits.as_ref())
+pub fn rename(source: &str, offset: usize, new_name: &str) -> Result<String, JsValue> {
+    export_optional_json("rename", || {
+        let parse_result = hew_parser::parse(source);
+        Ok(hew_analysis::rename::rename(
+            source,
+            &parse_result,
+            offset,
+            new_name,
+        ))
+    })
 }
 
 // ── Document structure ───────────────────────────────────────────────────
 
 /// Get document symbols. Returns JSON array of `SymbolInfo`.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the symbol list cannot be serialized.
 #[wasm_bindgen]
-pub fn document_symbols(source: &str) -> String {
-    let parse_result = hew_parser::parse(source);
-    let symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
-    serde_json::to_string(&symbols).unwrap_or_default()
+pub fn document_symbols(source: &str) -> Result<String, JsValue> {
+    export_json("document_symbols", || {
+        let parse_result = hew_parser::parse(source);
+        Ok(hew_analysis::symbols::build_document_symbols(
+            source,
+            &parse_result,
+        ))
+    })
 }
 
 /// Get semantic tokens. Returns JSON array of `{ start, length, token_type, modifiers }`.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the semantic token list cannot be serialized.
 #[wasm_bindgen]
-pub fn semantic_tokens(source: &str) -> String {
-    let tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
-    serde_json::to_string(&tokens).unwrap_or_default()
+pub fn semantic_tokens(source: &str) -> Result<String, JsValue> {
+    export_json("semantic_tokens", || {
+        Ok(hew_analysis::semantic_tokens::build_semantic_tokens(source))
+    })
 }
 
 /// Get folding ranges. Returns JSON array of `{ start_line, end_line, kind }`.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the folding ranges cannot be serialized.
 #[wasm_bindgen]
-pub fn folding_ranges(source: &str) -> String {
-    let parse_result = hew_parser::parse(source);
-    let ranges = hew_analysis::folding::build_folding_ranges(source, &parse_result);
-    serde_json::to_string(&ranges).unwrap_or_default()
+pub fn folding_ranges(source: &str) -> Result<String, JsValue> {
+    export_json("folding_ranges", || {
+        let parse_result = hew_parser::parse(source);
+        Ok(hew_analysis::folding::build_folding_ranges(
+            source,
+            &parse_result,
+        ))
+    })
 }
 
 // ── Type information ─────────────────────────────────────────────────────
 
-/// Get signature help at offset. Returns JSON `SignatureHelpResult` or `null`.
-#[must_use]
+/// Get signature help at offset. Returns JSON `SignatureHelpResult` or empty string.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the signature-help payload cannot be serialized.
 #[wasm_bindgen]
-pub fn signature_help(source: &str, offset: usize) -> String {
-    let analysis = parse_and_type_check(source);
-    let Some(type_output) = analysis.type_output.as_ref() else {
-        return encode_optional_json::<hew_analysis::SignatureHelpResult>(None);
-    };
-    let help = hew_analysis::signature_help::build_signature_help(source, type_output, offset);
-    encode_optional_json(help.as_ref())
+pub fn signature_help(source: &str, offset: usize) -> Result<String, JsValue> {
+    export_optional_json("signature_help", || {
+        let analysis = parse_and_type_check(source);
+        let Some(type_output) = analysis.type_output.as_ref() else {
+            return Ok(None);
+        };
+        Ok(hew_analysis::signature_help::build_signature_help(
+            source,
+            type_output,
+            offset,
+        ))
+    })
 }
 
 /// Get inlay hints. Returns JSON array of `{ offset, label, kind, padding_left }`.
-#[must_use]
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the inlay hints cannot be serialized.
 #[wasm_bindgen]
-pub fn inlay_hints(source: &str) -> String {
-    let analysis = parse_and_type_check(source);
-    let Some(type_output) = analysis.type_output.as_ref() else {
-        return String::new();
-    };
-    let hints =
-        hew_analysis::inlay_hints::build_inlay_hints(source, &analysis.parse_result, type_output);
-    serde_json::to_string(&hints).unwrap_or_default()
+pub fn inlay_hints(source: &str) -> Result<String, JsValue> {
+    export_optional_json("inlay_hints", || {
+        let analysis = parse_and_type_check(source);
+        let Some(type_output) = analysis.type_output.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some(hew_analysis::inlay_hints::build_inlay_hints(
+            source,
+            &analysis.parse_result,
+            type_output,
+        )))
+    })
 }
 
 // ── Code actions ─────────────────────────────────────────────────────────
@@ -179,16 +250,100 @@ pub fn inlay_hints(source: &str) -> String {
 ///
 /// `diagnostics_json` should be a JSON array of `DiagnosticInfo` objects:
 /// `[{ "kind": "UndefinedVariable", "message": "...", "span": { "start": 0, "end": 5 }, "suggestions": [] }]`
-#[must_use]
+///
+/// # Errors
+///
+/// Returns a JavaScript error if `diagnostics_json` is invalid JSON or if the
+/// resulting code actions cannot be serialized.
 #[wasm_bindgen]
-pub fn code_actions(source: &str, diagnostics_json: &str) -> String {
-    let diags: Vec<hew_analysis::code_actions::DiagnosticInfo> =
-        serde_json::from_str(diagnostics_json).unwrap_or_default();
-    let actions = hew_analysis::code_actions::build_code_actions(source, &diags);
-    serde_json::to_string(&actions).unwrap_or_default()
+pub fn code_actions(source: &str, diagnostics_json: &str) -> Result<String, JsValue> {
+    export_json("code_actions", || {
+        let diags: Vec<hew_analysis::code_actions::DiagnosticInfo> =
+            deserialize_json("code_actions", "diagnostics_json", diagnostics_json)?;
+        Ok(hew_analysis::code_actions::build_code_actions(
+            source, &diags,
+        ))
+    })
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────
+
+#[derive(Debug)]
+enum WasmExportError {
+    Serialize {
+        api: &'static str,
+        source: serde_json::Error,
+    },
+    Deserialize {
+        api: &'static str,
+        input: &'static str,
+        source: serde_json::Error,
+    },
+}
+
+impl fmt::Display for WasmExportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Serialize { api, source } => {
+                write!(f, "{api}: failed to serialize response: {source}")
+            }
+            Self::Deserialize { api, input, source } => {
+                write!(f, "{api}: failed to parse {input}: {source}")
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct RefsResult {
+    name: String,
+    spans: Vec<hew_analysis::OffsetSpan>,
+}
+
+fn export(run: impl FnOnce() -> Result<String, WasmExportError>) -> Result<String, JsValue> {
+    run().map_err(|err| export_error_to_js_value(&err))
+}
+
+fn export_json<T: Serialize>(
+    api: &'static str,
+    run: impl FnOnce() -> Result<T, WasmExportError>,
+) -> Result<String, JsValue> {
+    export(|| serialize_json(api, run()?))
+}
+
+fn export_optional_json<T: Serialize>(
+    api: &'static str,
+    run: impl FnOnce() -> Result<Option<T>, WasmExportError>,
+) -> Result<String, JsValue> {
+    export(|| match run()? {
+        Some(value) => serialize_json(api, value),
+        None => Ok(String::new()),
+    })
+}
+
+fn serialize_json<T: Serialize>(api: &'static str, value: T) -> Result<String, WasmExportError> {
+    serde_json::to_string(&value).map_err(|source| WasmExportError::Serialize { api, source })
+}
+
+fn deserialize_json<T: DeserializeOwned>(
+    api: &'static str,
+    input: &'static str,
+    json: &str,
+) -> Result<T, WasmExportError> {
+    serde_json::from_str(json).map_err(|source| WasmExportError::Deserialize { api, input, source })
+}
+
+fn export_error_to_js_value(err: &WasmExportError) -> JsValue {
+    #[cfg(target_arch = "wasm32")]
+    {
+        JsValue::from_str(&err.to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = err;
+        JsValue::NULL
+    }
+}
 
 /// A secondary span attached to a diagnostic (e.g. "defined here").
 #[derive(Serialize)]
@@ -297,10 +452,6 @@ fn run_analysis(source: &str) -> AnalysisResult {
     }
 }
 
-fn encode_optional_json<T: Serialize>(value: Option<&T>) -> String {
-    serde_json::to_string(&value).unwrap_or_default()
-}
-
 #[cfg(test)]
 #[test]
 fn curated_playground_manifest_smoke() {
@@ -373,7 +524,7 @@ fn curated_playground_manifest_smoke() {
                 id
             )
         });
-        let analysis_json = analyze(&source);
+        let analysis_json = analyze(&source).expect("analyze should succeed");
         let analysis: serde_json::Value =
             serde_json::from_str(&analysis_json).unwrap_or_else(|err| {
                 panic!(
@@ -400,9 +551,13 @@ fn curated_playground_manifest_smoke() {
 mod tests {
     use super::*;
 
+    fn ok(result: Result<String, JsValue>) -> String {
+        result.expect("wasm export should succeed")
+    }
+
     #[test]
     fn analyze_valid_program() {
-        let result = analyze("fn main() { println(42); }");
+        let result = ok(analyze("fn main() { println(42); }"));
         assert!(!result.is_empty());
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(parsed["diagnostics"].as_array().unwrap().is_empty());
@@ -410,14 +565,14 @@ mod tests {
 
     #[test]
     fn analyze_parse_error() {
-        let result = analyze("fn {");
+        let result = ok(analyze("fn {"));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(!parsed["diagnostics"].as_array().unwrap().is_empty());
     }
 
     #[test]
     fn keywords_non_empty() {
-        let result = get_keywords();
+        let result = ok(get_keywords());
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(parsed.as_array().unwrap().len() > 10);
     }
@@ -425,36 +580,30 @@ mod tests {
     #[test]
     fn hover_returns_type() {
         let source = "fn main() { let x: i64 = 42; }";
-        let result = hover(source, 25); // offset within `42`
-                                        // hover may or may not return a type depending on checker output;
-                                        // just ensure it doesn't panic.
+        let result = ok(hover(source, 25)); // offset within `42`
+                                            // hover may or may not return a type depending on checker output;
+                                            // just ensure it doesn't panic.
         let _ = result;
-    }
-
-    #[test]
-    fn hover_no_result_encodes_json_null() {
-        let parsed: serde_json::Value = serde_json::from_str(&hover("fn {", 0)).unwrap();
-        assert!(parsed.is_null());
     }
 
     #[test]
     fn complete_returns_items() {
         let source = "fn main() { let x = 42; x }";
-        let result = complete(source, 25); // near 'x'
+        let result = ok(complete(source, 25)); // near 'x'
         assert!(!result.is_empty());
     }
 
     #[test]
     fn document_symbols_returns_symbols() {
         let source = "fn foo() {} fn bar() {}";
-        let result = document_symbols(source);
+        let result = ok(document_symbols(source));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed.as_array().unwrap().len(), 2);
     }
 
     #[test]
     fn semantic_tokens_returns_tokens() {
-        let result = semantic_tokens("let x = 42;");
+        let result = ok(semantic_tokens("let x = 42;"));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(!parsed.as_array().unwrap().is_empty());
     }
@@ -462,7 +611,7 @@ mod tests {
     #[test]
     fn folding_ranges_for_function() {
         let source = "fn foo() {\n  let x = 1;\n  let y = 2;\n}";
-        let result = folding_ranges(source);
+        let result = ok(folding_ranges(source));
         // The parser may or may not produce folding ranges for this simple
         // example depending on span recording, so just verify valid JSON.
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -472,29 +621,15 @@ mod tests {
     #[test]
     fn goto_definition_finds_function() {
         let source = "fn foo() {} fn main() { foo(); }";
-        let result = goto_definition(source, 25); // on 'o' in second foo
+        let result = ok(goto_definition(source, 25)); // on 'o' in second foo
         assert!(!result.is_empty());
-    }
-
-    #[test]
-    fn goto_definition_no_result_encodes_json_null() {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&goto_definition("fn main() {}", 0)).unwrap();
-        assert!(parsed.is_null());
     }
 
     #[test]
     fn find_references_works() {
         let source = "fn main() { let x = 1; let y = x; }";
-        let result = find_references(source, 17); // on 'x' definition
+        let result = ok(find_references(source, 17)); // on 'x' definition
         assert!(!result.is_empty());
-    }
-
-    #[test]
-    fn find_references_no_result_encodes_json_null() {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&find_references("fn main() {}", 0)).unwrap();
-        assert!(parsed.is_null());
     }
 
     #[test]
@@ -506,15 +641,57 @@ mod tests {
             "span": { "start": 8, "end": 12 },
             "suggestions": ["`food`"]
         }]"#;
-        let result = code_actions(source, diags_json);
+        let result = ok(code_actions(source, diags_json));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(!parsed.as_array().unwrap().is_empty());
     }
 
     #[test]
+    fn code_actions_reject_invalid_diagnostics_json() {
+        assert!(
+            code_actions("let x = foob;", "{").is_err(),
+            "invalid diagnostics_json should fail closed"
+        );
+    }
+
+    #[test]
+    fn deserialize_json_reports_api_name() {
+        let err = deserialize_json::<Vec<hew_analysis::code_actions::DiagnosticInfo>>(
+            "code_actions",
+            "diagnostics_json",
+            "{",
+        )
+        .expect_err("expected deserialization failure");
+        assert!(err
+            .to_string()
+            .contains("code_actions: failed to parse diagnostics_json"));
+    }
+
+    #[test]
+    fn serialize_json_reports_api_name() {
+        struct AlwaysFails;
+
+        impl Serialize for AlwaysFails {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom("boom"))
+            }
+        }
+
+        let err = serialize_json("serialize_json_reports_api_name", AlwaysFails)
+            .expect_err("expected serialization failure");
+        assert_eq!(
+            err.to_string(),
+            "serialize_json_reports_api_name: failed to serialize response: boom"
+        );
+    }
+
+    #[test]
     fn inlay_hints_no_panic() {
         let source = "fn main() { let x = 42; }";
-        let result = inlay_hints(source);
+        let result = ok(inlay_hints(source));
         // May or may not produce hints depending on type checker, but should not panic.
         let _: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
     }
@@ -522,38 +699,24 @@ mod tests {
     #[test]
     fn signature_help_no_panic() {
         let source = "fn add(a: i64, b: i64) -> i64 { a + b } fn main() { add(1, 2); }";
-        let result = signature_help(source, 58); // inside add(1, ...)
-                                                 // May or may not produce help, but should not panic.
+        let result = ok(signature_help(source, 58)); // inside add(1, ...)
+                                                     // May or may not produce help, but should not panic.
         let _ = result;
-    }
-
-    #[test]
-    fn signature_help_no_result_encodes_json_null() {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&signature_help("fn main() {}", 0)).unwrap();
-        assert!(parsed.is_null());
     }
 
     #[test]
     fn prepare_rename_no_panic() {
         let source = "fn foo() {} fn main() { foo(); }";
-        let result = prepare_rename(source, 3); // on 'foo' definition
-                                                // Should return a span or JSON null.
+        let result = ok(prepare_rename(source, 3)); // on 'foo' definition
+                                                    // Should return a span or empty string.
         let _ = result;
     }
 
     #[test]
     fn rename_no_panic() {
         let source = "fn foo() {} fn main() { foo(); }";
-        let result = rename(source, 3, "bar"); // rename 'foo' to 'bar'
+        let result = ok(rename(source, 3, "bar")); // rename 'foo' to 'bar'
         let _ = result;
-    }
-
-    #[test]
-    fn rename_no_result_encodes_json_null() {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&rename("fn main() {}", 0, "bar")).unwrap();
-        assert!(parsed.is_null());
     }
 
     // ── WasmDiagnostic notes/suggestions serialization contract ─────────────
@@ -564,7 +727,7 @@ mod tests {
     #[test]
     fn diagnostic_always_has_notes_and_suggestions_fields() {
         // Parse error path — the checker never runs.
-        let json = analyze("fn {");
+        let json = ok(analyze("fn {"));
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let diags = v["diagnostics"].as_array().unwrap();
         assert!(!diags.is_empty(), "expected at least one parse diagnostic");
@@ -580,7 +743,7 @@ mod tests {
         }
 
         // Type-error path (clean parse, type error).
-        let json = analyze("fn main() { let x = 1; x = 2; }");
+        let json = ok(analyze("fn main() { let x = 1; x = 2; }"));
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let diags = v["diagnostics"].as_array().unwrap();
         // There may be zero type errors on this program if the checker doesn't
@@ -605,7 +768,7 @@ mod tests {
     fn diagnostic_suggestions_populated_for_mutability_error() {
         // `let x` is immutable; `x = 2` should produce a MutabilityError with
         // a "consider changing this to `var x`" suggestion.
-        let json = analyze("fn main() { let x = 1; x = 2; }");
+        let json = ok(analyze("fn main() { let x = 1; x = 2; }"));
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let diags = v["diagnostics"].as_array().unwrap();
 
@@ -642,7 +805,7 @@ mod tests {
     fn diagnostic_notes_populated_for_duplicate_definition() {
         // Two functions named `foo` — duplicate_definition attaches a note
         // "previous definition here" pointing at the first span.
-        let json = analyze("fn foo() {} fn foo() {}");
+        let json = ok(analyze("fn foo() {} fn foo() {}"));
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let diags = v["diagnostics"].as_array().unwrap();
 
@@ -698,7 +861,7 @@ mod tests {
         // diagnostic span covers exactly the identifier, not trailing parens.
         // `foo` in scope has edit-distance 1 ≤ max_dist 1 and will be suggested.
         let source = "fn main() { let foo = 1; let _y = fooo; }";
-        let analyze_json = analyze(source);
+        let analyze_json = ok(analyze(source));
         let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
         let diags = analysis["diagnostics"].as_array().unwrap();
 
@@ -738,7 +901,7 @@ mod tests {
         }])
         .to_string();
 
-        let actions_json = code_actions(source, &diag_info_json);
+        let actions_json = ok(code_actions(source, &diag_info_json));
         let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
         let actions_arr = actions.as_array().unwrap();
 
@@ -808,7 +971,7 @@ mod tests {
         // or earlier so it points only at the first definition.
         let second_def_start = source.rfind("fn foo").expect("second definition not found");
 
-        let analyze_json = analyze(source);
+        let analyze_json = ok(analyze(source));
         let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
         let diags = analysis["diagnostics"].as_array().unwrap();
 
@@ -879,7 +1042,7 @@ mod tests {
         //                                    ^   ^
         //                                   24  28 = start of '('
 
-        let analyze_json = analyze(source);
+        let analyze_json = ok(analyze(source));
         let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
         let diags = analysis["diagnostics"].as_array().unwrap();
 
@@ -918,7 +1081,7 @@ mod tests {
         }])
         .to_string();
 
-        let actions_json = code_actions(source, &diag_info_json);
+        let actions_json = ok(code_actions(source, &diag_info_json));
         let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
         let actions_arr = actions.as_array().unwrap();
 
@@ -974,7 +1137,7 @@ mod tests {
         // edit-distance 1 ≤ max_dist 1 and will be suggested.
         let source = "fn foo() {} fn main() { fooo<i64>(); }";
 
-        let analyze_json = analyze(source);
+        let analyze_json = ok(analyze(source));
         let analysis: serde_json::Value = serde_json::from_str(&analyze_json).unwrap();
         let diags = analysis["diagnostics"].as_array().unwrap();
 
@@ -1017,7 +1180,7 @@ mod tests {
         }])
         .to_string();
 
-        let actions_json = code_actions(source, &diag_info_json);
+        let actions_json = ok(code_actions(source, &diag_info_json));
         let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
         let actions_arr = actions.as_array().unwrap();
 
@@ -1091,7 +1254,7 @@ mod tests {
         }])
         .to_string();
 
-        let actions_json = code_actions(source, &diag_info_json);
+        let actions_json = ok(code_actions(source, &diag_info_json));
         let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
         let actions_arr = actions.as_array().unwrap();
 
@@ -1149,7 +1312,7 @@ mod tests {
         }])
         .to_string();
 
-        let actions_json = code_actions(source, &diag_info_json);
+        let actions_json = ok(code_actions(source, &diag_info_json));
         let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
         let actions_arr = actions.as_array().unwrap();
 

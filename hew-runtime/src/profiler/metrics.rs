@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use crate::profiler::allocator;
 use crate::scheduler;
+use crate::transport;
 
 /// Number of snapshots retained (5 minutes at 1 s interval).
 const RING_SIZE: usize = 300;
@@ -36,12 +37,20 @@ pub struct MetricsSnapshot {
     pub bytes_freed: u64,
     pub bytes_live: u64,
     pub peak_bytes_live: u64,
+
+    // TCP transport counters.
+    pub tcp_bytes_read: u64,
+    pub tcp_bytes_written: u64,
+    pub tcp_accept_count: u64,
+    pub tcp_connect_count: u64,
+    pub tcp_error_count: u64,
 }
 
 impl MetricsSnapshot {
     /// Capture a snapshot of all runtime metrics right now.
     pub fn capture(epoch: Instant) -> Self {
         let alloc = allocator::snapshot();
+        let tcp = transport::tcp_counters_snapshot();
         Self {
             timestamp_secs: epoch.elapsed().as_secs(),
             tasks_spawned: scheduler::TASKS_SPAWNED.load(Ordering::Relaxed),
@@ -56,6 +65,11 @@ impl MetricsSnapshot {
             bytes_freed: alloc.bytes_freed,
             bytes_live: alloc.bytes_live,
             peak_bytes_live: alloc.peak_bytes_live,
+            tcp_bytes_read: tcp.bytes_read,
+            tcp_bytes_written: tcp.bytes_written,
+            tcp_accept_count: tcp.accept_count,
+            tcp_connect_count: tcp.connect_count,
+            tcp_error_count: tcp.error_count,
         }
     }
 }

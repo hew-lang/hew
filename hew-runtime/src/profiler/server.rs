@@ -254,8 +254,12 @@ fn serve_current_metrics(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>
     let snap = crate::profiler::metrics::MetricsSnapshot::capture(ring_guard.epoch());
     drop(ring_guard);
 
-    let json = format!(
-        r#"{{"timestamp_secs":{},"tasks_spawned":{},"tasks_completed":{},"steals":{},"messages_sent":{},"messages_received":{},"active_workers":{},"alloc_count":{},"dealloc_count":{},"bytes_allocated":{},"bytes_freed":{},"bytes_live":{},"peak_bytes_live":{}}}"#,
+    json_response(current_metrics_json(&snap))
+}
+
+fn current_metrics_json(snap: &crate::profiler::metrics::MetricsSnapshot) -> String {
+    format!(
+        r#"{{"timestamp_secs":{},"tasks_spawned":{},"tasks_completed":{},"steals":{},"messages_sent":{},"messages_received":{},"active_workers":{},"alloc_count":{},"dealloc_count":{},"bytes_allocated":{},"bytes_freed":{},"bytes_live":{},"peak_bytes_live":{},"tcp_bytes_read":{},"tcp_bytes_written":{},"tcp_accept_count":{},"tcp_connect_count":{},"tcp_error_count":{}}}"#,
         snap.timestamp_secs,
         snap.tasks_spawned,
         snap.tasks_completed,
@@ -269,8 +273,12 @@ fn serve_current_metrics(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>
         snap.bytes_freed,
         snap.bytes_live,
         snap.peak_bytes_live,
-    );
-    json_response(json)
+        snap.tcp_bytes_read,
+        snap.tcp_bytes_written,
+        snap.tcp_accept_count,
+        snap.tcp_connect_count,
+        snap.tcp_error_count,
+    )
 }
 
 /// `GET /api/memory` — current allocator stats.
@@ -294,6 +302,10 @@ fn serve_history(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>> {
     let entries = ring_guard.read_all();
     drop(ring_guard);
 
+    json_response(history_json(&entries))
+}
+
+fn history_json(entries: &[crate::profiler::metrics::MetricsSnapshot]) -> String {
     // Build JSON array manually to avoid serde dependency for this path.
     let mut json = String::from("[");
     for (i, s) in entries.iter().enumerate() {
@@ -302,7 +314,7 @@ fn serve_history(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>> {
         }
         let _ = write!(
             json,
-            r#"{{"t":{},"ts":{},"tc":{},"st":{},"ms":{},"mr":{},"aw":{},"ac":{},"dc":{},"ba":{},"bf":{},"bl":{},"pb":{}}}"#,
+            r#"{{"t":{},"ts":{},"tc":{},"st":{},"ms":{},"mr":{},"aw":{},"ac":{},"dc":{},"ba":{},"bf":{},"bl":{},"pb":{},"tbr":{},"tbw":{},"tac":{},"tcc":{},"tec":{}}}"#,
             s.timestamp_secs,
             s.tasks_spawned,
             s.tasks_completed,
@@ -316,11 +328,16 @@ fn serve_history(ring: &Arc<Mutex<MetricsRing>>) -> Response<Full<Bytes>> {
             s.bytes_freed,
             s.bytes_live,
             s.peak_bytes_live,
+            s.tcp_bytes_read,
+            s.tcp_bytes_written,
+            s.tcp_accept_count,
+            s.tcp_connect_count,
+            s.tcp_error_count,
         );
     }
     json.push(']');
 
-    json_response(json)
+    json
 }
 
 /// `GET /debug/pprof/heap` — pprof-compatible heap profile (.pb.gz).
@@ -426,6 +443,7 @@ fn serve_crashes() -> Response<Full<Bytes>> {
 mod tests {
     use super::*;
     use crate::profiler::actor_registry::ActorSnapshot;
+    use serde_json::json;
 
     fn make_snapshot(actor_type: &'static str, state: &'static str) -> ActorSnapshot {
         ActorSnapshot {
@@ -475,5 +493,103 @@ mod tests {
         let output = actors_json(&snapshots);
         // Must parse as valid JSON and round-trip the original value.
         assert_eq!(parse_actor_type(&output), "a\x08b\x0Cc\x01d");
+    }
+
+    #[test]
+    fn metrics_history_json_round_trips_tcp_fields() {
+        let json = history_json(&[crate::profiler::metrics::MetricsSnapshot {
+            timestamp_secs: 7,
+            tasks_spawned: 1,
+            tasks_completed: 2,
+            steals: 3,
+            messages_sent: 4,
+            messages_received: 5,
+            active_workers: 6,
+            alloc_count: 8,
+            dealloc_count: 9,
+            bytes_allocated: 10,
+            bytes_freed: 11,
+            bytes_live: 12,
+            peak_bytes_live: 13,
+            tcp_bytes_read: 14,
+            tcp_bytes_written: 15,
+            tcp_accept_count: 16,
+            tcp_connect_count: 17,
+            tcp_error_count: 18,
+        }]);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("history must be valid json");
+        assert_eq!(
+            parsed,
+            json!([{
+                "t": 7,
+                "ts": 1,
+                "tc": 2,
+                "st": 3,
+                "ms": 4,
+                "mr": 5,
+                "aw": 6,
+                "ac": 8,
+                "dc": 9,
+                "ba": 10,
+                "bf": 11,
+                "bl": 12,
+                "pb": 13,
+                "tbr": 14,
+                "tbw": 15,
+                "tac": 16,
+                "tcc": 17,
+                "tec": 18
+            }])
+        );
+    }
+
+    #[test]
+    fn current_metrics_json_round_trips_tcp_fields() {
+        let json = current_metrics_json(&crate::profiler::metrics::MetricsSnapshot {
+            timestamp_secs: 1,
+            tasks_spawned: 2,
+            tasks_completed: 3,
+            steals: 4,
+            messages_sent: 5,
+            messages_received: 6,
+            active_workers: 7,
+            alloc_count: 8,
+            dealloc_count: 9,
+            bytes_allocated: 10,
+            bytes_freed: 11,
+            bytes_live: 12,
+            peak_bytes_live: 13,
+            tcp_bytes_read: 14,
+            tcp_bytes_written: 15,
+            tcp_accept_count: 16,
+            tcp_connect_count: 17,
+            tcp_error_count: 18,
+        });
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("current metrics must be valid json");
+        assert_eq!(
+            parsed,
+            json!({
+                "timestamp_secs": 1,
+                "tasks_spawned": 2,
+                "tasks_completed": 3,
+                "steals": 4,
+                "messages_sent": 5,
+                "messages_received": 6,
+                "active_workers": 7,
+                "alloc_count": 8,
+                "dealloc_count": 9,
+                "bytes_allocated": 10,
+                "bytes_freed": 11,
+                "bytes_live": 12,
+                "peak_bytes_live": 13,
+                "tcp_bytes_read": 14,
+                "tcp_bytes_written": 15,
+                "tcp_accept_count": 16,
+                "tcp_connect_count": 17,
+                "tcp_error_count": 18
+            })
+        );
     }
 }

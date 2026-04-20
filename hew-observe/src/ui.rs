@@ -1090,6 +1090,38 @@ fn draw_overview_stats(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("TCP Read: ", theme::muted_style()),
+            Span::styled(
+                format_bytes(m.tcp_bytes_read),
+                Style::default().fg(theme::ACCENT),
+            ),
+            Span::raw("    "),
+            Span::styled("Written: ", theme::muted_style()),
+            Span::styled(
+                format_bytes(m.tcp_bytes_written),
+                Style::default().fg(theme::ACCENT),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("TCP Accepts: ", theme::muted_style()),
+            Span::styled(
+                format!("{}", m.tcp_accept_count),
+                Style::default().fg(theme::ACCENT),
+            ),
+            Span::raw("    "),
+            Span::styled("Connects: ", theme::muted_style()),
+            Span::styled(
+                format!("{}", m.tcp_connect_count),
+                Style::default().fg(theme::ACCENT),
+            ),
+            Span::raw("    "),
+            Span::styled("Errors: ", theme::muted_style()),
+            Span::styled(
+                format!("{}", m.tcp_error_count),
+                Style::default().fg(theme::STATE_WARNING),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("Uptime: ", theme::muted_style()),
             Span::styled(
                 format_duration(m.timestamp_secs),

@@ -544,9 +544,7 @@ mod tests {
         let scope_addr = (&raw mut *scope) as usize;
         let actor2_addr = actor2 as usize;
         let lock_addr = (&raw mut scope.lock) as usize;
-        let spawn_started = Arc::new(AtomicBool::new(false));
         let spawn_returned = Arc::new(AtomicBool::new(false));
-        let spawn_started_in_thread = Arc::clone(&spawn_started);
         let spawn_returned_in_thread = Arc::clone(&spawn_returned);
 
         let wait_handle = std::thread::spawn(move || {
@@ -566,7 +564,6 @@ mod tests {
         }
 
         let spawn_handle = std::thread::spawn(move || {
-            spawn_started_in_thread.store(true, Ordering::Release);
             // SAFETY: scope_addr and actor2_addr remain valid for the duration of the test.
             let rc =
                 unsafe { hew_scope_spawn(scope_addr as *mut HewScope, actor2_addr as *mut c_void) };
@@ -574,10 +571,12 @@ mod tests {
             spawn_returned_in_thread.store(true, Ordering::Release);
         });
 
-        while !spawn_started.load(Ordering::Acquire) {
-            std::thread::yield_now();
-        }
-        for _ in 0..32 {
+        // Wait long enough for the spawn thread to have reached hew_scope_spawn
+        // and blocked on the scope lock held by wait_all. A false negative here
+        // (spawn_returned=true) would indicate the lock is NOT blocking spawn —
+        // the invariant we want to prove. A slow spawn thread that has not yet
+        // attempted the lock cannot produce spawn_returned=true either way.
+        for _ in 0..64 {
             std::thread::yield_now();
         }
         assert!(

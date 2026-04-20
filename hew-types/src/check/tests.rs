@@ -246,6 +246,35 @@ fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
 }
 
 #[test]
+fn centralized_hashset_admissibility_rejects_recursive_rcfree_cycle() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let a_ty = Ty::Named {
+        name: "A".to_string(),
+        args: vec![],
+    };
+    let b_ty = Ty::Named {
+        name: "B".to_string(),
+        args: vec![],
+    };
+    checker
+        .registry
+        .register_rcfree_members("A".to_string(), vec![b_ty.clone()]);
+    checker
+        .registry
+        .register_rcfree_members("B".to_string(), vec![a_ty.clone()]);
+
+    assert!(
+        !checker.validate_hashset_owned_element_type(&a_ty, &(0..0)),
+        "HashSet element admissibility should fail closed for recursive RcFree cycles"
+    );
+    assert!(checker.errors.iter().any(|err| {
+        err.kind == TypeErrorKind::UnsafeCollectionElement
+            && err.message.contains("recursive type cycle")
+            && err.message.contains('A')
+    }));
+}
+
+#[test]
 fn centralized_hashset_admissibility_rejects_module_qualified_named_rc_payload() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker

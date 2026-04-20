@@ -211,6 +211,7 @@ pub mod vec;
 pub mod vecdeque;
 
 pub mod bytes;
+mod channel_common;
 
 pub mod internal;
 mod tagged_union;
@@ -408,6 +409,9 @@ pub mod timer_periodic;
 pub mod timer_periodic_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod timer_wheel;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod wasm_parity_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hew_node;

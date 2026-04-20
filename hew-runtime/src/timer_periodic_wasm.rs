@@ -41,6 +41,9 @@ unsafe impl Send for PeriodicEntry {}
 // SAFETY: Queue entries are only mutated while held under PERIODIC_QUEUE.
 unsafe impl Sync for PeriodicEntry {}
 
+// WASM-TODO: replace this cooperative Vec-backed timer queue with the shared
+// timer wheel backend used natively; insert/drain/cancel are still O(n)/O(n²).
+// Tracking: <https://github.com/hew-lang/hew/issues/1338>
 static PERIODIC_QUEUE: Mutex<Vec<PeriodicEntry>> = Mutex::new(Vec::new());
 static PERIODIC_REGISTRY: Mutex<Option<HashMap<usize, Vec<usize>>>> = Mutex::new(None);
 

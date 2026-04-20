@@ -14,6 +14,8 @@ use std::ffi::{c_char, CStr};
 use std::ptr;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 
+use crate::channel_common::{bytes_to_cstr, free_channel_pair};
+
 // ── Handle types ────────────────────────────────────────────────────────────
 
 /// Opaque sender handle. Cloneable for multi-producer use.
@@ -131,19 +133,8 @@ pub unsafe extern "C" fn hew_channel_pair_receiver(
 /// `pair` must be a valid pointer returned by [`hew_channel_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_channel_pair_free(pair: *mut HewChannelPair) {
-    if pair.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees pair was Box-allocated.
-    let p = unsafe { Box::from_raw(pair) };
-    if !p.sender.is_null() {
-        // SAFETY: sender was Box-allocated in hew_channel_new.
-        unsafe { drop(Box::from_raw(p.sender)) };
-    }
-    if !p.receiver.is_null() {
-        // SAFETY: receiver was Box-allocated in hew_channel_new.
-        unsafe { drop(Box::from_raw(p.receiver)) };
-    }
+    // SAFETY: caller guarantees `pair` came from `hew_channel_new`.
+    unsafe { free_channel_pair(pair, |pair| (&mut pair.sender, &mut pair.receiver)) };
 }
 
 // ── Send ────────────────────────────────────────────────────────────────────
@@ -182,23 +173,6 @@ pub unsafe extern "C" fn hew_channel_send_int(sender: *mut HewChannelSender, val
 }
 
 // ── Receive ─────────────────────────────────────────────────────────────────
-
-/// Allocate a NUL-terminated C string from a byte slice.
-fn bytes_to_cstr(item: &[u8]) -> *mut c_char {
-    let len = item.len();
-    // SAFETY: libc::malloc returns a valid aligned pointer or null.
-    let buf = unsafe { libc::malloc(len + 1) };
-    if buf.is_null() {
-        return ptr::null_mut();
-    }
-    if len > 0 {
-        // SAFETY: buf has len+1 bytes; item.as_ptr() has len bytes.
-        unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
-    }
-    // SAFETY: writing NUL terminator at offset len within allocated len+1 bytes.
-    unsafe { *buf.cast::<u8>().add(len) = 0 };
-    buf.cast::<c_char>()
-}
 
 /// Block until a message is available and return it as a malloc-allocated
 /// NUL-terminated string. Returns NULL when the channel is closed (all

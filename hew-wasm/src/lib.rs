@@ -15,6 +15,12 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+#[derive(Serialize)]
+struct RefsResult {
+    name: String,
+    spans: Vec<hew_analysis::OffsetSpan>,
+}
+
 // ── Diagnostics API ──────────────────────────────────────────────────────
 
 /// Analyze Hew source code and return diagnostics, tokens, and symbols as JSON.
@@ -36,20 +42,18 @@ pub fn get_keywords() -> String {
 
 /// Get hover information for a position in the source.
 ///
-/// Returns JSON `{ contents, span? }` or an empty string if nothing to display.
+/// Returns JSON `{ contents, span? }` or `null` if nothing to display.
 #[must_use]
 #[wasm_bindgen]
 pub fn hover(source: &str, offset: usize) -> String {
     let analysis = parse_and_type_check(source);
-    match hew_analysis::hover::hover(
+    let hover = hew_analysis::hover::hover(
         source,
         &analysis.parse_result,
         analysis.type_output.as_ref(),
         offset,
-    ) {
-        Some(result) => serde_json::to_string(&result).unwrap_or_default(),
-        None => String::new(),
-    }
+    );
+    encode_optional_json(hover.as_ref())
 }
 
 // ── Completions ──────────────────────────────────────────────────────────
@@ -70,60 +74,48 @@ pub fn complete(source: &str, offset: usize) -> String {
 
 // ── Navigation ───────────────────────────────────────────────────────────
 
-/// Go to definition. Returns JSON `{ start, end }` or empty string.
+/// Go to definition. Returns JSON `{ start, end }` or `null`.
 #[must_use]
 #[wasm_bindgen]
 pub fn goto_definition(source: &str, offset: usize) -> String {
     let parse_result = hew_parser::parse(source);
     let Some(word) = hew_analysis::util::word_at_offset(source, offset) else {
-        return String::new();
+        return encode_optional_json::<hew_analysis::OffsetSpan>(None);
     };
-    match hew_analysis::definition::find_definition(source, &parse_result, &word) {
-        Some(span) => serde_json::to_string(&span).unwrap_or_default(),
-        None => String::new(),
-    }
+    let definition = hew_analysis::definition::find_definition(source, &parse_result, &word);
+    encode_optional_json(definition.as_ref())
 }
 
-/// Find all references at offset. Returns JSON `{ name, spans }` or empty string.
+/// Find all references at offset. Returns JSON `{ name, spans }` or `null`.
 #[must_use]
 #[wasm_bindgen]
 pub fn find_references(source: &str, offset: usize) -> String {
     let parse_result = hew_parser::parse(source);
-    match hew_analysis::references::find_all_references(source, &parse_result, offset) {
-        Some((name, spans)) => {
-            #[derive(Serialize)]
-            struct RefsResult {
-                name: String,
-                spans: Vec<hew_analysis::OffsetSpan>,
-            }
-            serde_json::to_string(&RefsResult { name, spans }).unwrap_or_default()
-        }
-        None => String::new(),
-    }
+    encode_optional_json(
+        hew_analysis::references::find_all_references(source, &parse_result, offset)
+            .map(|(name, spans)| RefsResult { name, spans })
+            .as_ref(),
+    )
 }
 
 // ── Rename ───────────────────────────────────────────────────────────────
 
-/// Prepare rename at offset. Returns JSON `{ start, end }` or empty string.
+/// Prepare rename at offset. Returns JSON `{ start, end }` or `null`.
 #[must_use]
 #[wasm_bindgen]
 pub fn prepare_rename(source: &str, offset: usize) -> String {
     let parse_result = hew_parser::parse(source);
-    match hew_analysis::rename::prepare_rename(source, &parse_result, offset) {
-        Some(span) => serde_json::to_string(&span).unwrap_or_default(),
-        None => String::new(),
-    }
+    let rename_span = hew_analysis::rename::prepare_rename(source, &parse_result, offset);
+    encode_optional_json(rename_span.as_ref())
 }
 
-/// Compute rename edits. Returns JSON array of `{ span, new_text }` or empty string.
+/// Compute rename edits. Returns JSON array of `{ span, new_text }` or `null`.
 #[must_use]
 #[wasm_bindgen]
 pub fn rename(source: &str, offset: usize, new_name: &str) -> String {
     let parse_result = hew_parser::parse(source);
-    match hew_analysis::rename::rename(source, &parse_result, offset, new_name) {
-        Some(edits) => serde_json::to_string(&edits).unwrap_or_default(),
-        None => String::new(),
-    }
+    let edits = hew_analysis::rename::rename(source, &parse_result, offset, new_name);
+    encode_optional_json(edits.as_ref())
 }
 
 // ── Document structure ───────────────────────────────────────────────────
@@ -156,18 +148,16 @@ pub fn folding_ranges(source: &str) -> String {
 
 // ── Type information ─────────────────────────────────────────────────────
 
-/// Get signature help at offset. Returns JSON `SignatureHelpResult` or empty string.
+/// Get signature help at offset. Returns JSON `SignatureHelpResult` or `null`.
 #[must_use]
 #[wasm_bindgen]
 pub fn signature_help(source: &str, offset: usize) -> String {
     let analysis = parse_and_type_check(source);
     let Some(type_output) = analysis.type_output.as_ref() else {
-        return String::new();
+        return encode_optional_json::<hew_analysis::SignatureHelpResult>(None);
     };
-    match hew_analysis::signature_help::build_signature_help(source, type_output, offset) {
-        Some(result) => serde_json::to_string(&result).unwrap_or_default(),
-        None => String::new(),
-    }
+    let help = hew_analysis::signature_help::build_signature_help(source, type_output, offset);
+    encode_optional_json(help.as_ref())
 }
 
 /// Get inlay hints. Returns JSON array of `{ offset, label, kind, padding_left }`.
@@ -307,6 +297,10 @@ fn run_analysis(source: &str) -> AnalysisResult {
     }
 }
 
+fn encode_optional_json<T: Serialize>(value: Option<&T>) -> String {
+    serde_json::to_string(&value).unwrap_or_default()
+}
+
 #[cfg(test)]
 #[test]
 fn curated_playground_manifest_smoke() {
@@ -438,6 +432,12 @@ mod tests {
     }
 
     #[test]
+    fn hover_no_result_encodes_json_null() {
+        let parsed: serde_json::Value = serde_json::from_str(&hover("fn {", 0)).unwrap();
+        assert!(parsed.is_null());
+    }
+
+    #[test]
     fn complete_returns_items() {
         let source = "fn main() { let x = 42; x }";
         let result = complete(source, 25); // near 'x'
@@ -477,10 +477,24 @@ mod tests {
     }
 
     #[test]
+    fn goto_definition_no_result_encodes_json_null() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&goto_definition("fn main() {}", 0)).unwrap();
+        assert!(parsed.is_null());
+    }
+
+    #[test]
     fn find_references_works() {
         let source = "fn main() { let x = 1; let y = x; }";
         let result = find_references(source, 17); // on 'x' definition
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn find_references_no_result_encodes_json_null() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&find_references("fn main() {}", 0)).unwrap();
+        assert!(parsed.is_null());
     }
 
     #[test]
@@ -514,10 +528,17 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_no_result_encodes_json_null() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&signature_help("fn main() {}", 0)).unwrap();
+        assert!(parsed.is_null());
+    }
+
+    #[test]
     fn prepare_rename_no_panic() {
         let source = "fn foo() {} fn main() { foo(); }";
         let result = prepare_rename(source, 3); // on 'foo' definition
-                                                // Should return a span or empty string.
+                                                // Should return a span or JSON null.
         let _ = result;
     }
 
@@ -526,6 +547,13 @@ mod tests {
         let source = "fn foo() {} fn main() { foo(); }";
         let result = rename(source, 3, "bar"); // rename 'foo' to 'bar'
         let _ = result;
+    }
+
+    #[test]
+    fn rename_no_result_encodes_json_null() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rename("fn main() {}", 0, "bar")).unwrap();
+        assert!(parsed.is_null());
     }
 
     // ── WasmDiagnostic notes/suggestions serialization contract ─────────────

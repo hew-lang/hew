@@ -361,8 +361,10 @@ pub unsafe extern "C" fn hew_wasm_send(
             .cast::<std::sync::atomic::AtomicI32>())
     };
 
-    // Single-threaded: if idle, make runnable and enqueue.
-    if state_ptr.load(std::sync::atomic::Ordering::Relaxed) == IDLE {
+    // Single-threaded: only successful sends may wake an idle actor. This
+    // matches the native actor-send path, which leaves failed sends side-effect
+    // free with respect to scheduler wakeups.
+    if rc == 0 && state_ptr.load(std::sync::atomic::Ordering::Relaxed) == IDLE {
         state_ptr.store(RUNNABLE, std::sync::atomic::Ordering::Relaxed);
         // Enqueue into the WASM scheduler's run queue.
         // SAFETY: actor_ptr is a valid actor.

@@ -268,6 +268,9 @@ static mut INITIALIZED: bool = false;
 /// when the deadline passes (see [`drain_expired_sleepers`]).
 ///
 /// Drop/cleanup contract: cleared in [`hew_sched_shutdown`].
+// WASM-TODO: replace this sorted Vec sleep queue with a WASM-compatible shared
+// timer queue helper; insert/drain/cancel are still O(n)/O(n²).
+// Tracking: <https://github.com/hew-lang/hew/issues/1338>
 static mut SLEEP_QUEUE: Vec<(u64, *mut HewActor)> = Vec::new();
 
 /// Pending sleep deadline set by the currently-dispatching actor via
@@ -1283,11 +1286,13 @@ pub extern "C" fn hew_sched_metrics_reset() {
     }
 }
 
-/// Return the total number of worker threads. Always 1 on WASM.
+/// Return the total number of worker threads.
 #[cfg_attr(not(test), no_mangle)]
 #[must_use]
+#[expect(static_mut_refs, reason = "single-threaded WASM metrics read")]
 pub extern "C" fn hew_sched_metrics_worker_count() -> u64 {
-    1
+    // SAFETY: Single-threaded on WASM.
+    unsafe { u64::from(RUN_QUEUE.is_some()) }
 }
 
 /// Return the approximate length of the global run queue.
@@ -1329,6 +1334,11 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
 /// WASM stack growth from nested cooperate → tick → cooperate chains
 /// while still allowing wait-loop callers (ask/await/reply) to drive the
 /// scheduler to completion.
+///
+/// WASM-TODO: native `hew_actor_cooperate` yields to the OS scheduler instead
+/// of suppressing progress. Replace this depth cap with a stack-safe,
+/// non-recursive cooperative driver so yielding never returns `1` without a
+/// scheduler tick. Tracking: <https://github.com/hew-lang/hew/issues/1338>
 ///
 /// Returns 0 if the actor should continue, 1 if it yielded.
 ///

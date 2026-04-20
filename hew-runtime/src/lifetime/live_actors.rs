@@ -15,12 +15,12 @@
 //! matching the original layout and keeping the module simple.
 //! `LINK_TABLE` and `MONITOR_TABLE` use 16 shards because their hot paths
 //! are keyed by a single `actor_id` and rarely contend across shards.
-//! `LIVE_ACTORS` is locked for the full duration of `with_live_actor_by_id`
-//! (which spans `actor_send_internal`), so additional shards would not
-//! reduce hold time.
+//! `LIVE_ACTORS` still uses one shard because the module primarily protects
+//! liveness probes and teardown bookkeeping. Hot by-ID send/ask paths resolve
+//! the pointer under the registry lock, then drop it before touching mailboxes.
 //!
-//! SHIM: no bench suite exists to validate a 5% regression threshold.
-//! When `cargo bench -p hew-runtime` becomes available, re-evaluate whether
+//! SHIM: no bench suite exists to validate a 5% regression threshold. When
+//! `cargo bench -p hew-runtime` becomes available, re-evaluate whether
 //! 16-shard `LIVE_ACTORS` reduces hot-path contention.
 
 use std::collections::HashMap;
@@ -140,30 +140,6 @@ pub(crate) fn with_live_actor_by_id<R>(
     })
 }
 
-/// Look up an actor by ID and run a closure with the live actor.
-///
-/// Unlike `with_live_actor_by_id`, this does not require a matching
-/// `expected` pointer — it accepts any live actor with the given ID.
-/// The `LIVE_ACTORS` lock is held across `f`.
-///
-/// Used by `hew_actor_ask_by_id` which needs to hold the lock while
-/// calling `actor_send_result_internal_reply` so the actor cannot be
-/// freed between lookup and send.
-pub(crate) fn with_actor_by_id_locked<R>(
-    actor_id: u64,
-    f: impl FnOnce(*mut HewActor) -> R,
-) -> Option<R> {
-    LIVE_ACTORS.access(|map| {
-        let ptr = map
-            .as_ref()
-            .and_then(|m| m.get(&actor_id).map(|p| p.0))
-            .filter(|p| !p.is_null())?;
-        // SAFETY: ptr is tracked; concurrent frees must remove it before
-        // reclaiming the allocation.
-        Some(f(ptr))
-    })
-}
-
 /// Look up an actor by ID and return a copy of its raw pointer if live.
 ///
 /// The lock is *not* held after this returns.  Call sites that can tolerate
@@ -171,9 +147,10 @@ pub(crate) fn with_actor_by_id_locked<R>(
 /// actor disappears) may use this; call sites that need the pointer to stay
 /// valid must use `with_live_actor_by_id` instead.
 ///
-/// SHIM: `hew_actor_send_by_id` uses this variant to avoid serialising all
-/// by-ID sends under a single mutex.  When sharded `LIVE_ACTORS` lands (see
-/// module-level doc), this can be replaced with a handle-per-shard approach.
+/// SHIM: `hew_actor_send_by_id` and `hew_actor_ask_by_id` use this variant to
+/// avoid serialising mailbox sends under a single registry mutex. When sharded
+/// `LIVE_ACTORS` lands (see module-level doc), this can be replaced with a
+/// handle-per-shard approach.
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
     LIVE_ACTORS.access(|map| {
         map.as_ref()

@@ -12,7 +12,7 @@ use std::ffi::{c_void, CStr};
 use std::io;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::raw::{c_char, c_int};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -35,6 +35,7 @@ struct HewWsConnInner {
     shutdown_stream: Option<TcpStream>,
     reader: Mutex<Option<ReaderControl>>,
     closed: AtomicBool,
+    active_recvs: AtomicUsize,
 }
 
 #[derive(Debug)]
@@ -42,6 +43,38 @@ struct ReaderControl {
     cancel: Arc<AtomicBool>,
     exited: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+struct ActiveCallGuard<'a> {
+    counter: &'a AtomicUsize,
+}
+
+impl<'a> ActiveCallGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self { counter }
+    }
+}
+
+impl Drop for ActiveCallGuard<'_> {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HewWsRecvResult {
+    Message,
+    Cancelled,
+    Error,
+}
+
+#[derive(Debug)]
+enum HewWsAcceptResult {
+    Accepted(Box<WebSocket<MaybeTlsStream<TcpStream>>>),
+    Cancelled,
+    Error,
 }
 
 /// Message received from a WebSocket connection.
@@ -105,6 +138,7 @@ impl HewWsConn {
                 shutdown_stream,
                 reader: Mutex::new(None),
                 closed: AtomicBool::new(false),
+                active_recvs: AtomicUsize::new(0),
             }),
         }
     }
@@ -114,8 +148,15 @@ impl HewWsConn {
         signal_reader_cancel(&self.inner);
         shutdown_socket(self.inner.shutdown_stream.as_ref(), Shutdown::Both);
 
-        if wait_for_reader_exit_flag(&self.inner, READER_JOIN_WAIT) {
+        let reader_exited = wait_for_reader_exit_flag(&self.inner, READER_JOIN_WAIT);
+        let recv_exited =
+            wait_for_active_calls_to_drain(&self.inner.active_recvs, READER_JOIN_WAIT);
+
+        if reader_exited {
             join_reader(&self.inner);
+        }
+
+        if reader_exited && recv_exited {
             drop_ws(&self.inner);
             return;
         }
@@ -126,6 +167,7 @@ impl HewWsConn {
             .lock()
             .expect("reader mutex poisoned")
             .is_none()
+            && self.inner.active_recvs.load(Ordering::Acquire) == 0
         {
             drop_ws(&self.inner);
         }
@@ -215,6 +257,19 @@ fn wait_for_reader_exit_flag(inner: &Arc<HewWsConnInner>, timeout: Duration) -> 
                 .is_none_or(|reader| reader.exited.load(Ordering::Acquire))
         };
         if exited {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(READER_WAIT_POLL);
+    }
+}
+
+fn wait_for_active_calls_to_drain(counter: &AtomicUsize, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if counter.load(Ordering::Acquire) == 0 {
             return true;
         }
         if Instant::now() >= deadline {
@@ -465,6 +520,51 @@ fn build_message(msg_type: i32, payload: &[u8]) -> *mut HewWsMessage {
     }))
 }
 
+fn build_recv_message(msg: Message) -> *mut HewWsMessage {
+    match msg {
+        Message::Text(text) => build_message(0, text.as_bytes()),
+        Message::Binary(bytes) => build_message(1, &bytes),
+        Message::Ping(bytes) => build_message(2, &bytes),
+        Message::Pong(bytes) => build_message(3, &bytes),
+        Message::Close(_) => build_message(4, &[]),
+        Message::Frame(_) => build_message(1, &[]),
+    }
+}
+
+fn recv_message(inner: &Arc<HewWsConnInner>) -> (HewWsRecvResult, *mut HewWsMessage) {
+    loop {
+        if inner.closed.load(Ordering::Acquire) {
+            return (HewWsRecvResult::Cancelled, std::ptr::null_mut());
+        }
+
+        let read_result = {
+            let mut guard = lock_or_recover(&inner.ws);
+            let Some(ws) = guard.as_mut() else {
+                let kind = if inner.closed.load(Ordering::Acquire) {
+                    HewWsRecvResult::Cancelled
+                } else {
+                    HewWsRecvResult::Error
+                };
+                return (kind, std::ptr::null_mut());
+            };
+            if let Err(err) = set_read_timeout(ws, Some(READER_READ_TIMEOUT)) {
+                eprintln!("[recv] failed to set read timeout: {err}");
+                return (HewWsRecvResult::Error, std::ptr::null_mut());
+            }
+            ws.read()
+        };
+
+        match read_result {
+            Ok(msg) => return (HewWsRecvResult::Message, build_recv_message(msg)),
+            Err(err) if is_timeout_error(&err) => {}
+            Err(_) if inner.closed.load(Ordering::Acquire) => {
+                return (HewWsRecvResult::Cancelled, std::ptr::null_mut());
+            }
+            Err(_) => return (HewWsRecvResult::Error, std::ptr::null_mut()),
+        }
+    }
+}
+
 /// Connect to a WebSocket server.
 ///
 /// Supports both `ws://` and `wss://` URLs. Returns a heap-allocated
@@ -503,16 +603,16 @@ pub unsafe extern "C" fn hew_ws_send_text(ws: *mut HewWsConn, msg: *const c_char
         return -1;
     }
     // SAFETY: `ws` is a valid HewWsConn pointer per caller contract.
-    let conn = unsafe { &mut *ws };
+    let inner = Arc::clone(&unsafe { &*ws }.inner);
     // SAFETY: `msg` is a valid NUL-terminated C string per caller contract.
     let Ok(text) = unsafe { CStr::from_ptr(msg) }.to_str() else {
         return -1;
     };
 
-    if conn.inner.closed.load(Ordering::Acquire) {
+    if inner.closed.load(Ordering::Acquire) {
         return -1;
     }
-    let mut guard = lock_or_recover(&conn.inner.ws);
+    let mut guard = lock_or_recover(&inner.ws);
     let Some(ws) = guard.as_mut() else {
         return -1;
     };
@@ -540,8 +640,8 @@ pub unsafe extern "C" fn hew_ws_send_binary(
         return -1;
     }
     // SAFETY: `ws` is a valid HewWsConn pointer per caller contract.
-    let conn = unsafe { &mut *ws };
-    if conn.inner.closed.load(Ordering::Acquire) {
+    let inner = Arc::clone(&unsafe { &*ws }.inner);
+    if inner.closed.load(Ordering::Acquire) {
         return -1;
     }
 
@@ -555,7 +655,7 @@ pub unsafe extern "C" fn hew_ws_send_binary(
         unsafe { std::slice::from_raw_parts(data, len) }
     };
 
-    let mut guard = lock_or_recover(&conn.inner.ws);
+    let mut guard = lock_or_recover(&inner.ws);
     let Some(ws) = guard.as_mut() else {
         return -1;
     };
@@ -579,28 +679,15 @@ pub unsafe extern "C" fn hew_ws_recv(ws: *mut HewWsConn) -> *mut HewWsMessage {
         return std::ptr::null_mut();
     }
     // SAFETY: `ws` is a valid HewWsConn pointer per caller contract.
-    let conn = unsafe { &mut *ws };
-    if conn.inner.closed.load(Ordering::Acquire) {
+    let inner = Arc::clone(&unsafe { &*ws }.inner);
+    if inner.closed.load(Ordering::Acquire) {
         return std::ptr::null_mut();
     }
 
-    let mut guard = lock_or_recover(&conn.inner.ws);
-    let Some(ws) = guard.as_mut() else {
-        return std::ptr::null_mut();
-    };
-    match ws.read() {
-        Ok(msg) => match msg {
-            Message::Text(t) => {
-                let bytes = t.as_bytes();
-                build_message(0, bytes)
-            }
-            Message::Binary(b) => build_message(1, &b),
-            Message::Ping(b) => build_message(2, &b),
-            Message::Pong(b) => build_message(3, &b),
-            Message::Close(_) => build_message(4, &[]),
-            Message::Frame(_) => build_message(1, &[]),
-        },
-        Err(_) => std::ptr::null_mut(),
+    let _recv_guard = ActiveCallGuard::new(&inner.active_recvs);
+    match recv_message(&inner) {
+        (HewWsRecvResult::Message, msg) => msg,
+        (HewWsRecvResult::Cancelled | HewWsRecvResult::Error, _) => std::ptr::null_mut(),
     }
 }
 
@@ -630,8 +717,7 @@ pub unsafe extern "C" fn hew_ws_close(ws: *mut HewWsConn) {
 
     // SAFETY: unattached handles have a single owning raw pointer, so reclaiming
     // the Box preserves the pre-attach close behaviour.
-    let conn = unsafe { Box::from_raw(ws) };
-    conn.close_handle();
+    drop(unsafe { Box::from_raw(ws) });
 }
 
 /// Get the message type tag from a [`HewWsMessage`].
@@ -765,7 +851,74 @@ extern "C" {
 /// them to WebSocket via tungstenite. Must be closed with [`hew_ws_server_close`].
 #[derive(Debug)]
 pub struct HewWsServer {
+    inner: Arc<HewWsServerInner>,
+}
+
+#[derive(Debug)]
+struct HewWsServerInner {
     listener: TcpListener,
+    cancel: AtomicBool,
+    active_accepts: AtomicUsize,
+}
+
+impl HewWsServer {
+    fn new(listener: TcpListener) -> io::Result<Self> {
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            inner: Arc::new(HewWsServerInner {
+                listener,
+                cancel: AtomicBool::new(false),
+                active_accepts: AtomicUsize::new(0),
+            }),
+        })
+    }
+
+    fn close_handle(&self) {
+        self.inner.cancel.store(true, Ordering::Release);
+        let _ = wait_for_active_calls_to_drain(&self.inner.active_accepts, READER_JOIN_WAIT);
+    }
+}
+
+impl Drop for HewWsServer {
+    fn drop(&mut self) {
+        self.close_handle();
+    }
+}
+
+fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
+    let _accept_guard = ActiveCallGuard::new(&inner.active_accepts);
+    loop {
+        if inner.cancel.load(Ordering::Acquire) {
+            return HewWsAcceptResult::Cancelled;
+        }
+
+        match inner.listener.accept() {
+            Ok((stream, _addr)) => {
+                if inner.cancel.load(Ordering::Acquire) {
+                    return HewWsAcceptResult::Cancelled;
+                }
+                if let Err(err) = stream.set_nonblocking(false) {
+                    eprintln!("[accept] failed to restore blocking mode: {err}");
+                    return HewWsAcceptResult::Error;
+                }
+                let tls_stream = MaybeTlsStream::Plain(stream);
+                if let Ok(ws) = tungstenite::accept(tls_stream) {
+                    return HewWsAcceptResult::Accepted(Box::new(ws));
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(READER_WAIT_POLL);
+            }
+            Err(err) => {
+                eprintln!("[accept] listener accept failed: {err}");
+                return if inner.cancel.load(Ordering::Acquire) {
+                    HewWsAcceptResult::Cancelled
+                } else {
+                    HewWsAcceptResult::Error
+                };
+            }
+        }
+    }
 }
 
 /// Create a WebSocket server listening on the given address (e.g. `"0.0.0.0:8080"`).
@@ -785,7 +938,10 @@ pub unsafe extern "C" fn hew_ws_server_new(addr: *const c_char) -> *mut HewWsSer
         return std::ptr::null_mut();
     };
     match TcpListener::bind(addr_str) {
-        Ok(listener) => Box::into_raw(Box::new(HewWsServer { listener })),
+        Ok(listener) => match HewWsServer::new(listener) {
+            Ok(server) => Box::into_raw(Box::new(server)),
+            Err(_) => std::ptr::null_mut(),
+        },
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -803,7 +959,7 @@ pub unsafe extern "C" fn hew_ws_server_port(server: *const HewWsServer) -> i32 {
         return -1;
     }
     // SAFETY: Caller guarantees `server` is a valid pointer returned by hew_ws_server_new.
-    match (unsafe { &*server }).listener.local_addr() {
+    match (unsafe { &*server }).inner.listener.local_addr() {
         Ok(addr) => i32::from(addr.port()),
         Err(_) => -1,
     }
@@ -821,32 +977,14 @@ pub unsafe extern "C" fn hew_ws_server_port(server: *const HewWsServer) -> i32 {
 /// `server` must be a valid pointer returned by [`hew_ws_server_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut HewWsConn {
-    eprintln!("[accept] server={:p} null={}", server, server.is_null());
     if server.is_null() {
-        eprintln!("[accept] server is NULL, returning null");
         return std::ptr::null_mut();
     }
     // SAFETY: Caller guarantees `server` is a valid pointer returned by hew_ws_server_new.
-    let srv = unsafe { &*server };
-    // Block until a valid WebSocket connection is established.
-    // Reject non-WebSocket TCP connections (failed handshakes) by retrying.
-    loop {
-        let Ok((stream, _addr)) = srv.listener.accept() else {
-            return std::ptr::null_mut();
-        };
-        // tungstenite::accept performs the HTTP upgrade handshake.
-        // If the client is not a WebSocket client, the handshake fails
-        // and we loop back to accept the next connection.
-        // Wrap in MaybeTlsStream::Plain BEFORE the handshake so
-        // tungstenite::accept produces WebSocket<MaybeTlsStream<TcpStream>>
-        // directly — no rewrap needed, preserving internal buffers.
-        let tls_stream = MaybeTlsStream::Plain(stream);
-        if let Ok(ws) = tungstenite::accept(tls_stream) {
-            let ptr = Box::into_raw(Box::new(HewWsConn::new(ws)));
-            eprintln!("[accept] returning conn {ptr:p}");
-            return ptr;
-        }
-        // Handshake failed (not a WebSocket client). Retry.
+    let inner = Arc::clone(&unsafe { &*server }.inner);
+    match accept_connection(&inner) {
+        HewWsAcceptResult::Accepted(ws) => Box::into_raw(Box::new(HewWsConn::new(*ws))),
+        HewWsAcceptResult::Cancelled | HewWsAcceptResult::Error => std::ptr::null_mut(),
     }
 }
 
@@ -895,6 +1033,13 @@ mod tests {
     #[derive(Clone, Copy)]
     struct TestActorState {
         test_id: u64,
+        conn: usize,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CancelOwnerState {
+        server: usize,
         conn: usize,
     }
 
@@ -973,6 +1118,27 @@ mod tests {
         }
     }
 
+    unsafe extern "C" fn websocket_cancel_owner_dispatch(
+        state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        if msg_type != TEST_STOP_TYPE {
+            return;
+        }
+
+        // SAFETY: test actor state is a POD snapshot allocated by `hew_actor_spawn`.
+        let state = unsafe { &*(state.cast::<CancelOwnerState>()) };
+        if state.conn != 0 {
+            unsafe { hew_ws_close(state.conn as *mut HewWsConn) };
+        }
+        if state.server != 0 {
+            unsafe { hew_ws_server_close(state.server as *mut HewWsServer) };
+        }
+        actor::hew_actor_self_stop();
+    }
+
     struct RuntimeGuard;
 
     impl RuntimeGuard {
@@ -1047,6 +1213,10 @@ mod tests {
         wait_for_condition(timeout, || unsafe {
             transport::hew_actor_ref_is_alive(&raw const actor_ref) == 0
         })
+    }
+
+    fn wait_for_thread_exit<T>(handle: &std::thread::JoinHandle<T>, timeout: Duration) -> bool {
+        wait_for_condition(timeout, || handle.is_finished())
     }
 
     fn recv_event(rx: &Receiver<ActorEvent>, timeout: Duration) -> ActorEvent {
@@ -1336,6 +1506,131 @@ mod tests {
         unsafe { hew_ws_server_close(server) };
 
         client_thread.join().expect("client thread should finish");
+    }
+
+    #[test]
+    fn server_accept_cancel_returns_cancelled() {
+        let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+        assert!(!server.is_null(), "server should bind successfully");
+
+        // SAFETY: `server` stays live until hew_ws_server_close below sets cancel.
+        let inner = unsafe { &*server }.inner.clone();
+        let accept_inner = inner.clone();
+        let accept_thread = std::thread::spawn(move || accept_connection(&accept_inner));
+
+        assert!(
+            wait_for_condition(Duration::from_millis(200), || {
+                inner.active_accepts.load(Ordering::Acquire) == 1
+            }),
+            "accept loop should become active before cancellation"
+        );
+
+        unsafe { hew_ws_server_close(server) };
+
+        assert!(
+            wait_for_thread_exit(&accept_thread, Duration::from_millis(750)),
+            "accept thread should exit within the cancel deadline"
+        );
+        assert!(
+            matches!(
+                accept_thread.join().expect("accept thread should join"),
+                HewWsAcceptResult::Cancelled
+            ),
+            "accept helper should report cancellation distinctly"
+        );
+    }
+
+    #[test]
+    fn recv_cancel_returns_cancelled() {
+        let (server, conn, client) = attach_test_conn();
+        // SAFETY: tests keep `conn` live until the recv thread exits.
+        let inner = unsafe { &*conn }.inner.clone();
+        let recv_thread = std::thread::spawn(move || {
+            let _recv_guard = ActiveCallGuard::new(&inner.active_recvs);
+            recv_message(&inner).0
+        });
+
+        assert!(
+            wait_for_condition(Duration::from_millis(200), || {
+                // SAFETY: `conn` remains live until hew_ws_close below.
+                unsafe { &*conn }.inner.active_recvs.load(Ordering::Acquire) == 1
+            }),
+            "recv loop should become active before cancellation"
+        );
+
+        unsafe { hew_ws_close(conn) };
+
+        assert!(
+            wait_for_thread_exit(&recv_thread, Duration::from_millis(750)),
+            "recv thread should exit within the cancel deadline"
+        );
+        assert_eq!(
+            recv_thread.join().expect("recv thread should join"),
+            HewWsRecvResult::Cancelled,
+            "recv helper should report cancellation distinctly"
+        );
+
+        drop(client);
+        unsafe { hew_ws_server_close(server) };
+    }
+
+    #[test]
+    fn server_accept_unblocks_when_owner_actor_stops() {
+        run_in_isolated_test_process(
+            "server_accept_unblocks_when_owner_actor_stops",
+            "HEW_WS_ACCEPT_STOP_ISOLATED",
+            || {
+                let _runtime = RuntimeGuard::new();
+                let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+                assert!(!server.is_null(), "server should bind successfully");
+
+                // SAFETY: `server` stays live until the owner actor closes it.
+                let inner = unsafe { &*server }.inner.clone();
+                let server_addr = server as usize;
+                let accept_thread = std::thread::spawn(move || unsafe {
+                    hew_ws_server_accept(server_addr as *mut HewWsServer) as usize
+                });
+
+                assert!(
+                    wait_for_condition(Duration::from_millis(200), || {
+                        inner.active_accepts.load(Ordering::Acquire) == 1
+                    }),
+                    "accept loop should become active before the owner stops"
+                );
+
+                let state = CancelOwnerState {
+                    server: server as usize,
+                    conn: 0,
+                };
+                let actor = unsafe {
+                    actor::hew_actor_spawn(
+                        (&raw const state).cast_mut().cast(),
+                        std::mem::size_of::<CancelOwnerState>(),
+                        Some(websocket_cancel_owner_dispatch),
+                    )
+                };
+                assert!(!actor.is_null(), "owner actor should spawn");
+
+                unsafe { actor::hew_actor_send(actor, TEST_STOP_TYPE, std::ptr::null_mut(), 0) };
+
+                assert!(
+                    wait_for_actor_dead(actor, Duration::from_secs(1)),
+                    "owner actor should stop after closing the server"
+                );
+                assert!(
+                    wait_for_thread_exit(&accept_thread, Duration::from_millis(750)),
+                    "accept thread should exit within the cancel deadline"
+                );
+                assert_eq!(
+                    accept_thread.join().expect("accept thread should join"),
+                    0,
+                    "cancelled accept should return null through the FFI surface"
+                );
+                assert_eq!(inner.active_accepts.load(Ordering::Acquire), 0);
+
+                assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+            },
+        );
     }
 
     #[test]

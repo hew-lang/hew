@@ -40,36 +40,6 @@ static int tests_passed = 0;
 
 static bool isZeroLiteralValue(mlir::Value value);
 
-#define TEST(name)                                                                                 \
-  do {                                                                                             \
-    tests_run++;                                                                                   \
-    printf("  test %s ... ", #name);                                                               \
-  } while (0)
-
-#define PASS()                                                                                     \
-  do {                                                                                             \
-    tests_passed++;                                                                                \
-    printf("ok\n");                                                                                \
-  } while (0)
-
-#define FAIL(msg)                                                                                  \
-  do {                                                                                             \
-    printf("FAILED: %s\n", msg);                                                                   \
-  } while (0)
-
-// ---------------------------------------------------------------------------
-// Helper: set up MLIR context with all required dialects
-// ---------------------------------------------------------------------------
-static void initContext(mlir::MLIRContext &ctx) {
-  ctx.loadDialect<hew::HewDialect>();
-  ctx.loadDialect<mlir::func::FuncDialect>();
-  ctx.loadDialect<mlir::arith::ArithDialect>();
-  ctx.loadDialect<mlir::scf::SCFDialect>();
-  ctx.loadDialect<mlir::memref::MemRefDialect>();
-  ctx.loadDialect<mlir::cf::ControlFlowDialect>();
-  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
-}
-
 // ---------------------------------------------------------------------------
 // Helper: look up a FuncOp by name suffix (handles module-qualified mangling)
 // ---------------------------------------------------------------------------

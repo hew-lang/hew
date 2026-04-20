@@ -138,7 +138,7 @@ fn fmt_stdin_parse_errors_render_cli_diagnostics() {
 
 #[test]
 fn fmt_inplace_reports_formatted_to_stderr() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("needs_fmt.hew");
     std::fs::write(&path, "fn main() { let x = 1; }\n").unwrap();
 
@@ -173,7 +173,7 @@ fn fmt_inplace_reports_formatted_to_stderr() {
 
 #[test]
 fn fmt_inplace_already_formatted_is_silent() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("already_fmt.hew");
     std::fs::write(&path, "fn main() {\n    let x = 1;\n}\n").unwrap();
 
@@ -203,7 +203,7 @@ fn fmt_inplace_already_formatted_is_silent() {
 
 #[test]
 fn fmt_file_parse_errors_render_cli_diagnostics() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("broken.hew");
     std::fs::write(&path, "fn main( {\n").unwrap();
 
@@ -231,7 +231,7 @@ fn fmt_file_parse_errors_render_cli_diagnostics() {
 /// All files already formatted → exit 0, no output on stdout or stderr.
 #[test]
 fn fmt_check_multi_file_all_formatted_exits_zero() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let a = dir.path().join("a.hew");
     let b = dir.path().join("b.hew");
     std::fs::write(&a, "fn foo() {\n    1\n}\n").unwrap();
@@ -266,7 +266,7 @@ fn fmt_check_multi_file_all_formatted_exits_zero() {
 /// no final summary count line.
 #[test]
 fn fmt_check_multi_file_some_unformatted_reports_per_file_and_exits_one() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let good = dir.path().join("good.hew");
     let bad = dir.path().join("bad.hew");
     // already formatted
@@ -311,7 +311,7 @@ fn fmt_check_multi_file_some_unformatted_reports_per_file_and_exits_one() {
 /// All files need formatting → each gets its own line, exit 1, no summary.
 #[test]
 fn fmt_check_multi_file_all_unformatted_reports_each_file() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let a = dir.path().join("a.hew");
     let b = dir.path().join("b.hew");
     std::fs::write(&a, "fn foo() { 1 }\n").unwrap();

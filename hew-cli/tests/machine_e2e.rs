@@ -10,7 +10,7 @@ fn machine_fixture() -> &'static str {
 
 #[test]
 fn machine_diagram_emits_mermaid_on_stdout() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let input = dir.path().join("light.hew");
     std::fs::write(&input, machine_fixture()).unwrap();
 
@@ -33,7 +33,7 @@ fn machine_diagram_emits_mermaid_on_stdout() {
 
 #[test]
 fn machine_diagram_dot_emits_graphviz_on_stdout() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let input = dir.path().join("light.hew");
     std::fs::write(&input, machine_fixture()).unwrap();
 
@@ -63,7 +63,7 @@ fn machine_diagram_dot_emits_graphviz_on_stdout() {
 
 #[test]
 fn machine_list_prints_summary_on_stdout() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let input = dir.path().join("light.hew");
     std::fs::write(&input, machine_fixture()).unwrap();
 
@@ -89,7 +89,7 @@ fn machine_list_prints_summary_on_stdout() {
 
 #[test]
 fn machine_diagram_missing_file_exits_non_zero() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let missing = dir.path().join("missing.hew");
 
     let output = Command::new(hew_binary())
@@ -108,7 +108,7 @@ fn machine_diagram_missing_file_exits_non_zero() {
 
 #[test]
 fn machine_diagram_no_machines_exits_non_zero() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let input = dir.path().join("no_machine.hew");
     std::fs::write(&input, "fn main() -> int {\n    0\n}\n").unwrap();
 

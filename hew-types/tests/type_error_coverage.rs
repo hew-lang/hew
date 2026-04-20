@@ -1,16 +1,7 @@
-use hew_types::error::{Severity, TypeErrorKind};
-use hew_types::Checker;
+mod common;
 
-fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parser errors: {:?}",
-        parsed.errors
-    );
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    checker.check_program(&parsed.program)
-}
+use common::typecheck_isolated as typecheck;
+use hew_types::error::{Severity, TypeErrorKind};
 
 #[test]
 fn test_non_exhaustive_match() {

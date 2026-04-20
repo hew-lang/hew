@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde::Deserialize;
-use support::{hew_binary, repo_root, require_wasi_runner};
+use support::{hew_binary, repo_root, require_wasi_runner, run_hew_in};
 
 #[derive(Debug, Deserialize)]
 struct Capabilities {
@@ -31,14 +31,10 @@ fn load_playground_manifest() -> Vec<PlaygroundEntry> {
 }
 
 fn run_wasi_example(source: &Path) -> Output {
-    Command::new(hew_binary())
-        .arg("run")
-        .arg(source)
-        .arg("--target")
-        .arg("wasm32-wasi")
-        .current_dir(repo_root())
-        .output()
-        .expect("run hew --target wasm32-wasi")
+    let source = source
+        .to_str()
+        .expect("wasi example path must be valid UTF-8");
+    run_hew_in(repo_root(), &["run", source, "--target", "wasm32-wasi"])
 }
 
 // Exact set of curated playground entries that declare wasi: "unsupported".
@@ -146,7 +142,7 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
 fn wasi_run_timeout_terminates_a_non_terminating_program() {
     require_wasi_runner();
 
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = support::tempdir();
     let source = dir.path().join("timeout_wasi.hew");
     fs::write(
         &source,

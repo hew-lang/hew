@@ -25,7 +25,7 @@ fn run_check(dir: &std::path::Path, file: &str) -> std::process::Output {
 
 #[test]
 fn init_creates_main_hew() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = support::tempdir();
     let out = run_init(tmp.path(), "hello_world");
 
     assert!(
@@ -43,7 +43,7 @@ fn init_creates_main_hew() {
 
 #[test]
 fn init_scaffold_has_no_typed_return_on_main() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = support::tempdir();
     run_init(tmp.path(), "typed_check");
 
     let src = std::fs::read_to_string(tmp.path().join("typed_check").join("main.hew")).unwrap();
@@ -62,7 +62,7 @@ fn init_scaffold_has_no_typed_return_on_main() {
 
 #[test]
 fn init_scaffold_passes_hew_check() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = support::tempdir();
     run_init(tmp.path(), "check_test");
 
     let project_dir = tmp.path().join("check_test");
@@ -78,7 +78,7 @@ fn init_scaffold_passes_hew_check() {
 
 #[test]
 fn init_scaffold_stays_source_only_and_points_to_adze_init() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = support::tempdir();
     let out = run_init(tmp.path(), "docs_test");
 
     assert!(
@@ -124,7 +124,7 @@ fn init_scaffold_stays_source_only_and_points_to_adze_init() {
 
 #[test]
 fn init_without_name_creates_files_in_cwd() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = support::tempdir();
     let out = run_hew(tmp.path(), &["init"]);
 
     assert!(
@@ -156,7 +156,7 @@ fn init_without_name_creates_files_in_cwd() {
 
 #[test]
 fn init_existing_directory_without_force_exits_one() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = support::tempdir();
     let existing = tmp.path().join("existing");
     fs::create_dir(&existing).unwrap();
 
@@ -188,7 +188,7 @@ fn init_existing_directory_without_force_exits_one() {
 #[test]
 fn init_existing_scaffold_files_without_force_exit_one() {
     for file_name in ["main.hew", "README.md"] {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = support::tempdir();
         let existing_path = tmp.path().join(file_name);
         fs::write(&existing_path, "sentinel").unwrap();
 
@@ -219,7 +219,7 @@ fn init_existing_scaffold_files_without_force_exit_one() {
 
 #[test]
 fn init_force_overwrites_existing_scaffold() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = support::tempdir();
     let main_hew = tmp.path().join("main.hew");
     let readme = tmp.path().join("README.md");
     fs::write(&main_hew, "old main").unwrap();

@@ -1,61 +1,16 @@
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use common::{
+    checker, isolated_checker, parse_and_typecheck_inline, parse_program, repo_root,
+    typecheck as typecheck_inline, typecheck_wasm as typecheck_inline_wasm,
+};
 use hew_parser::ast::{Expr, Item, Stmt};
 use hew_types::check::SpanKey;
 use hew_types::error::TypeErrorKind;
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .to_path_buf()
-}
-
-fn new_networking_demo_checker() -> hew_types::Checker {
-    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![
-        repo_root(),
-    ]))
-}
-
-/// Typecheck an inline source string with full stdlib access.
-fn typecheck_inline(source: &str) -> hew_types::TypeCheckOutput {
-    let parse_result = hew_parser::parse(source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-    let mut checker = new_networking_demo_checker();
-    checker.check_program(&parse_result.program)
-}
-
-fn parse_and_typecheck_inline(
-    source: &str,
-) -> (hew_parser::ast::Program, hew_types::TypeCheckOutput) {
-    let parse_result = hew_parser::parse(source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-    let mut checker = new_networking_demo_checker();
-    let output = checker.check_program(&parse_result.program);
-    (parse_result.program, output)
-}
-
-fn typecheck_inline_wasm(source: &str) -> hew_types::TypeCheckOutput {
-    let parse_result = hew_parser::parse(source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-    let mut checker = new_networking_demo_checker();
-    checker.enable_wasm_target();
-    checker.check_program(&parse_result.program)
-}
 
 fn platform_limitation_error_count(output: &hew_types::TypeCheckOutput, fragment: &str) -> usize {
     output
@@ -138,15 +93,9 @@ fn typecheck_top_level_networking_demos() {
 
 fn assert_typechecks(path: &Path, label: &str) {
     let source = fs::read_to_string(path).unwrap();
-    let parse_result = hew_parser::parse(&source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "{label} should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-
-    let mut checker = new_networking_demo_checker();
-    let output = checker.check_program(&parse_result.program);
+    let program = parse_program(&source);
+    let mut checker = checker();
+    let output = checker.check_program(&program);
     assert!(
         output.errors.is_empty(),
         "{label} should type-check cleanly, got: {:#?}",
@@ -676,6 +625,7 @@ fn test_directory(dir: &Path, label: &str) {
     let mut parse_fail = 0;
     let mut tc_ok = 0;
     let mut tc_fail = 0;
+    let mut parse_errors = Vec::new();
     let mut tc_errors = Vec::new();
 
     let mut entries: Vec<_> = fs::read_dir(dir)
@@ -688,25 +638,34 @@ fn test_directory(dir: &Path, label: &str) {
 
     for path in &entries {
         let source = fs::read_to_string(path).unwrap();
-        let parse_result = hew_parser::parse(&source);
-        if !parse_result.errors.is_empty() {
-            parse_fail += 1;
-            continue;
-        }
-        parse_ok += 1;
+        let program = match hew_parser::parse(&source) {
+            parse_result if parse_result.errors.is_empty() => {
+                parse_ok += 1;
+                parse_result.program
+            }
+            parse_result => {
+                parse_fail += 1;
+                parse_errors.push(format!(
+                    "  {} — parse errors: {:#?}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    parse_result.errors
+                ));
+                continue;
+            }
+        };
 
-        let mut checker =
-            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&parse_result.program);
+        let mut checker = isolated_checker();
+        let output = checker.check_program(&program);
         if output.errors.is_empty() {
             tc_ok += 1;
         } else {
             tc_fail += 1;
             let first_err = &output.errors[0];
             tc_errors.push(format!(
-                "  {} — {:?}",
+                "  {} — {:?}: {}",
                 path.file_name().unwrap().to_string_lossy(),
-                first_err
+                first_err.kind,
+                first_err.message
             ));
         }
     }
@@ -715,13 +674,16 @@ fn test_directory(dir: &Path, label: &str) {
     println!(
         "\n{label}: {parse_ok}/{total} parsed, {tc_ok}/{parse_ok} type-checked ({tc_fail} failed)"
     );
+    assert_eq!(
+        parse_fail,
+        0,
+        "{label}: expected every fixture to parse; failures:\n{}",
+        parse_errors.join("\n")
+    );
+    // Informational — don't fail on type-check errors yet.
     if !tc_errors.is_empty() {
-        println!("Type-check failures:");
-        for e in &tc_errors {
-            println!("{e}");
-        }
+        println!("Type-check failures:\n{}", tc_errors.join("\n"));
     }
-    // Informational — don't fail on type-check errors yet
 }
 
 // ===========================================================================

@@ -16,7 +16,7 @@ use support::{hew_binary, strip_ansi};
 /// Write a set of `(filename, content)` pairs into a temporary directory and
 /// return the directory handle (kept alive for the duration of the test).
 fn write_fixture(files: &[(&str, &str)]) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("cannot create temp dir for e2e fixture");
+    let dir = support::tempdir();
     for (name, content) in files {
         std::fs::write(dir.path().join(name), content).expect("cannot write fixture file");
     }

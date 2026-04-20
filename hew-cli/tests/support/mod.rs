@@ -306,6 +306,41 @@ fn hew_lib_name() -> &'static str {
     }
 }
 
+pub fn tempdir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("create hew-cli tempdir")
+}
+
+pub fn hew_command() -> Command {
+    Command::new(hew_binary())
+}
+
+pub fn run_hew(args: &[&str]) -> Output {
+    hew_command()
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to spawn hew binary")
+}
+
+pub fn run_hew_in(current_dir: &Path, args: &[&str]) -> Output {
+    hew_command()
+        .args(args)
+        .current_dir(current_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to spawn hew binary")
+}
+
+pub fn assert_success(output: &Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{context}\n{}",
+        describe_output(output)
+    );
+}
+
 pub fn describe_output(output: &Output) -> String {
     format!(
         "stdout:\n{}\nstderr:\n{}",

@@ -1,20 +1,9 @@
+mod common;
+
+use common::parse_and_typecheck_isolated as parse_and_check;
 use hew_parser::ast::{Expr, Item, Stmt};
 use hew_types::check::SpanKey;
-use hew_types::module_registry::ModuleRegistry;
-use hew_types::{Checker, Ty};
-
-fn parse_and_check(source: &str) -> (hew_parser::ast::Program, hew_types::TypeCheckOutput) {
-    let parse_result = hew_parser::parse(source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "parse errors: {:?}",
-        parse_result.errors
-    );
-
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&parse_result.program);
-    (parse_result.program, output)
-}
+use hew_types::Ty;
 
 fn main_call_spans(program: &hew_parser::ast::Program) -> Vec<hew_parser::ast::Span> {
     let main_fn = program

@@ -8,6 +8,7 @@
 #include "hew/mlir/HewDialect.h"
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/HewTypes.h"
+#include "test_utils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -27,23 +28,6 @@
 
 static int tests_run = 0;
 static int tests_passed = 0;
-
-#define TEST(name)                                                                                 \
-  do {                                                                                             \
-    tests_run++;                                                                                   \
-    printf("  test %s ... ", #name);                                                               \
-  } while (0)
-
-#define PASS()                                                                                     \
-  do {                                                                                             \
-    tests_passed++;                                                                                \
-    printf("ok\n");                                                                                \
-  } while (0)
-
-#define FAIL(msg)                                                                                  \
-  do {                                                                                             \
-    printf("FAILED: %s\n", msg);                                                                   \
-  } while (0)
 
 static std::string captureVerifyDiagnostics(mlir::Operation *op, bool &failed) {
   std::string diagnostics;

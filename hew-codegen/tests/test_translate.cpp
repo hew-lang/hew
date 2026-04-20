@@ -62,6 +62,17 @@
 #include <unistd.h>
 #endif
 
+static void initContext(mlir::MLIRContext &ctx) {
+  ctx.disableMultithreading();
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::arith::ArithDialect>();
+  ctx.loadDialect<mlir::scf::SCFDialect>();
+  ctx.loadDialect<mlir::memref::MemRefDialect>();
+  ctx.loadDialect<mlir::cf::ControlFlowDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+}
+
 #ifndef _WIN32
 static volatile sig_atomic_t timed_out = 0;
 
@@ -140,17 +151,6 @@ static bool translateWithTimeout(mlir::ModuleOp module, mlir::MLIRContext &conte
 
   fprintf(stderr, "  OK: translation succeeded\n");
   return true;
-}
-
-static void initContext(mlir::MLIRContext &ctx) {
-  ctx.disableMultithreading();
-  ctx.loadDialect<hew::HewDialect>();
-  ctx.loadDialect<mlir::func::FuncDialect>();
-  ctx.loadDialect<mlir::arith::ArithDialect>();
-  ctx.loadDialect<mlir::scf::SCFDialect>();
-  ctx.loadDialect<mlir::memref::MemRefDialect>();
-  ctx.loadDialect<mlir::cf::ControlFlowDialect>();
-  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
 }
 
 static bool hasUnrealizedConversionCast(mlir::Operation *op) {

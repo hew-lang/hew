@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 use support::{hew_binary, repo_root};
 
 fn run_wire_check(current: &str, baseline: &str) -> Output {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let current_path = dir.path().join("current.hew");
     let baseline_path = dir.path().join("baseline.hew");
     std::fs::write(&current_path, current).unwrap();

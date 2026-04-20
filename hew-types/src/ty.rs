@@ -5,7 +5,7 @@
 //! type inference variables.
 
 use crate::builtin_names::canonical_builtin_named_type_name;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -156,9 +156,18 @@ impl Substitution {
         Self::default()
     }
 
-    /// Insert a mapping without occurs check (internal use).
-    pub fn insert(&mut self, var: TypeVar, ty: Ty) {
-        self.mappings.insert(var, ty);
+    /// Insert a mapping after resolving and occurs-checking it.
+    ///
+    /// # Errors
+    /// Returns an occurs-check error when the resolved mapping would introduce
+    /// an infinite type or substitution cycle.
+    pub fn insert(&mut self, var: TypeVar, ty: &Ty) -> Result<(), crate::unify::UnifyError> {
+        let resolved = ty.apply_subst(self);
+        if resolved.contains_var(var) {
+            return Err(crate::unify::UnifyError::OccursCheck { var, ty: resolved });
+        }
+        self.mappings.insert(var, resolved);
+        Ok(())
     }
 
     /// Look up a type variable in the substitution.
@@ -187,12 +196,23 @@ impl Substitution {
     /// Walk a variable to its final resolved type.
     #[must_use]
     pub fn resolve(&self, ty: &Ty) -> Ty {
+        self.resolve_inner(ty, &mut HashSet::new())
+    }
+
+    fn resolve_inner(&self, ty: &Ty, visited: &mut HashSet<TypeVar>) -> Ty {
         match ty {
             Ty::Var(v) => match self.lookup(*v) {
-                Some(resolved) => self.resolve(resolved),
+                Some(resolved) => {
+                    if !visited.insert(*v) {
+                        return Ty::Error;
+                    }
+                    let resolved = self.resolve_inner(resolved, visited);
+                    visited.remove(v);
+                    resolved
+                }
                 None => ty.clone(),
             },
-            _ => ty.apply_subst(self),
+            _ => ty.apply_subst_inner(self, visited),
         }
     }
 }
@@ -777,16 +797,86 @@ impl Ty {
     /// Apply a full substitution to this type.
     #[must_use]
     pub fn apply_subst(&self, subst: &Substitution) -> Ty {
+        self.apply_subst_inner(subst, &mut HashSet::new())
+    }
+
+    fn apply_subst_inner(&self, subst: &Substitution, visited: &mut HashSet<TypeVar>) -> Ty {
         if subst.mappings().is_empty() {
             return self.clone();
         }
-        if let Ty::Var(v) = self {
-            return match subst.lookup(*v) {
-                Some(resolved) => resolved.apply_subst(subst),
+        match self {
+            Ty::Var(v) => match subst.lookup(*v) {
+                Some(resolved) => {
+                    if !visited.insert(*v) {
+                        return Ty::Error;
+                    }
+                    let resolved = resolved.apply_subst_inner(subst, visited);
+                    visited.remove(v);
+                    resolved
+                }
                 None => self.clone(),
-            };
+            },
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|elem| elem.apply_subst_inner(subst, visited))
+                    .collect(),
+            ),
+            Ty::Array(elem, size) => {
+                Ty::Array(Box::new(elem.apply_subst_inner(subst, visited)), *size)
+            }
+            Ty::Slice(elem) => Ty::Slice(Box::new(elem.apply_subst_inner(subst, visited))),
+            Ty::Named { name, args } => Ty::Named {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| arg.apply_subst_inner(subst, visited))
+                    .collect(),
+            },
+            Ty::Function { params, ret } => Ty::Function {
+                params: params
+                    .iter()
+                    .map(|param| param.apply_subst_inner(subst, visited))
+                    .collect(),
+                ret: Box::new(ret.apply_subst_inner(subst, visited)),
+            },
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => Ty::Closure {
+                params: params
+                    .iter()
+                    .map(|param| param.apply_subst_inner(subst, visited))
+                    .collect(),
+                ret: Box::new(ret.apply_subst_inner(subst, visited)),
+                captures: captures
+                    .iter()
+                    .map(|capture| capture.apply_subst_inner(subst, visited))
+                    .collect(),
+            },
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => Ty::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(pointee.apply_subst_inner(subst, visited)),
+            },
+            Ty::TraitObject { traits } => Ty::TraitObject {
+                traits: traits
+                    .iter()
+                    .map(|bound| TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|arg| arg.apply_subst_inner(subst, visited))
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            _ => self.clone(),
         }
-        self.map_children(&|child| child.apply_subst(subst))
     }
 
     /// Apply a function to each child type, reconstructing the composite.
@@ -1239,5 +1329,48 @@ mod tests {
     fn test_is_copy_array() {
         assert!(Ty::Array(Box::new(Ty::I32), 10).is_copy());
         assert!(!Ty::Array(Box::new(Ty::String), 10).is_copy());
+    }
+
+    #[test]
+    fn test_substitution_insert_rejects_direct_cycle() {
+        TypeVar::reset();
+        let mut subst = Substitution::new();
+        let v = TypeVar::fresh();
+
+        let result = subst.insert(v, &Ty::Var(v));
+
+        assert!(matches!(
+            result,
+            Err(crate::unify::UnifyError::OccursCheck { var, .. }) if var == v
+        ));
+    }
+
+    #[test]
+    fn test_substitution_resolve_returns_error_on_cycle() {
+        TypeVar::reset();
+        let mut subst = Substitution::new();
+        let v1 = TypeVar::fresh();
+        let v2 = TypeVar::fresh();
+
+        subst.mappings.insert(v1, Ty::Var(v2));
+        subst.mappings.insert(v2, Ty::Var(v1));
+
+        assert_eq!(subst.resolve(&Ty::Var(v1)), Ty::Error);
+    }
+
+    #[test]
+    fn test_apply_subst_returns_error_on_cycle() {
+        TypeVar::reset();
+        let mut subst = Substitution::new();
+        let v1 = TypeVar::fresh();
+        let v2 = TypeVar::fresh();
+
+        subst.mappings.insert(v1, Ty::Var(v2));
+        subst.mappings.insert(v2, Ty::Var(v1));
+
+        assert_eq!(
+            Ty::Tuple(vec![Ty::Var(v1)]).apply_subst(&subst),
+            Ty::Tuple(vec![Ty::Error])
+        );
     }
 }

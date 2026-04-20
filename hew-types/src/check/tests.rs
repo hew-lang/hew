@@ -6151,7 +6151,7 @@ fn literal_coercion_through_type_var() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     // Create a type variable and unify it with i32
     let tv = TypeVar::fresh();
-    checker.subst.insert(tv, Ty::I32);
+    checker.subst.insert(tv, &Ty::I32).unwrap();
     // Now check an integer literal against the type variable
     let lit = make_int_literal(42, 0..2);
     let ty = checker.check_against(&lit.0, &lit.1, &Ty::Var(tv));
@@ -8365,6 +8365,44 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
     assert!(
         !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
         "generic-method guard in super-trait must veto structural check for child trait"
+    );
+}
+
+#[test]
+fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .trait_super
+        .insert("TraitA".to_string(), vec!["TraitB".to_string()]);
+    checker
+        .trait_super
+        .insert("TraitB".to_string(), vec!["TraitA".to_string()]);
+    checker
+        .trait_impls_set
+        .insert(("Thing".to_string(), "TraitA".to_string()));
+
+    let sig = FnSig {
+        type_params: vec!["T".to_string()],
+        type_param_bounds: HashMap::from([("T".to_string(), vec!["MissingTrait".to_string()])]),
+        ..Default::default()
+    };
+
+    checker.enforce_type_param_bounds(
+        &sig,
+        &[Ty::Named {
+            name: "Thing".to_string(),
+            args: vec![],
+        }],
+        &(0..0),
+    );
+
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied),
+        "expected cyclic trait hierarchy bound check to fail with a diagnostic; got {:?}",
+        checker.errors
     );
 }
 

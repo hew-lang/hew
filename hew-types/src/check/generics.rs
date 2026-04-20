@@ -151,7 +151,9 @@ impl Checker {
         for ta in &resolved_type_args {
             if let Ty::Var(v) = ta {
                 if let Some(fresh_ty) = mapping.get(&v.0) {
-                    self.subst.insert(*v, fresh_ty.clone());
+                    self.subst.insert(*v, fresh_ty).expect(
+                        "freshening an unresolved type variable must not create a substitution cycle",
+                    );
                 }
             }
         }
@@ -420,9 +422,21 @@ impl Checker {
 
     /// Check if `child_trait` transitively extends `parent_trait`.
     pub(super) fn trait_extends(&self, child_trait: &str, parent_trait: &str) -> bool {
+        self.trait_extends_inner(child_trait, parent_trait, &mut HashSet::new())
+    }
+
+    fn trait_extends_inner(
+        &self,
+        child_trait: &str,
+        parent_trait: &str,
+        visited: &mut HashSet<String>,
+    ) -> bool {
+        if !visited.insert(child_trait.to_string()) {
+            return false;
+        }
         if let Some(supers) = self.trait_super.get(child_trait) {
             for s in supers {
-                if s == parent_trait || self.trait_extends(s, parent_trait) {
+                if s == parent_trait || self.trait_extends_inner(s, parent_trait, visited) {
                     return true;
                 }
             }

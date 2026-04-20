@@ -67,7 +67,7 @@ pub fn detect_actor_ref_cycles(
 /// looking through containers (`Vec`, `Array`, `Slice`, `Tuple`, `Option`,
 /// `Result`, `HashMap`) and transitively through struct fields.
 fn collect_actor_refs<'a>(
-    ty: &'a Ty,
+    ty: &Ty,
     type_defs: &'a HashMap<String, TypeDef>,
     out: &mut HashSet<&'a str>,
     visited_structs: &mut HashSet<&'a str>,
@@ -88,19 +88,32 @@ fn collect_actor_refs<'a>(
                     name: actor_name, ..
                 }) = args.first()
                 {
-                    if type_defs.contains_key(actor_name) {
-                        out.insert(actor_name.as_str());
+                    if let Some(actor_def) = type_defs.get(actor_name) {
+                        out.insert(actor_def.name.as_str());
                     }
                 }
             } else {
                 // Transitively follow struct fields
                 if let Some(td) = type_defs.get(name) {
+                    let struct_name = td.name.as_str();
                     if td.kind == crate::check::TypeDefKind::Struct
-                        && !visited_structs.contains(name.as_str())
+                        && !visited_structs.contains(struct_name)
                     {
-                        visited_structs.insert(name.as_str());
+                        visited_structs.insert(struct_name);
                         for field_ty in td.fields.values() {
-                            collect_actor_refs(field_ty, type_defs, out, visited_structs);
+                            let instantiated_field = td
+                                .type_params
+                                .iter()
+                                .zip(args.iter())
+                                .fold(field_ty.clone(), |field, (param, arg)| {
+                                    field.substitute_named_param(param, arg)
+                                });
+                            collect_actor_refs(
+                                &instantiated_field,
+                                type_defs,
+                                out,
+                                visited_structs,
+                            );
                         }
                     }
                 }
@@ -438,5 +451,53 @@ mod tests {
         let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
         assert!(capable.is_empty());
         assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn generic_struct_fields_participate_in_actor_cycle_detection() {
+        let generic_wrapper = (
+            "Wrapper".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Wrapper".to_string(),
+                type_params: vec!["T".to_string()],
+                fields: HashMap::from([(
+                    "target".to_string(),
+                    Ty::actor_ref(Ty::Named {
+                        name: "T".to_string(),
+                        args: vec![],
+                    }),
+                )]),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+        let type_defs: HashMap<String, TypeDef> = [
+            generic_wrapper,
+            make_actor(
+                "A",
+                HashMap::from([(
+                    "wrapper".to_string(),
+                    Ty::Named {
+                        name: "Wrapper".to_string(),
+                        args: vec![Ty::Named {
+                            name: "B".to_string(),
+                            args: vec![],
+                        }],
+                    },
+                )]),
+            ),
+            make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
+        ]
+        .into_iter()
+        .collect();
+
+        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+
+        assert!(capable.contains("A"));
+        assert!(capable.contains("B"));
+        assert_eq!(cycles.len(), 1);
     }
 }

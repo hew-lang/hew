@@ -83,8 +83,17 @@ struct HewActorRef {
     data: HewActorRefData,
 }
 
-// SAFETY: ActorRef snapshots are copied by value and only dereferenced through
-// runtime FFI that already requires the pointed-to actor/transport to remain live.
+// SAFETY: `HewActorRef` snapshots are copied by value and dereferenced only
+// through runtime FFI (`hew_actor_ref_is_alive`) that already requires the
+// pointed-to actor / transport to remain live for the duration of the call.
+//
+// The attached reader thread extends this required lifetime: it must stay
+// live until the reader observes `closed` and exits. `close_handle` enforces
+// this by waiting `READER_JOIN_WAIT` for `exited` before returning, after
+// which the reader is guaranteed not to touch the ref again. Callers that
+// free the actor MUST NOT do so before either (a) the attached `Conn` is
+// closed, or (b) the actor has been signalled quiescent; the runtime's
+// drain_actors primitive enforces (b) today.
 unsafe impl Send for HewActorRef {}
 
 impl HewWsConn {
@@ -1346,7 +1355,7 @@ mod tests {
                     "actor should transition to a non-live state"
                 );
                 assert!(
-                    wait_for_reader_exit(conn, Duration::from_secs(1)),
+                    wait_for_reader_exit(conn, Duration::from_millis(750)),
                     "reader should exit within the bounded deadline after actor stop"
                 );
 
@@ -1373,7 +1382,7 @@ mod tests {
                     "crashed actor should become non-live"
                 );
                 assert!(
-                    wait_for_reader_exit(conn, Duration::from_secs(1)),
+                    wait_for_reader_exit(conn, Duration::from_millis(750)),
                     "reader should exit within the bounded deadline after actor crash"
                 );
 
@@ -1396,7 +1405,7 @@ mod tests {
                 unsafe { hew_ws_close(conn) };
 
                 assert!(
-                    wait_for_reader_exit(conn, Duration::from_secs(1)),
+                    wait_for_reader_exit(conn, Duration::from_millis(750)),
                     "reader should exit promptly when the attached connection closes"
                 );
 
@@ -1433,7 +1442,7 @@ mod tests {
                     "remote close should notify the actor exactly once"
                 );
                 assert!(
-                    wait_for_reader_exit(conn, Duration::from_secs(1)),
+                    wait_for_reader_exit(conn, Duration::from_millis(750)),
                     "reader should exit after the remote close handshake"
                 );
                 assert_no_event(&rx, Duration::from_millis(200));

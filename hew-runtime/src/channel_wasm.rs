@@ -17,6 +17,8 @@ use std::ffi::{c_char, CStr};
 use std::ptr;
 use std::rc::Rc;
 
+use crate::channel_common::{bytes_to_cstr, free_channel_pair};
+
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -215,19 +217,8 @@ pub unsafe extern "C" fn hew_channel_pair_receiver(
 /// `pair` must be a valid pointer returned by [`hew_channel_new`].
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub unsafe extern "C" fn hew_channel_pair_free(pair: *mut HewWasmChannelPair) {
-    if pair.is_null() {
-        return;
-    }
     // SAFETY: caller guarantees `pair` came from `hew_channel_new`.
-    let pair = unsafe { Box::from_raw(pair) };
-    if !pair.sender.is_null() {
-        // SAFETY: unextracted sender handles are still Box-owned here.
-        unsafe { drop(Box::from_raw(pair.sender)) };
-    }
-    if !pair.receiver.is_null() {
-        // SAFETY: unextracted receiver handles are still Box-owned here.
-        unsafe { drop(Box::from_raw(pair.receiver)) };
-    }
+    unsafe { free_channel_pair(pair, |pair| (&mut pair.sender, &mut pair.receiver)) };
 }
 
 // ── Send ────────────────────────────────────────────────────────────────
@@ -349,22 +340,6 @@ impl Drop for WasmChannelReceiver {
     fn drop(&mut self) {
         self.inner.borrow_mut().receiver_closed = true;
     }
-}
-
-fn bytes_to_cstr(item: &[u8]) -> *mut c_char {
-    let len = item.len();
-    // SAFETY: malloc returns either a null pointer or a valid allocation.
-    let buf = unsafe { libc::malloc(len + 1) };
-    if buf.is_null() {
-        return ptr::null_mut();
-    }
-    if len > 0 {
-        // SAFETY: `buf` has `len + 1` bytes and `item` has `len` readable bytes.
-        unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
-    }
-    // SAFETY: the final byte of the allocation is reserved for the terminator.
-    unsafe { *buf.cast::<u8>().add(len) = 0 };
-    buf.cast::<c_char>()
 }
 
 /// Try to receive a message without blocking.

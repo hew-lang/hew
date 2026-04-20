@@ -8,6 +8,11 @@ mod navigation;
 mod workspace;
 
 #[cfg(test)]
+use self::handlers::language_features::{
+    lsp_code_actions_for_diagnostic, lsp_inlay_hint_from_analysis,
+    lsp_signature_help_from_analysis, remove_unused_imports_kind,
+};
+#[cfg(test)]
 use self::handlers::navigation::rename_error_to_jsonrpc;
 #[cfg(test)]
 use self::handlers::text_sync::build_initialize_result_from_caps_json;
@@ -69,28 +74,27 @@ use tower_lsp::lsp_types::{
     WorkspaceSymbolParams,
 };
 use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
-    ExecuteCommandParams, FoldingRange, FoldingRangeKind, FoldingRangeParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    MessageType, OneOf, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
+    CodeActionKind, CodeActionParams, CodeActionResponse, CompletionOptions, CompletionParams,
+    CompletionResponse, Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
+    ExecuteCommandParams, FoldingRange, FoldingRangeParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, Location, MessageType, OneOf, Position,
+    PrepareRenameResponse, Range, ReferenceParams, RenameParams, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
 #[cfg(test)]
 use tower_lsp::lsp_types::{
-    CompletionItemKind, DiagnosticSeverity, InsertTextFormat, SemanticToken, SymbolKind,
+    CodeActionOrCommand, CompletionItemKind, DiagnosticSeverity, DocumentSymbol, InlayHintTooltip,
+    InsertTextFormat, SemanticToken, SymbolKind,
 };
 use tower_lsp::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
 use tower_lsp::lsp_types::{
-    InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions, InlayHintParams,
-    InlayHintServerCapabilities, InlayHintTooltip, ParameterInformation, ParameterLabel,
-    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
+    InlayHint, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams,
 };
 use tower_lsp::lsp_types::{
     TypeHierarchyItem, TypeHierarchyPrepareParams, TypeHierarchySubtypesParams,
@@ -311,156 +315,6 @@ fn build_run_test_invocation(test_name: &str, workspace_root: &Path) -> (PathBuf
     )
 }
 
-fn remove_unused_imports_kind() -> CodeActionKind {
-    CodeActionKind::from(REMOVE_UNUSED_IMPORTS_KIND)
-}
-
-fn code_action_kind_matches_filter(
-    kind: &CodeActionKind,
-    requested_kinds: Option<&[CodeActionKind]>,
-) -> bool {
-    let Some(requested_kinds) = requested_kinds else {
-        return true;
-    };
-    requested_kinds.iter().any(|requested| {
-        kind.as_str() == requested.as_str()
-            || (kind.as_str().starts_with(requested.as_str())
-                && kind.as_str().as_bytes().get(requested.as_str().len()) == Some(&b'.'))
-    })
-}
-
-fn lsp_inlay_hint_from_analysis(
-    source: &str,
-    line_offsets: &[usize],
-    hint: hew_analysis::InlayHint,
-) -> InlayHint {
-    let (line, col) = offset_to_line_col(source, line_offsets, hint.offset);
-    let tooltip = hint.label.clone();
-    InlayHint {
-        position: Position::new(
-            u32::try_from(line).expect("line offsets fit in u32"),
-            u32::try_from(col).expect("column offsets fit in u32"),
-        ),
-        label: InlayHintLabel::String(hint.label),
-        kind: Some(match hint.kind {
-            hew_analysis::InlayHintKind::Type => InlayHintKind::TYPE,
-            hew_analysis::InlayHintKind::Parameter => InlayHintKind::PARAMETER,
-        }),
-        text_edits: None,
-        tooltip: Some(InlayHintTooltip::String(tooltip)),
-        padding_left: if hint.padding_left { Some(true) } else { None },
-        padding_right: None,
-        data: None,
-    }
-}
-
-fn lsp_signature_help_from_analysis(result: hew_analysis::SignatureHelpResult) -> SignatureHelp {
-    let active_parameter = result.active_parameter;
-    let active_signature = result.active_signature;
-    let signatures = result
-        .signatures
-        .into_iter()
-        .map(|sig| {
-            let params = sig
-                .parameters
-                .into_iter()
-                .map(|p| ParameterInformation {
-                    label: ParameterLabel::LabelOffsets([p.label_start, p.label_end]),
-                    documentation: None,
-                })
-                .collect();
-            SignatureInformation {
-                label: sig.label,
-                documentation: None,
-                parameters: Some(params),
-                active_parameter,
-            }
-        })
-        .collect();
-    SignatureHelp {
-        signatures,
-        active_signature,
-        active_parameter,
-    }
-}
-
-fn lsp_code_actions_for_diagnostic(
-    uri: &Url,
-    doc: &DocumentState,
-    diag: &Diagnostic,
-    requested_kinds: Option<&[CodeActionKind]>,
-) -> Vec<CodeActionOrCommand> {
-    let kind = diag
-        .data
-        .as_ref()
-        .and_then(|d| d.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        .map(String::from);
-    let suggestions = diag
-        .data
-        .as_ref()
-        .and_then(|d| d.get("suggestions"))
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_default();
-    let start = position_to_offset(&doc.source, &doc.line_offsets, diag.range.start);
-    let end = position_to_offset(&doc.source, &doc.line_offsets, diag.range.end);
-    let info = hew_analysis::code_actions::DiagnosticInfo {
-        kind: kind.clone(),
-        message: diag.message.clone(),
-        span: hew_analysis::OffsetSpan { start, end },
-        suggestions,
-    };
-    let actions = hew_analysis::code_actions::build_code_actions(&doc.source, &[info]);
-    let mut lsp_actions = Vec::new();
-
-    for action in actions {
-        let text_edits: Vec<TextEdit> = action
-            .edits
-            .iter()
-            .map(|e| TextEdit {
-                range: offset_range_to_lsp(
-                    &doc.source,
-                    &doc.line_offsets,
-                    e.span.start,
-                    e.span.end,
-                ),
-                new_text: e.new_text.clone(),
-            })
-            .collect();
-        let mut changes = HashMap::new();
-        changes.insert(uri.clone(), text_edits);
-        let edit = WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        };
-
-        if code_action_kind_matches_filter(&CodeActionKind::QUICKFIX, requested_kinds) {
-            lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: action.title.clone(),
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(vec![diag.clone()]),
-                edit: Some(edit.clone()),
-                ..Default::default()
-            }));
-        }
-
-        if kind.as_deref() == Some("UnusedImport")
-            && action.title == "Remove unused import"
-            && code_action_kind_matches_filter(&remove_unused_imports_kind(), requested_kinds)
-        {
-            lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: action.title,
-                kind: Some(remove_unused_imports_kind()),
-                diagnostics: Some(vec![diag.clone()]),
-                edit: Some(edit),
-                ..Default::default()
-            }));
-        }
-    }
-
-    lsp_actions
-}
-
 // ── Server ───────────────────────────────────────────────────────────
 
 /// Hew language server providing IDE features via LSP.
@@ -607,53 +461,11 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let uri = &params.text_document_position.text_document.uri;
-        let position = params.text_document_position.position;
-        let items = match self.documents.get(uri) {
-            Some(doc) => {
-                let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-                let analysis_items = hew_analysis::completions::complete(
-                    &doc.source,
-                    &doc.parse_result,
-                    doc.type_output.as_ref(),
-                    offset,
-                );
-                analysis_items.into_iter().map(to_lsp_completion).collect()
-            }
-            None => vec![],
-        };
-        Ok(Some(CompletionResponse::Array(items)))
+        Ok(Some(handlers::language_features::completion(self, &params)))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-
-        let result = hew_analysis::hover::hover(
-            &doc.source,
-            &doc.parse_result,
-            doc.type_output.as_ref(),
-            offset,
-        );
-
-        Ok(result.map(|hr| {
-            let range = hr
-                .span
-                .map(|s| offset_range_to_lsp(&doc.source, &doc.line_offsets, s.start, s.end));
-            Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: hr.contents,
-                }),
-                range,
-            }
-        }))
+        Ok(handlers::language_features::hover(self, &params))
     }
 
     async fn goto_definition(
@@ -667,46 +479,18 @@ impl LanguageServer for HewLanguageServer {
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let analysis_symbols =
-            hew_analysis::symbols::build_document_symbols(&doc.source, &doc.parse_result);
-        let symbols: Vec<DocumentSymbol> = analysis_symbols
-            .into_iter()
-            .map(|s| symbol_info_to_doc_symbol(&doc.source, &doc.line_offsets, s))
-            .collect();
-        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        Ok(handlers::language_features::document_symbol(self, &params))
     }
 
     async fn semantic_tokens_full(
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(&doc.source);
-        let tokens = analysis_tokens_to_lsp(&doc.source, &doc.line_offsets, &analysis_tokens)
-            .map_err(|error| internal_error(error.message()))?;
-        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-            result_id: None,
-            data: tokens,
-        })))
+        handlers::language_features::semantic_tokens_full(self, &params)
     }
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let links = build_document_links(uri, &doc.source, &doc.line_offsets, &doc.parse_result);
-        Ok(non_empty(links))
+        Ok(handlers::language_features::document_link(self, &params))
     }
 
     async fn prepare_type_hierarchy(
@@ -778,56 +562,15 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-        let Some(tc) = &doc.type_output else {
-            return Ok(None);
-        };
-        let analysis_hints =
-            hew_analysis::inlay_hints::build_inlay_hints(&doc.source, &doc.parse_result, tc);
-        let lsp_hints: Vec<InlayHint> = analysis_hints
-            .into_iter()
-            .map(|hint| lsp_inlay_hint_from_analysis(&doc.source, &doc.line_offsets, hint))
-            .collect();
-        Ok(non_empty(lsp_hints))
+        Ok(handlers::language_features::inlay_hint(self, &params))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-        let Some(tc) = &doc.type_output else {
-            return Ok(None);
-        };
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let Some(result) =
-            hew_analysis::signature_help::build_signature_help(&doc.source, tc, offset)
-        else {
-            return Ok(None);
-        };
-        Ok(Some(lsp_signature_help_from_analysis(result)))
+        Ok(handlers::language_features::signature_help(self, &params))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let mut lsp_actions = Vec::new();
-        for diag in &params.context.diagnostics {
-            lsp_actions.extend(lsp_code_actions_for_diagnostic(
-                uri,
-                &doc,
-                diag,
-                params.context.only.as_deref(),
-            ));
-        }
-        Ok(non_empty(lsp_actions))
+        Ok(handlers::language_features::code_action(self, &params))
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
@@ -835,29 +578,7 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
-        let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let analysis_ranges =
-            hew_analysis::folding::build_folding_ranges(&doc.source, &doc.parse_result);
-        let lsp_ranges: Vec<FoldingRange> = analysis_ranges
-            .into_iter()
-            .map(|r| FoldingRange {
-                start_line: r.start_line,
-                start_character: None,
-                end_line: r.end_line,
-                end_character: None,
-                kind: Some(match r.kind {
-                    hew_analysis::FoldingKind::Region => FoldingRangeKind::Region,
-                    hew_analysis::FoldingKind::Imports => FoldingRangeKind::Imports,
-                    hew_analysis::FoldingKind::Comment => FoldingRangeKind::Comment,
-                }),
-                collapsed_text: None,
-            })
-            .collect();
-        Ok(non_empty(lsp_ranges))
+        Ok(handlers::language_features::folding_range(self, &params))
     }
 }
 

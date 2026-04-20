@@ -494,11 +494,13 @@ pub extern "C" fn hew_sched_init() -> c_int {
         RUN_QUEUE = Some(VecDeque::new());
         INITIALIZED = true;
     }
-    crate::bridge::bridge_init();
     // Register the tracing reset hook so session_reset() clears trace events
     // on WASM just as it does on the native path.  Without this the hook list
     // stays empty and session_reset() in hew_sched_shutdown is a no-op.
     crate::tracing::register_trace_reset_hook();
+    // Initialise the bridge after tracing so its handler-name reset hook is
+    // appended later in the shared session-reset ordering.
+    crate::bridge::bridge_init();
     0
 }
 

@@ -31,11 +31,21 @@ using namespace mlir;
 
 namespace {
 constexpr llvm::StringLiteral kHewDebugParamNameAttr = "hew.debug.param_name";
+constexpr llvm::StringLiteral kHewExplicitDynParamAttr = "hew.explicit_dyn_param";
 
 void setDebugParamNameAttrs(mlir::func::FuncOp funcOp, const std::vector<hew::ast::Param> &params,
                             mlir::Builder &builder) {
   for (size_t i = 0; i < params.size(); ++i)
     funcOp.setArgAttr(i, kHewDebugParamNameAttr, builder.getStringAttr(params[i].name));
+}
+
+void setExplicitDynParamAttrs(mlir::func::FuncOp funcOp, const std::vector<hew::ast::Param> &params,
+                              mlir::Builder &builder) {
+  for (size_t i = 0; i < params.size(); ++i) {
+    if (std::holds_alternative<hew::ast::TypeTraitObject>(params[i].ty.value.kind)) {
+      funcOp.setArgAttr(i, kHewExplicitDynParamAttr, builder.getBoolAttr(true));
+    }
+  }
 }
 } // namespace
 
@@ -474,6 +484,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
   builder.setInsertionPointToEnd(module.getBody());
   auto funcOp = mlir::func::FuncOp::create(builder, location, funcName, funcType);
   setDebugParamNameAttrs(funcOp, fn.params, builder);
+  setExplicitDynParamAttrs(funcOp, fn.params, builder);
   if (funcName != "main") {
     funcOp.setVisibility(ast::is_pub(fn.visibility) ? mlir::SymbolTable::Visibility::Public
                                                     : mlir::SymbolTable::Visibility::Private);

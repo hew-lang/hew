@@ -581,6 +581,7 @@ add_e2e_reject_test(node_lookup_var_init_reject e2e_negative node_lookup_var_ini
 add_e2e_reject_test(node_lookup_assign_reject e2e_negative node_lookup_assign_reject "coerceType: no known conversion")
 add_e2e_reject_test(array_to_vec_actor_ref_reject e2e_negative array_to_vec_actor_ref_reject "coerceType: no known conversion")
 add_e2e_reject_test(let_vec_actor_ref_reject      e2e_negative let_vec_actor_ref_reject      "coerceType: no known conversion")
+add_e2e_reject_test(dyn_trait_generic_method_reject e2e_negative dyn_trait_generic_method_reject "dyn-trait dispatch does not yet support generic methods: apply")
 add_e2e_reject_test(composite_typearg_reject      e2e_negative composite_typearg_reject      "composite type arguments")
 add_e2e_reject_test(composite_typearg_struct_init_reject e2e_negative composite_typearg_struct_init_reject "composite type arguments")
 add_e2e_reject_test(infer_nested_generic_reject   e2e_negative infer_nested_generic_reject   "composite type arguments")

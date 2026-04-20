@@ -1,0 +1,26 @@
+trait Transform {
+    fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+}
+
+type Holder {
+    value: int;
+}
+
+impl Transform for Holder {
+    fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+        f(item.value)
+    }
+}
+
+fn double(x: int) -> int {
+    x * 2
+}
+
+fn run(item: dyn Transform) {
+    println(item.apply(double));
+}
+
+fn main() {
+    let holder = Holder { value: 21 };
+    run(holder);
+}

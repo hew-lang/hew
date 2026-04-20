@@ -466,6 +466,7 @@ private:
 
   /// Line map from serialized AST: byte offset of each line start.
   std::vector<size_t> lineMap_;
+  std::string sourcePath_;
 
   /// Convert a byte offset to (line, column), both 1-based.
   /// Returns (0, 0) if lineMap_ is empty (no debug info).
@@ -1230,6 +1231,7 @@ private:
   // ── dyn Trait dispatch infrastructure ────────────────────────────
   struct TraitImplInfo {
     std::string typeName;
+    std::vector<std::string> modulePath;
     std::string vtableName;                 // e.g. "__vtable_HT3DogF8Greetable"
     std::vector<std::string> shimFunctions; // shim function names in vtable order
   };
@@ -1239,6 +1241,7 @@ private:
   };
   // traitName → dispatch info
   std::unordered_map<std::string, TraitDispatchInfo> traitDispatchRegistry;
+  std::unordered_set<std::string> explicitDynTraitUses;
   // Track dyn-trait variable types: varName → traitName
   std::unordered_map<std::string, std::string> dynTraitVarTypes;
 
@@ -1257,14 +1260,16 @@ private:
                          const std::vector<std::string> &methodNames);
 
   /// Generate vtable dispatch shim functions for a (type, trait) pair.
-  void generateTraitImplShims(const std::string &typeName, const std::string &traitName);
+  void generateTraitImplShims(const std::string &typeName, const std::string &traitName,
+                              mlir::Location location);
 
   /// Generate a single dyn dispatch shim function.
   void generateDynDispatchShim(const std::string &implFuncName);
 
   /// Coerce a concrete struct value to a dyn Trait fat pointer {data_ptr, vtable_ptr}.
   mlir::Value coerceToDynTrait(mlir::Value concreteVal, const std::string &typeName,
-                               const std::string &traitName, mlir::Location location);
+                               const std::string &traitName, mlir::Location location,
+                               bool rejectGenericMethods = false);
 
   // ── Generics monomorphization ──────────────────────────────────
   // Registry of generic (unspecialized) function declarations.

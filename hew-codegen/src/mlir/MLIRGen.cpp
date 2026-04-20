@@ -38,9 +38,12 @@
 
 #include <algorithm>
 #include <cassert>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
+#include <regex>
+#include <sstream>
 #include <string>
 
 using namespace hew;
@@ -49,6 +52,7 @@ using namespace mlir;
 namespace {
 
 constexpr llvm::StringLiteral kHewDebugParamNameAttr = "hew.debug.param_name";
+constexpr llvm::StringLiteral kHewExplicitDynParamAttr = "hew.explicit_dyn_param";
 
 bool isQualifiedStdlibPointerBackedHandleName(llvm::StringRef name) {
   return name == "stream.Stream" || name == "stream.Sink" || name == "stream.StreamPair" ||
@@ -64,6 +68,15 @@ void setDebugParamNameAttrs(mlir::func::FuncOp funcOp, const std::vector<hew::as
                             mlir::Builder &builder) {
   for (size_t i = 0; i < params.size(); ++i)
     funcOp.setArgAttr(i, kHewDebugParamNameAttr, builder.getStringAttr(params[i].name));
+}
+
+void setExplicitDynParamAttrs(mlir::func::FuncOp funcOp, const std::vector<hew::ast::Param> &params,
+                              mlir::Builder &builder) {
+  for (size_t i = 0; i < params.size(); ++i) {
+    if (std::holds_alternative<hew::ast::TypeTraitObject>(params[i].ty.value.kind)) {
+      funcOp.setArgAttr(i, kHewExplicitDynParamAttr, builder.getBoolAttr(true));
+    }
+  }
 }
 
 } // namespace
@@ -474,8 +487,8 @@ static std::optional<ast::WireDecl> wireMetadataToWireDecl(const ast::TypeDecl &
 
 MLIRGen::MLIRGen(mlir::MLIRContext &context, const std::string &targetTriple,
                  const std::string &sourcePath, const std::vector<size_t> &lineMap)
-    : lineMap_(lineMap), context(context), builder(&context), targetTriple(targetTriple),
-      currentLoc(builder.getUnknownLoc()) {
+    : lineMap_(lineMap), sourcePath_(sourcePath), context(context), builder(&context),
+      targetTriple(targetTriple), currentLoc(builder.getUnknownLoc()) {
   fileIdentifier = builder.getStringAttr(sourcePath.empty() ? "<unknown>" : sourcePath);
   isWasm32_ = targetTriple.find("wasm32") != std::string::npos;
   cachedSizeType_ = mlir::IntegerType::get(&context, isWasm32_ ? 32 : 64);
@@ -3109,6 +3122,21 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     currentModulePath.clear();
   };
 
+  explicitDynTraitUses.clear();
+  if (!sourcePath_.empty()) {
+    std::ifstream sourceFile(sourcePath_);
+    if (sourceFile) {
+      std::ostringstream buffer;
+      buffer << sourceFile.rdbuf();
+      static const std::regex dynTraitPattern(R"(\bdyn\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
+      const auto sourceText = buffer.str();
+      for (auto it = std::sregex_iterator(sourceText.begin(), sourceText.end(), dynTraitPattern);
+           it != std::sregex_iterator(); ++it) {
+        explicitDynTraitUses.insert((*it)[1].str());
+      }
+    }
+  }
+
   // Pass 0: Process imports early so that stdlib extern declarations are
   // available before any function bodies are generated.
   forEachItem([&](const auto &spannedItem) {
@@ -3697,6 +3725,7 @@ void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string
   builder.setInsertionPointToEnd(module.getBody());
   auto funcOp = mlir::func::FuncOp::create(builder, location, funcName, funcType);
   setDebugParamNameAttrs(funcOp, fn.params, builder);
+  setExplicitDynParamAttrs(funcOp, fn.params, builder);
   builder.restoreInsertionPoint(savedIP);
 }
 
@@ -4629,14 +4658,14 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl,
     }
   }
 
-  // Register this type for trait dispatch and generate shim functions
+  // Register this type for trait dispatch; dyn shims are generated lazily when
+  // code actually coerces a concrete value to a trait object.
   if (traitIt != traitRegistry.end()) {
     std::vector<std::string> methodNames;
     for (const auto *tm : traitIt->second.methods) {
       methodNames.push_back(tm->name);
     }
     registerTraitImpl(typeName, traitName, methodNames);
-    generateTraitImplShims(typeName, traitName);
   }
 
   if (traitName == "Drop") {
@@ -4689,6 +4718,7 @@ void MLIRGen::registerTraitImpl(const std::string &typeName, const std::string &
   dispatchInfo.methodNames = methodNames;
   TraitImplInfo implInfo;
   implInfo.typeName = typeName;
+  implInfo.modulePath = currentModulePath;
   implInfo.vtableName = "__vtable" + mangleName(currentModulePath, typeName, traitName);
   // Pre-compute shim function names (actual functions generated later)
   auto traitIt = traitRegistry.find(traitName);
@@ -4707,7 +4737,8 @@ void MLIRGen::registerTraitImpl(const std::string &typeName, const std::string &
 // ============================================================================
 
 mlir::Value MLIRGen::coerceToDynTrait(mlir::Value concreteVal, const std::string &typeName,
-                                      const std::string &traitName, mlir::Location location) {
+                                      const std::string &traitName, mlir::Location location,
+                                      bool rejectGenericMethods) {
   auto dispIt = traitDispatchRegistry.find(traitName);
   if (dispIt == traitDispatchRegistry.end()) {
     ++errorCount_;
@@ -4727,6 +4758,26 @@ mlir::Value MLIRGen::coerceToDynTrait(mlir::Value concreteVal, const std::string
     ++errorCount_;
     emitError(location) << typeName << " does not implement " << traitName;
     return nullptr;
+  }
+
+  if (rejectGenericMethods && explicitDynTraitUses.count(traitName)) {
+    const unsigned errorCountBeforeShimGen = errorCount_;
+    generateTraitImplShims(typeName, traitName, location);
+    if (errorCount_ != errorCountBeforeShimGen)
+      return nullptr;
+
+    implInfo = nullptr;
+    for (const auto &impl : dispIt->second.impls) {
+      if (impl.typeName == typeName) {
+        implInfo = &impl;
+        break;
+      }
+    }
+    if (!implInfo) {
+      ++errorCount_;
+      emitError(location) << "no dispatch info for " << typeName << " as dyn " << traitName;
+      return nullptr;
+    }
   }
 
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
@@ -4831,7 +4882,8 @@ void MLIRGen::generateDynDispatchShim(const std::string &implFuncName) {
   builder.restoreInsertionPoint(savedIP);
 }
 
-void MLIRGen::generateTraitImplShims(const std::string &typeName, const std::string &traitName) {
+void MLIRGen::generateTraitImplShims(const std::string &typeName, const std::string &traitName,
+                                     mlir::Location location) {
   auto traitIt = traitRegistry.find(traitName);
   if (traitIt == traitRegistry.end())
     return;
@@ -4853,11 +4905,16 @@ void MLIRGen::generateTraitImplShims(const std::string &typeName, const std::str
 
   // Rebuild the shim-function list with the correct resolved names and
   // generate each shim body.
+  auto savedModulePath = currentModulePath;
+  if (implInfoPtr)
+    currentModulePath = implInfoPtr->modulePath;
   llvm::SmallVector<std::string> updatedShims;
   for (const auto *tm : traitIt->second.methods) {
     if (tm->type_params && !tm->type_params->empty()) {
-      // CODEGEN-TODO: dyn-trait vtables do not yet thread per-method type args.
-      continue;
+      ++errorCount_;
+      emitError(location) << "dyn-trait dispatch does not yet support generic methods: "
+                          << tm->name;
+      return;
     }
     std::string implFuncName = resolveTraitImplBodyName(
         typeName, traitName, tm->name, TraitImplBodyNameMode::PreferQualifiedIfGenerated);
@@ -4870,6 +4927,7 @@ void MLIRGen::generateTraitImplShims(const std::string &typeName, const std::str
   if (implInfoPtr) {
     implInfoPtr->shimFunctions.assign(updatedShims.begin(), updatedShims.end());
   }
+  currentModulePath = savedModulePath;
 }
 
 // ============================================================================

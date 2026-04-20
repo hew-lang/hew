@@ -884,6 +884,11 @@ impl App {
             bytes_freed: 491_520,
             bytes_live: 32_768,
             peak_bytes_live: 65_536,
+            tcp_bytes_read: 65_536,
+            tcp_bytes_written: 98_304,
+            tcp_accept_count: 24,
+            tcp_connect_count: 22,
+            tcp_error_count: 1,
         };
         self.msg_rate = 231.4;
 
@@ -1367,7 +1372,9 @@ mod tests {
                     .lock()
                     .expect("lock trace server state")
                     .metrics_timestamp;
-                format!(r#"{{"timestamp_secs":{metrics_timestamp}}}"#)
+                format!(
+                    r#"{{"timestamp_secs":{metrics_timestamp},"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}}"#
+                )
             }
             "/api/actors" | "/api/metrics/history" | "/api/supervisors" | "/api/crashes" => {
                 "[]".to_owned()

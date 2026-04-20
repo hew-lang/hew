@@ -9,10 +9,13 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::{atomic::Ordering, LazyLock, RwLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    LazyLock, OnceLock, RwLock,
+};
 
 use crate::lifetime::poison_safe::PoisonSafe;
 
@@ -314,6 +317,50 @@ pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> 
 // ===========================================================================
 // TCP transport
 // ===========================================================================
+
+#[derive(Debug, Default)]
+struct TcpCounters {
+    bytes_read: AtomicU64,
+    bytes_written: AtomicU64,
+    accept_count: AtomicU64,
+    connect_count: AtomicU64,
+    /// Counts syscall-level TCP failures from `hew_tcp_read`, `hew_tcp_write`,
+    /// `hew_tcp_accept`, and `hew_tcp_connect`. `WouldBlock` and `Interrupted`
+    /// are expected non-blocking outcomes and do not increment this counter.
+    error_count: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TcpCountersSnapshot {
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    pub accept_count: u64,
+    pub connect_count: u64,
+    pub error_count: u64,
+}
+
+fn tcp_counters() -> &'static TcpCounters {
+    static TCP_COUNTERS: OnceLock<TcpCounters> = OnceLock::new();
+    TCP_COUNTERS.get_or_init(TcpCounters::default)
+}
+
+#[must_use]
+pub fn tcp_counters_snapshot() -> TcpCountersSnapshot {
+    let counters = tcp_counters();
+    TcpCountersSnapshot {
+        bytes_read: counters.bytes_read.load(Ordering::Relaxed),
+        bytes_written: counters.bytes_written.load(Ordering::Relaxed),
+        accept_count: counters.accept_count.load(Ordering::Relaxed),
+        connect_count: counters.connect_count.load(Ordering::Relaxed),
+        error_count: counters.error_count.load(Ordering::Relaxed),
+    }
+}
+
+fn record_tcp_error_kind(kind: ErrorKind) {
+    if !matches!(kind, ErrorKind::WouldBlock | ErrorKind::Interrupted) {
+        tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// Internal state for the TCP transport.
 struct TcpTransport {
@@ -765,10 +812,15 @@ pub extern "C" fn hew_tcp_accept(listener: c_int) -> c_int {
     let Some(listener) = tcp_clone_listener(listener) else {
         return -1;
     };
-    let Ok((stream, _)) = listener.accept() else {
-        return -1;
+    let (stream, _) = match listener.accept() {
+        Ok(accepted) => accepted,
+        Err(e) => {
+            record_tcp_error_kind(e.kind());
+            return -1;
+        }
     };
     let _ = stream.set_nodelay(true);
+    tcp_counters().accept_count.fetch_add(1, Ordering::Relaxed);
     TCP_API_STATE.access(|state| {
         let handle = state.alloc_handle();
         state.streams.insert(handle, stream);
@@ -801,6 +853,7 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
     let stream = match TcpStream::connect(connect_addr) {
         Ok(s) => s,
         Err(e) => {
+            record_tcp_error_kind(e.kind());
             hew_cabi::sink::set_last_error_with_errno(
                 format!("hew_tcp_connect: {e}"),
                 e.raw_os_error().unwrap_or(0),
@@ -809,6 +862,7 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
         }
     };
     let _ = stream.set_nodelay(true);
+    tcp_counters().connect_count.fetch_add(1, Ordering::Relaxed);
     TCP_API_STATE.access(|state| {
         let handle = state.alloc_handle();
         state.streams.insert(handle, stream);
@@ -945,8 +999,15 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> *mut crate::vec::HewVec {
     };
     let mut buf = [0u8; 8192];
     match stream.read(&mut buf) {
-        Ok(0) | Err(_) => empty,
+        Ok(0) => empty,
+        Err(e) => {
+            record_tcp_error_kind(e.kind());
+            empty
+        }
         Ok(n) => {
+            tcp_counters()
+                .bytes_read
+                .fetch_add(n as u64, Ordering::Relaxed);
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "TCP reads are bounded by the 8192-byte stack buffer"
@@ -1008,9 +1069,13 @@ pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec
                 *slot = val as u8;
             }
         }
-        if stream.write_all(&scratch[..chunk_usize]).is_err() {
+        if let Err(e) = stream.write_all(&scratch[..chunk_usize]) {
+            record_tcp_error_kind(e.kind());
             return -1;
         }
+        tcp_counters()
+            .bytes_written
+            .fetch_add(chunk_usize as u64, Ordering::Relaxed);
         start += chunk;
     }
     let Ok(written) = c_int::try_from(len) else {
@@ -1065,6 +1130,8 @@ pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *m
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+    use std::sync::Arc;
 
     fn run_in_isolated_test_process(test_name: &str, env_key: &str, body: impl FnOnce()) {
         if std::env::var_os(env_key).is_some() {
@@ -1111,6 +1178,20 @@ mod tests {
     fn remove_stream(handle: c_int) {
         TCP_API_STATE.access(|state| {
             state.streams.remove(&handle);
+        });
+    }
+
+    fn register_listener(listener: TcpListener) -> c_int {
+        TCP_API_STATE.access(|state| {
+            let handle = state.alloc_handle();
+            state.listeners.insert(handle, listener);
+            handle
+        })
+    }
+
+    fn remove_listener(handle: c_int) {
+        TCP_API_STATE.access(|state| {
+            state.listeners.remove(&handle);
         });
     }
 
@@ -1220,6 +1301,219 @@ mod tests {
                     large == 0,
                     "tcp read should stay at zero Rust allocator calls, saw {large}"
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn tcp_counters_zero_init() {
+        run_in_isolated_test_process(
+            "transport::tests::tcp_counters_zero_init",
+            "HEW_RUNTIME_TCP_COUNTERS_ZERO_INIT",
+            || {
+                let _guard = crate::runtime_test_guard();
+                assert_eq!(tcp_counters_snapshot(), TcpCountersSnapshot::default());
+            },
+        );
+    }
+
+    #[test]
+    fn tcp_counters_read_write_increment() {
+        run_in_isolated_test_process(
+            "transport::tests::tcp_counters_read_write_increment",
+            "HEW_RUNTIME_TCP_COUNTERS_RW",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let payload = b"hello tcp counters";
+                let (server, mut client) = connected_streams();
+                let handle = register_stream(server);
+                let before = tcp_counters_snapshot();
+
+                // SAFETY: `payload` is valid for `payload.len()` bytes.
+                let bytes = unsafe {
+                    crate::vec::hew_vec_from_u8_data(
+                        payload.as_ptr(),
+                        u32::try_from(payload.len()).expect("payload length fits in u32"),
+                    )
+                };
+
+                // SAFETY: `bytes` is a valid caller-owned HewVec.
+                let written = unsafe { hew_tcp_write(handle, bytes) };
+                assert_eq!(
+                    written,
+                    c_int::try_from(payload.len()).expect("payload length fits in c_int")
+                );
+
+                let mut echoed = vec![0u8; payload.len()];
+                client
+                    .read_exact(&mut echoed)
+                    .expect("read payload from writer");
+                assert_eq!(echoed, payload);
+
+                client.write_all(payload).expect("send payload to reader");
+                let read_vec = hew_tcp_read(handle);
+                // SAFETY: `read_vec` is a valid caller-owned HewVec.
+                let read_len = unsafe { crate::vec::hew_vec_len(read_vec) };
+                assert_eq!(
+                    read_len,
+                    i64::try_from(payload.len()).expect("payload length fits in i64")
+                );
+
+                let after = tcp_counters_snapshot();
+                assert_eq!(
+                    after.bytes_written - before.bytes_written,
+                    u64::try_from(payload.len()).expect("payload length fits in u64")
+                );
+                assert_eq!(
+                    after.bytes_read - before.bytes_read,
+                    u64::try_from(payload.len()).expect("payload length fits in u64")
+                );
+
+                // SAFETY: vectors are caller-owned.
+                unsafe {
+                    crate::vec::hew_vec_free(bytes);
+                    crate::vec::hew_vec_free(read_vec);
+                }
+                remove_stream(handle);
+            },
+        );
+    }
+
+    #[test]
+    fn tcp_counters_accept_connect_increment() {
+        run_in_isolated_test_process(
+            "transport::tests::tcp_counters_accept_connect_increment",
+            "HEW_RUNTIME_TCP_COUNTERS_ACCEPT_CONNECT",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+                let addr = listener.local_addr().expect("read listener addr");
+                let listener_handle = register_listener(listener);
+                let before = tcp_counters_snapshot();
+                let addr_cstr = CString::new(addr.to_string()).expect("listener addr has no nuls");
+
+                let accept_thread = std::thread::spawn(move || {
+                    let accepted = hew_tcp_accept(listener_handle);
+                    assert!(accepted >= 0, "accept returned valid handle");
+                    remove_stream(accepted);
+                    remove_listener(listener_handle);
+                });
+
+                // SAFETY: `addr_cstr` is a valid NUL-terminated address string.
+                let conn = unsafe { hew_tcp_connect(addr_cstr.as_ptr()) };
+                assert!(conn >= 0, "connect returned valid handle");
+                remove_stream(conn);
+                accept_thread.join().expect("join accept thread");
+
+                let after = tcp_counters_snapshot();
+                assert_eq!(after.accept_count - before.accept_count, 1);
+                assert_eq!(after.connect_count - before.connect_count, 1);
+            },
+        );
+    }
+
+    #[test]
+    fn tcp_counters_error_policy() {
+        run_in_isolated_test_process(
+            "transport::tests::tcp_counters_error_policy",
+            "HEW_RUNTIME_TCP_COUNTERS_ERRORS",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let unused_listener =
+                    TcpListener::bind("127.0.0.1:0").expect("bind unused-port probe listener");
+                let unused_addr = unused_listener
+                    .local_addr()
+                    .expect("read unused-port probe addr");
+                drop(unused_listener);
+
+                let connect_addr =
+                    CString::new(unused_addr.to_string()).expect("addr contains no interior nuls");
+                let before_connect = tcp_counters_snapshot();
+                // SAFETY: `connect_addr` is a valid address string.
+                let result = unsafe { hew_tcp_connect(connect_addr.as_ptr()) };
+                assert_eq!(result, -1, "connect to unused port should fail");
+                let after_connect = tcp_counters_snapshot();
+                assert_eq!(after_connect.error_count - before_connect.error_count, 1);
+
+                let (server, _client) = connected_streams();
+                server
+                    .set_nonblocking(true)
+                    .expect("set server stream nonblocking");
+                let handle = register_stream(server);
+                let before_read = tcp_counters_snapshot();
+                let read_vec = hew_tcp_read(handle);
+                let after_read = tcp_counters_snapshot();
+                assert_eq!(
+                    after_read.error_count - before_read.error_count,
+                    0,
+                    "WouldBlock must not count as a TCP error"
+                );
+                // SAFETY: `read_vec` is caller-owned.
+                unsafe { crate::vec::hew_vec_free(read_vec) };
+                remove_stream(handle);
+            },
+        );
+    }
+
+    #[test]
+    fn tcp_counters_bytes_written_are_monotonic_under_concurrency() {
+        run_in_isolated_test_process(
+            "transport::tests::tcp_counters_bytes_written_are_monotonic_under_concurrency",
+            "HEW_RUNTIME_TCP_COUNTERS_CONCURRENCY",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let payload = Arc::new(*b"tcp-counter-payload");
+                let writes_per_thread = 32usize;
+                let thread_count = 6usize;
+                let total_expected = payload.len() * writes_per_thread * thread_count;
+                let (server, mut client) = connected_streams();
+                let handle = register_stream(server);
+                let before = tcp_counters_snapshot();
+
+                let reader = std::thread::spawn(move || {
+                    let mut received = vec![0u8; total_expected];
+                    client
+                        .read_exact(&mut received)
+                        .expect("drain concurrent writes");
+                });
+
+                let mut writers = Vec::new();
+                for _ in 0..thread_count {
+                    let payload = Arc::clone(&payload);
+                    writers.push(std::thread::spawn(move || {
+                        for _ in 0..writes_per_thread {
+                            // SAFETY: `payload` is valid for its full length.
+                            let bytes = unsafe {
+                                crate::vec::hew_vec_from_u8_data(
+                                    payload.as_ptr(),
+                                    u32::try_from(payload.len())
+                                        .expect("payload length fits in u32"),
+                                )
+                            };
+                            // SAFETY: `bytes` is a valid caller-owned HewVec.
+                            let written = unsafe { hew_tcp_write(handle, bytes) };
+                            assert_eq!(
+                                written,
+                                c_int::try_from(payload.len())
+                                    .expect("payload length fits in c_int")
+                            );
+                            // SAFETY: `bytes` is the caller-owned HewVec above.
+                            unsafe { crate::vec::hew_vec_free(bytes) };
+                        }
+                    }));
+                }
+
+                for writer in writers {
+                    writer.join().expect("join writer thread");
+                }
+                reader.join().expect("join reader thread");
+
+                let after = tcp_counters_snapshot();
+                assert_eq!(
+                    after.bytes_written - before.bytes_written,
+                    u64::try_from(total_expected).expect("total expected bytes fit in u64")
+                );
+                remove_stream(handle);
             },
         );
     }

@@ -77,6 +77,16 @@ pub struct Metrics {
     pub bytes_live: u64,
     #[serde(default)]
     pub peak_bytes_live: u64,
+    #[serde(default)]
+    pub tcp_bytes_read: u64,
+    #[serde(default)]
+    pub tcp_bytes_written: u64,
+    #[serde(default)]
+    pub tcp_accept_count: u64,
+    #[serde(default)]
+    pub tcp_connect_count: u64,
+    #[serde(default)]
+    pub tcp_error_count: u64,
 }
 
 /// Per-actor stats from `/api/actors`.
@@ -157,6 +167,16 @@ pub struct HistoryEntry {
     pub bytes_live: u64,
     #[serde(default, rename = "pb")]
     pub peak_bytes_live: u64,
+    #[serde(default, rename = "tbr")]
+    pub tcp_bytes_read: u64,
+    #[serde(default, rename = "tbw")]
+    pub tcp_bytes_written: u64,
+    #[serde(default, rename = "tac")]
+    pub tcp_accept_count: u64,
+    #[serde(default, rename = "tcc")]
+    pub tcp_connect_count: u64,
+    #[serde(default, rename = "tec")]
+    pub tcp_error_count: u64,
 }
 
 /// Cluster member from `/api/cluster/members`.
@@ -676,7 +696,7 @@ mod tests {
         assert!(client.last_error.is_some());
 
         // Swap to a socket that serves valid metrics JSON.
-        let metrics_json = r#"{"timestamp_secs":1.0,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0}"#;
+        let metrics_json = r#"{"timestamp_secs":1.0,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}"#;
         let body_len = metrics_json.len();
         let response =
             format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{metrics_json}");

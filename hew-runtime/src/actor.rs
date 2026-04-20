@@ -2229,6 +2229,54 @@ unsafe fn actor_send_internal(
     unsafe { actor_send_result_internal(actor, msg_type, data, size) == HewError::Ok as i32 }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+enum AskReplyChannelFailureCleanup {
+    FreeCreatorRef,
+    KeepCreatorRef,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn submit_ask_with_reply_channel<F>(
+    ch: *mut HewReplyChannel,
+    failure_cleanup: AskReplyChannelFailureCleanup,
+    send: F,
+) -> i32
+where
+    F: FnOnce(*mut HewReplyChannel) -> i32,
+{
+    if ch.is_null() {
+        return HewError::ErrOom as i32;
+    }
+
+    // Retain a sender-side reference before enqueueing so mailbox teardown and
+    // successful replies consume the queued ref while the caller keeps its own.
+    // DROP-SAFETY: send failure must release both references for owned ask
+    // channels and only the queued retain for caller-provided channels.
+    unsafe { reply_channel::hew_reply_channel_retain(ch) };
+
+    let send_result = send(ch);
+    if send_result != HewError::Ok as i32 {
+        if send_result == HewError::ErrOom as i32 {
+            // Mirror `alloc_reply_buffer`: record allocation failure before the
+            // error cleanup path releases the channel.
+            // SAFETY: `ch` is still live until the cleanup frees below.
+            unsafe { reply_channel::hew_reply_channel_mark_allocation_failed(ch) };
+        }
+        // SAFETY: release the queued sender-side reference retained above.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        if matches!(
+            failure_cleanup,
+            AskReplyChannelFailureCleanup::FreeCreatorRef
+        ) {
+            // SAFETY: owned ask paths must also release the creator reference.
+            unsafe { reply_channel::hew_reply_channel_free(ch) };
+        }
+    }
+
+    send_result
+}
+
 // ── Ask (request-response) ──────────────────────────────────────────────
 // Native asks block on threaded reply channels; WASM asks cooperate by
 // driving the single-threaded scheduler in bounded ticks.
@@ -2257,23 +2305,17 @@ pub unsafe extern "C" fn hew_actor_ask(
 ) -> *mut c_void {
     let ch = reply_channel::hew_reply_channel_new();
 
-    // Retain a sender-side reference — the receiver will call hew_reply
-    // which releases one reference, and we release ours after waiting.
-    // SAFETY: ch was created by hew_reply_channel_new.
-    unsafe { reply_channel::hew_reply_channel_retain(ch) };
-
-    // Send the message with the reply channel in the HewMsgNode field
-    // (not packed in the data buffer).
-    // SAFETY: actor is valid, data is valid for size bytes.
-    let send_result =
-        unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) };
+    // SAFETY: `ch` is a live reply channel owned by this ask call and the
+    // closure uses the same actor/data preconditions as this function.
+    let send_result = unsafe {
+        submit_ask_with_reply_channel(ch, AskReplyChannelFailureCleanup::FreeCreatorRef, |ch| {
+            // Send the message with the reply channel in the HewMsgNode
+            // field (not packed in the data buffer).
+            actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+        })
+    };
 
     if send_result != HewError::Ok as i32 {
-        // Release both references (sender + ours).
-        // SAFETY: ch was created by hew_reply_channel_new; releasing the send-side ref.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
-        // SAFETY: ch was created by hew_reply_channel_new; releasing our retained ref.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
         return actor_ask_null(send_err_to_ask_err(send_result));
     }
 
@@ -2321,18 +2363,15 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
 ) -> *mut c_void {
     let ch = reply_channel::hew_reply_channel_new();
 
-    // SAFETY: the actor now holds the sender-side reference until it replies.
-    unsafe { reply_channel::hew_reply_channel_retain(ch) };
-    // SAFETY: actor is valid, data is valid for size bytes.
-    let send_result =
-        unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) };
+    // SAFETY: `ch` is a live reply channel owned by this ask call and the
+    // closure uses the same actor/data preconditions as this function.
+    let send_result = unsafe {
+        submit_ask_with_reply_channel(ch, AskReplyChannelFailureCleanup::FreeCreatorRef, |ch| {
+            actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+        })
+    };
 
     if send_result != HewError::Ok as i32 {
-        // Release both references (sender + ours).
-        // SAFETY: ch was created by hew_reply_channel_new; releasing the send-side ref.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
-        // SAFETY: ch was created by hew_reply_channel_new; releasing our retained ref.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
         return actor_ask_null(send_err_to_ask_err(send_result));
     }
 
@@ -2418,20 +2457,13 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
     size: usize,
     ch: *mut HewReplyChannel,
 ) -> i32 {
-    // SAFETY: the actor now holds the sender-side reference until it replies.
-    unsafe { reply_channel::hew_reply_channel_retain(ch) };
-
-    // Send with reply channel in the msg node field.
-    // SAFETY: actor is valid, data is valid for size bytes.
-    let send_result =
-        unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) };
-
-    if send_result != HewError::Ok as i32 {
-        // SAFETY: release the sender-side reference retained for the failed send.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
+    // SAFETY: `ch` is caller-provided and valid per this function's contract;
+    // the closure forwards the same actor/data preconditions.
+    unsafe {
+        submit_ask_with_reply_channel(ch, AskReplyChannelFailureCleanup::KeepCreatorRef, |ch| {
+            actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+        })
     }
-
-    send_result
 }
 
 /// Perform a blocking ask against an actor identified by PID.
@@ -2456,31 +2488,31 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
 ) -> *mut c_void {
     let ch = reply_channel::hew_reply_channel_new();
 
-    // SAFETY: the actor now holds the sender-side reference until it replies.
-    unsafe { reply_channel::hew_reply_channel_retain(ch) };
+    // SAFETY: `ch` is a live reply channel owned by this ask call and the
+    // closure preserves the same actor-ID/data preconditions.
+    let send_result_code = unsafe {
+        submit_ask_with_reply_channel(ch, AskReplyChannelFailureCleanup::FreeCreatorRef, |ch| {
+            // Look up actor and send with reply channel in the msg node
+            // field. Capture the send error code (not just bool) for
+            // accurate error discrimination.
+            live_actors::get_actor_ptr_by_id(actor_id).map_or(
+                HewError::ErrActorStopped as i32,
+                |actor| {
+                    // SAFETY: `LIVE_ACTORS` only proves that the pointer was
+                    // live at lookup time. After we drop the mutex, this path
+                    // intentionally matches `hew_actor_send_by_id`: callers that
+                    // route by actor ID must uphold the same liveness invariant
+                    // as direct-pointer asks and only race with frees they
+                    // coordinate. If a free wins before the lookup, the ID is
+                    // absent and we report ActorStopped above.
+                    actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+                },
+            )
+        })
+    };
 
-    // Look up actor and send with reply channel in the msg node field.
-    // Capture the send error code (not just bool) for accurate error discrimination.
-    let send_result_code = live_actors::get_actor_ptr_by_id(actor_id).map(|actor| {
-        // SAFETY: `LIVE_ACTORS` only proves that the pointer was live at lookup
-        // time. After we drop the mutex, this path intentionally matches
-        // `hew_actor_send_by_id`: callers that route by actor ID must uphold the
-        // same liveness invariant as direct-pointer asks and only race with frees
-        // they coordinate. If a free wins before the lookup, the ID is absent and
-        // we fall through below.
-        unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) }
-    });
-
-    let send_ok = send_result_code.is_some_and(|rc| rc == HewError::Ok as i32);
-
-    if !send_ok {
-        // Release both references (sender + ours).
-        // SAFETY: ch was created by hew_reply_channel_new; releasing the send-side ref.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
-        // SAFETY: ch was created by hew_reply_channel_new; releasing our retained ref.
-        unsafe { reply_channel::hew_reply_channel_free(ch) };
-        let ask_err = send_result_code.map_or(AskError::ActorStopped, send_err_to_ask_err); // None → actor not found
-        return actor_ask_null(ask_err);
+    if send_result_code != HewError::Ok as i32 {
+        return actor_ask_null(send_err_to_ask_err(send_result_code));
     }
 
     let mut reply_size: usize = 0;
@@ -3950,6 +3982,32 @@ mod tests {
     }
 
     #[test]
+    fn ask_with_channel_send_oom_marks_allocation_failed() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        let ch = reply_channel::hew_reply_channel_new();
+        let _alloc_guard = crate::mailbox::fail_mailbox_alloc_on_nth(0);
+
+        // SAFETY: actor and ch are valid pointers from their respective constructors.
+        let rc = unsafe { hew_actor_ask_with_channel(actor, 0, std::ptr::null_mut(), 0, ch) };
+        assert_eq!(rc, HewError::ErrOom as i32);
+        // SAFETY: the failed send preserves the caller-owned ref so tests can
+        // inspect the channel before releasing it.
+        unsafe {
+            assert!(reply_channel::hew_reply_channel_allocation_failed_for_test(
+                ch
+            ));
+            reply_channel::hew_reply_channel_free(ch);
+            hew_actor_stop(actor);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        assert_eq!(reply_channel::active_channel_count(), 0);
+    }
+
+    #[test]
     fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
         let _guard = crate::runtime_test_guard();
         let runtime = NativeSchedulerGuard::new();
@@ -4197,6 +4255,42 @@ mod tests {
 
         // SAFETY: actor is stopped and owned by this test.
         assert_eq!(unsafe { hew_actor_free(actor) }, 0);
+    }
+
+    #[test]
+    fn native_ask_send_oom_releases_reply_channel() {
+        let _guard = crate::runtime_test_guard();
+        let runtime = NativeSchedulerGuard::new();
+
+        assert_eq!(reply_channel::active_channel_count(), 0);
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
+        let _alloc_guard = crate::mailbox::fail_mailbox_alloc_on_nth(0);
+        // SAFETY: actor is live and the forced mailbox allocation failure makes
+        // the ask fail before any reply can be queued.
+        let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+        assert!(reply.is_null(), "OOM ask send must return null");
+        assert_eq!(
+            hew_actor_ask_take_last_error(),
+            AskError::ActorStopped as i32,
+            "send-side OOM is reported through the ActorStopped ask bucket"
+        );
+        assert_eq!(
+            reply_channel::active_channel_count(),
+            0,
+            "failed ask send must release both reply-channel references"
+        );
+
+        // SAFETY: the ask never enqueued work, so stopping/freely cleaning the
+        // actor is valid once the reply-channel invariant above holds.
+        unsafe {
+            hew_actor_stop(actor);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        drop(runtime);
     }
 
     /// `hew_actor_ask_timeout` on a stopped actor sets `ActorStopped`.

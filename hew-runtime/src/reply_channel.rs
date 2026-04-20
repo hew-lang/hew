@@ -164,6 +164,17 @@ unsafe fn take_ready_reply(ch: *mut HewReplyChannel, out_size: Option<*mut usize
     }
 }
 
+pub(crate) unsafe fn hew_reply_channel_mark_allocation_failed(ch: *mut HewReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: caller guarantees `ch` is a live reply channel reference.
+    unsafe {
+        (*ch).allocation_failed.store(true, Ordering::Release);
+    }
+}
+
 /// Retire an ask sender reference whose mailbox ownership ends before dispatch.
 ///
 /// This is the explicit mailbox-teardown path for orphaned ask waiters
@@ -488,6 +499,19 @@ pub(crate) unsafe fn hew_reply_channel_is_ready_for_test(ch: *mut HewReplyChanne
     // SAFETY: test callers pass a valid channel pointer and only read the
     // atomic readiness flag; no ownership changes occur here.
     unsafe { (*ch).ready.load(Ordering::Acquire) }
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn hew_reply_channel_allocation_failed_for_test(
+    ch: *mut HewReplyChannel,
+) -> bool {
+    if ch.is_null() {
+        return false;
+    }
+
+    // SAFETY: test callers pass a valid channel pointer and only read the
+    // allocation-failure flag; no ownership changes occur here.
+    unsafe { (*ch).allocation_failed.load(Ordering::Acquire) }
 }
 
 #[cfg(test)]

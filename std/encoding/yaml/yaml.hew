@@ -114,9 +114,6 @@ impl CanonicalValueMethods for Value {
     fn with_bool(obj: Value, key: String, val: bool) -> Value {
         unsafe { hew_yaml_object_set_bool(obj, key, val as i32) }; obj
     }
-    fn with_null(obj: Value, key: String) -> Value {
-        unsafe { hew_yaml_object_set_null(obj, key) }; obj
-    }
     fn with(obj: Value, key: String, child: Value) -> Value {
         unsafe { hew_yaml_object_set(obj, key, child) }; obj
     }

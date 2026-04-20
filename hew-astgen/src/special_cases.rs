@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 const CURRENT_SCHEMA_VERSION: u32 = hew_serialize::msgpack::SCHEMA_VERSION;
 
 /// Hard-coded C++ parser for Literal (custom serde, not derive(Serialize)).
@@ -534,15 +536,93 @@ pub fn select_arm_parser() -> &'static str {
 }
 
 /// Hard-coded parser lifted from the working C++ reader.
-#[allow(
-    clippy::too_many_lines,
-    reason = "large string literal for C++ codegen"
-)]
-pub fn expr_parser() -> &'static str {
-    r#"static ast::Expr parseExpr(const msgpack::object &obj) {
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VariantDisposition {
+    Parsed,
+    Rejected,
+}
+
+#[cfg(test)]
+const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
+    ("Binary", VariantDisposition::Parsed),
+    ("Unary", VariantDisposition::Parsed),
+    ("Literal", VariantDisposition::Parsed),
+    ("Identifier", VariantDisposition::Parsed),
+    ("Tuple", VariantDisposition::Parsed),
+    ("Array", VariantDisposition::Parsed),
+    ("ArrayRepeat", VariantDisposition::Parsed),
+    ("MapLiteral", VariantDisposition::Parsed),
+    ("Block", VariantDisposition::Parsed),
+    ("If", VariantDisposition::Parsed),
+    ("IfLet", VariantDisposition::Parsed),
+    ("Match", VariantDisposition::Parsed),
+    ("Lambda", VariantDisposition::Parsed),
+    ("Spawn", VariantDisposition::Parsed),
+    ("SpawnLambdaActor", VariantDisposition::Parsed),
+    ("Scope", VariantDisposition::Parsed),
+    ("InterpolatedString", VariantDisposition::Parsed),
+    ("Call", VariantDisposition::Parsed),
+    ("MethodCall", VariantDisposition::Parsed),
+    ("StructInit", VariantDisposition::Parsed),
+    ("Send", VariantDisposition::Parsed),
+    ("Select", VariantDisposition::Parsed),
+    ("Join", VariantDisposition::Parsed),
+    ("Timeout", VariantDisposition::Parsed),
+    ("Unsafe", VariantDisposition::Parsed),
+    ("Yield", VariantDisposition::Parsed),
+    ("Cooperate", VariantDisposition::Parsed),
+    ("This", VariantDisposition::Parsed),
+    ("FieldAccess", VariantDisposition::Parsed),
+    ("Index", VariantDisposition::Parsed),
+    ("Cast", VariantDisposition::Parsed),
+    ("PostfixTry", VariantDisposition::Parsed),
+    ("Range", VariantDisposition::Parsed),
+    ("Await", VariantDisposition::Parsed),
+    ("ScopeLaunch", VariantDisposition::Parsed),
+    ("ScopeSpawn", VariantDisposition::Parsed),
+    ("ScopeCancel", VariantDisposition::Parsed),
+    ("RegexLiteral", VariantDisposition::Parsed),
+    ("ByteStringLiteral", VariantDisposition::Parsed),
+    ("ByteArrayLiteral", VariantDisposition::Parsed),
+];
+
+#[cfg(test)]
+const STMT_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
+    ("Let", VariantDisposition::Parsed),
+    ("Var", VariantDisposition::Parsed),
+    ("Assign", VariantDisposition::Parsed),
+    ("If", VariantDisposition::Parsed),
+    ("IfLet", VariantDisposition::Parsed),
+    ("Match", VariantDisposition::Parsed),
+    ("Loop", VariantDisposition::Parsed),
+    ("For", VariantDisposition::Parsed),
+    ("While", VariantDisposition::Parsed),
+    ("WhileLet", VariantDisposition::Parsed),
+    ("Break", VariantDisposition::Parsed),
+    ("Continue", VariantDisposition::Parsed),
+    ("Return", VariantDisposition::Parsed),
+    ("Defer", VariantDisposition::Parsed),
+    ("Expression", VariantDisposition::Parsed),
+];
+
+fn stitch(parts: &[&str]) -> String {
+    let mut out = String::new();
+    for part in parts {
+        out.push_str(part);
+    }
+    out
+}
+
+fn expr_dispatch_header() -> &'static str {
+    r"static ast::Expr parseExpr(const msgpack::object &obj) {
   auto [name, payload] = getEnumVariant(obj);
 
-  if (name == "Binary") {
+"
+}
+
+fn expr_scalar_and_collection_dispatcher() -> &'static str {
+    r#"  if (name == "Binary") {
     ast::ExprBinary e;
     e.left = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "left"), parseExpr));
@@ -606,7 +686,11 @@ pub fn expr_parser() -> &'static str {
   }
   if (name == "Block")
     return ast::Expr{ast::ExprBlock{parseBlock(*payload)}, {}};
-  if (name == "If") {
+"#
+}
+
+fn expr_control_flow_dispatcher() -> &'static str {
+    r#"  if (name == "If") {
     ast::ExprIf e;
     e.condition = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "condition"), parseExpr));
@@ -651,7 +735,11 @@ pub fn expr_parser() -> &'static str {
         parseSpanned<ast::Expr>(mapReq(*payload, "body"), parseExpr));
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "Spawn") {
+"#
+}
+
+fn expr_actor_dispatcher() -> &'static str {
+    r#"  if (name == "Spawn") {
     ast::ExprSpawn e;
     e.target = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "target"), parseExpr));
@@ -690,7 +778,11 @@ pub fn expr_parser() -> &'static str {
     e.parts = parseVec<ast::StringPart>(*payload, parseStringPart);
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "Call") {
+"#
+}
+
+fn expr_call_dispatcher() -> &'static str {
+    r#"  if (name == "Call") {
     ast::ExprCall e;
     e.function = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "function"), parseExpr));
@@ -750,7 +842,11 @@ pub fn expr_parser() -> &'static str {
         parseSpanned<ast::Expr>(mapReq(*payload, "message"), parseExpr));
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "Select") {
+"#
+}
+
+fn expr_async_dispatcher() -> &'static str {
+    r#"  if (name == "Select") {
     ast::ExprSelect e;
     e.arms = parseVec<ast::SelectArm>(mapReq(*payload, "arms"), parseSelectArm);
     const auto *to = mapGet(*payload, "timeout");
@@ -787,7 +883,11 @@ pub fn expr_parser() -> &'static str {
     return ast::Expr{ast::ExprCooperate{}, {}};
   if (name == "This")
     return ast::Expr{ast::ExprThis{}, {}};
-  if (name == "FieldAccess") {
+"#
+}
+
+fn expr_projection_dispatcher() -> &'static str {
+    r#"  if (name == "FieldAccess") {
     ast::ExprFieldAccess e;
     e.object = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "object"), parseExpr));
@@ -853,8 +953,30 @@ pub fn expr_parser() -> &'static str {
         ast::ExprByteArrayLiteral{parseVec<uint8_t>(
             *payload, [](const msgpack::object &o) { return static_cast<uint8_t>(getInt(o)); })},
         {}};
-  fail("unknown Expr variant: " + name);
+"#
+}
+
+fn expr_dispatch_footer() -> &'static str {
+    r#"  fail("unknown Expr variant: " + name);
 }"#
+}
+
+fn expr_parser_parts() -> [&'static str; 8] {
+    [
+        expr_dispatch_header(),
+        expr_scalar_and_collection_dispatcher(),
+        expr_control_flow_dispatcher(),
+        expr_actor_dispatcher(),
+        expr_call_dispatcher(),
+        expr_async_dispatcher(),
+        expr_projection_dispatcher(),
+        expr_dispatch_footer(),
+    ]
+}
+
+pub fn expr_parser() -> &'static str {
+    static PARSER: OnceLock<String> = OnceLock::new();
+    PARSER.get_or_init(|| stitch(&expr_parser_parts())).as_str()
 }
 
 /// Hard-coded parser lifted from the working C++ reader.
@@ -874,15 +996,15 @@ pub fn else_block_parser() -> &'static str {
 }
 
 /// Hard-coded parser lifted from the working C++ reader.
-#[allow(
-    clippy::too_many_lines,
-    reason = "large string literal for C++ codegen"
-)]
-pub fn stmt_parser() -> &'static str {
-    r#"static ast::Stmt parseStmt(const msgpack::object &obj) {
+fn stmt_dispatch_header() -> &'static str {
+    r"static ast::Stmt parseStmt(const msgpack::object &obj) {
   auto [name, payload] = getEnumVariant(obj);
 
-  if (name == "Let") {
+"
+}
+
+fn stmt_binding_dispatcher() -> &'static str {
+    r#"  if (name == "Let") {
     ast::StmtLet s;
     s.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
     const auto *ty = mapGet(*payload, "ty");
@@ -913,7 +1035,11 @@ pub fn stmt_parser() -> &'static str {
     s.value = parseSpanned<ast::Expr>(mapReq(*payload, "value"), parseExpr);
     return ast::Stmt{std::move(s), {}};
   }
-  if (name == "If") {
+"#
+}
+
+fn stmt_branching_dispatcher() -> &'static str {
+    r#"  if (name == "If") {
     ast::StmtIf s;
     s.condition = parseSpanned<ast::Expr>(mapReq(*payload, "condition"), parseExpr);
     s.then_block = parseBlock(mapReq(*payload, "then_block"));
@@ -939,7 +1065,11 @@ pub fn stmt_parser() -> &'static str {
     s.arms = parseVec<ast::MatchArm>(mapReq(*payload, "arms"), parseMatchArm);
     return ast::Stmt{std::move(s), {}};
   }
-  if (name == "Loop") {
+"#
+}
+
+fn stmt_loop_dispatcher() -> &'static str {
+    r#"  if (name == "Loop") {
     ast::StmtLoop s;
     const auto *lbl = mapGet(*payload, "label");
     if (lbl && !isNil(*lbl))
@@ -978,7 +1108,11 @@ pub fn stmt_parser() -> &'static str {
     s.body = parseBlock(mapReq(*payload, "body"));
     return ast::Stmt{std::move(s), {}};
   }
-  if (name == "Break") {
+"#
+}
+
+fn stmt_terminator_dispatcher() -> &'static str {
+    r#"  if (name == "Break") {
     ast::StmtBreak s;
     const auto *lbl = mapGet(*payload, "label");
     if (lbl && !isNil(*lbl))
@@ -1012,8 +1146,28 @@ pub fn stmt_parser() -> &'static str {
     s.expr = parseSpanned<ast::Expr>(*payload, parseExpr);
     return ast::Stmt{std::move(s), {}};
   }
-  fail("unknown Stmt variant: " + name);
+"#
+}
+
+fn stmt_dispatch_footer() -> &'static str {
+    r#"  fail("unknown Stmt variant: " + name);
 }"#
+}
+
+fn stmt_parser_parts() -> [&'static str; 6] {
+    [
+        stmt_dispatch_header(),
+        stmt_binding_dispatcher(),
+        stmt_branching_dispatcher(),
+        stmt_loop_dispatcher(),
+        stmt_terminator_dispatcher(),
+        stmt_dispatch_footer(),
+    ]
+}
+
+pub fn stmt_parser() -> &'static str {
+    static PARSER: OnceLock<String> = OnceLock::new();
+    PARSER.get_or_init(|| stitch(&stmt_parser_parts())).as_str()
 }
 
 /// Hard-coded parser lifted from the working C++ reader.
@@ -1356,6 +1510,12 @@ static std::vector<std::unique_ptr<T>> parseVecPtr(const msgpack::object &obj, P
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use crate::model::TypeDef;
+    use crate::parse;
+
     use super::*;
 
     // ── Verifying special-case parsers contain their function signatures ────
@@ -1375,6 +1535,80 @@ mod tests {
                 "Missing Literal variant: {variant}"
             );
         }
+    }
+
+    fn serialized_variant_names(type_name: &str) -> Vec<String> {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let ast_path = manifest_dir.join("../hew-parser/src/ast.rs");
+        let ast_source = fs::read_to_string(&ast_path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", ast_path.display()));
+        let types = parse::extract_types(&ast_path.display().to_string(), &ast_source)
+            .expect("hew-parser/src/ast.rs should stay parseable");
+        let tagged = types
+            .iter()
+            .find_map(|ty| match ty {
+                TypeDef::TaggedEnum(tagged) if tagged.name == type_name => Some(tagged),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing tagged enum {type_name}"));
+        tagged
+            .variants
+            .iter()
+            .map(|variant| variant.name().to_string())
+            .collect()
+    }
+
+    fn assert_variant_coverage(type_name: &str, coverage: &[(&str, VariantDisposition)]) {
+        let rejected = VariantDisposition::Rejected;
+        assert!(matches!(rejected, VariantDisposition::Rejected));
+
+        let mut actual = serialized_variant_names(type_name);
+        actual.sort();
+
+        let mut covered: Vec<String> = coverage
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        covered.sort();
+        assert_eq!(
+            covered, actual,
+            "{type_name} parser coverage must match serialized variants"
+        );
+        assert!(
+            coverage.iter().all(|(_, disposition)| {
+                matches!(
+                    disposition,
+                    VariantDisposition::Parsed | VariantDisposition::Rejected
+                )
+            }),
+            "{type_name} parser coverage must classify every variant"
+        );
+    }
+
+    #[test]
+    fn expr_parser_covers_every_serialized_variant() {
+        assert_variant_coverage("Expr", EXPR_VARIANT_COVERAGE);
+    }
+
+    #[test]
+    fn stmt_parser_covers_every_serialized_variant() {
+        assert_variant_coverage("Stmt", STMT_VARIANT_COVERAGE);
+    }
+
+    #[test]
+    fn expr_parser_stitches_topical_dispatchers() {
+        let src = expr_parser();
+        assert!(src.contains("name == \"Binary\""));
+        assert!(src.contains("name == \"ScopeCancel\""));
+        assert!(src.contains("unknown Expr variant"));
+    }
+
+    #[test]
+    fn stmt_parser_stitches_topical_dispatchers() {
+        let src = stmt_parser();
+        assert!(src.contains("name == \"Let\""));
+        assert!(src.contains("name == \"Expression\""));
+        assert!(src.contains("unknown Stmt variant"));
     }
 
     #[test]

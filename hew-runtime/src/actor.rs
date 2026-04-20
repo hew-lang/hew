@@ -2461,10 +2461,13 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
 
     // Look up actor and send with reply channel in the msg node field.
     // Capture the send error code (not just bool) for accurate error discrimination.
-    // The LIVE_ACTORS lock is held across the send so the actor cannot be freed
-    // between lookup and the send that commits the reply channel.
-    let send_result_code: Option<i32> = live_actors::with_actor_by_id_locked(actor_id, |actor| {
-        // SAFETY: actor and data are valid while LIVE_ACTORS is locked.
+    let send_result_code = live_actors::get_actor_ptr_by_id(actor_id).map(|actor| {
+        // SAFETY: `LIVE_ACTORS` only proves that the pointer was live at lookup
+        // time. After we drop the mutex, this path intentionally matches
+        // `hew_actor_send_by_id`: callers that route by actor ID must uphold the
+        // same liveness invariant as direct-pointer asks and only race with frees
+        // they coordinate. If a free wins before the lookup, the ID is absent and
+        // we fall through below.
         unsafe { actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()) }
     });
 
@@ -3457,6 +3460,8 @@ mod tests {
         AtomicPtr::new(ptr::null_mut());
     static SEND_BY_ID_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
+    static ASK_SEND_BY_ID_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
     static DRAIN_BUSY_LOOP_STARTED: AtomicBool = AtomicBool::new(false);
     static DRAIN_BUSY_LOOP_RELEASE: AtomicBool = AtomicBool::new(false);
     static DRAIN_TRAP_ON_STOP_STARTED: AtomicBool = AtomicBool::new(false);
@@ -3492,6 +3497,29 @@ mod tests {
         _size: usize,
     ) {
         SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
+    }
+
+    unsafe extern "C" fn count_ask_send_by_id_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        ASK_SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
+        let ch = crate::scheduler::hew_get_reply_channel();
+        if ch.is_null() {
+            return;
+        }
+        let mut value: i32 = 7;
+        // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
+        // and `value` lives for the duration of the call.
+        unsafe {
+            crate::reply_channel::hew_reply(
+                ch.cast(),
+                (&raw mut value).cast(),
+                std::mem::size_of::<i32>(),
+            );
+        }
     }
 
     unsafe extern "C" fn drain_busy_loop_dispatch(
@@ -3783,6 +3811,86 @@ mod tests {
         // the now-untracked actor ID instead of crashing.
         let rc = unsafe { hew_actor_send_by_id(actor_id, 1, ptr::null_mut(), 0) };
         assert_eq!(rc, -1);
+    }
+
+    #[test]
+    fn ask_by_id_concurrent_with_sends_completes_without_leaking_channels() {
+        let _guard = crate::runtime_test_guard();
+        let runtime = NativeSchedulerGuard::new();
+
+        assert_eq!(reply_channel::active_channel_count(), 0);
+        ASK_SEND_BY_ID_DISPATCH_COUNT.store(0, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe {
+            hew_actor_spawn(std::ptr::null_mut(), 0, Some(count_ask_send_by_id_dispatch))
+        };
+        assert!(!actor.is_null());
+
+        // SAFETY: actor is live for the duration of the test.
+        let actor_id = unsafe { (*actor).id };
+        let ask_threads = 6usize;
+        let send_threads = 6usize;
+        let asks_per_thread = 12usize;
+        let sends_per_thread = 12usize;
+        let start = std::sync::Arc::new(std::sync::Barrier::new(ask_threads + send_threads));
+        let mut handles = Vec::with_capacity(ask_threads + send_threads);
+
+        for _ in 0..ask_threads {
+            let start = start.clone();
+            handles.push(std::thread::spawn(move || {
+                start.wait();
+                for _ in 0..asks_per_thread {
+                    // SAFETY: actor remains live until all worker threads join.
+                    let reply = unsafe { hew_actor_ask_by_id(actor_id, 1, ptr::null_mut(), 0) };
+                    assert!(!reply.is_null(), "by-id ask should receive a reply");
+                    // SAFETY: successful ask replies are malloc-allocated.
+                    unsafe {
+                        assert_eq!(*reply.cast::<i32>(), 7);
+                        libc::free(reply);
+                    }
+                }
+            }));
+        }
+
+        for _ in 0..send_threads {
+            let start = start.clone();
+            handles.push(std::thread::spawn(move || {
+                start.wait();
+                for _ in 0..sends_per_thread {
+                    // SAFETY: actor remains live until all worker threads join.
+                    let rc = unsafe { hew_actor_send_by_id(actor_id, 1, ptr::null_mut(), 0) };
+                    assert_eq!(rc, 0);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("mixed ask/send thread must not panic");
+        }
+
+        let expected = (ask_threads * asks_per_thread) + (send_threads * sends_per_thread);
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(2), || {
+                ASK_SEND_BY_ID_DISPATCH_COUNT.load(Ordering::Acquire) == expected
+            }),
+            "scheduler should drain mixed by-id ask/send traffic without deadlocking"
+        );
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                reply_channel::active_channel_count() == 0
+            }),
+            "concurrent by-id asks should release all reply channels"
+        );
+
+        // SAFETY: actor remains live until teardown below.
+        unsafe {
+            hew_actor_close(actor);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+
+        drop(runtime);
+        assert_eq!(reply_channel::active_channel_count(), 0);
     }
 
     #[test]

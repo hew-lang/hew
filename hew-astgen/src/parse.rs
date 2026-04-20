@@ -1,8 +1,78 @@
+use std::fmt;
+
 use crate::model::{EnumVariant, FieldDef, RustType, SimpleEnum, StructDef, TaggedEnum, TypeDef};
+use syn::spanned::Spanned;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    InvalidRustSource {
+        source_name: String,
+        message: String,
+    },
+    UnsupportedStructShape {
+        source_name: String,
+        line: usize,
+        struct_name: String,
+        shape: UnsupportedStructShape,
+    },
+    UnnamedField {
+        source_name: String,
+        line: usize,
+        container: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedStructShape {
+    Tuple,
+    Unit,
+}
+
+impl fmt::Display for UnsupportedStructShape {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tuple => f.write_str("tuple struct"),
+            Self::Unit => f.write_str("unit struct"),
+        }
+    }
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRustSource {
+                source_name,
+                message,
+            } => write!(f, "{source_name}: failed to parse Rust source: {message}"),
+            Self::UnsupportedStructShape {
+                source_name,
+                line,
+                struct_name,
+                shape,
+            } => write!(
+                f,
+                "{source_name}:{line}: unsupported {shape} `{struct_name}`; hew-astgen only supports named-field structs"
+            ),
+            Self::UnnamedField {
+                source_name,
+                line,
+                container,
+            } => write!(
+                f,
+                "{source_name}:{line}: unnamed field in {container}; hew-astgen requires named fields"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
 
 /// Parse a Rust source file and extract serializable type definitions.
-pub fn extract_types(source: &str) -> Vec<TypeDef> {
-    let file = syn::parse_file(source).expect("Failed to parse Rust source");
+pub fn extract_types(source_name: &str, source: &str) -> Result<Vec<TypeDef>, ParseError> {
+    let file = syn::parse_file(source).map_err(|error| ParseError::InvalidRustSource {
+        source_name: source_name.to_string(),
+        message: error.to_string(),
+    })?;
     let mut types = Vec::new();
 
     for item in &file.items {
@@ -14,20 +84,20 @@ pub fn extract_types(source: &str) -> Vec<TypeDef> {
                 if is_simple_enum(e) {
                     types.push(TypeDef::SimpleEnum(extract_simple_enum(e)));
                 } else {
-                    types.push(TypeDef::TaggedEnum(extract_tagged_enum(e)));
+                    types.push(TypeDef::TaggedEnum(extract_tagged_enum(source_name, e)?));
                 }
             }
             syn::Item::Struct(s) => {
                 if !has_serialize_derive(s.attrs.as_slice()) {
                     continue;
                 }
-                types.push(TypeDef::Struct(extract_struct(s)));
+                types.push(TypeDef::Struct(extract_struct(source_name, s)?));
             }
             _ => {}
         }
     }
 
-    types
+    Ok(types)
 }
 
 /// Check if an item has `derive(Serialize)`.
@@ -63,23 +133,34 @@ fn extract_simple_enum(e: &syn::ItemEnum) -> SimpleEnum {
     }
 }
 
-fn extract_tagged_enum(e: &syn::ItemEnum) -> TaggedEnum {
-    TaggedEnum {
+fn extract_tagged_enum(source_name: &str, e: &syn::ItemEnum) -> Result<TaggedEnum, ParseError> {
+    Ok(TaggedEnum {
         name: e.ident.to_string(),
-        variants: e.variants.iter().map(extract_enum_variant).collect(),
-    }
+        variants: e
+            .variants
+            .iter()
+            .map(|variant| extract_enum_variant(source_name, &e.ident.to_string(), variant))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
 }
 
-fn extract_enum_variant(v: &syn::Variant) -> EnumVariant {
+fn extract_enum_variant(
+    source_name: &str,
+    enum_name: &str,
+    v: &syn::Variant,
+) -> Result<EnumVariant, ParseError> {
     let name = v.ident.to_string();
-    match &v.fields {
+    Ok(match &v.fields {
         syn::Fields::Unit => EnumVariant::Unit { name },
         syn::Fields::Unnamed(fields) => {
             let types: Vec<RustType> = fields.unnamed.iter().map(|f| parse_type(&f.ty)).collect();
             if types.len() == 1 {
                 EnumVariant::Newtype {
                     name,
-                    ty: types.into_iter().next().unwrap(),
+                    ty: types
+                        .into_iter()
+                        .next()
+                        .expect("newtype variant has one field"),
                 }
             } else {
                 EnumVariant::Tuple {
@@ -89,29 +170,65 @@ fn extract_enum_variant(v: &syn::Variant) -> EnumVariant {
             }
         }
         syn::Fields::Named(fields) => EnumVariant::Struct {
-            name,
-            fields: fields.named.iter().map(extract_field).collect(),
+            name: name.clone(),
+            fields: fields
+                .named
+                .iter()
+                .map(|field| {
+                    extract_field(
+                        source_name,
+                        &format!("enum variant `{enum_name}::{name}`"),
+                        field,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?,
         },
-    }
+    })
 }
 
-fn extract_struct(s: &syn::ItemStruct) -> StructDef {
+fn extract_struct(source_name: &str, s: &syn::ItemStruct) -> Result<StructDef, ParseError> {
     let fields = match &s.fields {
-        syn::Fields::Named(named) => named.named.iter().map(extract_field).collect(),
-        _ => Vec::new(),
+        syn::Fields::Named(named) => named
+            .named
+            .iter()
+            .map(|field| extract_field(source_name, &format!("struct `{}`", s.ident), field))
+            .collect::<Result<Vec<_>, _>>()?,
+        syn::Fields::Unnamed(_) => {
+            return Err(ParseError::UnsupportedStructShape {
+                source_name: source_name.to_string(),
+                line: s.ident.span().start().line,
+                struct_name: s.ident.to_string(),
+                shape: UnsupportedStructShape::Tuple,
+            });
+        }
+        syn::Fields::Unit => {
+            return Err(ParseError::UnsupportedStructShape {
+                source_name: source_name.to_string(),
+                line: s.ident.span().start().line,
+                struct_name: s.ident.to_string(),
+                shape: UnsupportedStructShape::Unit,
+            });
+        }
     };
-    StructDef {
+    Ok(StructDef {
         name: s.ident.to_string(),
         fields,
-    }
+    })
 }
 
-fn extract_field(f: &syn::Field) -> FieldDef {
-    let name = f
-        .ident
-        .as_ref()
-        .map(std::string::ToString::to_string)
-        .unwrap_or_default();
+fn extract_field(
+    source_name: &str,
+    container: &str,
+    f: &syn::Field,
+) -> Result<FieldDef, ParseError> {
+    let Some(ident) = f.ident.as_ref() else {
+        return Err(ParseError::UnnamedField {
+            source_name: source_name.to_string(),
+            line: f.span().start().line,
+            container: container.to_string(),
+        });
+    };
+    let name = ident.to_string();
 
     let mut serde_skip = false;
     let mut serde_default = false;
@@ -144,13 +261,13 @@ fn extract_field(f: &syn::Field) -> FieldDef {
         }
     }
 
-    FieldDef {
+    Ok(FieldDef {
         name,
         ty: parse_type(&f.ty),
         serde_skip,
         serde_default,
         serde_rename,
-    }
+    })
 }
 
 /// Parse a syn Type into our `RustType` representation.
@@ -259,6 +376,10 @@ fn quote_type(ty: &syn::Type) -> String {
 mod tests {
     use super::*;
 
+    fn extract(source: &str) -> Vec<TypeDef> {
+        extract_types("<test>", source).expect("test source should parse")
+    }
+
     // ── extract_types: filtering by derive(Serialize) ───────────────────────
 
     #[test]
@@ -269,7 +390,7 @@ mod tests {
             #[derive(Debug)]
             pub struct DebugOnly { pub y: String }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         assert!(
             types.is_empty(),
             "Should skip types lacking derive(Serialize)"
@@ -285,7 +406,7 @@ mod tests {
                 pub end: usize,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         assert_eq!(types.len(), 1);
         match &types[0] {
             TypeDef::Struct(s) => {
@@ -307,7 +428,7 @@ mod tests {
                 pub value: String,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         assert_eq!(types.len(), 1);
         assert_eq!(types[0].name(), "Token");
     }
@@ -324,7 +445,7 @@ mod tests {
                 Crate,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         assert_eq!(types.len(), 1);
         match &types[0] {
             TypeDef::SimpleEnum(e) => {
@@ -345,7 +466,7 @@ mod tests {
                 Unit,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         assert_eq!(types.len(), 1);
         match &types[0] {
             TypeDef::TaggedEnum(e) => {
@@ -378,7 +499,7 @@ mod tests {
                 Or(Box<Pattern>, Box<Pattern>),
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         match &types[0] {
             TypeDef::TaggedEnum(e) => match &e.variants[0] {
                 EnumVariant::Tuple { name, fields } => {
@@ -406,7 +527,7 @@ mod tests {
                 pub cached: bool,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -424,7 +545,7 @@ mod tests {
                 pub flags: Vec<String>,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -441,7 +562,7 @@ mod tests {
                 pub ty: String,
             }
         "#;
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -457,7 +578,7 @@ mod tests {
                 pub doc: Option<String>,
             }
         "#;
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -485,7 +606,7 @@ mod tests {
                 pub i: PathBuf,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -511,7 +632,7 @@ mod tests {
                 pub spanned: Spanned<TypeExpr>,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -538,7 +659,7 @@ mod tests {
                 pub entries: HashMap<String, ModuleId>,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -559,7 +680,7 @@ mod tests {
                 pub span: Range<usize>,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -576,7 +697,7 @@ mod tests {
                 pub coords: (u64, String),
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -598,7 +719,7 @@ mod tests {
                 pub items: Vec<Option<Box<Expr>>>,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
@@ -625,13 +746,40 @@ mod tests {
                 pub graph: crate::module::ModuleGraph,
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
         };
         assert!(
             matches!(&s.fields[0].ty, RustType::Named(n) if n == "ModuleGraph"),
             "Qualified path should resolve to last segment"
+        );
+    }
+
+    #[test]
+    fn rejects_tuple_structs_with_a_diagnostic() {
+        let source = r"
+            #[derive(Serialize)]
+            pub struct Pair(String, String);
+        ";
+        let error = extract_types("ast.rs", source).expect_err("tuple structs should be rejected");
+        assert_eq!(
+            error.to_string(),
+            "ast.rs:3: unsupported tuple struct `Pair`; hew-astgen only supports named-field structs"
+        );
+    }
+
+    #[test]
+    fn rejects_unit_structs_with_a_diagnostic() {
+        let source = r"
+            #[derive(Serialize)]
+            pub struct Marker;
+        ";
+        let error =
+            extract_types("module.rs", source).expect_err("unit structs should be rejected");
+        assert_eq!(
+            error.to_string(),
+            "module.rs:3: unsupported unit struct `Marker`; hew-astgen only supports named-field structs"
         );
     }
 
@@ -652,7 +800,7 @@ mod tests {
                 Rect { width: f64, height: f64 },
             }
         ";
-        let types = extract_types(source);
+        let types = extract(source);
         assert_eq!(types.len(), 3);
         assert!(matches!(&types[0], TypeDef::SimpleEnum(e) if e.name == "Colour"));
         assert!(matches!(&types[1], TypeDef::Struct(s) if s.name == "Point"));

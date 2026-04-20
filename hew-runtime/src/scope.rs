@@ -44,16 +44,6 @@ unsafe extern "system" {
     fn ReleaseSRWLockExclusive(lock: *mut PlatformMutex);
 }
 
-unsafe fn mutex_init(m: *mut PlatformMutex) {
-    #[cfg(unix)]
-    // SAFETY: caller guarantees `m` points to a valid, uninitialised mutex.
-    unsafe {
-        libc::pthread_mutex_init(m, std::ptr::null())
-    };
-    #[cfg(windows)]
-    let _ = m;
-}
-
 unsafe fn mutex_lock(m: *mut PlatformMutex) {
     #[cfg(unix)]
     // SAFETY: caller guarantees `m` points to an initialised mutex.
@@ -140,17 +130,12 @@ impl std::fmt::Debug for HewScope {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_scope_new() -> HewScope {
-    let mut scope = HewScope {
+    HewScope {
         actors: [std::ptr::null_mut(); HEW_SCOPE_MAX_ACTORS],
         actor_count: 0,
         lock: MUTEX_INIT,
         cancelled: AtomicBool::new(false),
-    };
-    // SAFETY: `scope.lock` is a valid mutex ready for initialisation.
-    unsafe {
-        mutex_init(&raw mut scope.lock);
     }
-    scope
 }
 
 /// Add an actor to the scope.
@@ -223,11 +208,7 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
         }
         // SAFETY: mb is valid for the actor's lifetime.
         while unsafe { mailbox::hew_mailbox_has_messages(mb) } != 0 {
-            // SAFETY: Lock is held.
-            unsafe { mutex_unlock(&raw mut s.lock) };
             std::thread::sleep(std::time::Duration::from_millis(1));
-            // SAFETY: Lock was initialised.
-            unsafe { mutex_lock(&raw mut s.lock) };
         }
     }
 
@@ -238,8 +219,6 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
             unsafe { actor::hew_actor_close(s.actors[i].cast()) };
         }
     }
-    // SAFETY: Lock is held.
-    unsafe { mutex_unlock(&raw mut s.lock) };
 
     // Phase 3: Wait for all actors to reach a terminal state (Stopped or
     // Crashed).  `Stopping` is *not* terminal — the scheduler is still
@@ -281,6 +260,9 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
         }
         s.actors[i] = std::ptr::null_mut();
     }
+    s.actor_count = 0;
+    // SAFETY: Lock is held.
+    unsafe { mutex_unlock(&raw mut s.lock) };
 }
 
 /// Destroy a stack-allocated scope (mutex cleanup only).
@@ -375,6 +357,7 @@ pub unsafe extern "C" fn hew_scope_free(scope: *mut HewScope) {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     unsafe extern "C" fn noop_dispatch(
@@ -508,5 +491,79 @@ mod tests {
 
         // SAFETY: scope is valid.
         unsafe { hew_scope_destroy(&raw mut scope) };
+    }
+
+    #[test]
+    fn wait_all_keeps_scope_locked_until_mailboxes_drain() {
+        // SAFETY: null state + noop dispatch is the minimal valid spawn.
+        let actor1 =
+            unsafe { actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: null state + noop dispatch is the minimal valid spawn.
+        let actor2 =
+            unsafe { actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor1.is_null());
+        assert!(!actor2.is_null());
+
+        // SAFETY: actors are valid.
+        unsafe { &*actor1 }
+            .actor_state
+            .store(HewActorState::Stopped as i32, Ordering::Release);
+        // SAFETY: actor2 is valid.
+        unsafe { &*actor2 }
+            .actor_state
+            .store(HewActorState::Stopped as i32, Ordering::Release);
+
+        // SAFETY: hew_scope_new returns a fully initialised scope by value.
+        let mut scope = Box::new(unsafe { hew_scope_new() });
+        // SAFETY: scope and actor are valid.
+        let spawn_actor1 = unsafe { hew_scope_spawn(&raw mut *scope, actor1.cast()) };
+        assert_eq!(spawn_actor1, 0);
+
+        // SAFETY: actor1 is valid and owns a mailbox for its lifetime.
+        let mailbox = unsafe { (*actor1).mailbox.cast::<mailbox::HewMailbox>() };
+        assert!(!mailbox.is_null());
+        // SAFETY: mailbox is live and accepts an empty test message.
+        let send_rc = unsafe { mailbox::hew_mailbox_send(mailbox, 1, std::ptr::null_mut(), 0) };
+        assert_eq!(send_rc, 0);
+
+        let scope_addr = (&raw mut *scope) as usize;
+        let actor2_addr = actor2 as usize;
+        let spawn_returned = Arc::new(AtomicBool::new(false));
+        let spawn_returned_in_thread = Arc::clone(&spawn_returned);
+
+        let wait_handle = std::thread::spawn(move || {
+            // SAFETY: scope_addr points to the boxed scope that outlives this thread.
+            unsafe { hew_scope_wait_all(scope_addr as *mut HewScope) };
+        });
+
+        let spawn_handle = std::thread::spawn(move || {
+            // SAFETY: scope_addr and actor2_addr remain valid for the duration of the test.
+            let rc =
+                unsafe { hew_scope_spawn(scope_addr as *mut HewScope, actor2_addr as *mut c_void) };
+            assert_eq!(rc, 0);
+            spawn_returned_in_thread.store(true, Ordering::Release);
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !spawn_returned.load(Ordering::Acquire),
+            "spawn returned while wait_all was still draining phase 1"
+        );
+
+        // SAFETY: mailbox is live; draining the message lets wait_all finish.
+        let node = unsafe { mailbox::hew_mailbox_try_recv(mailbox) };
+        assert!(!node.is_null());
+        // SAFETY: node was just removed from the mailbox and is exclusively owned.
+        unsafe { mailbox::hew_msg_node_free(node) };
+
+        wait_handle.join().unwrap();
+        spawn_handle.join().unwrap();
+
+        assert!(spawn_returned.load(Ordering::Acquire));
+
+        // SAFETY: actor2 was inserted after the first wait_all returned.
+        unsafe { hew_scope_wait_all(&raw mut *scope) };
+        // SAFETY: scope is valid.
+        unsafe { hew_scope_destroy(&raw mut *scope) };
     }
 }

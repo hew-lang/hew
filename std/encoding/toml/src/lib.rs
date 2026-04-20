@@ -87,8 +87,8 @@ pub extern "C" fn hew_toml_last_error() -> *mut c_char {
 
 /// Return the type of a TOML value.
 ///
-/// Type codes: 0 = string, 1 = integer, 2 = float, 3 = boolean,
-/// 4 = datetime, 5 = array, 6 = table. Returns -1 on null input.
+/// Type codes: 0 = null (reserved), 1 = boolean, 2 = integer, 3 = float,
+/// 4 = string, 5 = array, 6 = table, 7 = datetime. Returns -1 on null input.
 ///
 /// # Safety
 ///
@@ -100,13 +100,13 @@ pub unsafe extern "C" fn hew_toml_type(val: *const HewTomlValue) -> i32 {
     }
     // SAFETY: val is a valid pointer to a HewTomlValue per caller contract.
     match &unsafe { &*val }.inner {
-        toml::Value::String(_) => 0,
-        toml::Value::Integer(_) => 1,
-        toml::Value::Float(_) => 2,
-        toml::Value::Boolean(_) => 3,
-        toml::Value::Datetime(_) => 4,
+        toml::Value::Boolean(_) => 1,
+        toml::Value::Integer(_) => 2,
+        toml::Value::Float(_) => 3,
+        toml::Value::String(_) => 4,
         toml::Value::Array(_) => 5,
         toml::Value::Table(_) => 6,
+        toml::Value::Datetime(_) => 7,
     }
 }
 
@@ -694,7 +694,7 @@ mod tests {
         let field = unsafe { hew_toml_get_field(root, key.as_ptr()) };
         assert!(!field.is_null());
         // SAFETY: field is valid.
-        assert_eq!(unsafe { hew_toml_type(field) }, 0); // string
+        assert_eq!(unsafe { hew_toml_type(field) }, 4); // string
 
         // SAFETY: field is a string value.
         let s = unsafe { hew_toml_get_string(field) };
@@ -724,7 +724,7 @@ mod tests {
         let port = unsafe { hew_toml_get_field(root, key_port.as_ptr()) };
         assert!(!port.is_null());
         // SAFETY: port is valid.
-        assert_eq!(unsafe { hew_toml_type(port) }, 1); // integer
+        assert_eq!(unsafe { hew_toml_type(port) }, 2); // integer
                                                        // SAFETY: port is a valid integer TOML value.
         assert_eq!(unsafe { hew_toml_get_int(port) }, 8080);
 
@@ -733,7 +733,7 @@ mod tests {
         let pi = unsafe { hew_toml_get_field(root, key_pi.as_ptr()) };
         assert!(!pi.is_null());
         // SAFETY: pi is valid.
-        assert_eq!(unsafe { hew_toml_type(pi) }, 2); // float
+        assert_eq!(unsafe { hew_toml_type(pi) }, 3); // float
                                                      // SAFETY: pi is a valid float TOML value.
         let pi_val = unsafe { hew_toml_get_float(pi) };
         assert!((pi_val - 3.14).abs() < f64::EPSILON);
@@ -743,7 +743,7 @@ mod tests {
         let en = unsafe { hew_toml_get_field(root, key_en.as_ptr()) };
         assert!(!en.is_null());
         // SAFETY: en is valid.
-        assert_eq!(unsafe { hew_toml_type(en) }, 3); // boolean
+        assert_eq!(unsafe { hew_toml_type(en) }, 1); // boolean
                                                      // SAFETY: en is a valid boolean TOML value.
         assert_eq!(unsafe { hew_toml_get_bool(en) }, 1);
 
@@ -1063,7 +1063,7 @@ mod tests {
         unsafe {
             let b = hew_toml_from_bool(1);
             assert!(!b.is_null());
-            assert_eq!(hew_toml_type(b), 3); // boolean
+            assert_eq!(hew_toml_type(b), 1); // boolean
             assert_eq!(hew_toml_get_bool(b), 1);
             hew_toml_free(b);
 
@@ -1073,20 +1073,20 @@ mod tests {
 
             let i = hew_toml_from_int(42);
             assert!(!i.is_null());
-            assert_eq!(hew_toml_type(i), 1); // integer
+            assert_eq!(hew_toml_type(i), 2); // integer
             assert_eq!(hew_toml_get_int(i), 42);
             hew_toml_free(i);
 
             let f = hew_toml_from_float(2.718);
             assert!(!f.is_null());
-            assert_eq!(hew_toml_type(f), 2); // float
+            assert_eq!(hew_toml_type(f), 3); // float
             assert!((hew_toml_get_float(f) - 2.718).abs() < f64::EPSILON);
             hew_toml_free(f);
 
             let cs = CString::new("hello").unwrap();
             let s = hew_toml_from_string(cs.as_ptr());
             assert!(!s.is_null());
-            assert_eq!(hew_toml_type(s), 0); // string
+            assert_eq!(hew_toml_type(s), 4); // string
             assert_eq!(read_and_free_cstr(hew_toml_get_string(s)), "hello");
             hew_toml_free(s);
 

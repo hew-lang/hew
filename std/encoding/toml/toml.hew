@@ -19,6 +19,8 @@
 //! }
 //! ```
 
+import std::encoding::wire::value_trait;
+
 /// Structured error type for TOML parsing failures.
 ///
 /// Use `Result<Value, ParseError>` with `try_parse` for structured error
@@ -33,12 +35,18 @@ pub enum ParseError {
 /// An opaque TOML value.
 ///
 /// Represents any TOML type: string, integer, float, boolean, array,
-/// table, or datetime. Must be freed with `free()` when no longer needed.
+/// table, or datetime. The canonical shared wire tag prefix reserves
+/// `0` for null, even though TOML itself has no null value. Must be freed
+/// with `free()` when no longer needed.
 type Value {}
 
 /// Methods available on a TOML `Value`.
-trait ValueMethods {
-    /// Return the type tag (0=string, 1=int, 2=float, 3=bool, 4=array, 5=table, 6=datetime).
+///
+/// Extends the shared opaque-handle contract from
+/// `std::encoding::wire::value_trait`.
+trait ValueMethods: CanonicalValueMethods {
+    /// Return the type tag (0=null reserved, 1=bool, 2=int, 3=float,
+    /// 4=string, 5=array, 6=table, 7=datetime).
     fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the string value.
     fn get_string(val: Value) -> String;
@@ -81,6 +89,50 @@ trait ValueMethods {
     fn push_float(arr: Value, val: f64) -> Value;
     /// Push a boolean onto an array. Returns the array.
     fn push_bool(arr: Value, val: bool) -> Value;
+}
+
+impl CanonicalValueMethods for Value {
+    fn type_of(val: Value) -> i32 { unsafe { hew_toml_type(val) } } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
+    fn get_string(val: Value) -> String { unsafe { hew_toml_get_string(val) } }
+    fn get_int(val: Value) -> int { unsafe { hew_toml_get_int(val) } }
+    fn get_float(val: Value) -> f64 { unsafe { hew_toml_get_float(val) } }
+    fn get_bool(val: Value) -> i32 { unsafe { hew_toml_get_bool(val) } } // INTERNAL-ABI: C ABI returns bool as i32
+    fn get_field(val: Value, key: String) -> Value { unsafe { hew_toml_get_field(val, key) } }
+    fn array_len(val: Value) -> int { unsafe { hew_toml_array_len(val) } }
+    fn array_get(val: Value, index: int) -> Value { unsafe { hew_toml_array_get(val, index as i32) } } // INTERNAL-ABI: C ABI index is i32
+    fn stringify(val: Value) -> String { unsafe { hew_toml_stringify(val) } }
+    fn free(val: Value) { unsafe { hew_toml_free(val) }; }
+
+    fn with_string(tbl: Value, key: String, val: String) -> Value {
+        unsafe { hew_toml_table_set_string(tbl, key, val) }; tbl
+    }
+    fn with_int(tbl: Value, key: String, val: int) -> Value {
+        unsafe { hew_toml_table_set_int(tbl, key, val as i64) }; tbl // INTERNAL-ABI: C ABI takes i64
+    }
+    fn with_float(tbl: Value, key: String, val: f64) -> Value {
+        unsafe { hew_toml_table_set_float(tbl, key, val) }; tbl
+    }
+    fn with_bool(tbl: Value, key: String, val: bool) -> Value {
+        unsafe { hew_toml_table_set_bool(tbl, key, val as i32) }; tbl
+    }
+    fn with(tbl: Value, key: String, child: Value) -> Value {
+        unsafe { hew_toml_table_set(tbl, key, child) }; tbl
+    }
+    fn push(arr: Value, child: Value) -> Value {
+        unsafe { hew_toml_array_push(arr, child) }; arr
+    }
+    fn push_int(arr: Value, val: int) -> Value {
+        unsafe { hew_toml_array_push_int(arr, val as i64) }; arr // INTERNAL-ABI: C ABI takes i64
+    }
+    fn push_string(arr: Value, val: String) -> Value {
+        unsafe { hew_toml_array_push_string(arr, val) }; arr
+    }
+    fn push_float(arr: Value, val: f64) -> Value {
+        unsafe { hew_toml_array_push_float(arr, val) }; arr
+    }
+    fn push_bool(arr: Value, val: bool) -> Value {
+        unsafe { hew_toml_array_push_bool(arr, val as i32) }; arr
+    }
 }
 
 impl ValueMethods for Value {

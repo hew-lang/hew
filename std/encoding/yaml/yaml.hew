@@ -17,6 +17,8 @@
 //! }
 //! ```
 
+import std::encoding::wire::value_trait;
+
 /// Structured error type for YAML parsing failures.
 ///
 /// Use `Result<Value, ParseError>` with `try_parse` for structured error
@@ -35,7 +37,10 @@ pub enum ParseError {
 type Value {}
 
 /// Methods available on a YAML `Value`.
-trait ValueMethods {
+///
+/// Extends the shared opaque-handle contract from
+/// `std::encoding::wire::value_trait`.
+trait ValueMethods: CanonicalValueMethods {
     /// Serialize the value back to a YAML string.
     fn stringify(val: Value) -> String;
     /// Return the type tag (0=null, 1=bool, 2=int, 3=float, 4=string, 5=sequence, 6=mapping).
@@ -85,6 +90,50 @@ trait ValueMethods {
     fn push_null(arr: Value) -> Value;
 }
 
+impl CanonicalValueMethods for Value {
+    fn stringify(val: Value) -> String { unsafe { hew_yaml_stringify(val) } }
+    fn type_of(val: Value) -> i32 { unsafe { hew_yaml_type(val) } } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
+    fn get_bool(val: Value) -> i32 { unsafe { hew_yaml_get_bool(val) } } // INTERNAL-ABI: C ABI returns bool as i32
+    fn get_int(val: Value) -> int { unsafe { hew_yaml_get_int(val) } }
+    fn get_float(val: Value) -> f64 { unsafe { hew_yaml_get_float(val) } }
+    fn get_string(val: Value) -> String { unsafe { hew_yaml_get_string(val) } }
+    fn get_field(val: Value, key: String) -> Value { unsafe { hew_yaml_get_field(val, key) } }
+    fn array_len(val: Value) -> int { unsafe { hew_yaml_array_len(val) } }
+    fn array_get(val: Value, index: int) -> Value { unsafe { hew_yaml_array_get(val, index as i32) } } // INTERNAL-ABI: C ABI index is i32
+    fn free(val: Value) { unsafe { hew_yaml_free(val) }; }
+
+    fn with_string(obj: Value, key: String, val: String) -> Value {
+        unsafe { hew_yaml_object_set_string(obj, key, val) }; obj
+    }
+    fn with_int(obj: Value, key: String, val: int) -> Value {
+        unsafe { hew_yaml_object_set_int(obj, key, val as i64) }; obj // INTERNAL-ABI: C ABI takes i64
+    }
+    fn with_float(obj: Value, key: String, val: f64) -> Value {
+        unsafe { hew_yaml_object_set_float(obj, key, val) }; obj
+    }
+    fn with_bool(obj: Value, key: String, val: bool) -> Value {
+        unsafe { hew_yaml_object_set_bool(obj, key, val as i32) }; obj
+    }
+    fn with(obj: Value, key: String, child: Value) -> Value {
+        unsafe { hew_yaml_object_set(obj, key, child) }; obj
+    }
+    fn push(arr: Value, child: Value) -> Value {
+        unsafe { hew_yaml_array_push(arr, child) }; arr
+    }
+    fn push_int(arr: Value, val: int) -> Value {
+        unsafe { hew_yaml_array_push_int(arr, val as i64) }; arr // INTERNAL-ABI: C ABI takes i64
+    }
+    fn push_string(arr: Value, val: String) -> Value {
+        unsafe { hew_yaml_array_push_string(arr, val) }; arr
+    }
+    fn push_float(arr: Value, val: f64) -> Value {
+        unsafe { hew_yaml_array_push_float(arr, val) }; arr
+    }
+    fn push_bool(arr: Value, val: bool) -> Value {
+        unsafe { hew_yaml_array_push_bool(arr, val as i32) }; arr
+    }
+}
+
 impl ValueMethods for Value {
     fn stringify(val: Value) -> String { unsafe { hew_yaml_stringify(val) } }
     fn type_of(val: Value) -> i32 { unsafe { hew_yaml_type(val) } } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
@@ -109,11 +158,12 @@ impl ValueMethods for Value {
     fn with_bool(obj: Value, key: String, val: bool) -> Value {
         unsafe { hew_yaml_object_set_bool(obj, key, val as i32) }; obj
     }
-    fn with_null(obj: Value, key: String) -> Value {
-        unsafe { hew_yaml_object_set_null(obj, key) }; obj
-    }
     fn with(obj: Value, key: String, child: Value) -> Value {
         unsafe { hew_yaml_object_set(obj, key, child) }; obj
+    }
+
+    fn with_null(obj: Value, key: String) -> Value {
+        unsafe { hew_yaml_object_set_null(obj, key) }; obj
     }
     fn push(arr: Value, child: Value) -> Value {
         unsafe { hew_yaml_array_push(arr, child) }; arr

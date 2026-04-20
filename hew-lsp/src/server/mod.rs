@@ -4350,6 +4350,43 @@ machine Traffic {
         );
     }
 
+    #[test]
+    fn refresh_document_surfaces_module_cycle_diagnostic_and_keeps_per_file_analysis() {
+        let main_source = "import \"foo.hew\";\nfn main() -> i32 { true }";
+        let foo_source = "import \"main.hew\";\npub fn exported() -> i32 { true }";
+        let main_url = make_test_uri("/fake/project/main.hew");
+        let foo_url = make_test_uri("/fake/project/foo.hew");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        refresh_document_and_dependents(&main_url, main_source, &documents);
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+
+        for expected_uri in [&main_url, &foo_url] {
+            let diagnostics = refreshed
+                .iter()
+                .find(|(uri, _)| uri == expected_uri)
+                .map(|(_, diagnostics)| diagnostics)
+                .expect("cycle refresh must publish diagnostics for both open cycle members");
+            assert!(
+                diagnostics.iter().any(|diagnostic| {
+                    diagnostic.source.as_deref() == Some("hew-lsp")
+                        && diagnostic.message.contains("import cycle detected")
+                        && diagnostic
+                            .message
+                            .contains("falling back to per-file analysis")
+                }),
+                "expected cycle diagnostic for {expected_uri}, got: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.source.as_deref() == Some("hew-types")),
+                "expected per-file type-check diagnostics for {expected_uri}, got: {diagnostics:?}"
+            );
+        }
+    }
+
     /// `populate_user_module_imports` leaves `resolved_items` as None for a
     /// module that is absent from both the document store and the disk, so
     /// the type checker can emit a proper diagnostic.

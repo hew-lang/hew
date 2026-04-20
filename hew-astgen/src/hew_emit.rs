@@ -38,6 +38,23 @@ use std::fmt::Write;
 
 use quote::ToTokens;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HewEmitError {
+    MissingTypePathSegment { ty: String },
+}
+
+impl std::fmt::Display for HewEmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingTypePathSegment { ty } => {
+                write!(f, "failed to map Rust type with no path segments: {ty}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HewEmitError {}
+
 /// A single extern "C" function extracted from Rust source.
 #[derive(Debug)]
 pub struct ExternFn {
@@ -53,8 +70,12 @@ pub struct ExternFn {
 ///
 /// Skips functions whose name ends with `_free` — those are memory-management
 /// companions, not public Hew API.
-pub fn extract_extern_fns(source: &str) -> Vec<ExternFn> {
+pub fn extract_extern_fns(source: &str) -> Result<Vec<ExternFn>, HewEmitError> {
     let file = syn::parse_file(source).expect("Failed to parse Rust source");
+    extract_extern_fns_from_file(&file)
+}
+
+fn extract_extern_fns_from_file(file: &syn::File) -> Result<Vec<ExternFn>, HewEmitError> {
     let mut fns = Vec::new();
 
     for item in &file.items {
@@ -81,8 +102,8 @@ pub fn extract_extern_fns(source: &str) -> Vec<ExternFn> {
             continue;
         }
 
-        let params = extract_params(&f.sig);
-        let return_ty = extract_return_ty(&f.sig);
+        let params = extract_params(&f.sig)?;
+        let return_ty = extract_return_ty(&f.sig)?;
 
         fns.push(ExternFn {
             name,
@@ -91,7 +112,7 @@ pub fn extract_extern_fns(source: &str) -> Vec<ExternFn> {
         });
     }
 
-    fns
+    Ok(fns)
 }
 
 /// Generate a `.hew` module skeleton from a list of extern functions.
@@ -188,32 +209,22 @@ fn is_extern_c(f: &syn::ItemFn) -> bool {
 }
 
 /// Map a syn `Type` to a Hew surface type string.
-fn map_type(ty: &syn::Type) -> String {
+fn map_type(ty: &syn::Type) -> Result<String, HewEmitError> {
     match ty {
         syn::Type::Ptr(ptr) => {
             // *mut c_char and *const c_char → String
             if let syn::Type::Path(tp) = ptr.elem.as_ref() {
-                let ident = tp
-                    .path
-                    .segments
-                    .last()
-                    .map(|s| s.ident.to_string())
-                    .unwrap_or_default();
+                let ident = last_path_ident(&tp.path, ptr.elem.as_ref())?;
                 if ident == "c_char" {
-                    return "String".to_string();
+                    return Ok("String".to_string());
                 }
             }
             // Other pointer types: emit as unknown annotation
-            format!("/* {} */", ty.to_token_stream())
+            Ok(format!("/* {} */", ty.to_token_stream()))
         }
         syn::Type::Path(tp) => {
-            let ident = tp
-                .path
-                .segments
-                .last()
-                .map(|s| s.ident.to_string())
-                .unwrap_or_default();
-            match ident.as_str() {
+            let ident = last_path_ident(&tp.path, ty)?;
+            Ok(match ident.as_str() {
                 "i32" => "i32".to_string(),
                 "i64" => "i64".to_string(),
                 "u32" => "u32".to_string(),
@@ -223,20 +234,34 @@ fn map_type(ty: &syn::Type) -> String {
                 "usize" => "usize".to_string(),
                 // Anything else is named as-is — the human will fix it.
                 _ => ident,
-            }
+            })
         }
         syn::Type::Tuple(t) if t.elems.is_empty() => {
             // () — not used as a return type in the generated output; caller
             // maps this to `return_ty = None`.
-            "()".to_string()
+            Ok("()".to_string())
         }
-        _ => {
-            format!("/* {} */", ty.to_token_stream())
-        }
+        _ => Ok(format!("/* {} */", ty.to_token_stream())),
     }
 }
 
-fn extract_params(sig: &syn::Signature) -> Vec<(String, String)> {
+fn last_path_ident(path: &syn::Path, ty: &syn::Type) -> Result<String, HewEmitError> {
+    path.segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+        .ok_or_else(|| HewEmitError::MissingTypePathSegment {
+            ty: {
+                let ty = ty.to_token_stream().to_string();
+                if ty.is_empty() {
+                    "<empty path>".to_string()
+                } else {
+                    ty
+                }
+            },
+        })
+}
+
+fn extract_params(sig: &syn::Signature) -> Result<Vec<(String, String)>, HewEmitError> {
     let mut out = Vec::new();
     for (i, input) in sig.inputs.iter().enumerate() {
         let (name, hew_ty) = match input {
@@ -246,26 +271,26 @@ fn extract_params(sig: &syn::Signature) -> Vec<(String, String)> {
                     syn::Pat::Ident(pi) => pi.ident.to_string(),
                     _ => format!("arg{i}"),
                 };
-                let hew_ty = map_type(&pat_ty.ty);
+                let hew_ty = map_type(&pat_ty.ty)?;
                 (name, hew_ty)
             }
         };
         out.push((name, hew_ty));
     }
-    out
+    Ok(out)
 }
 
-fn extract_return_ty(sig: &syn::Signature) -> Option<String> {
+fn extract_return_ty(sig: &syn::Signature) -> Result<Option<String>, HewEmitError> {
     match &sig.output {
-        syn::ReturnType::Default => None,
+        syn::ReturnType::Default => Ok(None),
         syn::ReturnType::Type(_, ty) => {
             // Treat `()` as no return
             if let syn::Type::Tuple(t) = ty.as_ref() {
                 if t.elems.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
             }
-            let mapped = map_type(ty);
+            let mapped = map_type(ty)?;
             // Apply i32 → bool for functions whose C ABI uses 0/1 sentinel.
             // HEURISTIC: i32 return → bool when the mapped name is "i32".
             // WHY: hew-cabi convention for boolean predicates (e.g. hew_uuid_parse).
@@ -275,9 +300,9 @@ fn extract_return_ty(sig: &syn::Signature) -> Option<String> {
             // REAL SOLUTION: explicit annotation on the Rust side (attribute or
             //   naming convention) that distinguishes sentinel from count/discriminant.
             if mapped == "i32" {
-                return Some("bool".to_string());
+                return Ok(Some("bool".to_string()));
             }
-            Some(mapped)
+            Ok(Some(mapped))
         }
     }
 }
@@ -295,7 +320,7 @@ mod tests {
         let src = r#"
             pub extern "C" fn hew_foo() -> i32 { 0 }
         "#;
-        let fns = extract_extern_fns(src);
+        let fns = extract_extern_fns(src).unwrap();
         assert!(fns.is_empty(), "should skip fn without #[no_mangle]");
     }
 
@@ -305,7 +330,7 @@ mod tests {
             #[no_mangle]
             pub fn hew_foo() -> i32 { 0 }
         ";
-        let fns = extract_extern_fns(src);
+        let fns = extract_extern_fns(src).unwrap();
         assert!(fns.is_empty(), "should skip fn without extern \"C\"");
     }
 
@@ -315,7 +340,7 @@ mod tests {
             #[no_mangle]
             pub unsafe extern "C" fn hew_uuid_free(s: *mut c_char) {}
         "#;
-        let fns = extract_extern_fns(src);
+        let fns = extract_extern_fns(src).unwrap();
         assert!(fns.is_empty(), "should skip _free functions");
     }
 
@@ -327,7 +352,7 @@ mod tests {
                 todo!()
             }
         "#;
-        let fns = extract_extern_fns(src);
+        let fns = extract_extern_fns(src).unwrap();
         assert_eq!(fns.len(), 1);
         assert_eq!(fns[0].name, "hew_uuid_v4");
         assert!(fns[0].params.is_empty());
@@ -343,7 +368,7 @@ mod tests {
                 0
             }
         "#;
-        let fns = extract_extern_fns(src);
+        let fns = extract_extern_fns(src).unwrap();
         assert_eq!(fns.len(), 1);
         assert_eq!(fns[0].params.len(), 1);
         assert_eq!(fns[0].params[0].0, "s");
@@ -358,8 +383,42 @@ mod tests {
                 0
             }
         "#;
-        let fns = extract_extern_fns(src);
+        let fns = extract_extern_fns(src).unwrap();
         assert_eq!(fns[0].return_ty.as_deref(), Some("bool"));
+    }
+
+    #[test]
+    fn errors_when_a_type_path_has_no_segments() {
+        let mut file = syn::parse_file(
+            r#"
+                #[no_mangle]
+                pub unsafe extern "C" fn hew_uuid_parse(s: i32) -> i32 {
+                    s
+                }
+            "#,
+        )
+        .unwrap();
+        let syn::Item::Fn(func) = &mut file.items[0] else {
+            panic!("expected function item");
+        };
+        let syn::FnArg::Typed(pat_ty) = &mut func.sig.inputs[0] else {
+            panic!("expected typed argument");
+        };
+        *pat_ty.ty = syn::Type::Path(syn::TypePath {
+            qself: None,
+            path: syn::Path {
+                leading_colon: None,
+                segments: syn::punctuated::Punctuated::new(),
+            },
+        });
+
+        let err = extract_extern_fns_from_file(&file).unwrap_err();
+        assert_eq!(
+            err,
+            HewEmitError::MissingTypePathSegment {
+                ty: "<empty path>".to_string()
+            }
+        );
     }
 
     // ── generate_hew_module ────────────────────────────────────────────────
@@ -412,7 +471,7 @@ mod tests {
             // Path doesn't exist in test environment — skip.
             return;
         };
-        let fns = extract_extern_fns(&src);
+        let fns = extract_extern_fns(&src).unwrap();
         assert_eq!(
             fns.len(),
             3,
@@ -435,7 +494,7 @@ mod tests {
         let Ok(src) = std::fs::read_to_string(&lib_rs_path) else {
             return;
         };
-        let fns = extract_extern_fns(&src);
+        let fns = extract_extern_fns(&src).unwrap();
         let hew_src = generate_hew_module(&fns, "hew_uuid_");
 
         let result = hew_parser::parse(&hew_src);

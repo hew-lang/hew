@@ -28,6 +28,15 @@ fn generate_reader(ast_source: &str, module_source: &str) -> String {
     codegen::generate(&types, &type_map)
 }
 
+fn generate_hew_exports(
+    source: &str,
+    module_prefix: &str,
+) -> Result<(Vec<hew_emit::ExternFn>, String), hew_emit::HewEmitError> {
+    let fns = hew_emit::extract_extern_fns(source)?;
+    let hew_code = hew_emit::generate_hew_module(&fns, module_prefix);
+    Ok((fns, hew_code))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -83,7 +92,14 @@ fn main() {
             let source = std::fs::read_to_string(&input_path)
                 .unwrap_or_else(|e| panic!("Failed to read {}: {e}", input_path.display()));
 
-            let fns = hew_emit::extract_extern_fns(&source);
+            let module_prefix = prefix.as_deref().unwrap_or("");
+            let (fns, hew_code) =
+                generate_hew_exports(&source, module_prefix).unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to generate Hew exports from {}: {e}",
+                        input_path.display()
+                    )
+                });
             eprintln!(
                 "Extracted {} extern fns from {}",
                 fns.len(),
@@ -92,9 +108,6 @@ fn main() {
             for f in &fns {
                 eprintln!("  {}", f.name);
             }
-
-            let module_prefix = prefix.as_deref().unwrap_or("");
-            let hew_code = hew_emit::generate_hew_module(&fns, module_prefix);
 
             std::fs::write(&output_path, &hew_code)
                 .unwrap_or_else(|e| panic!("Failed to write {}: {e}", output_path.display()));

@@ -1,5 +1,7 @@
 //! HTTP client for fetching runtime profiler data.
 
+#[cfg(test)]
+use std::cell::RefCell;
 use std::io::{self, BufRead, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -15,6 +17,11 @@ use serde::Deserialize;
 /// socket misconfiguration or server-side issues.
 #[derive(Debug)]
 pub enum ClientError {
+    /// Failed to build the TCP HTTP client with the configured timeout/proxy settings.
+    Build {
+        base_url: String,
+        source: reqwest::Error,
+    },
     /// Could not connect to the unix socket (stale path, permissions, etc.).
     Connect(io::Error),
     /// Failed to configure socket read/write timeouts.
@@ -32,6 +39,9 @@ pub enum ClientError {
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Build { base_url, source } => {
+                write!(f, "http client build failed for {base_url}: {source}")
+            }
             Self::Connect(e) => write!(f, "connect failed: {e}"),
             Self::Timeout(e) => write!(f, "timeout configure failed: {e}"),
             Self::Write(e) => write!(f, "write failed: {e}"),
@@ -46,6 +56,34 @@ impl From<serde_json::Error> for ClientError {
     fn from(e: serde_json::Error) -> Self {
         Self::Parse(e)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TCP_CLIENT_BUILD_ERROR: RefCell<Option<reqwest::Error>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn take_injected_tcp_client_build_error() -> Option<reqwest::Error> {
+    TCP_CLIENT_BUILD_ERROR.with(|slot| slot.borrow_mut().take())
+}
+
+fn build_tcp_http_client(base_url: &str) -> Result<reqwest::blocking::Client, ClientError> {
+    #[cfg(test)]
+    if let Some(source) = take_injected_tcp_client_build_error() {
+        return Err(ClientError::Build {
+            base_url: base_url.to_owned(),
+            source,
+        });
+    }
+
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .map_err(|source| ClientError::Build {
+            base_url: base_url.to_owned(),
+            source,
+        })
 }
 
 /// Metrics snapshot from `/api/metrics`.
@@ -342,19 +380,16 @@ pub struct ProfilerClient {
 
 impl ProfilerClient {
     /// Create a client that connects over TCP.
-    pub fn new_tcp(base_url: &str) -> Self {
-        let http = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_millis(500))
-            .build()
-            .unwrap_or_default();
-        Self {
+    pub fn new_tcp(base_url: &str) -> Result<Self, ClientError> {
+        let http = build_tcp_http_client(base_url)?;
+        Ok(Self {
             transport: Transport::Tcp {
                 base_url: base_url.to_owned(),
                 http,
             },
             status: ConnectionStatus::Connecting,
             last_error: None,
-        }
+        })
     }
 
     /// Create a client that connects over a unix domain socket.
@@ -552,19 +587,19 @@ pub struct NodeClient {
 
 impl ClusterClient {
     /// Create a cluster client from TCP addresses.
-    pub fn new(addrs: &[String]) -> Self {
+    pub fn new(addrs: &[String]) -> Result<Self, ClientError> {
         let nodes = addrs
             .iter()
-            .map(|addr| {
+            .map(|addr| -> Result<NodeClient, ClientError> {
                 let base_url = format!("http://{addr}");
-                NodeClient {
-                    client: ProfilerClient::new_tcp(&base_url),
+                Ok(NodeClient {
+                    client: ProfilerClient::new_tcp(&base_url)?,
                     addr: addr.clone(),
                     node_id: None,
-                }
+                })
             })
-            .collect();
-        Self { nodes }
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { nodes })
     }
 
     /// Create a cluster client from a single unix domain socket.
@@ -717,10 +752,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tcp_client_builder_failure_bubbles_up() {
+        let source =
+            reqwest::Proxy::all("http://127.0.0.1:bad-port").expect_err("proxy should be invalid");
+        TCP_CLIENT_BUILD_ERROR.with(|slot| {
+            *slot.borrow_mut() = Some(source);
+        });
+
+        let error = ProfilerClient::new_tcp("http://127.0.0.1:6060")
+            .expect_err("injected reqwest build error should fail client construction");
+
+        match error {
+            ClientError::Build { base_url, .. } => {
+                assert_eq!(base_url, "http://127.0.0.1:6060");
+            }
+            other => panic!("expected ClientError::Build, got {other:?}"),
+        }
+    }
+
     // ── ClientError::Display ──────────────────────────────────────────────
 
     #[test]
     fn client_error_display_includes_category() {
+        let source =
+            reqwest::Proxy::all("http://127.0.0.1:bad-port").expect_err("proxy should be invalid");
+        let e = ClientError::Build {
+            base_url: "http://127.0.0.1:6060".to_owned(),
+            source,
+        };
+        assert!(
+            e.to_string()
+                .starts_with("http client build failed for http://127.0.0.1:6060:"),
+            "{e}"
+        );
+
         let e = ClientError::Connect(io::Error::new(io::ErrorKind::NotFound, "no such file"));
         assert!(e.to_string().starts_with("connect failed:"), "{e}");
 

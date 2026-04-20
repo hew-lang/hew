@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::client::{
-    ActorInfo, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus,
+    ActorInfo, ClientError, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus,
     CrashEntry as ClientCrashEntry, HistoryEntry, Metrics, RouteEntry, RoutingSnapshot,
     SupervisorRow as ClientSupervisorRow, TraceEvent,
 };
@@ -185,11 +185,16 @@ pub(crate) const DISCOVERY_SCAN_INTERVAL: Duration = Duration::from_secs(3);
 
 impl App {
     /// Connect to profilers over TCP.
-    pub fn new_tcp(node_addrs: &[String]) -> Self {
+    pub fn new_tcp(node_addrs: &[String]) -> Result<Self, ClientError> {
         let base_url = node_addrs
             .first()
             .map_or_else(|| "localhost:6060".to_owned(), Clone::clone);
-        Self::build(Some(ClusterClient::new(node_addrs)), base_url, false, false)
+        Ok(Self::build(
+            Some(ClusterClient::new(node_addrs)?),
+            base_url,
+            false,
+            false,
+        ))
     }
 
     /// Connect to a profiler over a unix domain socket.
@@ -1411,7 +1416,7 @@ mod tests {
     }
 
     fn timeline_app(server: &TestTraceServer) -> App {
-        let mut app = App::new_tcp(&[server.addr()]);
+        let mut app = App::new_tcp(&[server.addr()]).expect("trace server app should build");
         app.active_tab = Tab::Timeline;
         app
     }
@@ -1546,7 +1551,8 @@ mod tests {
         let live = TestTraceServer::new(Vec::new());
         let dead_addr = unused_tcp_addr();
         let live_addr = live.addr();
-        let mut app = App::new_tcp(&[dead_addr.clone(), live_addr.clone()]);
+        let mut app =
+            App::new_tcp(&[dead_addr.clone(), live_addr.clone()]).expect("tcp app should build");
 
         app.refresh();
 
@@ -1562,7 +1568,8 @@ mod tests {
 
     #[test]
     fn switching_active_node_resets_rate_baseline() {
-        let mut app = App::new_tcp(&["alpha:6060".to_owned(), "beta:6061".to_owned()]);
+        let mut app = App::new_tcp(&["alpha:6060".to_owned(), "beta:6061".to_owned()])
+            .expect("tcp app should build");
         app.msg_rate = 42.0;
         app.prev_messages_sent = 9;
         app.prev_timestamp = 3.5;
@@ -1581,7 +1588,8 @@ mod tests {
             "alpha:6060".to_owned(),
             "beta:6061".to_owned(),
             "gamma:6062".to_owned(),
-        ]);
+        ])
+        .expect("tcp app should build");
 
         assert!(app.cycle_active_node(false));
         assert_eq!(app.active_node_label(), "beta:6061");
@@ -1597,7 +1605,8 @@ mod tests {
         let dead_addr = unused_tcp_addr();
         let alpha_addr = alpha.addr();
         let beta_addr = beta.addr();
-        let mut app = App::new_tcp(&[alpha_addr.clone(), dead_addr, beta_addr.clone()]);
+        let mut app = App::new_tcp(&[alpha_addr.clone(), dead_addr, beta_addr.clone()])
+            .expect("tcp app should build");
 
         app.refresh();
         assert_eq!(app.active_node_label(), alpha_addr);
@@ -1617,7 +1626,8 @@ mod tests {
         let fallback = TestTraceServer::with_metrics(Vec::new(), 2.0);
         let recovering_addr = unused_tcp_addr();
         let fallback_addr = fallback.addr();
-        let mut app = App::new_tcp(&[recovering_addr.clone(), fallback_addr.clone()]);
+        let mut app = App::new_tcp(&[recovering_addr.clone(), fallback_addr.clone()])
+            .expect("tcp app should build");
 
         app.refresh();
         assert_eq!(app.active_node_label(), fallback_addr);

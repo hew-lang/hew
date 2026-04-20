@@ -19,6 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use app::{App, Tab};
 use clap::Parser;
+use client::ClientError;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -56,12 +57,27 @@ struct Cli {
     demo: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 enum ConnectError {
     NoProfilerForPid(u32),
     #[cfg(unix)]
     MultipleProfilers(Vec<AmbiguousProfiler>),
+    ClientInit(ClientError),
 }
+
+impl PartialEq for ConnectError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::NoProfilerForPid(lhs), Self::NoProfilerForPid(rhs)) => lhs == rhs,
+            #[cfg(unix)]
+            (Self::MultipleProfilers(lhs), Self::MultipleProfilers(rhs)) => lhs == rhs,
+            (Self::ClientInit(lhs), Self::ClientInit(rhs)) => lhs.to_string() == rhs.to_string(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ConnectError {}
 
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +111,9 @@ impl fmt::Display for ConnectError {
                 }
                 Ok(())
             }
+            Self::ClientInit(error) => {
+                write!(f, "Failed to initialize profiler client: {error}")
+            }
         }
     }
 }
@@ -115,7 +134,7 @@ fn connect(cli: &Cli) -> Result<App, ConnectError> {
                 addrs.push(n.clone());
             }
         }
-        return Ok(App::new_tcp(&addrs));
+        return App::new_tcp(&addrs).map_err(ConnectError::ClientInit);
     }
 
     // Unix socket discovery (--pid, auto-discover).
@@ -137,7 +156,7 @@ fn connect(cli: &Cli) -> Result<App, ConnectError> {
             "note: automatic discovery is not available on this platform — \
              use --addr host:port to specify the profiler address (falling back to localhost:6060)"
         );
-        Ok(App::new_tcp(&["localhost:6060".to_owned()]))
+        App::new_tcp(&["localhost:6060".to_owned()]).map_err(ConnectError::ClientInit)
     }
 }
 

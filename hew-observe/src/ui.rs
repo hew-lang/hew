@@ -1679,14 +1679,15 @@ mod tests {
 
     #[test]
     fn active_node_title_is_hidden_for_single_node_views() {
-        let app = App::new_tcp(&["alpha:6060".to_owned()]);
+        let app = App::new_tcp(&["alpha:6060".to_owned()]).expect("tcp app should build");
 
         assert_eq!(active_node_title(&app), None);
     }
 
     #[test]
     fn active_node_title_surfaces_multi_node_focus() {
-        let app = App::new_tcp(&["alpha:6060".to_owned(), "beta:6061".to_owned()]);
+        let app = App::new_tcp(&["alpha:6060".to_owned(), "beta:6061".to_owned()])
+            .expect("tcp app should build");
 
         let title = active_node_title(&app).expect("multi-node panes should show the active node");
         let text: String = title
@@ -1701,7 +1702,8 @@ mod tests {
 
     #[test]
     fn multi_node_status_bar_mentions_active_node_switching() {
-        let app = App::new_tcp(&["alpha:6060".to_owned(), "beta:6061".to_owned()]);
+        let app = App::new_tcp(&["alpha:6060".to_owned(), "beta:6061".to_owned()])
+            .expect("tcp app should build");
 
         let text = status_bar_text(&app);
 

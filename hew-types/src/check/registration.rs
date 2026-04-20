@@ -100,7 +100,7 @@ impl Checker {
         .then_some(qualified)
     }
 
-    fn registered_type_def_name(&self, name: &str) -> Option<String> {
+    pub(super) fn registered_type_def_name(&self, name: &str) -> Option<String> {
         if self.type_defs.contains_key(name) {
             return Some(name.to_string());
         }
@@ -2358,6 +2358,7 @@ impl Checker {
                             self.register_stdlib_hew_items(&short, resolved_items);
                         }
                     }
+                    self.refresh_handle_bearing_structs();
                     return;
                 }
                 Some(format!(

@@ -2288,6 +2288,319 @@ impl Checker {
         }
     }
 
+    pub(super) fn reject_owned_handle_field_accessors(&mut self, fd: &FnDecl) {
+        let Some((type_name, _)) = self.current_self_type.clone() else {
+            return;
+        };
+        if !self.struct_is_handle_bearing(&type_name) {
+            return;
+        }
+        let Some(receiver_name) = fd
+            .params
+            .first()
+            .filter(|param| self.is_receiver_param(param))
+            .map(|param| param.name.clone())
+        else {
+            return;
+        };
+
+        self.scan_block_for_owned_handle_field_return(
+            &fd.body,
+            &receiver_name,
+            &type_name,
+            &fd.name,
+        );
+    }
+
+    fn struct_is_handle_bearing(&self, type_name: &str) -> bool {
+        self.handle_bearing_structs.contains(type_name)
+            || self
+                .registered_type_def_name(type_name)
+                .is_some_and(|name| self.handle_bearing_structs.contains(&name))
+            || self
+                .strip_module_prefix(type_name)
+                .is_some_and(|name| self.handle_bearing_structs.contains(name))
+    }
+
+    fn scan_block_for_owned_handle_field_return(
+        &mut self,
+        block: &Block,
+        receiver_name: &str,
+        type_name: &str,
+        method_name: &str,
+    ) {
+        self.scan_stmts_for_owned_handle_field_return(
+            &block.stmts,
+            receiver_name,
+            type_name,
+            method_name,
+        );
+        if let Some(trailing) = &block.trailing_expr {
+            self.check_expr_for_owned_handle_field_return(
+                &trailing.0,
+                &trailing.1,
+                receiver_name,
+                type_name,
+                method_name,
+            );
+        }
+    }
+
+    fn scan_stmts_for_owned_handle_field_return(
+        &mut self,
+        stmts: &[Spanned<Stmt>],
+        receiver_name: &str,
+        type_name: &str,
+        method_name: &str,
+    ) {
+        for (stmt, _) in stmts {
+            match stmt {
+                Stmt::Return(Some((expr, span))) => self.check_expr_for_owned_handle_field_return(
+                    expr,
+                    span,
+                    receiver_name,
+                    type_name,
+                    method_name,
+                ),
+                Stmt::Expression((Expr::Block(block), _))
+                | Stmt::Loop { body: block, .. }
+                | Stmt::While { body: block, .. }
+                | Stmt::For { body: block, .. }
+                | Stmt::WhileLet { body: block, .. } => self
+                    .scan_block_for_owned_handle_field_return(
+                        block,
+                        receiver_name,
+                        type_name,
+                        method_name,
+                    ),
+                Stmt::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    self.scan_block_for_owned_handle_field_return(
+                        then_block,
+                        receiver_name,
+                        type_name,
+                        method_name,
+                    );
+                    if let Some(else_block) = else_block {
+                        if let Some(if_stmt) = &else_block.if_stmt {
+                            self.scan_stmts_for_owned_handle_field_return(
+                                std::slice::from_ref(if_stmt.as_ref()),
+                                receiver_name,
+                                type_name,
+                                method_name,
+                            );
+                        }
+                        if let Some(block) = &else_block.block {
+                            self.scan_block_for_owned_handle_field_return(
+                                block,
+                                receiver_name,
+                                type_name,
+                                method_name,
+                            );
+                        }
+                    }
+                }
+                Stmt::IfLet {
+                    body, else_body, ..
+                } => {
+                    self.scan_block_for_owned_handle_field_return(
+                        body,
+                        receiver_name,
+                        type_name,
+                        method_name,
+                    );
+                    if let Some(block) = else_body {
+                        self.scan_block_for_owned_handle_field_return(
+                            block,
+                            receiver_name,
+                            type_name,
+                            method_name,
+                        );
+                    }
+                }
+                Stmt::Match { arms, .. } => {
+                    for arm in arms {
+                        self.check_expr_for_owned_handle_field_return(
+                            &arm.body.0,
+                            &arm.body.1,
+                            receiver_name,
+                            type_name,
+                            method_name,
+                        );
+                    }
+                }
+                Stmt::Let { .. }
+                | Stmt::Var { .. }
+                | Stmt::Assign { .. }
+                | Stmt::Break { .. }
+                | Stmt::Continue { .. }
+                | Stmt::Return(None)
+                | Stmt::Expression(_)
+                | Stmt::Defer(_) => {}
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "owned-handle return-position scanning covers many expression forms"
+    )]
+    fn check_expr_for_owned_handle_field_return(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        receiver_name: &str,
+        type_name: &str,
+        method_name: &str,
+    ) {
+        if let Some((field_name, handle_name)) =
+            self.owned_handle_field_return(expr, receiver_name, type_name)
+        {
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::InvalidOperation,
+                span: span.clone(),
+                message: format!(
+                    "method `{method_name}` exposes owned handle field `{field_name}` from `{type_name}` — returning the raw `{handle_name}` aliases the wrapper's drop path and can double-free the handle"
+                ),
+                notes: vec![(
+                    span.clone(),
+                    "handle-bearing structs are dropped field-by-field; returning the raw handle bypasses that ownership proof".to_string(),
+                )],
+                suggestions: vec![
+                    "use a dedicated consume/release API instead of returning the raw handle field".to_string(),
+                    "prefer a borrow-style accessor once mutable receivers / borrow returns land (#1295)".to_string(),
+                ],
+                source_module: self.current_module.clone(),
+            });
+            return;
+        }
+
+        match expr {
+            Expr::Block(block) => self.scan_block_for_owned_handle_field_return(
+                block,
+                receiver_name,
+                type_name,
+                method_name,
+            ),
+            Expr::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                self.check_expr_for_owned_handle_field_return(
+                    &then_block.0,
+                    &then_block.1,
+                    receiver_name,
+                    type_name,
+                    method_name,
+                );
+                if let Some(else_expr) = else_block {
+                    self.check_expr_for_owned_handle_field_return(
+                        &else_expr.0,
+                        &else_expr.1,
+                        receiver_name,
+                        type_name,
+                        method_name,
+                    );
+                }
+            }
+            Expr::IfLet {
+                body, else_body, ..
+            } => {
+                self.scan_block_for_owned_handle_field_return(
+                    body,
+                    receiver_name,
+                    type_name,
+                    method_name,
+                );
+                if let Some(block) = else_body {
+                    self.scan_block_for_owned_handle_field_return(
+                        block,
+                        receiver_name,
+                        type_name,
+                        method_name,
+                    );
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    self.check_expr_for_owned_handle_field_return(
+                        &arm.body.0,
+                        &arm.body.1,
+                        receiver_name,
+                        type_name,
+                        method_name,
+                    );
+                }
+            }
+            Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::Tuple(_)
+            | Expr::Array(_)
+            | Expr::ArrayRepeat { .. }
+            | Expr::MapLiteral { .. }
+            | Expr::Lambda { .. }
+            | Expr::Spawn { .. }
+            | Expr::SpawnLambdaActor { .. }
+            | Expr::Scope { .. }
+            | Expr::InterpolatedString(_)
+            | Expr::Call { .. }
+            | Expr::MethodCall { .. }
+            | Expr::StructInit { .. }
+            | Expr::Send { .. }
+            | Expr::Select { .. }
+            | Expr::Join(_)
+            | Expr::Timeout { .. }
+            | Expr::Unsafe(_)
+            | Expr::Yield(_)
+            | Expr::Cooperate
+            | Expr::This
+            | Expr::FieldAccess { .. }
+            | Expr::Index { .. }
+            | Expr::Cast { .. }
+            | Expr::PostfixTry(_)
+            | Expr::Range { .. }
+            | Expr::Await(_)
+            | Expr::ScopeLaunch(_)
+            | Expr::ScopeSpawn(_)
+            | Expr::ScopeCancel
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_) => {}
+        }
+    }
+
+    fn owned_handle_field_return(
+        &self,
+        expr: &Expr,
+        receiver_name: &str,
+        type_name: &str,
+    ) -> Option<(String, String)> {
+        let Expr::FieldAccess { object, field } = expr else {
+            return None;
+        };
+        if !matches!(&object.0, Expr::Identifier(name) if name == receiver_name) {
+            return None;
+        }
+        let type_def = self.lookup_type_def(type_name)?;
+        let field_ty = type_def.fields.get(field)?;
+        let Ty::Named {
+            name: field_type_name,
+            ..
+        } = field_ty
+        else {
+            return None;
+        };
+        self.canonical_owned_handle_type_name(field_type_name)
+            .map(|handle_name| (field.clone(), handle_name))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "field access handles many type variants"

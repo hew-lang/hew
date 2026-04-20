@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::Path;
 
 use clap::Parser;
@@ -96,7 +97,7 @@ impl CommandDispatcher for MainCommandDispatcher {
 }
 
 pub(crate) fn parse_cli_or_exit() -> Cli {
-    try_parse_cli_with_build_fallback(std::env::args()).unwrap_or_else(|error| error.exit())
+    try_parse_cli_with_build_fallback(std::env::args_os()).unwrap_or_else(|error| error.exit())
 }
 
 pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl CommandDispatcher) {
@@ -122,9 +123,9 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
 
 fn try_parse_cli_with_build_fallback<I>(args: I) -> Result<Cli, clap::Error>
 where
-    I: IntoIterator<Item = String>,
+    I: IntoIterator<Item = OsString>,
 {
-    let raw_args: Vec<String> = args.into_iter().collect();
+    let raw_args: Vec<OsString> = args.into_iter().collect();
     match Cli::try_parse_from(raw_args.clone()) {
         Ok(cli) => Ok(cli),
         Err(error) => match build_fallback_args(&raw_args) {
@@ -134,15 +135,15 @@ where
     }
 }
 
-fn build_fallback_args(raw_args: &[String]) -> Option<Vec<String>> {
-    let input = raw_args.get(1)?;
+fn build_fallback_args(raw_args: &[OsString]) -> Option<Vec<OsString>> {
+    let input = raw_args.get(1)?.to_str()?;
     if !looks_like_hew_source_path(input) {
         return None;
     }
 
     let mut fallback_args = Vec::with_capacity(raw_args.len() + 1);
     fallback_args.push(raw_args[0].clone());
-    fallback_args.push("build".to_string());
+    fallback_args.push(OsString::from("build"));
     fallback_args.extend(raw_args[1..].iter().cloned());
     Some(fallback_args)
 }
@@ -155,7 +156,11 @@ fn looks_like_hew_source_path(arg: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::path::PathBuf;
+
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
 
     use crate::args::{
         BuildArgs, CommonBuildArgs, CompletionsArgs, ShellChoice, WireCheckArgs, WireCommand,
@@ -171,7 +176,7 @@ mod tests {
         let cli = try_parse_cli_with_build_fallback(
             ["hew", "sample.hew", "-o", "sample"]
                 .into_iter()
-                .map(str::to_string),
+                .map(OsString::from),
         )
         .expect("fallback should parse as build");
 
@@ -187,7 +192,7 @@ mod tests {
     #[test]
     fn parse_cli_keeps_explicit_subcommand_intact() {
         let cli =
-            try_parse_cli_with_build_fallback(["hew", "version"].into_iter().map(str::to_string))
+            try_parse_cli_with_build_fallback(["hew", "version"].into_iter().map(OsString::from))
                 .expect("explicit subcommand should parse");
 
         assert!(matches!(cli.command, Some(crate::args::Command::Version)));
@@ -198,7 +203,7 @@ mod tests {
         assert!(try_parse_cli_with_build_fallback(
             ["hew", "missing-subcommand"]
                 .into_iter()
-                .map(str::to_string)
+                .map(OsString::from)
         )
         .is_err());
     }
@@ -206,15 +211,40 @@ mod tests {
     #[test]
     fn build_fallback_args_only_rewrites_top_level_hew_paths() {
         assert_eq!(
-            build_fallback_args(&["hew".into(), "sample.hew".into(), "--emit-mlir".into()]),
+            build_fallback_args(&[
+                OsString::from("hew"),
+                OsString::from("sample.hew"),
+                OsString::from("--emit-mlir"),
+            ]),
             Some(vec![
-                "hew".into(),
-                "build".into(),
-                "sample.hew".into(),
-                "--emit-mlir".into(),
+                OsString::from("hew"),
+                OsString::from("build"),
+                OsString::from("sample.hew"),
+                OsString::from("--emit-mlir"),
             ])
         );
-        assert_eq!(build_fallback_args(&["hew".into(), "version".into()]), None);
+        assert_eq!(
+            build_fallback_args(&[OsString::from("hew"), OsString::from("version")]),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_cli_preserves_non_utf8_args_until_fallback_decision() {
+        let cli = try_parse_cli_with_build_fallback([
+            OsString::from("hew"),
+            OsString::from("build"),
+            OsString::from_vec(vec![0xFF]),
+        ])
+        .expect("clap should accept non-utf8 build paths");
+
+        match cli.command {
+            Some(crate::args::Command::Build(args)) => {
+                assert_eq!(args.input, PathBuf::from(OsString::from_vec(vec![0xFF])));
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
     }
 
     #[test]

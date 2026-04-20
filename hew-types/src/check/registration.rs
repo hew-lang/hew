@@ -2096,8 +2096,16 @@ impl Checker {
             all_type_params.extend(method_tps.iter().map(|tp| tp.name.clone()));
         }
 
-        let type_param_bounds =
+        let mut type_param_bounds =
             self.collect_type_param_bounds(impl_type_params, method.where_clause.as_ref());
+        for (type_param, bounds) in self
+            .collect_type_param_bounds(method.type_params.as_ref(), method.where_clause.as_ref())
+        {
+            let entry = type_param_bounds.entry(type_param).or_default();
+            for bound in bounds {
+                Self::push_unique_bound(entry, &bound);
+            }
+        }
 
         let sig = FnSig {
             type_params: all_type_params,

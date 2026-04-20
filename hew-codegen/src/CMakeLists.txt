@@ -3,8 +3,11 @@ add_library(HewMLIRDialect STATIC
   mlir/HewDialect.cpp
   mlir/HewOps.cpp
   mlir/MLIRGen.cpp
+  mlir/MLIRGenFunction.cpp
   mlir/MLIRGenStmt.cpp
+  mlir/MLIRGenStmtDispatch.cpp
   mlir/MLIRGenExpr.cpp
+  mlir/MLIRGenExprDispatch.cpp
   mlir/MLIRGenMatch.cpp
   mlir/MLIRGenIfLet.cpp
   mlir/MLIRGenWhileLet.cpp

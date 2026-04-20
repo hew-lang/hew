@@ -302,11 +302,7 @@ mod wasm {
         let Some(key) = (unsafe { cstr_key(name, "hew_registry_lookup") }) else {
             return std::ptr::null_mut();
         };
-        with_registry(|reg| {
-            reg.get(key.as_ref())
-                .map(|p| p.0)
-                .unwrap_or(std::ptr::null_mut())
-        })
+        with_registry(|reg| reg.get(key).map(|p| p.0).unwrap_or(std::ptr::null_mut()))
     }
 
     /// Remove an actor registration by name.
@@ -321,13 +317,7 @@ mod wasm {
         let Some(key) = (unsafe { cstr_key(name, "hew_registry_unregister") }) else {
             return -1;
         };
-        with_registry(|reg| {
-            if reg.remove(key.as_ref()).is_some() {
-                0
-            } else {
-                -1
-            }
-        })
+        with_registry(|reg| if reg.remove(key).is_some() { 0 } else { -1 })
     }
 
     /// Return the number of registered actors.

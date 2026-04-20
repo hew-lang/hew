@@ -359,33 +359,64 @@ pub extern "C" fn hew_sched_init() -> c_int {
     0
 }
 
-/// Clean up after a worker spawn failure during initialisation.
+/// Signal, wake, and join scheduler workers, optionally detaching the
+/// scheduler from the global pointer for caller-controlled final drop.
 ///
-/// Signals shutdown, joins all successfully-spawned workers, then removes
-/// and drops the scheduler from the global pointer.
-fn teardown_after_spawn_failure(mut handles: Vec<Option<JoinHandle<()>>>) {
-    // The scheduler is already installed globally — signal shutdown so
-    // any already-running workers observe the flag and exit.
-    if let Some(sched) = get_scheduler() {
+/// When `handles` is `None`, the worker-handle list is swapped out of the
+/// scheduler mutex before joining so no lock is held across the
+/// potentially-unbounded `join()` calls.
+fn teardown_workers(
+    scheduler: Option<&'static Scheduler>,
+    handles: Option<Vec<Option<JoinHandle<()>>>>,
+    take_scheduler: bool,
+) -> Option<Box<Scheduler>> {
+    if let Some(sched) = scheduler {
         sched.shutdown.store(true, Ordering::Release);
         for parker in &sched.parkers {
             parker.cond.notify_one();
         }
     }
 
-    // Join all successfully-spawned workers.
+    let mut handles = handles.unwrap_or_else(|| {
+        scheduler.map_or_else(Vec::new, |sched| {
+            sched.worker_handles.access(std::mem::take)
+        })
+    });
+    let current_id = thread::current().id();
     for handle in &mut handles {
+        if let Some(ref h) = handle {
+            if h.thread().id() == current_id {
+                let _ = handle.take();
+                continue;
+            }
+        }
         if let Some(h) = handle.take() {
-            let _ = h.join();
+            if h.join().is_err() {
+                eprintln!("hew: scheduler worker thread panicked during shutdown");
+            }
         }
     }
 
-    // Remove the scheduler from the global pointer and drop it.
-    let ptr = SCHEDULER.swap(std::ptr::null_mut(), Ordering::AcqRel);
-    if !ptr.is_null() {
-        // SAFETY: We installed this pointer and all workers are joined.
-        drop(unsafe { Box::from_raw(ptr) });
+    if !take_scheduler {
+        return None;
     }
+
+    let ptr = SCHEDULER.swap(std::ptr::null_mut(), Ordering::AcqRel);
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: The pointer was installed by `hew_sched_init`, and worker
+        // teardown above ensures no thread can still access it.
+        Some(unsafe { Box::from_raw(ptr) })
+    }
+}
+
+/// Clean up after a worker spawn failure during initialisation.
+///
+/// Signals shutdown, joins all successfully-spawned workers, then removes
+/// and drops the scheduler from the global pointer.
+fn teardown_after_spawn_failure(handles: Vec<Option<JoinHandle<()>>>) {
+    drop(teardown_workers(get_scheduler(), Some(handles), true));
 }
 
 /// Gracefully shut down the scheduler.
@@ -398,35 +429,7 @@ pub extern "C" fn hew_sched_shutdown() {
         return;
     };
 
-    // Signal shutdown.
-    sched.shutdown.store(true, Ordering::Release);
-
-    // Wake all parked workers so they observe the flag.
-    for parker in &sched.parkers {
-        parker.cond.notify_one();
-    }
-
-    // Join worker threads, skipping our own handle to avoid self-join
-    // deadlock when the spawn-failure fallback runs on a worker thread.
-    // The closure scope acts as the lock scope — the guard is released
-    // before the hooks below run.
-    let current_id = std::thread::current().id();
-    sched.worker_handles.access(|handles| {
-        for handle in handles.iter_mut() {
-            if let Some(ref h) = handle {
-                if h.thread().id() == current_id {
-                    // Drop the handle without joining — we're running on this thread.
-                    let _ = handle.take();
-                    continue;
-                }
-            }
-            if let Some(h) = handle.take() {
-                if h.join().is_err() {
-                    eprintln!("hew: scheduler worker thread panicked during shutdown");
-                }
-            }
-        }
-    });
+    teardown_workers(Some(sched), None, false);
 
     // Write profile files on exit if HEW_PROF_OUTPUT is set.  Must run BEFORE
     // session_reset() so that the dispatch-type registry is still populated
@@ -458,6 +461,10 @@ pub extern "C" fn hew_runtime_cleanup() {
     // SAFETY: shutdown_ticker joins the thread, so no concurrent ticks after this.
     unsafe { crate::timer_periodic::hew_periodic_shutdown() };
 
+    // Detach the scheduler from the global pointer and join any lingering
+    // workers before freeing actor/timer state they might still reference.
+    let scheduler = teardown_workers(get_scheduler(), None, true);
+
     // Free any registered top-level supervisors — this drops their child
     // specs (names + init_state) via the InternalChildSpec Drop impl.
     // Workers are already joined so we cannot send stop messages; we just
@@ -480,13 +487,7 @@ pub extern "C" fn hew_runtime_cleanup() {
     // REAL: `handler_names.clear()` adjacent to `hew_registry_clear()` above.
 
     // Free the scheduler itself (deques, parkers, stealers, global queue).
-    let ptr = SCHEDULER.swap(std::ptr::null_mut(), Ordering::AcqRel);
-    if !ptr.is_null() {
-        // SAFETY: The pointer was allocated with Box::into_raw in
-        // hew_sched_init. All worker threads have been joined, so no
-        // concurrent access is possible.
-        drop(unsafe { Box::from_raw(ptr) });
-    }
+    drop(scheduler);
 }
 
 // ── Internal API ────────────────────────────────────────────────────────
@@ -1385,6 +1386,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn spawn_failure_teardown_joins_partial_worker_set_and_drops_scheduler() {
+        use std::sync::Arc;
+
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let sched = Scheduler {
+            worker_count: 1,
+            parkers: vec![Parker {
+                mutex: Mutex::new(()),
+                cond: Condvar::new(),
+            }],
+            stealers: Vec::new(),
+            worker_handles: PoisonSafe::new(Vec::new()),
+            // SAFETY: single-threaded test setup with scheduler-owned queue state.
+            global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            shutdown: AtomicBool::new(false),
+        };
+        let sched_ptr = Box::into_raw(Box::new(sched));
+        SCHEDULER.store(sched_ptr, Ordering::Release);
+
+        let exited = Arc::new(AtomicBool::new(false));
+        let exited2 = Arc::clone(&exited);
+        let handle = thread::spawn(move || {
+            while get_scheduler().is_some_and(|sched| !sched.shutdown.load(Ordering::Acquire)) {
+                thread::sleep(Duration::from_millis(10));
+            }
+            exited2.store(true, Ordering::Release);
+        });
+
+        teardown_after_spawn_failure(vec![Some(handle)]);
+
+        assert!(
+            exited.load(Ordering::Acquire),
+            "spawn-failure teardown must join every spawned worker"
+        );
+        assert!(
+            SCHEDULER.load(Ordering::Acquire).is_null(),
+            "spawn-failure teardown must clear the global scheduler pointer"
+        );
+    }
+
     /// `hew_sched_shutdown` must skip joining the calling thread's own
     /// handle to avoid self-join deadlock.  We insert the spawned
     /// thread's `JoinHandle` into `worker_handles` and then call
@@ -1457,6 +1502,169 @@ mod tests {
             // other thread references it after the swap.
             drop(unsafe { Box::from_raw(ptr) });
         }
+    }
+
+    #[test]
+    fn shutdown_releases_worker_handles_while_join_pending() {
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let sched = Scheduler {
+            worker_count: 1,
+            parkers: vec![Parker {
+                mutex: Mutex::new(()),
+                cond: Condvar::new(),
+            }],
+            stealers: Vec::new(),
+            worker_handles: PoisonSafe::new(Vec::new()),
+            // SAFETY: single-threaded test setup with scheduler-owned queue state.
+            global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            shutdown: AtomicBool::new(false),
+        };
+        let sched_ptr = Box::into_raw(Box::new(sched));
+        SCHEDULER.store(sched_ptr, Ordering::Release);
+
+        let release_worker = Arc::new(AtomicBool::new(false));
+        let release_worker2 = Arc::clone(&release_worker);
+        let handle = thread::spawn(move || {
+            while !release_worker2.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(10));
+            }
+        });
+        // SAFETY: sched_ptr was just allocated above and remains valid until cleanup below.
+        unsafe { &*sched_ptr }
+            .worker_handles
+            .access(|handles| handles.push(Some(handle)));
+
+        let shutdown_done = Arc::new(AtomicBool::new(false));
+        let shutdown_done2 = Arc::clone(&shutdown_done);
+        let shutdown_thread = thread::spawn(move || {
+            hew_sched_shutdown();
+            shutdown_done2.store(true, Ordering::Release);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while {
+            // SAFETY: the scheduler remains installed until cleanup below.
+            let sched = unsafe { &*sched_ptr };
+            !sched.shutdown.load(Ordering::Acquire)
+        } && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let touch_succeeded = {
+            // SAFETY: the scheduler remains installed until cleanup below.
+            let sched = unsafe { &*sched_ptr };
+            let mut touched = false;
+            while Instant::now() < deadline {
+                if sched
+                    .worker_handles
+                    .try_access(|handles| assert!(handles.is_empty()))
+                    .is_some()
+                {
+                    touched = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            touched
+        };
+        assert!(
+            touch_succeeded,
+            "worker_handles must stay accessible while shutdown joins a blocked worker"
+        );
+        assert!(
+            !shutdown_done.load(Ordering::Acquire),
+            "shutdown should still be waiting on the worker join during the concurrent touch"
+        );
+
+        release_worker.store(true, Ordering::Release);
+        shutdown_thread.join().unwrap();
+        assert!(shutdown_done.load(Ordering::Acquire));
+        // SAFETY: sched_ptr remains valid until the cleanup swap below.
+        unsafe { &*sched_ptr }
+            .worker_handles
+            .access(|handles| assert!(handles.is_empty()));
+
+        let ptr = SCHEDULER.swap(ptr::null_mut(), Ordering::AcqRel);
+        if !ptr.is_null() {
+            // SAFETY: ptr was allocated with Box::into_raw above and no references remain.
+            drop(unsafe { Box::from_raw(ptr) });
+        }
+    }
+
+    #[test]
+    fn runtime_cleanup_joins_workers_and_drops_scheduler() {
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let sched = Scheduler {
+            worker_count: 1,
+            parkers: vec![Parker {
+                mutex: Mutex::new(()),
+                cond: Condvar::new(),
+            }],
+            stealers: Vec::new(),
+            worker_handles: PoisonSafe::new(Vec::new()),
+            // SAFETY: single-threaded test setup with scheduler-owned queue state.
+            global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            shutdown: AtomicBool::new(false),
+        };
+        let sched_ptr = Box::into_raw(Box::new(sched));
+        SCHEDULER.store(sched_ptr, Ordering::Release);
+
+        let release_worker = Arc::new(AtomicBool::new(false));
+        let release_worker2 = Arc::clone(&release_worker);
+        let joined = Arc::new(AtomicBool::new(false));
+        let joined2 = Arc::clone(&joined);
+        let handle = thread::spawn(move || {
+            while !release_worker2.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(10));
+            }
+            joined2.store(true, Ordering::Release);
+        });
+        // SAFETY: sched_ptr was just allocated above and remains valid until runtime cleanup.
+        unsafe { &*sched_ptr }
+            .worker_handles
+            .access(|handles| handles.push(Some(handle)));
+
+        let cleanup_done = Arc::new(AtomicBool::new(false));
+        let cleanup_done2 = Arc::clone(&cleanup_done);
+        let cleanup_thread = thread::spawn(move || {
+            hew_runtime_cleanup();
+            cleanup_done2.store(true, Ordering::Release);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while {
+            // SAFETY: the scheduler remains installed until runtime cleanup swaps it out.
+            let sched = unsafe { &*sched_ptr };
+            !sched.shutdown.load(Ordering::Acquire)
+        } && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        release_worker.store(true, Ordering::Release);
+
+        cleanup_thread.join().unwrap();
+        assert!(cleanup_done.load(Ordering::Acquire));
+        assert!(
+            joined.load(Ordering::Acquire),
+            "runtime cleanup must join any remaining worker handles"
+        );
+        assert!(
+            SCHEDULER.load(Ordering::Acquire).is_null(),
+            "runtime cleanup must clear the global scheduler pointer"
+        );
     }
 
     #[test]

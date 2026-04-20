@@ -346,7 +346,7 @@ impl Checker {
         covered_inference_vars
     }
 
-    fn validate_expr_output_contract(
+    pub(super) fn validate_expr_output_contract(
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
         covered_inference_vars: &HashSet<TypeVar>,
@@ -369,8 +369,9 @@ impl Checker {
                 if normalized != *ty {
                     let mut normalized_unresolved = HashSet::new();
                     collect_unresolved_inference_vars(&normalized, &mut normalized_unresolved);
-                    if normalized_unresolved.is_empty() {
-                        *ty = normalized;
+                    *ty = normalized;
+                    unresolved = normalized_unresolved;
+                    if unresolved.is_empty() {
                         continue;
                     }
                 }

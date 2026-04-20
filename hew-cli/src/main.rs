@@ -30,6 +30,7 @@ mod machine;
 mod platform;
 mod playground;
 mod process;
+mod router;
 #[cfg(unix)]
 mod signal;
 mod target;
@@ -42,8 +43,7 @@ mod wire;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use args::{Cli, Command};
-use clap::Parser;
+use args::Cli;
 
 fn main() {
     // Spawn the real entry point on a thread with a large stack so deeply
@@ -62,50 +62,9 @@ fn main() {
 }
 
 fn hew_main() {
-    // Try normal clap parse first; if it fails and the first arg looks like
-    // a .hew file, re-parse as `hew build <file> [rest...]`.
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
-        Err(e) => {
-            let raw_args: Vec<String> = std::env::args().collect();
-            if raw_args.len() >= 2
-                && Path::new(&raw_args[1])
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("hew"))
-            {
-                let mut new_args = vec![raw_args[0].clone(), "build".into()];
-                new_args.extend_from_slice(&raw_args[1..]);
-                Cli::parse_from(new_args)
-            } else {
-                e.exit();
-            }
-        }
-    };
-
-    match cli.command {
-        Some(Command::Build(ref a)) => cmd_build(a),
-        Some(Command::Run(ref a)) => cmd_run(a),
-        Some(Command::Debug(ref a)) => cmd_debug(a),
-        Some(Command::Check(ref a)) => cmd_check(a),
-        Some(Command::Doc(ref a)) => doc::cmd_doc(a),
-        Some(Command::Eval(ref a)) => eval::cmd_eval(a),
-        Some(Command::Test(ref a)) => test_runner::cmd_test(a),
-        Some(Command::Watch(ref a)) => watch::cmd_watch(a),
-        Some(Command::Wire(ref a)) => wire::cmd_wire(a),
-        Some(Command::Machine(ref a)) => machine::cmd_machine(a),
-        Some(Command::Fmt(ref a)) => cmd_fmt(a),
-        Some(Command::Init(ref a)) => cmd_init(a),
-        Some(Command::Playground(ref a)) => playground::cmd_playground(a),
-        Some(Command::Completions(ref a)) => cmd_completions(a),
-        Some(Command::Version) => cmd_version(),
-        None => {
-            // No subcommand — shouldn't normally happen since clap shows help,
-            // but handle gracefully.
-            let _ = <Cli as clap::CommandFactory>::command().print_help();
-            eprintln!();
-            std::process::exit(1);
-        }
-    }
+    let cli = router::parse_cli_or_exit();
+    let mut dispatcher = router::MainCommandDispatcher;
+    router::dispatch_command(cli.command.as_ref(), &mut dispatcher);
 }
 
 // ---------------------------------------------------------------------------

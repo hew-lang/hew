@@ -666,6 +666,8 @@ stable = [
 internal = [
   "_start",
   "hew_actor_cooperate",
+  "hew_actor_drain_outcome_free",
+  "hew_actor_drain_set",
   "hew_actor_register_type",
   "hew_deterministic_get_seed",
   "hew_deterministic_reset",

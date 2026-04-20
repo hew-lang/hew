@@ -111,35 +111,67 @@ pub fn hover(
     })
 }
 
-/// Convert a checker-boundary [`Ty`] into the rendered hover form via
-/// [`ResolvedTy`], defaulting any numeric-literal kinds first.
-///
-/// Returns `None` if the type carries checker-internal state
-/// (`Ty::Var`, `Ty::Error`) that the boundary converter rejects. Callers
-/// decide what to render in that case; today they fall back to the
-/// best-effort `Ty::user_facing` rendering to preserve historical hover
-/// output for error-recovery paths.
-fn resolved_hover_display(ty: &Ty) -> Option<String> {
-    ResolvedTy::from_ty(&ty.materialize_literal_defaults())
-        .ok()
-        .map(|resolved| resolved.user_facing().to_string())
+/// Render a type for hover, preferring the checker-boundary [`ResolvedTy`]
+/// form while rendering a neutral placeholder if boundary conversion
+/// fails.
+struct HoverTypeDisplay {
+    body: String,
+    fallback_note: Option<String>,
+}
+
+fn hover_type_display(ty: &Ty) -> HoverTypeDisplay {
+    match ResolvedTy::from_ty(&ty.materialize_literal_defaults()) {
+        Ok(resolved) => HoverTypeDisplay {
+            body: resolved.user_facing().to_string(),
+            fallback_note: None,
+        },
+        Err(err) => HoverTypeDisplay {
+            body: "<unknown>".to_string(),
+            fallback_note: Some(format!("hover fallback: {err}")),
+        },
+    }
+}
+
+fn append_hover_fallback_notes(contents: &mut String, notes: impl IntoIterator<Item = String>) {
+    let notes: Vec<String> = notes.into_iter().collect();
+    if notes.is_empty() {
+        return;
+    }
+    contents.push_str("\n\n");
+    contents.push_str(&notes.join("\n"));
 }
 
 fn render_expr_hover(snippet: &str, ty: &Ty) -> String {
     if let Ty::Function { params, ret } = ty {
-        let param_list: Vec<String> = params.iter().map(fn_component_display).collect();
-        let ret_text = fn_component_display(ret);
-        return format!(
+        let param_displays: Vec<HoverTypeDisplay> =
+            params.iter().map(fn_component_display).collect();
+        let param_list: Vec<String> = param_displays
+            .iter()
+            .map(|display| display.body.clone())
+            .collect();
+        let ret_display = fn_component_display(ret);
+        let mut contents = format!(
             "```hew\nfn {snippet}({}) -> {ret_text}\n```",
-            param_list.join(", ")
+            param_list.join(", "),
+            ret_text = ret_display.body
         );
+        append_hover_fallback_notes(
+            &mut contents,
+            param_displays
+                .into_iter()
+                .filter_map(|display| display.fallback_note)
+                .chain(ret_display.fallback_note),
+        );
+        return contents;
     }
-    let body = resolved_hover_display(ty).unwrap_or_else(|| ty.user_facing().to_string());
-    format!("```hew\n{snippet}: {body}\n```")
+    let display = hover_type_display(ty);
+    let mut contents = format!("```hew\n{snippet}: {}\n```", display.body);
+    append_hover_fallback_notes(&mut contents, display.fallback_note);
+    contents
 }
 
-fn fn_component_display(ty: &Ty) -> String {
-    resolved_hover_display(ty).unwrap_or_else(|| ty.user_facing().to_string())
+fn fn_component_display(ty: &Ty) -> HoverTypeDisplay {
+    hover_type_display(ty)
 }
 
 fn hover_param_at_offset(
@@ -1711,6 +1743,33 @@ mod tests {
             "hover body should equal ResolvedTy rendering {expected_body}, got {}",
             result.contents
         );
+    }
+
+    #[test]
+    fn hover_expr_reports_resolved_ty_boundary_failure() {
+        use hew_types::ty::TypeVar;
+
+        TypeVar::reset();
+        let var = TypeVar::fresh();
+        let rendered = render_expr_hover("value", &Ty::Var(var));
+        let body = rendered.split("\n\n").next().unwrap();
+
+        assert!(body.contains("value: <unknown>"));
+        assert!(rendered.contains(&format!(
+            "hover fallback: unresolved inference variable {var} leaked to boundary"
+        )));
+        assert!(!body.contains(&var.to_string()));
+        assert!(!body.contains("<error>"));
+    }
+
+    #[test]
+    fn hover_expr_masks_error_recovery_placeholder() {
+        let rendered = render_expr_hover("value", &Ty::Error);
+        let body = rendered.split("\n\n").next().unwrap();
+
+        assert!(body.contains("value: <unknown>"));
+        assert!(rendered.contains("hover fallback: error-recovery placeholder leaked to boundary"));
+        assert!(!body.contains("<error>"));
     }
 
     #[test]

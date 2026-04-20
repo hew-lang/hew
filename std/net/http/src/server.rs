@@ -6,12 +6,11 @@
 use hew_cabi::cabi::{malloc_cstring, str_to_malloc};
 use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
 use hew_cabi::vec::HewVec;
-use hew_runtime::PoisonSafe;
 use std::ffi::{c_char, c_void, CStr};
 use std::io::{Read, Write};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    mpsc, Arc,
+    mpsc, Arc, Mutex, PoisonError,
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -55,7 +54,7 @@ struct TrackedResponseThread {
 struct ResponseThreadTracker {
     active_count: Arc<AtomicUsize>,
     cancel: Arc<AtomicBool>,
-    threads: Arc<PoisonSafe<Vec<TrackedResponseThread>>>,
+    threads: Arc<Mutex<Vec<TrackedResponseThread>>>,
 }
 
 impl ResponseThreadTracker {
@@ -63,7 +62,7 @@ impl ResponseThreadTracker {
         Self {
             active_count: Arc::new(AtomicUsize::new(0)),
             cancel: Arc::new(AtomicBool::new(false)),
-            threads: Arc::new(PoisonSafe::new(Vec::new())),
+            threads: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -117,11 +116,14 @@ impl ResponseThreadTracker {
             }
         });
         self.threads
-            .access(|threads| threads.push(TrackedResponseThread { done_rx, handle }));
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(TrackedResponseThread { done_rx, handle });
     }
 
     fn reap_completed(&self) {
-        let completed = self.threads.access(|threads| {
+        let completed = {
+            let mut threads = self.threads.lock().unwrap_or_else(PoisonError::into_inner);
             let mut completed = Vec::new();
             let mut idx = 0;
             while idx < threads.len() {
@@ -136,7 +138,7 @@ impl ResponseThreadTracker {
                 }
             }
             completed
-        });
+        };
         for thread in completed {
             join_response_thread(thread.handle);
         }
@@ -144,7 +146,8 @@ impl ResponseThreadTracker {
 
     fn cancel_and_join_all(&self) {
         self.cancel.store(true, Ordering::Release);
-        let threads = self.threads.access(std::mem::take);
+        let threads =
+            std::mem::take(&mut *self.threads.lock().unwrap_or_else(PoisonError::into_inner));
         for thread in threads {
             match thread.done_rx.recv_timeout(RESPONSE_THREAD_JOIN_TIMEOUT) {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -162,6 +165,22 @@ impl ResponseThreadTracker {
     #[cfg(test)]
     fn active_response_count(&self) -> usize {
         self.active_count.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn tracked_thread_count(&self) -> usize {
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    #[cfg(test)]
+    fn push_tracked_thread(&self, thread: TrackedResponseThread) {
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(thread);
     }
 }
 
@@ -833,6 +852,22 @@ pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    fn wait_for_condition(
+        description: &str,
+        timeout: Duration,
+        mut condition: impl FnMut() -> bool,
+    ) {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if condition() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(condition(), "{description} within {timeout:?}");
+    }
 
     #[test]
     fn debug_impls_compile() {
@@ -1572,6 +1607,170 @@ mod tests {
         // SAFETY: sink was allocated by into_sink_ptr.
         drop(unsafe { Box::from_raw(sink) });
         client.join().expect("client thread should not panic");
+    }
+
+    #[test]
+    fn server_close_cancels_concurrent_streaming_responses_and_reaps_completed_threads() {
+        const STREAM_COUNT: usize = 4;
+        const CANCEL_SLO: Duration = Duration::from_secs(2);
+
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let tracker = {
+            // SAFETY: srv is valid until hew_http_server_close consumes it below.
+            let server = unsafe { &*srv };
+            server.response_threads.clone()
+        };
+        let base = server_addr(srv);
+
+        let clients: Vec<_> = (0..STREAM_COUNT)
+            .map(|idx| {
+                let base = base.clone();
+                std::thread::spawn(move || {
+                    ureq::get(&format!("{base}/stream-load/{idx}"))
+                        .call()
+                        .unwrap()
+                        .into_body()
+                        .read_to_string()
+                        .unwrap()
+                })
+            })
+            .collect();
+
+        let mut sinks = Vec::with_capacity(STREAM_COUNT);
+        for _ in 0..STREAM_COUNT {
+            // SAFETY: srv is valid until hew_http_server_close consumes it below.
+            let req = unsafe { hew_http_server_recv(srv) };
+            assert!(!req.is_null());
+            let ct = c"text/plain";
+            // SAFETY: req and ct are valid.
+            let sink = unsafe { hew_http_respond_stream(req, 200, ct.as_ptr()) };
+            assert!(!sink.is_null(), "respond_stream should return a valid sink");
+            sinks.push(sink);
+            // SAFETY: req is valid after respond_stream consumes its inner request.
+            unsafe { hew_http_request_free(req) };
+        }
+
+        wait_for_condition("all response threads tracked", CANCEL_SLO, || {
+            tracker.active_response_count() == STREAM_COUNT
+        });
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            STREAM_COUNT,
+            "all streaming response threads should be tracked before shutdown"
+        );
+
+        let completed_sink = sinks.pop().expect("one sink should be available");
+        // SAFETY: completed_sink was allocated by into_sink_ptr.
+        drop(unsafe { Box::from_raw(completed_sink) });
+
+        wait_for_condition("one stream completes before reap", CANCEL_SLO, || {
+            tracker.active_response_count() == STREAM_COUNT - 1
+        });
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            STREAM_COUNT,
+            "completed threads stay queued until reap_completed runs"
+        );
+
+        tracker.reap_completed();
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            STREAM_COUNT - 1,
+            "reap_completed should remove finished response threads while others are still active"
+        );
+
+        let started = Instant::now();
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+        let close_elapsed = started.elapsed();
+        assert!(
+            close_elapsed <= CANCEL_SLO,
+            "server close should finish within {CANCEL_SLO:?}, got {close_elapsed:?}"
+        );
+
+        wait_for_condition("remaining response threads cancel", CANCEL_SLO, || {
+            tracker.active_response_count() == 0
+        });
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            0,
+            "cancel_and_join_all should drain the tracked thread list"
+        );
+
+        for sink in sinks {
+            // SAFETY: sink was allocated by into_sink_ptr.
+            drop(unsafe { Box::from_raw(sink) });
+        }
+        for client in clients {
+            assert_eq!(client.join().unwrap(), "");
+        }
+    }
+
+    #[test]
+    fn server_close_detaches_hung_response_thread_after_timeout() {
+        const DETACH_EPSILON: Duration = Duration::from_millis(400);
+
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let tracker = {
+            // SAFETY: srv is valid until hew_http_server_close consumes it below.
+            let server = unsafe { &*srv };
+            server.response_threads.clone()
+        };
+
+        let release = Arc::new(AtomicBool::new(false));
+        let release_for_thread = Arc::clone(&release);
+        let active_count = Arc::clone(&tracker.active_count);
+        let (done_tx, done_rx) = mpsc::channel();
+        active_count.fetch_add(1, Ordering::AcqRel);
+        let handle = std::thread::spawn(move || {
+            struct ActiveCountGuard(Arc<AtomicUsize>);
+
+            impl Drop for ActiveCountGuard {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+
+            let _active_count = ActiveCountGuard(active_count);
+            while !release_for_thread.load(Ordering::Acquire) {
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
+            let _ = done_tx.send(());
+        });
+        tracker.push_tracked_thread(TrackedResponseThread { done_rx, handle });
+
+        let started = Instant::now();
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+        let close_elapsed = started.elapsed();
+        let close_limit = RESPONSE_THREAD_JOIN_TIMEOUT + DETACH_EPSILON;
+        assert!(
+            close_elapsed <= close_limit,
+            "server close should return within {close_limit:?}, got {close_elapsed:?}"
+        );
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            0,
+            "detach path should empty the tracked thread list even when a thread outlives close"
+        );
+        assert_eq!(
+            tracker.active_response_count(),
+            1,
+            "detached response thread should still be running immediately after close"
+        );
+
+        release.store(true, Ordering::Release);
+        wait_for_condition(
+            "detached response thread exits after release",
+            Duration::from_secs(1),
+            || tracker.active_response_count() == 0,
+        );
     }
 
     #[test]

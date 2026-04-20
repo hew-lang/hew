@@ -4,6 +4,101 @@
 
 use crate::target::TargetSpec;
 
+#[derive(Debug)]
+enum LinkerProbeError {
+    CommandUnavailable {
+        probe: &'static str,
+        command: String,
+        source: std::io::Error,
+    },
+    CommandFailed {
+        probe: &'static str,
+        command: String,
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
+    NonUtf8Stdout {
+        probe: &'static str,
+        command: String,
+    },
+    EmptyStdout {
+        probe: &'static str,
+        command: String,
+    },
+    MissingArtifact {
+        probe: &'static str,
+        artifact: &'static str,
+        tried: Vec<std::path::PathBuf>,
+    },
+    NoSuitableTool {
+        probe: &'static str,
+        tool_kind: &'static str,
+        tried: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for LinkerProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CommandUnavailable {
+                probe,
+                command,
+                source,
+            } => {
+                write!(f, "{probe} failed: could not run `{command}`: {source}")
+            }
+            Self::CommandFailed {
+                probe,
+                command,
+                status,
+                stderr,
+            } => {
+                write!(f, "{probe} failed: `{command}` exited with status {status}")?;
+                if !stderr.is_empty() {
+                    write!(f, " ({stderr})")?;
+                }
+                Ok(())
+            }
+            Self::NonUtf8Stdout { probe, command } => {
+                write!(f, "{probe} failed: `{command}` produced non-UTF-8 stdout")
+            }
+            Self::EmptyStdout { probe, command } => {
+                write!(f, "{probe} failed: `{command}` returned empty stdout")
+            }
+            Self::MissingArtifact {
+                probe,
+                artifact,
+                tried,
+            } => {
+                write!(f, "{probe} failed: could not find {artifact}")?;
+                if !tried.is_empty() {
+                    write!(
+                        f,
+                        "; tried: {}",
+                        tried
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )?;
+                }
+                Ok(())
+            }
+            Self::NoSuitableTool {
+                probe,
+                tool_kind,
+                tried,
+            } => {
+                write!(f, "{probe} failed: could not find a usable {tool_kind}")?;
+                if !tried.is_empty() {
+                    write!(f, "; tried: {}", tried.join(", "))?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Link an object file with the combined Hew library into a native executable
 /// (or `.wasm` binary when the target triple indicates a WASM platform).
 ///
@@ -92,9 +187,13 @@ pub fn link_executable(
     // ── Darwin SDK path (target-driven intent, host tool resolves path) ─
     // Anchor the SDK explicitly so the linker finds system frameworks even
     // when invoked from a non-standard PATH (e.g. CI without Xcode on PATH).
-    // Failure is non-fatal: clang falls back to its own SDK search heuristics.
     if plan.needs_darwin_sdk {
-        if let Some(sdk) = find_darwin_sdk() {
+        if let Some(sdk) = find_darwin_sdk().map_err(|e| {
+            format!(
+                "Error: failed to resolve the macOS SDK for target `{}`: {e}",
+                target.normalized_triple()
+            )
+        })? {
             cmd.arg("-isysroot").arg(sdk);
         }
     }
@@ -210,18 +309,17 @@ fn run_dsymutil(binary_path: &str) {
 
 /// Find the Darwin SDK path using `xcrun --show-sdk-path`.
 ///
-/// Returns `None` on non-macOS hosts (where `xcrun` is not available) and when
-/// `xcrun` fails.  Failure is non-fatal; clang falls back to its own SDK search
-/// heuristics.  The `#[cfg]` guard ensures the function compiles on all hosts
-/// while making availability explicit.
-fn find_darwin_sdk() -> Option<String> {
+/// Returns `Ok(None)` on non-macOS hosts where the SDK probe is not applicable.
+/// On macOS, probe failures are surfaced immediately so linker/toolchain
+/// misconfiguration does not degrade into a later, less actionable link error.
+fn find_darwin_sdk() -> Result<Option<String>, LinkerProbeError> {
     #[cfg(target_os = "macos")]
     {
         find_macos_sdk()
     }
     #[cfg(not(target_os = "macos"))]
     {
-        None
+        Ok(None)
     }
 }
 
@@ -270,7 +368,7 @@ fn find_linux_cross_sysroot(target: &TargetSpec) -> Option<std::path::PathBuf> {
 
 /// Link a WASM object file using `wasm-ld`.
 fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), String> {
-    let wasm_ld = find_wasm_ld()?;
+    let wasm_ld = find_wasm_ld().map_err(|e| format!("Error: {e}"))?;
 
     let mut cmd = std::process::Command::new(&wasm_ld);
 
@@ -285,7 +383,9 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
     }
 
     // Link WASI libc from Rust's sysroot to provide malloc, free, etc.
-    if let Some(wasi_libc) = find_wasi_libc(target) {
+    if let Some(wasi_libc) = find_wasi_libc(target)
+        .map_err(|e| format!("Error: failed to locate WASI libc for target `{target}`: {e}"))?
+    {
         cmd.arg(&wasi_libc);
     }
 
@@ -351,31 +451,40 @@ fn find_optional_hew_lib(exe_dir: &std::path::Path, name: &str, triple: &str) ->
 }
 
 /// Locate `libc.a` from Rust's WASI sysroot so `malloc`/`free`/etc. resolve.
-fn find_wasi_libc(target: &str) -> Option<String> {
+fn find_wasi_libc(target: &str) -> Result<Option<String>, LinkerProbeError> {
     let rust_target = if target == "wasm32-wasi" {
         "wasm32-wasip1"
     } else {
         target
     };
 
-    // `rustc --print sysroot` gives the toolchain root.
-    // WASI libc lives at <sysroot>/lib/rustlib/<target>/lib/self-contained/libc.a
-    let output = std::process::Command::new("rustc")
-        .args(["--print", "sysroot"])
-        .output()
-        .ok()?;
+    let sysroot = probe_command_stdout("Rust sysroot probe", "rustc", &["--print", "sysroot"])?;
+    let libc_path = wasi_libc_candidates(&sysroot, rust_target);
 
-    let sysroot = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-    let libc_path = std::path::PathBuf::from(&sysroot)
+    for candidate in &libc_path {
+        if candidate.exists() {
+            return Ok(Some(
+                candidate
+                    .canonicalize()
+                    .unwrap_or_else(|_| candidate.clone())
+                    .display()
+                    .to_string(),
+            ));
+        }
+    }
+
+    Err(LinkerProbeError::MissingArtifact {
+        probe: "Rust sysroot probe",
+        artifact: "WASI libc archive (`libc.a`)",
+        tried: libc_path,
+    })
+}
+
+fn wasi_libc_candidates(sysroot: &str, rust_target: &str) -> Vec<std::path::PathBuf> {
+    vec![std::path::PathBuf::from(sysroot)
         .join("lib/rustlib")
         .join(rust_target)
-        .join("lib/self-contained/libc.a");
-
-    if libc_path.exists() {
-        Some(libc_path.display().to_string())
-    } else {
-        None
-    }
+        .join("lib/self-contained/libc.a")]
 }
 
 fn hew_lib_candidates(
@@ -519,9 +628,20 @@ fn symbol_to_feature_hint(symbol: &str) -> Option<(&'static str, &'static str)> 
     None
 }
 
-fn find_wasm_ld() -> Result<String, String> {
+fn find_wasm_ld() -> Result<String, LinkerProbeError> {
+    find_wasm_ld_with(has_tool, |path| std::path::Path::new(path).exists())
+}
+
+fn find_wasm_ld_with<F, G>(has_tool: F, path_exists: G) -> Result<String, LinkerProbeError>
+where
+    F: Fn(&str) -> bool,
+    G: Fn(&str) -> bool,
+{
+    let mut tried = Vec::new();
+
     // Try bare `wasm-ld` first, then versioned variants
     for name in &["wasm-ld", "wasm-ld-21", "wasm-ld-19"] {
+        tried.push(format!("PATH: {name}"));
         if has_tool(name) {
             return Ok((*name).to_string());
         }
@@ -530,7 +650,8 @@ fn find_wasm_ld() -> Result<String, String> {
     // Try LLVM installation directories (Linux apt.llvm.org)
     for version in &["22", "21", "19", "18", "17"] {
         let path = format!("/usr/lib/llvm-{version}/bin/wasm-ld");
-        if std::path::Path::new(&path).exists() {
+        tried.push(path.clone());
+        if path_exists(&path) {
             return Ok(path);
         }
     }
@@ -538,7 +659,8 @@ fn find_wasm_ld() -> Result<String, String> {
     // Try FreeBSD pkg paths
     for version in &["22", "21", "20", "19"] {
         let path = format!("/usr/local/llvm{version}/bin/wasm-ld");
-        if std::path::Path::new(&path).exists() {
+        tried.push(path.clone());
+        if path_exists(&path) {
             return Ok(path);
         }
     }
@@ -547,34 +669,81 @@ fn find_wasm_ld() -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         let path = "C:/Program Files/LLVM/bin/wasm-ld.exe";
-        if std::path::Path::new(path).exists() {
+        tried.push(path.to_string());
+        if path_exists(path) {
             return Ok(path.to_string());
         }
     }
 
-    Err("Error: cannot find wasm-ld. Install LLVM or add wasm-ld to PATH".into())
+    Err(LinkerProbeError::NoSuitableTool {
+        probe: "WASM linker probe",
+        tool_kind: "WASM linker",
+        tried,
+    })
 }
 
 /// Query `xcrun` for the path to the current Xcode SDK.
 ///
-/// Returns `None` if `xcrun` is not available or the command fails; the
-/// linker will still attempt to locate the SDK through its own search
-/// heuristics in that case.
+/// Returns the SDK path on macOS and surfaces probe failures as actionable
+/// linker diagnostics.
 #[cfg(target_os = "macos")]
-fn find_macos_sdk() -> Option<String> {
-    let output = std::process::Command::new("xcrun")
-        .arg("--show-sdk-path")
-        .output()
-        .ok()?;
+fn find_macos_sdk() -> Result<Option<String>, LinkerProbeError> {
+    let path = probe_command_stdout("macOS SDK probe", "xcrun", &["--show-sdk-path"])?;
+    Ok(Some(path))
+}
+
+fn probe_command_stdout(
+    probe: &'static str,
+    program: &str,
+    args: &[&str],
+) -> Result<String, LinkerProbeError> {
+    run_probe_command(probe, program, args, |program, args| {
+        std::process::Command::new(program).args(args).output()
+    })
+}
+
+fn run_probe_command<F>(
+    probe: &'static str,
+    program: &str,
+    args: &[&str],
+    runner: F,
+) -> Result<String, LinkerProbeError>
+where
+    F: FnOnce(&str, &[&str]) -> std::io::Result<std::process::Output>,
+{
+    let command = format_probe_command(program, args);
+    let output = runner(program, args).map_err(|source| LinkerProbeError::CommandUnavailable {
+        probe,
+        command: command.clone(),
+        source,
+    })?;
+
     if !output.status.success() {
-        return None;
+        return Err(LinkerProbeError::CommandFailed {
+            probe,
+            command,
+            status: output.status,
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
     }
-    let path = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-    if path.is_empty() {
-        None
-    } else {
-        Some(path)
+
+    let stdout = String::from_utf8(output.stdout).map_err(|_| LinkerProbeError::NonUtf8Stdout {
+        probe,
+        command: command.clone(),
+    })?;
+    let stdout = stdout.trim();
+    if stdout.is_empty() {
+        return Err(LinkerProbeError::EmptyStdout { probe, command });
     }
+
+    Ok(stdout.to_owned())
+}
+
+fn format_probe_command(program: &str, args: &[&str]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn has_tool(name: &str) -> bool {
@@ -589,6 +758,10 @@ fn has_tool(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
 
     // ── extract_undefined_hew_symbol ──────────────────────────────────
 
@@ -795,6 +968,106 @@ mod tests {
         assert!(!has_tool("definitely_not_a_real_tool_abc123xyz"));
     }
 
+    #[test]
+    fn rustc_sysroot_probe_missing_tool_is_actionable() {
+        let err = run_probe_command(
+            "Rust sysroot probe",
+            "rustc",
+            &["--print", "sysroot"],
+            |_program, _args| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No such file or directory",
+                ))
+            },
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("Rust sysroot probe failed"));
+        assert!(message.contains("rustc --print sysroot"));
+        assert!(message.contains("No such file or directory"));
+    }
+
+    #[test]
+    fn rustc_sysroot_probe_non_zero_exit_is_actionable() {
+        let err = run_probe_command(
+            "Rust sysroot probe",
+            "rustc",
+            &["--print", "sysroot"],
+            |_program, _args| {
+                Ok(mock_output(
+                    exit_status(1),
+                    Vec::new(),
+                    b"toolchain missing",
+                ))
+            },
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("Rust sysroot probe failed"));
+        assert!(message.contains("rustc --print sysroot"));
+        assert!(message.contains("toolchain missing"));
+    }
+
+    #[test]
+    fn rustc_sysroot_probe_non_utf8_stdout_is_actionable() {
+        let err = run_probe_command(
+            "Rust sysroot probe",
+            "rustc",
+            &["--print", "sysroot"],
+            |_program, _args| {
+                Ok(mock_output(
+                    exit_status(0),
+                    vec![0xf0, 0x28, 0x8c, 0x28],
+                    b"",
+                ))
+            },
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("Rust sysroot probe failed"));
+        assert!(message.contains("non-UTF-8 stdout"));
+    }
+
+    #[test]
+    fn rustc_sysroot_probe_success_trims_stdout() {
+        let stdout = run_probe_command(
+            "Rust sysroot probe",
+            "rustc",
+            &["--print", "sysroot"],
+            |_program, _args| {
+                Ok(mock_output(
+                    exit_status(0),
+                    b"/toolchain/sysroot\n".to_vec(),
+                    b"",
+                ))
+            },
+        )
+        .expect("probe succeeds");
+
+        assert_eq!(stdout, "/toolchain/sysroot");
+    }
+
+    #[test]
+    fn wasm_linker_probe_missing_linker_lists_candidates() {
+        let err = find_wasm_ld_with(|_| false, |_| false).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("WASM linker probe failed"));
+        assert!(message.contains("usable WASM linker"));
+        assert!(message.contains("PATH: wasm-ld"));
+        assert!(message.contains("/usr/lib/llvm-22/bin/wasm-ld"));
+    }
+
+    #[test]
+    fn wasm_linker_probe_success_still_prefers_path_lookup() {
+        let linker = find_wasm_ld_with(|name| name == "wasm-ld-21", |_| false)
+            .expect("versioned PATH lookup succeeds");
+        assert_eq!(linker, "wasm-ld-21");
+    }
+
     // ── find_hew_lib ──────────────────────────────────────────────────
 
     #[test]
@@ -874,5 +1147,27 @@ mod tests {
             output_path.to_string()
         };
         assert_eq!(safe, "./-evil");
+    }
+
+    fn mock_output(
+        status: std::process::ExitStatus,
+        stdout: Vec<u8>,
+        stderr: &[u8],
+    ) -> std::process::Output {
+        std::process::Output {
+            status,
+            stdout,
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        std::process::ExitStatus::from_raw(code << 8)
+    }
+
+    #[cfg(windows)]
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        std::process::ExitStatus::from_raw(code as u32)
     }
 }

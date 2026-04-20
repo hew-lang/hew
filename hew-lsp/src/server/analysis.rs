@@ -215,10 +215,23 @@ pub(super) struct ModuleGraphBuild {
     dangling_imports: Vec<DanglingImport>,
 }
 
+#[derive(Debug)]
+pub(super) struct ModuleGraphCycle {
+    graph: hew_parser::module::ModuleGraph,
+    cycle: hew_parser::module::CycleError,
+    dangling_imports: Vec<DanglingImport>,
+}
+
+#[derive(Debug)]
+pub(super) enum ModuleGraphBuildResult {
+    Ready(ModuleGraphBuild),
+    Cycle(ModuleGraphCycle),
+}
+
 pub(super) fn build_document_module_graph(
     source_uri: &Url,
     program: &hew_parser::ast::Program,
-) -> Option<ModuleGraphBuild> {
+) -> Option<ModuleGraphBuildResult> {
     use hew_parser::module::{Module, ModuleGraph};
 
     let input_path = source_uri.to_file_path().ok()?;
@@ -248,11 +261,17 @@ pub(super) fn build_document_module_graph(
         doc: program.module_doc.clone(),
     });
 
-    graph.compute_topo_order().ok()?;
-    Some(ModuleGraphBuild {
-        graph,
-        dangling_imports,
-    })
+    match graph.compute_topo_order() {
+        Ok(()) => Some(ModuleGraphBuildResult::Ready(ModuleGraphBuild {
+            graph,
+            dangling_imports,
+        })),
+        Err(cycle) => Some(ModuleGraphBuildResult::Cycle(ModuleGraphCycle {
+            graph,
+            cycle,
+            dangling_imports,
+        })),
+    }
 }
 
 #[expect(
@@ -428,6 +447,72 @@ pub(super) fn build_dangling_import_diagnostics(
     diagnostics_by_uri
 }
 
+pub(super) fn build_module_cycle_diagnostics(
+    source: &str,
+    line_offsets: &[usize],
+    source_uri: &Url,
+    cycle: &ModuleGraphCycle,
+    documents: &DashMap<Url, DocumentState>,
+) -> DiagnosticMap {
+    let mut diagnostics_by_uri = DiagnosticMap::new();
+    let message = format!("{}; falling back to per-file analysis", cycle.cycle);
+
+    for window in cycle.cycle.cycle.windows(2) {
+        let [module_id, target_id] = window else {
+            continue;
+        };
+        let Some(module) = cycle.graph.modules.get(module_id) else {
+            continue;
+        };
+        let Some(import) = module
+            .imports
+            .iter()
+            .find(|import| import.target == *target_id)
+        else {
+            continue;
+        };
+        let Some(source_path) = module.source_paths.first() else {
+            continue;
+        };
+        let Ok(uri) = Url::from_file_path(source_path) else {
+            continue;
+        };
+
+        let diagnostic = if uri == *source_uri {
+            Diagnostic {
+                range: super::span_to_range(source, line_offsets, &import.span),
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("hew-lsp".to_string()),
+                message: message.clone(),
+                ..Default::default()
+            }
+        } else if let Some(doc) = documents.get(&uri) {
+            Diagnostic {
+                range: super::span_to_range(&doc.source, &doc.line_offsets, &import.span),
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("hew-lsp".to_string()),
+                message: message.clone(),
+                ..Default::default()
+            }
+        } else {
+            let Some(target_source) = source_for_path(source_path, documents) else {
+                continue;
+            };
+            let target_line_offsets = compute_line_offsets(&target_source);
+            Diagnostic {
+                range: super::span_to_range(&target_source, &target_line_offsets, &import.span),
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("hew-lsp".to_string()),
+                message: message.clone(),
+                ..Default::default()
+            }
+        };
+        insert_diagnostic(&mut diagnostics_by_uri, uri, diagnostic);
+    }
+
+    diagnostics_by_uri
+}
+
 pub(super) fn merge_diagnostics(into: &mut DiagnosticMap, from: &DiagnosticMap) {
     for (uri, diagnostics) in from {
         into.entry(uri.clone())
@@ -492,38 +577,60 @@ pub(super) fn analyze_document(
         .iter()
         .any(|e| e.severity == hew_parser::Severity::Error);
 
-    let (type_output, module_sources, dangling_import_diagnostics) = if has_parse_errors {
-        (None, HashMap::new(), HashMap::new())
-    } else {
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
-            build_module_search_paths(),
-        ));
-        // Clone the program so we can inject resolved_items for user-module
-        // imports without mutating the parse_result stored in DocumentState
-        // (other LSP features use the raw AST and do not need resolved_items).
-        let mut program = parse_result.program.clone();
-        populate_user_module_imports(uri, &mut program.items, documents);
-        let module_graph_build = build_document_module_graph(uri, &program);
-        let dangling_import_diagnostics =
-            module_graph_build
-                .as_ref()
-                .map_or_else(HashMap::new, |build| {
-                    build_dangling_import_diagnostics(
-                        source,
-                        &line_offsets,
-                        uri,
-                        &build.dangling_imports,
-                        documents,
-                    )
-                });
-        program.module_graph = module_graph_build.map(|build| build.graph);
-        let module_sources = build_module_source_map(&program, documents);
-        (
-            Some(checker.check_program(&program)),
-            module_sources,
-            dangling_import_diagnostics,
-        )
-    };
+    let (type_output, module_sources, dangling_import_diagnostics, cycle_diagnostics) =
+        if has_parse_errors {
+            (None, HashMap::new(), HashMap::new(), HashMap::new())
+        } else {
+            let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
+                build_module_search_paths(),
+            ));
+            // Clone the program so we can inject resolved_items for user-module
+            // imports without mutating the parse_result stored in DocumentState
+            // (other LSP features use the raw AST and do not need resolved_items).
+            let mut program = parse_result.program.clone();
+            populate_user_module_imports(uri, &mut program.items, documents);
+            let module_graph_build = build_document_module_graph(uri, &program);
+            let (module_graph, dangling_import_diagnostics, cycle_diagnostics) =
+                match module_graph_build {
+                    Some(ModuleGraphBuildResult::Ready(build)) => (
+                        Some(build.graph),
+                        build_dangling_import_diagnostics(
+                            source,
+                            &line_offsets,
+                            uri,
+                            &build.dangling_imports,
+                            documents,
+                        ),
+                        HashMap::new(),
+                    ),
+                    Some(ModuleGraphBuildResult::Cycle(cycle)) => (
+                        None,
+                        build_dangling_import_diagnostics(
+                            source,
+                            &line_offsets,
+                            uri,
+                            &cycle.dangling_imports,
+                            documents,
+                        ),
+                        build_module_cycle_diagnostics(
+                            source,
+                            &line_offsets,
+                            uri,
+                            &cycle,
+                            documents,
+                        ),
+                    ),
+                    None => (None, HashMap::new(), HashMap::new()),
+                };
+            program.module_graph = module_graph;
+            let module_sources = build_module_source_map(&program, documents);
+            (
+                Some(checker.check_program(&program)),
+                module_sources,
+                dangling_import_diagnostics,
+                cycle_diagnostics,
+            )
+        };
 
     let mut diagnostics_by_uri = build_diagnostics_by_uri(
         uri,
@@ -534,6 +641,7 @@ pub(super) fn analyze_document(
         &module_sources,
     );
     merge_diagnostics(&mut diagnostics_by_uri, &dangling_import_diagnostics);
+    merge_diagnostics(&mut diagnostics_by_uri, &cycle_diagnostics);
 
     DocumentState {
         source: source.to_string(),

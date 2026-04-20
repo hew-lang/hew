@@ -497,15 +497,26 @@ pub unsafe fn coro_init(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(target_os = "windows")
+    ))]
+    use std::sync::atomic::AtomicBool;
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     static TEST_SEEN_ARG: AtomicUsize = AtomicUsize::new(0);
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(target_os = "windows")
+    ))]
     static TEST_SWITCHED_BACK: AtomicBool = AtomicBool::new(false);
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(target_os = "windows")
+    ))]
     struct FirstSwitchState {
         caller_ctx: *mut CoroContext,
         callee_ctx: *mut CoroContext,
@@ -517,7 +528,10 @@ mod tests {
         TEST_SEEN_ARG.store(arg as usize, Ordering::Release);
     }
 
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(target_os = "windows")
+    ))]
     #[expect(
         clippy::cast_ptr_alignment,
         reason = "the test passes a pointer created from `&raw mut FirstSwitchState`"
@@ -624,7 +638,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(target_os = "windows")
+    ))]
     fn first_switch_delivers_init_argument_via_abi_register() {
         // SAFETY: Both contexts, the borrowed state record, and the alternate
         // stack remain live until the coroutine switches back to the caller.

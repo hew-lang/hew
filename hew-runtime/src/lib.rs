@@ -79,6 +79,7 @@ macro_rules! cabi_guard {
 
 pub(crate) mod lifetime;
 pub(crate) mod util;
+pub use crate::lifetime::poison_safe::{PoisonSafe, PoisonSafeRw};
 
 #[cfg(test)]
 pub(crate) struct RuntimeTestGuard {

@@ -38,7 +38,7 @@ use std::sync::{Mutex, PoisonError, RwLock, TryLockError};
     reason = "Mutex variant ships alongside PoisonSafeRw; first callers land with the next sweep (LIVE_ACTORS, MONITOR_TABLE, ...)"
 )]
 #[derive(Debug)]
-pub(crate) struct PoisonSafe<T>(Mutex<T>);
+pub struct PoisonSafe<T>(Mutex<T>);
 
 #[allow(
     dead_code,
@@ -46,7 +46,7 @@ pub(crate) struct PoisonSafe<T>(Mutex<T>);
 )]
 impl<T> PoisonSafe<T> {
     /// Construct a new `PoisonSafe<T>` wrapping `value`.
-    pub(crate) const fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         Self(Mutex::new(value))
     }
 
@@ -54,7 +54,7 @@ impl<T> PoisonSafe<T> {
     /// from poison by taking the inner value via
     /// [`PoisonError::into_inner`].
     #[inline]
-    pub(crate) fn access<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+    pub fn access<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         let mut guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         f(&mut *guard)
     }
@@ -64,7 +64,7 @@ impl<T> PoisonSafe<T> {
     /// transparently — a poisoned-but-uncontended mutex yields
     /// `Some(f(..))`, not `None`.
     #[inline]
-    pub(crate) fn try_access<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+    pub fn try_access<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         match self.0.try_lock() {
             Ok(mut guard) => Some(f(&mut *guard)),
             Err(TryLockError::Poisoned(poisoned)) => {
@@ -89,18 +89,19 @@ impl<T> PoisonSafe<T> {
 /// Use [`PoisonSafeRw::read_access`] for shared-read access,
 /// [`PoisonSafeRw::access`] for exclusive-write access, and
 /// [`PoisonSafeRw::try_access`] for non-blocking write attempts.
-pub(crate) struct PoisonSafeRw<T>(RwLock<T>);
+#[derive(Debug)]
+pub struct PoisonSafeRw<T>(RwLock<T>);
 
 impl<T> PoisonSafeRw<T> {
     /// Construct a new `PoisonSafeRw<T>` wrapping `value`.
-    pub(crate) const fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         Self(RwLock::new(value))
     }
 
     /// Shared-read access. Blocks until a read lock is available.
     /// Recovers from poison transparently.
     #[inline]
-    pub(crate) fn read_access<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+    pub fn read_access<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let guard = self.0.read().unwrap_or_else(PoisonError::into_inner);
         f(&*guard)
     }
@@ -108,7 +109,7 @@ impl<T> PoisonSafeRw<T> {
     /// Exclusive-write access. Blocks until a write lock is available.
     /// Recovers from poison transparently.
     #[inline]
-    pub(crate) fn access<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+    pub fn access<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         let mut guard = self.0.write().unwrap_or_else(PoisonError::into_inner);
         f(&mut *guard)
     }
@@ -121,7 +122,7 @@ impl<T> PoisonSafeRw<T> {
         dead_code,
         reason = "no callers yet; provided for symmetry with PoisonSafe::try_access and future sweeps"
     )]
-    pub(crate) fn try_access<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+    pub fn try_access<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         match self.0.try_write() {
             Ok(mut guard) => Some(f(&mut *guard)),
             Err(TryLockError::Poisoned(poisoned)) => {

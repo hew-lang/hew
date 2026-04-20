@@ -1,27 +1,7 @@
-use std::path::{Path, PathBuf};
+mod common;
 
+use common::typecheck;
 use hew_types::error::TypeErrorKind;
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .to_path_buf()
-}
-
-fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
-    let parse_result = hew_parser::parse(source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![
-            repo_root(),
-        ]));
-    checker.check_program(&parse_result.program)
-}
 
 #[test]
 fn regex_pattern_clone_preserves_pattern_type_via_registry_fallback() {

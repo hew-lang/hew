@@ -10,7 +10,10 @@ use hew_parser::ast::{
 };
 use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
 use hew_types::check::{SpanKey, TypeDefKind};
-use hew_types::{Checker, Ty};
+mod common;
+
+use common::isolated_checker;
+use hew_types::Ty;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -132,7 +135,7 @@ fn test_module_graph_preserved_through_pipeline() {
         module_doc: None,
         module_graph: Some(graph),
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -159,7 +162,7 @@ fn test_qualified_name_resolution() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -191,7 +194,7 @@ fn test_glob_import_resolution() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -231,7 +234,7 @@ fn test_file_import_const_annotation_rejects_unsupported_hashset() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -263,7 +266,7 @@ fn test_user_module_const_annotation_rejects_unsupported_hashset() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -300,7 +303,7 @@ fn test_named_import_selective_resolution() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -384,7 +387,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         .expect("root import should exist");
     import_decl.resolved_items = Some(module.program.items.clone());
 
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&root.program);
 
     assert!(
@@ -455,7 +458,7 @@ fn test_private_items_not_visible() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -499,7 +502,7 @@ fn test_pub_type_accessible_qualified() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -550,7 +553,7 @@ fn test_pub_type_import_conflicting_with_local_type_errors() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -632,7 +635,7 @@ fn test_two_modules_same_fn_no_collision() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(output.fn_sigs.contains_key("alpha.run"));
@@ -724,7 +727,7 @@ fn test_actor_bare_import_registers_type_and_methods() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -775,7 +778,7 @@ fn test_actor_glob_import_registers_unqualified() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -814,7 +817,7 @@ fn test_actor_named_import_selective() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -852,7 +855,7 @@ fn test_actor_multiple_receive_fns() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -884,7 +887,7 @@ fn test_actor_and_function_coexist_in_module() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -926,7 +929,7 @@ fn test_module_graph_same_fn_different_modules_no_collision() {
         module_doc: None,
         module_graph: Some(graph),
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -959,7 +962,7 @@ fn test_unresolved_import_fail_closed() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(
@@ -985,7 +988,7 @@ fn test_import_with_resolved_items_is_not_unresolved() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
     assert!(

@@ -18,16 +18,15 @@ fn test_registry() -> ModuleRegistry {
     ModuleRegistry::new(vec![repo_root])
 }
 
-fn check_source(_source: &str) -> TypeCheckOutput {
-    // hew-types has zero external deps, so we cannot parse source here.
-    // Integration tests that parse+check live in the workspace-level tests.
-    let program = Program {
-        module_graph: None,
-        items: vec![],
-        module_doc: None,
-    };
+fn check_source(source: &str) -> TypeCheckOutput {
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "check_source should parse cleanly, got: {:#?}",
+        parse_result.errors
+    );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.check_program(&program)
+    checker.check_program(&parse_result.program)
 }
 
 #[test]

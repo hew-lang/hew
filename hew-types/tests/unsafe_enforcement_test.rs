@@ -1,4 +1,7 @@
-use hew_types::Checker;
+mod common;
+
+use common::typecheck_isolated as typecheck;
+use hew_types::error::TypeErrorKind;
 
 #[test]
 fn extern_call_requires_unsafe() {
@@ -11,13 +14,13 @@ fn main() {
     let result = abs(-42);
 }
 "#;
-    let parse = hew_parser::parse(source);
-    assert!(parse.errors.is_empty(), "parse errors: {:?}", parse.errors);
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&parse.program);
+    let output = typecheck(source);
     assert!(
-        output.errors.iter().any(|e| e.message.contains("unsafe")),
-        "expected unsafe error, got: {:?}",
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error.message == "calling extern function `abs` requires `unsafe { ... }`"
+        }),
+        "expected explicit unsafe-call diagnostic, got: {:?}",
         output.errors
     );
 }

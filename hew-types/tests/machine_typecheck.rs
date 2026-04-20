@@ -1,7 +1,10 @@
 //! Tests for machine type checking: registration, exhaustiveness, and pattern matching.
 
 use hew_parser::ast::*;
-use hew_types::{Checker, TypeCheckOutput};
+mod common;
+
+use common::isolated_checker;
+use hew_types::TypeCheckOutput;
 
 fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
     let program = Program {
@@ -9,7 +12,7 @@ fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
         items,
         module_doc: None,
     };
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let mut checker = isolated_checker();
     checker.check_program(&program)
 }
 

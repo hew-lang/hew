@@ -1,5 +1,7 @@
 use hew_types::error::TypeErrorKind;
-use hew_types::Checker;
+mod common;
+
+use common::typecheck_isolated as typecheck;
 
 /// Regression: `fn max<T: Ord>(a: T, b: T) -> T` must accept primitive `i32` arguments.
 /// Previously `type_satisfies_trait_bound` fell through to `_ => false` for all non-Named,
@@ -16,11 +18,7 @@ fn primitive_satisfies_ord_bound() {
         }
     ";
 
-    let parse = hew_parser::parse(source);
-    assert!(parse.errors.is_empty(), "parser errors: {:?}", parse.errors);
-
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&parse.program);
+    let output = typecheck(source);
     assert!(
         !output
             .errors
@@ -45,11 +43,7 @@ fn string_satisfies_ord_bound() {
         }
     "#;
 
-    let parse = hew_parser::parse(source);
-    assert!(parse.errors.is_empty(), "parser errors: {:?}", parse.errors);
-
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&parse.program);
+    let output = typecheck(source);
     assert!(
         !output
             .errors
@@ -86,11 +80,7 @@ fn trait_bound_violation_reports_error() {
         }
     ";
 
-    let parse = hew_parser::parse(source);
-    assert!(parse.errors.is_empty(), "parser errors: {:?}", parse.errors);
-
-    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&parse.program);
+    let output = typecheck(source);
     assert!(
         output
             .errors

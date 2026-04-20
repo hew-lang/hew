@@ -1,61 +1,16 @@
+mod common;
+
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use common::{
+    checker, parse_and_typecheck_inline, parse_program, repo_root, typecheck as typecheck_inline,
+    typecheck_wasm as typecheck_inline_wasm,
+};
 use hew_parser::ast::{Expr, Item, Stmt};
 use hew_types::check::SpanKey;
 use hew_types::error::TypeErrorKind;
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .to_path_buf()
-}
-
-fn new_networking_demo_checker() -> hew_types::Checker {
-    hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![
-        repo_root(),
-    ]))
-}
-
-/// Typecheck an inline source string with full stdlib access.
-fn typecheck_inline(source: &str) -> hew_types::TypeCheckOutput {
-    let parse_result = hew_parser::parse(source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-    let mut checker = new_networking_demo_checker();
-    checker.check_program(&parse_result.program)
-}
-
-fn parse_and_typecheck_inline(
-    source: &str,
-) -> (hew_parser::ast::Program, hew_types::TypeCheckOutput) {
-    let parse_result = hew_parser::parse(source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-    let mut checker = new_networking_demo_checker();
-    let output = checker.check_program(&parse_result.program);
-    (parse_result.program, output)
-}
-
-fn typecheck_inline_wasm(source: &str) -> hew_types::TypeCheckOutput {
-    let parse_result = hew_parser::parse(source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-    let mut checker = new_networking_demo_checker();
-    checker.enable_wasm_target();
-    checker.check_program(&parse_result.program)
-}
 
 fn platform_limitation_error_count(output: &hew_types::TypeCheckOutput, fragment: &str) -> usize {
     output
@@ -114,6 +69,66 @@ fn assert_single_unknown_return_error(
     );
 }
 
+fn expected_directory_failures(
+    label: &str,
+) -> &'static [(&'static str, TypeErrorKind, &'static str)] {
+    match label {
+        "examples" => &[
+            (
+                "actor_net_reader.hew",
+                TypeErrorKind::UndefinedMethod,
+                "no method `read_string` on `net.Connection`",
+            ),
+            (
+                "benchmark_demo.hew",
+                TypeErrorKind::UndefinedMethod,
+                "no method `add` on `bench.Suite`",
+            ),
+            (
+                "chat_client.hew",
+                TypeErrorKind::UndefinedMethod,
+                "no method `set_read_timeout` on `net.Connection`",
+            ),
+            (
+                "chat_server.hew",
+                TypeErrorKind::UndefinedMethod,
+                "no method `write_string` on `net.Connection`",
+            ),
+            (
+                "curl_client.hew",
+                TypeErrorKind::UndefinedMethod,
+                "no method `set_read_timeout` on `net.Connection`",
+            ),
+            (
+                "enums_and_options.hew",
+                TypeErrorKind::InferenceFailed,
+                "cannot infer type for local binding `ok_val`",
+            ),
+            (
+                "regex_demo.hew",
+                TypeErrorKind::UndefinedMethod,
+                "no method `free` on `regex.Pattern`",
+            ),
+            (
+                "showcase.hew",
+                TypeErrorKind::InferenceFailed,
+                "cannot infer type for local binding `square`",
+            ),
+            (
+                "smtp_client.hew",
+                TypeErrorKind::UndefinedMethod,
+                "no method `try_send` on `smtp.Conn`",
+            ),
+            (
+                "syntax_test.hew",
+                TypeErrorKind::UndefinedType,
+                "impl `Drawable` for `Point` must define associated type `Canvas`",
+            ),
+        ],
+        _ => &[],
+    }
+}
+
 #[test]
 fn typecheck_all_examples() {
     let examples_dir = repo_root().join("examples");
@@ -138,15 +153,9 @@ fn typecheck_top_level_networking_demos() {
 
 fn assert_typechecks(path: &Path, label: &str) {
     let source = fs::read_to_string(path).unwrap();
-    let parse_result = hew_parser::parse(&source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "{label} should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-
-    let mut checker = new_networking_demo_checker();
-    let output = checker.check_program(&parse_result.program);
+    let program = parse_program(&source);
+    let mut checker = checker();
+    let output = checker.check_program(&program);
     assert!(
         output.errors.is_empty(),
         "{label} should type-check cleanly, got: {:#?}",
@@ -676,6 +685,7 @@ fn test_directory(dir: &Path, label: &str) {
     let mut parse_fail = 0;
     let mut tc_ok = 0;
     let mut tc_fail = 0;
+    let mut parse_errors = Vec::new();
     let mut tc_errors = Vec::new();
 
     let mut entries: Vec<_> = fs::read_dir(dir)
@@ -688,25 +698,33 @@ fn test_directory(dir: &Path, label: &str) {
 
     for path in &entries {
         let source = fs::read_to_string(path).unwrap();
-        let parse_result = hew_parser::parse(&source);
-        if !parse_result.errors.is_empty() {
-            parse_fail += 1;
-            continue;
-        }
-        parse_ok += 1;
+        let program = match hew_parser::parse(&source) {
+            parse_result if parse_result.errors.is_empty() => {
+                parse_ok += 1;
+                parse_result.program
+            }
+            parse_result => {
+                parse_fail += 1;
+                parse_errors.push(format!(
+                    "  {} — parse errors: {:#?}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    parse_result.errors
+                ));
+                continue;
+            }
+        };
 
-        let mut checker =
-            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&parse_result.program);
+        let mut checker = checker();
+        let output = checker.check_program(&program);
         if output.errors.is_empty() {
             tc_ok += 1;
         } else {
             tc_fail += 1;
             let first_err = &output.errors[0];
-            tc_errors.push(format!(
-                "  {} — {:?}",
+            tc_errors.push((
                 path.file_name().unwrap().to_string_lossy(),
-                first_err
+                first_err.kind.clone(),
+                first_err.message.clone(),
             ));
         }
     }
@@ -715,13 +733,27 @@ fn test_directory(dir: &Path, label: &str) {
     println!(
         "\n{label}: {parse_ok}/{total} parsed, {tc_ok}/{parse_ok} type-checked ({tc_fail} failed)"
     );
-    if !tc_errors.is_empty() {
-        println!("Type-check failures:");
-        for e in &tc_errors {
-            println!("{e}");
-        }
-    }
-    // Informational — don't fail on type-check errors yet
+    assert_eq!(
+        parse_fail,
+        0,
+        "{label}: expected every fixture to parse; failures:\n{}",
+        parse_errors.join("\n")
+    );
+    let actual_failures: Vec<_> = tc_errors
+        .iter()
+        .map(|(file, kind, message)| (file.as_ref(), kind.clone(), message.as_ref()))
+        .collect();
+    let expected_failures = expected_directory_failures(label);
+    assert_eq!(
+        actual_failures,
+        expected_failures,
+        "{label}: unexpected type-check corpus drift; actual failures:\n{}",
+        tc_errors
+            .iter()
+            .map(|(file, kind, message)| format!("  {file} — {kind:?}: {message}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 // ===========================================================================

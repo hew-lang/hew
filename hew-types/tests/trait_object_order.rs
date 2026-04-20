@@ -1,14 +1,6 @@
-fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parser errors: {:?}",
-        parsed.errors
-    );
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-    checker.check_program(&parsed.program)
-}
+mod common;
+
+use common::typecheck_isolated as typecheck;
 
 #[test]
 fn trait_object_different_order_unifies() {

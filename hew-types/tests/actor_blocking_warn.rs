@@ -7,34 +7,29 @@
 //! program.  The type-checker emits a `BlockingCallInReceiveFn` warning for
 //! each such call site.
 
-use std::path::{Path, PathBuf};
+mod common;
 
+use common::{typecheck, warnings_of_kind};
 use hew_types::error::TypeErrorKind;
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .to_path_buf()
-}
-
-fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
-    let parse_result = hew_parser::parse(source);
-    assert!(
-        parse_result.errors.is_empty(),
-        "should parse cleanly, got: {:#?}",
-        parse_result.errors
-    );
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![
-            repo_root(),
-        ]));
-    checker.check_program(&parse_result.program)
-}
 
 // ---------------------------------------------------------------------------
 // Positive cases: warn when blocking ops appear inside receive fns
 // ---------------------------------------------------------------------------
+
+fn assert_single_blocking_warning(output: &hew_types::TypeCheckOutput, operation: &str) {
+    let blocking_warnings = warnings_of_kind(output, &TypeErrorKind::BlockingCallInReceiveFn);
+    assert_eq!(
+        blocking_warnings.len(),
+        1,
+        "expected exactly one BlockingCallInReceiveFn warning, got: {:#?}",
+        output.warnings
+    );
+    assert!(
+        blocking_warnings[0].message.contains(operation),
+        "warning message should name the operation, got: {:?}",
+        blocking_warnings[0].message
+    );
+}
 
 /// `Receiver::recv` inside a receive function triggers a warning.
 #[test]
@@ -52,21 +47,7 @@ fn warn_receiver_recv_inside_receive_fn() {
         fn main() {}
         ",
     );
-    let blocking_warnings: Vec<_> = output
-        .warnings
-        .iter()
-        .filter(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .collect();
-    assert!(
-        !blocking_warnings.is_empty(),
-        "expected BlockingCallInReceiveFn warning for Receiver::recv, got warnings: {:#?}",
-        output.warnings
-    );
-    assert!(
-        blocking_warnings[0].message.contains("Receiver::recv"),
-        "warning message should name the operation, got: {:?}",
-        blocking_warnings[0].message
-    );
+    assert_single_blocking_warning(&output, "Receiver::recv");
 }
 
 /// `net.Connection::read` inside a receive function triggers a warning.
@@ -85,23 +66,7 @@ fn warn_net_connection_read_inside_receive_fn() {
         fn main() {}
         ",
     );
-    let blocking_warnings: Vec<_> = output
-        .warnings
-        .iter()
-        .filter(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .collect();
-    assert!(
-        !blocking_warnings.is_empty(),
-        "expected BlockingCallInReceiveFn warning for net.Connection::read, got: {:#?}",
-        output.warnings
-    );
-    assert!(
-        blocking_warnings[0]
-            .message
-            .contains("net.Connection::read"),
-        "warning message should name the operation, got: {:?}",
-        blocking_warnings[0].message
-    );
+    assert_single_blocking_warning(&output, "net.Connection::read");
 }
 
 /// `net.Listener::accept` inside a receive function triggers a warning.
@@ -120,23 +85,7 @@ fn warn_net_listener_accept_inside_receive_fn() {
         fn main() {}
         ",
     );
-    let blocking_warnings: Vec<_> = output
-        .warnings
-        .iter()
-        .filter(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .collect();
-    assert!(
-        !blocking_warnings.is_empty(),
-        "expected BlockingCallInReceiveFn warning for net.Listener::accept, got: {:#?}",
-        output.warnings
-    );
-    assert!(
-        blocking_warnings[0]
-            .message
-            .contains("net.Listener::accept"),
-        "warning message should name the operation, got: {:?}",
-        blocking_warnings[0].message
-    );
+    assert_single_blocking_warning(&output, "net.Listener::accept");
 }
 
 // ---------------------------------------------------------------------------
@@ -274,19 +223,5 @@ fn warn_http_server_accept_inside_receive_fn() {
         fn main() {}
         ",
     );
-    let blocking_warnings: Vec<_> = output
-        .warnings
-        .iter()
-        .filter(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .collect();
-    assert!(
-        !blocking_warnings.is_empty(),
-        "expected BlockingCallInReceiveFn warning for http.Server::accept, got: {:#?}",
-        output.warnings
-    );
-    assert!(
-        blocking_warnings[0].message.contains("http.Server::accept"),
-        "warning message should name the operation, got: {:?}",
-        blocking_warnings[0].message
-    );
+    assert_single_blocking_warning(&output, "http.Server::accept");
 }

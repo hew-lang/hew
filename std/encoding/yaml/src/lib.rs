@@ -597,9 +597,9 @@ pub unsafe extern "C" fn hew_yaml_object_set_bytes(
 
 /// Set a `char` (Unicode codepoint) field on a YAML mapping as an integer.
 ///
-/// `val` is the Unicode codepoint as an `i64`. Only BMP codepoints (0..=0xFFFF)
-/// are expected at this boundary (see `IntegerBounds::for_kind(Char)` SHIM in
-/// `hew-wirecodec/src/plan.rs` for the lift-to-full-Unicode tracking note).
+/// `val` is the Unicode codepoint as an `i64`. The public wire descriptor and
+/// C++ consumer use the integer-codepoint range `0..=0x10_FFFF` (see
+/// `IntegerBounds::for_kind(Char)` in `hew-wirecodec/src/plan.rs`).
 /// Emitted as a YAML integer.
 ///
 /// # Safety

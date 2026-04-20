@@ -53,12 +53,27 @@ impl IntegerBounds {
                 min: 0,
                 max: u64::from(u8::MAX),
             }),
-            PrimitiveWireKind::U16 | PrimitiveWireKind::Char => Some(Self {
+            PrimitiveWireKind::U16 => Some(Self {
                 min: 0,
-                // Char uses U16 bounds for msgpack parity with the existing
-                // C++ path; an independent plan-level lift to U32 would need a
-                // separate migration.
                 max: u64::from(u16::MAX),
+            }),
+            PrimitiveWireKind::Char => Some(Self {
+                min: 0,
+                // SHIM(#1276): Char is not BMP-bound on the wire.
+                //
+                // Audit result:
+                // - msgpack descriptors route Char through the same unsigned
+                //   varint op as U32/U64 (`hew-wirecodec/src/msgpack_desc.rs`)
+                // - the C++ reader decodes UTF-8 Char literals up to 4-byte
+                //   codepoints (`hew-codegen/src/msgpack_reader.cpp`)
+                // - MLIR wire JSON/YAML lowering already carries Char as an
+                //   integer codepoint via the dedicated get/set_char ABI and
+                //   validates against 0..=0x10_FFFF
+                //
+                // The old U16 reuse was incidental plan plumbing, not a wire
+                // invariant, so the public descriptor API exposes the existing
+                // full-Unicode ceiling used by the consumer.
+                max: 0x10_FFFF,
             }),
             PrimitiveWireKind::U32 => Some(Self {
                 min: 0,
@@ -525,6 +540,14 @@ mod tests {
         // Duration values are not rejected by the encode guard.
         assert_eq!(bounds.min, i64::MIN);
         assert_eq!(bounds.max, u64::try_from(i64::MAX).unwrap());
+    }
+
+    #[test]
+    fn char_bounds_cover_full_unicode_codepoint_range() {
+        let bounds =
+            IntegerBounds::for_kind(&PrimitiveWireKind::Char).expect("Char must have bounds");
+        assert_eq!(bounds.min, 0);
+        assert_eq!(bounds.max, 0x10_FFFF);
     }
 
     #[test]

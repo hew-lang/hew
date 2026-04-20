@@ -42,6 +42,7 @@ fn generate_hew_exports(
     Ok((fns, hew_code))
 }
 
+#[allow(clippy::too_many_lines, reason = "CLI dispatch is linear by design")]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 

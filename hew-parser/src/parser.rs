@@ -535,6 +535,10 @@ impl<'src> Parser<'src> {
 
     fn error(&mut self, message: String) {
         let span = self.peek_span();
+        self.error_at(message, span);
+    }
+
+    fn error_at(&mut self, message: String, span: Span) {
         self.errors.push(ParseError {
             message,
             span,
@@ -545,6 +549,10 @@ impl<'src> Parser<'src> {
 
     fn error_with_hint(&mut self, message: String, hint: impl Into<String>) {
         let span = self.peek_span();
+        self.error_at_with_hint(message, span, hint);
+    }
+
+    fn error_at_with_hint(&mut self, message: String, span: Span, hint: impl Into<String>) {
         self.errors.push(ParseError {
             message,
             span,
@@ -923,21 +931,40 @@ impl<'src> Parser<'src> {
                         if self.eat(&Token::Equal) {
                             let value = if self.peek().is_some_and(|tok| Self::is_ident_token(tok))
                             {
-                                self.expect_ident().unwrap_or_default()
+                                Some(self.expect_ident().unwrap_or_default())
                             } else if let Some(Token::StringLit(s) | Token::RawString(s)) =
                                 self.peek()
                             {
                                 let val = unquote_str(s).to_string();
                                 self.advance();
-                                val
+                                Some(val)
                             } else if let Some(Token::Integer(n)) = self.peek() {
                                 let val = n.to_string();
                                 self.advance();
-                                val
+                                Some(val)
                             } else {
-                                String::new()
+                                let span = self.peek_span();
+                                let found = match self.peek() {
+                                    Some(Token::Comma | Token::RightParen) | None => {
+                                        "missing value".to_string()
+                                    }
+                                    Some(tok) => format!("unexpected {tok}"),
+                                };
+                                self.error_at_with_hint(
+                                    format!("invalid value for attribute `{key}`: {found}"),
+                                    span,
+                                    "expected identifier, string literal, or integer literal",
+                                );
+                                if self.peek().is_some_and(|tok| {
+                                    !matches!(tok, Token::Comma | Token::RightParen)
+                                }) {
+                                    self.advance();
+                                }
+                                None
                             };
-                            args.push(AttributeArg::KeyValue { key, value });
+                            if let Some(value) = value {
+                                args.push(AttributeArg::KeyValue { key, value });
+                            }
                         } else {
                             args.push(AttributeArg::Positional(key));
                         }
@@ -5685,6 +5712,35 @@ mod tests {
         } else {
             panic!("expected actor");
         }
+    }
+
+    #[test]
+    fn parse_attribute_key_value_missing_value_emits_error_without_empty_fallback() {
+        let source = r"
+#[meta(rename = , version = 2)]
+fn demo() {}
+";
+        let result = parse(source);
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        assert_eq!(
+            result.errors[0].message,
+            "invalid value for attribute `rename`: missing value"
+        );
+        assert_eq!(
+            result.errors[0].hint.as_deref(),
+            Some("expected identifier, string literal, or integer literal")
+        );
+
+        let Item::Function(func) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        assert_eq!(func.attributes.len(), 1);
+        assert_eq!(func.attributes[0].name, "meta");
+        assert_eq!(func.attributes[0].args.len(), 1);
+        assert!(matches!(
+            &func.attributes[0].args[0],
+            AttributeArg::KeyValue { key, value } if key == "version" && value == "2"
+        ));
     }
 
     #[test]

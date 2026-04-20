@@ -1,5 +1,6 @@
 //! `adze` — the Hew package manager CLI.
 
+mod atomic_fs;
 mod checksum;
 mod client;
 mod config;
@@ -8,6 +9,8 @@ mod happy_eyeballs;
 mod index;
 mod lockfile;
 mod manifest;
+mod package_fs;
+mod paths;
 mod registry;
 mod resolver;
 mod signing;
@@ -486,7 +489,7 @@ fn cmd_add(pkg: &str, version: &str, registry_name: Option<&str>) {
         eprintln!("Run `adze init` to create one.");
         std::process::exit(1);
     }
-    match manifest::add_dependency(&manifest_path, pkg, version) {
+    match manifest::add_dependency(&manifest_path, pkg, version, registry_name) {
         Ok(()) => println!("Added {pkg}@{version} to hew.toml"),
         Err(e) => {
             eprintln!("adze add: {e}");
@@ -563,7 +566,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         }
     }
 
-    let local_packages = cwd.join(".adze").join("packages");
+    let local_packages = project_packages_path(&cwd);
     if let Err(e) = std::fs::create_dir_all(&local_packages) {
         eprintln!("adze install: cannot create .adze/packages/: {e}");
         std::process::exit(1);
@@ -585,12 +588,11 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
 
     // Resolve dependencies to exact versions, fetching any missing transitive
     // packages until the graph resolves cleanly.
-    let api_client = make_client(registry_name);
     let resolved = loop {
         match resolver::resolve_all(&m, registry) {
             Ok(resolved) => break resolved,
             Err(resolver::ResolveError::UnresolvableDeps { failures }) => {
-                if !fetch_missing_packages(&failures, registry, &api_client) {
+                if !fetch_missing_packages(&failures, registry, registry_name) {
                     eprintln!("adze install: could not resolve the dependency graph");
                     std::process::exit(1);
                 }
@@ -635,22 +637,16 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         });
 
         // Build the local symlink path: replace :: with / separators.
-        let link = name
-            .split("::")
-            .fold(local_packages.clone(), |p, seg| p.join(seg));
+        let link = local_link_path(&local_packages, name);
         if let Some(parent) = link.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 eprintln!("adze install: cannot create {}: {e}", parent.display());
                 std::process::exit(1);
             }
         }
-        if link.is_symlink() || link.exists() {
-            println!("  (already linked) {name}");
-            continue;
-        }
         #[cfg(unix)]
         {
-            if let Err(e) = std::os::unix::fs::symlink(&target, &link) {
+            if let Err(e) = replace_local_package_link(&link, &target) {
                 eprintln!("adze install: cannot create symlink for {name}: {e}");
                 std::process::exit(1);
             }
@@ -685,11 +681,12 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
 fn fetch_missing_packages(
     failures: &[resolver::UnresolvedDep],
     registry: &registry::Registry,
-    api_client: &client::RegistryClient,
+    default_registry_name: Option<&str>,
 ) -> bool {
     let mut fetched_any = false;
 
     for failure in failures {
+        let api_client = make_client(failure.registry.as_deref().or(default_registry_name));
         let name = &failure.package;
         let requirements = &failure.requirements;
         let requirement_summary = requirements.join(", ");
@@ -765,7 +762,7 @@ fn fetch_missing_packages(
         // Verify Ed25519 signature over the checksum.
         if !resolved.sig.is_empty() && !resolved.key_fp.is_empty() {
             match verify_package_signature(
-                api_client,
+                &api_client,
                 &resolved.checksum,
                 &resolved.sig,
                 &resolved.key_fp,
@@ -785,7 +782,7 @@ fn fetch_missing_packages(
         if let Some(ref reg_sig) = resolved.registry_sig {
             if let Some(ref published_at) = resolved.published_at {
                 match verify_registry_signature(
-                    api_client,
+                    &api_client,
                     name,
                     version,
                     &resolved.checksum,
@@ -1133,7 +1130,42 @@ fn cmd_search(
     }
 }
 
-fn cmd_info(package: &str, registry: &registry::Registry, _registry_name: Option<&str>) {
+fn cmd_info(package: &str, registry: &registry::Registry, registry_name: Option<&str>) {
+    if let Some(registry_name) = registry_name {
+        let api_client = make_client(Some(registry_name));
+        let entries = match api_client.get_package(package) {
+            Ok(entries) if !entries.is_empty() => entries,
+            Ok(_) => {
+                eprintln!("adze info: package `{package}` not found in registry `{registry_name}`");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("adze info: {e}");
+                std::process::exit(1);
+            }
+        };
+        let Some(latest) = entries.into_iter().max_by(|left, right| {
+            let left_version = semver::Version::parse(&left.vers)
+                .unwrap_or_else(|_| semver::Version::new(0, 0, 0));
+            let right_version = semver::Version::parse(&right.vers)
+                .unwrap_or_else(|_| semver::Version::new(0, 0, 0));
+            left_version.cmp(&right_version)
+        }) else {
+            eprintln!("adze info: package `{package}` not found in registry `{registry_name}`");
+            std::process::exit(1);
+        };
+        println!("{}@{}", latest.name, latest.vers);
+        println!("  source: registry `{registry_name}`");
+        println!("  checksum: {}", latest.cksum);
+        if !latest.deps.is_empty() {
+            println!("  dependencies:");
+            for dep in latest.deps {
+                println!("    {} {}", dep.name, dep.req);
+            }
+        }
+        return;
+    }
+
     let packages = registry.list_packages();
     let versions: Vec<_> = packages.iter().filter(|p| p.name == package).collect();
 
@@ -1316,9 +1348,7 @@ fn cmd_remove(package: &str) {
     match manifest::remove_dependency(&manifest_path, package) {
         Ok(true) => {
             // Remove local symlink if it exists.
-            let link = package
-                .split("::")
-                .fold(cwd.join(".adze").join("packages"), |p, seg| p.join(seg));
+            let link = local_link_path(&project_packages_path(&cwd), package);
             if link.is_symlink() || link.exists() {
                 let _ = std::fs::remove_file(&link);
             }
@@ -1458,14 +1488,13 @@ fn cmd_login() {
             Ok(resp) => {
                 if let Some(token) = resp.token {
                     let cred_path = credentials::credentials_path();
-                    let creds = credentials::CredentialsFile {
-                        registry: Some(credentials::Credentials {
+                    if let Err(e) = credentials::update_default_credentials(
+                        &cred_path,
+                        credentials::Credentials {
                             token,
                             github_user: resp.github_user.clone(),
-                        }),
-                        registries: None,
-                    };
-                    if let Err(e) = credentials::save_credentials(&cred_path, &creds) {
+                        },
+                    ) {
                         eprintln!("adze login: {e}");
                         std::process::exit(1);
                     }
@@ -1781,6 +1810,11 @@ fn cmd_index_sync() {
             }
         }
     }
+
+    if let Err(e) = index::validate_index_root(&index_dir) {
+        eprintln!("adze index sync: {e}");
+        std::process::exit(1);
+    }
 }
 
 fn cmd_index_resolve(package: &str, version_req: &str) {
@@ -1867,6 +1901,32 @@ fn cmd_index_list(package: &str) {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+fn project_packages_path(cwd: &Path) -> PathBuf {
+    cwd.join(".adze").join("packages")
+}
+
+fn local_link_path(base: &Path, package_name: &str) -> PathBuf {
+    package_name
+        .split("::")
+        .fold(base.to_path_buf(), |path, segment| path.join(segment))
+}
+
+#[cfg(unix)]
+fn replace_local_package_link(link: &Path, target: &Path) -> std::io::Result<()> {
+    if let Ok(existing) = std::fs::read_link(link) {
+        if existing == target {
+            return Ok(());
+        }
+    } else if std::fs::symlink_metadata(link).is_ok() {
+        return Err(std::io::Error::other(format!(
+            "{} exists and is not a symlink",
+            link.display()
+        )));
+    }
+
+    atomic_fs::replace_symlink_atomic(link, target)
+}
+
 /// Find the latest (highest semver) version of `package_name` in the registry.
 fn find_latest_version(
     packages: &[registry::InstalledPackage],
@@ -1920,7 +1980,7 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if matches!(name_str.as_ref(), ".git" | "target" | ".adze") {
+        if package_fs::is_skipped_package_dir(&name_str) {
             continue;
         }
         let src_path = entry.path();
@@ -2157,7 +2217,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hew.toml");
         manifest::write_default_manifest(&path, "myproject").unwrap();
-        manifest::add_dependency(&path, "std::net::http", "1.0").unwrap();
+        manifest::add_dependency(&path, "std::net::http", "1.0", None).unwrap();
 
         let removed = manifest::remove_dependency(&path, "std::net::http").unwrap();
         assert!(removed);
@@ -2218,7 +2278,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hew.toml");
         manifest::write_default_manifest(&path, "myproject").unwrap();
-        manifest::add_dependency(&path, "mypkg", "1.0.0").unwrap();
+        manifest::add_dependency(&path, "mypkg", "1.0.0", None).unwrap();
 
         let (_reg_dir, reg) = setup_registry();
         install_fake(&reg, "mypkg", "1.0.0");
@@ -2396,7 +2456,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hew.toml");
         manifest::write_default_manifest(&path, "myproject").unwrap();
-        manifest::add_dependency(&path, "std::net::http", "1.0").unwrap();
+        manifest::add_dependency(&path, "std::net::http", "1.0", None).unwrap();
 
         // Simulate installed package symlink directory.
         let pkg_dir = dir

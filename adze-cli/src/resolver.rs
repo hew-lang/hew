@@ -25,6 +25,8 @@ pub struct UnresolvedDep {
     pub package: String,
     /// Every version requirement currently imposed on the package.
     pub requirements: Vec<String>,
+    /// The named registry required for this package, if any.
+    pub registry: Option<String>,
 }
 
 /// A resolved package in the dependency graph.
@@ -197,6 +199,7 @@ struct PackageState {
     direct_requirement: Option<String>,
     requested_features: BTreeSet<String>,
     use_default_features: bool,
+    registry: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,6 +216,13 @@ struct DepRequest {
     direct_requirement: Option<String>,
     features: BTreeSet<String>,
     use_default_features: bool,
+    registry: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FailureState {
+    requirements: BTreeSet<String>,
+    registry: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -237,7 +247,7 @@ struct ResolverPass<'a> {
     package_states: BTreeMap<String, PackageState>,
     selected_versions: BTreeMap<String, String>,
     expanded_states: BTreeMap<String, ExpandedState>,
-    failures: BTreeMap<String, BTreeSet<String>>,
+    failures: BTreeMap<String, FailureState>,
     manifest_cache: BTreeMap<(String, String), HewManifest>,
 }
 
@@ -286,9 +296,10 @@ impl<'a> ResolverPass<'a> {
             let failures = self
                 .failures
                 .into_iter()
-                .map(|(package, requirements)| UnresolvedDep {
+                .map(|(package, failure)| UnresolvedDep {
                     package,
-                    requirements: requirements.into_iter().collect(),
+                    requirements: failure.requirements.into_iter().collect(),
+                    registry: failure.registry,
                 })
                 .collect();
             Ok(PassOutcome::Unresolved(failures))
@@ -314,6 +325,9 @@ impl<'a> ResolverPass<'a> {
                     .direct_requirement
                     .clone_from(&request.direct_requirement);
             }
+            if state.registry.is_none() {
+                state.registry.clone_from(&request.registry);
+            }
             state.requested_features.extend(request.features);
             state.use_default_features |= request.use_default_features;
             (
@@ -331,8 +345,16 @@ impl<'a> ResolverPass<'a> {
         else {
             self.failures
                 .entry(request.name)
-                .or_default()
-                .extend(requirements);
+                .and_modify(|failure| {
+                    failure.requirements.extend(requirements.iter().cloned());
+                    if failure.registry.is_none() {
+                        failure.registry.clone_from(&request.registry);
+                    }
+                })
+                .or_insert_with(|| FailureState {
+                    requirements: requirements.iter().cloned().collect(),
+                    registry: request.registry.clone(),
+                });
             return Ok(VisitControl::Continue);
         };
 
@@ -474,6 +496,7 @@ fn root_requests(manifest: &HewManifest) -> Vec<DepRequest> {
             direct_requirement: Some(dep_spec.version_req().to_string()),
             features: requested_features(dep_spec),
             use_default_features: uses_default_features(dep_spec),
+            registry: dependency_registry(dep_spec),
         })
         .collect()
 }
@@ -494,6 +517,13 @@ fn uses_default_features(dep_spec: &DepSpec) -> bool {
     match dep_spec {
         DepSpec::Version(_) => true,
         DepSpec::Table(table) => table.default_features.unwrap_or(true),
+    }
+}
+
+fn dependency_registry(dep_spec: &DepSpec) -> Option<String> {
+    match dep_spec {
+        DepSpec::Version(_) => None,
+        DepSpec::Table(table) => table.registry.clone(),
     }
 }
 
@@ -519,6 +549,7 @@ fn dependency_requests_from_manifest(
                 direct_requirement: None,
                 features: requested_features(dep_spec),
                 use_default_features: uses_default_features(dep_spec),
+                registry: dependency_registry(dep_spec),
             })
         })
         .collect()
@@ -1429,6 +1460,7 @@ mod tests {
             failures: vec![UnresolvedDep {
                 package: "a".to_string(),
                 requirements: vec!["1.0".to_string(), "^1.2".to_string()],
+                registry: None,
             }],
         };
         let msg = err.to_string();
@@ -1436,6 +1468,53 @@ mod tests {
         assert!(msg.contains('a'));
         assert!(msg.contains("1.0"));
         assert!(msg.contains("^1.2"));
+    }
+
+    #[test]
+    fn unresolved_dependency_preserves_named_registry() {
+        let (_dir, reg) = test_registry();
+        let mut dependencies = BTreeMap::new();
+        dependencies.insert(
+            "corp::auth".to_string(),
+            DepSpec::Table(DepTable {
+                version: "^1.0".to_string(),
+                optional: None,
+                features: None,
+                default_features: None,
+                registry: Some("internal".to_string()),
+                path: None,
+            }),
+        );
+        let manifest = HewManifest {
+            package: Package {
+                name: "app".to_string(),
+                version: "0.1.0".to_string(),
+                description: None,
+                authors: None,
+                license: None,
+                keywords: None,
+                categories: None,
+                homepage: None,
+                repository: None,
+                documentation: None,
+                readme: None,
+                exclude: None,
+                include: None,
+                edition: None,
+                hew: None,
+            },
+            dependencies,
+            dev_dependencies: BTreeMap::new(),
+            features: BTreeMap::new(),
+        };
+
+        let err = resolve_all(&manifest, &reg).unwrap_err();
+        let ResolveError::UnresolvableDeps { failures } = err else {
+            panic!("expected unresolved dependency");
+        };
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].package, "corp::auth");
+        assert_eq!(failures[0].registry.as_deref(), Some("internal"));
     }
 
     // ── resolve_version_from_entries ─────────────────────────────────

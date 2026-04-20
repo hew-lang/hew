@@ -158,7 +158,7 @@ pub fn verify(
 /// Return the default key directory (`~/.adze/keys/`).
 #[must_use]
 pub fn default_key_dir() -> PathBuf {
-    crate::config::home_dir().join(".adze").join("keys")
+    crate::paths::adze_home().join("keys")
 }
 
 /// Save a keypair to the key directory.
@@ -176,17 +176,11 @@ pub fn save_keypair(dir: &Path, keypair: &KeyPair) -> Result<(), SignError> {
 
     let secret_path = dir.join("id_ed25519");
     let secret_b64 = base64::engine::general_purpose::STANDARD.encode(keypair.secret_key_bytes());
-    std::fs::write(&secret_path, &secret_b64)?;
-
-    // Set file permissions to 0600 on Unix.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    crate::atomic_fs::write_atomic(&secret_path, secret_b64.as_bytes(), 0o600)?;
 
     let pub_path = dir.join("id_ed25519.pub");
-    std::fs::write(&pub_path, keypair.public_key_base64())?;
+    let public_key = keypair.public_key_base64();
+    crate::atomic_fs::write_atomic(&pub_path, public_key.as_bytes(), 0o644)?;
 
     Ok(())
 }

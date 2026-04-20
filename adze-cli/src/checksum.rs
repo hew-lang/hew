@@ -3,8 +3,6 @@
 use std::io;
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
-
 /// Compute a deterministic SHA-256 checksum of a package directory.
 ///
 /// Walks all files sorted by relative path, hashing each file's relative path
@@ -17,10 +15,10 @@ use sha2::{Digest, Sha256};
 /// Returns an [`io::Error`] if any file cannot be read or the directory cannot
 /// be traversed.
 pub fn compute_dir_checksum(dir: &Path) -> Result<String, io::Error> {
-    let mut hasher = Sha256::new();
+    use sha2::{Digest, Sha256};
 
-    let mut files = Vec::new();
-    collect_files(dir, dir, &mut files)?;
+    let mut hasher = Sha256::new();
+    let mut files = crate::package_fs::collect_package_files(dir)?;
     files.sort();
 
     for rel_path in &files {
@@ -30,8 +28,7 @@ pub fn compute_dir_checksum(dir: &Path) -> Result<String, io::Error> {
         hasher.update(&contents);
     }
 
-    let hash = hasher.finalize();
-    Ok(format!("sha256:{hash:x}"))
+    Ok(crate::package_fs::sha256_prefixed(&hasher.finalize()))
 }
 
 /// Verify that a directory's checksum matches an expected value.
@@ -43,33 +40,6 @@ pub fn compute_dir_checksum(dir: &Path) -> Result<String, io::Error> {
 pub fn verify_checksum(dir: &Path, expected: &str) -> Result<bool, io::Error> {
     let actual = compute_dir_checksum(dir)?;
     Ok(actual == expected)
-}
-
-/// Recursively collect relative file paths under `dir`, skipping `.git`,
-/// `target`, and `.adze` directories.
-fn collect_files(root: &Path, dir: &Path, files: &mut Vec<String>) -> Result<(), io::Error> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if matches!(name_str.as_ref(), ".git" | "target" | ".adze") {
-            continue;
-        }
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(root, &path, files)?;
-        } else {
-            let rel = path.strip_prefix(root).map_err(io::Error::other)?;
-            // Use forward slashes for cross-platform determinism.
-            let rel_str = rel
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join("/");
-            files.push(rel_str);
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

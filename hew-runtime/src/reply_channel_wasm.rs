@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static FORCE_REPLY_ALLOC_FAILURE: AtomicUsize = AtomicUsize::new(0);
 
 /// One-shot reply channel for the WASM ask pattern.
 ///
@@ -39,6 +41,8 @@ pub struct WasmReplyChannel {
     value: *mut c_void,
     /// Size of `value` in bytes.
     value_size: usize,
+    /// Distinguishes allocator failure from a legitimate null reply.
+    allocation_failed: bool,
     /// Whether a reply has been deposited.
     replied: bool,
     /// Whether the waiter abandoned the channel.
@@ -62,10 +66,20 @@ pub extern "C" fn hew_reply_channel_new() -> *mut WasmReplyChannel {
         refs: 1,
         value: ptr::null_mut(),
         value_size: 0,
+        allocation_failed: false,
         replied: false,
         cancelled: false,
         orphaned: false,
     }))
+}
+
+unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
+    #[cfg(test)]
+    if FORCE_REPLY_ALLOC_FAILURE.swap(0, Ordering::AcqRel) == 1 {
+        return ptr::null_mut();
+    }
+    // SAFETY: delegates to libc allocator for the requested reply payload size.
+    unsafe { libc::malloc(size) }
 }
 
 /// Retain an additional reference to a WASM reply channel.
@@ -109,8 +123,10 @@ pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void
             return;
         }
         if size > 0 && !value.is_null() {
-            let buf = libc::malloc(size);
-            if !buf.is_null() {
+            let buf = alloc_reply_buffer(size);
+            if buf.is_null() {
+                (*ch).allocation_failed = true;
+            } else {
                 ptr::copy_nonoverlapping(value.cast::<u8>(), buf.cast::<u8>(), size);
                 (*ch).value = buf;
                 (*ch).value_size = size;
@@ -150,6 +166,10 @@ pub(crate) unsafe fn reply_take(ch: *mut WasmReplyChannel) -> *mut c_void {
     unsafe {
         let result = (*ch).value;
         (*ch).value = ptr::null_mut();
+        if result.is_null() && (*ch).allocation_failed {
+            (*ch).allocation_failed = false;
+            crate::set_last_error("hew_reply: allocation failed while copying reply payload");
+        }
         result
     }
 }
@@ -514,6 +534,31 @@ mod tests {
             assert!(!result.is_null());
             assert_eq!(*result, 99);
             libc::free(result.cast());
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn reply_wait_surfaces_copy_oom() {
+        crate::hew_clear_error();
+        let ch = hew_reply_channel_new();
+        let value = 99_i32;
+
+        // SAFETY: test exercises the forced-allocation-failure path on a live channel.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            FORCE_REPLY_ALLOC_FAILURE.store(1, Ordering::Release);
+            hew_reply(
+                ch,
+                (&raw const value).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            );
+            let result = hew_reply_wait(ch);
+            assert!(result.is_null());
+            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
+                .to_str()
+                .unwrap();
+            assert!(err.contains("allocation failed"));
             hew_reply_channel_free(ch);
         }
     }

@@ -34,6 +34,16 @@ pub struct HewChannelPair {
     receiver: *mut HewChannelReceiver,
 }
 
+fn decode_i64_payload(payload: &[u8], context: &str) -> Result<i64, ()> {
+    let bytes: [u8; 8] = payload.try_into().map_err(|_| {
+        crate::set_last_error(format!(
+            "{context}: expected 8-byte int payload, got {} bytes",
+            payload.len()
+        ));
+    })?;
+    Ok(i64::from_le_bytes(bytes))
+}
+
 impl std::fmt::Debug for HewChannelPair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewChannelPair")
@@ -249,9 +259,14 @@ pub unsafe extern "C" fn hew_channel_recv_int(
     cabi_guard!(receiver.is_null() || out_valid.is_null(), 0);
     // SAFETY: receiver and out_valid are valid per caller contract.
     if let Ok(item) = unsafe { (*receiver).rx.recv() } {
+        if let Ok(value) = decode_i64_payload(&item, "hew_channel_recv_int") {
+            // SAFETY: out_valid is valid per caller contract.
+            unsafe { *out_valid = 1 };
+            return value;
+        }
         // SAFETY: out_valid is valid per caller contract.
-        unsafe { *out_valid = 1 };
-        return i64::from_le_bytes(item.try_into().unwrap_or([0; 8]));
+        unsafe { *out_valid = 0 };
+        return 0;
     }
     // SAFETY: out_valid is valid per caller contract.
     unsafe { *out_valid = 0 };
@@ -276,9 +291,15 @@ pub unsafe extern "C" fn hew_channel_try_recv_int(
     // SAFETY: receiver and out_valid are valid per caller contract.
     match unsafe { (*receiver).rx.try_recv() } {
         Ok(item) => {
-            // SAFETY: out_valid is valid per caller contract.
-            unsafe { *out_valid = 1 };
-            i64::from_le_bytes(item.try_into().unwrap_or([0; 8]))
+            if let Ok(value) = decode_i64_payload(&item, "hew_channel_try_recv_int") {
+                // SAFETY: out_valid is valid per caller contract.
+                unsafe { *out_valid = 1 };
+                value
+            } else {
+                // SAFETY: out_valid is valid per caller contract.
+                unsafe { *out_valid = 0 };
+                0
+            }
         }
         Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
             // SAFETY: out_valid is valid per caller contract.
@@ -604,6 +625,68 @@ mod tests {
             let val = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
             assert_eq!(valid, 1, "message available should set valid=1");
             assert_eq!(val, 99);
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn try_recv_int_rejects_non_i64_payloads() {
+        crate::hew_clear_error();
+        let pair = hew_channel_new(4);
+        // SAFETY: test owns both channel handles and only sends stack-backed test payloads.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let payload = b"oops\0";
+            hew_channel_send(tx, payload.as_ptr().cast());
+
+            let mut valid = -1;
+            let value = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 0);
+            assert_eq!(value, 0);
+            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                err.contains("expected 8-byte int payload"),
+                "unexpected error: {err}"
+            );
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn recv_int_rejects_non_i64_payloads() {
+        crate::hew_clear_error();
+        let pair = hew_channel_new(4);
+        // SAFETY: test owns both channel handles and only sends stack-backed test payloads.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let payload = b"bad";
+            hew_channel_send(tx, payload.as_ptr().cast());
+
+            let mut valid = -1;
+            let value = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 0);
+            assert_eq!(value, 0);
+            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                err.contains("expected 8-byte int payload"),
+                "unexpected error: {err}"
+            );
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);

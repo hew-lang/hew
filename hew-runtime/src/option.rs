@@ -7,7 +7,8 @@ use std::ffi::{c_char, c_void};
 
 use crate::tagged_union::{
     decode_const_ptr, decode_f64, decode_i32, decode_i64, decode_mut_ptr, encode_f64, encode_i32,
-    encode_i64, is_variant_0, is_variant_1, TAG_VARIANT_0, TAG_VARIANT_1,
+    encode_i64, is_known_variant, is_not_variant_0, is_variant_0, is_variant_1, TAG_VARIANT_0,
+    TAG_VARIANT_1,
 };
 
 /// ABI-stable `Option<T>` representation.
@@ -22,6 +23,29 @@ pub struct HewOption {
     _pad: i32,
     /// Payload (interpreted based on element type).
     pub value: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OptionTag {
+    None,
+    Some,
+}
+
+fn classify_tag(tag: i32, context: &str) -> Result<OptionTag, ()> {
+    if is_variant_0(tag) {
+        Ok(OptionTag::None)
+    } else if is_not_variant_0(tag) {
+        Ok(OptionTag::Some)
+    } else {
+        debug_assert!(!is_known_variant(tag));
+        crate::set_last_error(format!("{context}: invalid option tag {tag}"));
+        Err(())
+    }
+}
+
+fn abort_invalid_tag(tag: i32, context: &str) -> ! {
+    eprintln!("hew: {context}: invalid option tag {tag}");
+    std::process::abort();
 }
 
 // ---------------------------------------------------------------------------
@@ -75,13 +99,19 @@ pub extern "C" fn hew_option_some_f64(val: f64) -> HewOption {
 /// Returns 1 if the option is `Some`, 0 if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_is_some(opt: HewOption) -> i32 {
-    i32::from(is_variant_1(opt.tag))
+    match classify_tag(opt.tag, "hew_option_is_some") {
+        Ok(OptionTag::Some) => 1,
+        Ok(OptionTag::None) | Err(()) => 0,
+    }
 }
 
 /// Returns 1 if the option is `None`, 0 if `Some`.
 #[no_mangle]
 pub extern "C" fn hew_option_is_none(opt: HewOption) -> i32 {
-    i32::from(is_variant_0(opt.tag))
+    match classify_tag(opt.tag, "hew_option_is_none") {
+        Ok(OptionTag::None) => 1,
+        Ok(OptionTag::Some) | Err(()) => 0,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -91,31 +121,40 @@ pub extern "C" fn hew_option_is_none(opt: HewOption) -> i32 {
 /// Unwrap the i32 value. Aborts if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_unwrap_i32(opt: HewOption) -> i32 {
-    if is_variant_0(opt.tag) {
-        eprintln!("hew: unwrap called on None");
-        std::process::abort();
+    match classify_tag(opt.tag, "hew_option_unwrap_i32") {
+        Ok(OptionTag::Some) => decode_i32(opt.value),
+        Ok(OptionTag::None) => {
+            eprintln!("hew: unwrap called on None");
+            std::process::abort();
+        }
+        Err(()) => abort_invalid_tag(opt.tag, "hew_option_unwrap_i32"),
     }
-    decode_i32(opt.value)
 }
 
 /// Unwrap the i64 value. Aborts if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_unwrap_i64(opt: HewOption) -> i64 {
-    if is_variant_0(opt.tag) {
-        eprintln!("hew: unwrap called on None");
-        std::process::abort();
+    match classify_tag(opt.tag, "hew_option_unwrap_i64") {
+        Ok(OptionTag::Some) => decode_i64(opt.value),
+        Ok(OptionTag::None) => {
+            eprintln!("hew: unwrap called on None");
+            std::process::abort();
+        }
+        Err(()) => abort_invalid_tag(opt.tag, "hew_option_unwrap_i64"),
     }
-    decode_i64(opt.value)
 }
 
 /// Unwrap the f64 value. Aborts if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_unwrap_f64(opt: HewOption) -> f64 {
-    if is_variant_0(opt.tag) {
-        eprintln!("hew: unwrap called on None");
-        std::process::abort();
+    match classify_tag(opt.tag, "hew_option_unwrap_f64") {
+        Ok(OptionTag::Some) => decode_f64(opt.value),
+        Ok(OptionTag::None) => {
+            eprintln!("hew: unwrap called on None");
+            std::process::abort();
+        }
+        Err(()) => abort_invalid_tag(opt.tag, "hew_option_unwrap_f64"),
     }
-    decode_f64(opt.value)
 }
 
 // ---------------------------------------------------------------------------
@@ -125,30 +164,27 @@ pub extern "C" fn hew_option_unwrap_f64(opt: HewOption) -> f64 {
 /// Unwrap i32 or return `default` if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_unwrap_or_i32(opt: HewOption, default: i32) -> i32 {
-    if is_variant_0(opt.tag) {
-        default
-    } else {
-        decode_i32(opt.value)
+    match classify_tag(opt.tag, "hew_option_unwrap_or_i32") {
+        Ok(OptionTag::None) | Err(()) => default,
+        Ok(OptionTag::Some) => decode_i32(opt.value),
     }
 }
 
 /// Unwrap i64 or return `default` if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_unwrap_or_i64(opt: HewOption, default: i64) -> i64 {
-    if is_variant_0(opt.tag) {
-        default
-    } else {
-        decode_i64(opt.value)
+    match classify_tag(opt.tag, "hew_option_unwrap_or_i64") {
+        Ok(OptionTag::None) | Err(()) => default,
+        Ok(OptionTag::Some) => decode_i64(opt.value),
     }
 }
 
 /// Unwrap f64 or return `default` if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_unwrap_or_f64(opt: HewOption, default: f64) -> f64 {
-    if is_variant_0(opt.tag) {
-        default
-    } else {
-        decode_f64(opt.value)
+    match classify_tag(opt.tag, "hew_option_unwrap_or_f64") {
+        Ok(OptionTag::None) | Err(()) => default,
+        Ok(OptionTag::Some) => decode_f64(opt.value),
     }
 }
 
@@ -162,11 +198,12 @@ pub unsafe extern "C" fn hew_option_unwrap_or_ptr(
     opt: HewOption,
     default: *mut c_void,
 ) -> *mut c_void {
-    if is_variant_0(opt.tag) {
-        default
-    } else {
-        // SAFETY: caller guarantees stored pointer validity.
-        decode_mut_ptr(opt.value)
+    match classify_tag(opt.tag, "hew_option_unwrap_or_ptr") {
+        Ok(OptionTag::None) | Err(()) => default,
+        Ok(OptionTag::Some) => {
+            // SAFETY: caller guarantees stored pointer validity.
+            decode_mut_ptr(opt.value)
+        }
     }
 }
 
@@ -184,26 +221,27 @@ pub unsafe extern "C" fn hew_option_map_i32(
     opt: HewOption,
     f: unsafe extern "C" fn(i32) -> i32,
 ) -> HewOption {
-    if is_variant_0(opt.tag) {
-        opt
-    } else {
-        // SAFETY: caller guarantees `f` is valid.
-        let result = unsafe { f(decode_i32(opt.value)) };
-        HewOption {
-            tag: TAG_VARIANT_1,
-            _pad: 0,
-            value: encode_i32(result),
+    match classify_tag(opt.tag, "hew_option_map_i32") {
+        Ok(OptionTag::None) => opt,
+        Ok(OptionTag::Some) => {
+            // SAFETY: caller guarantees `f` is valid.
+            let result = unsafe { f(decode_i32(opt.value)) };
+            HewOption {
+                tag: TAG_VARIANT_1,
+                _pad: 0,
+                value: encode_i32(result),
+            }
         }
+        Err(()) => hew_option_none(),
     }
 }
 
 /// Returns 1 if `Some` and the value equals `needle`, 0 otherwise.
 #[no_mangle]
 pub extern "C" fn hew_option_contains_i32(opt: HewOption, needle: i32) -> i32 {
-    if is_variant_0(opt.tag) {
-        0
-    } else {
-        i32::from(decode_i32(opt.value) == needle)
+    match classify_tag(opt.tag, "hew_option_contains_i32") {
+        Ok(OptionTag::None) | Err(()) => 0,
+        Ok(OptionTag::Some) => i32::from(decode_i32(opt.value) == needle),
     }
 }
 
@@ -214,7 +252,10 @@ pub extern "C" fn hew_option_contains_i32(opt: HewOption, needle: i32) -> i32 {
 /// Both the stored pointer and `needle` must be valid C strings (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_option_contains_str(opt: HewOption, needle: *const c_char) -> i32 {
-    if is_variant_0(opt.tag) {
+    if matches!(
+        classify_tag(opt.tag, "hew_option_contains_str"),
+        Ok(OptionTag::None) | Err(())
+    ) {
         return 0;
     }
     let stored = decode_const_ptr::<c_char>(opt.value);
@@ -270,6 +311,25 @@ pub extern "C" fn hew_option_take(opt: *mut HewOption) -> HewOption {
 mod tests {
     use super::*;
     use std::ffi::CString;
+
+    unsafe extern "C" fn plus_one(value: i32) -> i32 {
+        value + 1
+    }
+
+    fn last_error_string() -> Option<String> {
+        let ptr = crate::hew_last_error();
+        if ptr.is_null() {
+            None
+        } else {
+            Some(
+                // SAFETY: `hew_last_error()` returns a stable NUL-terminated string for the thread.
+                unsafe { std::ffi::CStr::from_ptr(ptr) }
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            )
+        }
+    }
 
     // -- None constructor --
 
@@ -360,6 +420,68 @@ mod tests {
         let opt = hew_option_some_i32(0);
         assert_eq!(hew_option_is_some(opt), 1);
         assert_eq!(hew_option_is_none(opt), 0);
+    }
+
+    #[test]
+    fn invalid_tag_sets_error_and_fails_closed() {
+        crate::hew_clear_error();
+        let opt = HewOption {
+            tag: 7,
+            _pad: 0,
+            value: encode_i32(42),
+        };
+
+        assert_eq!(hew_option_is_some(opt), 0);
+        assert_eq!(hew_option_is_none(opt), 0);
+        assert_eq!(hew_option_unwrap_or_i32(opt, 9), 9);
+        assert_eq!(hew_option_contains_i32(opt, 42), 0);
+
+        let err = last_error_string().expect("invalid tag must surface an error");
+        assert!(
+            err.contains("invalid option tag 7"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_tag_map_returns_none_and_sets_error() {
+        crate::hew_clear_error();
+        let opt = HewOption {
+            tag: -1,
+            _pad: 0,
+            value: encode_i32(5),
+        };
+
+        // SAFETY: `plus_one` is a valid extern function for this mapping test.
+        let mapped = unsafe { hew_option_map_i32(opt, plus_one) };
+        assert_eq!(mapped.tag, TAG_VARIANT_0);
+
+        let err = last_error_string().expect("invalid tag must surface an error");
+        assert!(
+            err.contains("invalid option tag -1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_tag_contains_str_sets_error() {
+        crate::hew_clear_error();
+        let needle = CString::new("hello").unwrap();
+        let opt = HewOption {
+            tag: 3,
+            _pad: 0,
+            value: needle.as_ptr() as usize as u64,
+        };
+
+        // SAFETY: this test passes valid NUL-terminated strings for both operands.
+        let contains = unsafe { hew_option_contains_str(opt, needle.as_ptr()) };
+        assert_eq!(contains, 0);
+
+        let err = last_error_string().expect("invalid tag must surface an error");
+        assert!(
+            err.contains("invalid option tag 3"),
+            "unexpected error: {err}"
+        );
     }
 
     // -- Unwrap on Some --

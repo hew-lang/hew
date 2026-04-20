@@ -4,9 +4,37 @@
 //! extern "C"` FFI functions. State is thread-local (one generator per thread).
 
 use std::cell::RefCell;
+use std::mem;
 
 // Re-export HewVec so we can accept vec pointers.
-pub use hew_cabi::vec::HewVec;
+pub use hew_cabi::vec::{ElemKind, HewVec};
+
+unsafe fn validate_vec_shape(
+    v: *mut HewVec,
+    expected_size: usize,
+    context: &str,
+) -> Option<*mut HewVec> {
+    if v.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees `v` is a live HewVec when non-null.
+    let vec = unsafe { &*v };
+    if vec.elem_kind != ElemKind::Plain {
+        crate::set_last_error(format!(
+            "{context}: expected plain elements, got {:?}",
+            vec.elem_kind
+        ));
+        return None;
+    }
+    if vec.elem_size != expected_size {
+        crate::set_last_error(format!(
+            "{context}: expected elem_size {expected_size}, got {}",
+            vec.elem_size
+        ));
+        return None;
+    }
+    Some(v)
+}
 
 // ── MT19937 constants ───────────────────────────────────────────────────────
 const N: usize = 624;
@@ -279,7 +307,8 @@ pub unsafe extern "C" fn hew_random_randint(lo: i64, hi: i64) -> i64 {
     reason = "shuffle index is bounded by vec length"
 )]
 pub unsafe extern "C" fn hew_random_shuffle_i64(v: *mut HewVec) {
-    if v.is_null() {
+    // SAFETY: caller guarantees `v` is either null or a valid HewVec pointer.
+    if unsafe { validate_vec_shape(v, mem::size_of::<i64>(), "hew_random_shuffle_i64") }.is_none() {
         return;
     }
     // SAFETY: caller guarantees `v` is valid.
@@ -319,7 +348,8 @@ pub unsafe extern "C" fn hew_random_shuffle_i64(v: *mut HewVec) {
     reason = "bisect index is bounded by vec length"
 )]
 pub unsafe extern "C" fn hew_random_choices_vec(v: *mut HewVec, total: f64, _n: i64) -> i64 {
-    if v.is_null() {
+    // SAFETY: caller guarantees `v` is either null or a valid HewVec pointer.
+    if unsafe { validate_vec_shape(v, mem::size_of::<f64>(), "hew_random_choices_vec") }.is_none() {
         return 0;
     }
     // SAFETY: caller guarantees `v` is valid and contains f64 data.
@@ -410,5 +440,44 @@ mod tests {
         let vals1: Vec<f64> = (0..10).map(|_| st1.random()).collect();
         let vals2: Vec<f64> = (0..10).map(|_| st2.random()).collect();
         assert_ne!(vals1, vals2, "two independently seeded MTs should diverge");
+    }
+
+    #[test]
+    fn shuffle_i64_rejects_wrong_elem_shape() {
+        crate::hew_clear_error();
+        // SAFETY: test creates and frees the vector around the invalid-shape call.
+        unsafe {
+            let v = crate::vec::hew_vec_new_str();
+            hew_random_shuffle_i64(v);
+            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                err.contains("expected plain elements"),
+                "unexpected error: {err}"
+            );
+            crate::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn choices_vec_rejects_wrong_elem_size() {
+        crate::hew_clear_error();
+        // SAFETY: test creates and frees the vector around the invalid-shape call.
+        unsafe {
+            let v = crate::vec::hew_vec_new();
+            let result = hew_random_choices_vec(v, 1.0, 1);
+            assert_eq!(result, 0);
+            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                err.contains("expected elem_size 8"),
+                "unexpected error: {err}"
+            );
+            crate::vec::hew_vec_free(v);
+        }
     }
 }

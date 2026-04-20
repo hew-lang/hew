@@ -46,28 +46,6 @@ pub fn hover(
 
     let type_output = type_output?;
 
-    // Check if the word is a known function — show its full signature.
-    if let Some(word) = &word {
-        if let Some(sig) = type_output.fn_sigs.get(word.as_str()) {
-            let hover_text = format_fn_signature(word, sig);
-            return Some(HoverResult {
-                contents: hover_text,
-                span: None,
-            });
-        }
-
-        // Check if the word is a known type definition.
-        if let Some(type_def) =
-            method_resolution::lookup_type_def(&type_output.type_defs, word.as_str())
-        {
-            let hover_text = format_type_def_hover(&type_def);
-            return Some(HoverResult {
-                contents: hover_text,
-                span: None,
-            });
-        }
-    }
-
     if let Some((word, word_span)) = &simple_word {
         if let Some(result) =
             hover_param_at_offset(parse_result, &type_output.fn_sigs, word, *word_span, offset)
@@ -112,6 +90,24 @@ pub fn hover(
                 end: span_key.end,
             }),
         }
+    })
+    .or_else(|| {
+        word.as_ref().and_then(|word| {
+            if let Some(sig) = type_output.fn_sigs.get(word.as_str()) {
+                let hover_text = format_fn_signature(word, sig);
+                return Some(HoverResult {
+                    contents: hover_text,
+                    span: None,
+                });
+            }
+
+            method_resolution::lookup_type_def(&type_output.type_defs, word.as_str()).map(
+                |type_def| HoverResult {
+                    contents: format_type_def_hover(&type_def),
+                    span: None,
+                },
+            )
+        })
     })
 }
 
@@ -1623,6 +1619,21 @@ mod tests {
                 end: offset + "flag".len()
             })
         );
+    }
+
+    #[test]
+    fn hover_prefers_local_over_global_name() {
+        let source = "fn value() -> int { 1 }\nfn main() {\n    let value = 2;\n    value\n}";
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.rfind("value").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert!(
+            result.contents.contains(": int"),
+            "local hover should render the local binding type: {result:?}"
+        );
+        assert_eq!(result.span.map(|span| span.start), Some(offset));
     }
 
     #[test]

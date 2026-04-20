@@ -113,6 +113,9 @@ fn find_all_references_raw(
     offset: usize,
 ) -> Option<(String, Vec<Span>)> {
     let (name, _) = simple_word_at_offset(source, offset)?;
+    let local_definition =
+        crate::definition::find_local_binding_definition(source, parse_result, &name, offset)
+            .or_else(|| crate::definition::find_param_definition(parse_result, &name, offset));
 
     let mut spans = Vec::new();
     for (item, _span) in &parse_result.program.items {
@@ -121,7 +124,7 @@ fn find_all_references_raw(
 
     // For top-level names (functions, actors, types, receive handlers, fields),
     // return all references globally.
-    if is_top_level_name(parse_result, &name) {
+    if local_definition.is_none() && is_top_level_name(parse_result, &name) {
         if spans.is_empty() {
             return None;
         }
@@ -1777,6 +1780,21 @@ mod tests {
                 "first `x` refs should not include spans after the second `let x` at {second_let_x_offset}"
             );
         }
+    }
+
+    #[test]
+    fn local_shadowing_global_stays_local() {
+        let source = "fn foo() -> int { 1 }\nfn main() {\n    let foo = 2;\n    foo\n}";
+        let pr = parse(source);
+        let local_offset = source.find("let foo").unwrap() + 4;
+        let (_name, spans) =
+            find_all_references(source, &pr, local_offset).expect("should find local references");
+        let main_start = source.find("fn main").unwrap();
+        assert_eq!(spans.len(), 2, "expected local definition and use only");
+        assert!(
+            spans.iter().all(|span| span.start >= main_start),
+            "local references must stay inside main(): {spans:?}"
+        );
     }
 
     #[test]

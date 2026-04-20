@@ -4,6 +4,7 @@
 //! `hew-lsp` (native LSP server) and `hew-wasm` (browser-based editor support).
 //! All result types use plain offsets and strings rather than LSP protocol types.
 
+mod ast_visit;
 pub mod calls;
 pub mod code_actions;
 pub mod completions;

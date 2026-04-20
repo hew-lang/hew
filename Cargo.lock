@@ -1442,6 +1442,7 @@ dependencies = [
  "hew-parser",
  "hew-types",
  "serde",
+ "tracing",
 ]
 
 [[package]]

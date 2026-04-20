@@ -17,3 +17,4 @@ hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 serde = { version = "1", features = ["derive"] }
+tracing = "0.1"

@@ -90,7 +90,7 @@ fn resolve_eval_target(
 
 /// Run the `hew eval` subcommand.
 pub fn cmd_eval(args: &crate::args::EvalArgs) {
-    let timeout = resolve_eval_timeout(args.timeout);
+    let timeout = resolve_eval_timeout(&args.timeout);
     let target_spec = resolve_eval_target(args.target.as_deref()).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
@@ -108,8 +108,8 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
     execute_eval_request(&request, timeout, target);
 }
 
-fn resolve_eval_timeout(seconds: u64) -> std::time::Duration {
-    crate::process::timeout_from_seconds(seconds).unwrap_or_else(|e| {
+fn resolve_eval_timeout(raw: &str) -> std::time::Duration {
+    crate::util::parse_timeout(raw).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     })

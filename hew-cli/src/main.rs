@@ -127,7 +127,7 @@ fn cmd_build(a: &args::BuildArgs) {
 
 fn cmd_run(a: &args::RunArgs) {
     let input = a.input.display().to_string();
-    let timeout = resolve_optional_timeout(a.timeout);
+    let timeout = resolve_optional_timeout(a.timeout.as_deref());
     let options = a.to_compile_options();
     let target = resolve_run_target(options.target.as_deref(), a.profile);
     let artifact = compile_temp_run_artifact(&input, &options, &target);
@@ -139,9 +139,8 @@ fn cmd_run(a: &args::RunArgs) {
     exit_after_native_run(artifact, &a.program_args, timeout, a.profile);
 }
 
-fn resolve_optional_timeout(seconds: Option<u64>) -> Option<std::time::Duration> {
-    seconds
-        .map(crate::process::timeout_from_seconds)
+fn resolve_optional_timeout(raw: Option<&str>) -> Option<std::time::Duration> {
+    raw.map(crate::util::parse_timeout)
         .transpose()
         .unwrap_or_else(|e| {
             eprintln!("Error: {e}");

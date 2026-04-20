@@ -2,7 +2,7 @@
 //!
 //! # Subcommands
 //!
-//! * `hew playground verify [--manifest PATH] [--timeout SECS]`
+//! * `hew playground verify [--manifest PATH] [--timeout DURATION]`
 //!
 //!   Iterates the curated manifest, compiles and runs every example whose
 //!   `capabilities.wasi` is `"runnable"`, and checks its stdout against the
@@ -78,7 +78,7 @@ pub fn cmd_playground(args: &crate::args::PlaygroundCommand) {
 }
 
 fn cmd_verify(args: &crate::args::PlaygroundVerifyArgs) {
-    let timeout = crate::process::timeout_from_seconds(args.timeout).unwrap_or_else(|e| {
+    let timeout = crate::util::parse_timeout(&args.timeout).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });

@@ -16,7 +16,7 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         crate::args::TestFormat::Text => output::OutputFormat::Text,
         crate::args::TestFormat::Junit => output::OutputFormat::Junit,
     };
-    let timeout = crate::process::timeout_from_seconds(args.timeout).unwrap_or_else(|e| {
+    let timeout = crate::util::parse_timeout(&args.timeout).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });

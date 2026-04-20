@@ -11,6 +11,8 @@ mod workspace;
 use self::handlers::navigation::rename_error_to_jsonrpc;
 #[cfg(test)]
 use self::handlers::text_sync::build_initialize_result_from_caps_json;
+#[cfg(test)]
+use self::handlers::workspace::extract_run_test_name;
 // Items used by the LanguageServer impl handlers.
 use self::analysis::{close_document_and_dependents, refresh_document_and_dependents};
 use self::convert::{analysis_tokens_to_lsp, symbol_info_to_doc_symbol, to_lsp_completion};
@@ -278,19 +280,6 @@ async fn wait_for_output_task(
         })?;
     }
     Ok(())
-}
-
-fn extract_run_test_name(arguments: &[Value]) -> Option<String> {
-    let first = arguments.first()?;
-    match first {
-        Value::String(name) if !name.is_empty() => Some(name.clone()),
-        Value::Object(map) => map
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-            .map(str::to_string),
-        _ => None,
-    }
 }
 
 fn hew_cli_executable() -> PathBuf {
@@ -778,25 +767,14 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
-        let uri = params.text_document.uri;
-        let Some(doc) = self.documents.get(&uri) else {
-            return Ok(None);
-        };
-
-        let lenses = build_code_lenses(&doc.source, &doc.line_offsets, &doc.parse_result);
-        Ok(non_empty(lenses))
+        Ok(handlers::workspace::code_lens(self, &params))
     }
 
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
-        let roots = self
-            .workspace_roots
-            .read()
-            .map_or_else(|_| Vec::new(), |roots| roots.clone());
-        let symbols = collect_project_workspace_symbols(&self.documents, &roots, &params.query);
-        Ok(non_empty(symbols))
+        Ok(handlers::workspace::symbol(self, &params))
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
@@ -853,29 +831,7 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
-        match params.command.as_str() {
-            RUN_TEST_COMMAND => {
-                let Some(test_name) = extract_run_test_name(&params.arguments) else {
-                    self.client
-                        .show_message(
-                            MessageType::ERROR,
-                            "Cannot run Hew test: missing test name argument.",
-                        )
-                        .await;
-                    return Ok(None);
-                };
-                self.run_test_command(&test_name).await
-            }
-            other => {
-                self.client
-                    .log_message(
-                        MessageType::WARNING,
-                        format!("Unsupported command `{other}`"),
-                    )
-                    .await;
-                Ok(None)
-            }
-        }
+        handlers::workspace::execute_command(self, params).await
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {

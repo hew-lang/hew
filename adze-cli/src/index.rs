@@ -8,6 +8,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+const SUPPORTED_INDEX_VERSION: u64 = 1;
+
+#[derive(Debug, Deserialize)]
+struct IndexConfig {
+    version: u64,
+}
+
 /// A single version entry in the package index.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IndexEntry {
@@ -135,6 +142,8 @@ pub enum IndexError {
     Io(std::io::Error),
     /// A JSON line could not be parsed.
     Parse(String),
+    /// The index uses an unsupported version.
+    UnsupportedVersion(u64),
 }
 
 impl fmt::Display for IndexError {
@@ -142,6 +151,12 @@ impl fmt::Display for IndexError {
         match self {
             Self::Io(e) => write!(f, "index I/O error: {e}"),
             Self::Parse(msg) => write!(f, "index parse error: {msg}"),
+            Self::UnsupportedVersion(version) => {
+                write!(
+                    f,
+                    "unsupported index version {version}; expected {SUPPORTED_INDEX_VERSION}"
+                )
+            }
         }
     }
 }
@@ -150,7 +165,7 @@ impl std::error::Error for IndexError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(e) => Some(e),
-            Self::Parse(_) => None,
+            Self::Parse(_) | Self::UnsupportedVersion(_) => None,
         }
     }
 }
@@ -188,12 +203,34 @@ pub fn read_index_entries(
     index_root: &Path,
     package_name: &str,
 ) -> Result<Vec<IndexEntry>, IndexError> {
+    validate_index_root(index_root)?;
     let path = index_root.join(index_path(package_name));
     if !path.exists() {
         return Ok(Vec::new());
     }
     let content = std::fs::read_to_string(&path)?;
     parse_index_lines(&content)
+}
+
+/// Validate the root metadata for a local index checkout.
+///
+/// # Errors
+///
+/// Returns [`IndexError::UnsupportedVersion`] when the index advertises an
+/// unknown version.
+pub fn validate_index_root(index_root: &Path) -> Result<(), IndexError> {
+    let config_path = index_root.join("config.json");
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&config_path)?;
+    let config: IndexConfig = serde_json::from_str(&content)
+        .map_err(|e| IndexError::Parse(format!("config.json: {e}")))?;
+    if config.version != SUPPORTED_INDEX_VERSION {
+        return Err(IndexError::UnsupportedVersion(config.version));
+    }
+    Ok(())
 }
 
 /// Parse JSON lines into index entries.
@@ -357,6 +394,19 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].vers, "1.0.0");
         assert_eq!(entries[1].vers, "1.1.0");
+    }
+
+    #[test]
+    fn validate_index_root_rejects_unknown_version() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"version":99}"#).unwrap();
+
+        let error = validate_index_root(dir.path()).unwrap_err();
+        assert!(matches!(error, IndexError::UnsupportedVersion(99)));
+        assert_eq!(
+            error.to_string(),
+            "unsupported index version 99; expected 1"
+        );
     }
 
     #[test]

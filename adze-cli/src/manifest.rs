@@ -297,11 +297,25 @@ pub fn save_manifest(path: &Path, manifest: &HewManifest) -> Result<(), Manifest
 ///
 /// Returns [`ManifestError`] when the manifest cannot be read, parsed,
 /// serialized, or written.
-pub fn add_dependency(path: &Path, name: &str, version: &str) -> Result<(), ManifestError> {
+pub fn add_dependency(
+    path: &Path,
+    name: &str,
+    version: &str,
+    registry: Option<&str>,
+) -> Result<(), ManifestError> {
     let mut manifest = parse_manifest(path)?;
-    manifest
-        .dependencies
-        .insert(name.to_string(), DepSpec::Version(version.to_string()));
+    let dep_spec = match registry {
+        Some(registry) => DepSpec::Table(DepTable {
+            version: version.to_string(),
+            optional: None,
+            features: None,
+            default_features: None,
+            registry: Some(registry.to_string()),
+            path: None,
+        }),
+        None => DepSpec::Version(version.to_string()),
+    };
+    manifest.dependencies.insert(name.to_string(), dep_spec);
     save_manifest(path, &manifest)
 }
 
@@ -434,7 +448,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hew.toml");
         write_default_manifest(&path, "myproject").unwrap();
-        add_dependency(&path, "ecosystem::db::postgres", "1.0").unwrap();
+        add_dependency(&path, "ecosystem::db::postgres", "1.0", None).unwrap();
         let m = parse_manifest(&path).unwrap();
         assert_eq!(
             m.dependencies["ecosystem::db::postgres"].version_req(),
@@ -447,11 +461,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hew.toml");
         write_default_manifest(&path, "myproject").unwrap();
-        add_dependency(&path, "std::net::http", "1.0").unwrap();
-        add_dependency(&path, "std::net::http", "2.0").unwrap();
+        add_dependency(&path, "std::net::http", "1.0", None).unwrap();
+        add_dependency(&path, "std::net::http", "2.0", None).unwrap();
         let m = parse_manifest(&path).unwrap();
         assert_eq!(m.dependencies["std::net::http"].version_req(), "2.0");
         assert_eq!(m.dependencies.len(), 1);
+    }
+
+    #[test]
+    fn add_dependency_persists_named_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hew.toml");
+        write_default_manifest(&path, "myproject").unwrap();
+        add_dependency(&path, "corp::auth", "1.0", Some("internal")).unwrap();
+
+        let manifest = parse_manifest(&path).unwrap();
+        match &manifest.dependencies["corp::auth"] {
+            DepSpec::Table(table) => {
+                assert_eq!(table.version, "1.0");
+                assert_eq!(table.registry.as_deref(), Some("internal"));
+            }
+            DepSpec::Version(_) => panic!("expected table dependency"),
+        }
     }
 
     #[test]

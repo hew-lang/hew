@@ -33,7 +33,7 @@ impl Registry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            root: crate::config::home_dir().join(".adze").join("packages"),
+            root: crate::paths::adze_home().join("packages"),
         }
     }
 

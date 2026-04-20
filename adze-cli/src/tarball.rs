@@ -4,13 +4,15 @@
 //! timestamps. Respects `include`/`exclude` globs from the manifest.
 
 use std::fmt;
-use std::io::{self, Read};
-use std::path::Path;
-
-use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::path::{Component, Path, PathBuf};
 
 /// Maximum compressed tarball size (10 MB).
 pub const MAX_TARBALL_SIZE: usize = 10 * 1024 * 1024;
+
+/// Maximum cumulative number of bytes extracted from a tarball.
+pub const MAX_UNPACKED_TARBALL_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Errors from tarball operations.
 #[derive(Debug)]
@@ -18,9 +20,13 @@ pub enum TarballError {
     /// An I/O error occurred.
     Io(io::Error),
     /// The tarball exceeds the maximum allowed size.
-    TooLarge { size: usize, max: usize },
+    TooLarge { size: u64, max: u64 },
     /// The tarball is missing `hew.toml`.
     MissingManifest,
+    /// The tarball contains an invalid path.
+    InvalidPath(PathBuf),
+    /// The tarball contains an unsupported entry type.
+    UnsupportedEntryType { path: PathBuf, kind: String },
 }
 
 impl fmt::Display for TarballError {
@@ -34,6 +40,20 @@ impl fmt::Display for TarballError {
                 )
             }
             Self::MissingManifest => write!(f, "tarball must contain hew.toml"),
+            Self::InvalidPath(path) => {
+                write!(
+                    f,
+                    "tarball contains invalid entry path `{}`",
+                    path.display()
+                )
+            }
+            Self::UnsupportedEntryType { path, kind } => {
+                write!(
+                    f,
+                    "tarball entry `{}` has unsupported type {kind}",
+                    path.display()
+                )
+            }
         }
     }
 }
@@ -42,7 +62,10 @@ impl std::error::Error for TarballError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(e) => Some(e),
-            Self::TooLarge { .. } | Self::MissingManifest => None,
+            Self::TooLarge { .. }
+            | Self::MissingManifest
+            | Self::InvalidPath(_)
+            | Self::UnsupportedEntryType { .. } => None,
         }
     }
 }
@@ -80,17 +103,15 @@ pub fn pack(
     exclude: &[String],
     include: &[String],
 ) -> Result<PackResult, TarballError> {
-    // Collect and sort files for reproducibility.
-    let mut files = Vec::new();
-    collect_files(dir, dir, &mut files, exclude, include)?;
+    let mut files = crate::package_fs::collect_package_files(dir)?;
+    files.retain(|path| include.is_empty() || matches_any_glob(path, include));
+    files.retain(|path| !matches_any_glob(path, exclude));
     files.sort();
 
-    // Verify hew.toml is present.
     if !files.iter().any(|f| f == "hew.toml") {
         return Err(TarballError::MissingManifest);
     }
 
-    // Build tar archive in memory.
     let mut tar_data = Vec::new();
     {
         let mut builder = tar::Builder::new(&mut tar_data);
@@ -111,24 +132,19 @@ pub fn pack(
         builder.finish()?;
     }
 
-    // Compress with zstd at maximum level — publish is a one-time cost.
     let compressed = zstd::encode_all(tar_data.as_slice(), 22)
         .map_err(|e| TarballError::Io(io::Error::other(e)))?;
 
     if compressed.len() > MAX_TARBALL_SIZE {
         return Err(TarballError::TooLarge {
-            size: compressed.len(),
-            max: MAX_TARBALL_SIZE,
+            size: compressed.len() as u64,
+            max: MAX_TARBALL_SIZE as u64,
         });
     }
 
-    // Compute checksum of compressed data.
-    let hash = Sha256::digest(&compressed);
-    let checksum = format!("sha256:{hash:x}");
-
     Ok(PackResult {
+        checksum: crate::package_fs::sha256_prefixed(&compressed),
         data: compressed,
-        checksum,
     })
 }
 
@@ -136,37 +152,110 @@ pub fn pack(
 ///
 /// # Errors
 ///
-/// Returns [`TarballError::Io`] on I/O failures.
+/// Returns [`TarballError`] when the archive is malformed, unsafe, or exceeds
+/// the cumulative extraction limit.
 pub fn unpack(data: &[u8], target: &Path) -> Result<(), TarballError> {
+    unpack_with_limit(data, target, MAX_UNPACKED_TARBALL_BYTES)
+}
+
+fn unpack_with_limit(data: &[u8], target: &Path, max_bytes: u64) -> Result<(), TarballError> {
+    struct CleanupOnError {
+        path: PathBuf,
+        active: bool,
+    }
+
+    impl Drop for CleanupOnError {
+        fn drop(&mut self) {
+            if self.active {
+                let _ = std::fs::remove_dir_all(&self.path);
+            }
+        }
+    }
+
+    let target_existed = target.exists();
     std::fs::create_dir_all(target)?;
+    let mut cleanup = CleanupOnError {
+        path: target.to_path_buf(),
+        active: !target_existed,
+    };
 
-    let decompressed = zstd::decode_all(data)
+    let decoder = zstd::Decoder::new(std::io::Cursor::new(data))
         .map_err(|e| TarballError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+    let mut archive = tar::Archive::new(decoder);
+    let mut total_bytes = 0_u64;
+    let mut found_manifest = false;
 
-    let mut archive = tar::Archive::new(decompressed.as_slice());
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let path = entry.path()?.into_owned();
+        let original_path = entry.path()?.into_owned();
+        let normalized_path = normalize_unpack_path(&original_path)?;
+        let target_path = target.join(&normalized_path);
+        let entry_type = entry.header().entry_type();
 
-        // Security: reject absolute paths and path traversal.
-        if path.is_absolute()
-            || path
-                .components()
-                .any(|c| c == std::path::Component::ParentDir)
-        {
+        if normalized_path == Path::new("hew.toml") {
+            found_manifest = true;
+        }
+
+        if entry_type.is_dir() {
+            std::fs::create_dir_all(&target_path)?;
             continue;
         }
 
-        let target_path = target.join(&path);
+        if !entry_type.is_file() {
+            return Err(TarballError::UnsupportedEntryType {
+                path: normalized_path,
+                kind: format!("{entry_type:?}"),
+            });
+        }
+
         if let Some(parent) = target_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        let mut contents = Vec::new();
-        entry.read_to_end(&mut contents)?;
-        std::fs::write(&target_path, contents)?;
+        let mut output = File::create(&target_path)?;
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let bytes_read = entry.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            total_bytes += bytes_read as u64;
+            if total_bytes > max_bytes {
+                return Err(TarballError::TooLarge {
+                    size: total_bytes,
+                    max: max_bytes,
+                });
+            }
+            output.write_all(&buffer[..bytes_read])?;
+        }
+        output.sync_all()?;
     }
+
+    if !found_manifest {
+        return Err(TarballError::MissingManifest);
+    }
+
+    cleanup.active = false;
     Ok(())
+}
+
+fn normalize_unpack_path(path: &Path) -> Result<PathBuf, TarballError> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(TarballError::InvalidPath(path.to_path_buf()));
+            }
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        return Err(TarballError::InvalidPath(path.to_path_buf()));
+    }
+
+    Ok(normalized)
 }
 
 /// Compute the SHA-256 checksum of raw bytes.
@@ -174,58 +263,9 @@ pub fn unpack(data: &[u8], target: &Path) -> Result<(), TarballError> {
 /// Returns `"sha256:{hex}"` format.
 #[must_use]
 pub fn checksum_bytes(data: &[u8]) -> String {
-    let hash = Sha256::digest(data);
-    format!("sha256:{hash:x}")
+    crate::package_fs::sha256_prefixed(data)
 }
 
-// ── helpers ─────────────────────────────────────────────────────────────────
-
-/// Recursively collect relative file paths, applying include/exclude filters.
-fn collect_files(
-    root: &Path,
-    dir: &Path,
-    files: &mut Vec<String>,
-    exclude: &[String],
-    include: &[String],
-) -> Result<(), io::Error> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-
-        // Always skip these directories.
-        if matches!(name_str.as_ref(), ".git" | "target" | ".adze") {
-            continue;
-        }
-
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(root, &path, files, exclude, include)?;
-        } else {
-            let rel = path.strip_prefix(root).map_err(io::Error::other)?;
-            let rel_str = rel
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join("/");
-
-            // Apply include filter (if set, only matching files are included).
-            if !include.is_empty() && !matches_any_glob(&rel_str, include) {
-                continue;
-            }
-
-            // Apply exclude filter.
-            if matches_any_glob(&rel_str, exclude) {
-                continue;
-            }
-
-            files.push(rel_str);
-        }
-    }
-    Ok(())
-}
-
-/// Simple glob matching (supports `*` and `**`).
 fn matches_any_glob(path: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|pat| glob_match(pat, path))
 }
@@ -251,7 +291,6 @@ fn glob_match_parts(pattern: &[&str], path: &[&str]) -> bool {
         return path.is_empty();
     }
     if pattern[0] == "**" {
-        // ** matches zero or more path segments.
         for i in 0..=path.len() {
             if glob_match_parts(&pattern[1..], &path[i..]) {
                 return true;
@@ -269,7 +308,6 @@ fn glob_match_parts(pattern: &[&str], path: &[&str]) -> bool {
     }
 }
 
-/// Match a single path segment against a pattern segment (supports `*`).
 fn segment_match(pattern: &str, segment: &str) -> bool {
     if pattern == "*" {
         return true;
@@ -277,7 +315,6 @@ fn segment_match(pattern: &str, segment: &str) -> bool {
     if !pattern.contains('*') {
         return pattern == segment;
     }
-    // Simple wildcard: split on * and check prefix/suffix.
     let parts: Vec<&str> = pattern.split('*').collect();
     if parts.len() == 2 {
         segment.starts_with(parts[0]) && segment.ends_with(parts[1])
@@ -305,6 +342,57 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+
+    fn compressed_tar(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut tar_data = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_data);
+            for (path, contents) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(contents.len() as u64);
+                header.set_mode(0o644);
+                header.set_uid(0);
+                header.set_gid(0);
+                header.set_mtime(0);
+                header.set_cksum();
+                builder.append_data(&mut header, *path, *contents).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        zstd::encode_all(tar_data.as_slice(), 22).unwrap()
+    }
+
+    fn compressed_raw_tar(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
+        fn write_octal(field: &mut [u8], value: u64) {
+            let width = field.len();
+            let formatted = format!("{value:0width$o}\0", width = width - 1);
+            field[..formatted.len()].copy_from_slice(formatted.as_bytes());
+        }
+
+        let mut tar_data = Vec::new();
+        for (path, contents) in entries {
+            let mut header = [0_u8; 512];
+            header[..path.len()].copy_from_slice(path);
+            write_octal(&mut header[100..108], 0o644);
+            write_octal(&mut header[108..116], 0);
+            write_octal(&mut header[116..124], 0);
+            write_octal(&mut header[124..136], contents.len() as u64);
+            write_octal(&mut header[136..148], 0);
+            header[148..156].fill(b' ');
+            header[156] = b'0';
+            header[257..263].copy_from_slice(b"ustar\0");
+            header[263..265].copy_from_slice(b"00");
+            let checksum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
+            let checksum_str = format!("{checksum:06o}\0 ");
+            header[148..156].copy_from_slice(checksum_str.as_bytes());
+            tar_data.extend_from_slice(&header);
+            tar_data.extend_from_slice(contents);
+            let padding = (512 - (contents.len() % 512)) % 512;
+            tar_data.extend(std::iter::repeat_n(0, padding));
+        }
+        tar_data.extend([0_u8; 1024]);
+        zstd::encode_all(tar_data.as_slice(), 22).unwrap()
     }
 
     #[test]
@@ -377,6 +465,53 @@ mod tests {
     }
 
     #[test]
+    fn unpack_rejects_missing_manifest() {
+        let tarball = compressed_tar(&[("main.hew", b"fn main() {}")]);
+        let dst = tempfile::tempdir().unwrap();
+        let result = unpack(&tarball, dst.path());
+        assert!(matches!(result, Err(TarballError::MissingManifest)));
+    }
+
+    #[test]
+    fn unpack_rejects_absolute_path() {
+        let tarball =
+            compressed_raw_tar(&[(b"/hew.toml", b"[package]\nname=\"x\"\nversion=\"1.0.0\"\n")]);
+        let dst = tempfile::tempdir().unwrap();
+        let result = unpack(&tarball, dst.path());
+        assert!(
+            matches!(result, Err(TarballError::InvalidPath(path)) if path == Path::new("/hew.toml"))
+        );
+    }
+
+    #[test]
+    fn unpack_rejects_parent_dir_path() {
+        let tarball = compressed_raw_tar(&[
+            (b"hew.toml", b"[package]\nname=\"x\"\nversion=\"1.0.0\"\n"),
+            (b"../escape.txt", b"nope"),
+        ]);
+        let dst = tempfile::tempdir().unwrap();
+        let result = unpack(&tarball, dst.path());
+        assert!(
+            matches!(result, Err(TarballError::InvalidPath(path)) if path == Path::new("../escape.txt"))
+        );
+    }
+
+    #[test]
+    fn unpack_rejects_cumulative_size_over_limit() {
+        let large = vec![b'a'; 4096];
+        let tarball = compressed_tar(&[
+            ("hew.toml", b"[package]\nname=\"x\"\nversion=\"1.0.0\"\n"),
+            ("blob.bin", large.as_slice()),
+        ]);
+        let dst = tempfile::tempdir().unwrap();
+        let result = unpack_with_limit(&tarball, dst.path(), 1024);
+        assert!(matches!(
+            result,
+            Err(TarballError::TooLarge { max: 1024, .. })
+        ));
+    }
+
+    #[test]
     fn pack_skips_git_and_target() {
         let src = setup_package_dir();
         std::fs::create_dir(src.path().join(".git")).unwrap();
@@ -397,7 +532,7 @@ mod tests {
         let data = b"hello world";
         let cksum = checksum_bytes(data);
         assert!(cksum.starts_with("sha256:"));
-        assert_eq!(cksum.len(), 71); // sha256: + 64 hex chars
+        assert_eq!(cksum.len(), 71);
     }
 
     #[test]
@@ -415,8 +550,6 @@ mod tests {
 
     #[test]
     fn pack_checksum_matches_tarball_bytes() {
-        // Verify that the checksum returned by pack() matches
-        // what checksum_bytes() computes on the tarball data.
         let src = setup_package_dir();
         let result = pack(src.path(), &[], &[]).unwrap();
         let recomputed = checksum_bytes(&result.data);

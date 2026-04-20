@@ -56,9 +56,7 @@ impl From<std::io::Error> for CredentialError {
 /// Return the path to `~/.adze/credentials.toml`.
 #[must_use]
 pub fn credentials_path() -> PathBuf {
-    crate::config::home_dir()
-        .join(".adze")
-        .join("credentials.toml")
+    crate::paths::adze_home().join("credentials.toml")
 }
 
 /// Load credentials from the file.
@@ -80,19 +78,28 @@ pub fn load_credentials(path: &Path) -> Result<CredentialsFile, CredentialError>
 ///
 /// Returns [`CredentialError::Io`] on I/O failures.
 pub fn save_credentials(path: &Path, creds: &CredentialsFile) -> Result<(), CredentialError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let content = toml::to_string(creds).map_err(|e| CredentialError::Parse(e.to_string()))?;
-    std::fs::write(path, &content)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
+    crate::atomic_fs::write_atomic(path, content.as_bytes(), 0o600)?;
     Ok(())
+}
+
+/// Update the default registry credentials while preserving named registries.
+///
+/// # Errors
+///
+/// Returns [`CredentialError`] when the existing file cannot be parsed or the
+/// updated credentials cannot be written.
+pub fn update_default_credentials(
+    path: &Path,
+    credentials: Credentials,
+) -> Result<(), CredentialError> {
+    let mut existing = match load_credentials(path) {
+        Ok(creds) => creds,
+        Err(CredentialError::NotLoggedIn) => CredentialsFile::default(),
+        Err(err) => return Err(err),
+    };
+    existing.registry = Some(credentials);
+    save_credentials(path, &existing)
 }
 
 /// Get the API token for the default registry.
@@ -177,5 +184,44 @@ mod tests {
             get_named_token(&path, "other"),
             Err(CredentialError::NotLoggedIn)
         ));
+    }
+
+    #[test]
+    fn update_default_credentials_preserves_named_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.toml");
+
+        let mut registries = std::collections::BTreeMap::new();
+        registries.insert(
+            "internal".to_string(),
+            Credentials {
+                token: "tok_named".to_string(),
+                github_user: Some("bob".to_string()),
+            },
+        );
+        save_credentials(
+            &path,
+            &CredentialsFile {
+                registry: Some(Credentials {
+                    token: "tok_old".to_string(),
+                    github_user: Some("alice".to_string()),
+                }),
+                registries: Some(registries),
+            },
+        )
+        .unwrap();
+
+        update_default_credentials(
+            &path,
+            Credentials {
+                token: "tok_new".to_string(),
+                github_user: Some("carol".to_string()),
+            },
+        )
+        .unwrap();
+
+        let loaded = load_credentials(&path).unwrap();
+        assert_eq!(loaded.registry.unwrap().token, "tok_new");
+        assert_eq!(loaded.registries.unwrap()["internal"].token, "tok_named");
     }
 }

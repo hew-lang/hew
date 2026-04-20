@@ -6,8 +6,15 @@
 
 pub mod client;
 pub mod config;
+pub mod credentials;
 pub mod happy_eyeballs;
 pub mod index;
 pub mod manifest;
 pub mod registry;
 pub mod resolver;
+pub mod signing;
+pub mod tarball;
+
+mod atomic_fs;
+mod package_fs;
+mod paths;

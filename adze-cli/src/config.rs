@@ -4,15 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Return the user's home directory, preferring `$HOME` (Unix) then
-/// `%USERPROFILE%` (Windows).  Falls back to `std::env::temp_dir()` so
-/// callers always get a usable path regardless of platform.
-#[must_use]
-pub fn home_dir() -> PathBuf {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_or_else(|_| std::env::temp_dir(), PathBuf::from)
-}
+pub use crate::paths::home_dir;
 
 /// Top-level configuration loaded from `~/.adze/config.toml`.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -129,18 +121,18 @@ pub fn registry_path(config: &AdzeConfig) -> PathBuf {
 
 /// Return the path to `~/.adze/config.toml`.
 fn config_path() -> PathBuf {
-    home_dir().join(".adze").join("config.toml")
+    crate::paths::adze_home().join("config.toml")
 }
 
 /// Return the default registry path (`$HOME/.adze/packages`).
 fn default_registry_path() -> PathBuf {
-    home_dir().join(".adze").join("packages")
+    crate::paths::adze_home().join("packages")
 }
 
 /// Return the path to the local package index cache (`$HOME/.adze/index/`).
 #[must_use]
 pub fn local_index_path() -> PathBuf {
-    home_dir().join(".adze").join("index")
+    crate::paths::adze_home().join("index")
 }
 
 /// Expand a leading `~` or `~/` to the user's home directory.

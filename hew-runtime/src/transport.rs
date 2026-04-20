@@ -13,11 +13,11 @@ use std::io::{ErrorKind, Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    LazyLock, OnceLock, RwLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    LazyLock, OnceLock,
 };
 
-use crate::lifetime::poison_safe::PoisonSafe;
+use crate::lifetime::poison_safe::{PoisonSafe, PoisonSafeRw};
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
@@ -367,65 +367,113 @@ fn record_tcp_error_kind(kind: ErrorKind) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnLookupError {
+    Poisoned { transport: &'static str },
+}
+
+fn report_conn_table_poison(
+    transport: &'static str,
+    reported: &AtomicBool,
+    action: &'static str,
+    conn: Option<c_int>,
+) {
+    let message = match conn {
+        Some(conn) => {
+            format!("{transport} transport connection table poisoned while {action} conn {conn}")
+        }
+        None => format!("{transport} transport connection table poisoned while {action}"),
+    };
+    if !reported.swap(true, Ordering::Relaxed) {
+        tracing::error!(transport, action, conn_id = ?conn, "{message}");
+    }
+    set_last_error(message);
+}
+
 /// Internal state for the TCP transport.
 struct TcpTransport {
     listen_sock: Option<Socket>,
-    conns: RwLock<Vec<Option<Socket>>>,
+    conns: PoisonSafeRw<Vec<Option<Socket>>>,
+    conn_poison_reported: AtomicBool,
 }
 
 impl TcpTransport {
     fn new() -> Self {
         Self {
             listen_sock: None,
-            conns: RwLock::new((0..MAX_CONNS).map(|_| None).collect()),
+            conns: PoisonSafeRw::new((0..MAX_CONNS).map(|_| None).collect()),
+            conn_poison_reported: AtomicBool::new(false),
         }
     }
 
     fn store_conn(&self, sock: Socket) -> c_int {
-        let Ok(mut conns) = self.conns.write() else {
-            return HEW_CONN_INVALID;
-        };
-        for (i, slot) in conns.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(sock);
-                #[expect(clippy::cast_possible_truncation, reason = "MAX_CONNS fits in c_int")]
-                #[expect(clippy::cast_possible_wrap, reason = "MAX_CONNS fits in c_int")]
-                return i as c_int;
+        if let Ok(conn) = self.conns.write(|conns| {
+            for (i, slot) in conns.iter_mut().enumerate() {
+                if slot.is_none() {
+                    *slot = Some(sock);
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "MAX_CONNS fits in c_int"
+                    )]
+                    #[expect(clippy::cast_possible_wrap, reason = "MAX_CONNS fits in c_int")]
+                    return i as c_int;
+                }
             }
+            HEW_CONN_INVALID
+        }) {
+            conn
+        } else {
+            report_conn_table_poison("tcp", &self.conn_poison_reported, "storing conn", None);
+            HEW_CONN_INVALID
         }
-        HEW_CONN_INVALID
     }
 
-    fn get_conn(&self, id: c_int) -> Option<Socket> {
+    fn get_conn(&self, id: c_int) -> Result<Option<Socket>, ConnLookupError> {
         if id < 0 {
-            return None;
+            return Ok(None);
         }
         #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
         let idx = id as usize;
-        let conns = self.conns.read().ok()?;
-        conns
-            .get(idx)
-            .and_then(Option::as_ref)
-            .and_then(|sock| sock.try_clone().ok())
+        self.conns
+            .read(|conns| {
+                conns
+                    .get(idx)
+                    .and_then(Option::as_ref)
+                    .and_then(|sock| sock.try_clone().ok())
+            })
+            .map_err(|_| {
+                report_conn_table_poison("tcp", &self.conn_poison_reported, "looking up", Some(id));
+                ConnLookupError::Poisoned { transport: "tcp" }
+            })
     }
 
     fn remove_conn(&self, id: c_int) {
         if id >= 0 {
             #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
             let idx = id as usize;
-            if idx < MAX_CONNS {
-                if let Ok(mut conns) = self.conns.write() {
-                    // Shutdown the socket before dropping it so that any
-                    // cloned file descriptors (held by reader threads) are
-                    // woken from blocking recv calls. Without this, dropping
-                    // only decrements the refcount and the clone keeps the
-                    // socket alive, causing join() on the reader thread to
-                    // deadlock.
-                    if let Some(ref sock) = conns[idx] {
-                        let _ = sock.shutdown(Shutdown::Both);
-                    }
-                    conns[idx] = None;
-                }
+            if idx < MAX_CONNS
+                && self
+                    .conns
+                    .write(|conns| {
+                        // Shutdown the socket before dropping it so that any
+                        // cloned file descriptors (held by reader threads) are
+                        // woken from blocking recv calls. Without this, dropping
+                        // only decrements the refcount and the clone keeps the
+                        // socket alive, causing join() on the reader thread to
+                        // deadlock.
+                        if let Some(ref sock) = conns[idx] {
+                            let _ = sock.shutdown(Shutdown::Both);
+                        }
+                        conns[idx] = None;
+                    })
+                    .is_err()
+            {
+                report_conn_table_poison(
+                    "tcp",
+                    &self.conn_poison_reported,
+                    "removing conn",
+                    Some(id),
+                );
             }
         }
     }
@@ -646,8 +694,9 @@ unsafe extern "C" fn tcp_send(
     cabi_guard!(impl_ptr.is_null() || data.is_null(), -1);
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
-    let Some(sock) = tcp.get_conn(conn) else {
-        return -1;
+    let sock = match tcp.get_conn(conn) {
+        Ok(Some(sock)) => sock,
+        Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
     };
     // SAFETY: data is valid for `len` bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
@@ -663,8 +712,9 @@ unsafe extern "C" fn tcp_recv(
     cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
-    let Some(sock) = tcp.get_conn(conn) else {
-        return -1;
+    let sock = match tcp.get_conn(conn) {
+        Ok(Some(sock)) => sock,
+        Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
     };
     // SAFETY: buf is valid for buf_size bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
@@ -1136,7 +1186,8 @@ pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *m
 mod tests {
     use super::*;
     use std::ffi::CString;
-    use std::sync::Arc;
+    use std::io;
+    use std::sync::{Arc, Mutex, PoisonError};
 
     fn run_in_isolated_test_process(test_name: &str, env_key: &str, body: impl FnOnce()) {
         if std::env::var_os(env_key).is_some() {
@@ -1200,6 +1251,60 @@ mod tests {
         });
     }
 
+    #[derive(Clone, Default)]
+    struct TestLogBuffer {
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl TestLogBuffer {
+        fn contents(&self) -> String {
+            let bytes = self.bytes.lock().unwrap_or_else(PoisonError::into_inner);
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    }
+
+    struct TestLogWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl io::Write for TestLogWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TestLogBuffer {
+        type Writer = TestLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            TestLogWriter {
+                bytes: Arc::clone(&self.bytes),
+            }
+        }
+    }
+
+    fn last_error_string() -> Option<String> {
+        let ptr = crate::hew_last_error();
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: `hew_last_error` returns a NUL-terminated pointer valid until
+        // the next error update on this thread.
+        Some(
+            unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
     fn read_rust_allocs(payload: &[u8]) -> u64 {
         let (server, mut client) = connected_streams();
         let handle = register_stream(server);
@@ -1242,6 +1347,57 @@ mod tests {
         // SAFETY: `hew_tcp_read` transfers ownership of the vec to the caller.
         unsafe { crate::vec::hew_vec_free(bytes) };
         remove_stream(handle);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn tcp_get_conn_reports_poison_instead_of_missing_conn() {
+        let _guard = crate::runtime_test_guard();
+        crate::hew_clear_error();
+        let tcp = TcpTransport::new();
+        assert!(matches!(tcp.get_conn(0), Ok(None)));
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tcp.conns.access(|conns| {
+                conns[0] = None;
+                panic!("intentional poison");
+            });
+        }));
+
+        let logs = TestLogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_writer(logs.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(matches!(
+                tcp.get_conn(0),
+                Err(ConnLookupError::Poisoned { transport: "tcp" })
+            ));
+            assert!(matches!(
+                tcp.get_conn(0),
+                Err(ConnLookupError::Poisoned { transport: "tcp" })
+            ));
+        });
+
+        let last_error =
+            last_error_string().expect("poisoned lookup should update the thread-local error");
+        assert!(
+            last_error.contains("tcp transport connection table poisoned while looking up conn 0"),
+            "unexpected last error: {last_error}"
+        );
+        let log_output = logs.contents();
+        assert_eq!(
+            log_output
+                .matches("tcp transport connection table poisoned while looking up conn 0")
+                .count(),
+            1,
+            "poison should be logged once, saw logs:\n{log_output}"
+        );
+        crate::hew_clear_error();
     }
 
     #[test]
@@ -1654,17 +1810,19 @@ pub extern "C" fn hew_connection_is_valid(handle: c_int) -> bool {
 #[cfg(unix)]
 mod unix_transport {
     use super::{
-        accept_with_optional_timeout, c_char, c_int, c_void, framed_recv, framed_send, CStr,
-        Domain, HewTransport, HewTransportOps, RwLock, SockAddr, Socket, Type, HEW_CONN_INVALID,
-        MAX_CONNS,
+        accept_with_optional_timeout, c_char, c_int, c_void, framed_recv, framed_send,
+        report_conn_table_poison, CStr, ConnLookupError, Domain, HewTransport, HewTransportOps,
+        PoisonSafeRw, SockAddr, Socket, Type, HEW_CONN_INVALID, MAX_CONNS,
     };
     use std::net::Shutdown;
+    use std::sync::atomic::AtomicBool;
 
     /// Internal state for the Unix domain socket transport.
     struct UnixTransport {
         listen_sock: Option<Socket>,
         path: Option<String>,
-        conns: RwLock<Vec<Option<Socket>>>,
+        conns: PoisonSafeRw<Vec<Option<Socket>>>,
+        conn_poison_reported: AtomicBool,
     }
 
     impl UnixTransport {
@@ -1672,53 +1830,79 @@ mod unix_transport {
             Self {
                 listen_sock: None,
                 path: None,
-                conns: RwLock::new((0..MAX_CONNS).map(|_| None).collect()),
+                conns: PoisonSafeRw::new((0..MAX_CONNS).map(|_| None).collect()),
+                conn_poison_reported: AtomicBool::new(false),
             }
         }
 
         fn store_conn(&self, sock: Socket) -> c_int {
-            let Ok(mut conns) = self.conns.write() else {
-                return HEW_CONN_INVALID;
-            };
-            for (i, slot) in conns.iter_mut().enumerate() {
-                if slot.is_none() {
-                    *slot = Some(sock);
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "MAX_CONNS fits in c_int"
-                    )]
-                    #[expect(clippy::cast_possible_wrap, reason = "MAX_CONNS fits in c_int")]
-                    return i as c_int;
+            if let Ok(conn) = self.conns.write(|conns| {
+                for (i, slot) in conns.iter_mut().enumerate() {
+                    if slot.is_none() {
+                        *slot = Some(sock);
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "MAX_CONNS fits in c_int"
+                        )]
+                        #[expect(clippy::cast_possible_wrap, reason = "MAX_CONNS fits in c_int")]
+                        return i as c_int;
+                    }
                 }
+                HEW_CONN_INVALID
+            }) {
+                conn
+            } else {
+                report_conn_table_poison("unix", &self.conn_poison_reported, "storing conn", None);
+                HEW_CONN_INVALID
             }
-            HEW_CONN_INVALID
         }
 
-        fn get_conn(&self, id: c_int) -> Option<Socket> {
+        fn get_conn(&self, id: c_int) -> Result<Option<Socket>, ConnLookupError> {
             if id < 0 {
-                return None;
+                return Ok(None);
             }
             #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
             let idx = id as usize;
-            let conns = self.conns.read().ok()?;
-            conns
-                .get(idx)
-                .and_then(Option::as_ref)
-                .and_then(|sock| sock.try_clone().ok())
+            self.conns
+                .read(|conns| {
+                    conns
+                        .get(idx)
+                        .and_then(Option::as_ref)
+                        .and_then(|sock| sock.try_clone().ok())
+                })
+                .map_err(|_| {
+                    report_conn_table_poison(
+                        "unix",
+                        &self.conn_poison_reported,
+                        "looking up",
+                        Some(id),
+                    );
+                    ConnLookupError::Poisoned { transport: "unix" }
+                })
         }
 
         fn remove_conn(&self, id: c_int) {
             if id >= 0 {
                 #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
                 let idx = id as usize;
-                if idx < MAX_CONNS {
-                    if let Ok(mut conns) = self.conns.write() {
-                        // Shutdown before dropping — see TcpTransport::remove_conn.
-                        if let Some(ref sock) = conns[idx] {
-                            let _ = sock.shutdown(Shutdown::Both);
-                        }
-                        conns[idx] = None;
-                    }
+                if idx < MAX_CONNS
+                    && self
+                        .conns
+                        .write(|conns| {
+                            // Shutdown before dropping — see TcpTransport::remove_conn.
+                            if let Some(ref sock) = conns[idx] {
+                                let _ = sock.shutdown(Shutdown::Both);
+                            }
+                            conns[idx] = None;
+                        })
+                        .is_err()
+                {
+                    report_conn_table_poison(
+                        "unix",
+                        &self.conn_poison_reported,
+                        "removing conn",
+                        Some(id),
+                    );
                 }
             }
         }
@@ -1814,8 +1998,9 @@ mod unix_transport {
         cabi_guard!(impl_ptr.is_null() || data.is_null(), -1);
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
-        let Some(sock) = ut.get_conn(conn) else {
-            return -1;
+        let sock = match ut.get_conn(conn) {
+            Ok(Some(sock)) => sock,
+            Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
         };
         // SAFETY: data is valid for `len` bytes per caller contract.
         let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
@@ -1831,8 +2016,9 @@ mod unix_transport {
         cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
-        let Some(sock) = ut.get_conn(conn) else {
-            return -1;
+        let sock = match ut.get_conn(conn) {
+            Ok(Some(sock)) => sock,
+            Ok(None) | Err(ConnLookupError::Poisoned { .. }) => return -1,
         };
         // SAFETY: buf is valid for buf_size bytes per caller contract.
         let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };

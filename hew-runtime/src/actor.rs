@@ -6,6 +6,7 @@
 
 use crate::lifetime::live_actors;
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
@@ -415,6 +416,31 @@ pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
     live_actors::is_actor_live(actor)
 }
 
+/// Stable runtime actor identifier.
+pub type ActorId = u64;
+
+/// Typed outcome for draining a set of actors to quiescence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrainOutcome {
+    /// Every requested actor was already gone or drained successfully.
+    Drained,
+    /// At least one requested actor was still live or crashed at the deadline.
+    Incomplete {
+        still_live: Vec<ActorId>,
+        crashed: Vec<ActorId>,
+    },
+}
+
+/// C ABI representation of [`DrainOutcome`].
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct DrainOutcomeRepr {
+    pub still_live_ptr: *mut ActorId,
+    pub still_live_len: usize,
+    pub crashed_ptr: *mut ActorId,
+    pub crashed_len: usize,
+}
+
 #[inline]
 fn actor_free_state_is_quiescent(state: i32) -> bool {
     state == HewActorState::Stopped as i32
@@ -453,6 +479,38 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
     };
     live_actors::push_deferred_actor_free_thread(handle);
     0
+}
+
+/// Run the `hew_actor_free` pre-untrack cleanup ordering for a drained actor.
+///
+/// # Safety
+///
+/// `actor` must be valid, quiescent, and still tracked in `LIVE_ACTORS`.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
+    // SAFETY: caller guarantees `actor` is valid and quiescent.
+    let a = unsafe { &*actor };
+    crate::timer_periodic::cancel_all_timers_for_actor(actor);
+    let actor_id = a.id;
+    crate::link::remove_all_links_for_actor(actor_id, actor);
+    crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
+    // SAFETY: actor is still tracked here, so named-node cleanup can resolve it.
+    unsafe { crate::hew_node::unregister_actor_names(actor_id) };
+}
+
+/// Finish the `hew_actor_free` cleanup path after the actor has been untracked.
+///
+/// # Safety
+///
+/// `actor` must be valid, quiescent, and no longer tracked in `LIVE_ACTORS`.
+unsafe fn finalize_quiescent_actor_cleanup(actor: *mut HewActor, state: i32) {
+    if state != HewActorState::Crashed as i32 {
+        // SAFETY: caller guarantees the actor is quiescent and not dispatching.
+        unsafe { call_terminate_fn(actor) };
+    }
+
+    // SAFETY: caller guarantees the actor remains valid and is no longer dispatching.
+    unsafe { free_actor_resources(actor) };
 }
 
 /// Free all remaining tracked actors. Called during scheduler shutdown
@@ -1479,16 +1537,8 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     // Cancel periodic timers, links, and monitors BEFORE untracking so
     // that any in-flight timer callback or propagation that checks
     // LIVE_ACTORS still sees this actor as live and can safely bail out.
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::timer_periodic::cancel_all_timers_for_actor(actor);
-        let actor_id = a.id;
-        crate::link::remove_all_links_for_actor(actor_id, actor);
-        crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
-        // SAFETY: actor is still live here, so named-node cleanup can
-        // resolve the owning node and unregister any names bound to this PID.
-        unsafe { crate::hew_node::unregister_actor_names(actor_id) };
-    }
+    // SAFETY: the wait loop above proved the actor is quiescent and still tracked.
+    unsafe { prepare_quiescent_actor_for_cleanup(actor) };
 
     // Remove from live tracking. If the actor was already consumed by
     // cleanup_all_actors (returns false), skip freeing to avoid
@@ -1498,15 +1548,260 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
         return -1;
     }
 
-    // Run terminate for actors freed while still Idle (never explicitly
-    // stopped). terminate_called prevents double-execution.
-    if state != HewActorState::Crashed as i32 {
-        // SAFETY: actor is valid, not being dispatched (wait loop above).
-        unsafe { call_terminate_fn(actor) };
+    // SAFETY: actor is quiescent, no longer tracked, and not being dispatched.
+    unsafe { finalize_quiescent_actor_cleanup(actor, state) };
+    0
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_outcome_from_lists(
+    mut still_live: Vec<ActorId>,
+    mut crashed: Vec<ActorId>,
+) -> DrainOutcome {
+    still_live.sort_unstable();
+    crashed.sort_unstable();
+    if still_live.is_empty() && crashed.is_empty() {
+        DrainOutcome::Drained
+    } else {
+        DrainOutcome::Incomplete {
+            still_live,
+            crashed,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn collect_pending_actor(id: ActorId) -> Option<(ActorId, *mut HewActor)> {
+    live_actors::get_actor_ptr_by_id(id).map(|actor| (id, actor))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
+    (delay.saturating_mul(2)).min(std::time::Duration::from_millis(50))
+}
+
+/// Cooperatively stop a set of native actors and wait for quiescence with a shared deadline.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutcome {
+    if ids.is_empty() {
+        return DrainOutcome::Drained;
     }
 
-    // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
-    unsafe { free_actor_resources(actor) };
+    let mut seen = HashSet::with_capacity(ids.len());
+    let mut pending: Vec<(ActorId, *mut HewActor)> = ids
+        .iter()
+        .copied()
+        .filter(|id| seen.insert(*id))
+        .filter_map(collect_pending_actor)
+        .collect();
+
+    for &(_, actor) in &pending {
+        // SAFETY: actor came from LIVE_ACTORS and remains owned by the runtime.
+        unsafe { hew_actor_stop(actor) };
+    }
+
+    let mut crashed = Vec::new();
+    let mut backoff = std::time::Duration::from_millis(1);
+
+    loop {
+        let mut index = 0;
+        while index < pending.len() {
+            let (actor_id, expected) = pending[index];
+            let state = with_live_actor_by_id(actor_id, expected, |actor| {
+                actor.actor_state.load(Ordering::Acquire)
+            });
+            match state {
+                None => {
+                    pending.swap_remove(index);
+                }
+                Some(state) if state == HewActorState::Crashed as i32 => {
+                    crashed.push(actor_id);
+                    pending.swap_remove(index);
+                }
+                Some(state) if actor_free_state_is_quiescent(state) => {
+                    if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
+                        // SAFETY: the actor is quiescent and has just been removed from LIVE_ACTORS.
+                        unsafe {
+                            prepare_quiescent_actor_for_cleanup(actor);
+                            finalize_quiescent_actor_cleanup(actor, state);
+                        }
+                    }
+                    pending.swap_remove(index);
+                }
+                Some(_) => {
+                    index += 1;
+                }
+            }
+        }
+
+        if pending.is_empty() {
+            return drain_outcome_from_lists(Vec::new(), crashed);
+        }
+
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        let sleep_for = backoff.min(deadline.saturating_duration_since(now));
+        if !sleep_for.is_zero() {
+            std::thread::sleep(sleep_for);
+        }
+        backoff = drain_backoff_duration(backoff);
+    }
+
+    let mut still_live = Vec::with_capacity(pending.len());
+    for (actor_id, expected) in pending {
+        let state = with_live_actor_by_id(actor_id, expected, |actor| {
+            actor.actor_state.load(Ordering::Acquire)
+        });
+        match state {
+            None => {}
+            Some(state) if state == HewActorState::Crashed as i32 => crashed.push(actor_id),
+            Some(state) if actor_free_state_is_quiescent(state) => {
+                if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
+                    // SAFETY: the actor is quiescent and has just been removed from LIVE_ACTORS.
+                    unsafe {
+                        prepare_quiescent_actor_for_cleanup(actor);
+                        finalize_quiescent_actor_cleanup(actor, state);
+                    }
+                }
+            }
+            Some(_) => still_live.push(actor_id),
+        }
+    }
+
+    drain_outcome_from_lists(still_live, crashed)
+}
+
+/// WASM-TODO: drain_actors primitive pending WASM scheduler integration.
+#[cfg(target_arch = "wasm32")]
+pub fn drain_actors(ids: &[ActorId], _deadline: std::time::Instant) -> DrainOutcome {
+    let mut still_live = ids.to_vec();
+    still_live.sort_unstable();
+    still_live.dedup();
+    if still_live.is_empty() {
+        DrainOutcome::Drained
+    } else {
+        DrainOutcome::Incomplete {
+            still_live,
+            crashed: Vec::new(),
+        }
+    }
+}
+
+fn actor_ids_to_malloc(ids: &[ActorId]) -> Result<*mut ActorId, &'static str> {
+    if ids.is_empty() {
+        return Ok(ptr::null_mut());
+    }
+
+    let Some(bytes) = ids.len().checked_mul(std::mem::size_of::<ActorId>()) else {
+        return Err("hew_actor_drain_set: actor id list size overflow");
+    };
+    // SAFETY: malloc returns an allocation large enough for `ids.len()` ActorIds or null on failure.
+    let out = unsafe { libc::malloc(bytes) }.cast::<ActorId>();
+    if out.is_null() {
+        return Err("hew_actor_drain_set: failed to allocate outcome buffer");
+    }
+
+    // SAFETY: `out` points to `ids.len()` initialized ActorId slots allocated above.
+    unsafe { ptr::copy_nonoverlapping(ids.as_ptr(), out, ids.len()) };
+    Ok(out)
+}
+
+fn write_drain_outcome_repr(
+    out: &mut DrainOutcomeRepr,
+    outcome: DrainOutcome,
+) -> Result<(), &'static str> {
+    *out = DrainOutcomeRepr::default();
+    let (still_live, crashed) = match outcome {
+        DrainOutcome::Drained => (Vec::new(), Vec::new()),
+        DrainOutcome::Incomplete {
+            still_live,
+            crashed,
+        } => (still_live, crashed),
+    };
+
+    let still_live_ptr = actor_ids_to_malloc(&still_live)?;
+    let crashed_ptr = match actor_ids_to_malloc(&crashed) {
+        Ok(ptr) => ptr,
+        Err(err) => {
+            // SAFETY: `still_live_ptr` came from `actor_ids_to_malloc` in this function.
+            unsafe { libc::free(still_live_ptr.cast()) };
+            return Err(err);
+        }
+    };
+
+    out.still_live_ptr = still_live_ptr;
+    out.still_live_len = still_live.len();
+    out.crashed_ptr = crashed_ptr;
+    out.crashed_len = crashed.len();
+    Ok(())
+}
+
+/// Free buffers allocated by [`hew_actor_drain_set`].
+///
+/// # Safety
+///
+/// `out` must point to an initialized [`DrainOutcomeRepr`] from this runtime.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_drain_outcome_free(out: *mut DrainOutcomeRepr) {
+    if out.is_null() {
+        return;
+    }
+
+    // SAFETY: caller guarantees `out` points to a valid DrainOutcomeRepr.
+    let out = unsafe { &mut *out };
+    // SAFETY: the buffers were allocated by `actor_ids_to_malloc`; null is allowed.
+    unsafe {
+        libc::free(out.still_live_ptr.cast());
+        libc::free(out.crashed_ptr.cast());
+    }
+    *out = DrainOutcomeRepr::default();
+}
+
+/// Drain a set of actors using a caller-supplied timeout in nanoseconds.
+///
+/// The timeout is measured relative to `Instant::now()` on entry.
+///
+/// # Safety
+///
+/// - `ids_ptr` must point to `ids_len` actor IDs when `ids_len > 0`.
+/// - `out` must be a valid mutable pointer to writable [`DrainOutcomeRepr`] storage.
+// JIT-CLASSIFY-TODO: stable — rebase once #1229 lands
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_drain_set(
+    ids_ptr: *const ActorId,
+    ids_len: usize,
+    timeout_ns: u64,
+    out: *mut DrainOutcomeRepr,
+) -> i32 {
+    if out.is_null() {
+        crate::set_last_error("hew_actor_drain_set: null outcome pointer");
+        return -1;
+    }
+
+    let ids = if ids_len == 0 {
+        &[]
+    } else if ids_ptr.is_null() {
+        crate::set_last_error("hew_actor_drain_set: null ids pointer");
+        return -1;
+    } else {
+        // SAFETY: caller guarantees `ids_ptr` points to `ids_len` readable ActorIds.
+        unsafe { std::slice::from_raw_parts(ids_ptr, ids_len) }
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_nanos(timeout_ns);
+    let outcome = drain_actors(ids, deadline);
+    // SAFETY: caller guarantees `out` points to writable storage.
+    let out = unsafe { &mut *out };
+    if let Err(err) = write_drain_outcome_repr(out, outcome) {
+        crate::set_last_error(err);
+        // SAFETY: `out` points to initialized repr storage owned by the caller.
+        unsafe { hew_actor_drain_outcome_free(out) };
+        return -1;
+    }
+
     0
 }
 
@@ -3144,13 +3439,8 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
         return -1;
     }
 
-    if state != HewActorState::Crashed as i32 {
-        // SAFETY: the wait loop above ensures the actor is not being dispatched.
-        unsafe { call_terminate_fn(actor) };
-    }
-
-    // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
-    unsafe { free_actor_resources_wasm(actor) };
+    // SAFETY: actor is quiescent, no longer tracked, and not being dispatched.
+    unsafe { finalize_quiescent_actor_cleanup(actor, state) };
     0
 }
 
@@ -3169,6 +3459,9 @@ mod tests {
         AtomicPtr::new(ptr::null_mut());
     static SEND_BY_ID_DISPATCH_COUNT: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
+    static DRAIN_BUSY_LOOP_STARTED: AtomicBool = AtomicBool::new(false);
+    static DRAIN_BUSY_LOOP_RELEASE: AtomicBool = AtomicBool::new(false);
+    static DRAIN_TRAP_ON_STOP_STARTED: AtomicBool = AtomicBool::new(false);
 
     struct NativeSchedulerGuard;
 
@@ -3203,6 +3496,34 @@ mod tests {
         SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
     }
 
+    unsafe extern "C" fn drain_busy_loop_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        DRAIN_BUSY_LOOP_STARTED.store(true, Ordering::Release);
+        while !DRAIN_BUSY_LOOP_RELEASE.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    unsafe extern "C" fn drain_trap_on_stop_dispatch(
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+        if msg_type == -1 {
+            // SAFETY: this runs on the actor's own dispatch thread while `CURRENT_ACTOR` is set.
+            unsafe { hew_actor_trap(hew_actor_self(), 77) };
+            return;
+        }
+        DRAIN_TRAP_ON_STOP_STARTED.store(true, Ordering::Release);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
     fn wait_for_condition(
         timeout: std::time::Duration,
         mut condition: impl FnMut() -> bool,
@@ -3232,6 +3553,14 @@ mod tests {
                     .actor_state
                     .store(target_state as i32, Ordering::Release);
             }
+        })
+    }
+
+    fn wait_for_actor_quiescent(actor: *mut HewActor, timeout: std::time::Duration) -> bool {
+        wait_for_condition(timeout, || {
+            // SAFETY: tests only call this while the actor allocation is still live.
+            let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+            actor_free_state_is_quiescent(state)
         })
     }
 
@@ -4378,6 +4707,202 @@ mod tests {
                 "deferred free should finish before cleanup returns"
             );
         }
+    }
+
+    #[test]
+    fn drain_actors_all_drain_cleans_registries() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+        let _ticker_guard = crate::timer_periodic::TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor_one = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor_two = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor_three = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor_one.is_null());
+        assert!(!actor_two.is_null());
+        assert!(!actor_three.is_null());
+
+        // SAFETY: the spawned actors remain live until the assertions below finish.
+        let actor_one_id = unsafe { (*actor_one).id };
+        // SAFETY: the spawned actors remain live until the assertions below finish.
+        let actor_two_id = unsafe { (*actor_two).id };
+        // SAFETY: the spawned actors remain live until the assertions below finish.
+        let actor_three_id = unsafe { (*actor_three).id };
+
+        // SAFETY: actor_one is a valid live actor pointer returned by spawn.
+        let timer =
+            unsafe { crate::timer_periodic::hew_actor_schedule_periodic(actor_one, 7, 100) };
+        assert!(
+            !timer.is_null(),
+            "periodic timer should register successfully"
+        );
+        // SAFETY: both actor pointers were returned by spawn and are still live.
+        unsafe {
+            crate::link::hew_actor_link(actor_one, actor_two);
+        }
+        // SAFETY: both actor pointers were returned by spawn and are still live.
+        let monitor_ref = unsafe { crate::monitor::hew_actor_monitor(actor_three, actor_one) };
+        assert_ne!(monitor_ref, 0, "monitor registration should succeed");
+
+        assert_eq!(crate::timer_periodic::timer_count_for_actor(actor_one), 1);
+        assert!(crate::link::has_links_for_actor(actor_one_id, actor_one));
+        assert!(crate::link::has_links_for_actor(actor_two_id, actor_two));
+        assert!(crate::monitor::has_monitors_for_actor(
+            actor_one_id,
+            actor_one
+        ));
+        assert!(crate::monitor::has_monitors_for_actor(
+            actor_three_id,
+            actor_three
+        ));
+
+        let outcome = drain_actors(
+            &[actor_one_id, actor_two_id, actor_three_id],
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(outcome, DrainOutcome::Drained);
+        assert!(!is_actor_live(actor_one));
+        assert!(!is_actor_live(actor_two));
+        assert!(!is_actor_live(actor_three));
+        assert_eq!(crate::timer_periodic::timer_count_for_actor(actor_one), 0);
+        assert!(!crate::link::has_links_for_actor(actor_one_id, actor_one));
+        assert!(!crate::link::has_links_for_actor(actor_two_id, actor_two));
+        assert!(!crate::monitor::has_monitors_for_actor(
+            actor_one_id,
+            actor_one
+        ));
+        assert!(!crate::monitor::has_monitors_for_actor(
+            actor_three_id,
+            actor_three
+        ));
+    }
+
+    #[test]
+    fn drain_actors_partial_drain_with_timeout() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        DRAIN_BUSY_LOOP_STARTED.store(false, Ordering::Release);
+        DRAIN_BUSY_LOOP_RELEASE.store(false, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let stubborn_actor =
+            unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(drain_busy_loop_dispatch)) };
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let helper_actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let spare_actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!stubborn_actor.is_null());
+        assert!(!helper_actor.is_null());
+        assert!(!spare_actor.is_null());
+
+        // SAFETY: the spawned actors remain live until the assertions below finish.
+        let stubborn_actor_id = unsafe { (*stubborn_actor).id };
+        // SAFETY: the spawned actors remain live until the assertions below finish.
+        let helper_actor_id = unsafe { (*helper_actor).id };
+        // SAFETY: the spawned actors remain live until the assertions below finish.
+        let spare_actor_id = unsafe { (*spare_actor).id };
+
+        // SAFETY: stubborn_actor is a valid live actor pointer returned by spawn.
+        unsafe { hew_actor_send(stubborn_actor, 1, ptr::null_mut(), 0) };
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                DRAIN_BUSY_LOOP_STARTED.load(Ordering::Acquire)
+            }),
+            "busy loop actor should begin running before drain starts"
+        );
+
+        let outcome = drain_actors(
+            &[stubborn_actor_id, helper_actor_id, spare_actor_id],
+            std::time::Instant::now() + std::time::Duration::from_millis(100),
+        );
+        assert_eq!(
+            outcome,
+            DrainOutcome::Incomplete {
+                still_live: vec![stubborn_actor_id],
+                crashed: Vec::new(),
+            }
+        );
+        assert!(
+            is_actor_live(stubborn_actor),
+            "busy actor must remain live at the deadline"
+        );
+        assert!(
+            !is_actor_live(helper_actor),
+            "cooperating actor should be drained"
+        );
+        assert!(
+            !is_actor_live(spare_actor),
+            "cooperating actor should be drained"
+        );
+
+        DRAIN_BUSY_LOOP_RELEASE.store(true, Ordering::Release);
+        assert!(
+            wait_for_actor_quiescent(stubborn_actor, std::time::Duration::from_secs(5)),
+            "busy actor should become quiescent after releasing the loop"
+        );
+        // SAFETY: stubborn_actor is quiescent after the wait above.
+        let free_rc = unsafe { hew_actor_free(stubborn_actor) };
+        assert_eq!(free_rc, 0);
+    }
+
+    #[test]
+    fn drain_actors_crashed_during_drain_reports_crashed() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        DRAIN_TRAP_ON_STOP_STARTED.store(false, Ordering::Release);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor =
+            unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(drain_trap_on_stop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: actor remains live until the assertions below finish.
+        let actor_id = unsafe { (*actor).id };
+
+        // SAFETY: actor is a valid live actor pointer returned by spawn.
+        unsafe { hew_actor_send(actor, 1, ptr::null_mut(), 0) };
+        assert!(
+            wait_for_condition(std::time::Duration::from_secs(1), || {
+                DRAIN_TRAP_ON_STOP_STARTED.load(Ordering::Acquire)
+            }),
+            "trap-on-stop actor should begin running before drain starts"
+        );
+
+        let outcome = drain_actors(
+            &[actor_id],
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            outcome,
+            DrainOutcome::Incomplete {
+                still_live: Vec::new(),
+                crashed: vec![actor_id],
+            }
+        );
+        assert!(
+            is_actor_live(actor),
+            "crashed actors should remain tracked for caller-directed cleanup"
+        );
+        // SAFETY: crashed actors remain tracked until the explicit free below.
+        let actor_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(actor_state, HewActorState::Crashed as i32);
+        // SAFETY: crashed actors are quiescent and can be explicitly freed.
+        let free_rc = unsafe { hew_actor_free(actor) };
+        assert_eq!(free_rc, 0);
+    }
+
+    #[test]
+    fn drain_actors_empty_set_returns_drained() {
+        assert_eq!(
+            drain_actors(&[], std::time::Instant::now()),
+            DrainOutcome::Drained
+        );
     }
 
     #[test]

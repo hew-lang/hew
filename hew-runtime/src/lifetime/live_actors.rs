@@ -77,6 +77,20 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
     })
 }
 
+/// Remove and return the actor tracked under `actor_id` if it still matches `expected`.
+pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option<*mut HewActor> {
+    LIVE_ACTORS.access(|map| {
+        let tracked = map.as_mut()?.remove(&actor_id)?;
+        if tracked.0 == expected {
+            Some(tracked.0)
+        } else {
+            map.get_or_insert_with(HashMap::new)
+                .insert(actor_id, tracked);
+            None
+        }
+    })
+}
+
 /// Check whether an actor pointer is still live.
 ///
 /// Calls `f` with a shared reference to the actor and returns `Some(f(..))`

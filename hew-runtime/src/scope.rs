@@ -42,6 +42,7 @@ const MUTEX_INIT: PlatformMutex = PlatformMutex(std::ptr::null_mut());
 unsafe extern "system" {
     fn AcquireSRWLockExclusive(lock: *mut PlatformMutex);
     fn ReleaseSRWLockExclusive(lock: *mut PlatformMutex);
+    fn TryAcquireSRWLockExclusive(lock: *mut PlatformMutex) -> i32;
 }
 
 unsafe fn mutex_lock(m: *mut PlatformMutex) {
@@ -68,6 +69,20 @@ unsafe fn mutex_unlock(m: *mut PlatformMutex) {
     unsafe {
         ReleaseSRWLockExclusive(m)
     };
+}
+
+#[cfg(test)]
+unsafe fn mutex_try_lock(m: *mut PlatformMutex) -> bool {
+    #[cfg(unix)]
+    // SAFETY: caller guarantees `m` points to an initialised mutex.
+    unsafe {
+        libc::pthread_mutex_trylock(m) == 0
+    }
+    #[cfg(windows)]
+    // SAFETY: caller guarantees `m` points to an initialised SRWLOCK.
+    unsafe {
+        TryAcquireSRWLockExclusive(m) != 0
+    }
 }
 
 unsafe fn mutex_destroy(m: *mut PlatformMutex) {
@@ -528,7 +543,10 @@ mod tests {
 
         let scope_addr = (&raw mut *scope) as usize;
         let actor2_addr = actor2 as usize;
+        let lock_addr = (&raw mut scope.lock) as usize;
+        let spawn_started = Arc::new(AtomicBool::new(false));
         let spawn_returned = Arc::new(AtomicBool::new(false));
+        let spawn_started_in_thread = Arc::clone(&spawn_started);
         let spawn_returned_in_thread = Arc::clone(&spawn_returned);
 
         let wait_handle = std::thread::spawn(move || {
@@ -536,7 +554,19 @@ mod tests {
             unsafe { hew_scope_wait_all(scope_addr as *mut HewScope) };
         });
 
+        loop {
+            // SAFETY: lock_addr points at the scope mutex, which remains live for
+            // the duration of the test.
+            if unsafe { !mutex_try_lock(lock_addr as *mut PlatformMutex) } {
+                break;
+            }
+            // SAFETY: This thread just acquired the scope lock via try_lock.
+            unsafe { mutex_unlock(lock_addr as *mut PlatformMutex) };
+            std::thread::yield_now();
+        }
+
         let spawn_handle = std::thread::spawn(move || {
+            spawn_started_in_thread.store(true, Ordering::Release);
             // SAFETY: scope_addr and actor2_addr remain valid for the duration of the test.
             let rc =
                 unsafe { hew_scope_spawn(scope_addr as *mut HewScope, actor2_addr as *mut c_void) };
@@ -544,10 +574,15 @@ mod tests {
             spawn_returned_in_thread.store(true, Ordering::Release);
         });
 
-        std::thread::sleep(Duration::from_millis(50));
+        while !spawn_started.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        for _ in 0..32 {
+            std::thread::yield_now();
+        }
         assert!(
             !spawn_returned.load(Ordering::Acquire),
-            "spawn returned while wait_all was still draining phase 1"
+            "spawn returned before wait_all released the phase-1 scope lock"
         );
 
         // SAFETY: mailbox is live; draining the message lets wait_all finish.

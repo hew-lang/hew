@@ -294,9 +294,14 @@ jobs:
           # Licenses and docs
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
-          # Strip binaries
+          # Strip packaged binaries when present; missing artifacts are expected
+          # for targets that do not build every binary, but strip failures on
+          # existing files must still fail the job.
           for b in hew adze hew-lsp; do
-            strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
+            bin="${ARCHIVE_NAME}/bin/${b}"
+            if [[ -f "${bin}" ]]; then
+              strip "${bin}"
+            fi
           done
 
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
@@ -588,9 +593,14 @@ jobs:
             # Licenses and docs
             cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
-            # Strip binaries
+            # Strip packaged binaries when present; missing artifacts are expected
+            # for targets that do not build every binary, but strip failures on
+            # existing files must still fail the job.
             for b in hew adze hew-lsp; do
-              strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
+              bin="${ARCHIVE_NAME}/bin/${b}"
+              if [[ -f "${bin}" ]]; then
+                strip "${bin}"
+              fi
             done
 
             tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
@@ -771,8 +781,14 @@ jobs:
 
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
+          # Strip packaged binaries when present; missing artifacts are expected
+          # for targets that do not build every binary, but strip failures on
+          # existing files must still fail the job.
           for b in hew adze hew-lsp; do
-            strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
+            bin="${ARCHIVE_NAME}/bin/${b}"
+            if [[ -f "${bin}" ]]; then
+              strip "${bin}"
+            fi
           done
 
           mkdir -p dist
@@ -1052,7 +1068,7 @@ jobs:
         run: |
           mkdir -p extension/server
           cp "lsp-binary/${{ matrix.binary }}" "extension/server/${{ matrix.binary }}"
-          chmod +x "extension/server/${{ matrix.binary }}" 2>/dev/null || true
+          chmod +x "extension/server/${{ matrix.binary }}"
 
       - name: Package extension
         if: steps.download.outcome == 'success'

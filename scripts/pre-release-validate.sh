@@ -160,9 +160,9 @@ validate_linux() {
             exit 1
         fi
 
-        echo "==> Step 4: Run test suite (informational — failures here don't block release)"
-        run_with_timeout "${TEST_TIMEOUT}" bash -lc 'cargo test -p hew-runtime --quiet 2>&1 | tail -3' || true
-        run_with_timeout "${TEST_TIMEOUT}" bash -lc 'make test-codegen 2>&1 | tail -5' || true
+        echo "==> Step 4: Run gating test suite"
+        run_with_timeout "${TEST_TIMEOUT}" bash -o pipefail -lc 'cargo test -p hew-runtime --quiet 2>&1 | tail -3'
+        run_with_timeout "${TEST_TIMEOUT}" bash -o pipefail -lc 'make test-codegen 2>&1 | tail -5'
 
         echo "==> Step 5: Verify no dynamic LLVM/MLIR dependencies"
         if ldd target/release/hew 2>/dev/null | grep -qi 'llvm\|mlir'; then

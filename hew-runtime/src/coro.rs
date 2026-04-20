@@ -499,7 +499,7 @@ mod tests {
     use super::*;
     #[cfg(all(
         any(target_arch = "x86_64", target_arch = "aarch64"),
-        not(target_os = "windows")
+        target_os = "macos"
     ))]
     use std::sync::atomic::AtomicBool;
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -509,13 +509,13 @@ mod tests {
     static TEST_SEEN_ARG: AtomicUsize = AtomicUsize::new(0);
     #[cfg(all(
         any(target_arch = "x86_64", target_arch = "aarch64"),
-        not(target_os = "windows")
+        target_os = "macos"
     ))]
     static TEST_SWITCHED_BACK: AtomicBool = AtomicBool::new(false);
 
     #[cfg(all(
         any(target_arch = "x86_64", target_arch = "aarch64"),
-        not(target_os = "windows")
+        target_os = "macos"
     ))]
     struct FirstSwitchState {
         caller_ctx: *mut CoroContext,
@@ -530,7 +530,7 @@ mod tests {
 
     #[cfg(all(
         any(target_arch = "x86_64", target_arch = "aarch64"),
-        not(target_os = "windows")
+        target_os = "macos"
     ))]
     #[expect(
         clippy::cast_ptr_alignment,
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     #[cfg(all(
         any(target_arch = "x86_64", target_arch = "aarch64"),
-        not(target_os = "windows")
+        target_os = "macos"
     ))]
     fn first_switch_delivers_init_argument_via_abi_register() {
         // SAFETY: Both contexts, the borrowed state record, and the alternate

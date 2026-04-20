@@ -408,25 +408,24 @@ pub extern "C" fn hew_sched_shutdown() {
 
     // Join worker threads, skipping our own handle to avoid self-join
     // deadlock when the spawn-failure fallback runs on a worker thread.
-    // The closure scope acts as the lock scope — the guard is released
-    // before the hooks below run.
+    // Swap the worker list out first so no lock is held across the
+    // potentially-unbounded joins.
     let current_id = std::thread::current().id();
-    sched.worker_handles.access(|handles| {
-        for handle in handles.iter_mut() {
-            if let Some(ref h) = handle {
-                if h.thread().id() == current_id {
-                    // Drop the handle without joining — we're running on this thread.
-                    let _ = handle.take();
-                    continue;
-                }
-            }
-            if let Some(h) = handle.take() {
-                if h.join().is_err() {
-                    eprintln!("hew: scheduler worker thread panicked during shutdown");
-                }
+    let mut handles = sched.worker_handles.access(std::mem::take);
+    for handle in &mut handles {
+        if let Some(ref h) = handle {
+            if h.thread().id() == current_id {
+                // Drop the handle without joining — we're running on this thread.
+                let _ = handle.take();
+                continue;
             }
         }
-    });
+        if let Some(h) = handle.take() {
+            if h.join().is_err() {
+                eprintln!("hew: scheduler worker thread panicked during shutdown");
+            }
+        }
+    }
 
     // Write profile files on exit if HEW_PROF_OUTPUT is set.  Must run BEFORE
     // session_reset() so that the dispatch-type registry is still populated

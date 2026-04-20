@@ -153,6 +153,15 @@ impl Checker {
         let hole_var_set: std::collections::HashSet<TypeVar> = hole_vars.iter().copied().collect();
         self.record_deferred_inference_holes(annotation, context, hole_vars);
         match &ty {
+            Ty::Named { name, args } if name == "Vec" && args.len() == 1 => {
+                let elem = self.subst.resolve(&args[0]);
+                let mut unresolved_vars = HashSet::new();
+                collect_unresolved_inference_vars(&elem, &mut unresolved_vars);
+                let elem_is_hole = unresolved_vars.iter().any(|var| hole_var_set.contains(var));
+                if !elem_is_hole {
+                    self.validate_vec_element_type(&args[0], &annotation.1);
+                }
+            }
             Ty::Named { name, args } if name == "HashSet" && args.len() == 1 => {
                 // Skip if element is a fresh inference hole — inference-holes
                 // path is the authority; admission runs at method-call sites.

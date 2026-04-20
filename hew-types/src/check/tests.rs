@@ -1513,6 +1513,30 @@ fn typecheck_vec_type_annotation() {
 }
 
 #[test]
+fn unresolved_vec_new_method_chain_fails_closed() {
+    let source = "fn main() { Vec::new().clear(); }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+
+    assert!(
+        output.errors.iter().any(|err| {
+            err.kind == TypeErrorKind::InferenceFailed
+                && err.message.contains("Vec element type")
+                && err.message.contains("Vec<")
+        }),
+        "expected fail-closed Vec inference diagnostic, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn typecheck_multiple_functions_cross_call() {
     let source = concat!(
         "fn add(a: i32, b: i32) -> i32 { a + b }\n",

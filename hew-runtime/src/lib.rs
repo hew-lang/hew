@@ -390,7 +390,6 @@ pub mod channel;
 mod channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
-mod reply_channel_common;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod reply_channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
@@ -411,7 +410,7 @@ pub mod timer_periodic_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod timer_wheel;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod wasm_parity_tests;
 
 #[cfg(not(target_arch = "wasm32"))]

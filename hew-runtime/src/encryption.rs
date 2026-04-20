@@ -866,7 +866,7 @@ pub unsafe extern "C" fn hew_noise_key_save(
     );
 
     // SAFETY: path was null-checked by cabi_guard above.
-    let Some(path_str) = (unsafe { crate::util::cstr_to_str(path, "hew_noise_key_save") }) else {
+    let Some(path_str) = (unsafe { crate::util::cstr_to_str(&path, "hew_noise_key_save") }) else {
         return -1;
     };
 
@@ -913,7 +913,7 @@ pub unsafe extern "C" fn hew_noise_key_load(
     );
 
     // SAFETY: path was null-checked by cabi_guard above.
-    let Some(path_str) = (unsafe { crate::util::cstr_to_str(path, "hew_noise_key_load") }) else {
+    let Some(path_str) = (unsafe { crate::util::cstr_to_str(&path, "hew_noise_key_load") }) else {
         return -1;
     };
     let Ok(mut bytes) = fs::read(path_str) else {

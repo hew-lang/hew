@@ -100,7 +100,7 @@ pub(crate) trait CondvarExt {
 /// `ptr` must be a valid, null-terminated C string or null.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn cstr_to_str<'a>(
-    ptr: *const std::ffi::c_char,
+    ptr: &'a *const std::ffi::c_char,
     context: &str,
 ) -> Option<&'a str> {
     if ptr.is_null() {
@@ -108,7 +108,7 @@ pub(crate) unsafe fn cstr_to_str<'a>(
         return None;
     }
     // SAFETY: Caller guarantees ptr is a valid NUL-terminated C string.
-    if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_str() {
+    if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(*ptr) }.to_str() {
         Some(s)
     } else {
         crate::set_last_error(format!("{context}: invalid UTF-8"));
@@ -158,5 +158,14 @@ mod tests {
         let mut json = String::new();
         push_json_string(&mut json, "quo\"te\\slash\nline\rreturn\t\x1f");
         assert_eq!(json, r#""quo\"te\\slash\nline\rreturn\t\u001f""#);
+    }
+
+    #[test]
+    fn cstr_to_str_borrows_through_pointer_binding() {
+        let text = std::ffi::CString::new("hew").unwrap();
+        let ptr = text.as_ptr();
+        // SAFETY: ptr originates from the live CString above.
+        let parsed = unsafe { cstr_to_str(&ptr, "test cstr_to_str") }.unwrap();
+        assert_eq!(parsed, "hew");
     }
 }

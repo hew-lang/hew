@@ -78,7 +78,8 @@ mod native {
     #[no_mangle]
     pub unsafe extern "C" fn hew_registry_register(name: *const c_char, actor: *mut c_void) -> i32 {
         // SAFETY: caller guarantees `name` is a live C string when non-null.
-        let Some(key) = (unsafe { crate::util::cstr_to_str(name, "hew_registry_register") }) else {
+        let Some(key) = (unsafe { crate::util::cstr_to_str(&name, "hew_registry_register") })
+        else {
             return -1;
         };
         let key = key.to_owned();
@@ -101,7 +102,7 @@ mod native {
     #[no_mangle]
     pub unsafe extern "C" fn hew_registry_lookup(name: *const c_char) -> *mut c_void {
         // SAFETY: caller guarantees `name` is a live C string when non-null.
-        let Some(key) = (unsafe { crate::util::cstr_to_str(name, "hew_registry_lookup") }) else {
+        let Some(key) = (unsafe { crate::util::cstr_to_str(&name, "hew_registry_lookup") }) else {
             return std::ptr::null_mut();
         };
         let shard = REGISTRY.shard_for(key);
@@ -119,7 +120,7 @@ mod native {
     #[no_mangle]
     pub unsafe extern "C" fn hew_registry_unregister(name: *const c_char) -> i32 {
         // SAFETY: caller guarantees `name` is a live C string when non-null.
-        let Some(key) = (unsafe { crate::util::cstr_to_str(name, "hew_registry_unregister") })
+        let Some(key) = (unsafe { crate::util::cstr_to_str(&name, "hew_registry_unregister") })
         else {
             return -1;
         };

@@ -19,6 +19,8 @@ struct HewArcInner {
     weak: AtomicUsize,
     drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
     data_size: usize,
+    data_align: usize,
+    data_offset: usize,
 }
 
 /// Recover header pointer from data pointer.
@@ -27,15 +29,40 @@ struct HewArcInner {
 ///
 /// `data_ptr` must have been returned by [`hew_arc_new`].
 unsafe fn header_from_data(data_ptr: *mut u8) -> *mut HewArcInner {
-    // SAFETY: data sits immediately after HewArcInner.
-    unsafe { data_ptr.sub(size_of::<HewArcInner>()) }.cast()
+    // SAFETY: hew_arc_new stores the offset in the usize immediately preceding
+    // the returned data pointer.
+    let offset = unsafe {
+        data_ptr
+            .sub(size_of::<usize>())
+            .cast::<usize>()
+            .read_unaligned()
+    };
+    // SAFETY: the stored offset points back to the start of the allocation.
+    unsafe { data_ptr.sub(offset) }.cast()
 }
 
-/// Compute allocation layout for header + data. Returns `None` on overflow.
-fn alloc_layout(data_size: usize) -> Option<Layout> {
-    let total = size_of::<HewArcInner>().checked_add(data_size)?;
-    let align = align_of::<HewArcInner>();
-    Layout::from_size_align(total, align).ok()
+const MAX_INFERRED_PAYLOAD_ALIGN: usize = std::mem::align_of::<u128>();
+
+fn payload_align(data: *const u8, data_size: usize) -> usize {
+    if data.is_null() || data_size == 0 {
+        1
+    } else {
+        // Without an explicit ABI alignment, only infer up to a conservative
+        // max_align_t-style bound. Over-aligned callers must thread alignment
+        // explicitly instead of relying on source-address trailing zeros.
+        (1usize << (data as usize).trailing_zeros()).min(MAX_INFERRED_PAYLOAD_ALIGN)
+    }
+}
+
+/// Compute allocation layout for header + offset slot + aligned data.
+/// Returns `None` on overflow.
+fn alloc_layout(data_size: usize, data_align: usize) -> Option<(Layout, usize)> {
+    let (prefix, _) = Layout::new::<HewArcInner>()
+        .extend(Layout::new::<usize>())
+        .ok()?;
+    let data = Layout::from_size_align(data_size, data_align).ok()?;
+    let (layout, data_offset) = prefix.extend(data).ok()?;
+    Some((layout.pad_to_align(), data_offset))
 }
 
 // ── Public C ABI ───────────────────────────────────────────────────────
@@ -60,7 +87,8 @@ pub unsafe extern "C" fn hew_arc_new(
     size: usize,
     drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
 ) -> *mut u8 {
-    let Some(layout) = alloc_layout(size) else {
+    let data_align = payload_align(data, size);
+    let Some((layout, data_offset)) = alloc_layout(size, data_align) else {
         return ptr::null_mut();
     };
     // SAFETY: layout is valid (non-zero size due to header).
@@ -78,11 +106,21 @@ pub unsafe extern "C" fn hew_arc_new(
             weak: AtomicUsize::new(1), // +1 implicit weak ref held by strong refs
             drop_fn,
             data_size: size,
+            data_align,
+            data_offset,
         });
     }
 
-    // SAFETY: ptr + sizeof(header) is within the allocation of total bytes.
-    let data_ptr = unsafe { ptr.add(size_of::<HewArcInner>()) };
+    // SAFETY: the offset slot lies within the allocated prefix and records how
+    // to recover the header from the returned data pointer.
+    unsafe {
+        ptr.add(data_offset - size_of::<usize>())
+            .cast::<usize>()
+            .write_unaligned(data_offset);
+    }
+
+    // SAFETY: data_offset was computed by Layout::extend for this allocation.
+    let data_ptr = unsafe { ptr.add(data_offset) };
     if !data.is_null() && size > 0 {
         // SAFETY: data is valid for size bytes, data_ptr is valid for size.
         unsafe { ptr::copy_nonoverlapping(data, data_ptr, size) };
@@ -158,7 +196,8 @@ pub unsafe extern "C" fn hew_arc_drop(ptr: *mut u8) {
     if inner.weak.fetch_sub(1, Ordering::Release) == 1 {
         // We were the last weak ref (implicit). Deallocate.
         std::sync::atomic::fence(Ordering::Acquire);
-        let layout = alloc_layout(inner.data_size).expect("layout was valid at construction");
+        let (layout, _) = alloc_layout(inner.data_size, inner.data_align)
+            .expect("layout was valid at construction");
         // SAFETY: header was allocated with this layout, no other refs remain.
         unsafe { dealloc(header.cast(), layout) };
     }
@@ -262,8 +301,8 @@ pub unsafe extern "C" fn hew_weak_upgrade_arc(weak_ptr: *mut u8) -> *mut u8 {
             .compare_exchange_weak(current, current + 1, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
-            // SAFETY: data pointer is immediately after header, within the allocation.
-            return unsafe { weak_ptr.add(size_of::<HewArcInner>()) };
+            // SAFETY: data_offset was validated at construction time.
+            return unsafe { weak_ptr.add(inner.data_offset) };
         }
     }
 }
@@ -305,7 +344,8 @@ pub unsafe extern "C" fn hew_weak_drop_arc(weak_ptr: *mut u8) {
     // the implicit +1 weak ref would still be held). Deallocate.
     std::sync::atomic::fence(Ordering::Acquire);
 
-    let layout = alloc_layout(inner.data_size).expect("layout was valid at construction");
+    let (layout, _) =
+        alloc_layout(inner.data_size, inner.data_align).expect("layout was valid at construction");
     // SAFETY: header was allocated with this layout, strong=0 and weak=0.
     unsafe { dealloc(header.cast(), layout) };
 }
@@ -407,7 +447,27 @@ mod tests {
 
     #[test]
     fn arc_layout_overflow_returns_none() {
-        assert!(alloc_layout(usize::MAX).is_none());
-        assert!(alloc_layout(usize::MAX - size_of::<HewArcInner>() + 1).is_none());
+        assert!(alloc_layout(usize::MAX, 1).is_none());
+        assert!(alloc_layout(usize::MAX - size_of::<HewArcInner>() + 1, 1).is_none());
+    }
+
+    #[test]
+    fn arc_caps_overaligned_source_alignment() {
+        #[repr(align(4096))]
+        struct Over {
+            _x: [u8; 16],
+        }
+
+        // SAFETY: hew_arc_new copies from a valid Over pointer and returns an
+        // Arc allocation that is dropped before the test exits.
+        unsafe {
+            let value = Over { _x: [1; 16] };
+            let arc = hew_arc_new((&raw const value).cast(), size_of::<Over>(), None);
+            assert!(!arc.is_null());
+            let header = header_from_data(arc);
+            assert_eq!((*header).data_align, MAX_INFERRED_PAYLOAD_ALIGN);
+            assert_eq!(arc as usize % MAX_INFERRED_PAYLOAD_ALIGN, 0);
+            hew_arc_drop(arc);
+        }
     }
 }

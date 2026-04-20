@@ -233,7 +233,8 @@ pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate::vec::HewVec {
     // SAFETY: `path` is the caller-provided C string pointer for this ABI entrypoint.
-    let Some(rust_path) = (unsafe { crate::util::cstr_to_str(path, "hew_file_read_bytes") }) else {
+    let Some(rust_path) = (unsafe { crate::util::cstr_to_str(&path, "hew_file_read_bytes") })
+    else {
         let msg = "hew_file_read_bytes: invalid path string";
         crate::set_last_error(msg);
         set_last_error_with_errno(
@@ -268,7 +269,7 @@ pub extern "C" fn hew_file_last_error() -> *mut c_char {
         return str_to_malloc("");
     }
     // SAFETY: `ptr` comes from thread-local last-error storage and remains valid for this read.
-    let Some(text) = (unsafe { crate::util::cstr_to_str(ptr, "hew_file_last_error") }) else {
+    let Some(text) = (unsafe { crate::util::cstr_to_str(&ptr, "hew_file_last_error") }) else {
         return str_to_malloc("");
     };
     str_to_malloc(text)

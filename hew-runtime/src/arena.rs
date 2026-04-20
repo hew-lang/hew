@@ -151,18 +151,17 @@ impl ActorArena {
             return ptr::null_mut();
         }
 
-        // Round cursor up to the required alignment.
-        let aligned_cursor = (self.cursor + align - 1) & !(align - 1);
-        let end_offset = aligned_cursor + size;
-
-        // Check if current chunk has enough space
-        if self.current_chunk < self.chunks.len() {
+        while self.current_chunk < self.chunks.len() {
+            let aligned_cursor = (self.cursor + align - 1) & !(align - 1);
+            let end_offset = aligned_cursor + size;
             let chunk = &self.chunks[self.current_chunk];
             if end_offset <= chunk.size {
                 self.cursor = end_offset;
                 // SAFETY: aligned_cursor is within chunk bounds
                 return unsafe { chunk.base.add(aligned_cursor) };
             }
+            self.current_chunk += 1;
+            self.cursor = 0;
         }
 
         // Need a new chunk
@@ -431,6 +430,29 @@ mod tests {
         assert_ne!(ptr1, ptr2);
 
         assert!(arena.chunks.len() >= 2);
+    }
+
+    #[test]
+    fn reset_reuses_retained_chunks_after_first_chunk_fills_again() {
+        let mut arena = ActorArena::new_with_sizes(32, 128).expect("Failed to create arena");
+
+        let first = arena.alloc(32, 1);
+        assert!(!first.is_null());
+        let second = arena.alloc(40, 1);
+        assert!(!second.is_null());
+        assert_eq!(arena.chunks.len(), 2);
+        let retained_second_base = arena.chunks[1].base;
+
+        arena.reset();
+
+        let reused_first = arena.alloc(32, 1);
+        assert_eq!(reused_first, first);
+        let chunk_count_before = arena.chunks.len();
+        let reused_second = arena.alloc(16, 1);
+
+        assert_eq!(reused_second, retained_second_base);
+        assert_eq!(arena.chunks.len(), chunk_count_before);
+        assert_eq!(arena.current_chunk, 1);
     }
 
     #[test]

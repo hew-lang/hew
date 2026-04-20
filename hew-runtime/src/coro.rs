@@ -39,12 +39,16 @@ const PAGE_NOACCESS: u32 = 0x01;
 
 // ── CoroStack ────────────────────────────────────────────────────────────────
 
-/// Usable stack size (8 KiB).
-const STACK_SIZE: usize = 8 * 1024;
+/// Usable stack size (64 KiB).
+///
+/// 8 KiB was enough for the raw context bootstrap but not for debug-test
+/// entry trampolines on Linux/Windows, which overflowed before the first
+/// switched call could prove the ABI argument reload.
+const STACK_SIZE: usize = 64 * 1024;
 /// Guard page size (4 KiB, mapped `PROT_NONE` at the bottom).
 const GUARD_SIZE: usize = 4 * 1024;
 
-/// A coroutine stack: 8 KiB usable + 4 KiB guard page (`PROT_NONE` at bottom).
+/// A coroutine stack: 64 KiB usable + 4 KiB guard page (`PROT_NONE` at bottom).
 pub struct CoroStack {
     /// Base of the allocation (guard page starts here).
     base: *mut u8,
@@ -308,6 +312,7 @@ pub unsafe fn coro_switch(from: *mut CoroContext, to: *const CoroContext) {
             "mov r14, [{to} + 4*8]",
             "mov r15, [{to} + 5*8]",
             "mov rsp, [{to} + 6*8]",
+            "mov rdi, r12",
             "jmp [{to} + 7*8]",
             "2:",
             from = in(reg) from,
@@ -367,11 +372,13 @@ pub unsafe fn coro_switch(from: *mut CoroContext, to: *const CoroContext) {
             "ldp x29, x30, [{to}, #(10*8)]",    // regs[10], regs[11] (fp, lr)
             "ldr x9, [{to}, #(12*8)]",          // regs[12] = sp
             "mov sp, x9",
+            "mov x0, x19",
             "ldr x9, [{to}, #(13*8)]",          // regs[13] = return address
             "br x9",
             "2:",
             from = in(reg) from,
             to = in(reg) to,
+            clobber_abi("C"),
             out("x9") _,
             options(nostack),
         );
@@ -382,6 +389,10 @@ pub unsafe fn coro_switch(from: *mut CoroContext, to: *const CoroContext) {
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub unsafe fn coro_switch(_from: *mut CoroContext, _to: *const CoroContext) {
     unimplemented!("coro_switch is only implemented for x86_64 and aarch64");
+}
+
+unsafe extern "C" fn coro_return_stub() -> ! {
+    std::process::abort();
 }
 
 /// Initialise a [`CoroContext`] so that switching to it starts executing
@@ -403,24 +414,24 @@ pub unsafe fn coro_init(
 ) {
     // SAFETY: Caller guarantees `stack_top` has enough space. We set up the
     // initial stack frame so that when `coro_switch` jumps to `rip` the
-    // coroutine starts executing `entry`. The argument is passed in `rdi`
-    // via the r12 register (restored by coro_switch, then moved to rdi by
-    // the trampoline — but for now we store it at a known stack slot).
+    // coroutine starts executing `entry(arg)`. The synthetic return address
+    // traps if the entry function ever returns.
     unsafe {
-        // 16-byte align the stack pointer (System V ABI requirement).
+        // 16-byte align the call frame (System V ABI requirement: rsp % 16 == 8
+        // at function entry because the return address occupies one word).
         #[allow(
             clippy::cast_ptr_alignment,
             reason = "stack_top is page-aligned from mmap"
         )]
-        let sp = stack_top.sub(16).cast::<u64>();
+        let sp = (((stack_top as usize) & !0xF).wrapping_sub(8)) as *mut u64;
+        sp.write(coro_return_stub as *const () as usize as u64);
 
         (*ctx).regs = [0; 8];
         (*ctx).regs[6] = sp as u64; // rsp
-        (*ctx).regs[7] = entry as usize as u64; // rip — entry point
+        (*ctx).regs[7] = entry as *const () as usize as u64; // rip — entry point
 
-        // Store arg in r12 slot so it is available after coro_switch restores
-        // callee-saved registers. A trampoline can move r12 → rdi before
-        // calling the real entry function.
+        // Store arg in r12 so coro_switch can reload the ABI argument register
+        // before it jumps into the entry function.
         (*ctx).regs[2] = arg as u64; // r12 = arg
     }
 }
@@ -444,9 +455,10 @@ pub unsafe fn coro_init(
 ) {
     // SAFETY: Caller guarantees `stack_top` has enough space. We set up the
     // initial stack frame so that when `coro_switch` restores registers and
-    // jumps to the saved address, the coroutine starts executing `entry`.
-    // The argument is passed via x19 (callee-saved), which gets moved to x0
-    // by a trampoline.
+    // jumps to the saved address, the coroutine starts executing `entry(arg)`.
+    // The argument is passed via x19 (callee-saved) and moved to x0 just
+    // before the branch. If the entry ever returns, the saved link register
+    // transfers control to the aborting return stub.
     unsafe {
         // 16-byte align the stack pointer (AAPCS64 requirement).
         #[allow(
@@ -463,8 +475,9 @@ pub unsafe fn coro_init(
         // regs[13] = return address (pc)
 
         (*ctx).regs[0] = arg as u64; // x19 = arg
+        (*ctx).regs[11] = coro_return_stub as *const () as usize as u64; // x30 / lr
         (*ctx).regs[12] = sp as u64; // sp
-        (*ctx).regs[13] = entry as usize as u64; // pc = entry point
+        (*ctx).regs[13] = entry as *const () as usize as u64; // pc = entry point
     }
 }
 
@@ -484,6 +497,57 @@ pub unsafe fn coro_init(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        target_os = "macos"
+    ))]
+    use std::sync::atomic::AtomicBool;
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    static TEST_SEEN_ARG: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        target_os = "macos"
+    ))]
+    static TEST_SWITCHED_BACK: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        target_os = "macos"
+    ))]
+    struct FirstSwitchState {
+        caller_ctx: *mut CoroContext,
+        callee_ctx: *mut CoroContext,
+        expected_arg: *mut u8,
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    unsafe extern "C" fn record_arg(arg: *mut u8) {
+        TEST_SEEN_ARG.store(arg as usize, Ordering::Release);
+    }
+
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        target_os = "macos"
+    ))]
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "the test passes a pointer created from `&raw mut FirstSwitchState`"
+    )]
+    unsafe extern "C" fn record_arg_and_switch_back(arg: *mut u8) {
+        // SAFETY: `arg` points at the `FirstSwitchState` created by the test and
+        // remains live until the caller context resumes.
+        let state = unsafe { &mut *arg.cast::<FirstSwitchState>() };
+        TEST_SEEN_ARG.store(state.expected_arg as usize, Ordering::Release);
+        TEST_SWITCHED_BACK.store(true, Ordering::Release);
+        // SAFETY: Both contexts remain live for the duration of the test. This
+        // resumes the suspended caller before any Rust frame returns on the
+        // coroutine stack.
+        unsafe { coro_switch(state.callee_ctx, state.caller_ctx) };
+        unreachable!("test should not resume the bootstrap coroutine twice");
+    }
 
     #[test]
     fn stack_alloc_and_free() {
@@ -535,6 +599,79 @@ mod tests {
                 assert_ne!(coro_ctx.regs[12], 0); // sp should be set
                 assert_ne!(coro_ctx.regs[13], 0); // pc should be set
             }
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn first_call_receives_init_argument() {
+        // SAFETY: coro_init fills a context owned by this test. The test then
+        // invokes the recorded entry function with the recorded argument to
+        // validate the bootstrapping state without performing a full context switch.
+        unsafe {
+            let stack = CoroStack::new().expect("failed to allocate stack");
+            let mut coro_ctx = CoroContext::new();
+            let arg = (&raw mut coro_ctx).cast::<u8>();
+
+            TEST_SEEN_ARG.store(0, Ordering::Release);
+
+            coro_init(&raw mut coro_ctx, stack.top(), record_arg, arg);
+
+            #[cfg(target_arch = "x86_64")]
+            {
+                let entry_addr =
+                    usize::try_from(coro_ctx.regs[7]).expect("entry pointer fits in usize");
+                let entry: unsafe extern "C" fn(*mut u8) = std::mem::transmute(entry_addr);
+                entry(coro_ctx.regs[2] as *mut u8);
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            {
+                let entry_addr =
+                    usize::try_from(coro_ctx.regs[13]).expect("entry pointer fits in usize");
+                let entry: unsafe extern "C" fn(*mut u8) = std::mem::transmute(entry_addr);
+                entry(coro_ctx.regs[0] as *mut u8);
+            }
+
+            assert_eq!(TEST_SEEN_ARG.load(Ordering::Acquire), arg as usize);
+        }
+    }
+
+    #[test]
+    #[cfg(all(
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        target_os = "macos"
+    ))]
+    fn first_switch_delivers_init_argument_via_abi_register() {
+        // SAFETY: Both contexts, the borrowed state record, and the alternate
+        // stack remain live until the coroutine switches back to the caller.
+        unsafe {
+            let stack = CoroStack::new().expect("failed to allocate stack");
+            let mut caller_ctx = CoroContext::new();
+            let mut callee_ctx = CoroContext::new();
+            let expected_arg = (&raw mut callee_ctx).cast::<u8>();
+            let mut state = FirstSwitchState {
+                caller_ctx: &raw mut caller_ctx,
+                callee_ctx: &raw mut callee_ctx,
+                expected_arg,
+            };
+
+            TEST_SEEN_ARG.store(0, Ordering::Release);
+            TEST_SWITCHED_BACK.store(false, Ordering::Release);
+
+            // SAFETY: The alternate stack and both contexts remain owned by this
+            // test for the full switch out and back.
+            coro_init(
+                &raw mut callee_ctx,
+                stack.top(),
+                record_arg_and_switch_back,
+                (&raw mut state).cast(),
+            );
+
+            coro_switch(&raw mut caller_ctx, &raw const callee_ctx);
+
+            assert_eq!(TEST_SEEN_ARG.load(Ordering::Acquire), expected_arg as usize);
+            assert!(TEST_SWITCHED_BACK.load(Ordering::Acquire));
         }
     }
 }

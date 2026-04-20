@@ -1,0 +1,18 @@
+import std::testing;
+import std::text::regex;
+
+type PatternWrapper {
+    pattern: regex.Pattern
+}
+
+impl PatternWrapper {
+    fn matches(wrapper: PatternWrapper, text: String) -> bool {
+        wrapper.pattern.is_match(text)
+    }
+}
+
+#[test]
+fn test_owned_handle_wrapper_can_delegate_without_exposing_handle() {
+    let wrapper = PatternWrapper { pattern: regex.new("a+") };
+    testing.assert_true(wrapper.matches("aaa"));
+}

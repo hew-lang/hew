@@ -2957,6 +2957,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   for (const auto &ht : program.handle_types) {
     knownHandleTypes.insert(ht);
   }
+  for (const auto &name : program.handle_bearing_structs) {
+    handleBearingStructs.insert(name);
+  }
   handleTypeRepr = program.handle_type_repr;
   stdlibDropFuncs = program.drop_funcs;
 
@@ -5254,13 +5257,9 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
   // above already covers returned params and early-return paths correctly.
   //
   // Deliberately excluded:
-  //  • __auto_field_drop structs (structs without user Drop but with owned
-  //    fields): without alias-tracking we cannot tell whether an owned field is
-  //    aliased in the return value.
-  // DROP-TODO(D2): BLOCKED — no alias-tracking infrastructure exists in the
-  // codebase. Enabling __auto_field_drop struct params here without alias
-  // tracking would cause double-free of returned fields. Prerequisite:
-  // alias-tracking pass or IR annotation.
+  //  • Non-handle-bearing __auto_field_drop structs (String / Vec / HashMap /
+  //    Closure-only wrappers): without alias-tracking we still cannot prove
+  //    that a returned field is not aliased in the result value.
   //  • Handle types (Stream/Sink/Pair): these need closeAlloca RAII, not a
   //    plain drop call.
   // DROP-TODO(D3): BLOCKED — stream ownership convention is ambiguous per call
@@ -5301,6 +5300,11 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn, const std::s
     auto dropFunc = dropFuncForType(param.ty.value);
     if (dropFunc.empty() || isBorrowSemanticsDrop(dropFunc))
       continue;
+    if (dropFunc == "__auto_field_drop") {
+      auto *named = std::get_if<ast::TypeNamed>(&param.ty.value.kind);
+      if (!named || !isHandleBearingStruct(resolveTypeAlias(named->name)))
+        continue;
+    }
     // Skip if this function IS the drop function for the param's type.
     // A user Drop implementation must not re-drop its own parameter — doing so
     // would recurse into itself infinitely.
@@ -7004,6 +7008,8 @@ std::string MLIRGen::dropFuncForMLIRType(mlir::Type type, bool includeStructType
 }
 
 bool MLIRGen::structHasOwnedFields(const std::string &name) const {
+  if (isHandleBearingStruct(name))
+    return true;
   auto it = structTypes.find(name);
   if (it == structTypes.end())
     return false;
@@ -7028,6 +7034,13 @@ bool MLIRGen::structHasOwnedFields(const std::string &name) const {
     }
   }
   return false;
+}
+
+bool MLIRGen::isHandleBearingStruct(const std::string &name) const {
+  if (handleBearingStructs.count(name))
+    return true;
+  auto dot = name.rfind('.');
+  return dot != std::string::npos && handleBearingStructs.count(name.substr(dot + 1));
 }
 
 void MLIRGen::maybeRegisterBorrowedFieldReturn(const ast::FnDecl &fn, llvm::StringRef symbolName) {

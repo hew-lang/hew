@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// codegen cannot understand. The embedded reader requires an explicit
 /// `schema_version` field and rejects mismatches instead of carrying
 /// fallback decoding for pre-versioned payloads.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
 ///
@@ -113,6 +113,7 @@ pub struct LoweringFactEntry {
 /// - `"assign_target_shapes"`
 /// - `"lowering_facts"`
 /// - `"handle_types"`
+/// - `"handle_bearing_structs"`
 /// - `"handle_type_repr"`
 /// - `"drop_funcs"`
 /// - `"module_graph"` when module graph data is available
@@ -140,6 +141,8 @@ struct TypedProgram<'a, ModuleGraphRepr> {
     /// Names of all known handle types (e.g., `"http.Server"`, `"json.Value"`).
     /// Flows type metadata to C++ codegen so it doesn't need hardcoded type lists.
     handle_types: Vec<String>,
+    /// Structs whose fields directly or transitively contain owned handles.
+    handle_bearing_structs: Vec<String>,
     /// Map of handle type name to its MLIR representation.
     /// Default is `"handle"` (opaque pointer via `HandleType`).
     /// `"i32"` means the type is represented as a 32-bit integer (e.g., file descriptors).
@@ -177,6 +180,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
         assign_target_shapes: &'a [AssignTargetShapeEntry],
         lowering_facts: &'a [LoweringFactEntry],
         handle_types: Vec<String>,
+        handle_bearing_structs: Vec<String>,
         handle_type_repr: HashMap<String, String>,
         drop_funcs: Vec<(String, String)>,
         module_graph: Option<ModuleGraphRepr>,
@@ -193,6 +197,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
             assign_target_shapes,
             lowering_facts,
             handle_types,
+            handle_bearing_structs,
             handle_type_repr,
             drop_funcs,
             module_graph,
@@ -226,6 +231,7 @@ pub fn serialize_to_msgpack(
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
     lowering_facts: Vec<LoweringFactEntry>,
     handle_types: Vec<String>,
+    handle_bearing_structs: Vec<String>,
     handle_type_repr: HashMap<String, String>,
     drop_funcs: Vec<(String, String)>,
     source_path: Option<&str>,
@@ -239,6 +245,7 @@ pub fn serialize_to_msgpack(
         &assign_target_shapes,
         &lowering_facts,
         handle_types,
+        handle_bearing_structs,
         handle_type_repr,
         drop_funcs,
         program.module_graph.as_ref(),
@@ -282,6 +289,7 @@ pub fn serialize_to_json(
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
     lowering_facts: Vec<LoweringFactEntry>,
     handle_types: Vec<String>,
+    handle_bearing_structs: Vec<String>,
     handle_type_repr: HashMap<String, String>,
     drop_funcs: Vec<(String, String)>,
     source_path: Option<&str>,
@@ -300,6 +308,7 @@ pub fn serialize_to_json(
         &assign_target_shapes,
         &lowering_facts,
         handle_types,
+        handle_bearing_structs,
         handle_type_repr,
         drop_funcs,
         module_graph_json,
@@ -1039,6 +1048,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1054,6 +1064,7 @@ mod tests {
         let bytes = serialize_to_msgpack(
             program,
             expr_types,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1234,6 +1245,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1304,6 +1316,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1326,6 +1339,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1407,6 +1421,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1425,6 +1440,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &parsed.program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1463,6 +1479,7 @@ mod tests {
                     type_name: "Widget".to_string(),
                 },
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1533,6 +1550,7 @@ mod tests {
                 },
             }],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1586,6 +1604,7 @@ mod tests {
                 end: 20,
                 kind: AssignTargetKindData::LocalVar,
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1684,6 +1703,7 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1765,6 +1785,7 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1841,6 +1862,7 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1939,6 +1961,7 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1975,6 +1998,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -2001,6 +2025,59 @@ mod tests {
         // is extra metadata that Program doesn't carry, so it's silently ignored).
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
+    }
+
+    #[test]
+    fn serialize_includes_handle_bearing_structs() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec!["PatternWrapper".to_string(), "regexwrap.Outer".to_string()],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize to generic value");
+        let obj = value.as_object().expect("top-level should be a map");
+        assert_eq!(
+            obj.get("handle_bearing_structs")
+                .expect("handle_bearing_structs key should be present"),
+            &serde_json::json!(["PatternWrapper", "regexwrap.Outer"])
+        );
+
+        let json = serialize_to_json(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec!["PatternWrapper".to_string()],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let json_value: serde_json::Value =
+            serde_json::from_str(&json).expect("json serialization should parse");
+        assert_eq!(
+            json_value["handle_bearing_structs"],
+            serde_json::json!(["PatternWrapper"])
+        );
     }
 
     #[test]
@@ -2081,6 +2158,7 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2167,6 +2245,7 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2246,6 +2325,7 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2324,6 +2404,7 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2363,6 +2444,7 @@ mod tests {
             vec![],
             vec![],
             shapes.clone(),
+            vec![],
             vec![],
             vec![],
             HashMap::new(),
@@ -2420,6 +2502,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -2466,6 +2549,7 @@ mod tests {
                     type_name: "net.Connection".to_string(),
                 },
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -2529,6 +2613,7 @@ mod tests {
                 vec![],
                 vec![],
                 vec![],
+                vec![],
                 HashMap::new(),
                 vec![],
                 None,
@@ -2579,6 +2664,7 @@ mod tests {
                     drop_kind: hew_types::DropKind::HashSetFree,
                 },
             }],
+            vec![],
             vec![],
             HashMap::new(),
             vec![],
@@ -2634,6 +2720,7 @@ mod tests {
                     drop_kind: hew_types::DropKind::HashSetFree,
                 },
             }],
+            vec![],
             vec![],
             HashMap::new(),
             vec![],
@@ -2691,6 +2778,7 @@ mod tests {
                     3..12,
                 ),
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -2755,6 +2843,7 @@ mod tests {
             vec![],
             vec![],
             vec!["fd.Socket".to_string(), "http.Server".to_string()],
+            vec![],
             handle_type_repr,
             vec![(
                 "http.Server".to_string(),

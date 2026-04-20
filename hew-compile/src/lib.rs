@@ -162,6 +162,7 @@ pub struct FrontendArtifacts {
     pub assign_target_shapes: Vec<AssignTargetShapeEntry>,
     pub lowering_facts: Vec<LoweringFactEntry>,
     pub handle_types: Vec<String>,
+    pub handle_bearing_structs: Vec<String>,
     pub handle_type_repr: HashMap<String, String>,
     pub drop_funcs: Vec<(String, String)>,
     pub abs_source_path: Option<String>,
@@ -179,6 +180,7 @@ impl FrontendArtifacts {
             self.assign_target_shapes.clone(),
             self.lowering_facts.clone(),
             self.handle_types.clone(),
+            self.handle_bearing_structs.clone(),
             self.handle_type_repr.clone(),
             self.drop_funcs.clone(),
             self.abs_source_path.as_deref(),
@@ -196,6 +198,7 @@ impl FrontendArtifacts {
             self.assign_target_shapes.clone(),
             self.lowering_facts.clone(),
             self.handle_types.clone(),
+            self.handle_bearing_structs.clone(),
             self.handle_type_repr.clone(),
             self.drop_funcs.clone(),
             self.abs_source_path.as_deref(),
@@ -244,6 +247,7 @@ struct ProjectContext {
 
 struct CodegenMetadata {
     handle_types: Vec<String>,
+    handle_bearing_structs: Vec<String>,
     handle_type_repr: HashMap<String, String>,
     drop_funcs: Vec<(String, String)>,
     abs_source_path: Option<String>,
@@ -849,6 +853,7 @@ pub fn enrich_program_ast(
 
 fn build_codegen_metadata(
     module_registry: &hew_types::module_registry::ModuleRegistry,
+    tco: Option<&hew_types::check::TypeCheckOutput>,
     input: &str,
     source: &str,
 ) -> CodegenMetadata {
@@ -869,8 +874,19 @@ fn build_codegen_metadata(
     );
     let line_map = Some(line_map_from_source(source));
     let drop_funcs = module_registry.all_drop_funcs();
+    let mut handle_bearing_structs = tco
+        .map(|output| {
+            output
+                .handle_bearing_structs
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    handle_bearing_structs.sort();
     CodegenMetadata {
         handle_types,
+        handle_bearing_structs,
         handle_type_repr,
         drop_funcs,
         abs_source_path,
@@ -1555,8 +1571,12 @@ fn finish_compile(
         .tco
         .as_ref()
         .map_or_else(Vec::new, |tco| build_lowering_fact_entries(&program, tco));
-    let metadata =
-        build_codegen_metadata(&typecheck_result.module_registry, &source_label, &source);
+    let metadata = build_codegen_metadata(
+        &typecheck_result.module_registry,
+        typecheck_result.tco.as_ref(),
+        &source_label,
+        &source,
+    );
 
     Ok(FrontendArtifacts {
         diagnostics,
@@ -1569,6 +1589,7 @@ fn finish_compile(
         assign_target_shapes,
         lowering_facts,
         handle_types: metadata.handle_types,
+        handle_bearing_structs: metadata.handle_bearing_structs,
         handle_type_repr: metadata.handle_type_repr,
         drop_funcs: metadata.drop_funcs,
         abs_source_path: metadata.abs_source_path,
@@ -2164,6 +2185,7 @@ mod tests {
             warnings: Vec::new(),
             type_defs: std::collections::HashMap::new(),
             fn_sigs: std::collections::HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
             cycle_capable_actors: std::collections::HashSet::new(),
             user_modules: std::collections::HashSet::new(),
             call_type_args: std::collections::HashMap::new(),

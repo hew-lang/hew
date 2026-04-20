@@ -5,7 +5,7 @@
 use super::*;
 use crate::module_registry::ModuleRegistry;
 use hew_parser::ast::IntRadix;
-use hew_parser::ast::{ImportName, TraitMethod, Visibility};
+use hew_parser::ast::{ImportName, TraitMethod, TypeExpr, Visibility};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
 /// Module registry with the repo root as a search path, so stdlib
@@ -91,6 +91,90 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
 
     assert_ne!(*fresh, original);
     assert_eq!(mapping.get(&original.0), Some(&Ty::Var(*fresh)));
+}
+
+#[test]
+fn register_type_decl_marks_transitive_handle_bearing_structs() {
+    let mut registry = ModuleRegistry::new(vec![]);
+    registry.insert_handle_type_for_test("regex.Pattern".to_string());
+    let mut checker = Checker::new(registry);
+
+    let inner = TypeDecl {
+        visibility: Visibility::Private,
+        kind: TypeDeclKind::Struct,
+        name: "Inner".to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Field {
+            name: "pattern".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "regex.Pattern".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            attributes: vec![],
+            doc_comment: None,
+        }],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+    };
+    let outer = TypeDecl {
+        visibility: Visibility::Private,
+        kind: TypeDeclKind::Struct,
+        name: "Outer".to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Field {
+            name: "inner".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "Inner".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            attributes: vec![],
+            doc_comment: None,
+        }],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+    };
+    let plain = TypeDecl {
+        visibility: Visibility::Private,
+        kind: TypeDeclKind::Struct,
+        name: "Plain".to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Field {
+            name: "count".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "int".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            attributes: vec![],
+            doc_comment: None,
+        }],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+    };
+
+    checker.register_type_decl(&inner);
+    checker.register_type_decl(&outer);
+    checker.register_type_decl(&plain);
+    checker.register_qualified_type_alias("regexwrap", "Outer");
+
+    assert!(checker.handle_bearing_structs.contains("Inner"));
+    assert!(checker.handle_bearing_structs.contains("Outer"));
+    assert!(checker.handle_bearing_structs.contains("regexwrap.Outer"));
+    assert!(!checker.handle_bearing_structs.contains("Plain"));
 }
 
 #[test]

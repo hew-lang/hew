@@ -271,6 +271,7 @@ impl Checker {
             warnings: std::mem::take(&mut self.warnings),
             type_defs: resolved_type_defs,
             fn_sigs: resolved_fn_sigs,
+            handle_bearing_structs: std::mem::take(&mut self.handle_bearing_structs),
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
             call_type_args: resolved_call_type_args,

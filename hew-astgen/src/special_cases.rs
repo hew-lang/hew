@@ -345,6 +345,10 @@ pub fn program_parser() -> &'static str {
       parseVec<std::string>(mapReq(obj, "handle_types"), [](const msgpack::object &o) {
         return getString(o);
       });
+  prog.handle_bearing_structs =
+      parseVec<std::string>(mapReq(obj, "handle_bearing_structs"), [](const msgpack::object &o) {
+        return getString(o);
+      });
 
   // Handle type representations: map of type name → repr string ("i32", etc.)
   const auto &hr = mapReq(obj, "handle_type_repr");
@@ -1472,6 +1476,7 @@ mod tests {
         assert!(src.contains("mapReq(obj, \"assign_target_kinds\")"));
         assert!(src.contains("mapReq(obj, \"lowering_facts\")"));
         assert!(src.contains("mapReq(obj, \"handle_types\")"));
+        assert!(src.contains("mapReq(obj, \"handle_bearing_structs\")"));
         assert!(src.contains("mapReq(obj, \"handle_type_repr\")"));
         assert!(src.contains("prog.lowering_facts"));
         // Optional fields checked with mapGet

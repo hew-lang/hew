@@ -124,6 +124,7 @@ impl Checker {
         if !fd.is_generator {
             self.warn_rc_param_return(fd);
         }
+        self.reject_owned_handle_field_accessors(fd);
 
         self.in_generator = prev_in_generator;
         self.in_pure_function = prev_in_pure;

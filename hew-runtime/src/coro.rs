@@ -39,12 +39,16 @@ const PAGE_NOACCESS: u32 = 0x01;
 
 // ── CoroStack ────────────────────────────────────────────────────────────────
 
-/// Usable stack size (8 KiB).
-const STACK_SIZE: usize = 8 * 1024;
+/// Usable stack size (64 KiB).
+///
+/// 8 KiB was enough for the raw context bootstrap but not for debug-test
+/// entry trampolines on Linux/Windows, which overflowed before the first
+/// switched call could prove the ABI argument reload.
+const STACK_SIZE: usize = 64 * 1024;
 /// Guard page size (4 KiB, mapped `PROT_NONE` at the bottom).
 const GUARD_SIZE: usize = 4 * 1024;
 
-/// A coroutine stack: 8 KiB usable + 4 KiB guard page (`PROT_NONE` at bottom).
+/// A coroutine stack: 64 KiB usable + 4 KiB guard page (`PROT_NONE` at bottom).
 pub struct CoroStack {
     /// Base of the allocation (guard page starts here).
     base: *mut u8,
@@ -494,14 +498,41 @@ pub unsafe fn coro_init(
 mod tests {
     use super::*;
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     static TEST_SEEN_ARG: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    static TEST_SWITCHED_BACK: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    struct FirstSwitchState {
+        caller_ctx: *mut CoroContext,
+        callee_ctx: *mut CoroContext,
+        expected_arg: *mut u8,
+    }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     unsafe extern "C" fn record_arg(arg: *mut u8) {
         TEST_SEEN_ARG.store(arg as usize, Ordering::Release);
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "the test passes a pointer created from `&raw mut FirstSwitchState`"
+    )]
+    unsafe extern "C" fn record_arg_and_switch_back(arg: *mut u8) {
+        // SAFETY: `arg` points at the `FirstSwitchState` created by the test and
+        // remains live until the caller context resumes.
+        let state = unsafe { &mut *arg.cast::<FirstSwitchState>() };
+        TEST_SEEN_ARG.store(state.expected_arg as usize, Ordering::Release);
+        TEST_SWITCHED_BACK.store(true, Ordering::Release);
+        // SAFETY: Both contexts remain live for the duration of the test. This
+        // resumes the suspended caller before any Rust frame returns on the
+        // coroutine stack.
+        unsafe { coro_switch(state.callee_ctx, state.caller_ctx) };
+        unreachable!("test should not resume the bootstrap coroutine twice");
     }
 
     #[test]
@@ -595,41 +626,35 @@ mod tests {
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn first_switch_delivers_init_argument_via_abi_register() {
-        let current_exe = std::env::current_exe().expect("test binary path");
-        let status = std::process::Command::new(current_exe)
-            .arg("--exact")
-            .arg("coro::tests::first_switch_child_records_init_argument")
-            .env("HEW_CORO_SWITCH_CHILD", "1")
-            .status()
-            .expect("spawn child test process");
-
-        assert_eq!(status.code(), Some(7));
-    }
-
-    #[test]
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn first_switch_child_records_init_argument() {
-        if std::env::var_os("HEW_CORO_SWITCH_CHILD").is_none() {
-            return;
-        }
-
-        // Jump into `_exit` in a subprocess so the test exercises the ABI
-        // register reload without needing to resume libtest on the switched stack.
-        // SAFETY: The child process owns both contexts and the stack for the
-        // duration of the switch, and `_exit` never returns after receiving the
-        // argument register loaded by `coro_switch`.
+        // SAFETY: Both contexts, the borrowed state record, and the alternate
+        // stack remain live until the coroutine switches back to the caller.
         unsafe {
             let stack = CoroStack::new().expect("failed to allocate stack");
             let mut caller_ctx = CoroContext::new();
             let mut callee_ctx = CoroContext::new();
-            let exit_entry: unsafe extern "C" fn(*mut u8) =
-                std::mem::transmute(libc::_exit as unsafe extern "C" fn(i32) -> !);
-            let status = std::ptr::with_exposed_provenance_mut::<u8>(7);
-            coro_init(&raw mut callee_ctx, stack.top(), exit_entry, status);
+            let expected_arg = (&raw mut callee_ctx).cast::<u8>();
+            let mut state = FirstSwitchState {
+                caller_ctx: &raw mut caller_ctx,
+                callee_ctx: &raw mut callee_ctx,
+                expected_arg,
+            };
+
+            TEST_SEEN_ARG.store(0, Ordering::Release);
+            TEST_SWITCHED_BACK.store(false, Ordering::Release);
+
+            // SAFETY: The alternate stack and both contexts remain owned by this
+            // test for the full switch out and back.
+            coro_init(
+                &raw mut callee_ctx,
+                stack.top(),
+                record_arg_and_switch_back,
+                (&raw mut state).cast(),
+            );
 
             coro_switch(&raw mut caller_ctx, &raw const callee_ctx);
-        }
 
-        panic!("child coroutine should exit via libc::_exit");
+            assert_eq!(TEST_SEEN_ARG.load(Ordering::Acquire), expected_arg as usize);
+            assert!(TEST_SWITCHED_BACK.load(Ordering::Acquire));
+        }
     }
 }

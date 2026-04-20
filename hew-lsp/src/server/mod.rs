@@ -724,63 +724,21 @@ impl LanguageServer for HewLanguageServer {
         &self,
         params: TypeHierarchyPrepareParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let uri = &params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let Some(word) = word_at_offset(&doc.source, offset) else {
-            return Ok(None);
-        };
-
-        let item = find_type_hierarchy_item(
-            uri,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-            &word,
-        );
-        Ok(item.map(|i| vec![i]))
+        Ok(handlers::hierarchy::prepare_type_hierarchy(self, &params))
     }
 
     async fn supertypes(
         &self,
         params: TypeHierarchySupertypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let item = &params.item;
-        let Some(doc) = self.documents.get(&item.uri) else {
-            return Ok(None);
-        };
-
-        let supers = collect_supertypes(
-            &item.uri,
-            &item.name,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-        );
-        Ok(non_empty(supers))
+        Ok(handlers::hierarchy::supertypes(self, &params))
     }
 
     async fn subtypes(
         &self,
         params: TypeHierarchySubtypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let item = &params.item;
-        let Some(doc) = self.documents.get(&item.uri) else {
-            return Ok(None);
-        };
-
-        let subs = collect_subtypes(
-            &item.uri,
-            &item.name,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-        );
-        Ok(non_empty(subs))
+        Ok(handlers::hierarchy::subtypes(self, &params))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -802,64 +760,21 @@ impl LanguageServer for HewLanguageServer {
         &self,
         params: CallHierarchyPrepareParams,
     ) -> Result<Option<Vec<CallHierarchyItem>>> {
-        let uri = params.text_document_position_params.text_document.uri;
-        let pos = params.text_document_position_params.position;
-        let Some(doc) = self.documents.get(&uri) else {
-            return Ok(None);
-        };
-
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, pos);
-        let word = word_at_offset(&doc.source, offset);
-        let Some(word) = word else {
-            return Ok(None);
-        };
-
-        let item = find_callable_at(
-            &uri,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-            &word,
-        );
-        Ok(item.map(|it| vec![it]))
+        Ok(handlers::hierarchy::prepare_call_hierarchy(self, &params))
     }
 
     async fn incoming_calls(
         &self,
         params: CallHierarchyIncomingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
-        let item = &params.item;
-        let Some(doc) = self.documents.get(&item.uri) else {
-            return Ok(None);
-        };
-
-        let calls = find_incoming_calls(
-            &item.uri,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-            &item.name,
-        );
-        Ok(non_empty(calls))
+        Ok(handlers::hierarchy::incoming_calls(self, &params))
     }
 
     async fn outgoing_calls(
         &self,
         params: CallHierarchyOutgoingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
-        let item = &params.item;
-        let Some(doc) = self.documents.get(&item.uri) else {
-            return Ok(None);
-        };
-
-        let calls = find_outgoing_calls(
-            &item.uri,
-            &doc.source,
-            &doc.line_offsets,
-            &doc.parse_result,
-            &item.name,
-        );
-        Ok(non_empty(calls))
+        Ok(handlers::hierarchy::outgoing_calls(self, &params))
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {

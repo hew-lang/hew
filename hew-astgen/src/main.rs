@@ -7,9 +7,14 @@ mod type_map;
 
 use std::path::PathBuf;
 
-fn generate_reader(ast_source: &str, module_source: &str) -> String {
-    let mut types = parse::extract_types(ast_source);
-    let module_types = parse::extract_types(module_source);
+fn generate_reader(
+    ast_source_name: &str,
+    ast_source: &str,
+    module_source_name: &str,
+    module_source: &str,
+) -> Result<String, parse::ParseError> {
+    let mut types = parse::extract_types(ast_source_name, ast_source)?;
+    let module_types = parse::extract_types(module_source_name, module_source)?;
     types.extend(module_types);
 
     eprintln!("Extracted {} type definitions:", types.len());
@@ -25,7 +30,7 @@ fn generate_reader(ast_source: &str, module_source: &str) -> String {
     }
 
     let type_map = type_map::TypeMap::new();
-    codegen::generate(&types, &type_map)
+    Ok(codegen::generate(&types, &type_map))
 }
 
 fn main() {
@@ -116,7 +121,18 @@ fn main() {
             let module_source = std::fs::read_to_string(&module_path)
                 .unwrap_or_else(|e| panic!("Failed to read {}: {e}", module_path.display()));
 
-            let cpp_code = generate_reader(&ast_source, &module_source);
+            let ast_source_name = ast_path.display().to_string();
+            let module_source_name = module_path.display().to_string();
+            let cpp_code = generate_reader(
+                &ast_source_name,
+                &ast_source,
+                &module_source_name,
+                &module_source,
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("{error}");
+                std::process::exit(1);
+            });
 
             std::fs::write(&output_path, &cpp_code)
                 .unwrap_or_else(|e| panic!("Failed to write {}: {e}", output_path.display()));
@@ -155,7 +171,13 @@ mod tests {
         let checked_in = fs::read_to_string(&output_path)
             .unwrap_or_else(|e| panic!("Failed to read {}: {e}", output_path.display()));
 
-        let generated = generate_reader(&ast_source, &module_source);
+        let generated = generate_reader(
+            &ast_path.display().to_string(),
+            &ast_source,
+            &module_path.display().to_string(),
+            &module_source,
+        )
+        .expect("checked-in AST sources should parse");
         // Normalize CRLF → LF so the comparison works on Windows (git
         // may check out .cpp files with CRLF, but the generator emits LF).
         assert_eq!(

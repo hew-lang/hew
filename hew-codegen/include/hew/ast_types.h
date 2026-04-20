@@ -1115,6 +1115,8 @@ struct Program {
   /// Known handle type names (e.g., "http.Server", "json.Value").
   /// Populated from the Rust type checker's handle type registry.
   std::vector<std::string> handle_types;
+  /// Struct type names whose fields directly or transitively contain owned handles.
+  std::vector<std::string> handle_bearing_structs;
   /// Handle type name → MLIR representation ("handle" or "i32").
   /// Types not in this map default to opaque pointer (HandleType).
   std::unordered_map<std::string, std::string> handle_type_repr;

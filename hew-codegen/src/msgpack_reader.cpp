@@ -157,7 +157,7 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
 /// boundary is internal to the current `hew` binary, so missing or
 /// mismatched versions are rejected rather than carrying compatibility
 /// fallbacks for older payloads.
-constexpr uint32_t CURRENT_SCHEMA_VERSION = 7;
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 8;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 
@@ -1909,6 +1909,10 @@ static ast::Program parseProgram(const msgpack::object &obj) {
   // Handle type metadata: list of known handle type names
   prog.handle_types =
       parseVec<std::string>(mapReq(obj, "handle_types"), [](const msgpack::object &o) {
+        return getString(o);
+      });
+  prog.handle_bearing_structs =
+      parseVec<std::string>(mapReq(obj, "handle_bearing_structs"), [](const msgpack::object &o) {
         return getString(o);
       });
 

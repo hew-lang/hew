@@ -21,10 +21,12 @@ fn main() {
     let repo_dir = Path::new("..");
     emit_git_metadata(repo_dir);
 
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should exist"));
+    let out_dir = PathBuf::from(
+        env::var_os("OUT_DIR").expect("invariant: cargo sets OUT_DIR for build scripts"),
+    );
     let build_dir = out_dir.join("hew-codegen-cmake");
     let source_dir = repo_dir.join("hew-codegen");
-    let target = env::var("TARGET").expect("TARGET should exist");
+    let target = env::var("TARGET").expect("invariant: cargo sets TARGET for build scripts");
     let target_env = target.replace('-', "_");
 
     println!("cargo:rerun-if-env-changed=CC_{target_env}");
@@ -100,7 +102,7 @@ fn configure_and_build(
     // Reject unsupported cross-compilation: the embedded C++ codegen backend is
     // built for the host toolchain by default, so a host≠target mismatch would
     // silently embed the wrong backend artifact.  Native builds are fine.
-    let host = env::var("HOST").unwrap_or_default();
+    let host = required_target_env("HOST");
     if let Some(message) = embedded_codegen_guard_error(&host, target) {
         panic!("{message}");
     }
@@ -326,8 +328,9 @@ fn embedded_codegen_guard_error(host: &str, target: &str) -> Option<String> {
         return None;
     }
 
-    let host_tuple = parse_target_tuple(host);
-    let target_tuple = parse_target_tuple(target);
+    let host_tuple = parse_target_tuple("HOST", host).unwrap_or_else(|message| panic!("{message}"));
+    let target_tuple =
+        parse_target_tuple("TARGET", target).unwrap_or_else(|message| panic!("{message}"));
     if host_tuple == target_tuple {
         return None;
     }
@@ -342,9 +345,15 @@ fn embedded_codegen_guard_error(host: &str, target: &str) -> Option<String> {
     ))
 }
 
-fn parse_target_tuple(triple: &str) -> TargetTuple<'_> {
+fn parse_target_tuple<'a>(label: &str, triple: &'a str) -> Result<TargetTuple<'a>, String> {
+    if triple.trim().is_empty() {
+        return Err(format!(
+            "environment variable {label} was empty; expected a Rust target triple such as x86_64-unknown-linux-gnu"
+        ));
+    }
+
     let parts: Vec<_> = triple.split('-').collect();
-    let arch = parts.first().copied().unwrap_or_default();
+    let arch = parts.first().copied().filter(|part| !part.is_empty());
     let os = parts
         .iter()
         .skip(1)
@@ -353,9 +362,25 @@ fn parse_target_tuple(triple: &str) -> TargetTuple<'_> {
         .or(match parts.as_slice() {
             [_, os] | [_, _, os, ..] => Some(*os),
             _ => None,
-        })
-        .unwrap_or_default();
-    TargetTuple { arch, os }
+        });
+    match (arch, os.filter(|part| !part.is_empty())) {
+        (Some(arch), Some(os)) => Ok(TargetTuple { arch, os }),
+        _ => Err(format!(
+            "environment variable {label} had invalid target triple '{triple}'; expected a Rust target triple such as x86_64-unknown-linux-gnu"
+        )),
+    }
+}
+
+fn required_target_env(name: &str) -> String {
+    match env::var(name) {
+        Ok(value) if !value.trim().is_empty() => value,
+        Ok(_) => panic!(
+            "environment variable {name} was empty; expected a Rust target triple such as x86_64-unknown-linux-gnu"
+        ),
+        Err(error) => panic!(
+            "environment variable {name} is required for the hew-cli build script: {error}"
+        ),
+    }
 }
 
 fn is_known_os_component(component: &str) -> bool {
@@ -500,12 +525,19 @@ mod tests {
     #[test]
     fn target_tuple_parser_finds_wasi_os_component() {
         assert_eq!(
-            parse_target_tuple("wasm32-unknown-unknown-wasi"),
+            parse_target_tuple("TARGET", "wasm32-unknown-unknown-wasi")
+                .expect("wasi triple should parse"),
             super::TargetTuple {
                 arch: "wasm32",
                 os: "wasi",
             }
         );
+    }
+
+    #[test]
+    fn target_tuple_parser_rejects_empty_triples() {
+        let error = parse_target_tuple("HOST", "").expect_err("empty HOST should fail");
+        assert!(error.contains("environment variable HOST was empty"));
     }
 
     #[test]

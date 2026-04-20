@@ -330,12 +330,17 @@ fn resolve_check_target<'a>(
 
     match file {
         Some(f) => Some(f),
-        None => find_first_hew_file(original_input)
-            .map(|entry| Box::leak(entry.into_boxed_str()) as &str)
-            .or_else(|| {
+        None => match find_first_hew_file(original_input) {
+            Ok(Some(entry)) => Some(Box::leak(entry.into_boxed_str()) as &str),
+            Ok(None) => {
                 eprintln!("No .hew files found in '{original_input}'");
                 None
-            }),
+            }
+            Err(error) => {
+                eprintln!("Warning: {error}");
+                None
+            }
+        },
     }
 }
 
@@ -442,18 +447,36 @@ fn emit_watch_status(status: &str, color: &str, elapsed: Duration, palette: &Wat
     );
 }
 
-fn find_first_hew_file(dir: &str) -> Option<String> {
+fn find_first_hew_file(dir: &str) -> Result<Option<String>, String> {
     let path = Path::new(dir);
-    for entry in std::fs::read_dir(path).ok()?.flatten() {
+    let entries = std::fs::read_dir(path)
+        .map_err(|error| format!("cannot read watch directory '{}': {error}", path.display()))?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!(
+                    "Warning: cannot inspect an entry under '{}': {error}",
+                    path.display()
+                );
+                continue;
+            }
+        };
         let p = entry.path();
         if p.is_file()
             && p.extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("hew"))
         {
-            return p.to_str().map(String::from);
+            let path = p.to_str().ok_or_else(|| {
+                format!(
+                    "found watch target '{}' but its path is not valid UTF-8",
+                    p.display()
+                )
+            })?;
+            return Ok(Some(path.to_string()));
         }
     }
-    None
+    Ok(None)
 }
 
 fn chrono_like_timestamp() -> String {
@@ -505,5 +528,12 @@ mod tests {
         assert_eq!(palette.bold, BOLD);
         assert_eq!(palette.dim, DIM);
         assert_eq!(palette.reset, RESET);
+    }
+
+    #[test]
+    fn find_first_hew_file_reports_missing_directory() {
+        let error = find_first_hew_file("this-directory-should-not-exist-hew-watch")
+            .expect_err("missing directory should be reported");
+        assert!(error.contains("cannot read watch directory"));
     }
 }

@@ -1,6 +1,7 @@
 //! Global configuration for the Adze package manager (`~/.adze/config.toml`).
 
-use std::path::PathBuf;
+use std::fmt;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +62,43 @@ pub const DEFAULT_FALLBACK_API: Option<&str> = Some("https://mirror.hewpkg.com/a
 /// The default public registry index URL.
 pub const DEFAULT_REGISTRY_INDEX: &str = "https://github.com/hew-lang/registry-index";
 
+/// Errors that can occur when reading or parsing `~/.adze/config.toml`.
+#[derive(Debug)]
+pub enum ConfigError {
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Parse {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read { path, source } => {
+                write!(f, "cannot read config '{}': {source}", path.display())
+            }
+            Self::Parse { path, source } => write!(
+                f,
+                "invalid config '{}': expected a valid TOML Adze config, found {source}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read { source, .. } => Some(source),
+            Self::Parse { source, .. } => Some(source),
+        }
+    }
+}
+
 /// Compiled-in registry endpoints.
 #[derive(Debug, Clone)]
 pub struct RegistryEndpoints {
@@ -95,14 +133,27 @@ pub fn get_named_registry(config: &AdzeConfig, name: &str) -> Option<RemoteRegis
 
 /// Load the global configuration from `~/.adze/config.toml`.
 ///
-/// Returns a default (empty) config if the file does not exist or cannot be
-/// parsed.
-#[must_use]
-pub fn load_config() -> AdzeConfig {
-    let path = config_path();
-    match std::fs::read_to_string(&path) {
-        Ok(text) => toml::from_str(&text).unwrap_or_default(),
-        Err(_) => AdzeConfig::default(),
+/// Returns a default (empty) config if the file does not exist.
+///
+/// # Errors
+///
+/// Returns [`ConfigError`] when `~/.adze/config.toml` exists but cannot be read
+/// or parsed as a valid Adze TOML config.
+pub fn load_config() -> Result<AdzeConfig, ConfigError> {
+    load_config_from_path(&config_path())
+}
+
+fn load_config_from_path(path: &Path) -> Result<AdzeConfig, ConfigError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => toml::from_str(&text).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AdzeConfig::default()),
+        Err(source) => Err(ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
@@ -152,9 +203,38 @@ mod tests {
 
     #[test]
     fn load_config_returns_default_when_missing() {
-        let config = load_config();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = load_config_from_path(&dir.path().join("config.toml"))
+            .expect("missing config defaults");
         assert!(config.defaults.is_none());
         assert!(config.registry.is_none());
+    }
+
+    #[test]
+    fn load_config_reports_parse_error_with_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[defaults\nauthor = \"Alice\"\n").expect("write config");
+
+        let error = load_config_from_path(&path).expect_err("malformed config should fail");
+        let message = error.to_string();
+
+        assert!(message.contains(path.to_string_lossy().as_ref()));
+        assert!(message.contains("expected a valid TOML Adze config"));
+    }
+
+    #[test]
+    fn load_config_parses_valid_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[defaults]\nauthor = \"Alice\"\nlicense = \"MIT\"\n")
+            .expect("write config");
+
+        let config = load_config_from_path(&path).expect("valid config should parse");
+        let defaults = config.defaults.expect("defaults should exist");
+
+        assert_eq!(defaults.author.as_deref(), Some("Alice"));
+        assert_eq!(defaults.license.as_deref(), Some("MIT"));
     }
 
     #[test]

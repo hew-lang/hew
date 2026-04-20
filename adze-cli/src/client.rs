@@ -173,8 +173,17 @@ impl RegistryClient {
     /// Loads `~/.adze/config.toml` to check for a `fallback-api` override.
     #[must_use]
     pub fn new() -> Self {
+        let cfg = config::load_config().unwrap_or_else(|error| {
+            eprintln!("adze: {error}");
+            std::process::exit(1);
+        });
+        Self::new_with_config(&cfg)
+    }
+
+    /// Create a client using the provided config.
+    #[must_use]
+    pub fn new_with_config(cfg: &config::AdzeConfig) -> Self {
         let endpoints = config::discover_registry();
-        let cfg = config::load_config();
 
         // Config fallback-api overrides the compiled-in default.
         let fallback_api = cfg
@@ -762,14 +771,15 @@ mod tests {
 
     #[test]
     fn client_default_url() {
-        let client = RegistryClient::new();
+        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
         assert_eq!(client.api_url, config::DEFAULT_REGISTRY_API);
         assert!(client.token.is_none());
     }
 
     #[test]
     fn client_with_token() {
-        let client = RegistryClient::new().with_token("tok123".to_string());
+        let client = RegistryClient::new_with_config(&config::AdzeConfig::default())
+            .with_token("tok123".to_string());
         assert_eq!(client.token.as_deref(), Some("tok123"));
     }
 
@@ -781,7 +791,7 @@ mod tests {
 
     #[test]
     fn publish_requires_token() {
-        let client = RegistryClient::new();
+        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
         let req = PublishRequest {
             metadata: PublishMetadata {
                 name: "test".to_string(),
@@ -809,21 +819,21 @@ mod tests {
 
     #[test]
     fn yank_requires_token() {
-        let client = RegistryClient::new();
+        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
         let result = client.yank("test", "0.1.0", true, Some("reason"));
         assert!(matches!(result, Err(ApiError::NotAuthenticated)));
     }
 
     #[test]
     fn register_namespace_requires_token() {
-        let client = RegistryClient::new();
+        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
         let result = client.register_namespace("myprefix");
         assert!(matches!(result, Err(ApiError::NotAuthenticated)));
     }
 
     #[test]
     fn register_key_requires_token() {
-        let client = RegistryClient::new();
+        let client = RegistryClient::new_with_config(&config::AdzeConfig::default());
         let result = client.register_key("base64key");
         assert!(matches!(result, Err(ApiError::NotAuthenticated)));
     }

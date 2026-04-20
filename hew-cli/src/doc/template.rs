@@ -170,15 +170,6 @@ pub fn highlight_signature(sig: &str) -> String {
     super::highlight::highlight_signature(sig)
 }
 
-/// Escape HTML special characters.
-#[must_use]
-pub fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,11 +179,6 @@ mod tests {
         let html = wrap_page("TestMod", "<p>hello</p>", None);
         assert!(html.contains("<title>TestMod — Hew Standard Library</title>"));
         assert!(html.contains("<p>hello</p>"));
-    }
-
-    #[test]
-    fn html_escape_works() {
-        assert_eq!(html_escape("<i32>"), "&lt;i32&gt;");
     }
 
     #[test]

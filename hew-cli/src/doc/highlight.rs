@@ -202,21 +202,6 @@ fn classify_identifier(id: &str) -> &'static str {
     }
 }
 
-/// Escape HTML special characters in source text.
-fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
 /// Check whether a gap between tokens looks like a comment and return the
 /// colour to apply. Regular `//` and `/* */` comments are skipped by the lexer
 /// so they appear as gaps.
@@ -296,24 +281,24 @@ pub fn highlight_signature(source: &str) -> String {
     for (tok, span) in &tokens {
         if span.start > pos {
             let gap = &source[pos..span.start];
-            out.push_str(&html_escape(gap));
+            out.push_str(&crate::util::html_escape(gap));
         }
         let text = &source[span.start..span.end];
         let color = token_color(tok);
         if color == PLAIN {
-            out.push_str(&html_escape(text));
+            out.push_str(&crate::util::html_escape(text));
         } else {
             out.push_str("<span style=\"color:");
             out.push_str(color);
             out.push_str("\">");
-            out.push_str(&html_escape(text));
+            out.push_str(&crate::util::html_escape(text));
             out.push_str("</span>");
         }
         pos = span.end;
     }
 
     if pos < source.len() {
-        out.push_str(&html_escape(&source[pos..]));
+        out.push_str(&crate::util::html_escape(&source[pos..]));
     }
 
     out
@@ -332,7 +317,7 @@ fn emit_gap(out: &mut String, gap: &str) {
                 out.push_str("<span style=\"color:");
                 out.push_str(color);
                 out.push_str(";font-style:italic\">");
-                out.push_str(&html_escape(line));
+                out.push_str(&crate::util::html_escape(line));
                 out.push_str("</span>");
             }
         }
@@ -343,7 +328,7 @@ fn emit_gap(out: &mut String, gap: &str) {
                 out.push_str("</span>\n<span class=\"line\">");
             }
             if !line.is_empty() {
-                out.push_str(&html_escape(line));
+                out.push_str(&crate::util::html_escape(line));
             }
         }
     }
@@ -357,12 +342,12 @@ fn emit_styled(out: &mut String, text: &str, color: &str) {
         }
         if !line.is_empty() {
             if color == PLAIN {
-                out.push_str(&html_escape(line));
+                out.push_str(&crate::util::html_escape(line));
             } else {
                 out.push_str("<span style=\"color:");
                 out.push_str(color);
                 out.push_str("\">");
-                out.push_str(&html_escape(line));
+                out.push_str(&crate::util::html_escape(line));
                 out.push_str("</span>");
             }
         }

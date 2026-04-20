@@ -3,12 +3,14 @@
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::collections::HashMap;
 
+use crate::util::html_escape;
+
 use super::extract::{
     DocActor, DocConst, DocField, DocFunction, DocMethod, DocModule, DocTrait, DocType,
     DocTypeAlias,
 };
 use super::highlight;
-use super::template::{highlight_signature, html_escape};
+use super::template::highlight_signature;
 
 /// Shift a pulldown-cmark heading level by `offset`, clamping to 1–6.
 fn shift_level(level: HeadingLevel, offset: u8) -> HeadingLevel {

@@ -198,7 +198,7 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
         for module in &modules {
             let body = render_module(module);
             let filename = module_to_filename(&module.name, "html");
-            let escaped_name = template::html_escape(&module.name);
+            let escaped_name = crate::util::html_escape(&module.name);
             let breadcrumb = format!(
                 "<a href=\"index.html\">Index</a><a href=\"{filename}\">{escaped_name}</a>"
             );

@@ -39,15 +39,6 @@ pub(crate) enum TimeoutKillTarget {
     ProcessGroup,
 }
 
-/// Parse a `--timeout` value expressed in seconds.
-pub(crate) fn timeout_from_seconds(seconds: u64) -> Result<Duration, String> {
-    if seconds == 0 {
-        Err("--timeout must be at least 1 second".to_string())
-    } else {
-        Ok(Duration::from_secs(seconds))
-    }
-}
-
 /// Format a timeout duration using the existing CLI text style.
 pub(crate) fn format_timeout(timeout: Duration) -> String {
     if timeout.as_millis() > 0 && timeout.as_millis() < 1_000 {

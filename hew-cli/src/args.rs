@@ -197,9 +197,9 @@ pub struct RunArgs {
     /// Target triple.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
-    /// Execution timeout in seconds.
-    #[arg(long)]
-    pub timeout: Option<u64>,
+    /// Execution timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
+    #[arg(long, value_name = "DURATION")]
+    pub timeout: Option<String>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Arguments to pass to the compiled program (after --).
@@ -307,9 +307,9 @@ pub struct EvalArgs {
     /// Execute file in REPL context (`-` reads from stdin).
     #[arg(short = 'f')]
     pub file: Option<PathBuf>,
-    /// Per-evaluation timeout in seconds.
-    #[arg(long, default_value = "30")]
-    pub timeout: u64,
+    /// Per-evaluation timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
+    #[arg(long, default_value = "30", value_name = "DURATION")]
+    pub timeout: String,
     /// Compilation target triple (e.g. `wasm32-wasi`).
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
@@ -352,9 +352,9 @@ pub struct TestArgs {
     /// Output format.
     #[arg(long, value_enum, default_value = "text")]
     pub format: TestFormat,
-    /// Per-test timeout in seconds.
-    #[arg(long, default_value = "30")]
-    pub timeout: u64,
+    /// Per-test timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
+    #[arg(long, default_value = "30", value_name = "DURATION")]
+    pub timeout: String,
     /// Disable coloured output.
     #[arg(long)]
     pub no_color: bool,
@@ -519,7 +519,7 @@ pub struct PlaygroundVerifyArgs {
     /// Defaults to `examples/playground/manifest.json` (relative to cwd).
     #[arg(long, value_name = "FILE")]
     pub manifest: Option<std::path::PathBuf>,
-    /// Per-example execution timeout in seconds.
-    #[arg(long, default_value = "30")]
-    pub timeout: u64,
+    /// Per-example execution timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
+    #[arg(long, default_value = "30", value_name = "DURATION")]
+    pub timeout: String,
 }

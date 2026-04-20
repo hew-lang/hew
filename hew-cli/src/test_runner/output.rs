@@ -227,12 +227,7 @@ fn strip_ansi(s: &str) -> String {
 
 /// Escape XML special characters (also strips ANSI codes).
 fn xml_escape(s: &str) -> String {
-    strip_ansi(s)
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    crate::util::html_escape(&strip_ansi(s)).replace('\'', "&apos;")
 }
 
 #[cfg(test)]

@@ -153,6 +153,14 @@ pub fn set_timeout(timeout_ms: int) {
     unsafe { hew_http_set_timeout(timeout_ms as i32) }; // INTERNAL-ABI: C ABI takes i32 timeout
 }
 
+/// Return the last HTTP client error observed on this thread.
+///
+/// Accessors that return null on allocation failure update this string.
+/// Successful accessor calls clear it.
+pub fn last_error() -> String {
+    unsafe { hew_http_last_error() }
+}
+
 /// Perform an HTTP GET request and return a `Response` handle.
 ///
 /// # Examples
@@ -226,6 +234,7 @@ pub fn post_string(url: String, content_type: String, body: String) -> Option<St
 extern "C" {
     fn hew_http_request_hew(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Response;
     fn hew_http_set_timeout(timeout_ms: i32);
+    fn hew_http_last_error() -> String;
     fn hew_http_response_free(resp: Response);
     fn hew_http_response_status(resp: Response) -> i32;
     fn hew_http_response_body(resp: Response) -> String;

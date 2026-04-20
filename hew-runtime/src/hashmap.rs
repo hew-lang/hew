@@ -116,6 +116,58 @@ unsafe fn find_entry(m: *mut HewHashMap, key: *const c_char) -> isize {
     }
 }
 
+/// Find the slot to update or insert for `key`, continuing past tombstones.
+///
+/// Returns a pointer to either the existing occupied entry for `key`, the first
+/// tombstone in the probe chain, or the first empty slot if no tombstone was
+/// encountered.
+///
+/// # Safety
+///
+/// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
+unsafe fn find_insert_slot(m: *mut HewHashMap, key: *const c_char) -> *mut HewMapEntry {
+    // SAFETY: caller guarantees `m` and `key` are valid.
+    unsafe {
+        let map = &mut *m;
+        let mask = map.cap - 1;
+        let start = (fnv1a(key) as usize) & mask;
+        let mut idx = start;
+        let mut first_tombstone = ptr::null_mut::<HewMapEntry>();
+
+        loop {
+            let entry = map.entries.add(idx);
+            match (*entry).state {
+                OCCUPIED => {
+                    if libc::strcmp((*entry).key, key) == 0 {
+                        return entry;
+                    }
+                }
+                TOMBSTONE => {
+                    if first_tombstone.is_null() {
+                        first_tombstone = entry;
+                    }
+                }
+                EMPTY => {
+                    return if first_tombstone.is_null() {
+                        entry
+                    } else {
+                        first_tombstone
+                    };
+                }
+                _ => unreachable!("invalid hashmap entry state"),
+            }
+            idx = (idx + 1) & mask;
+            if idx == start {
+                return if first_tombstone.is_null() {
+                    unreachable!("hashmap insert probe found no reusable slot")
+                } else {
+                    first_tombstone
+                };
+            }
+        }
+    }
+}
+
 /// Resize the map to double its current capacity.
 ///
 /// # Safety
@@ -220,39 +272,13 @@ pub unsafe extern "C" fn hew_hashmap_insert_impl(
         if (*m).len * 100 >= (*m).cap * LOAD_PCTG {
             resize(m);
         }
-        let mask = (*m).cap - 1;
-        let h = fnv1a(key);
-        let mut idx = (h as usize) & mask;
-
-        loop {
-            let entry = &mut *(*m).entries.add(idx);
-            if entry.state == OCCUPIED {
-                if libc::strcmp(entry.key, key) == 0 {
-                    // Update existing entry.
-                    entry.value_i32 = val_i32;
-                    if !entry.value_str.is_null() {
-                        libc::free(entry.value_str.cast());
-                    }
-                    entry.value_str = if val_str.is_null() {
-                        ptr::null_mut()
-                    } else {
-                        libc::strdup(val_str)
-                    };
-                    if !val_str.is_null() && entry.value_str.is_null() {
-                        libc::abort();
-                    }
-                    return;
-                }
-                idx = (idx + 1) & mask;
-                continue;
-            }
-            // Empty or tombstone slot — insert here.
-            entry.state = OCCUPIED;
-            entry.key = libc::strdup(key);
-            if entry.key.is_null() {
-                libc::abort();
-            }
+        let entry = &mut *find_insert_slot(m, key);
+        if entry.state == OCCUPIED {
+            // Update existing entry.
             entry.value_i32 = val_i32;
+            if !entry.value_str.is_null() {
+                libc::free(entry.value_str.cast());
+            }
             entry.value_str = if val_str.is_null() {
                 ptr::null_mut()
             } else {
@@ -261,11 +287,26 @@ pub unsafe extern "C" fn hew_hashmap_insert_impl(
             if !val_str.is_null() && entry.value_str.is_null() {
                 libc::abort();
             }
-            entry.value_i64 = 0;
-            entry.value_f64 = 0.0;
-            (*m).len += 1;
             return;
         }
+        // Empty or tombstone slot — insert here.
+        entry.state = OCCUPIED;
+        entry.key = libc::strdup(key);
+        if entry.key.is_null() {
+            libc::abort();
+        }
+        entry.value_i32 = val_i32;
+        entry.value_str = if val_str.is_null() {
+            ptr::null_mut()
+        } else {
+            libc::strdup(val_str)
+        };
+        if !val_str.is_null() && entry.value_str.is_null() {
+            libc::abort();
+        }
+        entry.value_i64 = 0;
+        entry.value_f64 = 0.0;
+        (*m).len += 1;
     }
 }
 
@@ -281,32 +322,21 @@ pub unsafe extern "C" fn hew_hashmap_insert_i64(m: *mut HewHashMap, key: *const 
         if (*m).len * 100 >= (*m).cap * LOAD_PCTG {
             resize(m);
         }
-        let mask = (*m).cap - 1;
-        let h = fnv1a(key);
-        let mut idx = (h as usize) & mask;
-
-        loop {
-            let entry = &mut *(*m).entries.add(idx);
-            if entry.state == OCCUPIED {
-                if libc::strcmp(entry.key, key) == 0 {
-                    entry.value_i64 = val;
-                    return;
-                }
-                idx = (idx + 1) & mask;
-                continue;
-            }
-            entry.state = OCCUPIED;
-            entry.key = libc::strdup(key);
-            if entry.key.is_null() {
-                libc::abort();
-            }
+        let entry = &mut *find_insert_slot(m, key);
+        if entry.state == OCCUPIED {
             entry.value_i64 = val;
-            entry.value_i32 = 0;
-            entry.value_str = ptr::null_mut();
-            entry.value_f64 = 0.0;
-            (*m).len += 1;
             return;
         }
+        entry.state = OCCUPIED;
+        entry.key = libc::strdup(key);
+        if entry.key.is_null() {
+            libc::abort();
+        }
+        entry.value_i64 = val;
+        entry.value_i32 = 0;
+        entry.value_str = ptr::null_mut();
+        entry.value_f64 = 0.0;
+        (*m).len += 1;
     }
 }
 
@@ -322,32 +352,21 @@ pub unsafe extern "C" fn hew_hashmap_insert_f64(m: *mut HewHashMap, key: *const 
         if (*m).len * 100 >= (*m).cap * LOAD_PCTG {
             resize(m);
         }
-        let mask = (*m).cap - 1;
-        let h = fnv1a(key);
-        let mut idx = (h as usize) & mask;
-
-        loop {
-            let entry = &mut *(*m).entries.add(idx);
-            if entry.state == OCCUPIED {
-                if libc::strcmp(entry.key, key) == 0 {
-                    entry.value_f64 = val;
-                    return;
-                }
-                idx = (idx + 1) & mask;
-                continue;
-            }
-            entry.state = OCCUPIED;
-            entry.key = libc::strdup(key);
-            if entry.key.is_null() {
-                libc::abort();
-            }
+        let entry = &mut *find_insert_slot(m, key);
+        if entry.state == OCCUPIED {
             entry.value_f64 = val;
-            entry.value_i32 = 0;
-            entry.value_str = ptr::null_mut();
-            entry.value_i64 = 0;
-            (*m).len += 1;
             return;
         }
+        entry.state = OCCUPIED;
+        entry.key = libc::strdup(key);
+        if entry.key.is_null() {
+            libc::abort();
+        }
+        entry.value_f64 = val;
+        entry.value_i32 = 0;
+        entry.value_str = ptr::null_mut();
+        entry.value_i64 = 0;
+        (*m).len += 1;
     }
 }
 
@@ -709,6 +728,23 @@ mod tests {
     use super::*;
     use std::ffi::{CStr, CString};
 
+    fn colliding_keys() -> (CString, CString) {
+        for lhs in 0..64 {
+            let key_a = CString::new(format!("collision_{lhs}")).unwrap();
+            // SAFETY: key_a is a valid NUL-terminated CString.
+            let bucket_a = unsafe { fnv1a(key_a.as_ptr()) as usize & (INIT_CAP - 1) };
+            for rhs in lhs + 1..64 {
+                let key_b = CString::new(format!("collision_{rhs}")).unwrap();
+                // SAFETY: key_b is a valid NUL-terminated CString.
+                let bucket_b = unsafe { fnv1a(key_b.as_ptr()) as usize & (INIT_CAP - 1) };
+                if bucket_a == bucket_b {
+                    return (key_a, key_b);
+                }
+            }
+        }
+        panic!("expected at least one colliding key pair");
+    }
+
     #[test]
     fn test_hashmap_new_and_len() {
         // SAFETY: FFI calls use valid pointers returned by hew_hashmap_new_impl.
@@ -878,6 +914,26 @@ mod tests {
             hew_hashmap_insert_impl(m, key.as_ptr(), 20, core::ptr::null());
             assert_eq!(hew_hashmap_get_i32(m, key.as_ptr()), 20);
             assert_eq!(hew_hashmap_len(m), 1);
+            hew_hashmap_free_impl(m);
+        }
+    }
+
+    #[test]
+    fn test_hashmap_reinsert_after_tombstone_collision_keeps_single_entry() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
+        unsafe {
+            let m = hew_hashmap_new_impl();
+            let (first, second) = colliding_keys();
+
+            hew_hashmap_insert_impl(m, first.as_ptr(), 10, core::ptr::null());
+            hew_hashmap_insert_impl(m, second.as_ptr(), 20, core::ptr::null());
+            assert!(hew_hashmap_remove(m, first.as_ptr()));
+
+            hew_hashmap_insert_impl(m, second.as_ptr(), 30, core::ptr::null());
+
+            assert_eq!(hew_hashmap_len(m), 1);
+            assert_eq!(hew_hashmap_get_i32(m, second.as_ptr()), 30);
+            assert!(!hew_hashmap_contains_key(m, first.as_ptr()));
             hew_hashmap_free_impl(m);
         }
     }

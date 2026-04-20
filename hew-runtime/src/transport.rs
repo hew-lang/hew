@@ -325,8 +325,10 @@ struct TcpCounters {
     accept_count: AtomicU64,
     connect_count: AtomicU64,
     /// Counts syscall-level TCP failures from `hew_tcp_read`, `hew_tcp_write`,
-    /// `hew_tcp_accept`, and `hew_tcp_connect`. `WouldBlock` and `Interrupted`
-    /// are expected non-blocking outcomes and do not increment this counter.
+    /// `hew_tcp_accept`, and `hew_tcp_connect`. `WouldBlock`, `Interrupted`,
+    /// and `TimedOut` are expected non-failure outcomes (the latter for
+    /// user-configured socket read/write timeouts, which surface as
+    /// `ErrorKind::TimedOut` on Windows) and do not increment this counter.
     error_count: AtomicU64,
 }
 
@@ -357,7 +359,10 @@ pub fn tcp_counters_snapshot() -> TcpCountersSnapshot {
 }
 
 fn record_tcp_error_kind(kind: ErrorKind) {
-    if !matches!(kind, ErrorKind::WouldBlock | ErrorKind::Interrupted) {
+    if !matches!(
+        kind,
+        ErrorKind::WouldBlock | ErrorKind::Interrupted | ErrorKind::TimedOut
+    ) {
         tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -1451,6 +1456,26 @@ mod tests {
                 // SAFETY: `read_vec` is caller-owned.
                 unsafe { crate::vec::hew_vec_free(read_vec) };
                 remove_stream(handle);
+
+                // Explicit filter policy regression: WouldBlock, Interrupted,
+                // and TimedOut must not bump error_count (e.g. TimedOut can
+                // arise from user-configured SO_RCVTIMEO on Windows).
+                let before_filter = tcp_counters_snapshot();
+                record_tcp_error_kind(ErrorKind::WouldBlock);
+                record_tcp_error_kind(ErrorKind::Interrupted);
+                record_tcp_error_kind(ErrorKind::TimedOut);
+                let after_filter = tcp_counters_snapshot();
+                assert_eq!(
+                    after_filter.error_count, before_filter.error_count,
+                    "WouldBlock/Interrupted/TimedOut must not count as TCP errors"
+                );
+                record_tcp_error_kind(ErrorKind::ConnectionReset);
+                let after_reset = tcp_counters_snapshot();
+                assert_eq!(
+                    after_reset.error_count - after_filter.error_count,
+                    1,
+                    "real I/O errors must bump error_count"
+                );
             },
         );
     }

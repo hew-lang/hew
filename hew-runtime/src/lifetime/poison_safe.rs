@@ -28,6 +28,10 @@
 
 use std::sync::{Mutex, PoisonError, RwLock, TryLockError};
 
+/// Error returned by fail-closed lock accessors when the inner lock is poisoned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PoisonedLock;
+
 /// Mutex wrapper that recovers from poisoning and exposes access only
 /// through a closure.
 ///
@@ -97,12 +101,30 @@ impl<T> PoisonSafeRw<T> {
         Self(RwLock::new(value))
     }
 
+    /// Shared-read access that fails closed on poison.
+    #[inline]
+    pub(crate) fn read<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R, PoisonedLock> {
+        match self.0.read() {
+            Ok(guard) => Ok(f(&*guard)),
+            Err(_) => Err(PoisonedLock),
+        }
+    }
+
     /// Shared-read access. Blocks until a read lock is available.
     /// Recovers from poison transparently.
     #[inline]
     pub(crate) fn read_access<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let guard = self.0.read().unwrap_or_else(PoisonError::into_inner);
         f(&*guard)
+    }
+
+    /// Exclusive-write access that fails closed on poison.
+    #[inline]
+    pub(crate) fn write<R>(&self, f: impl FnOnce(&mut T) -> R) -> Result<R, PoisonedLock> {
+        match self.0.write() {
+            Ok(mut guard) => Ok(f(&mut *guard)),
+            Err(_) => Err(PoisonedLock),
+        }
     }
 
     /// Exclusive-write access. Blocks until a write lock is available.

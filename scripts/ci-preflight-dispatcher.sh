@@ -186,8 +186,19 @@ has_grammar=0
 has_parser=0
 has_types=0
 has_cli=0
+needs_codegen_lint=0
+needs_stdlib_lint=0
 
 for path in "${CHANGED_FILES[@]}"; do
+    case "$path" in
+        hew-codegen/*)
+            needs_codegen_lint=1
+            ;;
+        std/*)
+            needs_stdlib_lint=1
+            ;;
+    esac
+
     if is_grammar_path "$path"; then
         has_grammar=1
     elif is_docs_path "$path"; then
@@ -228,6 +239,11 @@ else
     LANE_REASON="CLI surface changed"
 fi
 
+if [[ "$LANE" != "docs" ]]; then
+    add_command "cargo fmt --all -- --check"
+    add_command "cargo clippy --workspace --tests -- -D warnings"
+fi
+
 case "$LANE" in
     docs)
         ;;
@@ -244,7 +260,6 @@ case "$LANE" in
         add_command "make test-cli"
         ;;
     fallback)
-        add_command "cargo fmt --all -- --check"
         add_command "make lint"
         add_command "make playground-check"
         add_command "make test"
@@ -253,6 +268,14 @@ case "$LANE" in
         die "unhandled lane: $LANE"
         ;;
 esac
+
+if (( needs_codegen_lint == 1 )); then
+    add_command "make codegen-lint"
+fi
+
+if (( needs_stdlib_lint == 1 )); then
+    add_command "make stdlib-lint"
+fi
 
 echo "==> Hew CI preflight dispatcher"
 if (( EXPLICIT_PATHS == 1 )); then
@@ -289,37 +312,6 @@ if (( DRY_RUN == 1 )); then
     echo "Dry run: no commands executed."
     exit 0
 fi
-
-# ── grep-gate: no string-matched error classification in std/ ──────────────
-# Asserts that no string-matched OS error patterns remain in std/ — these
-# indicate classification via message text which was replaced with errno-based
-# IoError population in #1241 and #1266.  If this fires, you have introduced a
-# regression; remove the string match and use io_error_from_errno instead.
-#
-# Caught patterns:
-#   "os error"           — Rust std error prefix (legacy classification)
-#   "Connection refused" — OS message string used for classify-by-text
-#   "Permission denied"  — OS message string used for classify-by-text
-#   "timed out"          — OS message string used for classify-by-text
-echo "==> grep-gate: checking for banned string-match error patterns in std/"
-grep_failed=0
-if grep --include="*.hew" -r "os error" std/ 2>/dev/null | grep -qv "^Binary"; then
-    echo "error: 'os error' string patterns found in std/ — use errno-based error classification instead:" >&2
-    grep --include="*.hew" -r "os error" std/ >&2
-    grep_failed=1
-fi
-for _banned_msg in "Connection refused" "Permission denied" "timed out"; do
-    if grep --include="*.hew" -r "contains(\"${_banned_msg}" std/ 2>/dev/null | grep -qv "^Binary"; then
-        echo "error: OS message string '${_banned_msg}' used in .contains() in std/ — use errno-based error classification instead:" >&2
-        grep --include="*.hew" -r "contains(\"${_banned_msg}" std/ >&2
-        grep_failed=1
-    fi
-done
-if (( grep_failed == 1 )); then
-    exit 1
-fi
-echo "grep-gate passed: no string-match error patterns in std/"
-# ──────────────────────────────────────────────────────────────────────────────
 
 for cmd in "${COMMANDS[@]}"; do
     echo "==> $cmd"

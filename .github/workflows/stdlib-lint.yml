@@ -14,4 +14,4 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check stdlib int surface
-        run: bash scripts/lint-stdlib-int-surface.sh
+        run: make stdlib-lint

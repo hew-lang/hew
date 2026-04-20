@@ -30,6 +30,7 @@
 #   make playground-check          — manifest freshness + curated analysis smoke + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
+#   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen + Hew)
 #   make test-rust    — just Rust workspace tests
@@ -46,8 +47,8 @@
 #   make clean        — remove build/, target/, hew-codegen/build{,-cov,-lsan}/
 # ============================================================================
 
-.PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight wasm-dist release
-.PHONY: test test-all test-rust test-parser test-types test-cli test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint grammar
+.PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
+.PHONY: test test-all test-rust test-parser test-types test-cli test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -184,6 +185,15 @@ playground-wasi-check:
 # Usage: make ci-preflight ARGS="--dry-run" or ARGS="--base origin/main"
 ci-preflight:
 	scripts/ci-preflight-dispatcher.sh $(ARGS)
+
+# Opt-in merge-queue parity preflight.
+ci-preflight-strict:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --tests -- -D warnings
+	$(MAKE) playground-check
+	$(MAKE) test
+	$(MAKE) codegen-lint
+	$(MAKE) stdlib-lint
 
 # Downstream repo roots (sibling directories of hew/)
 HEW_SH  ?= $(CURDIR)/../hew.sh
@@ -501,6 +511,51 @@ tsan:
 
 lint: runtime-poison-safe-lint verify-ffi
 	cargo clippy --workspace --tests -- -D warnings
+
+codegen-lint:
+	@set -eu; \
+	echo "==> codegen-lint: checking for silent error swallowing in codegen"; \
+	violations=$$(grep -rn '\.ok()?' hew-codegen/src/ | grep -v '// JUSTIFIED' | grep -v '#\[' || true); \
+	if [ -n "$$violations" ]; then \
+		echo "::warning::Found .ok()? patterns in codegen without // JUSTIFIED comment:"; \
+		echo "$$violations"; \
+		echo ""; \
+		echo "If intentional, add '// JUSTIFIED: <reason>' on the same line."; \
+	fi; \
+	defaults=$$(grep -rn 'unwrap_or_default()' hew-codegen/src/ | grep -v '// JUSTIFIED' || true); \
+	if [ -n "$$defaults" ]; then \
+		echo "::warning::Found unwrap_or_default() patterns in codegen without justification:"; \
+		echo "$$defaults"; \
+	fi; \
+	todos=$$(grep -rn 'DROP-TODO\|WASM-TODO' hew-codegen/src/ hew-runtime/src/ || true); \
+	if [ -n "$$todos" ]; then \
+		echo "::notice::Found resource cleanup TODOs (track these):"; \
+		echo "$$todos"; \
+	fi
+
+stdlib-errno-gate:
+	@bash -euo pipefail -c '\
+		echo "==> stdlib-errno-gate: checking for banned string-match error patterns in std/"; \
+		if rg -n --glob "*.hew" "os error" std/; then \
+			echo "error: \047os error\047 string patterns found in std/ — use errno-based error classification instead." >&2; \
+			exit 1; \
+		fi; \
+		if rg -n --glob "*.hew" "contains\\(\\\"Connection refused" std/; then \
+			echo "error: OS message string \047Connection refused\047 used in .contains() in std/ — use errno-based error classification instead." >&2; \
+			exit 1; \
+		fi; \
+		if rg -n --glob "*.hew" "contains\\(\\\"Permission denied" std/; then \
+			echo "error: OS message string \047Permission denied\047 used in .contains() in std/ — use errno-based error classification instead." >&2; \
+			exit 1; \
+		fi; \
+		if rg -n --glob "*.hew" "contains\\(\\\"timed out" std/; then \
+			echo "error: OS message string \047timed out\047 used in .contains() in std/ — use errno-based error classification instead." >&2; \
+			exit 1; \
+		fi; \
+		echo "stdlib-errno-gate passed: no banned string-match error patterns in std/."'
+
+stdlib-lint: stdlib-errno-gate
+	bash scripts/lint-stdlib-int-surface.sh
 
 # Grep-gate: fail on raw .lock()/.read()/.write() against any runtime global
 # that has been migrated to the PoisonSafe/PoisonSafeRw wrapper, and on the

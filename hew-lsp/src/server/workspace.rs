@@ -193,7 +193,7 @@ fn workspace_symbol_paths(
     documents: &DashMap<Url, DocumentState>,
     workspace_roots: &[PathBuf],
 ) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+    let mut paths = Vec::with_capacity(workspace_roots.len().saturating_add(documents.len()));
 
     if workspace_roots.is_empty() {
         paths.extend(open_document_paths(documents));
@@ -424,7 +424,6 @@ fn path_is_under_workspace_root(path: &Path, workspace_roots: &[PathBuf]) -> boo
     let normalized_path = normalize_workspace_path(path);
     workspace_roots
         .iter()
-        .map(|root| normalize_workspace_path(root))
         .any(|root| normalized_path.starts_with(root))
 }
 

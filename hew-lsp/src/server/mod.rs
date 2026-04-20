@@ -34,6 +34,7 @@ use self::workspace::has_test_attribute;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::RwLock;
 
 use dashmap::DashMap;
@@ -52,6 +53,7 @@ use hew_types::error::TypeErrorKind;
 use hew_types::Checker;
 use hew_types::TypeCheckOutput;
 use serde_json::{json, Value};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
@@ -228,28 +230,112 @@ fn build_server_capabilities() -> ServerCapabilities {
 }
 
 fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
+    let mut roots = Vec::with_capacity(params.workspace_folders.as_ref().map_or(1, Vec::len));
     if let Some(folders) = &params.workspace_folders {
         for folder in folders {
             if let Ok(path) = folder.uri.to_file_path() {
-                roots.push(path);
+                roots.push(normalize_workspace_root(path));
             }
         }
     }
     if roots.is_empty() {
         if let Some(root_uri) = &params.root_uri {
             if let Ok(path) = root_uri.to_file_path() {
-                roots.push(path);
+                roots.push(normalize_workspace_root(path));
             }
         }
     }
     #[expect(deprecated, reason = "LSP root_path is a fallback for older clients")]
     if roots.is_empty() {
         if let Some(root_path) = &params.root_path {
-            roots.push(PathBuf::from(root_path));
+            roots.push(normalize_workspace_root(PathBuf::from(root_path)));
         }
     }
+    roots.sort();
+    roots.dedup();
     roots
+}
+
+fn normalize_workspace_root(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+fn decode_server_capabilities(caps_json: Value) -> std::result::Result<ServerCapabilities, String> {
+    serde_json::from_value(caps_json).map_err(|error| error.to_string())
+}
+
+fn build_initialize_result(capabilities: &ServerCapabilities) -> Result<InitializeResult> {
+    use tower_lsp::jsonrpc::{Error, ErrorCode};
+
+    // lsp-types 0.94.1 doesn't have typeHierarchyProvider in ServerCapabilities,
+    // but the LSP 3.17 protocol requires it for clients to discover the feature.
+    // Inject it via JSON serialization.
+    let mut caps_json = serde_json::to_value(capabilities).map_err(|error| Error {
+        code: ErrorCode::InternalError,
+        message: format!("failed to encode LSP server capabilities: {error}").into(),
+        data: None,
+    })?;
+    if let serde_json::Value::Object(ref mut map) = caps_json {
+        map.insert("typeHierarchyProvider".to_string(), serde_json::json!(true));
+    }
+    build_initialize_result_from_caps_json(caps_json)
+}
+
+fn build_initialize_result_from_caps_json(caps_json: Value) -> Result<InitializeResult> {
+    use tower_lsp::jsonrpc::{Error, ErrorCode};
+
+    let capabilities = decode_server_capabilities(caps_json).map_err(|error| Error {
+        code: ErrorCode::InternalError,
+        message: format!("failed to decode LSP server capabilities: {error}").into(),
+        data: None,
+    })?;
+
+    Ok(InitializeResult {
+        capabilities,
+        ..Default::default()
+    })
+}
+
+fn internal_error(message: impl Into<String>) -> tower_lsp::jsonrpc::Error {
+    use tower_lsp::jsonrpc::{Error, ErrorCode};
+
+    Error {
+        code: ErrorCode::InternalError,
+        message: message.into().into(),
+        data: None,
+    }
+}
+
+async fn stream_command_output<R>(
+    client: Client,
+    reader: R,
+    level: MessageType,
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        if !line.trim().is_empty() {
+            client.show_message(level, line).await;
+        }
+    }
+    Ok(())
+}
+
+async fn wait_for_output_task(
+    task: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    stream_name: &str,
+) -> Result<()> {
+    if let Some(task) = task {
+        let read_result = task.await.map_err(|error| {
+            internal_error(format!("failed to join {stream_name} stream task: {error}"))
+        })?;
+        read_result.map_err(|error| {
+            internal_error(format!("failed to read {stream_name} stream: {error}"))
+        })?;
+    }
+    Ok(())
 }
 
 fn extract_run_test_name(arguments: &[Value]) -> Option<String> {
@@ -551,24 +637,25 @@ impl HewLanguageServer {
         match tokio::process::Command::new(&program)
             .args(&args)
             .current_dir(&workspace_root)
-            .output()
-            .await
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
         {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                if !stdout.is_empty() {
-                    self.client.show_message(MessageType::INFO, stdout).await;
-                }
-                if !stderr.is_empty() {
-                    let level = if output.status.success() {
-                        MessageType::INFO
-                    } else {
-                        MessageType::ERROR
-                    };
-                    self.client.show_message(level, stderr).await;
-                }
-                let level = if output.status.success() {
+            Ok(mut child) => {
+                let stdout_task = child.stdout.take().map(|stdout| {
+                    let client = self.client.clone();
+                    tokio::spawn(stream_command_output(client, stdout, MessageType::INFO))
+                });
+                let stderr_task = child.stderr.take().map(|stderr| {
+                    let client = self.client.clone();
+                    tokio::spawn(stream_command_output(client, stderr, MessageType::ERROR))
+                });
+                let status = child.wait().await.map_err(|error| {
+                    internal_error(format!("failed to wait for test process: {error}"))
+                })?;
+                wait_for_output_task(stdout_task, "stdout").await?;
+                wait_for_output_task(stderr_task, "stderr").await?;
+                let level = if status.success() {
                     MessageType::INFO
                 } else {
                     MessageType::ERROR
@@ -578,7 +665,7 @@ impl HewLanguageServer {
                     .await;
                 Ok(Some(json!({
                     "command": RUN_TEST_COMMAND,
-                    "success": output.status.success(),
+                    "success": status.success(),
                     "test": test_name,
                 })))
             }
@@ -605,21 +692,7 @@ impl LanguageServer for HewLanguageServer {
             *roots = extract_workspace_roots(&params);
         }
         let capabilities = build_server_capabilities();
-
-        // lsp-types 0.94.1 doesn't have typeHierarchyProvider in ServerCapabilities,
-        // but the LSP 3.17 protocol requires it for clients to discover the feature.
-        // Inject it via JSON serialization.
-        let mut caps_json = serde_json::to_value(&capabilities).unwrap_or_default();
-        if let serde_json::Value::Object(ref mut map) = caps_json {
-            map.insert("typeHierarchyProvider".to_string(), serde_json::json!(true));
-        }
-        let capabilities: ServerCapabilities =
-            serde_json::from_value(caps_json).unwrap_or(capabilities);
-
-        Ok(InitializeResult {
-            capabilities,
-            ..Default::default()
-        })
+        build_initialize_result(&capabilities)
     }
 
     async fn initialized(&self, _: InitializedParams) {
@@ -828,7 +901,8 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(&doc.source);
-        let tokens = analysis_tokens_to_lsp(&doc.source, &doc.line_offsets, &analysis_tokens);
+        let tokens = analysis_tokens_to_lsp(&doc.source, &doc.line_offsets, &analysis_tokens)
+            .map_err(|error| internal_error(error.message()))?;
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data: tokens,
@@ -1371,7 +1445,8 @@ mod tests {
         let source = "let x = 42;";
         let lo = compute_line_offsets(source);
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
-        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens);
+        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens)
+            .expect("semantic token encoding should succeed");
         assert!(!tokens.is_empty());
         // First token should be `let` keyword
         assert_eq!(tokens[0].token_type, hew_analysis::token_types::KEYWORD);
@@ -1390,7 +1465,8 @@ mod tests {
         let source = "const Y = 1; async fn foo() {}";
         let lo = compute_line_offsets(source);
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
-        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens);
+        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens)
+            .expect("semantic token encoding should succeed");
         let decl = modifier_bit(&SemanticTokenModifier::DECLARATION);
         let readonly = modifier_bit(&SemanticTokenModifier::READONLY);
         let async_mod = modifier_bit(&SemanticTokenModifier::ASYNC);
@@ -1426,7 +1502,8 @@ mod tests {
         let source = "fn main() { let a = 1; let b = 2; let x = ~a << b >> 1 & a | b ^ a; x <<= 1; x >>= 1; x &= 1; x |= 1; x ^= 1; }";
         let lo = compute_line_offsets(source);
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
-        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens);
+        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens)
+            .expect("semantic token encoding should succeed");
         let operator_token_type = hew_analysis::token_types::OPERATOR;
         let token_data = semantic_token_data(source, &tokens);
         let operator_texts: Vec<String> = token_data
@@ -1449,7 +1526,8 @@ mod tests {
         let source = "type Point { x: i32 }\ntrait Stream { type Item; fn next() -> i32; }\nfn calc(v: i32) -> i32 { v }";
         let lo = compute_line_offsets(source);
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
-        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens);
+        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens)
+            .expect("semantic token encoding should succeed");
         let token_data = semantic_token_data(source, &tokens);
         let function_token_type = hew_analysis::token_types::FUNCTION;
         let type_token_type = hew_analysis::token_types::TYPE;
@@ -1480,6 +1558,32 @@ mod tests {
                 .iter()
                 .any(|(text, token_type, _)| text == "Item" && *token_type == type_token_type),
             "expected type token for associated type Item"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_reject_delta_underflow() {
+        let source = "let alpha = 1; let beta = 2;";
+        let lo = compute_line_offsets(source);
+        let tokens = vec![
+            hew_analysis::SemanticToken {
+                start: source.find("beta").expect("beta token"),
+                length: "beta".len(),
+                token_type: hew_analysis::token_types::VARIABLE,
+                modifiers: 0,
+            },
+            hew_analysis::SemanticToken {
+                start: source.find("alpha").expect("alpha token"),
+                length: "alpha".len(),
+                token_type: hew_analysis::token_types::VARIABLE,
+                modifiers: 0,
+            },
+        ];
+        let err = analysis_tokens_to_lsp(source, &lo, &tokens)
+            .expect_err("out-of-order tokens must be rejected");
+        assert!(
+            err.message().contains("semantic token delta underflow"),
+            "expected underflow error, got: {err:?}"
         );
     }
 
@@ -2491,6 +2595,17 @@ impl Worker {
             .expect("execute command support should be advertised")
             .commands;
         assert_eq!(commands, vec![RUN_TEST_COMMAND.to_string()]);
+    }
+
+    #[test]
+    fn initialize_surfaces_capability_decode_errors() {
+        let err = build_initialize_result_from_caps_json(serde_json::json!(42))
+            .expect_err("invalid capability payload should surface an initialize error");
+        assert!(
+            err.message
+                .contains("failed to decode LSP server capabilities"),
+            "expected decode error, got: {err:?}"
+        );
     }
 
     #[test]
@@ -4856,6 +4971,26 @@ machine Traffic {
         assert!(
             has_unresolved,
             "should emit UnresolvedImport for a sibling module not in documents or on disk"
+        );
+    }
+
+    #[test]
+    fn refresh_document_surfaces_dangling_module_graph_import_diagnostic() {
+        let util_source = "import missing::thing;\npub fn greet() -> i32 { 1 }";
+        let util_url = make_test_uri("/project/util.hew");
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        let refreshed = refresh_document_and_dependents(&util_url, util_source, &documents);
+        let util_diags = refreshed
+            .into_iter()
+            .find(|(uri, _)| *uri == util_url)
+            .map(|(_, diags)| diags)
+            .expect("expected diagnostics for dangling import source");
+        assert!(
+            util_diags
+                .iter()
+                .any(|diag| diag.message.contains("unresolved import 'missing.thing'")),
+            "expected dangling import diagnostic, got: {util_diags:?}"
         );
     }
 

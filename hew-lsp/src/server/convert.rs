@@ -103,6 +103,25 @@ pub(super) fn symbol_info_to_doc_symbol(
 
 // ── Semantic tokens ──────────────────────────────────────────────────
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SemanticTokenEncodingError {
+    message: String,
+}
+
+impl SemanticTokenEncodingError {
+    fn delta_underflow(prev_line: u32, prev_start: u32, line: u32, col: u32) -> Self {
+        Self {
+            message: format!(
+                "semantic token delta underflow: previous token at {prev_line}:{prev_start}, current token at {line}:{col}"
+            ),
+        }
+    }
+
+    pub(super) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 /// Convert analysis semantic tokens (absolute byte offsets) to LSP
 /// delta-encoded tokens (line/col deltas, UTF-16 lengths).
 #[expect(
@@ -113,8 +132,8 @@ pub(super) fn analysis_tokens_to_lsp(
     source: &str,
     lo: &[usize],
     tokens: &[hew_analysis::SemanticToken],
-) -> Vec<SemanticToken> {
-    let mut result = Vec::new();
+) -> Result<Vec<SemanticToken>, SemanticTokenEncodingError> {
+    let mut result = Vec::with_capacity(tokens.len());
     let mut prev_line: u32 = 0;
     let mut prev_start: u32 = 0;
 
@@ -128,9 +147,13 @@ pub(super) fn analysis_tokens_to_lsp(
             .map(|c| c.len_utf16() as u32)
             .sum();
 
-        let delta_line = line - prev_line;
+        let delta_line = line.checked_sub(prev_line).ok_or_else(|| {
+            SemanticTokenEncodingError::delta_underflow(prev_line, prev_start, line, col)
+        })?;
         let delta_start = if delta_line == 0 {
-            col - prev_start
+            col.checked_sub(prev_start).ok_or_else(|| {
+                SemanticTokenEncodingError::delta_underflow(prev_line, prev_start, line, col)
+            })?
         } else {
             col
         };
@@ -159,5 +182,5 @@ pub(super) fn analysis_tokens_to_lsp(
         prev_start = col;
     }
 
-    result
+    Ok(result)
 }

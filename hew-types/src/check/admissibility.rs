@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::traits::RcFreeStatus;
 
 pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
     params.iter().any(ty_contains_error) || ty_contains_error(ret)
@@ -550,21 +551,33 @@ impl Checker {
         container: &str,
         elem_ty: &Ty,
         span: &Span,
-    ) {
+    ) -> bool {
         let resolved = self.subst.resolve(elem_ty);
-        if !self
-            .registry
-            .implements_marker(&resolved, MarkerTrait::RcFree)
-        {
-            self.report_error(
-                TypeErrorKind::UnsafeCollectionElement,
-                span,
-                format!(
-                    "`{container}` cannot hold `{}`; Rc<T> in collections is not yet \
-                     supported (runtime does not track Rc ownership for collection elements)",
-                    resolved.user_facing()
-                ),
-            );
+        match self.registry.rc_free_status(&resolved) {
+            RcFreeStatus::RcFree => true,
+            RcFreeStatus::ContainsRc => {
+                self.report_error(
+                    TypeErrorKind::UnsafeCollectionElement,
+                    span,
+                    format!(
+                        "`{container}` cannot hold `{}`; Rc<T> in collections is not yet \
+                         supported (runtime does not track Rc ownership for collection elements)",
+                        resolved.user_facing()
+                    ),
+                );
+                false
+            }
+            RcFreeStatus::Recursive(type_name) => {
+                self.report_error(
+                    TypeErrorKind::UnsafeCollectionElement,
+                    span,
+                    format!(
+                        "`{container}` cannot hold `{}`; RcFree could not be proven because `{type_name}` participates in a recursive type cycle",
+                        resolved.user_facing()
+                    ),
+                );
+                false
+            }
         }
     }
 
@@ -632,24 +645,9 @@ impl Checker {
         val_ty: &Ty,
         span: &Span,
     ) -> bool {
-        self.reject_rc_collection_element("HashMap", key_ty, span);
-        self.reject_rc_collection_element("HashMap", val_ty, span);
-
-        let resolved_key = self.subst.resolve(key_ty);
-        let resolved_val = self.subst.resolve(val_ty);
-        if !self
-            .registry
-            .implements_marker(&resolved_key, MarkerTrait::RcFree)
-        {
-            return false;
-        }
-        if !self
-            .registry
-            .implements_marker(&resolved_val, MarkerTrait::RcFree)
-        {
-            return false;
-        }
-        true
+        let key_ok = self.reject_rc_collection_element("HashMap", key_ty, span);
+        let val_ok = self.reject_rc_collection_element("HashMap", val_ty, span);
+        key_ok && val_ok
     }
 
     pub(super) fn validate_hashmap_owned_element_types(
@@ -705,12 +703,7 @@ impl Checker {
         elem_ty: &Ty,
         span: &Span,
     ) -> bool {
-        self.reject_rc_collection_element("HashSet", elem_ty, span);
-        let resolved = self.subst.resolve(elem_ty);
-        if !self
-            .registry
-            .implements_marker(&resolved, MarkerTrait::RcFree)
-        {
+        if !self.reject_rc_collection_element("HashSet", elem_ty, span) {
             return false;
         }
         self.validate_hashset_element_type(elem_ty, span)

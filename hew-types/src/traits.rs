@@ -138,6 +138,13 @@ pub struct TraitRegistry {
     drop_types: HashSet<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RcFreeStatus {
+    RcFree,
+    ContainsRc,
+    Recursive(String),
+}
+
 impl TraitRegistry {
     /// Create a new empty trait registry.
     #[must_use]
@@ -163,33 +170,59 @@ impl TraitRegistry {
         })
     }
 
-    fn implements_rc_free(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+    fn combine_rc_free_status<I>(&self, tys: I, visiting: &mut HashSet<String>) -> RcFreeStatus
+    where
+        I: IntoIterator<Item = Ty>,
+    {
+        let mut unknown = None;
+        for ty in tys {
+            match self.implements_rc_free(&ty, visiting) {
+                RcFreeStatus::RcFree => {}
+                RcFreeStatus::ContainsRc => return RcFreeStatus::ContainsRc,
+                RcFreeStatus::Recursive(name) => {
+                    if unknown.is_none() {
+                        unknown = Some(name);
+                    }
+                }
+            }
+        }
+        unknown.map_or(RcFreeStatus::RcFree, RcFreeStatus::Recursive)
+    }
+
+    fn implements_rc_free(&self, ty: &Ty, visiting: &mut HashSet<String>) -> RcFreeStatus {
         match ty {
-            Ty::Named { name, args } if name == "Rc" => args.is_empty(),
+            Ty::Named { name, args } if name == "Rc" => {
+                if args.is_empty() {
+                    RcFreeStatus::RcFree
+                } else {
+                    RcFreeStatus::ContainsRc
+                }
+            }
             Ty::Named { name, args } => {
-                if args
-                    .iter()
-                    .any(|arg| !self.implements_rc_free(arg, visiting))
-                {
-                    return false;
+                match self.combine_rc_free_status(args.iter().cloned(), visiting) {
+                    RcFreeStatus::RcFree => {}
+                    outcome => return outcome,
                 }
                 if !visiting.insert(name.clone()) {
-                    return true;
+                    return RcFreeStatus::Recursive(name.clone());
                 }
-                let result = self.rc_free_members_any(name).is_none_or(|members| {
-                    members
-                        .iter()
-                        .all(|member| self.implements_rc_free(member, visiting))
-                });
+                let result = self
+                    .rc_free_members_any(name)
+                    .map_or(RcFreeStatus::RcFree, |members| {
+                        self.combine_rc_free_status(members.iter().cloned(), visiting)
+                    });
                 visiting.remove(name);
                 result
             }
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|elem| self.implements_rc_free(elem, visiting)),
+            Ty::Tuple(elems) => self.combine_rc_free_status(elems.iter().cloned(), visiting),
             Ty::Array(inner, _) | Ty::Slice(inner) => self.implements_rc_free(inner, visiting),
-            _ => true,
+            _ => RcFreeStatus::RcFree,
         }
+    }
+
+    pub(crate) fn rc_free_status(&self, ty: &Ty) -> RcFreeStatus {
+        let mut visiting = HashSet::new();
+        self.implements_rc_free(ty, &mut visiting)
     }
 
     /// Register an actor type.
@@ -276,8 +309,7 @@ impl TraitRegistry {
     )]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
         if marker == MarkerTrait::RcFree {
-            let mut visiting = HashSet::new();
-            return self.implements_rc_free(ty, &mut visiting);
+            return matches!(self.rc_free_status(ty), RcFreeStatus::RcFree);
         }
         match ty {
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug
@@ -714,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rcfree_handles_recursive_named_types() {
+    fn test_rcfree_rejects_recursive_named_types_without_proof() {
         let mut registry = TraitRegistry::new();
         let list = Ty::Named {
             name: "List".to_string(),
@@ -722,7 +754,37 @@ mod tests {
         };
         registry.register_rcfree_members("List".to_string(), vec![Ty::option(list.clone())]);
 
-        assert!(registry.implements_marker(&list, MarkerTrait::RcFree));
+        assert_eq!(
+            registry.rc_free_status(&list),
+            RcFreeStatus::Recursive("List".to_string())
+        );
+        assert!(!registry.implements_marker(&list, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn test_rcfree_rejects_mutually_recursive_named_types_without_proof() {
+        let mut registry = TraitRegistry::new();
+        let a = Ty::Named {
+            name: "A".to_string(),
+            args: vec![],
+        };
+        let b = Ty::Named {
+            name: "B".to_string(),
+            args: vec![],
+        };
+        registry.register_rcfree_members("A".to_string(), vec![b.clone()]);
+        registry.register_rcfree_members("B".to_string(), vec![a.clone()]);
+
+        assert_eq!(
+            registry.rc_free_status(&a),
+            RcFreeStatus::Recursive("A".to_string())
+        );
+        assert_eq!(
+            registry.rc_free_status(&b),
+            RcFreeStatus::Recursive("B".to_string())
+        );
+        assert!(!registry.implements_marker(&a, MarkerTrait::RcFree));
+        assert!(!registry.implements_marker(&b, MarkerTrait::RcFree));
     }
 
     #[test]

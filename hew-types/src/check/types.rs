@@ -180,6 +180,17 @@ pub(super) struct DeferredHashSetAdmission {
     pub(super) source_module: Option<String>,
 }
 
+/// A `Vec` element admission check deferred until after all inference has
+/// settled. Recorded when `validate_vec_element_type` encounters an element
+/// type that still contains an unresolved inference variable; drained by
+/// `finalize_vec_admission` in `check_program`.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredVecAdmission {
+    pub(super) span: Span,
+    pub(super) elem_ty: Ty,
+    pub(super) source_module: Option<String>,
+}
+
 /// A channel method call rewrite deferred until after all inference has settled.
 ///
 /// Recorded when a `Sender<T>::send` / `Receiver<T>::recv` / `try_recv` call is
@@ -542,6 +553,10 @@ pub struct Checker {
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same set).
     pub(super) deferred_hashset_admission: HashMap<SpanKey, DeferredHashSetAdmission>,
+    /// `Vec` element admission checks deferred until after inference
+    /// completes. Keyed by span to suppress duplicates from repeated traversals
+    /// of the same site.
+    pub(super) deferred_vec_admission: HashMap<SpanKey, DeferredVecAdmission>,
     /// Channel method call rewrites deferred until after inference completes.
     /// Keyed by call-site span so repeated traversal of the same site is
     /// idempotent (last write wins, which is fine since the inner type is the
@@ -704,6 +719,7 @@ impl Checker {
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
             deferred_hashset_admission: HashMap::new(),
+            deferred_vec_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),

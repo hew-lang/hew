@@ -231,6 +231,65 @@ impl Checker {
         self.errors.extend(new_errors);
     }
 
+    /// Drain `deferred_vec_admission`, resolve element types through the
+    /// current substitution, and fail closed on any that are still unresolved
+    /// or error-typed at the checker boundary.
+    ///
+    /// * Any surviving inference variable inside the element type →
+    ///   [`TypeErrorKind::InferenceFailed`].
+    /// * `Ty::Error` (anywhere inside the element type) → silent drop:
+    ///   upstream already emitted a diagnostic.
+    /// * Fully-resolved types are revalidated so late-resolved unsupported
+    ///   element types are rejected just like inline admission sites.
+    pub(super) fn finalize_vec_admission(&mut self) {
+        let checks = std::mem::take(&mut self.deferred_vec_admission);
+        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
+        let mut reported_unresolved_roots: std::collections::HashSet<Vec<u32>> =
+            std::collections::HashSet::new();
+
+        for (_span_key, check) in checks {
+            let resolved = self
+                .subst
+                .resolve(&check.elem_ty)
+                .materialize_literal_defaults();
+
+            if resolved.contains_error() {
+                continue;
+            }
+
+            if resolved.has_inference_var() {
+                let mut unresolved_vars = HashSet::new();
+                collect_unresolved_inference_vars(&resolved, &mut unresolved_vars);
+                let mut unresolved_roots: Vec<u32> =
+                    unresolved_vars.into_iter().map(|var| var.0).collect();
+                unresolved_roots.sort_unstable();
+                unresolved_roots.dedup();
+                if !reported_unresolved_roots.insert(unresolved_roots) {
+                    continue;
+                }
+
+                let mut err = crate::error::TypeError::new(
+                    TypeErrorKind::InferenceFailed,
+                    check.span.clone(),
+                    format!(
+                        "cannot infer Vec element type at the checker boundary \
+                         (Vec<{}>); add an explicit type annotation",
+                        resolved.user_facing(),
+                    ),
+                );
+                if let Some(module) = check.source_module {
+                    err = err.with_source_module(module);
+                }
+                new_errors.push(err);
+                continue;
+            }
+
+            let _ = self.validate_resolved_vec_element_type(&resolved, &check.span);
+        }
+
+        self.errors.extend(new_errors);
+    }
+
     /// Drain `deferred_channel_rewrites`, resolve each inner type through the
     /// current substitution, and record the correct type-specific C symbol.
     ///
@@ -1254,6 +1313,7 @@ impl Checker {
         let mut elem_ty_before_visiting = HashSet::new();
         let elem_ty_before_has_structural_array = self
             .vec_element_contains_structural_array(&elem_ty_before, &mut elem_ty_before_visiting);
+        let _ = self.validate_vec_element_type(&elem_ty, span);
         let result = match method {
             "push" => {
                 self.check_arity(args, 1, "`Vec::push`", span);

@@ -338,6 +338,10 @@ impl Checker {
             let resolved = self.subst.resolve(&site.ty);
             collect_unresolved_inference_vars(&resolved, &mut covered_inference_vars);
         }
+        for admission in self.deferred_vec_admission.values() {
+            let resolved = self.subst.resolve(&admission.elem_ty);
+            collect_unresolved_inference_vars(&resolved, &mut covered_inference_vars);
+        }
         for sig in self.lambda_poly_sig_map.values() {
             for poly_var in &sig.type_vars {
                 let resolved_poly = self.subst.resolve(&Ty::Var(*poly_var));
@@ -764,18 +768,17 @@ impl Checker {
         }
     }
 
-    pub(super) fn validate_vec_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
-        let resolved = self.subst.resolve(elem_ty);
-        if matches!(resolved, Ty::Var(_) | Ty::Error) {
-            return true;
-        }
-
-        if !self.validate_concrete_collection_types(&resolved, span) {
+    pub(super) fn validate_resolved_vec_element_type(
+        &mut self,
+        resolved: &Ty,
+        span: &Span,
+    ) -> bool {
+        if !self.validate_concrete_collection_types(resolved, span) {
             return false;
         }
 
         let mut visiting = HashSet::new();
-        if self.vec_element_contains_structural_array(&resolved, &mut visiting) {
+        if self.vec_element_contains_structural_array(resolved, &mut visiting) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
@@ -788,6 +791,26 @@ impl Checker {
         }
 
         true
+    }
+
+    pub(super) fn validate_vec_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(elem_ty);
+        if resolved.contains_error() {
+            return false;
+        }
+
+        if resolved.has_inference_var() {
+            self.deferred_vec_admission
+                .entry(SpanKey::from(span))
+                .or_insert_with(|| DeferredVecAdmission {
+                    span: span.clone(),
+                    elem_ty: elem_ty.clone(),
+                    source_module: self.current_module.clone(),
+                });
+            return true;
+        }
+
+        self.validate_resolved_vec_element_type(&resolved, span)
     }
 
     fn validate_concrete_collection_type(

@@ -5,6 +5,7 @@
 //! infinite types.
 
 use crate::ty::{Substitution, Ty, TypeVar};
+use std::collections::HashSet;
 use std::fmt;
 
 /// Error that can occur during type unification.
@@ -79,8 +80,7 @@ pub fn bind(subst: &mut Substitution, var: TypeVar, ty: &Ty) -> Result<(), Unify
         return Err(UnifyError::OccursCheck { var, ty });
     }
 
-    subst.insert(var, ty);
-    Ok(())
+    subst.insert(var, &ty)
 }
 
 fn literal_kind_can_unify_with_concrete(literal: &Ty, concrete: &Ty) -> bool {
@@ -106,8 +106,28 @@ fn maybe_promote_literal_bound_var(
     if !literal_kind_can_unify_with_concrete(resolved, concrete) {
         return false;
     }
-    subst.insert(*var, concrete.clone());
+    let Some(root_var) = literal_promotion_root(subst, *var) else {
+        return false;
+    };
+    subst.insert(root_var, concrete).expect(
+        "promoting a literal-bound root variable to a concrete numeric type must stay acyclic",
+    );
     true
+}
+
+fn literal_promotion_root(subst: &Substitution, start: TypeVar) -> Option<TypeVar> {
+    let mut current = start;
+    let mut visited = HashSet::new();
+
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        match subst.lookup(current) {
+            Some(Ty::Var(next)) => current = *next,
+            Some(_) | None => return Some(current),
+        }
+    }
 }
 
 /// Unify two types, updating the substitution.
@@ -250,7 +270,7 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
         (Ty::Named { name: an, args: aa }, Ty::Named { name: bn, args: ba })
             if (an == "ActorRef" || an == "Actor")
                 && (bn == "ActorRef" || bn == "Actor")
-                && aa.len() != ba.len() =>
+                && matches!((aa.len(), ba.len()), (0, 1) | (1, 0)) =>
         {
             Ok(())
         }
@@ -507,7 +527,7 @@ mod tests {
         TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
-        subst.insert(v, Ty::IntLiteral);
+        subst.insert(v, &Ty::IntLiteral).unwrap();
         assert!(unify(&mut subst, &Ty::Var(v), &Ty::I32).is_ok());
         assert_eq!(subst.resolve(&Ty::Var(v)), Ty::I32);
     }
@@ -517,7 +537,7 @@ mod tests {
         TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
-        subst.insert(v, Ty::FloatLiteral);
+        subst.insert(v, &Ty::FloatLiteral).unwrap();
         assert!(unify(&mut subst, &Ty::Var(v), &Ty::F32).is_ok());
         assert_eq!(subst.resolve(&Ty::Var(v)), Ty::F32);
     }
@@ -659,6 +679,40 @@ mod tests {
         assert!(unify(&mut subst, &Ty::Var(v1), &Ty::Var(v2)).is_ok());
         assert!(unify(&mut subst, &Ty::Var(v2), &Ty::I32).is_ok());
         assert_eq!(subst.resolve(&Ty::Var(v1)), Ty::I32);
+    }
+
+    #[test]
+    fn test_literal_promotion_preserves_alias_equivalence() {
+        TypeVar::reset();
+        let mut subst = Substitution::new();
+        let v1 = TypeVar::fresh();
+        let v2 = TypeVar::fresh();
+
+        subst.insert(v1, &Ty::Var(v2)).unwrap();
+        subst.insert(v2, &Ty::IntLiteral).unwrap();
+
+        assert!(unify(&mut subst, &Ty::Var(v1), &Ty::I32).is_ok());
+        assert_eq!(subst.lookup(v1), Some(&Ty::Var(v2)));
+        assert_eq!(subst.resolve(&Ty::Var(v1)), Ty::I32);
+        assert_eq!(subst.resolve(&Ty::Var(v2)), Ty::I32);
+    }
+
+    #[test]
+    fn test_actor_ref_arity_mismatch_rejects_nonstandard_pairs() {
+        let mut subst = Substitution::new();
+        let typed = Ty::Named {
+            name: "ActorRef".to_string(),
+            args: vec![Ty::I32, Ty::Bool],
+        };
+        let untyped = Ty::Named {
+            name: "ActorRef".to_string(),
+            args: vec![],
+        };
+
+        assert!(matches!(
+            unify(&mut subst, &typed, &untyped),
+            Err(UnifyError::ArityMismatch { .. })
+        ));
     }
 
     #[test]

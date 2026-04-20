@@ -873,7 +873,7 @@ fn apply_subst_empty_is_identity() {
 fn apply_subst_resolves_var() {
     let v = TypeVar(7000);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::Bool);
+    subst.insert(v, &Ty::Bool).unwrap();
 
     assert_eq!(Ty::Var(v).apply_subst(&subst), Ty::Bool);
 }
@@ -883,8 +883,8 @@ fn apply_subst_chains_through_vars() {
     let v1 = TypeVar(7010);
     let v2 = TypeVar(7011);
     let mut subst = Substitution::new();
-    subst.insert(v1, Ty::Var(v2));
-    subst.insert(v2, Ty::I64);
+    subst.insert(v1, &Ty::Var(v2)).unwrap();
+    subst.insert(v2, &Ty::I64).unwrap();
 
     // v1 -> v2 -> I64
     assert_eq!(Ty::Var(v1).apply_subst(&subst), Ty::I64);
@@ -894,7 +894,7 @@ fn apply_subst_chains_through_vars() {
 fn apply_subst_through_composite() {
     let v = TypeVar(7020);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::String);
+    subst.insert(v, &Ty::String).unwrap();
 
     let ty = Ty::Tuple(vec![Ty::Var(v), Ty::I32]);
     assert_eq!(ty.apply_subst(&subst), Ty::Tuple(vec![Ty::String, Ty::I32]));
@@ -917,9 +917,9 @@ fn substitution_resolve_walks_chain() {
     let v2 = TypeVar(8001);
     let v3 = TypeVar(8002);
     let mut subst = Substitution::new();
-    subst.insert(v1, Ty::Var(v2));
-    subst.insert(v2, Ty::Var(v3));
-    subst.insert(v3, Ty::I32);
+    subst.insert(v1, &Ty::Var(v2)).unwrap();
+    subst.insert(v2, &Ty::Var(v3)).unwrap();
+    subst.insert(v3, &Ty::I32).unwrap();
 
     assert_eq!(subst.resolve(&Ty::Var(v1)), Ty::I32);
 }
@@ -928,7 +928,7 @@ fn substitution_resolve_walks_chain() {
 fn substitution_resolve_non_var() {
     let v = TypeVar(8010);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::Bool);
+    subst.insert(v, &Ty::Bool).unwrap();
 
     // Resolving a non-var applies subst to children
     let ty = Ty::Tuple(vec![Ty::Var(v), Ty::I32]);
@@ -939,13 +939,13 @@ fn substitution_resolve_non_var() {
 fn substitution_snapshot_and_restore() {
     let v = TypeVar(8020);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::I32);
+    subst.insert(v, &Ty::I32).unwrap();
 
     let snap = subst.snapshot();
     assert_eq!(subst.lookup(v), Some(&Ty::I32));
 
     // Modify
-    subst.insert(v, Ty::Bool);
+    subst.insert(v, &Ty::Bool).unwrap();
     assert_eq!(subst.lookup(v), Some(&Ty::Bool));
 
     // Restore
@@ -964,8 +964,8 @@ fn substitution_mappings_returns_all() {
     let v1 = TypeVar(8030);
     let v2 = TypeVar(8031);
     let mut subst = Substitution::new();
-    subst.insert(v1, Ty::I32);
-    subst.insert(v2, Ty::Bool);
+    subst.insert(v1, &Ty::I32).unwrap();
+    subst.insert(v2, &Ty::Bool).unwrap();
 
     let m = subst.mappings();
     assert_eq!(m.len(), 2);
@@ -1027,7 +1027,7 @@ fn ty_equality_composites() {
 fn apply_subst_through_closure() {
     let v = TypeVar(9000);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::F32);
+    subst.insert(v, &Ty::F32).unwrap();
 
     let ty = Ty::Closure {
         params: vec![Ty::Var(v)],
@@ -1048,7 +1048,7 @@ fn apply_subst_through_closure() {
 fn apply_subst_through_pointer() {
     let v = TypeVar(9010);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::U64);
+    subst.insert(v, &Ty::U64).unwrap();
 
     let ty = Ty::Pointer {
         is_mutable: false,
@@ -1067,7 +1067,7 @@ fn apply_subst_through_pointer() {
 fn apply_subst_through_trait_object() {
     let v = TypeVar(9020);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::Char);
+    subst.insert(v, &Ty::Char).unwrap();
 
     let ty = Ty::TraitObject {
         traits: vec![TraitObjectBound {
@@ -1090,7 +1090,7 @@ fn apply_subst_through_trait_object() {
 fn apply_subst_through_slice() {
     let v = TypeVar(9030);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::I16);
+    subst.insert(v, &Ty::I16).unwrap();
 
     let ty = Ty::Slice(Box::new(Ty::Var(v)));
     assert_eq!(ty.apply_subst(&subst), Ty::Slice(Box::new(Ty::I16)));
@@ -1100,7 +1100,7 @@ fn apply_subst_through_slice() {
 fn apply_subst_through_array() {
     let v = TypeVar(9040);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::U8);
+    subst.insert(v, &Ty::U8).unwrap();
 
     let ty = Ty::Array(Box::new(Ty::Var(v)), 256);
     assert_eq!(ty.apply_subst(&subst), Ty::Array(Box::new(Ty::U8), 256));
@@ -1110,7 +1110,7 @@ fn apply_subst_through_array() {
 fn apply_subst_named_machine_unchanged() {
     let v = TypeVar(9050);
     let mut subst = Substitution::new();
-    subst.insert(v, Ty::I32);
+    subst.insert(v, &Ty::I32).unwrap();
 
     let ty = Ty::Named {
         name: "SM".to_string(),

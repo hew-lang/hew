@@ -29,7 +29,12 @@ pub fn detect_actor_ref_cycles(
         }
         let mut refs = HashSet::new();
         for field_ty in td.fields.values() {
-            collect_actor_refs(field_ty, type_defs, &mut refs, &mut HashSet::new());
+            collect_actor_refs(
+                field_ty,
+                type_defs,
+                &mut refs,
+                &mut HashSet::<(String, Vec<Ty>)>::new(),
+            );
         }
         adj.insert(name.as_str(), refs);
     }
@@ -67,10 +72,10 @@ pub fn detect_actor_ref_cycles(
 /// looking through containers (`Vec`, `Array`, `Slice`, `Tuple`, `Option`,
 /// `Result`, `HashMap`) and transitively through struct fields.
 fn collect_actor_refs<'a>(
-    ty: &'a Ty,
+    ty: &Ty,
     type_defs: &'a HashMap<String, TypeDef>,
     out: &mut HashSet<&'a str>,
-    visited_structs: &mut HashSet<&'a str>,
+    visited_structs: &mut HashSet<(String, Vec<Ty>)>,
 ) {
     match ty {
         Ty::Slice(inner) | Ty::Array(inner, _) => {
@@ -88,19 +93,33 @@ fn collect_actor_refs<'a>(
                     name: actor_name, ..
                 }) = args.first()
                 {
-                    if type_defs.contains_key(actor_name) {
-                        out.insert(actor_name.as_str());
+                    if let Some(actor_def) = type_defs.get(actor_name) {
+                        out.insert(actor_def.name.as_str());
                     }
                 }
             } else {
                 // Transitively follow struct fields
                 if let Some(td) = type_defs.get(name) {
+                    let struct_name = td.name.as_str();
+                    let key = (struct_name.to_string(), args.clone());
                     if td.kind == crate::check::TypeDefKind::Struct
-                        && !visited_structs.contains(name.as_str())
+                        && !visited_structs.contains(&key)
                     {
-                        visited_structs.insert(name.as_str());
+                        visited_structs.insert(key);
                         for field_ty in td.fields.values() {
-                            collect_actor_refs(field_ty, type_defs, out, visited_structs);
+                            let instantiated_field = td
+                                .type_params
+                                .iter()
+                                .zip(args.iter())
+                                .fold(field_ty.clone(), |field, (param, arg)| {
+                                    field.substitute_named_param(param, arg)
+                                });
+                            collect_actor_refs(
+                                &instantiated_field,
+                                type_defs,
+                                out,
+                                visited_structs,
+                            );
                         }
                     }
                 }
@@ -438,5 +457,125 @@ mod tests {
         let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
         assert!(capable.is_empty());
         assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn generic_struct_fields_participate_in_actor_cycle_detection() {
+        let generic_wrapper = (
+            "Wrapper".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Wrapper".to_string(),
+                type_params: vec!["T".to_string()],
+                fields: HashMap::from([(
+                    "target".to_string(),
+                    Ty::actor_ref(Ty::Named {
+                        name: "T".to_string(),
+                        args: vec![],
+                    }),
+                )]),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+        let type_defs: HashMap<String, TypeDef> = [
+            generic_wrapper,
+            make_actor(
+                "A",
+                HashMap::from([(
+                    "wrapper".to_string(),
+                    Ty::Named {
+                        name: "Wrapper".to_string(),
+                        args: vec![Ty::Named {
+                            name: "B".to_string(),
+                            args: vec![],
+                        }],
+                    },
+                )]),
+            ),
+            make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
+        ]
+        .into_iter()
+        .collect();
+
+        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+
+        assert!(capable.contains("A"));
+        assert!(capable.contains("B"));
+        assert_eq!(cycles.len(), 1);
+    }
+
+    #[test]
+    fn two_distinct_generic_instantiations_both_walk_fields() {
+        // Regression for dedup-by-bare-name: prior code keyed visited_structs
+        // on `"Wrapper"` alone, so the second encounter of `Wrapper<_>` was
+        // skipped *within a single traversal*. With args-dependent substitution
+        // that meant ActorRef<C> was never recorded. Key is now (name, args)
+        // so both instantiations are followed.
+        //
+        // The two `Wrapper<_>` instantiations MUST share a single
+        // `visited_structs` traversal, so we nest them in one tuple field —
+        // separate fields would get fresh visited sets (see line 32).
+        let generic_wrapper = (
+            "Wrapper".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Wrapper".to_string(),
+                type_params: vec!["T".to_string()],
+                fields: HashMap::from([(
+                    "target".to_string(),
+                    Ty::actor_ref(Ty::Named {
+                        name: "T".to_string(),
+                        args: vec![],
+                    }),
+                )]),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+        let type_defs: HashMap<String, TypeDef> = [
+            generic_wrapper,
+            make_actor(
+                "A",
+                HashMap::from([(
+                    "combo".to_string(),
+                    Ty::Tuple(vec![
+                        Ty::Named {
+                            name: "Wrapper".to_string(),
+                            args: vec![Ty::Named {
+                                name: "B".to_string(),
+                                args: vec![],
+                            }],
+                        },
+                        Ty::Named {
+                            name: "Wrapper".to_string(),
+                            args: vec![Ty::Named {
+                                name: "C".to_string(),
+                                args: vec![],
+                            }],
+                        },
+                    ]),
+                )]),
+            ),
+            make_actor("B", HashMap::new()),
+            make_actor("C", HashMap::from([("a".to_string(), actor_ref("A"))])),
+        ]
+        .into_iter()
+        .collect();
+
+        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+
+        // A→Wrapper<C>→C→A cycle must be detected. Before the fix, the
+        // Tuple traversal visited Wrapper<B> first, poisoning the bare-name
+        // key and skipping Wrapper<C>, so ActorRef<C> was never recorded
+        // and no cycle was found.
+        assert!(capable.contains("A"));
+        assert!(capable.contains("C"));
+        assert!(!capable.contains("B"));
+        assert_eq!(cycles.len(), 1);
     }
 }

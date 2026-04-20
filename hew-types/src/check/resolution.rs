@@ -504,7 +504,9 @@ impl Checker {
                 if name == "Range" && args.len() == 1 {
                     if let Ty::Var(v) = &args[0] {
                         if self.subst.lookup(*v).is_none() {
-                            self.subst.insert(*v, Ty::I64);
+                            self.subst.insert(*v, &Ty::I64).expect(
+                                "defaulting an unresolved numeric literal variable to i64 must stay acyclic",
+                            );
                         }
                     }
                 }

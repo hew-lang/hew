@@ -27,7 +27,7 @@ fn bind_applies_substitution_before_occurs_check() {
     let mut subst = fresh_subst();
     let v1 = TypeVar::fresh();
     let v2 = TypeVar::fresh();
-    subst.insert(v1, Ty::I32);
+    subst.insert(v1, &Ty::I32).unwrap();
     let ty = Ty::Tuple(vec![Ty::Var(v1)]);
     assert!(bind(&mut subst, v2, &ty).is_ok());
     assert_eq!(subst.resolve(&Ty::Var(v2)), Ty::Tuple(vec![Ty::I32]));
@@ -581,9 +581,9 @@ fn resolve_three_var_chain() {
     let v2 = TypeVar::fresh();
     let v3 = TypeVar::fresh();
     // v1 -> v2 -> v3 -> String
-    subst.insert(v1, Ty::Var(v2));
-    subst.insert(v2, Ty::Var(v3));
-    subst.insert(v3, Ty::String);
+    subst.insert(v1, &Ty::Var(v2)).unwrap();
+    subst.insert(v2, &Ty::Var(v3)).unwrap();
+    subst.insert(v3, &Ty::String).unwrap();
     assert_eq!(subst.resolve(&Ty::Var(v1)), Ty::String);
     assert_eq!(subst.resolve(&Ty::Var(v2)), Ty::String);
 }
@@ -593,7 +593,7 @@ fn resolve_var_in_nested_structure() {
     // Resolving a non-Var type should apply substitution to children.
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
-    subst.insert(v, Ty::I64);
+    subst.insert(v, &Ty::I64).unwrap();
     let ty = Ty::Named {
         name: "Option".into(),
         args: vec![Ty::Var(v)],

@@ -1619,12 +1619,11 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
                     pending.swap_remove(index);
                 }
                 Some(state) if actor_free_state_is_quiescent(state) => {
+                    // SAFETY: prepare_quiescent_actor_for_cleanup must run while the quiescent actor is still tracked in LIVE_ACTORS.
+                    unsafe { prepare_quiescent_actor_for_cleanup(expected) };
                     if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
-                        // SAFETY: the actor is quiescent and has just been removed from LIVE_ACTORS.
-                        unsafe {
-                            prepare_quiescent_actor_for_cleanup(actor);
-                            finalize_quiescent_actor_cleanup(actor, state);
-                        }
+                        // SAFETY: the actor is quiescent, prepared for cleanup, and no longer tracked.
+                        unsafe { finalize_quiescent_actor_cleanup(actor, state) };
                     }
                     pending.swap_remove(index);
                 }
@@ -1659,12 +1658,11 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
             None => {}
             Some(state) if state == HewActorState::Crashed as i32 => crashed.push(actor_id),
             Some(state) if actor_free_state_is_quiescent(state) => {
+                // SAFETY: prepare_quiescent_actor_for_cleanup must run while the quiescent actor is still tracked in LIVE_ACTORS.
+                unsafe { prepare_quiescent_actor_for_cleanup(expected) };
                 if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
-                    // SAFETY: the actor is quiescent and has just been removed from LIVE_ACTORS.
-                    unsafe {
-                        prepare_quiescent_actor_for_cleanup(actor);
-                        finalize_quiescent_actor_cleanup(actor, state);
-                    }
+                    // SAFETY: the actor is quiescent, prepared for cleanup, and no longer tracked.
+                    unsafe { finalize_quiescent_actor_cleanup(actor, state) };
                 }
             }
             Some(_) => still_live.push(actor_id),

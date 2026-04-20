@@ -16,6 +16,8 @@
 //! System messages use a separate lock-free MPSC queue.
 
 use crate::util::{CondvarExt, MutexExt};
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -35,6 +37,55 @@ pub use crate::internal::types::HewOverflowPolicy as OverflowPolicy;
 pub type HewCoalesceKeyFn = unsafe extern "C" fn(i32, *mut c_void, usize) -> u64;
 
 const SYS_QUEUE_WARN_THRESHOLD: usize = 10_000;
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_MAILBOX_ALLOC_ON_NTH: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+#[cfg(test)]
+pub(crate) struct MailboxAllocFailureGuard;
+
+#[cfg(test)]
+impl Drop for MailboxAllocFailureGuard {
+    fn drop(&mut self) {
+        FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| slot.set(usize::MAX));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fail_mailbox_alloc_on_nth(n: usize) -> MailboxAllocFailureGuard {
+    FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| slot.set(n));
+    MailboxAllocFailureGuard
+}
+
+#[cfg(test)]
+fn should_fail_mailbox_alloc() -> bool {
+    FAIL_MAILBOX_ALLOC_ON_NTH.with(|slot| {
+        let remaining = slot.get();
+        if remaining == usize::MAX {
+            return false;
+        }
+        if remaining == 0 {
+            slot.set(usize::MAX);
+            return true;
+        }
+        slot.set(remaining - 1);
+        false
+    })
+}
+
+fn mailbox_malloc(size: usize) -> *mut c_void {
+    #[cfg(test)]
+    {
+        if should_fail_mailbox_alloc() {
+            return ptr::null_mut();
+        }
+    }
+
+    // SAFETY: `size` is forwarded to libc unchanged.
+    unsafe { libc::malloc(size) }
+}
 
 // ── Message node ────────────────────────────────────────────────────────
 
@@ -73,7 +124,7 @@ unsafe fn msg_node_alloc(
     reply_channel: *mut c_void,
 ) -> *mut HewMsgNode {
     // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
-    let node = unsafe { libc::malloc(std::mem::size_of::<HewMsgNode>()) }.cast::<HewMsgNode>();
+    let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
     if node.is_null() {
         return ptr::null_mut();
     }
@@ -88,7 +139,7 @@ unsafe fn msg_node_alloc(
 
         // Deep-copy message data for actor isolation.
         if data_size > 0 && !data.is_null() {
-            let buf = libc::malloc(data_size);
+            let buf = mailbox_malloc(data_size);
             if buf.is_null() {
                 libc::free(node.cast());
                 return ptr::null_mut();
@@ -161,7 +212,7 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
 /// to consumers — it exists only to simplify empty/non-empty transitions.
 fn alloc_sentinel() -> *mut HewMsgNode {
     // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
-    let node = unsafe { libc::malloc(std::mem::size_of::<HewMsgNode>()) }.cast::<HewMsgNode>();
+    let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
     if node.is_null() {
         return ptr::null_mut();
     }
@@ -659,7 +710,7 @@ unsafe fn replace_node_payload(
     unsafe {
         let mut new_buf: *mut c_void = ptr::null_mut();
         if data_size > 0 && !data.is_null() {
-            new_buf = libc::malloc(data_size);
+            new_buf = mailbox_malloc(data_size);
             if new_buf.is_null() {
                 return false;
             }

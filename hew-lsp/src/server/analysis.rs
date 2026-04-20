@@ -202,10 +202,23 @@ pub(super) fn resolved_import_source_path(
     })
 }
 
+#[derive(Debug)]
+pub(super) struct DanglingImport {
+    source_path: std::path::PathBuf,
+    span: hew_parser::ast::Span,
+    module_id: hew_parser::module::ModuleId,
+}
+
+#[derive(Debug)]
+pub(super) struct ModuleGraphBuild {
+    graph: hew_parser::module::ModuleGraph,
+    dangling_imports: Vec<DanglingImport>,
+}
+
 pub(super) fn build_document_module_graph(
     source_uri: &Url,
     program: &hew_parser::ast::Program,
-) -> Option<hew_parser::module::ModuleGraph> {
+) -> Option<ModuleGraphBuild> {
     use hew_parser::module::{Module, ModuleGraph};
 
     let input_path = source_uri.to_file_path().ok()?;
@@ -214,6 +227,7 @@ pub(super) fn build_document_module_graph(
     let root_id = module_id_from_file(source_dir, &input_path);
     let mut graph = ModuleGraph::new(root_id.clone());
     let mut seen_ids = HashSet::from([root_id.clone()]);
+    let mut dangling_imports = Vec::new();
 
     let root_imports = extract_module_info(
         &program.items,
@@ -223,6 +237,7 @@ pub(super) fn build_document_module_graph(
         &root_id,
         &mut graph,
         &mut seen_ids,
+        &mut dangling_imports,
     );
 
     graph.add_module(Module {
@@ -234,9 +249,16 @@ pub(super) fn build_document_module_graph(
     });
 
     graph.compute_topo_order().ok()?;
-    Some(graph)
+    Some(ModuleGraphBuild {
+        graph,
+        dangling_imports,
+    })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "module graph construction threads shared graph state and dangling import output"
+)]
 pub(super) fn extract_module_info(
     items: &[hew_parser::ast::Spanned<Item>],
     current_source: &std::path::Path,
@@ -245,6 +267,7 @@ pub(super) fn extract_module_info(
     root_id: &hew_parser::module::ModuleId,
     graph: &mut hew_parser::module::ModuleGraph,
     seen_ids: &mut HashSet<hew_parser::module::ModuleId>,
+    dangling_imports: &mut Vec<DanglingImport>,
 ) -> Vec<hew_parser::module::ModuleImport> {
     use hew_parser::module::{Module, ModuleId, ModuleImport};
 
@@ -283,6 +306,7 @@ pub(super) fn extract_module_info(
                     root_id,
                     graph,
                     seen_ids,
+                    dangling_imports,
                 );
                 let source_paths = if decl.resolved_source_paths.is_empty() {
                     first_source_path.iter().cloned().collect()
@@ -295,6 +319,12 @@ pub(super) fn extract_module_info(
                     imports: child_imports,
                     source_paths,
                     doc: None,
+                });
+            } else {
+                dangling_imports.push(DanglingImport {
+                    source_path: current_source.to_path_buf(),
+                    span: span.clone(),
+                    module_id,
                 });
             }
         }
@@ -339,6 +369,63 @@ pub(super) fn build_module_source_map(
     }
 
     module_sources
+}
+
+pub(super) fn build_dangling_import_diagnostics(
+    source: &str,
+    line_offsets: &[usize],
+    source_uri: &Url,
+    dangling_imports: &[DanglingImport],
+    documents: &DashMap<Url, DocumentState>,
+) -> DiagnosticMap {
+    let mut diagnostics_by_uri = DiagnosticMap::new();
+
+    for dangling_import in dangling_imports {
+        let Ok(uri) = Url::from_file_path(&dangling_import.source_path) else {
+            continue;
+        };
+        let message = format!(
+            "unresolved import '{}'",
+            dangling_import.module_id.path.join(".")
+        );
+        let diagnostic = if uri == *source_uri {
+            Diagnostic {
+                range: super::span_to_range(source, line_offsets, &dangling_import.span),
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("hew-lsp".to_string()),
+                message,
+                ..Default::default()
+            }
+        } else if let Some(doc) = documents.get(&uri) {
+            Diagnostic {
+                range: super::span_to_range(&doc.source, &doc.line_offsets, &dangling_import.span),
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("hew-lsp".to_string()),
+                message,
+                ..Default::default()
+            }
+        } else {
+            let Some(target_source) = source_for_path(&dangling_import.source_path, documents)
+            else {
+                continue;
+            };
+            let target_line_offsets = compute_line_offsets(&target_source);
+            Diagnostic {
+                range: super::span_to_range(
+                    &target_source,
+                    &target_line_offsets,
+                    &dangling_import.span,
+                ),
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("hew-lsp".to_string()),
+                message,
+                ..Default::default()
+            }
+        };
+        insert_diagnostic(&mut diagnostics_by_uri, uri, diagnostic);
+    }
+
+    diagnostics_by_uri
 }
 
 pub(super) fn merge_diagnostics(into: &mut DiagnosticMap, from: &DiagnosticMap) {
@@ -405,8 +492,8 @@ pub(super) fn analyze_document(
         .iter()
         .any(|e| e.severity == hew_parser::Severity::Error);
 
-    let (type_output, module_sources) = if has_parse_errors {
-        (None, HashMap::new())
+    let (type_output, module_sources, dangling_import_diagnostics) = if has_parse_errors {
+        (None, HashMap::new(), HashMap::new())
     } else {
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
             build_module_search_paths(),
@@ -416,12 +503,29 @@ pub(super) fn analyze_document(
         // (other LSP features use the raw AST and do not need resolved_items).
         let mut program = parse_result.program.clone();
         populate_user_module_imports(uri, &mut program.items, documents);
-        program.module_graph = build_document_module_graph(uri, &program);
+        let module_graph_build = build_document_module_graph(uri, &program);
+        let dangling_import_diagnostics =
+            module_graph_build
+                .as_ref()
+                .map_or_else(HashMap::new, |build| {
+                    build_dangling_import_diagnostics(
+                        source,
+                        &line_offsets,
+                        uri,
+                        &build.dangling_imports,
+                        documents,
+                    )
+                });
+        program.module_graph = module_graph_build.map(|build| build.graph);
         let module_sources = build_module_source_map(&program, documents);
-        (Some(checker.check_program(&program)), module_sources)
+        (
+            Some(checker.check_program(&program)),
+            module_sources,
+            dangling_import_diagnostics,
+        )
     };
 
-    let diagnostics_by_uri = build_diagnostics_by_uri(
+    let mut diagnostics_by_uri = build_diagnostics_by_uri(
         uri,
         source,
         &line_offsets,
@@ -429,6 +533,7 @@ pub(super) fn analyze_document(
         type_output.as_ref(),
         &module_sources,
     );
+    merge_diagnostics(&mut diagnostics_by_uri, &dangling_import_diagnostics);
 
     DocumentState {
         source: source.to_string(),
@@ -439,21 +544,29 @@ pub(super) fn analyze_document(
     }
 }
 
-pub(super) fn document_imports_target(
-    importer_uri: &Url,
-    parse_result: &ParseResult,
-    target_uri: &Url,
-) -> bool {
-    parse_result.program.items.iter().any(|(item, _)| {
-        let Item::Import(import) = item else {
-            return false;
-        };
+fn build_reverse_importer_index(documents: &DashMap<Url, DocumentState>) -> HashMap<Url, Vec<Url>> {
+    let mut index: HashMap<Url, Vec<Url>> = HashMap::with_capacity(documents.len());
 
-        import_candidate_paths(importer_uri, import)
-            .into_iter()
-            .filter_map(|path| Url::from_file_path(path).ok())
-            .any(|candidate_uri| candidate_uri == *target_uri)
-    })
+    for entry in documents {
+        let importer_uri = entry.key().clone();
+        let parse_result = &entry.value().parse_result;
+        for (item, _) in &parse_result.program.items {
+            let Item::Import(import) = item else {
+                continue;
+            };
+            for candidate_uri in import_candidate_paths(&importer_uri, import)
+                .into_iter()
+                .filter_map(|path| Url::from_file_path(path).ok())
+            {
+                index
+                    .entry(candidate_uri)
+                    .or_default()
+                    .push(importer_uri.clone());
+            }
+        }
+    }
+
+    index
 }
 
 pub(super) fn refresh_open_importers(
@@ -465,31 +578,29 @@ pub(super) fn refresh_open_importers(
     // (e.g. A -> B -> C when C changes) are also re-analysed.
     // `visited` tracks every URI we have already queued or processed so that
     // diamond imports and import cycles don't cause infinite loops.
+    let reverse_importer_index = build_reverse_importer_index(documents);
     let mut visited: HashSet<Url> = HashSet::from([target_uri.clone()]);
     let mut queue: VecDeque<Url> = VecDeque::from([target_uri.clone()]);
 
     while let Some(current) = queue.pop_front() {
-        let dependents: Vec<_> = documents
-            .iter()
-            .filter_map(|entry| {
-                let importer_uri = entry.key().clone();
-                if visited.contains(&importer_uri) {
+        let dependents: Vec<_> = reverse_importer_index
+            .get(&current)
+            .into_iter()
+            .flat_map(|uris| uris.iter())
+            .filter_map(|importer_uri| {
+                if visited.contains(importer_uri) {
                     return None;
                 }
-                let importer = entry.value();
-                if document_imports_target(&importer_uri, &importer.parse_result, &current) {
-                    Some((
-                        importer_uri,
-                        importer.source.clone(),
-                        importer
-                            .diagnostics_by_uri
-                            .keys()
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                    ))
-                } else {
-                    None
-                }
+                let importer = documents.get(importer_uri)?;
+                Some((
+                    importer_uri.clone(),
+                    importer.source.clone(),
+                    importer
+                        .diagnostics_by_uri
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ))
             })
             .collect();
 

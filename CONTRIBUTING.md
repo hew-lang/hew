@@ -112,6 +112,7 @@ When adding new language features, add an end-to-end test:
 New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execution — must ship with a WASM implementation or an explicit tracked gap. Per LESSONS.md `native-wasm-parity` (P1):
 
 - Implement both native and WASM paths, or add `// WASM-TODO: <reason>` where the WASM path is deferred.
+- New `hew_*` runtime exports must be classified `jit: stable` or `jit: internal` in `scripts/jit-symbol-classification.toml` alongside their WASM disposition declaration; `scripts/verify-ffi-symbols.py --classify stable --validate` rejects unclassified exports.
 - Add contract tests for timeout, cancel, and budget edges.
 - Document intentional divergence where parity cannot land yet.
 - Register new E2E tests in `CMakeLists.txt` with both `add_e2e_test` and `add_wasm_file_test` where applicable.

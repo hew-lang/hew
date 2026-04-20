@@ -8036,6 +8036,104 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     assert_eq!(sig.return_type, Ty::String);
 }
 
+#[test]
+fn generic_named_method_calls_record_method_type_args() {
+    let source = r#"
+        type Wrapper<T> { value: T }
+
+        impl<T> Wrapper<T> {
+            fn map<U>(wrapper: Wrapper<T>, mapper: fn(T) -> U) -> U {
+                mapper(wrapper.value)
+            }
+        }
+
+        fn to_len(value: string) -> int {
+            value.len()
+        }
+
+        fn main() {
+            let wrapper = Wrapper { value: "hew" };
+            let len = wrapper.map(to_len);
+        }
+    "#;
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "generic method call should type-check cleanly: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![Ty::I64]),
+        "method call should record inferred method type args, got {:?}",
+        output.call_type_args
+    );
+}
+
+#[test]
+fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
+    let source = r"
+        trait Show {
+            fn show(value: Self);
+        }
+
+        type Wrapper {}
+
+        impl Wrapper {
+            fn map<U: Show>(wrapper: Wrapper, value: U) -> U {
+                value
+            }
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "inline-bounded impl method should register without checker errors: {:?}",
+        output.errors
+    );
+
+    let fn_sig = output
+        .fn_sigs
+        .get("Wrapper::map")
+        .expect("impl method must populate fn_sigs");
+    let method_sig = output
+        .type_defs
+        .get("Wrapper")
+        .and_then(|type_def| type_def.methods.get("map"))
+        .expect("impl method must populate type_def.methods");
+
+    assert_eq!(
+        fn_sig.type_param_bounds.get("U"),
+        Some(&vec!["Show".to_string()]),
+        "fn_sigs surface must retain method-inline bounds"
+    );
+    assert_eq!(
+        method_sig.type_param_bounds.get("U"),
+        Some(&vec!["Show".to_string()]),
+        "type_def.methods surface must retain method-inline bounds"
+    );
+}
+
 // -------------------------------------------------------------------------
 // Structural-hardening tests (qualified names + super-trait walk)
 // -------------------------------------------------------------------------

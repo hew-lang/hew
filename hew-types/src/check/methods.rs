@@ -4,6 +4,7 @@
 )]
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
+use crate::check::calls::SignatureArgApplication;
 use crate::method_resolution::{
     collect_method_sigs_for_receiver, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
@@ -576,7 +577,7 @@ impl Checker {
         receiver_ty: &Ty,
         method: &str,
         args: &[CallArg],
-        _span: &Span,
+        span: &Span,
     ) -> Option<Ty> {
         let Ty::Named {
             name,
@@ -586,13 +587,19 @@ impl Checker {
             return None;
         };
         let sig = self.lookup_named_method_sig(name, type_args, method)?;
-        for (i, arg) in args.iter().enumerate() {
-            if let Some(param_ty) = sig.params.get(i) {
-                let (expr, sp) = arg.expr();
-                self.check_against(expr, sp, param_ty);
-            }
-        }
-        Some(sig.return_type)
+        Some(
+            self.apply_instantiated_call_signature(
+                &sig,
+                None,
+                args,
+                span,
+                SignatureArgApplication::PositionalOnly {
+                    arity_context: format!("method '{method}'"),
+                },
+                true,
+            )
+            .return_type,
+        )
     }
 
     pub(super) fn check_named_method_fallback(
@@ -1401,72 +1408,19 @@ impl Checker {
                             .or_default()
                             .insert(key.clone());
                     }
-                    let (freshened_params, freshened_ret, resolved_type_args) =
-                        self.instantiate_fn_sig_for_call(&sig, None, span);
                     self.record_module_qualified_stdlib_call_rewrite_if_any(name, method, span);
-                    // Separate positional and named args
-                    let positional_count = args.iter().take_while(|a| a.name().is_none()).count();
-                    let positional_args = &args[..positional_count];
-                    let named_args = &args[positional_count..];
-
-                    // Arity check
-                    if !sig.accepts_kwargs && args.len() != freshened_params.len() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "expected {} arguments, found {}",
-                                freshened_params.len(),
-                                args.len()
-                            ),
-                        );
-                    } else if sig.accepts_kwargs && positional_count < freshened_params.len() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "expected at least {} positional arguments, found {}",
-                                freshened_params.len(),
-                                positional_count
-                            ),
-                        );
-                    }
-
-                    // Check positional args by index
-                    for (i, arg) in positional_args.iter().enumerate() {
-                        if let Some(param_ty) = freshened_params.get(i) {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, param_ty);
-                        }
-                    }
-
-                    // Check named args by name lookup
-                    for arg in named_args {
-                        if let Some(arg_name) = arg.name() {
-                            if let Some(idx) = sig.param_names.iter().position(|n| n == arg_name) {
-                                if let Some(param_ty) = freshened_params.get(idx) {
-                                    let (expr, sp) = arg.expr();
-                                    self.check_against(expr, sp, param_ty);
-                                }
-                            } else if !sig.accepts_kwargs {
-                                let (_, sp) = arg.expr();
-                                self.report_error(
-                                    TypeErrorKind::InvalidOperation,
-                                    sp,
-                                    format!("unknown named argument `{arg_name}`"),
-                                );
-                            } else {
-                                // For kwargs functions, synthesize the expression type
-                                let (expr, sp) = arg.expr();
-                                self.synthesize(expr, sp);
-                            }
-                        }
-                    }
-                    self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
-
-                    if !sig.type_params.is_empty() {
-                        self.record_concrete_call_type_args(span, &resolved_type_args);
-                    }
+                    let applied_sig = self.apply_instantiated_call_signature(
+                        &sig,
+                        None,
+                        args,
+                        span,
+                        SignatureArgApplication::FunctionLike {
+                            param_names: &sig.param_names,
+                            accepts_kwargs: sig.accepts_kwargs,
+                            module_qualified: true,
+                        },
+                        true,
+                    );
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
                     // linked through unification.
@@ -1474,7 +1428,7 @@ impl Checker {
                         let t = Ty::Var(TypeVar::fresh());
                         return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
                     }
-                    return freshened_ret;
+                    return applied_sig.return_type;
                 }
                 for arg in args {
                     let (expr, sp) = arg.expr();
@@ -2051,24 +2005,16 @@ impl Checker {
                 _,
             ) => {
                 if let Some(sig) = self.lookup_named_method_sig(name, type_args, method) {
-                    let (freshened_params, freshened_ret, resolved_type_args) =
-                        self.instantiate_fn_sig_for_call(&sig, None, span);
-                    self.check_arity(
+                    let applied_sig = self.apply_instantiated_call_signature(
+                        &sig,
+                        None,
                         args,
-                        freshened_params.len(),
-                        &format!("method '{method}'"),
                         span,
+                        SignatureArgApplication::PositionalOnly {
+                            arity_context: format!("method '{method}'"),
+                        },
+                        true,
                     );
-                    for (i, arg) in args.iter().enumerate() {
-                        if let Some(param_ty) = freshened_params.get(i) {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, param_ty);
-                        }
-                    }
-                    self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
-                    if !sig.type_params.is_empty() {
-                        self.record_concrete_call_type_args(span, &resolved_type_args);
-                    }
                     self.record_method_call_receiver_kind(
                         span,
                         MethodCallReceiverKind::NamedTypeInstance {
@@ -2076,7 +2022,7 @@ impl Checker {
                         },
                     );
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
-                    return freshened_ret;
+                    return applied_sig.return_type;
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
                 // When the receiver is a generic type parameter (e.g. `T` in
@@ -2102,32 +2048,23 @@ impl Checker {
                             trait_sig.return_type = trait_sig
                                 .return_type
                                 .substitute_named_param("Self", &self_ty);
-                            let (freshened_params, freshened_ret, resolved_type_args) =
-                                self.instantiate_fn_sig_for_call(&trait_sig, None, span);
-
-                            self.check_arity(
+                            let applied_sig = self.apply_instantiated_call_signature(
+                                &trait_sig,
+                                None,
                                 args,
-                                freshened_params.len(),
-                                &format!("method '{method}'"),
                                 span,
+                                SignatureArgApplication::PositionalOnly {
+                                    arity_context: format!("method '{method}'"),
+                                },
+                                true,
                             );
-                            for (i, arg) in args.iter().enumerate() {
-                                if let Some(param_ty) = freshened_params.get(i) {
-                                    let (expr, sp) = arg.expr();
-                                    self.check_against(expr, sp, param_ty);
-                                }
-                            }
-                            self.enforce_type_param_bounds(&trait_sig, &resolved_type_args, span);
-                            if !trait_sig.type_params.is_empty() {
-                                self.record_concrete_call_type_args(span, &resolved_type_args);
-                            }
                             self.record_method_call_receiver_kind(
                                 span,
                                 MethodCallReceiverKind::NamedTypeInstance {
                                     type_name: name.clone(),
                                 },
                             );
-                            return freshened_ret;
+                            return applied_sig.return_type;
                         }
                     }
                 }
@@ -2188,28 +2125,17 @@ impl Checker {
                             }
                         }
                     }
-                    let (freshened_params, freshened_ret, resolved_type_args) =
-                        self.instantiate_fn_sig_for_call(&sig, None, span);
-
-                    self.check_arity(
+                    self.apply_instantiated_call_signature(
+                        &sig,
+                        None,
                         args,
-                        freshened_params.len(),
-                        &format!("method '{method}'"),
                         span,
-                    );
-                    for (i, arg) in args.iter().enumerate() {
-                        if let Some(param_ty) = freshened_params.get(i) {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, param_ty);
-                        }
-                    }
-                    self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
-                    if !sig.type_params.is_empty() {
-                        // CODEGEN-TODO: TraitDispatchOp does not yet thread per-method type args;
-                        // vtable ABI extension needed for generic trait-object method dispatch.
-                        self.record_concrete_call_type_args(span, &resolved_type_args);
-                    }
-                    freshened_ret
+                        SignatureArgApplication::PositionalOnly {
+                            arity_context: format!("method '{method}'"),
+                        },
+                        true,
+                    )
+                    .return_type
                 } else {
                     for arg in args {
                         let (expr, sp) = arg.expr();

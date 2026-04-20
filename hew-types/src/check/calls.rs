@@ -4,6 +4,22 @@
 )]
 use super::*;
 
+pub(super) enum SignatureArgApplication<'a> {
+    PositionalOnly {
+        arity_context: String,
+    },
+    FunctionLike {
+        param_names: &'a [String],
+        accepts_kwargs: bool,
+        module_qualified: bool,
+    },
+}
+
+pub(super) struct AppliedCallSignature {
+    pub(super) params: Vec<Ty>,
+    pub(super) return_type: Ty,
+}
+
 impl Checker {
     fn lookup_variant_constructor(
         &self,
@@ -67,6 +83,111 @@ impl Checker {
     fn record_builtin_result_output_type_args(&mut self, span: &Span, ok_ty: &Ty, err_ty: &Ty) {
         self.builtin_result_output_type_args
             .insert(SpanKey::from(span), (ok_ty.clone(), err_ty.clone()));
+    }
+
+    pub(super) fn apply_instantiated_call_signature(
+        &mut self,
+        sig: &FnSig,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        span: &Span,
+        arg_application: SignatureArgApplication<'_>,
+        record_call_type_args: bool,
+    ) -> AppliedCallSignature {
+        let (freshened_params, freshened_ret, resolved_type_args) =
+            self.instantiate_fn_sig_for_call(sig, type_args, span);
+
+        match arg_application {
+            SignatureArgApplication::PositionalOnly { arity_context } => {
+                self.check_arity(args, freshened_params.len(), &arity_context, span);
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(param_ty) = freshened_params.get(i) {
+                        let (expr, sp) = arg.expr();
+                        self.check_against(expr, sp, param_ty);
+                    }
+                }
+            }
+            SignatureArgApplication::FunctionLike {
+                param_names,
+                accepts_kwargs,
+                module_qualified,
+            } => {
+                let positional_count = args.iter().take_while(|arg| arg.name().is_none()).count();
+                let positional_args = &args[..positional_count];
+                let named_args = &args[positional_count..];
+
+                if !accepts_kwargs && args.len() != freshened_params.len() {
+                    let message = if module_qualified {
+                        format!(
+                            "expected {} arguments, found {}",
+                            freshened_params.len(),
+                            args.len()
+                        )
+                    } else {
+                        format!(
+                            "this function takes {} argument(s) but {} were supplied",
+                            freshened_params.len(),
+                            args.len()
+                        )
+                    };
+                    self.report_error(TypeErrorKind::ArityMismatch, span, message);
+                } else if accepts_kwargs && positional_count < freshened_params.len() {
+                    let message = if module_qualified {
+                        format!(
+                            "expected at least {} positional arguments, found {}",
+                            freshened_params.len(),
+                            positional_count
+                        )
+                    } else {
+                        format!(
+                            "this function takes at least {} positional argument(s) but {} were supplied",
+                            freshened_params.len(),
+                            positional_count
+                        )
+                    };
+                    self.report_error(TypeErrorKind::ArityMismatch, span, message);
+                }
+
+                for (i, arg) in positional_args.iter().enumerate() {
+                    if let Some(param_ty) = freshened_params.get(i) {
+                        let (expr, sp) = arg.expr();
+                        self.check_against(expr, sp, param_ty);
+                    }
+                }
+
+                for arg in named_args {
+                    if let Some(name) = arg.name() {
+                        if let Some(idx) = param_names.iter().position(|param| param == name) {
+                            if let Some(param_ty) = freshened_params.get(idx) {
+                                let (expr, sp) = arg.expr();
+                                self.check_against(expr, sp, param_ty);
+                            }
+                        } else if !accepts_kwargs {
+                            let (_, sp) = arg.expr();
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                sp,
+                                format!("unknown named argument `{name}`"),
+                            );
+                        } else {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.enforce_type_param_bounds(sig, &resolved_type_args, span);
+
+        if record_call_type_args && !sig.type_params.is_empty() {
+            self.record_concrete_call_type_args(span, &resolved_type_args);
+        }
+
+        AppliedCallSignature {
+            params: freshened_params,
+            return_type: freshened_ret,
+        }
     }
 
     pub(super) fn check_call_against_expected_constructor(
@@ -484,79 +605,21 @@ impl Checker {
                     .borrow_mut()
                     .insert(ImportKey::new(self.current_module.clone(), module));
             }
-            let (freshened_params, freshened_ret, resolved_type_args) =
-                self.instantiate_fn_sig_for_call(&sig, type_args, span);
-
-            // Separate positional and named args
-            let positional_count = args.iter().take_while(|a| a.name().is_none()).count();
-            let positional_args = &args[..positional_count];
-            let named_args = &args[positional_count..];
-
-            // Arity check: for accepts_kwargs functions, only check positional args
-            // against required params; for normal functions, all args must match
-            if !sig.accepts_kwargs && args.len() != freshened_params.len() {
-                self.report_error(
-                    TypeErrorKind::ArityMismatch,
-                    span,
-                    format!(
-                        "this function takes {} argument(s) but {} were supplied",
-                        freshened_params.len(),
-                        args.len()
-                    ),
-                );
-            } else if sig.accepts_kwargs && positional_count < freshened_params.len() {
-                self.report_error(
-                    TypeErrorKind::ArityMismatch,
-                    span,
-                    format!(
-                        "this function takes at least {} positional argument(s) but {} were supplied",
-                        freshened_params.len(),
-                        positional_count
-                    ),
-                );
-            }
-
-            // Check positional args by index
-            for (i, arg) in positional_args.iter().enumerate() {
-                if let Some(param_ty) = freshened_params.get(i) {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, param_ty);
-                }
-            }
-
-            // Check named args by name lookup
-            for arg in named_args {
-                if let Some(name) = arg.name() {
-                    if let Some(idx) = sig.param_names.iter().position(|n| n == name) {
-                        if let Some(param_ty) = freshened_params.get(idx) {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, param_ty);
-                        }
-                    } else if !sig.accepts_kwargs {
-                        let (_, sp) = arg.expr();
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            sp,
-                            format!("unknown named argument `{name}`"),
-                        );
-                    } else {
-                        // For kwargs functions, synthesize the expression type
-                        let (expr, sp) = arg.expr();
-                        self.synthesize(expr, sp);
-                    }
-                }
-            }
-            self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
-
-            // When the caller omitted explicit type arguments, resolve the
-            // inferred type variables to concrete types and record them so the
-            // enrichment layer can fill them in before serialization.
-            if type_args.is_none() && !sig.type_params.is_empty() {
-                self.record_concrete_call_type_args(span, &resolved_type_args);
-            }
+            let applied_sig = self.apply_instantiated_call_signature(
+                &sig,
+                type_args,
+                args,
+                span,
+                SignatureArgApplication::FunctionLike {
+                    param_names: &sig.param_names,
+                    accepts_kwargs: sig.accepts_kwargs,
+                    module_qualified: false,
+                },
+                type_args.is_none(),
+            );
 
             if resolved_fn_name == "Rc::new" {
-                if let (Some(payload_ty), Some(arg)) = (freshened_params.first(), args.first()) {
+                if let (Some(payload_ty), Some(arg)) = (applied_sig.params.first(), args.first()) {
                     let (_, arg_span) = arg.expr();
                     let resolved_payload = self.subst.resolve(payload_ty);
                     self.validate_rc_payload_type(&resolved_payload, arg_span);
@@ -565,7 +628,7 @@ impl Checker {
 
             if resolved_fn_name == "len" {
                 if let Some(Ty::Named { name, args }) =
-                    freshened_params.first().map(|ty| self.subst.resolve(ty))
+                    applied_sig.params.first().map(|ty| self.subst.resolve(ty))
                 {
                     if Ty::names_match_qualified(&name, "HashSet") {
                         let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
@@ -577,7 +640,7 @@ impl Checker {
                 }
             }
 
-            return freshened_ret;
+            return applied_sig.return_type;
         }
 
         // Then check if it's a variable with a function type (e.g., lambda parameters)
@@ -588,62 +651,20 @@ impl Checker {
                 .and_then(|def_span| self.lambda_poly_sig_map.get(&SpanKey::from(def_span)))
                 .cloned()
             {
-                let (freshened_params, freshened_ret, resolved_type_args) =
-                    self.instantiate_fn_sig_for_call(&sig.call_sig, type_args, span);
-
-                let positional_count = args.iter().take_while(|arg| arg.name().is_none()).count();
-                let positional_args = &args[..positional_count];
-                let named_args = &args[positional_count..];
-
-                if args.len() != freshened_params.len() {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
+                return self
+                    .apply_instantiated_call_signature(
+                        &sig.call_sig,
+                        type_args,
+                        args,
                         span,
-                        format!(
-                            "this function takes {} argument(s) but {} were supplied",
-                            freshened_params.len(),
-                            args.len()
-                        ),
-                    );
-                }
-
-                for (i, arg) in positional_args.iter().enumerate() {
-                    if let Some(param_ty) = freshened_params.get(i) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, param_ty);
-                    }
-                }
-
-                for arg in named_args {
-                    if let Some(name) = arg.name() {
-                        if let Some(idx) = sig
-                            .call_sig
-                            .param_names
-                            .iter()
-                            .position(|param| param == name)
-                        {
-                            if let Some(param_ty) = freshened_params.get(idx) {
-                                let (expr, sp) = arg.expr();
-                                self.check_against(expr, sp, param_ty);
-                            }
-                        } else {
-                            let (_, sp) = arg.expr();
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                sp,
-                                format!("unknown named argument `{name}`"),
-                            );
-                        }
-                    }
-                }
-
-                self.enforce_type_param_bounds(&sig.call_sig, &resolved_type_args, span);
-
-                if type_args.is_none() && !sig.call_sig.type_params.is_empty() {
-                    self.record_concrete_call_type_args(span, &resolved_type_args);
-                }
-
-                return freshened_ret;
+                        SignatureArgApplication::FunctionLike {
+                            param_names: &sig.call_sig.param_names,
+                            accepts_kwargs: sig.call_sig.accepts_kwargs,
+                            module_qualified: false,
+                        },
+                        type_args.is_none(),
+                    )
+                    .return_type;
             }
 
             let func_ty = binding.ty.clone();

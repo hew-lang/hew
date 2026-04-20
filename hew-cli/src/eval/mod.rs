@@ -66,112 +66,141 @@ pub enum EvalStatus {
 /// Returns `Err(message)` for non-WASM explicit targets **and** wasi-shaped
 /// triples that do not normalize to `wasm32-wasip1` (e.g.
 /// `wasm32-unknown-unknown-wasi`).
-fn resolve_eval_target(triple: Option<&str>) -> Result<Option<crate::target::TargetSpec>, String> {
-    let spec = match triple {
+fn resolve_eval_target(
+    triple: Option<&str>,
+) -> Result<Option<crate::target::ExecutionTarget>, String> {
+    let target = match triple {
         None => return Ok(None),
-        Some(t) => crate::target::TargetSpec::from_requested(Some(t))?,
+        Some(t) => crate::target::ExecutionTarget::from_requested(Some(t))?,
     };
     // Only the canonical wasm32-wasip1 target (which wasm32-wasi also
     // normalizes to) is supported for eval.
     // Other wasi-shaped triples like `wasm32-unknown-unknown-wasi` parse as
     // WASM but do not normalize to wasm32-wasip1 and must be rejected.
-    if spec.is_wasm() && spec.normalized_triple() == "wasm32-wasip1" {
-        Ok(Some(spec))
+    if target.is_wasi() && target.normalized_triple() == "wasm32-wasip1" {
+        Ok(Some(target))
     } else {
         Err(format!(
             "`hew eval --target {}` is not supported. \
              Only `--target wasm32-wasi` is accepted; omit --target for native eval.",
-            spec.normalized_triple()
+            target.normalized_triple()
         ))
     }
 }
 
 /// Run the `hew eval` subcommand.
 pub fn cmd_eval(args: &crate::args::EvalArgs) {
-    let timeout = crate::process::timeout_from_seconds(args.timeout).unwrap_or_else(|e| {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
-    });
-
-    // Validate the target up front.  Only wasm32-wasi / wasm32-wasip1 are
-    // accepted as explicit targets; any other explicit triple is rejected with
-    // a clear diagnostic.
+    let timeout = resolve_eval_timeout(args.timeout);
     let target_spec = resolve_eval_target(args.target.as_deref()).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
-    let target = target_spec
-        .as_ref()
-        .map(|_| args.target.as_deref().unwrap_or("wasm32-wasi"));
+    let request = EvalRequest::from_args(args);
+    let target = eval_target_arg(args.target.as_deref(), target_spec.as_ref());
 
-    // --json requires a non-interactive invocation.
-    if args.json && args.file.is_none() && args.expr.is_empty() {
-        eprintln!("Error: --json requires -f <file> or an inline expression; it cannot be used with the interactive REPL.");
-        std::process::exit(1);
-    }
+    validate_eval_request(&request, args.json, target);
 
-    // Interactive REPL is not supported for explicit WASI targets.
-    // Each WASI execution is compile-per-input via wasmtime; a persistent
-    // session loop is intentionally out of scope here.
-    if target_spec.is_some() && args.file.is_none() && args.expr.is_empty() {
-        eprintln!(
-            "Error: interactive REPL is not supported for --target {}. \
-             Provide an inline expression or use -f <file>.",
-            args.target.as_deref().unwrap_or("wasm32-wasi")
-        );
-        std::process::exit(1);
-    }
-
-    // --json mode: collect result into a structured contract and emit as JSON.
     if args.json {
-        let result = if let Some(ref file) = args.file {
-            let path = file.display().to_string();
-            crate::diagnostic::start_diagnostic_capture();
-            let outcome = repl::eval_file(&path, timeout, target);
-            let diagnostics = crate::diagnostic::finish_diagnostic_capture();
-            eval_result_to_json(outcome, diagnostics)
+        emit_json_eval(&request, timeout, target);
+        return;
+    }
+
+    execute_eval_request(&request, timeout, target);
+}
+
+fn resolve_eval_timeout(seconds: u64) -> std::time::Duration {
+    crate::process::timeout_from_seconds(seconds).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    })
+}
+
+enum EvalRequest {
+    File(String),
+    Expr(String),
+    Repl,
+}
+
+impl EvalRequest {
+    fn from_args(args: &crate::args::EvalArgs) -> Self {
+        if let Some(file) = &args.file {
+            Self::File(file.display().to_string())
+        } else if args.expr.is_empty() {
+            Self::Repl
         } else {
-            let expr = args.expr.join(" ");
-            crate::diagnostic::start_diagnostic_capture();
-            let outcome = repl::eval_one(&expr, timeout, target);
-            let diagnostics = crate::diagnostic::finish_diagnostic_capture();
-            eval_result_to_json(outcome, diagnostics)
-        };
-        // Always exit 0 when --json is active: the structured `status` field
-        // carries the outcome; callers must not rely on the process exit code.
-        println!(
-            "{}",
-            serde_json::to_string(&result).expect("JSON serialization is infallible")
+            Self::Expr(args.expr.join(" "))
+        }
+    }
+
+    fn is_repl(&self) -> bool {
+        matches!(self, Self::Repl)
+    }
+}
+
+fn eval_target_arg<'a>(
+    requested_target: Option<&'a str>,
+    target_spec: Option<&crate::target::ExecutionTarget>,
+) -> Option<&'a str> {
+    target_spec.map(|_| requested_target.unwrap_or("wasm32-wasi"))
+}
+
+fn validate_eval_request(request: &EvalRequest, json: bool, target: Option<&str>) {
+    if json && request.is_repl() {
+        eprintln!(
+            "Error: --json requires -f <file> or an inline expression; it cannot be used with the interactive REPL."
         );
-        return;
+        std::process::exit(1);
     }
 
-    // Check for `-f <file>` flag first.
-    if let Some(ref file) = args.file {
-        let path = file.display().to_string();
-        match repl::eval_file(&path, timeout, target) {
-            Ok(output) => {
-                if !output.is_empty() {
-                    print!("{output}");
-                }
+    if let Some(target) = target.filter(|_| request.is_repl()) {
+        eprintln!(
+            "Error: interactive REPL is not supported for --target {target}. \
+             Provide an inline expression or use -f <file>.",
+        );
+        std::process::exit(1);
+    }
+}
+
+fn emit_json_eval(request: &EvalRequest, timeout: std::time::Duration, target: Option<&str>) {
+    let result = match request {
+        EvalRequest::File(path) => capture_json_eval(|| repl::eval_file(path, timeout, target)),
+        EvalRequest::Expr(expr) => capture_json_eval(|| repl::eval_one(expr, timeout, target)),
+        EvalRequest::Repl => unreachable!("validated before JSON evaluation"),
+    };
+
+    // Always exit 0 when --json is active: the structured `status` field
+    // carries the outcome; callers must not rely on the process exit code.
+    println!(
+        "{}",
+        serde_json::to_string(&result).expect("JSON serialization is infallible")
+    );
+}
+
+fn capture_json_eval<F>(run: F) -> EvalJsonOutput
+where
+    F: FnOnce() -> Result<String, repl::CliEvalError>,
+{
+    crate::diagnostic::start_diagnostic_capture();
+    let result = run();
+    let diagnostics = crate::diagnostic::finish_diagnostic_capture();
+    eval_result_to_json(result, diagnostics)
+}
+
+fn execute_eval_request(request: &EvalRequest, timeout: std::time::Duration, target: Option<&str>) {
+    match request {
+        EvalRequest::File(path) => emit_eval_output(repl::eval_file(path, timeout, target)),
+        EvalRequest::Expr(expr) => emit_eval_output(repl::eval_one(expr, timeout, target)),
+        EvalRequest::Repl => {
+            if let Err(e) = repl::run_interactive(timeout, target) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
             }
-            Err(e) => exit_eval_error(e),
         }
-        return;
     }
+}
 
-    if args.expr.is_empty() {
-        // Interactive REPL.
-        if let Err(e) = repl::run_interactive(timeout, target) {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
-        return;
-    }
-
-    // Evaluate inline expression.
-    let expr = args.expr.join(" ");
-    match repl::eval_one(&expr, timeout, target) {
+fn emit_eval_output(result: Result<String, repl::CliEvalError>) {
+    match result {
         Ok(output) => {
             if !output.is_empty() {
                 print!("{output}");
@@ -262,7 +291,7 @@ mod target_validation_tests {
         let spec = resolve_eval_target(Some("wasm32-wasi"))
             .expect("wasm32-wasi should be accepted")
             .expect("should return Some");
-        assert!(spec.is_wasm());
+        assert!(spec.is_wasi());
     }
 
     #[test]
@@ -270,7 +299,7 @@ mod target_validation_tests {
         let spec = resolve_eval_target(Some("wasm32-wasip1"))
             .expect("wasm32-wasip1 should be accepted")
             .expect("should return Some");
-        assert!(spec.is_wasm());
+        assert!(spec.is_wasi());
     }
 
     #[test]

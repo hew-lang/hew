@@ -23,6 +23,12 @@ pub enum ObjectFormat {
     Wasm,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionTargetKind {
+    Native,
+    Wasi,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetSpec {
     #[cfg(hew_embedded_codegen)]
@@ -32,6 +38,12 @@ pub struct TargetSpec {
     os: TargetOs,
     env: Option<String>,
     object_format: ObjectFormat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionTarget {
+    spec: TargetSpec,
+    kind: ExecutionTargetKind,
 }
 
 /// Platform-specific components of a native link plan, driven entirely by the
@@ -498,11 +510,47 @@ fn host_env() -> Option<&'static str> {
     HOST_ENV
 }
 
+impl ExecutionTarget {
+    pub fn from_requested(requested: Option<&str>) -> Result<Self, String> {
+        let spec = TargetSpec::from_requested(requested)?;
+        let kind = if spec.is_wasm() {
+            ExecutionTargetKind::Wasi
+        } else {
+            ExecutionTargetKind::Native
+        };
+        Ok(Self { spec, kind })
+    }
+
+    pub fn normalized_triple(&self) -> &str {
+        self.spec.normalized_triple()
+    }
+
+    pub fn executable_suffix(&self) -> &'static str {
+        self.spec.executable_suffix()
+    }
+
+    pub fn is_native(&self) -> bool {
+        self.kind == ExecutionTargetKind::Native
+    }
+
+    pub fn is_wasi(&self) -> bool {
+        self.kind == ExecutionTargetKind::Wasi
+    }
+
+    pub fn can_run_on_host(&self) -> bool {
+        self.spec.can_run_on_host()
+    }
+
+    pub fn cross_target_run_error(&self, verb: &str) -> String {
+        self.spec.cross_target_run_error(verb)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
-    use super::TargetSpec;
+    use super::{ExecutionTarget, TargetSpec};
 
     // Serialize env-var–mutating tests: `std::env::set_var` / `remove_var` are
     // not thread-safe when multiple tests share the same process.
@@ -528,6 +576,21 @@ mod tests {
         let spec = TargetSpec::from_requested(Some("wasm32-wasi")).expect("target");
         assert_eq!(spec.normalized_triple(), "wasm32-wasip1");
         assert_eq!(spec.executable_suffix(), ".wasm");
+    }
+
+    #[test]
+    fn execution_target_classifies_native_targets() {
+        let target =
+            ExecutionTarget::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
+        assert!(target.is_native());
+        assert!(!target.is_wasi());
+    }
+
+    #[test]
+    fn execution_target_classifies_wasi_targets() {
+        let target = ExecutionTarget::from_requested(Some("wasm32-wasi")).expect("target");
+        assert!(target.is_wasi());
+        assert!(!target.is_native());
     }
 
     // ── linker_triple ──────────────────────────────────────────────────

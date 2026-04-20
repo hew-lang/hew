@@ -19,7 +19,10 @@ pub mod traits;
 pub mod ty;
 pub mod unify;
 
-pub use check::{Checker, MethodCallReceiverKind, MethodCallRewrite, TypeCheckOutput, VariantDef};
+pub use check::{
+    builtin_function_names, Checker, MethodCallReceiverKind, MethodCallRewrite, TypeCheckOutput,
+    VariantDef,
+};
 pub use error::TypeError;
 pub use lowering_facts::{
     DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,

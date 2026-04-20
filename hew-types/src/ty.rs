@@ -4,7 +4,9 @@
 //! the type checker. Types are structural and support substitution for
 //! type inference variables.
 
-use crate::builtin_names::canonical_builtin_named_type_name;
+use crate::builtin_names::{
+    builtin_named_type, canonical_builtin_named_type_name, BuiltinNamedType,
+};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -42,6 +44,13 @@ pub struct TraitObjectBound {
     pub trait_name: String,
     /// Type arguments
     pub args: Vec<Ty>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HashSetLoweringTypeKey {
+    I64,
+    U64,
+    String,
 }
 
 /// The internal representation of a type in Hew.
@@ -441,6 +450,28 @@ impl Ty {
     }
 
     #[must_use]
+    pub fn is_well_known_type_name(name: &str) -> bool {
+        Self::from_name(name).is_some()
+            || Self::canonical_named_builtin(name).is_some()
+            || matches!(
+                name,
+                "void"
+                    | "never"
+                    | "Self"
+                    | "Ok"
+                    | "Err"
+                    | "Some"
+                    | "None"
+                    | "Arc"
+                    | "Weak"
+                    | "Send"
+                    | "Frozen"
+                    | "Copy"
+                    | "ActorStream"
+            )
+    }
+
+    #[must_use]
     pub fn type_name(&self) -> Option<&str> {
         match self {
             Ty::Named { name, .. } => Some(name),
@@ -518,25 +549,37 @@ impl Ty {
     /// Construct `Sender<inner>`.
     #[must_use]
     pub fn sender(inner: Ty) -> Ty {
-        Self::normalize_named("Sender".to_string(), vec![inner])
+        Self::normalize_named(
+            BuiltinNamedType::Sender.canonical_name().to_string(),
+            vec![inner],
+        )
     }
 
     /// Construct `Receiver<inner>`.
     #[must_use]
     pub fn receiver(inner: Ty) -> Ty {
-        Self::normalize_named("Receiver".to_string(), vec![inner])
+        Self::normalize_named(
+            BuiltinNamedType::Receiver.canonical_name().to_string(),
+            vec![inner],
+        )
     }
 
     /// Construct `Stream<inner>`.
     #[must_use]
     pub fn stream(inner: Ty) -> Ty {
-        Self::normalize_named("Stream".to_string(), vec![inner])
+        Self::normalize_named(
+            BuiltinNamedType::Stream.canonical_name().to_string(),
+            vec![inner],
+        )
     }
 
     /// Construct `Sink<inner>`.
     #[must_use]
     pub fn sink(inner: Ty) -> Ty {
-        Self::normalize_named("Sink".to_string(), vec![inner])
+        Self::normalize_named(
+            BuiltinNamedType::Sink.canonical_name().to_string(),
+            vec![inner],
+        )
     }
 
     /// Construct `Generator<yields, returns>`.
@@ -607,22 +650,39 @@ impl Ty {
         }
     }
 
+    fn as_single_arg_builtin_named(&self, kind: BuiltinNamedType) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args }
+                if builtin_named_type(name) == Some(kind) && args.len() == 1 =>
+            {
+                Some(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// If this is `Sender<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_sender(&self) -> Option<&Ty> {
+        self.as_single_arg_builtin_named(BuiltinNamedType::Sender)
+    }
+
+    /// If this is `Receiver<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_receiver(&self) -> Option<&Ty> {
+        self.as_single_arg_builtin_named(BuiltinNamedType::Receiver)
+    }
+
     /// If this is `Stream<T>`, return `Some(&T)`.
     #[must_use]
     pub fn as_stream(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named { name, args } if name == "Stream" && args.len() == 1 => Some(&args[0]),
-            _ => None,
-        }
+        self.as_single_arg_builtin_named(BuiltinNamedType::Stream)
     }
 
     /// If this is `Sink<T>`, return `Some(&T)`.
     #[must_use]
     pub fn as_sink(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named { name, args } if name == "Sink" && args.len() == 1 => Some(&args[0]),
-            _ => None,
-        }
+        self.as_single_arg_builtin_named(BuiltinNamedType::Sink)
     }
 
     /// If this is `Generator<Y, R>`, return `Some((&Y, &R))`.
@@ -741,6 +801,16 @@ impl Ty {
                 | Ty::U64
                 | Ty::IntLiteral
         )
+    }
+
+    #[must_use]
+    pub(crate) fn hashset_lowering_type_key(&self) -> Option<HashSetLoweringTypeKey> {
+        match self {
+            Ty::IntLiteral | Ty::I64 => Some(HashSetLoweringTypeKey::I64),
+            Ty::U64 => Some(HashSetLoweringTypeKey::U64),
+            Ty::String => Some(HashSetLoweringTypeKey::String),
+            _ => None,
+        }
     }
 
     /// Check if this is an unsigned integer type.

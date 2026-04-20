@@ -24,97 +24,9 @@ use crate::{OffsetSpan, RenameConflict, RenameConflictKind, RenameEdit, RenameEr
 /// user code. Renaming to one of these would shadow a global reachable
 /// anywhere; the heuristic rejects it pre-emptively.
 ///
-/// SHIM: hard-coded list; a complete reflection of the builtin registry
-/// requires Lane 1B type-checker introspection. Until then, this list
-/// covers all plain-identifier builtins (no `::` or `.`); a user
-/// attempting to rename into an unlisted qualified builtin (e.g.
-/// `Vec::new`, `math.sqrt`) will encounter a type-check error rather
-/// than a rename-time refusal. Every name here is verified against
-/// `register_builtin_fn` calls in
-/// `hew-types/src/check/registration.rs` (the canonical registry).
-///
 /// Excluded intentionally: names containing `::` or `.` such as
 /// `Vec::new`, `HashMap::new`, `Node::start`, `math.*`, `random.*`.
 /// Those are module-qualified and can't be introduced by a bare rename.
-const BUILTIN_FUNCTION_NAMES: &[&str] = &[
-    // Registered via register_builtin_fn in hew-types/src/check/registration.rs.
-    // SHIM: hard-coded until Lane 1B's type-checker introspection lands.
-    // Core I/O
-    "print",
-    "println",
-    "panic",
-    // Assertions
-    "assert",
-    "assert_eq",
-    "assert_ne",
-    // Math
-    "abs",
-    "sqrt",
-    "min",
-    "max",
-    "to_float",
-    // String / collection
-    "len",
-    "to_string",
-    "string_concat",
-    "string_length",
-    "string_char_at",
-    "string_equals",
-    "string_from_int",
-    "string_contains",
-    "string_split",
-    "string_starts_with",
-    "substring",
-    "string_slice",
-    "string_trim",
-    "string_to_int",
-    "string_find",
-    "string_replace",
-    "string_to_upper",
-    "string_to_lower",
-    "string_ends_with",
-    "int_to_string",
-    "float_to_string",
-    "char_to_string",
-    "bool_to_string",
-    // Typed print variants
-    "println_int",
-    "println_str",
-    "print_int",
-    "print_str",
-    "println_float",
-    "println_bool",
-    "print_float",
-    "print_bool",
-    "println_f64",
-    "print_f64",
-    "println_i64",
-    "println_char",
-    // System / process
-    "exit",
-    "stop",
-    "close",
-    "sleep",
-    "sleep_ms",
-    // File I/O
-    "read_file",
-    "write_file",
-    // Actor fault-propagation
-    "link",
-    "unlink",
-    "monitor",
-    "demonitor",
-    // Supervisor helpers
-    "supervisor_child",
-    "supervisor_stop",
-    // Channel receive builtins (registered conditionally in registration.rs:2131-2135
-    // when both Receiver and hew_channel_send are present, but always plain identifiers)
-    "hew_channel_recv",
-    "hew_channel_recv_int",
-    "hew_channel_try_recv",
-    "hew_channel_try_recv_int",
-];
-
 /// Return `true` if `name` is a syntactically valid Hew identifier.
 ///
 /// Must start with `_` or an alphabetic character and continue with
@@ -138,7 +50,7 @@ pub fn is_builtin_name(name: &str) -> bool {
     if hew_lexer::ALL_KEYWORDS.contains(&name) {
         return true;
     }
-    BUILTIN_FUNCTION_NAMES.contains(&name)
+    hew_types::builtin_function_names().contains(name)
 }
 
 /// Check whether rename is valid at `offset`. Returns the word span if yes.
@@ -555,7 +467,7 @@ mod tests {
 
     #[test]
     fn plan_rename_rejects_newly_added_builtin_names() {
-        // Regression guard for the names added to BUILTIN_FUNCTION_NAMES in
+        // Regression guard for builtin names derived from checker registration in
         // the fix for issue #1277.  Each must be rejected with Builtin.
         let source = "fn main() { let x = 1; }";
         let pr = parse(source);

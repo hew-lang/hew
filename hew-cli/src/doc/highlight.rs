@@ -4,6 +4,7 @@
 //! `dark-plus` theme as configured on the Hew website (`hew.sh`).
 
 use hew_lexer::{Lexer, Span, Token};
+use hew_types::Ty;
 
 // ── Hew website design-system colours (dark theme) ───────────────────────────
 
@@ -194,14 +195,10 @@ fn token_color(tok: &Token<'_>) -> &'static str {
 
 /// Classify an identifier as a type (`PascalCase`) or plain variable.
 fn classify_identifier(id: &str) -> &'static str {
-    // Built-in primitive types
-    match id {
-        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64" | "int"
-        | "uint" | "byte" | "float" | "isize" | "usize" | "bool" | "char" | "string" | "bytes"
-        | "void" | "Self" => TY,
-        // PascalCase → type name
-        _ if id.starts_with(|c: char| c.is_ascii_uppercase()) => TY,
-        _ => PLAIN,
+    if Ty::is_well_known_type_name(id) || id.starts_with(|c: char| c.is_ascii_uppercase()) {
+        TY
+    } else {
+        PLAIN
     }
 }
 

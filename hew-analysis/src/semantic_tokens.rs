@@ -5,51 +5,19 @@
 //! these into whatever delta-encoded, UTF-16 form the protocol requires.
 
 use hew_lexer::Token;
+use hew_types::Ty;
 
 use crate::{token_modifiers, token_types, SemanticToken};
 
-/// Primitive type names that the lexer emits as `Identifier` but should be
-/// highlighted as types.
-const PRIMITIVE_TYPE_NAMES: &[&str] = &[
+#[cfg(test)]
+const WELL_KNOWN_PRIMITIVE_TYPE_NAMES: &[&str] = &[
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f32", "f64", "bool",
     "char", "string", "bytes", "void", "never", "duration",
 ];
 
-/// Well-known generic/collection/concurrency type names from the standard
-/// library.  These are always `PascalCase`, so they'd be caught by the
-/// `starts_with(uppercase)` heuristic below, but listing them explicitly
-/// makes the classification deterministic across source positions.
-const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Result",
-    "Option",
-    "Ok",
-    "Err",
-    "Some",
-    "None",
-    "Vec",
-    "HashMap",
-    "Arc",
-    "Rc",
-    "Weak",
-    "ActorRef",
-    "Task",
-    "Scope",
-    "Generator",
-    "AsyncGenerator",
-    "Stream",
-    "Sink",
-    "Sender",
-    "Receiver",
-    "Send",
-    "Frozen",
-    "Copy",
-    "Range",
-    "ActorStream",
-];
-
 /// Returns `true` if `name` is a known type name (primitive or builtin).
 fn is_type_name(name: &str) -> bool {
-    PRIMITIVE_TYPE_NAMES.contains(&name) || BUILTIN_TYPE_NAMES.contains(&name)
+    Ty::is_well_known_type_name(name)
 }
 
 /// Classify a single lexer token into a semantic token type index.
@@ -305,7 +273,7 @@ mod tests {
 
     #[test]
     fn all_primitive_types_classified() {
-        for ty in super::PRIMITIVE_TYPE_NAMES {
+        for ty in super::WELL_KNOWN_PRIMITIVE_TYPE_NAMES {
             let source = format!("fn f(x: {ty}) {{}}");
             let tokens = build_semantic_tokens(&source);
             let ty_tok = tokens

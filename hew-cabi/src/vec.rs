@@ -6,6 +6,7 @@
 //! here we provide `extern "C"` declarations that resolve at link time.
 
 use core::ffi::{c_char, c_void};
+use core::mem;
 
 /// Discriminator for element ownership semantics.
 ///
@@ -60,6 +61,7 @@ extern "C" {
     pub fn hew_vec_push_generic(v: *mut HewVec, data: *const c_void);
 
     // Get
+    #[cfg(not(test))]
     pub fn hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32;
     pub fn hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64;
     pub fn hew_vec_get_f64(v: *mut HewVec, index: i64) -> f64;
@@ -82,6 +84,7 @@ extern "C" {
     pub fn hew_vec_pop_generic(v: *mut HewVec, out: *mut c_void) -> i32;
 
     // Queries
+    #[cfg(not(test))]
     pub fn hew_vec_len(v: *mut HewVec) -> i64;
     pub fn hew_vec_is_empty(v: *mut HewVec) -> bool;
 
@@ -109,6 +112,47 @@ extern "C" {
     pub fn hew_vec_remove_ptr(v: *mut HewVec, val: *mut c_void);
 }
 
+#[cfg(test)]
+#[no_mangle]
+#[expect(
+    clippy::not_unsafe_ptr_arg_deref,
+    reason = "test stub mirrors the runtime ABI export"
+)]
+pub extern "C" fn hew_vec_len(v: *mut HewVec) -> i64 {
+    if v.is_null() {
+        return 0;
+    }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "test stub mirrors platform-sized len in i64 space"
+    )]
+    // SAFETY: the test stub only dereferences the caller-provided `HewVec`.
+    unsafe {
+        (*v).len as i64
+    }
+}
+
+#[cfg(test)]
+#[no_mangle]
+#[expect(
+    clippy::not_unsafe_ptr_arg_deref,
+    clippy::cast_ptr_alignment,
+    clippy::missing_panics_doc,
+    reason = "test stub mirrors the runtime ABI export"
+)]
+pub extern "C" fn hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32 {
+    assert!(!v.is_null(), "test stub requires a non-null HewVec");
+    let index: usize = index
+        .try_into()
+        .expect("test stub index must be non-negative");
+    // SAFETY: the null check above ensures `v` is safe to inspect here.
+    assert!(index < unsafe { (*v).len }, "test stub index out of bounds");
+    // SAFETY: the null check above ensures `v` is safe to inspect here.
+    let data = unsafe { (*v).data.cast::<i32>() };
+    // SAFETY: the bounds check above ensures `index` addresses initialized data.
+    unsafe { *data.add(index) }
+}
+
 // ---------------------------------------------------------------------------
 // bytes <-> HewVec helpers (used by codec wrappers in native packages)
 // ---------------------------------------------------------------------------
@@ -118,23 +162,40 @@ extern "C" {
 /// # Safety
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` with i32 element size.
+///
+/// # Panics
+///
+/// Panics if `v` is null, has non-plain elements, has the wrong element size,
+/// or contains values outside the byte range `0..=255`.
 pub unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
-    if v.is_null() {
-        return Vec::new();
-    }
+    assert!(!v.is_null(), "hwvec_to_u8: null HewVec pointer");
+    // SAFETY: the caller promises `v` points to a valid HewVec.
+    let vec = unsafe { &*v };
+    assert!(
+        vec.elem_kind == ElemKind::Plain,
+        "hwvec_to_u8: expected plain elements, got {:?}",
+        vec.elem_kind
+    );
+    assert!(
+        vec.elem_size == mem::size_of::<i32>(),
+        "hwvec_to_u8: expected elem_size {}, got {}",
+        mem::size_of::<i32>(),
+        vec.elem_size
+    );
     // SAFETY: caller guarantees v is a valid HewVec.
+    #[cfg(test)]
+    let len = hew_vec_len(v);
+    #[cfg(not(test))]
+    // SAFETY: caller guarantees `v` points to a valid HewVec.
     let len = unsafe { hew_vec_len(v) };
     (0..len)
         .map(|i| {
-            // SAFETY: i < len.
-            #[expect(
-                clippy::cast_sign_loss,
-                clippy::cast_possible_truncation,
-                reason = "byte values stored as i32 are 0-255"
-            )]
-            // SAFETY: i < len, so index is in bounds.
-            let b = unsafe { hew_vec_get_i32(v, i) } as u8;
-            b
+            #[cfg(test)]
+            let raw = hew_vec_get_i32(v, i);
+            #[cfg(not(test))]
+            // SAFETY: `i < len`, so the read is in-bounds for the caller-provided HewVec.
+            let raw = unsafe { hew_vec_get_i32(v, i) };
+            u8::try_from(raw).expect("hwvec_to_u8: element out of byte range")
         })
         .collect()
 }
@@ -257,5 +318,43 @@ mod tests {
         assert!(v.data.is_null());
         assert_eq!(v.len, 0);
         assert_eq!(v.cap, 0);
+    }
+
+    #[test]
+    fn hwvec_to_u8_rejects_null_pointer() {
+        // SAFETY: this test intentionally exercises the null-pointer panic path.
+        let panic = std::panic::catch_unwind(|| unsafe {
+            let _ = hwvec_to_u8(std::ptr::null_mut());
+        })
+        .expect_err("null vectors must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("<non-string panic>");
+        assert!(message.contains("null HewVec pointer"));
+    }
+
+    #[test]
+    fn hwvec_to_u8_rejects_non_byte_shape() {
+        let mut vec = HewVec {
+            data: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+            elem_size: mem::size_of::<i64>(),
+            elem_kind: ElemKind::Plain,
+        };
+        let vec_ptr = &raw mut vec;
+        // SAFETY: this test intentionally exercises the invalid-shape panic path.
+        let panic = std::panic::catch_unwind(move || unsafe {
+            let _ = hwvec_to_u8(vec_ptr);
+        })
+        .expect_err("non-byte vectors must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("<non-string panic>");
+        assert!(message.contains("expected elem_size"));
     }
 }

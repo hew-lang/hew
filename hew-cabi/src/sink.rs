@@ -49,15 +49,25 @@ pub fn take_last_errno() -> i32 {
 ///
 /// Clears both the error message and the associated errno after reading.
 /// Callers must free the returned string.
+///
+/// # Panics
+///
+/// Panics only if the hard-coded fallback diagnostic is not a valid C string.
 #[no_mangle]
 pub extern "C" fn hew_stream_last_error() -> *mut std::ffi::c_char {
     match take_last_error() {
         Some(msg) => {
-            let c = std::ffi::CString::new(msg).unwrap_or_default();
+            let c = std::ffi::CString::new(msg).unwrap_or_else(|_| {
+                std::ffi::CString::new(
+                    "hew_stream_last_error: stored error message contained interior NUL",
+                )
+                .expect("static diagnostic must be a valid C string")
+            });
             let len = c.as_bytes_with_nul().len();
             // SAFETY: allocating len bytes via malloc.
             let ptr = unsafe { libc::malloc(len) }.cast::<std::ffi::c_char>();
             if ptr.is_null() {
+                set_last_error("hew_stream_last_error: allocation failed".to_string());
                 return std::ptr::null_mut();
             }
             // SAFETY: ptr is freshly allocated with at least len bytes.
@@ -292,6 +302,19 @@ mod tests {
         unsafe {
             let recovered = CStr::from_ptr(ptr).to_str().unwrap();
             assert_eq!(recovered, "échec de connexion 🔥");
+            libc::free(ptr.cast());
+        }
+    }
+
+    #[test]
+    fn hew_stream_last_error_surfaces_interior_nul_diagnostic() {
+        set_last_error("bad\0message".to_string());
+        let ptr = hew_stream_last_error();
+        assert!(!ptr.is_null());
+        // SAFETY: `ptr` is a freshly allocated NUL-terminated C string from the ABI.
+        unsafe {
+            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
+            assert!(recovered.contains("contained interior NUL"));
             libc::free(ptr.cast());
         }
     }

@@ -781,6 +781,7 @@ mod tests {
             hew_wasm_register_actor_meta, reset_bridge_full, HewActorMeta, HewHandlerMeta,
             BRIDGE_TEST_LOCK,
         };
+        let _runtime_guard = crate::runtime_test_guard();
 
         // Acquire both locks in a consistent order (bridge first, then tracing)
         // to avoid deadlocks with concurrent bridge tests.
@@ -886,6 +887,7 @@ mod tests {
     /// that holds both locks.
     #[test]
     fn session_reset_clears_trace_state_via_hook() {
+        let _runtime_guard = crate::runtime_test_guard();
         // Acquire session lock first, tracing lock second (consistent order).
         let _session_guard = crate::session::reset_hooks_for_test();
         let _trace_guard = TEST_LOCK

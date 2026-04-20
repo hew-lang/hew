@@ -20,7 +20,7 @@ fn stdlib_docs() -> &'static PathBuf {
     static CELL: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
     &CELL
         .get_or_init(|| {
-            let dir = tempfile::tempdir().expect("create tempdir");
+            let dir = support::tempdir();
             let out_dir = dir.path().to_path_buf();
 
             let std_dir = repo_root().join("std");

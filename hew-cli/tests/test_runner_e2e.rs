@@ -2,8 +2,7 @@ mod support;
 
 use std::path::Path;
 use std::process::Command;
-
-use support::{hew_binary, require_codegen};
+use support::{hew_binary, require_codegen, run_hew_in};
 
 fn write_file(root: &Path, relative_path: &str, contents: &str) {
     let path = root.join(relative_path);
@@ -14,18 +13,14 @@ fn write_file(root: &Path, relative_path: &str, contents: &str) {
 }
 
 fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Output {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     for (path, contents) in files {
         write_file(dir.path(), path, contents);
     }
 
-    Command::new(hew_binary())
-        .arg("test")
-        .arg(".")
-        .args(extra_args)
-        .current_dir(dir.path())
-        .output()
-        .unwrap()
+    let mut args = vec!["test", "."];
+    args.extend_from_slice(extra_args);
+    run_hew_in(dir.path(), &args)
 }
 
 #[test]
@@ -191,7 +186,7 @@ fn should_panic_test_fails_when_it_does_not_panic() {
 
 #[test]
 fn no_test_files_in_directory_exits_zero() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     write_file(dir.path(), "notes/readme.txt", "not a Hew test\n");
 
     let output = Command::new(hew_binary())
@@ -240,7 +235,7 @@ fn no_test_functions_found_exits_zero() {
 fn multi_path_invocation_aggregates_results() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     write_file(
         dir.path(),
         "suite_a/alpha_test.hew",
@@ -309,7 +304,7 @@ fn timeout_exit_code_is_non_zero() {
 
 #[test]
 fn missing_path_exits_non_zero() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let output = Command::new(hew_binary())
         .arg("test")
         .arg(dir.path().join("missing"))

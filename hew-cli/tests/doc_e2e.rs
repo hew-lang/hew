@@ -1,22 +1,15 @@
 mod support;
 
-use std::process::Command;
-
-use support::hew_binary;
+use support::{assert_success, run_hew};
 
 fn run_doc(args: &[&str]) -> std::process::Output {
-    Command::new(hew_binary())
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to spawn hew binary")
+    run_hew(args)
 }
 
 /// A syntactically valid Hew source file should exit 0.
 #[test]
 fn valid_file_exits_zero() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let src = dir.path().join("ok.hew");
     std::fs::write(
         &src,
@@ -32,11 +25,7 @@ fn valid_file_exits_zero() {
         out_dir.to_str().unwrap(),
     ]);
 
-    assert!(
-        output.status.success(),
-        "expected exit 0 for valid file\nstderr: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
+    assert_success(&output, "expected exit 0 for valid file");
     assert!(out_dir.join("index.html").is_file(), "missing index.html");
     assert!(out_dir.join("ok.html").is_file(), "missing ok.html");
 }
@@ -44,7 +33,7 @@ fn valid_file_exits_zero() {
 /// A file with parse errors must exit nonzero and emit an error message.
 #[test]
 fn parse_error_file_exits_nonzero() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let src = dir.path().join("bad.hew");
     // Intentionally broken syntax: unclosed brace.
     std::fs::write(&src, "fn broken( {\n").unwrap();
@@ -72,7 +61,7 @@ fn parse_error_file_exits_nonzero() {
 /// Passing a nonexistent file must exit nonzero.
 #[test]
 fn nonexistent_file_exits_nonzero() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let out_dir = dir.path().join("docs");
 
     let output = run_doc(&[
@@ -92,7 +81,7 @@ fn nonexistent_file_exits_nonzero() {
 /// File input should render an index plus a module page with the expected HTML structure.
 #[test]
 fn file_input_renders_expected_html_structure() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let src = dir.path().join("math.hew");
     std::fs::write(
         &src,
@@ -108,11 +97,7 @@ fn file_input_renders_expected_html_structure() {
         out_dir.to_str().unwrap(),
     ]);
 
-    assert!(
-        output.status.success(),
-        "expected exit 0 for valid file\nstderr: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
+    assert_success(&output, "expected exit 0 for valid file");
 
     let index = std::fs::read_to_string(out_dir.join("index.html")).unwrap();
     assert!(index.contains("math.html"), "index: {index}");
@@ -138,7 +123,7 @@ fn file_input_renders_expected_html_structure() {
 /// Directory input should recurse through `.hew` files and use directory-qualified module names.
 #[test]
 fn directory_input_recurses_and_uses_directory_module_names() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let pkg_dir = dir.path().join("pkg");
     std::fs::create_dir_all(pkg_dir.join("nested")).unwrap();
     std::fs::write(
@@ -189,7 +174,7 @@ fn directory_input_recurses_and_uses_directory_module_names() {
 /// Parse warnings should be reported but still produce documentation and exit 0.
 #[test]
 fn parse_warnings_report_but_do_not_fail_generation() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let src = dir.path().join("warn.hew");
     std::fs::write(&src, "//! Warning test.\nfn main() {\n    let x = 1;;\n}\n").unwrap();
     let out_dir = dir.path().join("docs");

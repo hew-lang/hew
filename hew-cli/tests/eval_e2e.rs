@@ -63,7 +63,7 @@ fn eval_inline_expression_succeeds() {
 fn eval_file_in_repl_context_succeeds() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("positive_eval.hew");
     std::fs::write(
         &path,
@@ -91,7 +91,7 @@ fn eval_file_in_repl_context_succeeds() {
 fn eval_file_resolves_sibling_imports_relative_to_file_path() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let nested = dir.path().join("nested");
     std::fs::create_dir_all(&nested).unwrap();
     std::fs::write(
@@ -139,7 +139,7 @@ fn eval_stdin_in_repl_context_succeeds() {
 fn eval_stdin_file_mode_resolves_imports_from_cwd() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     std::fs::write(
         dir.path().join("lib.hew"),
         "pub fn answer() -> i64 {\n    42\n}\n",
@@ -210,7 +210,7 @@ fn statement_replay_repl_does_not_repeat_one_shot_statement() {
 fn eval_timeout_exit_code_is_non_zero() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("timeout_eval.hew");
     std::fs::write(
         &path,
@@ -237,7 +237,7 @@ fn eval_timeout_exit_code_is_non_zero() {
 fn eval_large_stdout_completes_before_timeout() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("large_stdout_eval.hew");
     std::fs::write(
         &path,
@@ -271,7 +271,7 @@ fn eval_large_stdout_completes_before_timeout() {
 fn eval_large_stderr_completes_before_timeout() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("large_stderr_eval.hew");
     std::fs::write(
         &path,
@@ -393,7 +393,7 @@ fn eval_stdin_reports_balanced_invalid_input() {
 fn eval_file_continues_balanced_incomplete_expression() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("balanced_incomplete.hew");
     std::fs::write(&path, "1 +\n2\n").unwrap();
 
@@ -416,7 +416,7 @@ fn eval_file_continues_balanced_incomplete_expression() {
 
 #[test]
 fn eval_file_reports_balanced_invalid_input() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("balanced_invalid.hew");
     std::fs::write(&path, "1 + *\n").unwrap();
 
@@ -596,7 +596,7 @@ fn eval_stdin_expression_type_errors_render_user_input() {
 
 #[test]
 fn eval_repl_load_parse_errors_render_cli_diagnostics() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("bad_load.hew");
     std::fs::write(&path, "fn broken(\n").unwrap();
 
@@ -618,7 +618,7 @@ fn eval_repl_load_parse_errors_render_cli_diagnostics() {
 
 #[test]
 fn eval_repl_load_non_root_type_errors_render_imported_filename() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("main.hew");
     let dep_path = dir.path().join("dep.hew");
     std::fs::write(&path, "import \"dep.hew\";\n\nfn main() {}\n").unwrap();
@@ -650,7 +650,7 @@ fn eval_repl_load_non_root_type_errors_render_imported_filename() {
 fn eval_repl_load_valid_file_succeeds() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("load_ok.hew");
     std::fs::write(&path, "fn answer() -> i64 {\n    42\n}\n").unwrap();
 
@@ -679,7 +679,7 @@ fn eval_repl_load_valid_file_succeeds() {
 fn eval_repl_load_resolves_sibling_imports_relative_to_file_path() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let nested = dir.path().join("nested");
     std::fs::create_dir_all(&nested).unwrap();
     std::fs::write(
@@ -785,7 +785,7 @@ fn eval_repl_session_commands_introspect_state() {
 fn eval_repl_load_reports_session_delta() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("load_session_delta.hew");
     std::fs::write(
         &path,
@@ -838,7 +838,7 @@ fn eval_repl_clear_reports_removed_session_delta() {
 
 #[test]
 fn eval_file_type_errors_render_cli_diagnostics() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("negative_eval.hew");
     std::fs::write(&path, "fn broken() -> i64 {\n    \"oops\"\n}\n").unwrap();
 
@@ -895,7 +895,7 @@ fn eval_wasm_file_succeeds() {
     require_codegen();
     support::require_wasi_runner();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("wasm_eval_file.hew");
     std::fs::write(&path, "fn double(x: i64) -> i64 { x * 2 }\ndouble(21)\n").unwrap();
 
@@ -920,7 +920,7 @@ fn eval_wasm_timeout_is_reported() {
     require_codegen();
     support::require_wasi_runner();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("wasm_eval_timeout.hew");
     // A function that loops forever — compiles fine under WASM32 (no
     // structured-concurrency APIs), but wasmtime will spin until the timeout.
@@ -952,7 +952,7 @@ fn eval_wasm_unsupported_feature_reports_diagnostic() {
     require_codegen();
     support::require_wasi_runner();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("wasm_eval_unsupported.hew");
     // `scope { }` uses OS-thread-backed structured concurrency — not available
     // on WASM32.  The compiler should emit an "not supported on WASM32"
@@ -1110,7 +1110,7 @@ fn eval_inline_runtime_failure_surfaces_child_stderr() {
 fn eval_file_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("failing_eval.hew");
     // A single expression that unconditionally panics.  `panic` exits with
     // code 101 (Hew's convention), which is distinct from the CLI's own
@@ -1138,7 +1138,7 @@ fn eval_file_runtime_failure_exits_with_child_exit_code() {
 fn eval_file_runtime_failure_preserves_pre_failure_stdout() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("partial_output_eval.hew");
     // A helper that prints before panicking, called as a single expression so
     // both print and panic run inside the same compiled binary.  Stdout
@@ -1203,7 +1203,7 @@ fn eval_wasm_file_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
     support::require_wasi_runner();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("wasm_failing_eval.hew");
     std::fs::write(&path, "panic(\"deliberate failure\")\n").unwrap();
 
@@ -1228,7 +1228,7 @@ fn eval_wasm_file_runtime_failure_preserves_pre_failure_stdout() {
     require_codegen();
     support::require_wasi_runner();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("wasm_partial_output_eval.hew");
     std::fs::write(
         &path,
@@ -1337,7 +1337,7 @@ fn eval_json_runtime_failure() {
 fn eval_json_runtime_failure_preserves_stdout() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("partial.hew");
     std::fs::write(
         &path,
@@ -1512,7 +1512,7 @@ fn eval_json_compile_error_contains_diagnostic_text() {
 
 #[test]
 fn eval_json_manifest_message_diagnostic_stays_in_json() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     std::fs::write(dir.path().join("hew.toml"), "[package]\nname = \"myapp\"\n").unwrap();
 
     let path = dir.path().join("manifest_error.hew");
@@ -1577,7 +1577,7 @@ fn eval_json_requires_non_interactive() {
 fn eval_json_file_ok() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("json_ok.hew");
     std::fs::write(&path, "42\n").unwrap();
 
@@ -1641,7 +1641,7 @@ fn write_cross_chunk_failure_file(dir: &std::path::Path) -> std::path::PathBuf {
 fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = write_cross_chunk_failure_file(dir.path());
 
     let output = Command::new(hew_binary())
@@ -1672,7 +1672,7 @@ fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
 fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = write_cross_chunk_failure_file(dir.path());
 
     let output = Command::new(hew_binary())

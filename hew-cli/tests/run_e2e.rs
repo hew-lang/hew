@@ -25,7 +25,7 @@ fn hew_std() -> std::path::PathBuf {
 fn run_timeout_kills_grandchild_process_tree() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let pid_file = dir.path().join("grandchild.pid");
     let hew_src = dir.path().join("grandchild_spinner.hew");
 
@@ -131,7 +131,7 @@ fn timeout_zero_is_rejected() {
 fn run_timeout_exit_code_is_non_zero() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("timeout_run.hew");
     std::fs::write(
         &path,
@@ -157,7 +157,7 @@ fn run_timeout_exit_code_is_non_zero() {
 fn run_program_with_std_path_exists_succeeds() {
     require_codegen();
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let path = dir.path().join("path_exists_run.hew");
     std::fs::write(dir.path().join("present.txt"), "ok").unwrap();
     std::fs::create_dir(dir.path().join("present-dir")).unwrap();

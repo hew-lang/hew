@@ -47,7 +47,7 @@
 #   make clean        — remove build/, target/, hew-codegen/build{,-cov,-lsan}/
 # ============================================================================
 
-.PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
+.PHONY: all bootstrap install-hooks hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
 .PHONY: test test-all test-rust test-parser test-types test-cli test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
@@ -88,6 +88,7 @@ DESTDIR    ?=
 
 # Output directory — all usable artifacts land here as symlinks
 BUILD_DIR  := build
+COMMON_GIT_DIR := $(shell git rev-parse --git-common-dir 2>/dev/null)
 
 # Cargo profile directory names
 DEBUG_DIR  := target/debug
@@ -194,6 +195,76 @@ ci-preflight-strict:
 	$(MAKE) test
 	$(MAKE) codegen-lint
 	$(MAKE) stdlib-lint
+
+bootstrap: install-hooks
+
+install-hooks:
+	@common_git_dir="$(COMMON_GIT_DIR)"; \
+	pre_commit_dir="$$common_git_dir/hooks/pre-commit.d"; \
+	pre_push_dir="$$common_git_dir/hooks/pre-push.d"; \
+	mkdir -p "$$pre_commit_dir" "$$pre_push_dir"; \
+	format_link_target="../../../scripts/pre-commit-fmt.sh"; \
+	preflight_link_target="../../../scripts/pre-push-ci-preflight.sh"; \
+	wrote_links=""; \
+	skipped_links=""; \
+	dispatcher_summary=""; \
+	if [ -L "$$pre_commit_dir/format" ] && [ "$$(readlink "$$pre_commit_dir/format")" = "$$format_link_target" ]; then \
+		skipped_links="$$skipped_links\n  - $$pre_commit_dir/format -> $$format_link_target"; \
+	else \
+		ln -sfn "$$format_link_target" "$$pre_commit_dir/format"; \
+		wrote_links="$$wrote_links\n  - $$pre_commit_dir/format -> $$format_link_target"; \
+	fi; \
+	if [ -L "$$pre_push_dir/ci-preflight" ] && [ "$$(readlink "$$pre_push_dir/ci-preflight")" = "$$preflight_link_target" ]; then \
+		skipped_links="$$skipped_links\n  - $$pre_push_dir/ci-preflight -> $$preflight_link_target"; \
+	else \
+		ln -sfn "$$preflight_link_target" "$$pre_push_dir/ci-preflight"; \
+		wrote_links="$$wrote_links\n  - $$pre_push_dir/ci-preflight -> $$preflight_link_target"; \
+	fi; \
+	hooks_path="$$(git config --global --get core.hooksPath 2>/dev/null; status=$$?; if [ $$status -eq 0 ]; then :; elif [ $$status -eq 1 ]; then printf ''; else exit $$status; fi)"; \
+	if [ -z "$$hooks_path" ]; then \
+		for hook_name in pre-commit pre-push; do \
+			hook_path="$$common_git_dir/hooks/$$hook_name"; \
+			hook_dir="$$common_git_dir/hooks/$$hook_name.d"; \
+			if [ -e "$$hook_path" ] || [ -L "$$hook_path" ]; then \
+				dispatcher_summary="$$dispatcher_summary\n  - $$hook_path (skipped: already exists)"; \
+				continue; \
+			fi; \
+			{ \
+				printf '%s\n' '#!/usr/bin/env bash'; \
+				printf '%s\n' 'set -Eeuo pipefail'; \
+				printf '%s\n' 'hook_name="$$(basename "$$0")"'; \
+				printf '%s\n' 'hook_dir="$$(dirname "$$0")/$${hook_name}.d"'; \
+				printf '%s\n' 'if [ ! -d "$$hook_dir" ]; then'; \
+				printf '%s\n' '    exit 0'; \
+				printf '%s\n' 'fi'; \
+				printf '%s\n' 'for hook in "$$hook_dir"/*; do'; \
+				printf '%s\n' '    [ -e "$$hook" ] || continue'; \
+				printf '%s\n' '    [ -x "$$hook" ] || continue'; \
+				printf '%s\n' '    "$$hook" "$$@"'; \
+				printf '%s\n' 'done'; \
+			} >"$$hook_path"; \
+			chmod +x "$$hook_path"; \
+			dispatcher_summary="$$dispatcher_summary\n  - $$hook_path (created fallback dispatcher)"; \
+		done; \
+	else \
+		dispatcher_summary="$$dispatcher_summary\n  - skipped fallback dispatcher install (core.hooksPath=$$hooks_path)"; \
+	fi; \
+	echo "==> install-hooks summary"; \
+	echo "Common git dir: $$common_git_dir"; \
+	if [ -n "$$wrote_links" ]; then \
+		echo "Symlinks written:"; \
+		printf '%b\n' "$$wrote_links"; \
+	else \
+		echo "Symlinks written: none"; \
+	fi; \
+	if [ -n "$$skipped_links" ]; then \
+		echo "Symlinks already correct:"; \
+		printf '%b\n' "$$skipped_links"; \
+	else \
+		echo "Symlinks already correct: none"; \
+	fi; \
+	echo "Dispatcher status:"; \
+	printf '%b\n' "$$dispatcher_summary"
 
 # Downstream repo roots (sibling directories of hew/)
 HEW_SH  ?= $(CURDIR)/../hew.sh

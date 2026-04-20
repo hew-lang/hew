@@ -1194,4 +1194,38 @@ mod tests {
             hew_toml_free(arr);
         }
     }
+
+    #[test]
+    fn canonical_type_tag_prefix_matches_issue_1321() {
+        // #1321: lock the shared 0..6 prefix documented in
+        // std/encoding/wire/value_trait.hew; TOML reserves 0 for null and only
+        // emits the shared bool/int/float/string/array/object(table) prefix here.
+        // SAFETY: every handle below is allocated by boxed_value and freed once
+        // by hew_toml_free in the same scope.
+        unsafe {
+            let bool_val = boxed_value(toml::Value::Boolean(true));
+            assert_eq!(hew_toml_type(bool_val), 1);
+            hew_toml_free(bool_val);
+
+            let int_val = boxed_value(toml::Value::Integer(42));
+            assert_eq!(hew_toml_type(int_val), 2);
+            hew_toml_free(int_val);
+
+            let float_val = boxed_value(toml::Value::Float(3.25));
+            assert_eq!(hew_toml_type(float_val), 3);
+            hew_toml_free(float_val);
+
+            let string_val = boxed_value(toml::Value::String("hew".to_owned()));
+            assert_eq!(hew_toml_type(string_val), 4);
+            hew_toml_free(string_val);
+
+            let array_val = boxed_value(toml::Value::Array(Vec::new()));
+            assert_eq!(hew_toml_type(array_val), 5);
+            hew_toml_free(array_val);
+
+            let object_val = boxed_value(toml::Value::Table(toml::Table::new()));
+            assert_eq!(hew_toml_type(object_val), 6);
+            hew_toml_free(object_val);
+        }
+    }
 }

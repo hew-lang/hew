@@ -1944,4 +1944,42 @@ mod tests {
             hew_yaml_free(reparsed);
         }
     }
+
+    #[test]
+    fn canonical_type_tag_prefix_matches_issue_1321() {
+        // #1321: lock the shared 0..6 prefix documented in
+        // std/encoding/wire/value_trait.hew so YAML stays aligned with JSON/TOML.
+        // SAFETY: every handle below is allocated by boxed_value and freed once
+        // by hew_yaml_free in the same scope.
+        unsafe {
+            let null_val = boxed_value(serde_yaml::Value::Null);
+            assert_eq!(hew_yaml_type(null_val), 0);
+            hew_yaml_free(null_val);
+
+            let bool_val = boxed_value(serde_yaml::Value::Bool(true));
+            assert_eq!(hew_yaml_type(bool_val), 1);
+            hew_yaml_free(bool_val);
+
+            let int_val = boxed_value(serde_yaml::to_value(42_i64).expect("serialize YAML int"));
+            assert_eq!(hew_yaml_type(int_val), 2);
+            hew_yaml_free(int_val);
+
+            let float_val =
+                boxed_value(serde_yaml::to_value(3.25_f64).expect("serialize YAML float"));
+            assert_eq!(hew_yaml_type(float_val), 3);
+            hew_yaml_free(float_val);
+
+            let string_val = boxed_value(serde_yaml::Value::String("hew".to_owned()));
+            assert_eq!(hew_yaml_type(string_val), 4);
+            hew_yaml_free(string_val);
+
+            let array_val = boxed_value(serde_yaml::Value::Sequence(Vec::new()));
+            assert_eq!(hew_yaml_type(array_val), 5);
+            hew_yaml_free(array_val);
+
+            let object_val = boxed_value(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+            assert_eq!(hew_yaml_type(object_val), 6);
+            hew_yaml_free(object_val);
+        }
+    }
 }

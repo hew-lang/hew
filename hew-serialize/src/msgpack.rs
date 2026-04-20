@@ -2967,6 +2967,36 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_non_bmp_char_literal() {
+        round_trip_program(&Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "main".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((Expr::Literal(Literal::Char('🦀')), 10..13))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                    fn_span: 0..0,
+                }),
+                0..20,
+            )],
+            module_doc: None,
+            module_graph: None,
+        });
+    }
+
+    #[test]
     fn round_trip_duration_literal() {
         round_trip_program(&Program {
             items: vec![(

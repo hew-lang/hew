@@ -598,9 +598,9 @@ pub unsafe extern "C" fn hew_json_object_set_bytes(
 
 /// Set a `char` (Unicode codepoint) field on a JSON object as an integer.
 ///
-/// `val` is the Unicode codepoint as an `i64`. Only BMP codepoints (0..=0xFFFF)
-/// are expected at this boundary (see `IntegerBounds::for_kind(Char)` SHIM in
-/// `hew-wirecodec/src/plan.rs` for the lift-to-full-Unicode tracking note).
+/// `val` is the Unicode codepoint as an `i64`. The public wire descriptor and
+/// C++ consumer use the integer-codepoint range `0..=0x10_FFFF` (see
+/// `IntegerBounds::for_kind(Char)` in `hew-wirecodec/src/plan.rs`).
 /// Emitted as a JSON number (integer).
 ///
 /// # Safety
@@ -639,8 +639,8 @@ pub unsafe extern "C" fn hew_json_object_set_duration(
 /// Get the `char` (Unicode codepoint) from a [`HewJsonValue`] integer field.
 ///
 /// Returns the integer value as an `i64` (same as `hew_json_get_int`). The
-/// caller is responsible for verifying the value is in the BMP range before
-/// interpreting it as a char codepoint.
+/// caller is responsible for verifying the value is in the descriptor's public
+/// char range before interpreting it as a codepoint.
 ///
 /// # Safety
 ///

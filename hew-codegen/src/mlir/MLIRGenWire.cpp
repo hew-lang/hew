@@ -282,7 +282,7 @@ static std::optional<WireSerialIntegerBounds> wireFromSerialIntegerBounds(const 
   case PrimitiveTypeKind::U32:
     return WireSerialIntegerBounds{0, 4294967295LL};
   case PrimitiveTypeKind::Char:
-    return WireSerialIntegerBounds{0, 1114111};
+    return WireSerialIntegerBounds{0, 0x10FFFF};
   default:
     return std::nullopt;
   }

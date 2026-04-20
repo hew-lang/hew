@@ -52,7 +52,8 @@ pub enum JsonOp {
     /// Decode uses `hew_json_get_duration` (std/encoding/json/src/lib.rs:662).
     SetDuration,
     /// Emits the char as an unsigned integer codepoint.
-    /// Full Unicode scalar range (0..=0x10FFFF) is enforced — see issue #1276.
+    /// Uses the public descriptor range from `IntegerBounds::for_kind(Char)`:
+    /// `0..=0x10_FFFF`.
     /// Encode uses `hew_json_object_set_char` (std/encoding/json/src/lib.rs:610).
     /// Decode uses `hew_json_get_char` (std/encoding/json/src/lib.rs:649).
     SetChar,
@@ -237,12 +238,11 @@ mod tests {
         );
         let b = desc.fields[0].bounds.unwrap();
         assert_eq!(b.min, 0, "char min codepoint is 0");
-        // Plan uses U16-width bounds for msgpack parity. Assert the actual
-        // contract pinned by IntegerBounds::for_kind Char arm.
+        // Char shares the existing unsigned-varint / integer-codepoint wire
+        // path; the descriptor must expose the full public ceiling.
         assert_eq!(
-            b.max,
-            u64::from(u16::MAX),
-            "char uses u16 bounds (BMP only) for msgpack parity"
+            b.max, 0x10_FFFF,
+            "char exposes the full Unicode codepoint ceiling"
         );
     }
 

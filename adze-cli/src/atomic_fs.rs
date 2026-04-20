@@ -94,8 +94,20 @@ fn temp_path_for(path: &Path) -> io::Result<PathBuf> {
 }
 
 fn sync_parent_dir(path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows, directories cannot be opened with `File::open` for
+        // `sync_all` — that requires CreateFile with FILE_FLAG_BACKUP_SEMANTICS,
+        // which is not exposed by std. `fs::rename` is already atomic on
+        // Windows; parent-dir durability requires a Windows-specific path
+        // that's out of scope here.
+        let _ = path;
     }
     Ok(())
 }

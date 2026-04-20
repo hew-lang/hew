@@ -8,14 +8,22 @@ use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
 use hew_cabi::vec::HewVec;
 use std::ffi::{c_char, c_void, CStr};
 use std::io::{Read, Write};
-use std::sync::mpsc;
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    mpsc, Arc, Mutex, PoisonError,
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+const RESPONSE_THREAD_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const RESPONSE_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Opaque HTTP server handle.
 pub struct HewHttpServer {
     inner: tiny_http::Server,
     max_body_size: usize,
+    response_threads: ResponseThreadTracker,
 }
 
 impl std::fmt::Debug for HewHttpServer {
@@ -28,11 +36,163 @@ impl std::fmt::Debug for HewHttpServer {
 pub struct HewHttpRequest {
     inner: Option<tiny_http::Request>,
     max_body_size: usize,
+    response_threads: Option<ResponseThreadTracker>,
 }
 
 impl std::fmt::Debug for HewHttpRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewHttpRequest").finish_non_exhaustive()
+    }
+}
+
+struct TrackedResponseThread {
+    done_rx: mpsc::Receiver<()>,
+    handle: JoinHandle<()>,
+}
+
+#[derive(Clone)]
+struct ResponseThreadTracker {
+    active_count: Arc<AtomicUsize>,
+    cancel: Arc<AtomicBool>,
+    threads: Arc<Mutex<Vec<TrackedResponseThread>>>,
+}
+
+impl ResponseThreadTracker {
+    fn new() -> Self {
+        Self {
+            active_count: Arc::new(AtomicUsize::new(0)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            threads: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
+    }
+
+    fn spawn_response(
+        &self,
+        request: tiny_http::Request,
+        status: u16,
+        content_type: Option<String>,
+        reader: ChannelReader,
+    ) {
+        self.reap_completed();
+        let (done_tx, done_rx) = mpsc::channel();
+        let active_count = Arc::clone(&self.active_count);
+        active_count.fetch_add(1, Ordering::AcqRel);
+        let handle = thread::spawn(move || {
+            struct ActiveCountGuard(Arc<AtomicUsize>);
+
+            impl Drop for ActiveCountGuard {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+
+            let _active_count = ActiveCountGuard(active_count);
+            let mut response = tiny_http::Response::new(
+                tiny_http::StatusCode(status),
+                Vec::new(),
+                reader,
+                None, // No Content-Length — tiny_http uses chunked encoding
+                None,
+            );
+            if let Some(ct) = content_type {
+                match tiny_http::Header::from_bytes("Content-Type", ct) {
+                    Ok(header) => {
+                        response = response.with_header(header);
+                    }
+                    Err(err) => {
+                        eprintln!("hew_http: ignoring invalid Content-Type header: {err:?}");
+                    }
+                }
+            }
+            if let Err(err) = request.respond(response) {
+                eprintln!("hew_http: streaming response thread failed to respond: {err}");
+            }
+            if done_tx.send(()).is_err() {
+                eprintln!("hew_http: response thread completion receiver dropped before join");
+            }
+        });
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(TrackedResponseThread { done_rx, handle });
+    }
+
+    fn reap_completed(&self) {
+        let completed = {
+            let mut threads = self.threads.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut completed = Vec::new();
+            let mut idx = 0;
+            while idx < threads.len() {
+                let is_done = match threads[idx].done_rx.try_recv() {
+                    Ok(()) | Err(mpsc::TryRecvError::Disconnected) => true,
+                    Err(mpsc::TryRecvError::Empty) => false,
+                };
+                if is_done {
+                    completed.push(threads.swap_remove(idx));
+                } else {
+                    idx += 1;
+                }
+            }
+            completed
+        };
+        for thread in completed {
+            join_response_thread(thread.handle);
+        }
+    }
+
+    fn cancel_and_join_all(&self) {
+        self.cancel.store(true, Ordering::Release);
+        let threads =
+            std::mem::take(&mut *self.threads.lock().unwrap_or_else(PoisonError::into_inner));
+        for thread in threads {
+            match thread.done_rx.recv_timeout(RESPONSE_THREAD_JOIN_TIMEOUT) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    join_response_thread(thread.handle);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    eprintln!(
+                        "hew_http: response thread exceeded {RESPONSE_THREAD_JOIN_TIMEOUT:?} shutdown timeout; detaching"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn active_response_count(&self) -> usize {
+        self.active_count.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn tracked_thread_count(&self) -> usize {
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    #[cfg(test)]
+    fn push_tracked_thread(&self, thread: TrackedResponseThread) {
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(thread);
+    }
+}
+
+fn join_response_thread(handle: JoinHandle<()>) {
+    if let Err(err) = handle.join() {
+        eprintln!("hew_http: response thread panicked: {err:?}");
+    }
+}
+
+impl Drop for HewHttpServer {
+    fn drop(&mut self) {
+        self.response_threads.cancel_and_join_all();
     }
 }
 
@@ -65,6 +225,7 @@ pub unsafe extern "C" fn hew_http_server_new(addr: *const c_char) -> *mut HewHtt
         Ok(server) => Box::into_raw(Box::new(HewHttpServer {
             inner: server,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: ResponseThreadTracker::new(),
         })),
         Err(_) => std::ptr::null_mut(),
     }
@@ -85,11 +246,13 @@ pub unsafe extern "C" fn hew_http_server_recv(srv: *mut HewHttpServer) -> *mut H
     }
     // SAFETY: srv was allocated by hew_http_server_new and is valid.
     let server = unsafe { &*srv };
+    server.response_threads.reap_completed();
 
     match server.inner.recv() {
         Ok(req) => Box::into_raw(Box::new(HewHttpRequest {
             inner: Some(req),
             max_body_size: server.max_body_size,
+            response_threads: Some(server.response_threads.clone()),
         })),
         Err(_) => std::ptr::null_mut(),
     }
@@ -456,6 +619,7 @@ pub unsafe extern "C" fn hew_http_respond_json(
 struct ChannelReader {
     rx: mpsc::Receiver<Vec<u8>>,
     buf: Vec<u8>,
+    cancel: Arc<AtomicBool>,
     offset: usize,
 }
 
@@ -463,12 +627,16 @@ impl Read for ChannelReader {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         // Refill from channel when the current buffer is exhausted.
         while self.offset >= self.buf.len() {
-            match self.rx.recv() {
+            if self.cancel.load(Ordering::Acquire) {
+                return Ok(0);
+            }
+            match self.rx.recv_timeout(RESPONSE_THREAD_POLL_INTERVAL) {
                 Ok(data) => {
                     self.buf = data;
                     self.offset = 0;
                 }
-                Err(_) => return Ok(0), // Sender dropped → EOF
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(0), // Sender dropped → EOF
             }
         }
         let avail = self.buf.len() - self.offset;
@@ -482,11 +650,18 @@ impl Read for ChannelReader {
 /// Sink backend that forwards writes to a channel for HTTP streaming.
 #[derive(Debug)]
 struct HttpResponseSink {
+    cancel: Arc<AtomicBool>,
     tx: Option<mpsc::SyncSender<Vec<u8>>>,
 }
 
 impl Write for HttpResponseSink {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.cancel.load(Ordering::Acquire) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "HTTP response sink cancelled during server shutdown",
+            ));
+        }
         if let Some(ref tx) = self.tx {
             tx.send(data.to_vec()).map_err(|_| {
                 std::io::Error::new(
@@ -546,12 +721,19 @@ pub unsafe extern "C" fn hew_http_respond_stream(
             .map(String::from)
     };
 
+    let Some(response_threads) = request.response_threads.clone() else {
+        request.inner = Some(inner);
+        set_last_error("request is missing response thread tracker".into());
+        return std::ptr::null_mut();
+    };
+
     // Bounded channel — backpressure if the network is slower than the producer.
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
-
+    let cancel = response_threads.cancel_flag();
     let reader = ChannelReader {
         rx,
         buf: Vec::new(),
+        cancel: Arc::clone(&cancel),
         offset: 0,
     };
 
@@ -565,25 +747,11 @@ pub unsafe extern "C" fn hew_http_respond_stream(
     )]
     let status_u16 = status.max(0) as u16;
 
-    // Spawn a thread that drives tiny_http's response from the ChannelReader.
-    // The thread lives until the Sink is closed (sender dropped → reader EOF).
-    std::thread::spawn(move || {
-        let mut response = tiny_http::Response::new(
-            tiny_http::StatusCode(status_u16),
-            Vec::new(),
-            reader,
-            None, // No Content-Length — tiny_http uses chunked encoding
-            None,
-        );
-        if let Some(ct) = ct_string {
-            if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", ct) {
-                response = response.with_header(header);
-            }
-        }
-        let _ = inner.respond(response);
-    });
-
-    into_write_sink_ptr(HttpResponseSink { tx: Some(tx) })
+    response_threads.spawn_response(inner, status_u16, ct_string, reader);
+    into_write_sink_ptr(HttpResponseSink {
+        cancel,
+        tx: Some(tx),
+    })
 }
 
 /// Close and free the HTTP server.
@@ -684,6 +852,22 @@ pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    fn wait_for_condition(
+        description: &str,
+        timeout: Duration,
+        mut condition: impl FnMut() -> bool,
+    ) {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if condition() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(condition(), "{description} within {timeout:?}");
+    }
 
     #[test]
     fn debug_impls_compile() {
@@ -692,6 +876,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         let dbg = format!("{req:?}");
         assert!(dbg.contains("HewHttpRequest"));
@@ -704,6 +889,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         let ct = c"text/plain";
         // SAFETY: req is a valid local struct; body is empty.
@@ -717,6 +903,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         let ct = c"text/plain";
         // SAFETY: req is a valid mutable pointer; ct is a valid C string literal.
@@ -842,6 +1029,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         // SAFETY: req is a valid local struct with inner = None.
         let result = unsafe { hew_http_request_method(&raw const req) };
@@ -853,6 +1041,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         // SAFETY: req is a valid local struct with inner = None.
         let result = unsafe { hew_http_request_path(&raw const req) };
@@ -864,6 +1053,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         let mut out_len: usize = 99;
         // SAFETY: req and out_len are valid local variables.
@@ -876,6 +1066,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         let name = c"content-type";
         // SAFETY: req is valid with inner = None; name is a valid C string.
@@ -888,6 +1079,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         // SAFETY: null name is the tested scenario.
         let result = unsafe { hew_http_request_header(&raw const req, std::ptr::null()) };
@@ -899,6 +1091,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         // SAFETY: out_len is null (tested scenario).
         let result = unsafe { hew_http_request_body(&raw mut req, std::ptr::null_mut()) };
@@ -924,6 +1117,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         // SAFETY: req is a valid local struct with inner = None.
         let vec = unsafe { hew_http_request_headers(&raw const req) };
@@ -1111,6 +1305,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         // SAFETY: text is null (tested scenario); req is valid.
         let result = unsafe { hew_http_respond_text(&raw mut req, 200, std::ptr::null()) };
@@ -1122,6 +1317,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         // SAFETY: json is null (tested scenario); req is valid.
         let result = unsafe { hew_http_respond_json(&raw mut req, 200, std::ptr::null()) };
@@ -1350,6 +1546,234 @@ mod tests {
     }
 
     #[test]
+    fn server_close_cancels_streaming_responses_and_drains_threads() {
+        const CANCEL_SLO: Duration = Duration::from_secs(1);
+
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let tracker = {
+            // SAFETY: srv is valid until hew_http_server_close consumes it below.
+            let server = unsafe { &*srv };
+            server.response_threads.clone()
+        };
+        let base = server_addr(srv);
+        let (done_tx, done_rx) = mpsc::channel();
+
+        let client = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let result = ureq::get(&format!("{base}/stream-close")).call().unwrap();
+            let body = result.into_body().read_to_string();
+            done_tx
+                .send((started.elapsed(), body))
+                .expect("server-close test receiver must still be present");
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        let ct = c"text/plain";
+        // SAFETY: req and ct are valid.
+        let sink = unsafe { hew_http_respond_stream(req, 200, ct.as_ptr()) };
+        assert!(!sink.is_null(), "respond_stream should return a valid sink");
+        assert_eq!(
+            tracker.active_response_count(),
+            1,
+            "streaming response thread should be tracked while active"
+        );
+
+        // SAFETY: req is valid after respond_stream consumes its inner request.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+
+        let (elapsed, body_result) = done_rx
+            .recv_timeout(CANCEL_SLO)
+            .expect("client should observe server-close cancellation within the SLO");
+        assert!(
+            elapsed <= CANCEL_SLO,
+            "streaming response should end within {CANCEL_SLO:?}, got {elapsed:?}"
+        );
+        let body = body_result.expect("cancelled stream should still finish cleanly");
+        assert_eq!(body, "");
+        assert_eq!(
+            tracker.active_response_count(),
+            0,
+            "all tracked streaming response threads must be gone after server drop"
+        );
+
+        // SAFETY: sink was allocated by into_sink_ptr.
+        drop(unsafe { Box::from_raw(sink) });
+        client.join().expect("client thread should not panic");
+    }
+
+    #[test]
+    fn server_close_cancels_concurrent_streaming_responses_and_reaps_completed_threads() {
+        const STREAM_COUNT: usize = 4;
+        const CANCEL_SLO: Duration = Duration::from_secs(2);
+
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let tracker = {
+            // SAFETY: srv is valid until hew_http_server_close consumes it below.
+            let server = unsafe { &*srv };
+            server.response_threads.clone()
+        };
+        let base = server_addr(srv);
+
+        let clients: Vec<_> = (0..STREAM_COUNT)
+            .map(|idx| {
+                let base = base.clone();
+                std::thread::spawn(move || {
+                    ureq::get(&format!("{base}/stream-load/{idx}"))
+                        .call()
+                        .unwrap()
+                        .into_body()
+                        .read_to_string()
+                        .unwrap()
+                })
+            })
+            .collect();
+
+        let mut sinks = Vec::with_capacity(STREAM_COUNT);
+        for _ in 0..STREAM_COUNT {
+            // SAFETY: srv is valid until hew_http_server_close consumes it below.
+            let req = unsafe { hew_http_server_recv(srv) };
+            assert!(!req.is_null());
+            let ct = c"text/plain";
+            // SAFETY: req and ct are valid.
+            let sink = unsafe { hew_http_respond_stream(req, 200, ct.as_ptr()) };
+            assert!(!sink.is_null(), "respond_stream should return a valid sink");
+            sinks.push(sink);
+            // SAFETY: req is valid after respond_stream consumes its inner request.
+            unsafe { hew_http_request_free(req) };
+        }
+
+        wait_for_condition("all response threads tracked", CANCEL_SLO, || {
+            tracker.active_response_count() == STREAM_COUNT
+        });
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            STREAM_COUNT,
+            "all streaming response threads should be tracked before shutdown"
+        );
+
+        let completed_sink = sinks.pop().expect("one sink should be available");
+        // SAFETY: completed_sink was allocated by into_sink_ptr.
+        drop(unsafe { Box::from_raw(completed_sink) });
+
+        wait_for_condition("one stream completes before reap", CANCEL_SLO, || {
+            tracker.active_response_count() == STREAM_COUNT - 1
+        });
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            STREAM_COUNT,
+            "completed threads stay queued until reap_completed runs"
+        );
+
+        tracker.reap_completed();
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            STREAM_COUNT - 1,
+            "reap_completed should remove finished response threads while others are still active"
+        );
+
+        let started = Instant::now();
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+        let close_elapsed = started.elapsed();
+        assert!(
+            close_elapsed <= CANCEL_SLO,
+            "server close should finish within {CANCEL_SLO:?}, got {close_elapsed:?}"
+        );
+
+        wait_for_condition("remaining response threads cancel", CANCEL_SLO, || {
+            tracker.active_response_count() == 0
+        });
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            0,
+            "cancel_and_join_all should drain the tracked thread list"
+        );
+
+        for sink in sinks {
+            // SAFETY: sink was allocated by into_sink_ptr.
+            drop(unsafe { Box::from_raw(sink) });
+        }
+        for client in clients {
+            assert_eq!(client.join().unwrap(), "");
+        }
+    }
+
+    #[test]
+    fn server_close_detaches_hung_response_thread_after_timeout() {
+        const DETACH_EPSILON: Duration = Duration::from_millis(400);
+
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        let tracker = {
+            // SAFETY: srv is valid until hew_http_server_close consumes it below.
+            let server = unsafe { &*srv };
+            server.response_threads.clone()
+        };
+
+        let release = Arc::new(AtomicBool::new(false));
+        let release_for_thread = Arc::clone(&release);
+        let active_count = Arc::clone(&tracker.active_count);
+        let (done_tx, done_rx) = mpsc::channel();
+        active_count.fetch_add(1, Ordering::AcqRel);
+        let handle = std::thread::spawn(move || {
+            struct ActiveCountGuard(Arc<AtomicUsize>);
+
+            impl Drop for ActiveCountGuard {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+
+            let _active_count = ActiveCountGuard(active_count);
+            while !release_for_thread.load(Ordering::Acquire) {
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
+            let _ = done_tx.send(());
+        });
+        tracker.push_tracked_thread(TrackedResponseThread { done_rx, handle });
+
+        let started = Instant::now();
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+        let close_elapsed = started.elapsed();
+        let close_limit = RESPONSE_THREAD_JOIN_TIMEOUT + DETACH_EPSILON;
+        assert!(
+            close_elapsed <= close_limit,
+            "server close should return within {close_limit:?}, got {close_elapsed:?}"
+        );
+        assert_eq!(
+            tracker.tracked_thread_count(),
+            0,
+            "detach path should empty the tracked thread list even when a thread outlives close"
+        );
+        assert_eq!(
+            tracker.active_response_count(),
+            1,
+            "detached response thread should still be running immediately after close"
+        );
+
+        release.store(true, Ordering::Release);
+        wait_for_condition(
+            "detached response thread exits after release",
+            Duration::from_secs(1),
+            || tracker.active_response_count() == 0,
+        );
+    }
+
+    #[test]
     fn loopback_request_header_missing_returns_null() {
         let addr = c"127.0.0.1:0";
         // SAFETY: addr is a valid C string.
@@ -1534,6 +1958,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         let encoding = c"utf-8";
         // SAFETY: req is a valid local struct with inner = None.
@@ -1546,6 +1971,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         // SAFETY: null encoding should not crash; consumed request returns null.
         let result = unsafe { hew_http_request_body_string(&raw mut req, std::ptr::null()) };
@@ -1568,6 +1994,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         let ct = c"text/plain";
         let body = c"hello";
@@ -1582,6 +2009,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         let ct = c"text/plain";
         // SAFETY: null body is valid (empty response); consumed request returns -1.
@@ -1595,6 +2023,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            response_threads: None,
         };
         let body = c"hello";
         // SAFETY: null content_type is valid; consumed request returns -1.

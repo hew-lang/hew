@@ -1869,4 +1869,41 @@ mod tests {
             hew_json_free(reparsed);
         }
     }
+
+    #[test]
+    fn canonical_type_tag_prefix_matches_issue_1321() {
+        // #1321: lock the shared 0..6 prefix documented in
+        // std/encoding/wire/value_trait.hew so JSON stays aligned with YAML/TOML.
+        // SAFETY: every handle below is allocated by boxed_value and freed once
+        // by hew_json_free in the same scope.
+        unsafe {
+            let null_val = boxed_value(serde_json::Value::Null);
+            assert_eq!(hew_json_type(null_val), 0);
+            hew_json_free(null_val);
+
+            let bool_val = boxed_value(serde_json::Value::Bool(true));
+            assert_eq!(hew_json_type(bool_val), 1);
+            hew_json_free(bool_val);
+
+            let int_val = boxed_value(serde_json::json!(42));
+            assert_eq!(hew_json_type(int_val), 2);
+            hew_json_free(int_val);
+
+            let float_val = boxed_value(serde_json::json!(3.25));
+            assert_eq!(hew_json_type(float_val), 3);
+            hew_json_free(float_val);
+
+            let string_val = boxed_value(serde_json::Value::String("hew".to_owned()));
+            assert_eq!(hew_json_type(string_val), 4);
+            hew_json_free(string_val);
+
+            let array_val = boxed_value(serde_json::Value::Array(Vec::new()));
+            assert_eq!(hew_json_type(array_val), 5);
+            hew_json_free(array_val);
+
+            let object_val = boxed_value(serde_json::Value::Object(serde_json::Map::new()));
+            assert_eq!(hew_json_type(object_val), 6);
+            hew_json_free(object_val);
+        }
+    }
 }

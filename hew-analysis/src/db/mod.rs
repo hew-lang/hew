@@ -26,7 +26,8 @@
 //! `String` via `Url::as_str().to_owned()` at the boundary.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use hew_parser::ParseResult;
 use hew_types::module_registry::{build_module_search_paths, ModuleRegistry};
@@ -122,7 +123,10 @@ pub struct InMemorySourceDatabase {
     /// is limited to `set_source` / `invalidate` — both rare.
     entries: RwLock<HashMap<DocumentUri, Arc<SourceEntry>>>,
     /// Global version counter. Each `set_source` bumps it once.
-    next_version: std::sync::atomic::AtomicU64,
+    next_version: AtomicU64,
+    /// Warn once if a poisoned lock is recovered so the operator has a visible
+    /// signal without spamming every subsequent analysis request.
+    poison_recovery_warned: AtomicBool,
 }
 
 impl InMemorySourceDatabase {
@@ -132,38 +136,61 @@ impl InMemorySourceDatabase {
         Self::default()
     }
 
+    fn warn_on_poison_recovery(&self, mode: &str) {
+        if !self.poison_recovery_warned.swap(true, Ordering::SeqCst) {
+            tracing::warn!("source db {mode} lock poisoned; recovering");
+        }
+    }
+
+    fn read_entries(&self) -> RwLockReadGuard<'_, HashMap<DocumentUri, Arc<SourceEntry>>> {
+        match self.entries.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                self.warn_on_poison_recovery("read");
+                poisoned.into_inner()
+            }
+        }
+    }
+
+    fn write_entries(&self) -> RwLockWriteGuard<'_, HashMap<DocumentUri, Arc<SourceEntry>>> {
+        match self.entries.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                self.warn_on_poison_recovery("write");
+                poisoned.into_inner()
+            }
+        }
+    }
+
     /// Return the caller-supplied `version: i32` that was installed with the
     /// current source, if any. Useful when the LSP layer needs to stamp
     /// diagnostics with the document version.
     #[must_use]
     pub fn external_version(&self, uri: &str) -> Option<i32> {
-        self.entries
-            .read()
-            .ok()?
+        self.read_entries()
             .get(uri)
             .map(|entry| entry.external_version)
     }
 
     fn entry(&self, uri: &str) -> Option<Arc<SourceEntry>> {
-        self.entries.read().ok()?.get(uri).cloned()
+        self.read_entries().get(uri).cloned()
+    }
+
+    #[cfg(test)]
+    fn poison_recovery_warned_for_test(&self) -> bool {
+        self.poison_recovery_warned.load(Ordering::SeqCst)
     }
 }
 
 impl SourceDatabase for InMemorySourceDatabase {
     fn set_source(&self, uri: DocumentUri, text: String, version: i32) {
-        let new_version = self
-            .next_version
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let new_version = self.next_version.fetch_add(1, Ordering::SeqCst);
         let entry = Arc::new(SourceEntry::new(text, new_version, version));
-        if let Ok(mut guard) = self.entries.write() {
-            guard.insert(uri, entry);
-        }
+        self.write_entries().insert(uri, entry);
     }
 
     fn invalidate(&self, uri: &str) {
-        if let Ok(mut guard) = self.entries.write() {
-            guard.remove(uri);
-        }
+        self.write_entries().remove(uri);
     }
 
     fn source(&self, uri: &str) -> Option<Arc<str>> {
@@ -216,6 +243,8 @@ impl SourceDatabase for InMemorySourceDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::thread;
 
     const URI: &str = "file:///a.hew";
 
@@ -335,5 +364,51 @@ mod tests {
         let a = db.parse("file:///a.hew").unwrap();
         let b = db.parse("file:///b.hew").unwrap();
         assert!(!Arc::ptr_eq(&a, &b));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn recovers_from_poisoned_entries_lock_and_warns_once() {
+        let db = Arc::new(db_with("fn a() {}"));
+        let db_for_writer = Arc::clone(&db);
+        let joiner = thread::spawn(move || {
+            let _guard = db_for_writer
+                .entries
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            panic!("intentional poison");
+        });
+        assert!(joiner.join().is_err(), "writer thread must panic");
+        assert!(
+            db.entries.is_poisoned(),
+            "writer panic must poison the lock"
+        );
+        assert!(
+            !db.poison_recovery_warned_for_test(),
+            "warn-once flag should be clear before recovery"
+        );
+
+        assert_eq!(
+            db.external_version(URI),
+            Some(1),
+            "reads must recover and return the preserved entry"
+        );
+        assert!(
+            db.poison_recovery_warned_for_test(),
+            "first recovery should flip the warn-once flag"
+        );
+        assert_eq!(
+            db.source(URI).as_deref(),
+            Some("fn a() {}"),
+            "subsequent reads must keep succeeding after recovery"
+        );
+
+        db.set_source(URI.to_string(), "fn b() {}".to_string(), 2);
+        assert_eq!(
+            db.source(URI).as_deref(),
+            Some("fn b() {}"),
+            "writes must also recover after the poison"
+        );
+        assert_eq!(db.external_version(URI), Some(2));
     }
 }

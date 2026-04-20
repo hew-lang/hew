@@ -20,9 +20,9 @@ trait CanonicalValueMethods {
     /// Serialize the value back to its source encoding.
     fn stringify(val: Self) -> String;
     /// Return the canonical shared type tag.
-    fn type_of(val: Self) -> i32;
+    fn type_of(val: Self) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the boolean value (0 or 1).
-    fn get_bool(val: Self) -> i32;
+    fn get_bool(val: Self) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
     /// Extract the integer value.
     fn get_int(val: Self) -> int;
     /// Extract the floating-point value.

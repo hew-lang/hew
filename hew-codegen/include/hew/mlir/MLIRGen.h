@@ -247,10 +247,26 @@ private:
   void generateReturnStmt(const ast::StmtReturn &stmt);
   void generateExprStmt(const ast::StmtExpression &stmt);
   mlir::Value generateDiscardedExpr(const ast::Spanned<ast::Expr> &expr);
+  void generateForStmtDispatch(const ast::StmtFor &stmt);
+  void generateDeferStmt(const ast::StmtDefer &stmt);
 
   // ── Expressions ──────────────────────────────────────────────────
   mlir::Value generateExpression(const ast::Expr &expr,
                                  std::optional<mlir::Type> typeHint = std::nullopt);
+  mlir::Value generateIdentifierExpr(const ast::ExprIdentifier &expr, const ast::Span &exprSpan,
+                                     std::optional<mlir::Type> typeHint = std::nullopt);
+  mlir::Value generateBlockExprWithHint(const ast::ExprBlock &expr,
+                                        std::optional<mlir::Type> typeHint = std::nullopt);
+  mlir::Value generateCastDispatchExpr(const ast::ExprCast &expr);
+  mlir::Value generateTimeoutExpr(const ast::ExprTimeout &expr);
+  mlir::Value generateUnsafeExpr(const ast::ExprUnsafe &expr);
+  mlir::Value generateYieldExpr(const ast::ExprYield &expr);
+  mlir::Value generateCooperateExpr();
+  mlir::Value generateThisExpr();
+  mlir::Value generateFieldAccessExpr(const ast::ExprFieldAccess &expr);
+  mlir::Value generateIndexExpr(const ast::ExprIndex &expr);
+  mlir::Value generateAwaitExpr(const ast::ExprAwait &expr);
+  mlir::Value generateRangeExpr(const ast::ExprRange &expr);
   mlir::Value generateLiteral(const ast::Literal &lit, const ast::Span &span);
   mlir::Value generateBinaryExpr(const ast::ExprBinary &expr);
   mlir::Value generateUnaryExpr(const ast::ExprUnary &expr);
@@ -398,6 +414,14 @@ private:
   /// Emit an Option<T> wrapping: builds an scf::IfOp with Some(payload)/None branches.
   mlir::Value emitOptionWrap(mlir::Value condition, mlir::Value payload, mlir::Type optionType,
                              mlir::Location location);
+  bool functionProducesValue(const ast::FnDecl &fn) const;
+  void bindFunctionParameters(const ast::FnDecl &fn, mlir::Block *entryBlock);
+  void prepareFunctionDropAnalysis(const ast::FnDecl &fn, llvm::StringRef funcName,
+                                   bool fnProducesValue, bool &hasNestedReturn);
+  void collectExplicitReturnExcludeVars(const ast::Block &block, bool &hasNestedReturn);
+  void queueFunctionParamDrops(const ast::FnDecl &fn, llvm::StringRef funcName);
+  bool validateFunctionReturnDrops(const ast::FnDecl &fn, bool fnProducesValue,
+                                   mlir::Location location);
 
   /// Allocate the returnFlag and (if the return type is memref-compatible)
   /// the returnSlot for early-return support inside SCF regions.
@@ -1118,13 +1142,34 @@ private:
     bool prevReturnSlotIsLazy;
     mlir::Value prevEarlyReturnFlag;
     mlir::Value prevChannelIntOutValidAlloca;
+    std::set<std::pair<std::string, size_t>> prevFuncLevelDropExcludeVars;
+    std::set<std::string> prevFuncLevelReturnVarNames;
+    DropValueSet prevFuncLevelDropExcludeValues;
+    std::set<std::string> prevFuncLevelDropExcludeResolvedNames;
+    std::set<std::string> prevFuncLevelEarlyReturnVarNames;
+    DropValueSet prevFuncLevelEarlyReturnExcludeValues;
+    std::set<std::string> prevFuncLevelEarlyReturnExcludeResolvedNames;
+    size_t prevFuncLevelDropScopeBase;
+    std::vector<PendingParamDrop> prevPendingFunctionParamDrops;
+    std::vector<DeferInfo> prevCurrentFnDefers;
 
     FunctionGenerationScope(MLIRGen &g, mlir::func::FuncOp newFunc)
         : gen(g), prevFunction(g.currentFunction),
           prevFunctionReturnTypeExpr(g.currentFunctionReturnTypeExpr), prevReturnFlag(g.returnFlag),
           prevReturnSlot(g.returnSlot), prevReturnSlotIsLazy(g.returnSlotIsLazy),
           prevEarlyReturnFlag(g.earlyReturnFlag),
-          prevChannelIntOutValidAlloca(g.channelIntOutValidAlloca) {
+          prevChannelIntOutValidAlloca(g.channelIntOutValidAlloca),
+          prevFuncLevelDropExcludeVars(std::move(g.funcLevelDropExcludeVars)),
+          prevFuncLevelReturnVarNames(std::move(g.funcLevelReturnVarNames)),
+          prevFuncLevelDropExcludeValues(std::move(g.funcLevelDropExcludeValues)),
+          prevFuncLevelDropExcludeResolvedNames(std::move(g.funcLevelDropExcludeResolvedNames)),
+          prevFuncLevelEarlyReturnVarNames(std::move(g.funcLevelEarlyReturnVarNames)),
+          prevFuncLevelEarlyReturnExcludeValues(std::move(g.funcLevelEarlyReturnExcludeValues)),
+          prevFuncLevelEarlyReturnExcludeResolvedNames(
+              std::move(g.funcLevelEarlyReturnExcludeResolvedNames)),
+          prevFuncLevelDropScopeBase(g.funcLevelDropScopeBase),
+          prevPendingFunctionParamDrops(std::move(g.pendingFunctionParamDrops)),
+          prevCurrentFnDefers(std::move(g.currentFnDefers)) {
       gen.currentFunction = newFunc;
       gen.currentFunctionReturnTypeExpr = nullptr;
       gen.returnFlag = nullptr;
@@ -1132,6 +1177,16 @@ private:
       gen.returnSlotIsLazy = false;
       gen.earlyReturnFlag = nullptr;
       gen.channelIntOutValidAlloca = nullptr;
+      gen.funcLevelDropExcludeVars.clear();
+      gen.funcLevelReturnVarNames.clear();
+      gen.funcLevelDropExcludeValues.clear();
+      gen.funcLevelDropExcludeResolvedNames.clear();
+      gen.funcLevelEarlyReturnVarNames.clear();
+      gen.funcLevelEarlyReturnExcludeValues.clear();
+      gen.funcLevelEarlyReturnExcludeResolvedNames.clear();
+      gen.funcLevelDropScopeBase = 0;
+      gen.pendingFunctionParamDrops.clear();
+      gen.currentFnDefers.clear();
     }
 
     ~FunctionGenerationScope() {
@@ -1142,6 +1197,17 @@ private:
       gen.returnSlotIsLazy = prevReturnSlotIsLazy;
       gen.earlyReturnFlag = prevEarlyReturnFlag;
       gen.channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
+      gen.funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+      gen.funcLevelReturnVarNames = std::move(prevFuncLevelReturnVarNames);
+      gen.funcLevelDropExcludeValues = std::move(prevFuncLevelDropExcludeValues);
+      gen.funcLevelDropExcludeResolvedNames = std::move(prevFuncLevelDropExcludeResolvedNames);
+      gen.funcLevelEarlyReturnVarNames = std::move(prevFuncLevelEarlyReturnVarNames);
+      gen.funcLevelEarlyReturnExcludeValues = std::move(prevFuncLevelEarlyReturnExcludeValues);
+      gen.funcLevelEarlyReturnExcludeResolvedNames =
+          std::move(prevFuncLevelEarlyReturnExcludeResolvedNames);
+      gen.funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
+      gen.pendingFunctionParamDrops = std::move(prevPendingFunctionParamDrops);
+      gen.currentFnDefers = std::move(prevCurrentFnDefers);
     }
 
     FunctionGenerationScope(const FunctionGenerationScope &) = delete;

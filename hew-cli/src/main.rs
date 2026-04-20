@@ -628,10 +628,10 @@ fn cmd_version() {
         "release"
     };
     let git_hash = option_env!("HEW_GIT_HASH").unwrap_or("");
-    let dirty = if option_env!("HEW_GIT_DIRTY") == Some("true") {
-        "-dirty"
-    } else {
-        ""
+    let dirty = match option_env!("HEW_GIT_DIRTY") {
+        Some("true") => "-dirty",
+        Some("unknown") => "-unknown",
+        _ => "",
     };
     if git_hash.is_empty() {
         println!("hew {version} ({profile})");

@@ -40,11 +40,16 @@ unsafe fn header_from_data(data_ptr: *mut u8) -> *mut HewRcInner {
     unsafe { data_ptr.sub(offset) }.cast()
 }
 
+const MAX_INFERRED_PAYLOAD_ALIGN: usize = std::mem::align_of::<u128>();
+
 fn payload_align(data: *const u8, data_size: usize) -> usize {
     if data.is_null() || data_size == 0 {
         1
     } else {
-        1usize << (data as usize).trailing_zeros()
+        // Without an explicit ABI alignment, only infer up to a conservative
+        // max_align_t-style bound. Over-aligned callers must thread alignment
+        // explicitly instead of relying on source-address trailing zeros.
+        (1usize << (data as usize).trailing_zeros()).min(MAX_INFERRED_PAYLOAD_ALIGN)
     }
 }
 
@@ -444,19 +449,21 @@ mod tests {
     }
 
     #[test]
-    fn rc_payload_respects_overaligned_source() {
-        #[repr(align(64))]
+    fn rc_caps_overaligned_source_alignment() {
+        #[repr(align(4096))]
         struct Over {
-            _x: [u64; 2],
+            _x: [u8; 16],
         }
 
         // SAFETY: hew_rc_new copies from a valid Over pointer and returns an
-        // aligned data pointer that is dropped before the test exits.
+        // Rc allocation that is dropped before the test exits.
         unsafe {
-            let value = Over { _x: [1, 2] };
+            let value = Over { _x: [1; 16] };
             let rc = hew_rc_new((&raw const value).cast(), size_of::<Over>(), None);
             assert!(!rc.is_null());
-            assert_eq!(rc as usize % 64, 0);
+            let header = header_from_data(rc);
+            assert_eq!((*header).data_align, MAX_INFERRED_PAYLOAD_ALIGN);
+            assert_eq!(rc as usize % MAX_INFERRED_PAYLOAD_ALIGN, 0);
             hew_rc_drop(rc);
         }
     }

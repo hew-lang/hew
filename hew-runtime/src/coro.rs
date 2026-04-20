@@ -591,4 +591,45 @@ mod tests {
             assert_eq!(TEST_SEEN_ARG.load(Ordering::Acquire), arg as usize);
         }
     }
+
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn first_switch_delivers_init_argument_via_abi_register() {
+        let current_exe = std::env::current_exe().expect("test binary path");
+        let status = std::process::Command::new(current_exe)
+            .arg("--exact")
+            .arg("coro::tests::first_switch_child_records_init_argument")
+            .env("HEW_CORO_SWITCH_CHILD", "1")
+            .status()
+            .expect("spawn child test process");
+
+        assert_eq!(status.code(), Some(7));
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn first_switch_child_records_init_argument() {
+        if std::env::var_os("HEW_CORO_SWITCH_CHILD").is_none() {
+            return;
+        }
+
+        // Jump into `_exit` in a subprocess so the test exercises the ABI
+        // register reload without needing to resume libtest on the switched stack.
+        // SAFETY: The child process owns both contexts and the stack for the
+        // duration of the switch, and `_exit` never returns after receiving the
+        // argument register loaded by `coro_switch`.
+        unsafe {
+            let stack = CoroStack::new().expect("failed to allocate stack");
+            let mut caller_ctx = CoroContext::new();
+            let mut callee_ctx = CoroContext::new();
+            let exit_entry: unsafe extern "C" fn(*mut u8) =
+                std::mem::transmute(libc::_exit as unsafe extern "C" fn(i32) -> !);
+            let status = std::ptr::with_exposed_provenance_mut::<u8>(7);
+            coro_init(&raw mut callee_ctx, stack.top(), exit_entry, status);
+
+            coro_switch(&raw mut caller_ctx, &raw const callee_ctx);
+        }
+
+        panic!("child coroutine should exit via libc::_exit");
+    }
 }

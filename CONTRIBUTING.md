@@ -45,14 +45,13 @@ Key boundary checks most contributors encounter:
 
 ## Formatting
 
-All code should pass the project's formatters (`rustfmt`, `clang-format`, `taplo`, `shfmt`, `prettier`). The easiest way to enforce this automatically is to symlink the formatting script into your local hooks:
+All code should pass the project's formatters (`rustfmt`, `clang-format`, `taplo`, `shfmt`, `prettier`). Run `make install-hooks` after cloning. This wires pre-commit formatting/clippy and a pre-push ci-preflight gate.
 
-```bash
-mkdir -p .git/hooks/pre-commit.d
-ln -sf ../../../scripts/pre-commit-fmt.sh .git/hooks/pre-commit.d/format
-```
+The installer is worktree-safe and targets the shared git common dir, so linked worktrees inherit the same hooks; run it once from the main checkout.
 
-This formats staged files and re-stages them on every commit.
+#### Troubleshooting / offline work
+
+If you are temporarily offline or missing local dependencies, you may set `ALLOW_SKIP_PREFLIGHT=1` for a one-off local push. Treat this as emergency-only; re-run `make ci-preflight` and push normally as soon as your environment is healthy again.
 
 ## Build System
 

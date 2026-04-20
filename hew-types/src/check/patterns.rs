@@ -43,7 +43,38 @@ fn sorted_pattern_bound_names(names: &HashSet<String>) -> Vec<String> {
     names
 }
 
+fn substitute_pattern_field_ty(raw_field_ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
+    type_params
+        .iter()
+        .zip(type_args.iter())
+        .fold(raw_field_ty.clone(), |acc, (tp, concrete)| {
+            acc.substitute_named_param(tp, concrete)
+        })
+}
+
 impl Checker {
+    pub(super) fn or_pattern_bindings_match(
+        &self,
+        left_env: &crate::env::TypeEnv,
+        right_env: &crate::env::TypeEnv,
+        left_names: &HashSet<String>,
+        right_names: &HashSet<String>,
+    ) -> bool {
+        if left_names != right_names {
+            return false;
+        }
+        left_names.iter().all(|name| {
+            let left = left_env.lookup_ref(name);
+            let right = right_env.lookup_ref(name);
+            matches!(
+                (left, right),
+                (Some(left_binding), Some(right_binding))
+                    if self.subst.resolve(&left_binding.ty) == self.subst.resolve(&right_binding.ty)
+                        && left_binding.is_mutable == right_binding.is_mutable
+            )
+        })
+    }
+
     fn bind_struct_field_placeholders(
         &mut self,
         fields: &[hew_parser::ast::PatternField],
@@ -153,12 +184,10 @@ impl Checker {
                                     .iter()
                                     .find(|(field_name, _)| field_name == &pf.name)
                                 {
-                                    // Apply type-param → concrete-arg substitution
-                                    let field_ty = type_params.iter().zip(type_args.iter()).fold(
-                                        raw_field_ty.clone(),
-                                        |acc, (tp, concrete)| {
-                                            acc.substitute_named_param(tp, concrete)
-                                        },
+                                    let field_ty = substitute_pattern_field_ty(
+                                        raw_field_ty,
+                                        &type_params,
+                                        &type_args,
                                     );
                                     if let Some((pat, ps)) = &pf.pattern {
                                         self.bind_pattern(pat, &field_ty, is_mutable, ps);
@@ -184,15 +213,26 @@ impl Checker {
                                 }
                             }
                         } else {
+                            let type_params = td.type_params.clone();
+                            let type_args = if let Ty::Named { args, .. } = ty {
+                                args.clone()
+                            } else {
+                                vec![]
+                            };
                             for pf in fields {
-                                if let Some(field_ty) = td.fields.get(&pf.name) {
+                                if let Some(raw_field_ty) = td.fields.get(&pf.name) {
+                                    let field_ty = substitute_pattern_field_ty(
+                                        raw_field_ty,
+                                        &type_params,
+                                        &type_args,
+                                    );
                                     if let Some((pat, ps)) = &pf.pattern {
-                                        self.bind_pattern(pat, field_ty, is_mutable, ps);
+                                        self.bind_pattern(pat, &field_ty, is_mutable, ps);
                                     } else {
                                         self.check_shadowing(&pf.name, span);
                                         self.env.define_with_span(
                                             pf.name.clone(),
-                                            field_ty.clone(),
+                                            field_ty,
                                             is_mutable,
                                             span.clone(),
                                         );
@@ -211,6 +251,15 @@ impl Checker {
                                 }
                             }
                         }
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!(
+                                "type `{type_name}` is not defined for struct pattern `{name}`"
+                            ),
+                        );
+                        self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     }
                 } else if matches!(ty, Ty::Var(_) | Ty::Error) {
                     self.bind_struct_field_placeholders(fields, ty, is_mutable, span);
@@ -275,8 +324,10 @@ impl Checker {
                 let left_env = self.env.clone();
                 self.env = env_before.clone();
                 self.bind_pattern(&b.0, ty, is_mutable, &b.1);
+                let right_env = self.env.clone();
 
-                if left_names == right_names {
+                if self.or_pattern_bindings_match(&left_env, &right_env, &left_names, &right_names)
+                {
                     self.env = left_env;
                 } else {
                     self.env = env_before;
@@ -287,6 +338,60 @@ impl Checker {
                         b.1.clone(),
                         &sorted_pattern_bound_names(&right_names),
                     );
+                    if left_names == right_names {
+                        for name in sorted_pattern_bound_names(&left_names) {
+                            let left_binding = left_env.lookup_ref(&name);
+                            let right_binding = right_env.lookup_ref(&name);
+                            if let (Some(left_binding), Some(right_binding)) =
+                                (left_binding, right_binding)
+                            {
+                                let left_ty = self.subst.resolve(&left_binding.ty);
+                                let right_ty = self.subst.resolve(&right_binding.ty);
+                                if left_ty != right_ty {
+                                    error = error
+                                        .with_note(
+                                            a.1.clone(),
+                                            format!(
+                                                "left branch binds `{name}` as `{}`",
+                                                left_ty.user_facing()
+                                            ),
+                                        )
+                                        .with_note(
+                                            b.1.clone(),
+                                            format!(
+                                                "right branch binds `{name}` as `{}`",
+                                                right_ty.user_facing()
+                                            ),
+                                        );
+                                }
+                                if left_binding.is_mutable != right_binding.is_mutable {
+                                    error = error
+                                        .with_note(
+                                            a.1.clone(),
+                                            format!(
+                                                "left branch binds `{name}` as {}",
+                                                if left_binding.is_mutable {
+                                                    "mutable"
+                                                } else {
+                                                    "immutable"
+                                                }
+                                            ),
+                                        )
+                                        .with_note(
+                                            b.1.clone(),
+                                            format!(
+                                                "right branch binds `{name}` as {}",
+                                                if right_binding.is_mutable {
+                                                    "mutable"
+                                                } else {
+                                                    "immutable"
+                                                }
+                                            ),
+                                        );
+                                }
+                            }
+                        }
+                    }
                     if let Some(module_name) = &self.current_module {
                         error.source_module = Some(module_name.clone());
                     }

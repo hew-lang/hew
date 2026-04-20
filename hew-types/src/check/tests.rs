@@ -473,6 +473,39 @@ fn checker_output_contract_intersects_assignment_target_side_tables() {
     );
 }
 
+#[test]
+fn expr_output_contract_rechecks_normalized_unresolved_subset() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let sender_var = TypeVar::fresh();
+    let covered_var = TypeVar::fresh();
+    let span = SpanKey { start: 10, end: 20 };
+    let mut expr_types = HashMap::from([(
+        span.clone(),
+        Ty::Tuple(vec![
+            Ty::Named {
+                name: "Sender".to_string(),
+                args: vec![Ty::Var(sender_var)],
+            },
+            Ty::Var(covered_var),
+        ]),
+    )]);
+
+    checker.validate_expr_output_contract(&mut expr_types, &HashSet::from([covered_var]));
+
+    assert!(
+        checker
+            .errors
+            .iter()
+            .all(|error| error.kind != TypeErrorKind::InferenceFailed),
+        "normalized covered vars must not emit InferenceFailed: {checker_errors:#?}",
+        checker_errors = checker.errors
+    );
+    assert!(
+        !expr_types.contains_key(&span),
+        "covered unresolved expr types should still be pruned after normalization: {expr_types:?}"
+    );
+}
+
 // ── method-call output-contract validation ───────────────────────────────────
 
 /// Valid method-call metadata must survive the output-contract boundary when
@@ -1781,6 +1814,33 @@ fn typecheck_or_pattern_symmetric_bindings_ok() {
     ));
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+}
+
+#[test]
+fn typecheck_or_pattern_incompatible_binding_types_error() {
+    let (errors, _) = parse_and_check(concat!(
+        "fn unwrap(result: Result<int, String>) -> int {\n",
+        "    match result {\n",
+        "        Ok(x) | Err(x) => x,\n",
+        "    }\n",
+        "}\n",
+    ));
+    let err = errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch))
+        .expect("expected incompatible or-pattern binding diagnostic");
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("left branch binds `x` as `int`")),
+        "expected left-branch type note, got: {err:?}"
+    );
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("right branch binds `x` as `String`")),
+        "expected right-branch type note, got: {err:?}"
+    );
 }
 
 #[test]
@@ -6059,8 +6119,8 @@ fn literal_coercion_array_to_i32_array() {
     assert_eq!(ty, expected);
     assert!(
         checker.errors.is_empty(),
-        "unexpected errors: {:?}",
-        checker.errors
+        "unexpected errors: {checker_errors:#?}",
+        checker_errors = checker.errors
     );
 }
 
@@ -6398,6 +6458,136 @@ fn typecheck_output_materializes_literal_kinds_for_unannotated_lets() {
     );
     assert!(output.expr_types.values().any(|ty| ty == &Ty::I64));
     assert!(output.expr_types.values().any(|ty| ty == &Ty::F64));
+}
+
+#[test]
+fn bind_pattern_struct_fields_substitute_generic_type_args() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.type_defs.insert(
+        "Pair".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Pair".to_string(),
+            type_params: vec!["T".to_string(), "U".to_string()],
+            fields: HashMap::from([
+                (
+                    "first".to_string(),
+                    Ty::Named {
+                        name: "T".to_string(),
+                        args: vec![],
+                    },
+                ),
+                (
+                    "second".to_string(),
+                    Ty::Named {
+                        name: "U".to_string(),
+                        args: vec![],
+                    },
+                ),
+            ]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+
+    checker.bind_pattern(
+        &Pattern::Struct {
+            name: "Pair".to_string(),
+            fields: vec![
+                hew_parser::ast::PatternField {
+                    name: "first".to_string(),
+                    pattern: None,
+                },
+                hew_parser::ast::PatternField {
+                    name: "second".to_string(),
+                    pattern: None,
+                },
+            ],
+        },
+        &Ty::Named {
+            name: "Pair".to_string(),
+            args: vec![Ty::I64, Ty::Bool],
+        },
+        false,
+        &(0..10),
+    );
+
+    assert!(
+        checker.errors.is_empty(),
+        "unexpected errors: {:?}",
+        checker.errors
+    );
+    assert_eq!(
+        checker
+            .env
+            .lookup_ref("first")
+            .map(|binding| binding.ty.clone()),
+        Some(Ty::I64),
+        "generic struct destructuring must bind instantiated field types"
+    );
+    assert_eq!(
+        checker
+            .env
+            .lookup_ref("second")
+            .map(|binding| binding.ty.clone()),
+        Some(Ty::Bool),
+        "generic struct destructuring must bind instantiated field types"
+    );
+}
+
+#[test]
+fn or_pattern_binding_helper_rejects_mutability_mismatch() {
+    let checker = Checker::new(ModuleRegistry::new(vec![]));
+    let names = HashSet::from(["x".to_string()]);
+    let mut left_env = crate::env::TypeEnv::new();
+    let mut right_env = crate::env::TypeEnv::new();
+    left_env.define_with_span("x".to_string(), Ty::I64, true, 0..1);
+    right_env.define_with_span("x".to_string(), Ty::I64, false, 0..1);
+
+    assert!(
+        !checker.or_pattern_bindings_match(&left_env, &right_env, &names, &names),
+        "or-pattern merge must reject bindings with mismatched mutability"
+    );
+}
+
+#[test]
+fn struct_pattern_missing_type_def_emits_diagnostic() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+    checker.bind_pattern(
+        &Pattern::Struct {
+            name: "Ghost".to_string(),
+            fields: vec![hew_parser::ast::PatternField {
+                name: "value".to_string(),
+                pattern: None,
+            }],
+        },
+        &Ty::Named {
+            name: "Ghost".to_string(),
+            args: vec![],
+        },
+        false,
+        &(0..5),
+    );
+
+    assert!(
+        checker.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedType
+                && error.message.contains("type `Ghost` is not defined")
+        }),
+        "missing type defs in struct patterns must fail closed: {checker_errors:#?}",
+        checker_errors = checker.errors
+    );
+    assert_eq!(
+        checker
+            .env
+            .lookup_ref("value")
+            .map(|binding| binding.ty.clone()),
+        Some(Ty::Error),
+        "missing type defs should seed placeholder bindings for recovery"
+    );
 }
 
 // ── Struct init literal coercion tests ─────────────────────────────

@@ -12,6 +12,12 @@ pub(crate) const fn is_variant_0(tag: i32) -> bool {
 pub(crate) const fn is_variant_1(tag: i32) -> bool {
     tag == TAG_VARIANT_1
 }
+pub(crate) const fn is_not_variant_0(tag: i32) -> bool {
+    tag == TAG_VARIANT_1
+}
+pub(crate) const fn is_known_variant(tag: i32) -> bool {
+    is_variant_0(tag) || is_variant_1(tag)
+}
 pub(crate) fn encode_i32(value: i32) -> u64 {
     value as u64
 }

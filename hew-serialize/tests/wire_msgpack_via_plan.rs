@@ -53,6 +53,15 @@ fn iter_wire_fixtures() -> Vec<PathBuf> {
     out
 }
 
+fn field_type_name(field_name: &str, ty: &hew_parser::ast::TypeExpr) -> String {
+    match ty {
+        hew_parser::ast::TypeExpr::Named { name, .. } => name.clone(),
+        _ => panic!(
+            "wire fixture field `{field_name}` uses unsupported non-named type in plan collection"
+        ),
+    }
+}
+
 /// Extract `WireDecls` from either the legacy `Item::Wire` shape (`wire type
 /// Foo { ... }` syntax) or the newer `#[wire]`-on-`TypeDecl` shape.
 ///
@@ -63,8 +72,7 @@ fn iter_wire_fixtures() -> Vec<PathBuf> {
 /// and run the same plan-driven encode path.
 fn collect_all_wire_decls_from_program(source: &str) -> Vec<WireDecl> {
     use hew_parser::ast::{
-        Item as AstItem, TypeBodyItem, TypeDeclKind, TypeExpr, VariantDecl, WireDeclKind,
-        WireFieldDecl,
+        Item as AstItem, TypeBodyItem, TypeDeclKind, VariantDecl, WireDeclKind, WireFieldDecl,
     };
     let result = hew_parser::parser::parse(source);
     let mut out: Vec<WireDecl> = Vec::new();
@@ -86,10 +94,7 @@ fn collect_all_wire_decls_from_program(source: &str) -> Vec<WireDecl> {
                             else {
                                 continue;
                             };
-                            let ty_name = match &ty.0 {
-                                TypeExpr::Named { name, .. } => name.clone(),
-                                _ => String::new(),
-                            };
+                            let ty_name = field_type_name(name, &ty.0);
                             fields.push(WireFieldDecl {
                                 name: name.clone(),
                                 ty: ty_name,
@@ -191,4 +196,35 @@ fn every_wire_fixture_has_a_deterministic_plan_driven_encoding() {
         skipped_fixtures.len(),
         skipped_fixtures
     );
+}
+
+#[test]
+fn plan_collection_rejects_non_named_wire_fields() {
+    use hew_parser::ast::TypeExpr;
+
+    let tuple = TypeExpr::Tuple(vec![
+        (
+            TypeExpr::Named {
+                name: "i64".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+        (
+            TypeExpr::Named {
+                name: "i64".to_string(),
+                type_args: None,
+            },
+            0..0,
+        ),
+    ]);
+
+    let panic = std::panic::catch_unwind(|| field_type_name("field", &tuple))
+        .expect_err("non-named wire fields must panic");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("<non-string panic>");
+    assert!(message.contains("unsupported non-named type"));
 }

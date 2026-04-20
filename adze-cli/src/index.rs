@@ -291,27 +291,32 @@ pub fn resolve_from_index(
     requirement: &str,
 ) -> Result<Option<IndexEntry>, IndexError> {
     let entries = read_index_entries(index_root, package_name)?;
-    let Ok(req) = crate::resolver::VersionReq::parse(requirement) else {
-        return Ok(None);
-    };
+    let req = crate::resolver::VersionReq::parse(requirement).map_err(|error| {
+        IndexError::Parse(format!(
+            "invalid version requirement `{requirement}`: {error}"
+        ))
+    })?;
 
     let mut candidates: Vec<_> = entries
         .into_iter()
         .filter(|e| !e.yanked.is_yanked())
-        .filter(|e| {
-            semver::Version::parse(&e.vers)
-                .ok()
-                .is_some_and(|v| req.matches(&v))
+        .map(|entry| {
+            let version = semver::Version::parse(&entry.vers).map_err(|error| {
+                IndexError::Parse(format!(
+                    "invalid index version `{}` for package `{}`: {error}",
+                    entry.vers, entry.name
+                ))
+            })?;
+            Ok((entry, version))
         })
+        .collect::<Result<Vec<_>, IndexError>>()?
+        .into_iter()
+        .filter(|(_, version)| req.matches(version))
         .collect();
 
-    candidates.sort_by(|a, b| {
-        let va = semver::Version::parse(&a.vers).unwrap_or(semver::Version::new(0, 0, 0));
-        let vb = semver::Version::parse(&b.vers).unwrap_or(semver::Version::new(0, 0, 0));
-        va.cmp(&vb)
-    });
+    candidates.sort_by(|(_, left), (_, right)| left.cmp(right));
 
-    Ok(candidates.pop())
+    Ok(candidates.pop().map(|(entry, _)| entry))
 }
 
 #[cfg(test)]
@@ -441,6 +446,21 @@ mod tests {
 
         let resolved = resolve_from_index(dir.path(), "pkg", "*").unwrap();
         assert_eq!(resolved.unwrap().vers, "1.0.0");
+    }
+
+    #[test]
+    fn resolve_rejects_invalid_requirement() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = resolve_from_index(dir.path(), "pkg", "not-a-version").unwrap_err();
+        assert!(err.to_string().contains("invalid version requirement"));
+    }
+
+    #[test]
+    fn resolve_rejects_invalid_index_version() {
+        let dir = tempfile::tempdir().unwrap();
+        append_index_entry(dir.path(), &sample_entry("pkg", "not-semver")).unwrap();
+        let err = resolve_from_index(dir.path(), "pkg", "*").unwrap_err();
+        assert!(err.to_string().contains("invalid index version"));
     }
 
     #[test]

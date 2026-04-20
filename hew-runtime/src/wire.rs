@@ -905,13 +905,13 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
                 if unsafe { hew_wire_decode_varint(buf, &raw mut v) } != 0 {
                     return -1;
                 }
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "source_node_id is u16; validated within range"
-                )]
-                {
-                    e.source_node_id = v as u16;
-                }
+                let Ok(source_node_id) = u16::try_from(v) else {
+                    set_last_error(format!(
+                        "hew_wire_decode_envelope: source_node_id {v} exceeds u16::MAX"
+                    ));
+                    return -1;
+                };
+                e.source_node_id = source_node_id;
             }
             // Unknown field — skip based on wire type.
             (_, w) if w == HEW_WIRE_VARINT => {
@@ -2205,6 +2205,46 @@ mod tests {
             );
             assert_eq!(decoded_env.request_id, 0);
             assert_eq!(decoded_env.source_node_id, 0);
+        }
+    }
+
+    #[test]
+    fn envelope_decode_rejects_oversized_source_node_id() {
+        // SAFETY: test owns the buffer and decode envelope storage for the duration of the call.
+        unsafe {
+            crate::hew_clear_error();
+            let buf = hew_wire_buf_new();
+            assert!(!buf.is_null());
+            assert_eq!(hew_wire_encode_field_varint(buf, 1, 42), 0);
+            assert_eq!(hew_wire_encode_field_varint(buf, 2, 7), 0);
+            assert_eq!(
+                hew_wire_encode_field_varint(buf, 3, hew_wire_zigzag_encode(10)),
+                0
+            );
+            assert_eq!(hew_wire_encode_field_bytes(buf, 4, std::ptr::null(), 0), 0);
+            assert_eq!(
+                hew_wire_encode_field_varint(buf, 6, u64::from(u16::MAX) + 1),
+                0
+            );
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+            let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
+            assert_eq!(
+                hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
+                -1
+            );
+            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
+                .to_str()
+                .unwrap();
+            assert!(err.contains("source_node_id"));
         }
     }
 

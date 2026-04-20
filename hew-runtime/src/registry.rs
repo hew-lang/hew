@@ -10,7 +10,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::collections::HashMap;
-    use std::ffi::{c_char, c_void, CStr};
+    use std::ffi::{c_char, c_void};
     use std::sync::{LazyLock, RwLock};
 
     use crate::util::RwLockExt;
@@ -77,14 +77,11 @@ mod native {
     /// - `actor` must be a valid pointer (or null — but that is the caller's choice).
     #[no_mangle]
     pub unsafe extern "C" fn hew_registry_register(name: *const c_char, actor: *mut c_void) -> i32 {
-        if name.is_null() {
+        // SAFETY: caller guarantees `name` is a live C string when non-null.
+        let Some(key) = (unsafe { crate::util::cstr_to_str(name, "hew_registry_register") }) else {
             return -1;
-        }
-        // SAFETY: `name` was checked for null above and caller guarantees it points
-        // to a valid NUL-terminated C string.
-        let key = unsafe { CStr::from_ptr(name) }
-            .to_string_lossy()
-            .into_owned();
+        };
+        let key = key.to_owned();
         let shard = REGISTRY.shard_for(&key);
         let mut reg = shard.write_or_recover();
         if reg.0.contains_key(&key) {
@@ -103,18 +100,13 @@ mod native {
     /// If `name` is non-null, it must be a valid, NUL-terminated C string.
     #[no_mangle]
     pub unsafe extern "C" fn hew_registry_lookup(name: *const c_char) -> *mut c_void {
-        if name.is_null() {
+        // SAFETY: caller guarantees `name` is a live C string when non-null.
+        let Some(key) = (unsafe { crate::util::cstr_to_str(name, "hew_registry_lookup") }) else {
             return std::ptr::null_mut();
-        }
-        // SAFETY: `name` was checked for null above and caller guarantees it points
-        // to a valid NUL-terminated C string.
-        let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-        let shard = REGISTRY.shard_for(key.as_ref());
+        };
+        let shard = REGISTRY.shard_for(key);
         let reg = shard.read_or_recover();
-        reg.0
-            .get(key.as_ref())
-            .copied()
-            .unwrap_or(std::ptr::null_mut())
+        reg.0.get(key).copied().unwrap_or(std::ptr::null_mut())
     }
 
     /// Remove an actor registration by name.
@@ -126,15 +118,14 @@ mod native {
     /// If `name` is non-null, it must be a valid, NUL-terminated C string.
     #[no_mangle]
     pub unsafe extern "C" fn hew_registry_unregister(name: *const c_char) -> i32 {
-        if name.is_null() {
+        // SAFETY: caller guarantees `name` is a live C string when non-null.
+        let Some(key) = (unsafe { crate::util::cstr_to_str(name, "hew_registry_unregister") })
+        else {
             return -1;
-        }
-        // SAFETY: `name` was checked for null above and caller guarantees it points
-        // to a valid NUL-terminated C string.
-        let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-        let shard = REGISTRY.shard_for(key.as_ref());
+        };
+        let shard = REGISTRY.shard_for(key);
         let mut reg = shard.write_or_recover();
-        if reg.0.remove(key.as_ref()).is_some() {
+        if reg.0.remove(key).is_some() {
             0
         } else {
             -1
@@ -211,6 +202,30 @@ mod tests {
             assert_eq!(result, 0);
         }
     }
+
+    #[test]
+    fn registry_rejects_invalid_utf8_keys() {
+        hew_registry_clear();
+        crate::hew_clear_error();
+        let invalid_name = b"bad\xff\0";
+
+        // SAFETY: `invalid_name` is NUL-terminated test input with invalid UTF-8 bytes.
+        unsafe {
+            assert_eq!(
+                hew_registry_register(invalid_name.as_ptr().cast(), std::ptr::dangling_mut()),
+                -1
+            );
+            assert!(hew_registry_lookup(invalid_name.as_ptr().cast()).is_null());
+            assert_eq!(hew_registry_unregister(invalid_name.as_ptr().cast()), -1);
+        }
+
+        // SAFETY: the test just populated `hew_last_error()` with a NUL-terminated message.
+        let err = unsafe { std::ffi::CStr::from_ptr(crate::hew_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(err.contains("invalid UTF-8"), "unexpected error: {err}");
+        assert_eq!(hew_registry_count(), 0);
+    }
 }
 
 // ── WASM (single-threaded) implementation ───────────────────────────────────
@@ -230,6 +245,20 @@ mod wasm {
 
     static REGISTRY: Mutex<Option<HashMap<String, SendPtr>>> = Mutex::new(None);
 
+    unsafe fn cstr_key<'a>(name: *const c_char, context: &str) -> Option<&'a str> {
+        if name.is_null() {
+            crate::set_last_error(format!("{context}: null pointer"));
+            return None;
+        }
+        match unsafe { CStr::from_ptr(name) }.to_str() {
+            Ok(key) => Some(key),
+            Err(_) => {
+                crate::set_last_error(format!("{context}: invalid UTF-8"));
+                None
+            }
+        }
+    }
+
     fn with_registry<F, R>(f: F) -> R
     where
         F: FnOnce(&mut HashMap<String, SendPtr>) -> R,
@@ -248,14 +277,10 @@ mod wasm {
     /// - `actor` must be a valid pointer (or null — but that is the caller's choice).
     #[no_mangle]
     pub unsafe extern "C" fn hew_registry_register(name: *const c_char, actor: *mut c_void) -> i32 {
-        if name.is_null() {
+        let Some(key) = (unsafe { cstr_key(name, "hew_registry_register") }) else {
             return -1;
-        }
-        // SAFETY: `name` was checked for null above and caller guarantees it points
-        // to a valid NUL-terminated C string.
-        let key = unsafe { CStr::from_ptr(name) }
-            .to_string_lossy()
-            .into_owned();
+        };
+        let key = key.to_owned();
         with_registry(|reg| {
             if reg.contains_key(&key) {
                 return -1;
@@ -274,17 +299,10 @@ mod wasm {
     /// If `name` is non-null, it must be a valid, NUL-terminated C string.
     #[no_mangle]
     pub unsafe extern "C" fn hew_registry_lookup(name: *const c_char) -> *mut c_void {
-        if name.is_null() {
+        let Some(key) = (unsafe { cstr_key(name, "hew_registry_lookup") }) else {
             return std::ptr::null_mut();
-        }
-        // SAFETY: `name` was checked for null above and caller guarantees it points
-        // to a valid NUL-terminated C string.
-        let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-        with_registry(|reg| {
-            reg.get(key.as_ref())
-                .map(|p| p.0)
-                .unwrap_or(std::ptr::null_mut())
-        })
+        };
+        with_registry(|reg| reg.get(key).map(|p| p.0).unwrap_or(std::ptr::null_mut()))
     }
 
     /// Remove an actor registration by name.
@@ -296,19 +314,10 @@ mod wasm {
     /// If `name` is non-null, it must be a valid, NUL-terminated C string.
     #[no_mangle]
     pub unsafe extern "C" fn hew_registry_unregister(name: *const c_char) -> i32 {
-        if name.is_null() {
+        let Some(key) = (unsafe { cstr_key(name, "hew_registry_unregister") }) else {
             return -1;
-        }
-        // SAFETY: `name` was checked for null above and caller guarantees it points
-        // to a valid NUL-terminated C string.
-        let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-        with_registry(|reg| {
-            if reg.remove(key.as_ref()).is_some() {
-                0
-            } else {
-                -1
-            }
-        })
+        };
+        with_registry(|reg| if reg.remove(key).is_some() { 0 } else { -1 })
     }
 
     /// Return the number of registered actors.

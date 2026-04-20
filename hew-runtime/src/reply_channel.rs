@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static FORCE_REPLY_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
 
 /// One-shot reply channel for the actor ask pattern.
 ///
@@ -37,6 +39,8 @@ pub struct HewReplyChannel {
     value: *mut c_void,
     /// Size of `value` in bytes.
     value_size: usize,
+    /// Distinguishes allocator failure from a legitimate null reply.
+    allocation_failed: AtomicBool,
     /// Mutex protecting the condvar wait.
     lock: Mutex<()>,
     /// Condvar signalled by [`hew_reply`].
@@ -77,9 +81,19 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         orphaned: AtomicBool::new(false),
         value: ptr::null_mut(),
         value_size: 0,
+        allocation_failed: AtomicBool::new(false),
         lock: Mutex::new(()),
         cond: Condvar::new(),
     }))
+}
+
+unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
+    #[cfg(test)]
+    if FORCE_REPLY_ALLOC_FAILURE.swap(false, Ordering::AcqRel) {
+        return ptr::null_mut();
+    }
+    // SAFETY: delegates to libc allocator for the requested reply payload size.
+    unsafe { libc::malloc(size) }
 }
 
 /// Retain an additional reference to a reply channel.
@@ -132,6 +146,21 @@ unsafe fn publish_reply_from_sender_ref(
         (*ch).cond.notify_one();
         drop(guard);
         hew_reply_channel_free(ch);
+    }
+}
+
+unsafe fn take_ready_reply(ch: *mut HewReplyChannel, out_size: Option<*mut usize>) -> *mut c_void {
+    // SAFETY: caller guarantees `ch` is a ready, live reply channel.
+    unsafe {
+        let result = (*ch).value;
+        if let Some(out_size) = out_size {
+            *out_size = (*ch).value_size;
+        }
+        (*ch).value = ptr::null_mut();
+        if result.is_null() && (*ch).allocation_failed.swap(false, Ordering::AcqRel) {
+            crate::set_last_error("hew_reply: allocation failed while copying reply payload");
+        }
+        result
     }
 }
 
@@ -194,8 +223,10 @@ pub unsafe extern "C" fn hew_reply(ch: *mut HewReplyChannel, value: *mut c_void,
         let mut copied_size = 0;
         if size > 0 && !value.is_null() {
             // SAFETY: malloc for deep copy of reply payload.
-            let buf = libc::malloc(size);
-            if !buf.is_null() {
+            let buf = alloc_reply_buffer(size);
+            if buf.is_null() {
+                (*ch).allocation_failed.store(true, Ordering::Release);
+            } else {
                 ptr::copy_nonoverlapping(value.cast::<u8>(), buf.cast::<u8>(), size);
                 copied_value = buf;
                 copied_size = size;
@@ -226,9 +257,7 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
     unsafe {
         // Fast path: check atomic flag without locking.
         if (*ch).ready.load(Ordering::Acquire) {
-            let result = (*ch).value;
-            (*ch).value = ptr::null_mut();
-            return result;
+            return take_ready_reply(ch, None);
         }
 
         // Slow path: wait on condvar.
@@ -236,8 +265,7 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
         while !(*ch).ready.load(Ordering::Acquire) {
             guard = (*ch).cond.wait_or_recover(guard);
         }
-        let result = (*ch).value;
-        (*ch).value = ptr::null_mut();
+        let result = take_ready_reply(ch, None);
         drop(guard);
         result
     }
@@ -265,10 +293,7 @@ pub(crate) unsafe fn hew_reply_wait_with_size(
     unsafe {
         // Fast path: check atomic flag without locking.
         if (*ch).ready.load(Ordering::Acquire) {
-            let result = (*ch).value;
-            *out_size = (*ch).value_size;
-            (*ch).value = ptr::null_mut();
-            return result;
+            return take_ready_reply(ch, Some(out_size));
         }
 
         // Slow path: wait on condvar.
@@ -276,9 +301,7 @@ pub(crate) unsafe fn hew_reply_wait_with_size(
         while !(*ch).ready.load(Ordering::Acquire) {
             guard = (*ch).cond.wait_or_recover(guard);
         }
-        let result = (*ch).value;
-        *out_size = (*ch).value_size;
-        (*ch).value = ptr::null_mut();
+        let result = take_ready_reply(ch, Some(out_size));
         drop(guard);
         result
     }
@@ -304,9 +327,7 @@ pub unsafe extern "C" fn hew_reply_wait_timeout(
     unsafe {
         // Fast path.
         if (*ch).ready.load(Ordering::Acquire) {
-            let result = (*ch).value;
-            (*ch).value = ptr::null_mut();
-            return result;
+            return take_ready_reply(ch, None);
         }
 
         let deadline =
@@ -325,8 +346,7 @@ pub unsafe extern "C" fn hew_reply_wait_timeout(
             }
         }
 
-        let result = (*ch).value;
-        (*ch).value = ptr::null_mut();
+        let result = take_ready_reply(ch, None);
         drop(guard);
         result
     }
@@ -596,6 +616,32 @@ mod tests {
             libc::free(result.cast());
             hew_reply_channel_free(ch);
             handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn reply_wait_surfaces_copy_oom() {
+        crate::hew_clear_error();
+        let ch = hew_reply_channel_new();
+        let payload = 55_i32;
+
+        // SAFETY: test exercises the forced-allocation-failure path on a live channel.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            FORCE_REPLY_ALLOC_FAILURE.store(true, Ordering::Release);
+            hew_reply(
+                ch,
+                (&raw const payload).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            );
+
+            let result = hew_reply_wait(ch);
+            assert!(result.is_null());
+            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
+                .to_str()
+                .unwrap();
+            assert!(err.contains("allocation failed"));
+            hew_reply_channel_free(ch);
         }
     }
 

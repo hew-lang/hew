@@ -79,6 +79,16 @@ pub(crate) struct HewWasmChannelReceiver {
     inner: WasmChannelReceiver,
 }
 
+fn decode_i64_payload(payload: &[u8], context: &str) -> Result<i64, ()> {
+    let bytes: [u8; 8] = payload.try_into().map_err(|_| {
+        crate::set_last_error(format!(
+            "{context}: expected 8-byte int payload, got {} bytes",
+            payload.len()
+        ));
+    })?;
+    Ok(i64::from_le_bytes(bytes))
+}
+
 /// Temporary pair returned by [`hew_channel_new`].
 #[derive(Debug)]
 #[repr(C)]
@@ -395,9 +405,15 @@ pub unsafe extern "C" fn hew_channel_try_recv_int(
     // SAFETY: caller guarantees `receiver` is a live ABI receiver handle.
     match unsafe { (*receiver).inner.try_recv() } {
         Ok(item) => {
-            // SAFETY: caller guarantees `out_valid` points to writable memory.
-            unsafe { *out_valid = 1 };
-            i64::from_le_bytes(item.try_into().unwrap_or([0; 8]))
+            if let Ok(value) = decode_i64_payload(&item, "hew_channel_try_recv_int") {
+                // SAFETY: caller guarantees `out_valid` points to writable memory.
+                unsafe { *out_valid = 1 };
+                value
+            } else {
+                // SAFETY: caller guarantees `out_valid` points to writable memory.
+                unsafe { *out_valid = 0 };
+                0
+            }
         }
         Err(TryRecvError::Empty | TryRecvError::Closed) => {
             // SAFETY: caller guarantees `out_valid` points to writable memory.
@@ -725,6 +741,31 @@ mod tests {
             hew_channel_receiver_close(rx);
         }
         assert_eq!(active_handle_count(), 0);
+    }
+
+    #[test]
+    fn try_recv_int_rejects_non_i64_payloads() {
+        crate::hew_clear_error();
+        let pair = hew_channel_new(2);
+        // SAFETY: test owns both channel handles and only sends stack-backed test payloads.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let payload = CString::new("tiny").unwrap();
+            hew_channel_send(tx, payload.as_ptr());
+
+            let mut valid = -1;
+            let value = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 0);
+            assert_eq!(value, 0);
+            let err = CStr::from_ptr(crate::hew_last_error()).to_str().unwrap();
+            assert!(err.contains("expected 8-byte int payload"));
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
     }
 
     // On wasm32-wasip1 panics abort the test binary, so the explicit panic

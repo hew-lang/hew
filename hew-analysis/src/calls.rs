@@ -432,6 +432,16 @@ mod tests {
     }
 
     #[test]
+    fn select_source_calls_found() {
+        let source = "fn f() { let value = select { msg from inbox.recv() => handle(msg), }; }";
+        let pr = parse(source);
+        let calls = collect_calls_in_parse_result(&pr);
+        let ns = names(&calls);
+        assert!(ns.contains(&"recv"), "should find call in select source");
+        assert!(ns.contains(&"handle"), "should find call in select body");
+    }
+
+    #[test]
     fn no_false_positives_for_identifiers() {
         let source = "fn f() { let x = 1; let y = x; }";
         let pr = parse(source);

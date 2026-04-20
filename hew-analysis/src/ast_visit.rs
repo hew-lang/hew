@@ -98,6 +98,7 @@ pub(crate) fn visible_bindings_at<'ast>(
     let mut collector = VisibleBindingsCollector {
         offset,
         matches: Vec::new(),
+        active_body_depth: 0,
     };
     walk_parse_result(Some(source), parse_result, &mut collector);
     collector.matches
@@ -110,14 +111,29 @@ pub(crate) fn visible_bindings_at<'ast>(
 struct VisibleBindingsCollector<'ast> {
     offset: usize,
     matches: Vec<BindingInfo<'ast>>,
+    active_body_depth: usize,
 }
 
 impl<'ast> AstVisitor<'ast> for VisibleBindingsCollector<'ast> {
-    fn enter_body(&mut self, _body: BodyInfo<'ast>, _ctx: VisitContext<'ast>) {
-        self.matches.clear();
+    fn enter_body(&mut self, body: BodyInfo<'ast>, _ctx: VisitContext<'ast>) {
+        if body.span.is_some_and(|span| span.start <= self.offset) {
+            if self.active_body_depth == 0 {
+                self.matches.clear();
+            }
+            self.active_body_depth += 1;
+        }
+    }
+
+    fn leave_body(&mut self, body: BodyInfo<'ast>, _ctx: VisitContext<'ast>) {
+        if body.span.is_some_and(|span| span.start <= self.offset) && self.active_body_depth > 0 {
+            self.active_body_depth -= 1;
+        }
     }
 
     fn visit_binding(&mut self, binding: BindingInfo<'ast>, _ctx: VisitContext<'ast>) {
+        if self.active_body_depth == 0 {
+            return;
+        }
         if binding.span.start <= self.offset {
             if let Some(existing) = self
                 .matches
@@ -171,7 +187,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_block_body(
                     &function.body,
                     body_info,
-                    params_to_bindings(&function.params),
+                    params_to_bindings(self.source, body_info.span, &function.params),
                 );
             }
             Item::Actor(actor) => {
@@ -181,7 +197,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         name: Some(&actor.name),
                         span: Some(span),
                     };
-                    self.walk_block_body(&init.body, body_info, params_to_bindings(&init.params));
+                    self.walk_block_body(
+                        &init.body,
+                        body_info,
+                        params_to_bindings(self.source, body_info.span, &init.params),
+                    );
                 }
                 if let Some(term) = &actor.terminate {
                     let body_info = BodyInfo {
@@ -197,7 +217,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         name: Some(&recv.name),
                         span: Some(&recv.span),
                     };
-                    self.walk_block_body(&recv.body, body_info, params_to_bindings(&recv.params));
+                    self.walk_block_body(
+                        &recv.body,
+                        body_info,
+                        params_to_bindings(self.source, body_info.span, &recv.params),
+                    );
                 }
                 for method in &actor.methods {
                     let body_info = BodyInfo {
@@ -208,7 +232,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_block_body(
                         &method.body,
                         body_info,
-                        params_to_bindings(&method.params),
+                        params_to_bindings(self.source, body_info.span, &method.params),
                     );
                 }
             }
@@ -223,7 +247,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         self.walk_block_body(
                             &method.body,
                             body_info,
-                            params_to_bindings(&method.params),
+                            params_to_bindings(self.source, body_info.span, &method.params),
                         );
                     }
                 }
@@ -238,7 +262,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_block_body(
                         &method.body,
                         body_info,
-                        params_to_bindings(&method.params),
+                        params_to_bindings(self.source, body_info.span, &method.params),
                     );
                 }
             }
@@ -254,7 +278,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                             self.walk_block_body(
                                 body_block,
                                 body_info,
-                                params_to_bindings(&method.params),
+                                params_to_bindings(self.source, body_info.span, &method.params),
                             );
                         }
                     }
@@ -326,7 +350,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     name: Some(&function.name),
                     span: Some(&function.fn_span),
                 };
-                self.walk_block_body(&function.body, body_info, params_to_bindings(&function.params));
+                self.walk_block_body(
+                    &function.body,
+                    body_info,
+                    params_to_bindings(self.source, body_info.span, &function.params),
+                );
                 true
             }
             Item::Const(const_decl) if const_decl.name == body_name => {
@@ -380,7 +408,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         name: Some(&recv.name),
                         span: Some(&recv.span),
                     };
-                    self.walk_block_body(&recv.body, body_info, params_to_bindings(&recv.params));
+                    self.walk_block_body(
+                        &recv.body,
+                        body_info,
+                        params_to_bindings(self.source, body_info.span, &recv.params),
+                    );
                     return true;
                 }
                 if let Some(method) = actor.methods.iter().find(|method| method.name == body_name) {
@@ -389,7 +421,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         name: Some(&method.name),
                         span: Some(&method.fn_span),
                     };
-                    self.walk_block_body(&method.body, body_info, params_to_bindings(&method.params));
+                    self.walk_block_body(
+                        &method.body,
+                        body_info,
+                        params_to_bindings(self.source, body_info.span, &method.params),
+                    );
                     return true;
                 }
                 false
@@ -402,7 +438,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         name: Some(&method.name),
                         span: Some(&method.fn_span),
                     };
-                    self.walk_block_body(&method.body, body_info, params_to_bindings(&method.params));
+                    self.walk_block_body(
+                        &method.body,
+                        body_info,
+                        params_to_bindings(self.source, body_info.span, &method.params),
+                    );
                     true
                 } else {
                     false
@@ -419,7 +459,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         name: Some(&method.name),
                         span: Some(&method.fn_span),
                     };
-                    self.walk_block_body(&method.body, body_info, params_to_bindings(&method.params));
+                    self.walk_block_body(
+                        &method.body,
+                        body_info,
+                        params_to_bindings(self.source, body_info.span, &method.params),
+                    );
                     true
                 } else {
                     false
@@ -437,7 +481,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         span: Some(&method.span),
                     };
                     self.visitor.enter_body(body_info, Self::context(Some(body_info)));
-                    self.push_scope(params_to_bindings(&method.params));
+                    self.push_scope(params_to_bindings(self.source, body_info.span, &method.params));
                     if let Some(body_block) = &method.body {
                         self.walk_block(body_block, Some(body_info));
                     }
@@ -703,7 +747,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 body: inner_body,
                 ..
             } => {
-                self.push_scope(lambda_params_to_bindings(params));
+                self.push_scope(lambda_params_to_bindings(self.source, span, params));
                 self.walk_expr(&inner_body.0, &inner_body.1, body);
                 self.pop_scope();
             }
@@ -837,24 +881,51 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
     }
 }
 
-fn params_to_bindings(params: &[hew_parser::ast::Param]) -> Vec<BindingInfo<'_>> {
+fn params_to_bindings<'ast>(
+    source: Option<&str>,
+    signature_span: Option<&Span>,
+    params: &'ast [hew_parser::ast::Param],
+) -> Vec<BindingInfo<'ast>> {
+    let mut cursor = param_list_search_start(source, signature_span);
     params
         .iter()
-        .map(|param| BindingInfo {
-            kind: BindingKind::Param,
-            name: &param.name,
-            span: param.ty.1.start.saturating_sub(param.name.len())..param.ty.1.start,
+        .map(|param| {
+            let binding = binding_from_search_from(
+                source,
+                &param.name,
+                cursor,
+                &param.ty.1,
+                BindingKind::Param,
+            );
+            cursor = binding.span.end.max(param.ty.1.end);
+            binding
         })
         .collect()
 }
 
-fn lambda_params_to_bindings(params: &[LambdaParam]) -> Vec<BindingInfo<'_>> {
+fn lambda_params_to_bindings<'ast>(
+    source: Option<&str>,
+    outer_span: &Span,
+    params: &'ast [LambdaParam],
+) -> Vec<BindingInfo<'ast>> {
+    let mut cursor = param_list_search_start(source, Some(outer_span));
     params
         .iter()
-        .map(|param| BindingInfo {
-            kind: BindingKind::Param,
-            name: &param.name,
-            span: 0..0,
+        .map(|param| {
+            let fallback_span = param.ty.as_ref().map_or(outer_span, |(_, span)| span);
+            let binding = binding_from_search_from(
+                source,
+                &param.name,
+                cursor,
+                fallback_span,
+                BindingKind::Param,
+            );
+            cursor = param
+                .ty
+                .as_ref()
+                .map_or(binding.span.end, |(_, span)| span.end)
+                .max(binding.span.end);
+            binding
         })
         .collect()
 }
@@ -876,6 +947,38 @@ fn binding_from_name<'ast>(
         kind,
         name,
         span: binding_span,
+    }
+}
+
+fn binding_from_search_from<'ast>(
+    source: Option<&str>,
+    name: &'ast str,
+    search_from: usize,
+    fallback_span: &Span,
+    kind: BindingKind,
+) -> BindingInfo<'ast> {
+    let binding_span = source.map_or_else(
+        || fallback_span.clone(),
+        |source| {
+            let span = crate::util::find_name_span(source, search_from, name);
+            span.start..span.end
+        },
+    );
+    BindingInfo {
+        kind,
+        name,
+        span: binding_span,
+    }
+}
+
+fn param_list_search_start(source: Option<&str>, signature_span: Option<&Span>) -> usize {
+    match (source, signature_span) {
+        (Some(source), Some(span)) => source
+            .get(span.start..span.end)
+            .and_then(|snippet| snippet.find('(').map(|offset| span.start + offset + 1))
+            .unwrap_or(span.start),
+        (_, Some(span)) => span.start,
+        _ => 0,
     }
 }
 
@@ -1011,5 +1114,56 @@ mod tests {
             vec![(BodyKind::ActorReceive, "handle".to_string())]
         );
         assert!(visitor.resolved_uses.iter().all(|(name, _)| name == "msg"));
+    }
+
+    #[test]
+    fn params_to_bindings_marks_parameter_name_span() {
+        let source = "fn f(abc: int) { abc }";
+        let parse_result = hew_parser::parse(source);
+        let Item::Function(function) = &parse_result.program.items[0].0 else {
+            panic!("expected function");
+        };
+
+        let bindings = params_to_bindings(Some(source), Some(&function.fn_span), &function.params);
+        assert_eq!(bindings[0].name, "abc");
+        assert_eq!(&source[bindings[0].span.clone()], "abc");
+    }
+
+    #[test]
+    fn lambda_params_to_bindings_use_non_zero_name_spans() {
+        let source =
+            "fn main() { let first = (x: int) => x; let second = (y: int, z: int) => y + z; }";
+        let parse_result = hew_parser::parse(source);
+        let Item::Function(function) = &parse_result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((Expr::Lambda { params, .. }, span)),
+            ..
+        } = &function.body.stmts[1].0
+        else {
+            panic!("expected lambda binding");
+        };
+
+        let bindings = lambda_params_to_bindings(Some(source), span, params);
+        let z_binding = bindings
+            .iter()
+            .find(|binding| binding.name == "z")
+            .expect("z lambda binding");
+        assert!(z_binding.span.start > 0);
+        assert_eq!(&source[z_binding.span.clone()], "z");
+    }
+
+    #[test]
+    fn visible_bindings_at_keeps_selected_body_isolated() {
+        let source = "fn first(a: int) { let b = a; b }\nfn second(c: int) { c }";
+        let parse_result = hew_parser::parse(source);
+        let offset = source.find("b }").expect("b usage");
+        let bindings = visible_bindings_at(source, &parse_result, offset);
+
+        let binding_names: Vec<_> = bindings.iter().map(|binding| binding.name).collect();
+        assert!(binding_names.contains(&"a"));
+        assert!(binding_names.contains(&"b"));
+        assert!(!binding_names.contains(&"c"));
     }
 }

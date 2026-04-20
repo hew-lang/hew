@@ -111,7 +111,7 @@ unsafe fn hewvec_string_args(arg_vec: *mut HewVec, context: &str) -> Option<Vec<
         let raw_arg = unsafe { crate::vec::hew_vec_get_str(arg_vec, index_i64) };
         let arg_context = format!("{context}: args[{index}]");
         // SAFETY: raw_arg is the strdup returned by hew_vec_get_str for this slot.
-        let Some(arg_text) = (unsafe { cstr_to_str(raw_arg, &arg_context) }) else {
+        let Some(arg_text) = (unsafe { cstr_to_str(&raw_arg, &arg_context) }) else {
             // SAFETY: raw_arg came from hew_vec_get_str and must be released here.
             unsafe { free_c_string(raw_arg) };
             return None;
@@ -127,7 +127,7 @@ unsafe fn hewvec_string_args(arg_vec: *mut HewVec, context: &str) -> Option<Vec<
 /// Clone a result string field into a new malloc-owned C string.
 unsafe fn clone_result_string(ptr: *const c_char, context: &str) -> *mut c_char {
     // SAFETY: ptr is expected to reference a valid NUL-terminated result field.
-    let Some(text) = (unsafe { cstr_to_str(ptr, context) }) else {
+    let Some(text) = (unsafe { cstr_to_str(&ptr, context) }) else {
         return std::ptr::null_mut();
     };
     crate::hew_clear_error();
@@ -149,7 +149,7 @@ unsafe fn clone_result_string(ptr: *const c_char, context: &str) -> *mut c_char 
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_run(cmd: *const c_char) -> *mut HewProcessResult {
     // SAFETY: cmd is a caller-provided C string at this ABI boundary.
-    let Some(cmd_str) = (unsafe { cstr_to_str(cmd, "hew_process_run") }) else {
+    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_run") }) else {
         return std::ptr::null_mut();
     };
     let mut command = Command::new("sh");
@@ -182,7 +182,7 @@ pub unsafe extern "C" fn hew_process_run_args(
         return std::ptr::null_mut();
     }
     // SAFETY: cmd is a caller-provided C string at this ABI boundary.
-    let Some(cmd_str) = (unsafe { cstr_to_str(cmd, "hew_process_run_args") }) else {
+    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_run_args") }) else {
         return std::ptr::null_mut();
     };
 
@@ -201,7 +201,7 @@ pub unsafe extern "C" fn hew_process_run_args(
             let arg_ptr = unsafe { *args.add(index) };
             let arg_context = format!("hew_process_run_args: args[{index}]");
             // SAFETY: arg_ptr comes from the caller-provided args array.
-            let Some(arg_str) = (unsafe { cstr_to_str(arg_ptr, &arg_context) }) else {
+            let Some(arg_str) = (unsafe { cstr_to_str(&arg_ptr, &arg_context) }) else {
                 return std::ptr::null_mut();
             };
             command.arg(arg_str);
@@ -226,7 +226,7 @@ pub unsafe extern "C" fn hew_process_run_argv(
     argv_vec: *mut HewVec,
 ) -> *mut HewProcessResult {
     // SAFETY: cmd is a caller-provided C string at this ABI boundary.
-    let Some(cmd_str) = (unsafe { cstr_to_str(cmd, "hew_process_run_argv") }) else {
+    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_run_argv") }) else {
         return std::ptr::null_mut();
     };
     // SAFETY: argv_vec is either null or a valid Vec<String>-backed HewVec.
@@ -250,7 +250,7 @@ pub unsafe extern "C" fn hew_process_run_argv(
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_spawn(cmd: *const c_char) -> *mut HewProcess {
     // SAFETY: cmd is a caller-provided C string at this ABI boundary.
-    let Some(cmd_str) = (unsafe { cstr_to_str(cmd, "hew_process_spawn") }) else {
+    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_spawn") }) else {
         return std::ptr::null_mut();
     };
     match Command::new("sh").arg("-c").arg(cmd_str).spawn() {
@@ -324,7 +324,7 @@ pub extern "C" fn hew_process_last_error() -> *mut c_char {
     }
     // SAFETY: ptr comes from thread-local storage and remains valid until the
     // next error mutation; we duplicate it immediately.
-    let Some(text) = (unsafe { cstr_to_str(ptr, "hew_process_last_error") }) else {
+    let Some(text) = (unsafe { cstr_to_str(&ptr, "hew_process_last_error") }) else {
         return std::ptr::null_mut();
     };
     str_to_malloc(text)

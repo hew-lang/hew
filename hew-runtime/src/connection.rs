@@ -1326,7 +1326,7 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
     let target_owned: Option<String> = if enabled != 0 {
         // SAFETY: caller guarantees target_addr is a valid C string (or null).
         let Some(target) =
-            (unsafe { crate::util::cstr_to_str(target_addr, "hew_connmgr_configure_reconnect") })
+            (unsafe { crate::util::cstr_to_str(&target_addr, "hew_connmgr_configure_reconnect") })
         else {
             return -1;
         };
@@ -1686,7 +1686,9 @@ pub unsafe extern "C" fn hew_connmgr_set_outbound_capacity(
         set_last_error("hew_connmgr_set_outbound_capacity: manager is null");
         return -1;
     }
-    set_last_error("hew_connmgr_set_outbound_capacity: outbound queue support was removed; sends are synchronous");
+    set_last_error(
+        "hew_connmgr_set_outbound_capacity: outbound queue support was removed; sends are synchronous",
+    );
     -1
 }
 

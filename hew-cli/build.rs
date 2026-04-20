@@ -3,6 +3,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const UNKNOWN_GIT_METADATA: &str = "unknown";
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../hew-codegen/CMakeLists.txt");
@@ -95,22 +97,12 @@ fn configure_and_build(
     cc: Option<OsString>,
     cxx: Option<OsString>,
 ) -> bool {
-    // Reject unsupported cross-compilation: the embedded C++ codegen must be
-    // built for the same architecture as the Rust target.  CMake builds for the
-    // host by default, so a host≠target mismatch would silently embed a
-    // wrong-arch static library.  Native builds and macOS universal builds
-    // (detected via CARGO_CFG_TARGET_OS) are fine.
+    // Reject unsupported cross-compilation: the embedded C++ codegen backend is
+    // built for the host toolchain by default, so a host≠target mismatch would
+    // silently embed the wrong backend artifact.  Native builds are fine.
     let host = env::var("HOST").unwrap_or_default();
-    if host != target {
-        let host_arch = host.split('-').next().unwrap_or("");
-        let target_arch = target.split('-').next().unwrap_or("");
-        assert!(
-            host_arch == target_arch,
-            "Cross-compiling hew-cli from {host} to {target} is not supported: \
-             the embedded C++ codegen would be built for the host architecture ({host_arch}) \
-             instead of the target ({target_arch}).  Build natively on the target platform \
-             or use CI runners that match the target architecture."
-        );
+    if let Some(message) = embedded_codegen_guard_error(&host, target) {
+        panic!("{message}");
     }
 
     let build_type = if env::var("PROFILE").is_ok_and(|profile| profile == "release") {
@@ -241,31 +233,169 @@ fn path_display(value: OsString) -> String {
 }
 
 fn emit_git_metadata(repo_dir: &Path) {
-    if let Some(git_dir) = git_stdout(repo_dir, &["rev-parse", "--git-dir"]) {
-        let git_dir = repo_dir.join(git_dir);
-        for path in [git_dir.join("HEAD"), git_dir.join("index")] {
-            println!("cargo:rerun-if-changed={}", path.display());
+    match git_stdout(repo_dir, &["rev-parse", "--git-dir"]) {
+        Ok(git_dir) => {
+            let git_dir = repo_dir.join(git_dir);
+            for path in [git_dir.join("HEAD"), git_dir.join("index")] {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+        Err(error) => {
+            cargo_warning(&format!(
+                "failed to locate git metadata for hew-cli build: {error}"
+            ));
         }
     }
 
-    let git_hash = git_stdout(repo_dir, &["rev-parse", "--short", "HEAD"]).unwrap_or_default();
+    let git_hash = git_output_or_unknown(
+        repo_dir,
+        &["rev-parse", "--short", "HEAD"],
+        "git commit hash",
+    );
     println!("cargo:rustc-env=HEW_GIT_HASH={git_hash}");
 
-    let is_dirty =
-        git_stdout(repo_dir, &["status", "--porcelain"]).is_some_and(|status| !status.is_empty());
-    println!("cargo:rustc-env=HEW_GIT_DIRTY={is_dirty}");
+    let git_dirty = match git_stdout(repo_dir, &["status", "--porcelain"]) {
+        Ok(status) => {
+            if status.is_empty() {
+                "false".to_string()
+            } else {
+                "true".to_string()
+            }
+        }
+        Err(error) => {
+            cargo_warning(&format!(
+                "failed to determine git dirty state for hew-cli build: {error}"
+            ));
+            UNKNOWN_GIT_METADATA.to_string()
+        }
+    };
+    println!("cargo:rustc-env=HEW_GIT_DIRTY={git_dirty}");
 }
 
-fn git_stdout(repo_dir: &Path, args: &[&str]) -> Option<String> {
+fn git_output_or_unknown(repo_dir: &Path, args: &[&str], description: &str) -> String {
+    match git_stdout(repo_dir, args) {
+        Ok(output) if !output.is_empty() => output,
+        Ok(_) => {
+            cargo_warning(&format!(
+                "{description} was empty during hew-cli build; using {UNKNOWN_GIT_METADATA}"
+            ));
+            UNKNOWN_GIT_METADATA.to_string()
+        }
+        Err(error) => {
+            cargo_warning(&format!(
+                "failed to read {description} during hew-cli build: {error}; using {UNKNOWN_GIT_METADATA}"
+            ));
+            UNKNOWN_GIT_METADATA.to_string()
+        }
+    }
+}
+
+fn git_stdout(repo_dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .current_dir(repo_dir)
         .args(args)
         .output()
-        .ok()?;
+        .map_err(|error| error.to_string())?;
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("git {:?} exited with {}", args, output.status)
+        };
+        return Err(detail);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn cargo_warning(message: &str) {
+    println!("cargo::warning={}", message.replace('\n', " "));
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TargetTuple<'a> {
+    arch: &'a str,
+    os: &'a str,
+}
+
+fn embedded_codegen_guard_error(host: &str, target: &str) -> Option<String> {
+    if host == target {
         return None;
     }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+
+    let host_tuple = parse_target_tuple(host);
+    let target_tuple = parse_target_tuple(target);
+    if host_tuple == target_tuple {
+        return None;
+    }
+
+    Some(format!(
+        "Cross-compiling hew-cli from {host} to {target} is not supported: \
+         the embedded C++ codegen backend artifact is only available for the \
+         host target tuple ({}/{}), but the requested target tuple is ({}/{}). \
+         Build natively on the requested target OS/architecture or use a CI \
+         runner that matches it.",
+        host_tuple.arch, host_tuple.os, target_tuple.arch, target_tuple.os
+    ))
+}
+
+fn parse_target_tuple(triple: &str) -> TargetTuple<'_> {
+    let parts: Vec<_> = triple.split('-').collect();
+    let arch = parts.first().copied().unwrap_or_default();
+    let os = parts
+        .iter()
+        .skip(1)
+        .copied()
+        .find(|part| is_known_os_component(part))
+        .or(match parts.as_slice() {
+            [_, os] | [_, _, os, ..] => Some(*os),
+            _ => None,
+        })
+        .unwrap_or_default();
+    TargetTuple { arch, os }
+}
+
+fn is_known_os_component(component: &str) -> bool {
+    matches!(
+        component,
+        "aix"
+            | "android"
+            | "darwin"
+            | "dragonfly"
+            | "emscripten"
+            | "espidf"
+            | "freebsd"
+            | "fuchsia"
+            | "haiku"
+            | "hermit"
+            | "horizon"
+            | "hurd"
+            | "illumos"
+            | "ios"
+            | "linux"
+            | "macos"
+            | "netbsd"
+            | "none"
+            | "nto"
+            | "nuttx"
+            | "openbsd"
+            | "psp"
+            | "redox"
+            | "solaris"
+            | "teeos"
+            | "trusty"
+            | "uefi"
+            | "visionos"
+            | "vita"
+            | "wasi"
+            | "wasip1"
+            | "wasip2"
+            | "windows"
+            | "xros"
+    )
 }
 
 fn llvm_prefix_tool(llvm_prefix: Option<&PathBuf>, name: &str) -> Option<OsString> {
@@ -346,4 +476,40 @@ fn reset_build_dir_if_needed(build_dir: &Path, signature: &str) {
     std::fs::write(signature_path, signature).unwrap_or_else(|error| {
         panic!("failed to record embedded codegen build signature: {error}")
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{embedded_codegen_guard_error, parse_target_tuple, UNKNOWN_GIT_METADATA};
+
+    #[test]
+    fn cross_compile_guard_rejects_same_arch_different_os() {
+        let error = embedded_codegen_guard_error("x86_64-apple-darwin", "x86_64-unknown-linux-gnu")
+            .expect("guard should reject mismatched OS targets");
+        assert!(error.contains("requested target tuple is (x86_64/linux)"));
+    }
+
+    #[test]
+    fn cross_compile_guard_allows_matching_arch_and_os_tuple() {
+        assert_eq!(
+            embedded_codegen_guard_error("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"),
+            None
+        );
+    }
+
+    #[test]
+    fn target_tuple_parser_finds_wasi_os_component() {
+        assert_eq!(
+            parse_target_tuple("wasm32-unknown-unknown-wasi"),
+            super::TargetTuple {
+                arch: "wasm32",
+                os: "wasi",
+            }
+        );
+    }
+
+    #[test]
+    fn git_metadata_uses_unknown_sentinel() {
+        assert_eq!(UNKNOWN_GIT_METADATA, "unknown");
+    }
 }

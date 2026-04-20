@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "hew/msgpack_reader.h"
+#include "test_utils.h"
 
 #include <msgpack.hpp>
 
@@ -26,23 +27,6 @@
 
 static int tests_run = 0;
 static int tests_passed = 0;
-
-#define TEST(name)                                                                                 \
-  do {                                                                                             \
-    tests_run++;                                                                                   \
-    printf("  test %s ... ", #name);                                                               \
-  } while (0)
-
-#define PASS()                                                                                     \
-  do {                                                                                             \
-    tests_passed++;                                                                                \
-    printf("ok\n");                                                                                \
-  } while (0)
-
-#define FAIL(msg)                                                                                  \
-  do {                                                                                             \
-    printf("FAILED: %s\n", msg);                                                                   \
-  } while (0)
 
 // ---------------------------------------------------------------------------
 // Helper: run a function in a child process to test that it rejects input.

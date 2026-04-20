@@ -29,23 +29,6 @@ std::string formatEmitMlirVerificationFailure(mlir::ModuleOp module);
 static int tests_run = 0;
 static int tests_passed = 0;
 
-#define TEST(name)                                                                                 \
-  do {                                                                                             \
-    tests_run++;                                                                                   \
-    printf("  test %s ... ", #name);                                                               \
-  } while (0)
-
-#define PASS()                                                                                     \
-  do {                                                                                             \
-    tests_passed++;                                                                                \
-    printf("ok\n");                                                                                \
-  } while (0)
-
-#define FAIL(msg)                                                                                  \
-  do {                                                                                             \
-    printf("FAILED: %s\n", msg);                                                                   \
-  } while (0)
-
 static HewCodegenOptions makeOptions(HewCodegenMode mode) {
   HewCodegenOptions opts{};
   opts.mode = mode;

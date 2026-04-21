@@ -221,26 +221,72 @@ fn self_signed_server_config() -> Result<ServerConfig, BoxError> {
     )))
 }
 
-fn resolve_bind_addr(addr: &str) -> Option<SocketAddr> {
-    let owned;
-    let bind_addr = if addr.starts_with(':') {
-        owned = format!("0.0.0.0{addr}");
-        owned.as_str()
-    } else {
-        addr
+fn split_host_port(addr: &str) -> Result<(&str, &str), &'static str> {
+    if let Some(rest) = addr.strip_prefix('[') {
+        let Some((host, port)) = rest.split_once("]:") else {
+            return Err("missing closing `]` or port separator");
+        };
+        if host.is_empty() {
+            return Err("missing host");
+        }
+        if port.is_empty() {
+            return Err("missing port");
+        }
+        return Ok((host, port));
+    }
+
+    let Some((host, port)) = addr.rsplit_once(':') else {
+        return Err("missing port separator");
     };
-    bind_addr.to_socket_addrs().ok()?.next()
+    if host.is_empty() {
+        return Err("missing host");
+    }
+    if host.contains(':') {
+        return Err("unexpected `:` in host; IPv6 addresses must use `[addr]:port`");
+    }
+    if port.is_empty() {
+        return Err("missing port");
+    }
+    Ok((host, port))
 }
 
-fn resolve_connect_addr(addr: &str) -> Option<SocketAddr> {
+fn set_constructor_error_and_return<T>(msg: String) -> Result<T, String> {
+    set_constructor_last_error(msg.clone());
+    Err(msg)
+}
+
+fn resolve_addr(addr: &str, default_host: &str, context: &str) -> Result<SocketAddr, String> {
     let owned;
-    let connect_addr = if addr.starts_with(':') {
-        owned = format!("127.0.0.1{addr}");
+    let resolved_addr = if addr.starts_with(':') {
+        owned = format!("{default_host}{addr}");
         owned.as_str()
     } else {
         addr
     };
-    connect_addr.to_socket_addrs().ok()?.next()
+
+    let (_, port) = split_host_port(resolved_addr).map_err(|detail| {
+        format!("could not resolve {context} address `{addr}`: parse failure: {detail}")
+    })?;
+    port.parse::<u16>().map_err(|err| {
+        format!(
+            "could not resolve {context} address `{addr}`: parse failure: invalid port `{port}`: {err}"
+        )
+    })?;
+
+    let mut addrs = resolved_addr.to_socket_addrs().map_err(|err| {
+        format!("could not resolve {context} address `{addr}`: resolution failure: {err}")
+    })?;
+    addrs.next().ok_or_else(|| {
+        format!("could not resolve {context} address `{addr}`: resolution returned no results")
+    })
+}
+
+fn resolve_bind_addr(addr: &str) -> Result<SocketAddr, String> {
+    resolve_addr(addr, "0.0.0.0", "bind").or_else(set_constructor_error_and_return)
+}
+
+fn resolve_connect_addr(addr: &str) -> Result<SocketAddr, String> {
+    resolve_addr(addr, "127.0.0.1", "connect").or_else(set_constructor_error_and_return)
 }
 
 fn build_runtime() -> Result<Arc<Runtime>, String> {
@@ -516,9 +562,12 @@ pub unsafe extern "C" fn hew_quic_new_server(addr: *const c_char) -> *mut HewQui
         set_constructor_last_error("invalid bind address");
         return std::ptr::null_mut();
     };
-    let Some(bind_addr) = resolve_bind_addr(addr_str) else {
-        set_constructor_last_error(format!("could not resolve bind address `{addr_str}`"));
-        return std::ptr::null_mut();
+    let bind_addr = match resolve_bind_addr(addr_str) {
+        Ok(bind_addr) => bind_addr,
+        Err(err) => {
+            set_constructor_last_error(err);
+            return std::ptr::null_mut();
+        }
     };
     let server_config = match self_signed_server_config() {
         Ok(server_config) => server_config,
@@ -569,9 +618,12 @@ pub unsafe extern "C" fn hew_quic_new_server_with_tls(
         set_constructor_last_error("invalid TLS private key PEM");
         return std::ptr::null_mut();
     };
-    let Some(bind_addr) = resolve_bind_addr(addr_str) else {
-        set_constructor_last_error(format!("could not resolve bind address `{addr_str}`"));
-        return std::ptr::null_mut();
+    let bind_addr = match resolve_bind_addr(addr_str) {
+        Ok(bind_addr) => bind_addr,
+        Err(err) => {
+            set_constructor_last_error(err);
+            return std::ptr::null_mut();
+        }
     };
     let server_config = match server_config_from_pem(cert_pem, key_pem) {
         Ok(server_config) => server_config,
@@ -637,12 +689,16 @@ pub unsafe extern "C" fn hew_quic_endpoint_connect(
         let _ = endpoint.events.push(EVENT_ERROR);
         return std::ptr::null_mut();
     };
-    let Some(remote) = resolve_connect_addr(addr_str) else {
-        update_endpoint(endpoint, |state| {
-            state.last_error = format!("could not resolve `{addr_str}`");
-        });
-        let _ = endpoint.events.push(EVENT_ERROR);
-        return std::ptr::null_mut();
+    let remote = match resolve_connect_addr(addr_str) {
+        Ok(remote) => remote,
+        Err(err) => {
+            set_constructor_last_error(err.clone());
+            update_endpoint(endpoint, |state| {
+                state.last_error = err;
+            });
+            let _ = endpoint.events.push(EVENT_ERROR);
+            return std::ptr::null_mut();
+        }
     };
 
     let conn_result = endpoint.rt.block_on(async {
@@ -1440,6 +1496,23 @@ mod tests {
         value
     }
 
+    fn assert_resolver_error(
+        result: Result<SocketAddr, String>,
+        expected_context: &str,
+        expected_fragment: &str,
+    ) {
+        let err = result.expect_err("resolver should fail");
+        assert!(
+            err.contains(expected_context),
+            "expected `{expected_context}` in resolver error: {err}"
+        );
+        assert!(
+            err.contains(expected_fragment),
+            "expected `{expected_fragment}` in resolver error: {err}"
+        );
+        assert_eq!(get_constructor_last_error(), err);
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "Complex QUIC protocol handling; splitting would reduce clarity"
@@ -1718,13 +1791,57 @@ mod tests {
     }
 
     #[test]
-    fn resolve_bind_addr_rejects_garbage() {
-        assert!(resolve_bind_addr("not-an-address").is_none());
+    fn resolve_bind_addr_reports_parse_failure() {
+        clear_constructor_last_error();
+        assert_resolver_error(resolve_bind_addr("bad:host:here"), "bind", "parse");
     }
 
     #[test]
-    fn resolve_connect_addr_rejects_garbage() {
-        assert!(resolve_connect_addr("not-an-address").is_none());
+    fn resolve_bind_addr_reports_resolution_failure() {
+        // `.invalid.` is reserved by RFC 2606, so it should fail resolution
+        // without depending on a real service existing in CI.
+        clear_constructor_last_error();
+        assert_resolver_error(
+            resolve_bind_addr("unresolvable.invalid.:443"),
+            "bind",
+            "resolution",
+        );
+    }
+
+    #[test]
+    fn resolve_bind_addr_accepts_socket_addr_literal() {
+        clear_constructor_last_error();
+        assert_eq!(
+            resolve_bind_addr("127.0.0.1:4433").expect("literal bind address must resolve"),
+            "127.0.0.1:4433".parse().expect("valid socket address")
+        );
+    }
+
+    #[test]
+    fn resolve_connect_addr_reports_parse_failure() {
+        clear_constructor_last_error();
+        assert_resolver_error(resolve_connect_addr("bad:host:here"), "connect", "parse");
+    }
+
+    #[test]
+    fn resolve_connect_addr_reports_resolution_failure() {
+        // `.invalid.` is reserved by RFC 2606, so it should fail resolution
+        // without depending on a real service existing in CI.
+        clear_constructor_last_error();
+        assert_resolver_error(
+            resolve_connect_addr("unresolvable.invalid.:443"),
+            "connect",
+            "resolution",
+        );
+    }
+
+    #[test]
+    fn resolve_connect_addr_accepts_socket_addr_literal() {
+        clear_constructor_last_error();
+        assert_eq!(
+            resolve_connect_addr("127.0.0.1:4433").expect("literal remote address must resolve"),
+            "127.0.0.1:4433".parse().expect("valid socket address")
+        );
     }
 
     #[test]
@@ -1801,8 +1918,9 @@ mod tests {
         let ep = unsafe { hew_quic_new_server(bad_addr.as_ptr()) };
         assert!(ep.is_null());
         // SAFETY: the getter returns an owned malloc string for this thread.
-        assert!(unsafe { take_string(hew_quic_last_error()) }
-            .contains("could not resolve bind address"),);
+        let error = unsafe { take_string(hew_quic_last_error()) };
+        assert!(error.contains("could not resolve bind address"));
+        assert!(error.contains("parse failure"));
 
         let good_addr = c":0";
         // SAFETY: good_addr is a valid C string literal.
@@ -1840,9 +1958,11 @@ mod tests {
         // SAFETY: error getter returns a malloc-backed string.
         let error = unsafe { take_string(hew_quic_endpoint_last_error(ep)) };
         assert!(
-            error.contains("could not resolve"),
-            "expected a resolution error, got `{error}`"
+            error.contains("could not resolve connect address"),
+            "expected a parse error, got `{error}`"
         );
+        assert!(error.contains("parse failure"));
+        assert_eq!(get_constructor_last_error(), error);
 
         // SAFETY: ep was created by the constructor above.
         unsafe { hew_quic_endpoint_close(ep) };

@@ -421,6 +421,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn errors_when_a_return_type_path_has_no_segments() {
+        let mut file = syn::parse_file(
+            r#"
+                #[no_mangle]
+                pub unsafe extern "C" fn hew_uuid_parse(s: *const c_char) -> i32 {
+                    0
+                }
+            "#,
+        )
+        .unwrap();
+        let syn::Item::Fn(func) = &mut file.items[0] else {
+            panic!("expected function item");
+        };
+        func.sig.output = syn::ReturnType::Type(
+            syn::token::RArrow::default(),
+            Box::new(syn::Type::Path(syn::TypePath {
+                qself: None,
+                path: syn::Path {
+                    leading_colon: None,
+                    segments: syn::punctuated::Punctuated::new(),
+                },
+            })),
+        );
+
+        let err = extract_extern_fns_from_file(&file).unwrap_err();
+        assert_eq!(
+            err,
+            HewEmitError::MissingTypePathSegment {
+                ty: "<empty path>".to_string()
+            }
+        );
+    }
+
     // ── generate_hew_module ────────────────────────────────────────────────
 
     #[test]

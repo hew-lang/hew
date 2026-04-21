@@ -1,8 +1,9 @@
 //! Hew runtime: `datetime` module.
 //!
 //! Provides datetime utilities for compiled Hew programs using Unix epoch
-//! milliseconds as the canonical time representation. All returned strings
-//! are allocated with `libc::malloc` so callers can free them with `libc::free`.
+//! milliseconds as the canonical time representation. Returned strings are
+//! allocated with `libc::malloc` so callers can free them with `libc::free`;
+//! [`hew_datetime_last_error`] returns null when no error has been recorded.
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
 // referenced by hew-cabi's object code.
@@ -32,11 +33,8 @@ fn clear_datetime_last_error() {
     LAST_DATETIME_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
-fn get_datetime_last_error() -> String {
-    LAST_DATETIME_ERROR.with(|error| match error.borrow().as_ref() {
-        Some(msg) => msg.clone(),
-        None => String::new(),
-    })
+fn clone_datetime_last_error() -> Option<String> {
+    LAST_DATETIME_ERROR.with(|error| error.borrow().clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -111,10 +109,14 @@ pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char
 
 /// Return the last datetime parse error recorded on the current thread.
 ///
-/// Returns an empty string when no parse error has been recorded.
+/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
+/// it with `libc::free`. Returns null when no datetime error has been recorded.
 #[no_mangle]
 pub extern "C" fn hew_datetime_last_error() -> *mut c_char {
-    str_to_malloc(&get_datetime_last_error())
+    match clone_datetime_last_error() {
+        Some(message) => str_to_malloc(&message),
+        None => std::ptr::null_mut(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -311,8 +313,8 @@ mod tests {
         assert_eq!(result, -1);
         // SAFETY: hew_datetime_year has no preconditions for a valid epoch timestamp.
         assert_eq!(unsafe { hew_datetime_year(result) }, 1969);
-        // SAFETY: hew_datetime_last_error returns a malloc-allocated C string.
-        assert!(unsafe { read_and_free(hew_datetime_last_error()) }.is_empty());
+        let err = hew_datetime_last_error();
+        assert!(err.is_null());
     }
 
     #[test]
@@ -322,8 +324,8 @@ mod tests {
         // SAFETY: both pointers are valid NUL-terminated C strings.
         let result = unsafe { hew_datetime_parse(input.as_ptr(), fmt.as_ptr()) };
         assert_eq!(result, 1_767_225_600_000);
-        // SAFETY: hew_datetime_last_error returns a malloc-allocated C string.
-        assert!(unsafe { read_and_free(hew_datetime_last_error()) }.is_empty());
+        let err = hew_datetime_last_error();
+        assert!(err.is_null());
     }
 
     #[test]
@@ -342,7 +344,7 @@ mod tests {
         // SAFETY: both pointers are valid NUL-terminated C strings.
         let result = unsafe { hew_datetime_parse(input.as_ptr(), fmt.as_ptr()) };
         assert_eq!(result, 1_767_225_600_000);
-        // SAFETY: hew_datetime_last_error returns a malloc-allocated C string.
-        assert!(unsafe { read_and_free(hew_datetime_last_error()) }.is_empty());
+        let err = hew_datetime_last_error();
+        assert!(err.is_null());
     }
 }

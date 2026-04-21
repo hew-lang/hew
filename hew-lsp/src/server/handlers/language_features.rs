@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
@@ -8,9 +9,10 @@ use tower_lsp::lsp_types::{
     FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
     InlayHintLabel, InlayHintParams, InlayHintTooltip, MarkupContent, MarkupKind,
     ParameterInformation, ParameterLabel, Position, SemanticTokens, SemanticTokensParams,
-    SemanticTokensResult, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit,
+    SemanticTokensResult, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit, Url,
     WorkspaceEdit,
 };
+use tracing::warn;
 
 use super::super::{
     analysis_tokens_to_lsp, build_document_links, internal_error, non_empty, offset_range_to_lsp,
@@ -105,12 +107,7 @@ pub(crate) fn lsp_code_actions_for_diagnostic(
         .and_then(|d| d.get("kind"))
         .and_then(serde_json::Value::as_str)
         .map(String::from);
-    let suggestions = diag
-        .data
-        .as_ref()
-        .and_then(|d| d.get("suggestions"))
-        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
-        .unwrap_or_default();
+    let suggestions = diagnostic_suggestions(diag);
     let start = position_to_offset(&doc.source, &doc.line_offsets, diag.range.start);
     let end = position_to_offset(&doc.source, &doc.line_offsets, diag.range.end);
     let info = hew_analysis::code_actions::DiagnosticInfo {
@@ -168,6 +165,25 @@ pub(crate) fn lsp_code_actions_for_diagnostic(
     }
 
     lsp_actions
+}
+
+fn diagnostic_suggestions(diag: &Diagnostic) -> Vec<String> {
+    let Some(raw_suggestions) = diag.data.as_ref().and_then(|data| data.get("suggestions")) else {
+        return vec![];
+    };
+
+    match serde_json::from_value::<Vec<String>>(raw_suggestions.clone()) {
+        Ok(suggestions) => suggestions,
+        Err(error) => {
+            warn!(
+                target: "hew-lsp",
+                diagnostic_message = %diag.message,
+                error = %error,
+                "failed to deserialize code-action suggestions; returning empty suggestion list"
+            );
+            vec![]
+        }
+    }
 }
 
 pub(crate) fn completion(
@@ -296,9 +312,23 @@ pub(crate) fn signature_help(
 pub(crate) fn code_action(
     server: &HewLanguageServer,
     params: &CodeActionParams,
-) -> Option<CodeActionResponse> {
+) -> CodeActionResponse {
+    code_action_response(&server.documents, params)
+}
+
+pub(crate) fn code_action_response(
+    documents: &DashMap<Url, DocumentState>,
+    params: &CodeActionParams,
+) -> CodeActionResponse {
     let uri = &params.text_document.uri;
-    let doc = server.documents.get(uri)?;
+    let Some(doc) = documents.get(uri) else {
+        warn!(
+            target: "hew-lsp",
+            uri = %uri,
+            "code action requested for unknown document; returning empty response"
+        );
+        return vec![];
+    };
 
     let mut lsp_actions = Vec::new();
     for diag in &params.context.diagnostics {
@@ -309,7 +339,7 @@ pub(crate) fn code_action(
             params.context.only.as_deref(),
         ));
     }
-    non_empty(lsp_actions)
+    lsp_actions
 }
 
 pub(crate) fn folding_range(

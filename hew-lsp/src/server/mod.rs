@@ -9,7 +9,7 @@ mod workspace;
 
 #[cfg(test)]
 use self::handlers::language_features::{
-    lsp_code_actions_for_diagnostic, lsp_inlay_hint_from_analysis,
+    code_action_response, lsp_code_actions_for_diagnostic, lsp_inlay_hint_from_analysis,
     lsp_signature_help_from_analysis, remove_unused_imports_kind,
 };
 #[cfg(test)]
@@ -73,6 +73,12 @@ use tower_lsp::lsp_types::{
     CallHierarchyServerCapability, CodeLens, CodeLensOptions, CodeLensParams, SymbolInformation,
     WorkspaceSymbolParams,
 };
+#[cfg(test)]
+use tower_lsp::lsp_types::{
+    CodeActionContext, CodeActionOrCommand, CompletionItemKind, DiagnosticSeverity, DocumentSymbol,
+    InlayHintTooltip, InsertTextFormat, PartialResultParams, SemanticToken, SymbolKind,
+    TextDocumentIdentifier, WorkDoneProgressParams,
+};
 use tower_lsp::lsp_types::{
     CodeActionKind, CodeActionParams, CodeActionResponse, CompletionOptions, CompletionParams,
     CompletionResponse, Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
@@ -85,11 +91,6 @@ use tower_lsp::lsp_types::{
     SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
     WorkDoneProgressOptions, WorkspaceEdit,
-};
-#[cfg(test)]
-use tower_lsp::lsp_types::{
-    CodeActionOrCommand, CompletionItemKind, DiagnosticSeverity, DocumentSymbol, InlayHintTooltip,
-    InsertTextFormat, SemanticToken, SymbolKind,
 };
 use tower_lsp::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
 use tower_lsp::lsp_types::{
@@ -570,7 +571,9 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
-        Ok(handlers::language_features::code_action(self, &params))
+        Ok(Some(handlers::language_features::code_action(
+            self, &params,
+        )))
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<Value>> {
@@ -586,6 +589,9 @@ impl LanguageServer for HewLanguageServer {
 mod tests {
     use super::*;
     use hew_analysis::CompletionKind;
+    use std::io;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestDir {
@@ -626,6 +632,49 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedLogWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl SharedLogWriter {
+        fn contents(&self) -> String {
+            String::from_utf8(self.buffer.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    struct SharedLogGuard(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedLogGuard {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedLogWriter {
+        type Writer = SharedLogGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedLogGuard(self.buffer.clone())
+        }
+    }
+
+    fn capture_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
+        let writer = SharedLogWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let result = tracing::subscriber::with_default(subscriber, f);
+        (result, writer.contents())
     }
 
     fn semantic_token_data(source: &str, tokens: &[SemanticToken]) -> Vec<(String, u32, u32)> {
@@ -2728,7 +2777,10 @@ machine Traffic {
                 .data
                 .as_ref()
                 .and_then(|d| d.get("suggestions"))
-                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .map(|value| {
+                    serde_json::from_value::<Vec<String>>(value.clone())
+                        .expect("undefined-variable suggestions should deserialize")
+                })
                 .unwrap_or_default();
             let start = position_to_offset(source, &lo, diag.range.start);
             let end = position_to_offset(source, &lo, diag.range.end);
@@ -2776,7 +2828,10 @@ machine Traffic {
             .data
             .as_ref()
             .and_then(|d| d.get("suggestions"))
-            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+            .map(|value| {
+                serde_json::from_value::<Vec<String>>(value.clone())
+                    .expect("non-exhaustive-match suggestions should deserialize")
+            })
             .unwrap_or_default();
         let info = DiagnosticInfo {
             kind: Some("NonExhaustiveMatch".to_string()),
@@ -2874,6 +2929,96 @@ machine Traffic {
                     if action.kind.as_ref() == Some(&CodeActionKind::QUICKFIX)
             )),
             "quickfix-only requests should exclude source.removeUnusedImports actions"
+        );
+    }
+
+    #[test]
+    fn code_actions_warn_and_return_empty_when_suggestions_drift() {
+        let source = "fn main() -> i32 { let counter = 42; counte }";
+        let doc = make_doc(source);
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let start = source.find("counte").unwrap();
+        let end = start + "counte".len();
+        let diag = Diagnostic {
+            range: offset_range_to_lsp(source, &doc.line_offsets, start, end),
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("hew-types".to_string()),
+            message: "Undefined variable `counte`".to_string(),
+            data: Some(json!({
+                "kind": "UndefinedVariable",
+                "suggestions": [{"replacement": "counter"}]
+            })),
+            ..Default::default()
+        };
+
+        let (actions, logs) =
+            capture_logs(|| lsp_code_actions_for_diagnostic(&uri, &doc, &diag, None));
+
+        assert!(
+            actions.is_empty(),
+            "malformed suggestion payloads should fail closed to an empty action list"
+        );
+        assert!(
+            logs.contains("WARN")
+                && logs.contains("hew-lsp")
+                && logs.contains("failed to deserialize code-action suggestions"),
+            "expected warn log for suggestion drift, got: {logs}"
+        );
+    }
+
+    #[test]
+    fn code_action_returns_empty_response_and_warns_for_unknown_document() {
+        let uri = Url::parse("file:///missing.hew").unwrap();
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let (actions, logs) = capture_logs(|| code_action_response(&DashMap::new(), &params));
+
+        assert!(actions.is_empty());
+        assert!(
+            logs.contains("WARN")
+                && logs.contains("hew-lsp")
+                && logs.contains("code action requested for unknown document"),
+            "expected warn log for unknown document, got: {logs}"
+        );
+    }
+
+    #[test]
+    fn code_action_returns_explicit_empty_response_when_no_actions_match() {
+        let source = "fn main() -> i32 { 0 }\n";
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+        let documents = DashMap::new();
+        documents.insert(uri, make_doc(source));
+
+        let (actions, logs) = capture_logs(|| code_action_response(&documents, &params));
+
+        assert!(
+            actions.is_empty(),
+            "requests with no matching diagnostics should return an explicit empty response"
+        );
+        assert!(
+            logs.is_empty(),
+            "expected no warnings for a normal empty code-action response, got: {logs}"
         );
     }
 

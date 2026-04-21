@@ -282,8 +282,8 @@ pub unsafe extern "C" fn hew_yaml_get_string(val: *const HewYamlValue) -> *mut c
 /// Get a base64-decoded bytes value from a [`HewYamlValue`].
 ///
 /// Returns a newly allocated [`HewVec`] for valid string inputs. Non-string
-/// values return null. Invalid base64 inputs decode to an empty bytes vector to
-/// match `std::encoding::base64::decode`.
+/// values return null. Invalid base64 inputs return null and populate
+/// [`hew_yaml_last_error`].
 ///
 /// # Safety
 ///
@@ -297,9 +297,16 @@ pub unsafe extern "C" fn hew_yaml_get_bytes(val: *const HewYamlValue) -> *mut He
     let v = unsafe { &*val };
     match v.inner.as_str() {
         Some(s) => {
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(s)
-                .unwrap_or_default();
+            let decoded = match base64::engine::general_purpose::STANDARD.decode(s) {
+                Ok(decoded) => decoded,
+                Err(err) => {
+                    set_parse_last_error(format!(
+                        "invalid YAML bytes: base64 decode failed: {err}"
+                    ));
+                    return std::ptr::null_mut();
+                }
+            };
+            clear_parse_last_error();
             // SAFETY: allocates a new HewVec owned by the caller.
             unsafe { u8_to_hwvec(&decoded) }
         }
@@ -941,6 +948,16 @@ mod tests {
         s
     }
 
+    /// Helper: read a bytes `HewVec` pointer and free it.
+    unsafe fn read_and_free_bytes(ptr: *mut HewVec) -> Vec<u8> {
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a valid bytes HewVec returned by this crate.
+        let bytes = unsafe { hwvec_to_u8(ptr) };
+        // SAFETY: ptr was allocated by the runtime allocator.
+        unsafe { hew_cabi::vec::hew_vec_free(ptr) };
+        bytes
+    }
+
     #[test]
     fn parse_mapping_and_get_fields() {
         let val = parse("name: hew\nversion: 42\nactive: true\n");
@@ -1453,6 +1470,69 @@ mod tests {
 
         // SAFETY: ok is a valid pointer returned by parse.
         unsafe { hew_yaml_free(ok) };
+    }
+
+    #[test]
+    fn get_bytes_invalid_base64_returns_null_and_sets_last_error() {
+        clear_parse_last_error();
+        let val = parse("b: '!!!not-base64!!!'\n");
+        assert!(!val.is_null());
+
+        // SAFETY: val is a valid HewYamlValue from parse.
+        unsafe {
+            let key = CString::new("b").unwrap();
+            let field = hew_yaml_get_field(val, key.as_ptr());
+            assert!(!field.is_null());
+
+            let bytes = hew_yaml_get_bytes(field);
+            assert!(bytes.is_null());
+
+            let err = read_and_free_cstr(hew_yaml_last_error());
+            assert!(err.contains("base64") || err.contains("decode"));
+
+            hew_yaml_free(field);
+            hew_yaml_free(val);
+        }
+    }
+
+    #[test]
+    fn get_bytes_empty_base64_returns_empty_vec() {
+        clear_parse_last_error();
+        let val = parse("b: ''\n");
+        assert!(!val.is_null());
+
+        // SAFETY: val is a valid HewYamlValue from parse.
+        unsafe {
+            let key = CString::new("b").unwrap();
+            let field = hew_yaml_get_field(val, key.as_ptr());
+            assert!(!field.is_null());
+
+            let bytes = read_and_free_bytes(hew_yaml_get_bytes(field));
+            assert!(bytes.is_empty());
+
+            hew_yaml_free(field);
+            hew_yaml_free(val);
+        }
+    }
+
+    #[test]
+    fn get_bytes_valid_base64_round_trips() {
+        clear_parse_last_error();
+        let val = parse("b: 'aGV3'\n");
+        assert!(!val.is_null());
+
+        // SAFETY: val is a valid HewYamlValue from parse.
+        unsafe {
+            let key = CString::new("b").unwrap();
+            let field = hew_yaml_get_field(val, key.as_ptr());
+            assert!(!field.is_null());
+
+            let bytes = read_and_free_bytes(hew_yaml_get_bytes(field));
+            assert_eq!(bytes, b"hew");
+
+            hew_yaml_free(field);
+            hew_yaml_free(val);
+        }
     }
 
     #[test]

@@ -19,6 +19,10 @@ See the [Building from Source](README.md#building-from-source) section of the RE
 4. Run `make lint` to check for warnings
 5. Submit a pull request
 
+PR titles, PR bodies, and commit messages are part of the permanent project history after squash merge.
+Keep them free of model names, orchestration jargon, and internal-only path references such as `.claude/`.
+CI rejects these leaks with the voice-guard check before merge.
+
 ### Using LESSONS.md
 
 [`LESSONS.md`](LESSONS.md) is a structured decision aid for contributors. Before merging a change, match it against the **trigger** column in LESSONS.md and apply every matching row's **apply** checklist. Start with **P0** rows (correctness and boundary safety), then **P1** (parity, tests, diagnostics), then **P2** (architecture and cleanup). When two rules conflict, keep the stricter fail-closed, ownership-preserving, or parity-preserving rule.

@@ -18,6 +18,7 @@
      For changes with no new tests, explain why (e.g., "covered by existing E2E"). -->
 
 ## Quality Checklist
+- [ ] PR title, body, and commit messages avoid internal-only orchestration/model vocabulary
 - [ ] No new `.ok()?` or `unwrap_or_default()` in codegen without `// JUSTIFIED` comment
 - [ ] New allocations have cleanup paths for sync, async, and actor shutdown contexts
 - [ ] Serialization changes include round-trip encode/decode tests

@@ -18,6 +18,13 @@ use hew_cabi::{
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
+/// Reject YAML inputs larger than 1 MiB before parsing to avoid memory abuse.
+const YAML_PARSE_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
+/// Reject YAML inputs declaring more than 32 anchors before parsing.
+const YAML_PARSE_ANCHOR_LIMIT: usize = 32;
+/// Reject YAML inputs referencing more than 1024 aliases before parsing.
+const YAML_PARSE_ALIAS_LIMIT: usize = 1024;
+
 /// Opaque wrapper around a [`serde_yaml::Value`].
 ///
 /// Returned by [`hew_yaml_parse`], [`hew_yaml_get_field`], and
@@ -50,6 +57,90 @@ fn get_parse_last_error() -> String {
     LAST_PARSE_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
 }
 
+fn validate_yaml_input_limits(input: &str) -> Result<(), String> {
+    if input.len() > YAML_PARSE_SIZE_LIMIT_BYTES {
+        return Err(format!(
+            "invalid YAML input: size limit exceeded ({} bytes > {} byte cap)",
+            input.len(),
+            YAML_PARSE_SIZE_LIMIT_BYTES
+        ));
+    }
+
+    if !input
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(byte, b'&' | b'*'))
+    {
+        return Ok(());
+    }
+
+    let bytes = input.as_bytes();
+    let mut anchors = 0usize;
+    let mut aliases = 0usize;
+    let mut idx = 0usize;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'\'' if !in_double_quote => {
+                if in_single_quote && bytes.get(idx + 1) == Some(&b'\'') {
+                    idx += 2;
+                    continue;
+                }
+                in_single_quote = !in_single_quote;
+            }
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            b'\\' if in_double_quote => {
+                idx += 2;
+                continue;
+            }
+            b'&' | b'*'
+                if !in_single_quote
+                    && !in_double_quote
+                    && bytes
+                        .get(idx + 1)
+                        .is_some_and(|next| is_yaml_anchor_alias_name_byte(*next)) =>
+            {
+                if bytes[idx] == b'&' {
+                    anchors += 1;
+                    if anchors > YAML_PARSE_ANCHOR_LIMIT {
+                        return Err(format!(
+                            "invalid YAML input: anchor limit exceeded ({anchors} > {YAML_PARSE_ANCHOR_LIMIT})"
+                        ));
+                    }
+                } else {
+                    aliases += 1;
+                    if aliases > YAML_PARSE_ALIAS_LIMIT {
+                        return Err(format!(
+                            "invalid YAML input: alias limit exceeded ({aliases} > {YAML_PARSE_ALIAS_LIMIT})"
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        idx += 1;
+    }
+
+    Ok(())
+}
+
+fn is_yaml_anchor_alias_name_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'a'..=b'z'
+            | b'A'..=b'Z'
+            | b'0'..=b'9'
+            | b'_'
+            | b'-'
+            | b'.'
+    )
+}
+
 // ---------------------------------------------------------------------------
 // C ABI exports
 // ---------------------------------------------------------------------------
@@ -73,6 +164,10 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const c_char) -> *mut HewYaml
         set_parse_last_error("invalid YAML input: input was not valid UTF-8");
         return std::ptr::null_mut();
     };
+    if let Err(err) = validate_yaml_input_limits(s) {
+        set_parse_last_error(err);
+        return std::ptr::null_mut();
+    }
     match serde_yaml::from_str::<serde_yaml::Value>(s) {
         Ok(val) => {
             clear_parse_last_error();
@@ -930,6 +1025,7 @@ pub extern "C" fn hew_yaml_from_null() -> *mut HewYamlValue {
 mod tests {
     use super::*;
     use std::ffi::CString;
+    use std::fmt::Write as _;
 
     /// Helper: parse a YAML string and return the owned pointer.
     fn parse(yaml: &str) -> *mut HewYamlValue {
@@ -1470,6 +1566,103 @@ mod tests {
 
         // SAFETY: ok is a valid pointer returned by parse.
         unsafe { hew_yaml_free(ok) };
+    }
+
+    fn billion_laughs_alias_limit_yaml() -> String {
+        let mut yaml = String::from("a: &a [\"x\"]\n");
+        let mut previous = String::from("a");
+
+        for level in b'b'..=b'i' {
+            let name = char::from(level).to_string();
+            write!(yaml, "{name}: &{name} [").expect("write YAML alias bomb prefix");
+            for alias_idx in 0..9 {
+                if alias_idx > 0 {
+                    yaml.push_str(", ");
+                }
+                yaml.push('*');
+                yaml.push_str(&previous);
+            }
+            yaml.push_str("]\n");
+            previous = name;
+        }
+
+        yaml.push_str("boom: [");
+        for alias_idx in 0..=YAML_PARSE_ALIAS_LIMIT {
+            if alias_idx > 0 {
+                yaml.push_str(", ");
+            }
+            yaml.push('*');
+            yaml.push_str(&previous);
+        }
+        yaml.push_str("]\n");
+        yaml
+    }
+
+    #[test]
+    fn parse_rejects_alias_bomb_before_deserialization() {
+        let yaml = billion_laughs_alias_limit_yaml();
+        let val = parse(&yaml);
+        assert!(val.is_null());
+
+        // SAFETY: hew_yaml_last_error returns a malloc-allocated C string.
+        let err = unsafe { read_and_free_cstr(hew_yaml_last_error()) };
+        assert!(err.contains("alias limit"));
+    }
+
+    #[test]
+    fn parse_rejects_input_over_size_cap() {
+        let yaml = "a".repeat(YAML_PARSE_SIZE_LIMIT_BYTES * 2);
+        let val = parse(&yaml);
+        assert!(val.is_null());
+
+        // SAFETY: hew_yaml_last_error returns a malloc-allocated C string.
+        let err = unsafe { read_and_free_cstr(hew_yaml_last_error()) };
+        assert!(err.contains("size limit"));
+        assert!(err.contains("byte cap"));
+    }
+
+    #[test]
+    fn parse_accepts_normal_anchor_and_alias_usage() {
+        let yaml = r#"
+defaults: &defaults
+  enabled: true
+  tags: ["base"]
+profile: &profile
+  <<: *defaults
+  name: hew
+release: &release
+  <<: *profile
+  version: 1
+copy_one: *defaults
+copy_two: *profile
+copy_three: *release
+"#;
+        let val = parse(yaml);
+        assert!(!val.is_null());
+
+        // SAFETY: val is a valid pointer returned by parse.
+        unsafe {
+            let key = CString::new("copy_three").unwrap();
+            let copy_three = hew_yaml_get_field(val, key.as_ptr());
+            assert!(!copy_three.is_null());
+            assert_eq!(hew_yaml_type(copy_three), 6);
+            hew_yaml_free(copy_three);
+            hew_yaml_free(val);
+        }
+    }
+
+    #[test]
+    fn parse_ignores_anchor_like_markers_inside_quotes() {
+        let val = parse("'&not_anchor *not_alias'");
+        assert!(!val.is_null());
+
+        // SAFETY: val is a valid pointer returned by parse.
+        unsafe {
+            assert_eq!(hew_yaml_type(val), 4);
+            let s = read_and_free_cstr(hew_yaml_get_string(val));
+            assert_eq!(s, "&not_anchor *not_alias");
+            hew_yaml_free(val);
+        }
     }
 
     #[test]

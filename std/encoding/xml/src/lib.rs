@@ -11,8 +11,27 @@
 extern crate hew_runtime;
 
 use hew_cabi::cabi::str_to_malloc;
+use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
+
+const MAX_XML_DEPTH: usize = 256;
+
+std::thread_local! {
+    static LAST_XML_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn set_xml_last_error(msg: impl Into<String>) {
+    LAST_XML_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+}
+
+fn clear_xml_last_error() {
+    LAST_XML_ERROR.with(|error| *error.borrow_mut() = None);
+}
+
+fn clone_xml_last_error() -> Option<String> {
+    LAST_XML_ERROR.with(|error| error.borrow().clone())
+}
 
 // ---------------------------------------------------------------------------
 // Internal tree representation
@@ -59,6 +78,21 @@ struct Frame {
     children: Vec<XmlNodeKind>,
 }
 
+#[derive(Debug)]
+enum ParseXmlError {
+    Malformed,
+    MaximumDepthExceeded,
+}
+
+impl ParseXmlError {
+    fn message(&self) -> &'static str {
+        match self {
+            Self::Malformed => "xml: parse error",
+            Self::MaximumDepthExceeded => "xml: maximum nesting depth (256) exceeded",
+        }
+    }
+}
+
 /// Extract tag name and attributes from a [`BytesStart`] event.
 fn extract_tag_and_attrs(e: &BytesStart<'_>) -> (String, Vec<(String, String)>) {
     let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
@@ -95,11 +129,16 @@ fn flush_text(buf: &mut String, stack: &mut [Frame], top_level: &mut Vec<XmlNode
 }
 
 /// Build a tree of [`XmlNodeKind`] from an XML string using quick-xml.
-fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
+fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
     use quick_xml::events::Event;
     use quick_xml::reader::Reader;
 
     let mut reader = Reader::from_str(xml);
+    reader.config_mut().expand_empty_elements = false;
+    // quick-xml 0.39 does not expose an external-entity-resolution toggle:
+    // general/entity references are surfaced as `Event::GeneralRef` and are not
+    // expanded against external resources by default. Preserve that fail-closed
+    // behavior here rather than attempting any custom resolution.
     let mut stack: Vec<Frame> = Vec::new();
     let mut top_level: Vec<XmlNodeKind> = Vec::new();
 
@@ -114,6 +153,9 @@ fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
                 flush_text(&mut text_buf, &mut stack, &mut top_level);
+                if stack.len() + 1 > MAX_XML_DEPTH {
+                    return Err(ParseXmlError::MaximumDepthExceeded);
+                }
                 let (tag, attributes) = extract_tag_and_attrs(e);
                 stack.push(Frame {
                     tag,
@@ -123,7 +165,7 @@ fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
             }
             Ok(Event::End(_)) => {
                 flush_text(&mut text_buf, &mut stack, &mut top_level);
-                let frame = stack.pop()?;
+                let frame = stack.pop().ok_or(ParseXmlError::Malformed)?;
                 let node = XmlNodeKind::Element {
                     tag: frame.tag,
                     attributes: frame.attributes,
@@ -133,6 +175,9 @@ fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
             }
             Ok(Event::Empty(ref e)) => {
                 flush_text(&mut text_buf, &mut stack, &mut top_level);
+                if stack.len() + 1 > MAX_XML_DEPTH {
+                    return Err(ParseXmlError::MaximumDepthExceeded);
+                }
                 let (tag, attributes) = extract_tag_and_attrs(e);
                 let node = XmlNodeKind::Element {
                     tag,
@@ -153,6 +198,10 @@ fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
                 _ => {
                     if let Ok(Some(ch)) = e.resolve_char_ref() {
                         text_buf.push(ch);
+                    } else {
+                        text_buf.push('&');
+                        text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+                        text_buf.push(';');
                     }
                 }
             },
@@ -168,18 +217,18 @@ fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
                 break;
             }
             Ok(_) => {}
-            Err(_) => return None,
+            Err(_) => return Err(ParseXmlError::Malformed),
         }
     }
 
     if !stack.is_empty() {
-        return None;
+        return Err(ParseXmlError::Malformed);
     }
 
     match top_level.len() {
-        0 => None,
-        1 => Some(top_level.remove(0)),
-        _ => Some(XmlNodeKind::Element {
+        0 => Err(ParseXmlError::Malformed),
+        1 => Ok(top_level.remove(0)),
+        _ => Ok(XmlNodeKind::Element {
             tag: String::new(),
             attributes: Vec::new(),
             children: top_level,
@@ -273,14 +322,35 @@ fn collect_text(node: &XmlNodeKind, buf: &mut String) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_xml_parse(xml_str: *const c_char) -> *mut HewXmlNode {
     if xml_str.is_null() {
+        set_xml_last_error("xml: invalid input: null pointer");
         return std::ptr::null_mut();
     }
     // SAFETY: xml_str is a valid NUL-terminated C string per caller contract.
     let Ok(s) = unsafe { CStr::from_ptr(xml_str) }.to_str() else {
+        set_xml_last_error("xml: invalid input: input was not valid UTF-8");
         return std::ptr::null_mut();
     };
     match parse_xml(s) {
-        Some(tree) => boxed_node(tree),
+        Ok(tree) => {
+            clear_xml_last_error();
+            boxed_node(tree)
+        }
+        Err(err) => {
+            set_xml_last_error(err.message());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Return the last XML parse error recorded on the current thread.
+///
+/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
+/// it with [`hew_xml_string_free`]. Returns null when no XML error has been
+/// recorded.
+#[no_mangle]
+pub extern "C" fn hew_xml_last_error() -> *mut c_char {
+    match clone_xml_last_error() {
+        Some(message) => str_to_malloc(&message),
         None => std::ptr::null_mut(),
     }
 }
@@ -514,6 +584,17 @@ mod tests {
         s
     }
 
+    unsafe fn read_and_free_optional_cstr(ptr: *mut c_char) -> Option<String> {
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: ptr is a valid NUL-terminated C string from malloc.
+        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        // SAFETY: ptr was allocated with malloc.
+        unsafe { hew_xml_string_free(ptr) };
+        Some(s)
+    }
+
     #[test]
     fn parse_simple_element() {
         let node = parse("<greeting>Hello</greeting>");
@@ -642,10 +723,17 @@ mod tests {
     fn parse_invalid_returns_null() {
         let node = parse("<unclosed>");
         assert!(node.is_null());
+        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
+        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        assert_eq!(last_error, Some("xml: parse error".to_string()));
 
         // SAFETY: null pointer is safe for hew_xml_parse.
         unsafe {
             assert!(hew_xml_parse(std::ptr::null()).is_null());
+            assert_eq!(
+                read_and_free_optional_cstr(hew_xml_last_error()),
+                Some("xml: invalid input: null pointer".to_string())
+            );
         }
     }
 
@@ -680,6 +768,67 @@ mod tests {
             let serialized = read_and_free_cstr(hew_xml_to_string(node));
             assert_eq!(serialized, "<data>&lt;hello&gt; &amp; world</data>");
 
+            hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn parse_empty_root() {
+        let node = parse("<root/>");
+        assert!(!node.is_null());
+
+        // SAFETY: node is a valid HewXmlNode from parse.
+        unsafe {
+            let tag = read_and_free_cstr(hew_xml_get_tag(node));
+            assert_eq!(tag, "root");
+            assert_eq!(hew_xml_children_count(node), 0);
+            hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn parse_reasonable_nesting_succeeds() {
+        let xml = "<a><b><c><d><e>ok</e></d></c></b></a>";
+        let node = parse(xml);
+        assert!(!node.is_null());
+
+        // SAFETY: node is a valid HewXmlNode from parse.
+        unsafe {
+            let text = read_and_free_cstr(hew_xml_get_text(node));
+            assert_eq!(text, "ok");
+            assert!(read_and_free_optional_cstr(hew_xml_last_error()).is_none());
+            hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn parse_rejects_excessive_nesting_depth() {
+        let open = "<x>".repeat(10_000);
+        let close = "</x>".repeat(10_000);
+        let xml = format!("{open}{close}");
+
+        let node = parse(&xml);
+        assert!(node.is_null());
+        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
+        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        assert_eq!(
+            last_error,
+            Some("xml: maximum nesting depth (256) exceeded".to_string())
+        );
+    }
+
+    #[test]
+    fn general_entity_references_are_not_expanded() {
+        let xml = r#"<!DOCTYPE foo [<!ENTITY lol "LOL">]><root>&lol;</root>"#;
+        let node = parse(xml);
+        assert!(!node.is_null());
+
+        // quick-xml 0.39 surfaces `&lol;` as a GeneralRef event and does not
+        // expand it via the DTD, so this crate preserves the literal reference.
+        // SAFETY: node is a valid HewXmlNode from parse.
+        unsafe {
+            let text = read_and_free_cstr(hew_xml_get_text(node));
+            assert_eq!(text, "&lol;");
             hew_xml_free(node);
         }
     }

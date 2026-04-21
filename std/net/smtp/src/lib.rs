@@ -1,7 +1,8 @@
 //! Hew runtime: SMTP email sending via lettre.
 //!
 //! Provides SMTP client functionality for compiled Hew programs.
-//! Opaque connection handles are freed via [`hew_smtp_close`].
+//! All returned strings and connection handles are allocated with `libc::malloc`
+//! / `Box` so callers can free them with the corresponding free function.
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
 // referenced by hew-cabi's object code.
@@ -49,8 +50,8 @@ pub struct HewSmtpConn {
 ///
 /// Returns an empty string when no SMTP client error has been recorded.
 #[no_mangle]
-pub extern "C" fn hew_smtp_last_error() -> *const c_char {
-    str_to_malloc(&get_smtp_last_error()).cast_const()
+pub extern "C" fn hew_smtp_last_error() -> *mut c_char {
+    str_to_malloc(&get_smtp_last_error())
 }
 
 impl std::fmt::Debug for HewSmtpConn {
@@ -451,7 +452,7 @@ mod tests {
         // SAFETY: `err` was allocated by `hew_smtp_last_error`.
         let text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
         // SAFETY: `err` was allocated via `malloc`.
-        unsafe { libc::free(err.cast_mut().cast()) };
+        unsafe { libc::free(err.cast()) };
         text
     }
 

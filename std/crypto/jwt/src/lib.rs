@@ -11,9 +11,8 @@
 extern crate hew_runtime;
 
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
-use std::os::raw::c_char;
-
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use std::{cell::Cell, os::raw::c_char};
 
 /// Map an algorithm integer to a [`jsonwebtoken::Algorithm`].
 ///
@@ -27,9 +26,155 @@ fn algo_from_i32(algo: i32) -> Option<Algorithm> {
     }
 }
 
+/// Tagged error code surfaced across the JWT C ABI.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HewJwtError {
+    None = 0,
+    AlgorithmUnsupported = 1,
+    InvalidKey = 2,
+    TokenMalformed = 3,
+    SignatureInvalid = 4,
+    ClaimsExpired = 5,
+    AllocationFailure = 6,
+}
+
+std::thread_local! {
+    static LAST_JWT_ERROR: Cell<HewJwtError> = const { Cell::new(HewJwtError::None) };
+    #[cfg(test)]
+    static FAIL_NEXT_JWT_ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+fn set_last_jwt_error(err: HewJwtError) {
+    LAST_JWT_ERROR.with(|slot| slot.set(err));
+}
+
+fn last_jwt_error() -> HewJwtError {
+    LAST_JWT_ERROR.with(Cell::get)
+}
+
+#[cfg(test)]
+fn fail_jwt_allocations_after(successes_before_failure: usize) {
+    FAIL_NEXT_JWT_ALLOCATIONS.with(|remaining| remaining.set(Some(successes_before_failure)));
+}
+
+#[cfg(test)]
+fn reset_jwt_allocation_failures() {
+    FAIL_NEXT_JWT_ALLOCATIONS.with(|remaining| remaining.set(None));
+}
+
+#[cfg(test)]
+fn should_fail_jwt_allocation() -> bool {
+    FAIL_NEXT_JWT_ALLOCATIONS.with(|remaining| match remaining.get() {
+        Some(0) => true,
+        Some(count) => {
+            remaining.set(Some(count - 1));
+            false
+        }
+        None => false,
+    })
+}
+
+#[cfg(not(test))]
+fn should_fail_jwt_allocation() -> bool {
+    false
+}
+
+fn jwt_str_to_malloc(s: &str) -> *mut c_char {
+    if should_fail_jwt_allocation() {
+        return std::ptr::null_mut();
+    }
+    str_to_malloc(s)
+}
+
+unsafe fn write_err_out(err_out: *mut HewJwtError, err: HewJwtError) {
+    if !err_out.is_null() {
+        // SAFETY: caller provided a valid out-pointer when non-null.
+        unsafe { *err_out = err };
+    }
+}
+
+unsafe fn input_str<'a>(ptr: *const c_char, err: HewJwtError) -> Result<&'a str, HewJwtError> {
+    // SAFETY: caller guarantees `ptr` is either null or a valid NUL-terminated C string.
+    unsafe { cstr_to_str(ptr) }.ok_or(err)
+}
+
+fn classify_jwt_error(kind: &ErrorKind) -> HewJwtError {
+    match kind {
+        ErrorKind::InvalidEcdsaKey
+        | ErrorKind::InvalidEddsaKey
+        | ErrorKind::InvalidRsaKey(_)
+        | ErrorKind::RsaFailedSigning
+        | ErrorKind::Signing(_)
+        | ErrorKind::InvalidKeyFormat
+        | ErrorKind::Provider(_) => HewJwtError::InvalidKey,
+        ErrorKind::InvalidAlgorithmName | ErrorKind::MissingAlgorithm => {
+            HewJwtError::AlgorithmUnsupported
+        }
+        ErrorKind::InvalidSignature | ErrorKind::InvalidAlgorithm => HewJwtError::SignatureInvalid,
+        ErrorKind::ExpiredSignature => HewJwtError::ClaimsExpired,
+        _ => HewJwtError::TokenMalformed,
+    }
+}
+
+unsafe fn encode_impl(
+    payload_json: *const c_char,
+    secret: *const c_char,
+    algo: i32,
+) -> Result<String, HewJwtError> {
+    // SAFETY: `payload_json` is forwarded from the FFI caller under this function's contract.
+    let payload_str = unsafe { input_str(payload_json, HewJwtError::TokenMalformed) }?;
+    // SAFETY: `secret` is forwarded from the FFI caller under this function's contract.
+    let secret_str = unsafe { input_str(secret, HewJwtError::InvalidKey) }?;
+    let algorithm = algo_from_i32(algo).ok_or(HewJwtError::AlgorithmUnsupported)?;
+    let claims: serde_json::Value =
+        serde_json::from_str(payload_str).map_err(|_| HewJwtError::TokenMalformed)?;
+
+    jsonwebtoken::encode(
+        &Header::new(algorithm),
+        &claims,
+        &EncodingKey::from_secret(secret_str.as_bytes()),
+    )
+    .map_err(|err| classify_jwt_error(err.kind()))
+}
+
+unsafe fn decode_impl(
+    token: *const c_char,
+    secret: *const c_char,
+    algo: i32,
+) -> Result<String, HewJwtError> {
+    // SAFETY: `token` is forwarded from the FFI caller under this function's contract.
+    let token_str = unsafe { input_str(token, HewJwtError::TokenMalformed) }?;
+    // SAFETY: `secret` is forwarded from the FFI caller under this function's contract.
+    let secret_str = unsafe { input_str(secret, HewJwtError::InvalidKey) }?;
+    let algorithm = algo_from_i32(algo).ok_or(HewJwtError::AlgorithmUnsupported)?;
+
+    let key = DecodingKey::from_secret(secret_str.as_bytes());
+    let mut validation = Validation::new(algorithm);
+    validation.required_spec_claims.clear();
+    let data = jsonwebtoken::decode::<serde_json::Value>(token_str, &key, &validation)
+        .map_err(|err| classify_jwt_error(err.kind()))?;
+    serde_json::to_string(&data.claims).map_err(|_| HewJwtError::TokenMalformed)
+}
+
+fn malloc_or_allocation_failure(s: &str) -> Result<*mut c_char, HewJwtError> {
+    let ptr = jwt_str_to_malloc(s);
+    if ptr.is_null() {
+        Err(HewJwtError::AllocationFailure)
+    } else {
+        Ok(ptr)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // C ABI exports
 // ---------------------------------------------------------------------------
+
+/// Return the last JWT error observed through the Hew compatibility wrappers.
+#[no_mangle]
+pub extern "C" fn hew_jwt_last_error_code() -> i32 {
+    last_jwt_error() as i32
+}
 
 /// Create a signed JWT from a JSON payload string.
 ///
@@ -37,70 +182,114 @@ fn algo_from_i32(algo: i32) -> Option<Algorithm> {
 /// selects the HMAC algorithm: 0 = HS256, 1 = HS384, 2 = HS512.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated JWT string, or null on error.
-/// The caller must free the returned string with [`hew_jwt_free`].
+/// On failure, writes a discriminator to `err_out` when non-null. The caller
+/// must free the returned string with [`hew_jwt_free`].
 ///
 /// # Safety
 ///
-/// `payload_json` and `secret` must be valid NUL-terminated C strings.
+/// `payload_json`, `secret`, and `err_out` (when non-null) must be valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_jwt_encode(
     payload_json: *const c_char,
     secret: *const c_char,
     algo: i32,
+    err_out: *mut HewJwtError,
 ) -> *mut c_char {
-    let encode_inner = || -> Option<String> {
-        // SAFETY: Caller guarantees valid NUL-terminated C strings.
-        let payload_str = unsafe { cstr_to_str(payload_json) }?;
-        // SAFETY: Caller guarantees valid NUL-terminated C strings.
-        let secret_str = unsafe { cstr_to_str(secret) }?;
-        let algorithm = algo_from_i32(algo)?;
+    // SAFETY: `err_out` is an optional caller-provided out-pointer.
+    unsafe { write_err_out(err_out, HewJwtError::None) };
 
-        let claims: serde_json::Value = serde_json::from_str(payload_str).ok()?;
-
-        let header = Header::new(algorithm);
-        let key = EncodingKey::from_secret(secret_str.as_bytes());
-        jsonwebtoken::encode(&header, &claims, &key).ok()
-    };
-
-    match encode_inner() {
-        Some(token) => str_to_malloc(&token),
-        None => std::ptr::null_mut(),
+    // SAFETY: arguments satisfy this function's FFI contract.
+    match unsafe { encode_impl(payload_json, secret, algo) } {
+        Ok(token) => match malloc_or_allocation_failure(&token) {
+            Ok(ptr) => ptr,
+            Err(err) => {
+                // SAFETY: `err_out` is an optional caller-provided out-pointer.
+                unsafe { write_err_out(err_out, err) };
+                std::ptr::null_mut()
+            }
+        },
+        Err(err) => {
+            // SAFETY: `err_out` is an optional caller-provided out-pointer.
+            unsafe { write_err_out(err_out, err) };
+            std::ptr::null_mut()
+        }
     }
+}
+
+/// Hew-facing compatibility wrapper for [`hew_jwt_encode`].
+///
+/// # Safety
+///
+/// `payload_json` and `secret` must be valid NUL-terminated C strings when
+/// non-null, matching [`hew_jwt_encode`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_jwt_encode_hew(
+    payload_json: *const c_char,
+    secret: *const c_char,
+    algo: i32,
+) -> *mut c_char {
+    let mut err = HewJwtError::None;
+    // SAFETY: arguments satisfy the contract inherited from `hew_jwt_encode`.
+    let result = unsafe { hew_jwt_encode(payload_json, secret, algo, &raw mut err) };
+    set_last_jwt_error(err);
+    result
 }
 
 /// Decode and validate a JWT, returning the payload as a JSON string.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated JSON string, or null if the
-/// token is invalid or expired. The caller must free the returned string with
+/// token is invalid or expired. On failure, writes a discriminator to `err_out`
+/// when non-null. The caller must free the returned string with
 /// [`hew_jwt_free`].
 ///
 /// # Safety
 ///
-/// `token` and `secret` must be valid NUL-terminated C strings.
+/// `token`, `secret`, and `err_out` (when non-null) must be valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_jwt_decode(
     token: *const c_char,
     secret: *const c_char,
     algo: i32,
+    err_out: *mut HewJwtError,
 ) -> *mut c_char {
-    let decode_inner = || -> Option<String> {
-        // SAFETY: Caller guarantees valid NUL-terminated C strings.
-        let token_str = unsafe { cstr_to_str(token) }?;
-        // SAFETY: Caller guarantees valid NUL-terminated C strings.
-        let secret_str = unsafe { cstr_to_str(secret) }?;
-        let algorithm = algo_from_i32(algo)?;
+    // SAFETY: `err_out` is an optional caller-provided out-pointer.
+    unsafe { write_err_out(err_out, HewJwtError::None) };
 
-        let key = DecodingKey::from_secret(secret_str.as_bytes());
-        let mut validation = Validation::new(algorithm);
-        validation.required_spec_claims.clear();
-        let data = jsonwebtoken::decode::<serde_json::Value>(token_str, &key, &validation).ok()?;
-        serde_json::to_string(&data.claims).ok()
-    };
-
-    match decode_inner() {
-        Some(json) => str_to_malloc(&json),
-        None => std::ptr::null_mut(),
+    // SAFETY: arguments satisfy this function's FFI contract.
+    match unsafe { decode_impl(token, secret, algo) } {
+        Ok(json) => match malloc_or_allocation_failure(&json) {
+            Ok(ptr) => ptr,
+            Err(err) => {
+                // SAFETY: `err_out` is an optional caller-provided out-pointer.
+                unsafe { write_err_out(err_out, err) };
+                std::ptr::null_mut()
+            }
+        },
+        Err(err) => {
+            // SAFETY: `err_out` is an optional caller-provided out-pointer.
+            unsafe { write_err_out(err_out, err) };
+            std::ptr::null_mut()
+        }
     }
+}
+
+/// Hew-facing compatibility wrapper for [`hew_jwt_decode`].
+///
+/// # Safety
+///
+/// `token` and `secret` must be valid NUL-terminated C strings when non-null,
+/// matching [`hew_jwt_decode`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_jwt_decode_hew(
+    token: *const c_char,
+    secret: *const c_char,
+    algo: i32,
+) -> *mut c_char {
+    let mut err = HewJwtError::None;
+    // SAFETY: arguments satisfy the contract inherited from `hew_jwt_decode`.
+    let result = unsafe { hew_jwt_decode(token, secret, algo, &raw mut err) };
+    set_last_jwt_error(err);
+    result
 }
 
 /// Decode a JWT without signature verification (for inspection only).
@@ -125,7 +314,7 @@ pub unsafe extern "C" fn hew_jwt_decode_insecure(token: *const c_char) -> *mut c
     };
 
     match decode_inner() {
-        Some(json) => str_to_malloc(&json),
+        Some(json) => jwt_str_to_malloc(&json),
         None => std::ptr::null_mut(),
     }
 }
@@ -197,6 +386,21 @@ mod tests {
     use super::*;
     use std::ffi::{CStr, CString};
 
+    struct AllocationFailureGuard;
+
+    impl AllocationFailureGuard {
+        fn after(successes_before_failure: usize) -> Self {
+            fail_jwt_allocations_after(successes_before_failure);
+            Self
+        }
+    }
+
+    impl Drop for AllocationFailureGuard {
+        fn drop(&mut self) {
+            reset_jwt_allocation_failures();
+        }
+    }
+
     /// Helper: read a C string pointer and free it.
     unsafe fn read_and_free(ptr: *mut c_char) -> String {
         assert!(!ptr.is_null(), "expected non-null C string");
@@ -207,23 +411,124 @@ mod tests {
         s
     }
 
+    unsafe fn encode_err(
+        payload: *const c_char,
+        secret: *const c_char,
+        algo: i32,
+    ) -> (*mut c_char, HewJwtError) {
+        let mut err = HewJwtError::AllocationFailure;
+        // SAFETY: test helpers pass valid arguments for the selected scenario.
+        let ptr = unsafe { hew_jwt_encode(payload, secret, algo, &raw mut err) };
+        (ptr, err)
+    }
+
+    unsafe fn decode_err(
+        token: *const c_char,
+        secret: *const c_char,
+        algo: i32,
+    ) -> (*mut c_char, HewJwtError) {
+        let mut err = HewJwtError::AllocationFailure;
+        // SAFETY: test helpers pass valid arguments for the selected scenario.
+        let ptr = unsafe { hew_jwt_decode(token, secret, algo, &raw mut err) };
+        (ptr, err)
+    }
+
+    fn valid_payload() -> CString {
+        CString::new(r#"{"sub":"user1","role":"admin"}"#).unwrap()
+    }
+
+    fn valid_secret() -> CString {
+        CString::new("test-secret-key").unwrap()
+    }
+
+    fn mint_token(payload: &CString, secret: &CString, algo: i32) -> String {
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (token_ptr, err) = encode_err(payload.as_ptr(), secret.as_ptr(), algo);
+            assert_eq!(err, HewJwtError::None);
+            read_and_free(token_ptr)
+        }
+    }
+
     #[test]
-    fn encode_decode_roundtrip() {
-        let payload = CString::new(r#"{"sub":"user1","role":"admin"}"#).unwrap();
-        let secret = CString::new("test-secret-key").unwrap();
+    fn encode_success_sets_none() {
+        let payload = valid_payload();
+        let secret = valid_secret();
 
         // SAFETY: CStrings are valid NUL-terminated C strings.
         unsafe {
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
-            assert!(!token_ptr.is_null());
+            let (token_ptr, err) = encode_err(payload.as_ptr(), secret.as_ptr(), 0);
+            assert_eq!(err, HewJwtError::None);
             let token = read_and_free(token_ptr);
-            assert!(token.contains('.'), "JWT should contain dots");
+            assert!(token.contains('.'));
+        }
+    }
 
-            // Re-encode to get a pointer for decode
-            let token_c = CString::new(token).unwrap();
-            let decoded_ptr = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 0);
+    #[test]
+    fn encode_reports_algorithm_unsupported() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (token_ptr, err) = encode_err(payload.as_ptr(), secret.as_ptr(), 99);
+            assert!(token_ptr.is_null());
+            assert_eq!(err, HewJwtError::AlgorithmUnsupported);
+        }
+    }
+
+    #[test]
+    fn encode_reports_invalid_key_for_bad_secret_utf8() {
+        let payload = valid_payload();
+        let bad_secret = CString::new(vec![0xff]).unwrap();
+
+        // SAFETY: pointers are valid NUL-terminated byte sequences.
+        unsafe {
+            let (token_ptr, err) = encode_err(payload.as_ptr(), bad_secret.as_ptr(), 0);
+            assert!(token_ptr.is_null());
+            assert_eq!(err, HewJwtError::InvalidKey);
+        }
+    }
+
+    #[test]
+    fn encode_reports_token_malformed_for_bad_payload() {
+        let secret = valid_secret();
+        let bad_payload = CString::new("not valid json").unwrap();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (token_ptr, err) = encode_err(bad_payload.as_ptr(), secret.as_ptr(), 0);
+            assert!(token_ptr.is_null());
+            assert_eq!(err, HewJwtError::TokenMalformed);
+        }
+    }
+
+    #[test]
+    fn encode_reports_allocation_failure() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        let _guard = AllocationFailureGuard::after(0);
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (token_ptr, err) = encode_err(payload.as_ptr(), secret.as_ptr(), 0);
+            assert!(token_ptr.is_null());
+            assert_eq!(err, HewJwtError::AllocationFailure);
+        }
+    }
+
+    #[test]
+    fn decode_success_sets_none() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        let token = mint_token(&payload, &secret, 0);
+        let token_c = CString::new(token).unwrap();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (decoded_ptr, err) = decode_err(token_c.as_ptr(), secret.as_ptr(), 0);
+            assert_eq!(err, HewJwtError::None);
             let decoded = read_and_free(decoded_ptr);
-
             let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
             assert_eq!(claims["sub"], "user1");
             assert_eq!(claims["role"], "admin");
@@ -231,42 +536,110 @@ mod tests {
     }
 
     #[test]
-    fn invalid_token_returns_null() {
-        let bad_token = CString::new("not.a.valid.jwt").unwrap();
-        let secret = CString::new("secret").unwrap();
+    fn decode_reports_algorithm_unsupported() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        let token = mint_token(&payload, &secret, 0);
+        let token_c = CString::new(token).unwrap();
 
         // SAFETY: CStrings are valid NUL-terminated C strings.
         unsafe {
-            let result = hew_jwt_decode(bad_token.as_ptr(), secret.as_ptr(), 0);
-            assert!(result.is_null());
-
-            let status = hew_jwt_validate(bad_token.as_ptr(), secret.as_ptr(), 0);
-            assert_eq!(status, 0);
+            let (decoded_ptr, err) = decode_err(token_c.as_ptr(), secret.as_ptr(), 99);
+            assert!(decoded_ptr.is_null());
+            assert_eq!(err, HewJwtError::AlgorithmUnsupported);
         }
     }
 
     #[test]
-    fn expired_token_detected() {
-        // Create a token with an `exp` claim in the past.
-        let payload = CString::new(r#"{"sub":"user1","exp":1}"#).unwrap();
-        let secret = CString::new("secret").unwrap();
+    fn decode_reports_invalid_key_for_null_secret() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        let token = mint_token(&payload, &secret, 0);
+        let token_c = CString::new(token).unwrap();
+
+        // SAFETY: null secret is explicitly classified.
+        unsafe {
+            let (decoded_ptr, err) = decode_err(token_c.as_ptr(), std::ptr::null(), 0);
+            assert!(decoded_ptr.is_null());
+            assert_eq!(err, HewJwtError::InvalidKey);
+        }
+    }
+
+    #[test]
+    fn decode_reports_token_malformed_for_bad_token_utf8() {
+        let secret = valid_secret();
+        let bad_token = CString::new(vec![0xff]).unwrap();
+
+        // SAFETY: pointers are valid NUL-terminated byte sequences.
+        unsafe {
+            let (decoded_ptr, err) = decode_err(bad_token.as_ptr(), secret.as_ptr(), 0);
+            assert!(decoded_ptr.is_null());
+            assert_eq!(err, HewJwtError::TokenMalformed);
+        }
+    }
+
+    #[test]
+    fn decode_reports_signature_invalid_for_wrong_secret() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        let wrong_secret = CString::new("wrong-secret").unwrap();
+        let token = mint_token(&payload, &secret, 0);
+        let token_c = CString::new(token).unwrap();
 
         // SAFETY: CStrings are valid NUL-terminated C strings.
         unsafe {
-            // Encode with exp validation disabled (encode doesn't check exp).
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
-            assert!(!token_ptr.is_null());
-            let token = read_and_free(token_ptr);
+            let (decoded_ptr, err) = decode_err(token_c.as_ptr(), wrong_secret.as_ptr(), 0);
+            assert!(decoded_ptr.is_null());
+            assert_eq!(err, HewJwtError::SignatureInvalid);
+        }
+    }
 
+    #[test]
+    fn decode_reports_claims_expired() {
+        let payload = CString::new(r#"{"sub":"user1","exp":1}"#).unwrap();
+        let secret = CString::new("secret").unwrap();
+        let token = mint_token(&payload, &secret, 0);
+        let token_c = CString::new(token).unwrap();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (decoded_ptr, err) = decode_err(token_c.as_ptr(), secret.as_ptr(), 0);
+            assert!(decoded_ptr.is_null());
+            assert_eq!(err, HewJwtError::ClaimsExpired);
+        }
+    }
+
+    #[test]
+    fn decode_reports_allocation_failure() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        let token = mint_token(&payload, &secret, 0);
+        let token_c = CString::new(token).unwrap();
+        let _guard = AllocationFailureGuard::after(0);
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let (decoded_ptr, err) = decode_err(token_c.as_ptr(), secret.as_ptr(), 0);
+            assert!(decoded_ptr.is_null());
+            assert_eq!(err, HewJwtError::AllocationFailure);
+        }
+    }
+
+    #[test]
+    fn hew_wrappers_track_last_error_code() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+
+        // SAFETY: CStrings are valid NUL-terminated C strings.
+        unsafe {
+            let token_ptr = hew_jwt_encode_hew(payload.as_ptr(), secret.as_ptr(), 0);
+            assert_eq!(hew_jwt_last_error_code(), HewJwtError::None as i32);
+            let token = read_and_free(token_ptr);
             let token_c = CString::new(token).unwrap();
 
-            // Decode should fail (expired).
-            let decoded = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 0);
-            assert!(decoded.is_null());
-
-            // Validate should return -1 (expired).
-            let status = hew_jwt_validate(token_c.as_ptr(), secret.as_ptr(), 0);
-            assert_eq!(status, -1);
+            let decoded_ptr = hew_jwt_decode_hew(token_c.as_ptr(), std::ptr::null(), 0);
+            assert!(decoded_ptr.is_null());
+            assert_eq!(hew_jwt_last_error_code(), HewJwtError::InvalidKey as i32);
         }
     }
 
@@ -274,19 +647,13 @@ mod tests {
     fn insecure_decode_skips_verification() {
         let payload = CString::new(r#"{"sub":"user1","data":"hello"}"#).unwrap();
         let secret = CString::new("secret").unwrap();
+        let token = mint_token(&payload, &secret, 0);
+        let token_c = CString::new(token).unwrap();
 
         // SAFETY: CStrings are valid NUL-terminated C strings.
         unsafe {
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
-            assert!(!token_ptr.is_null());
-            let token = read_and_free(token_ptr);
-
-            let token_c = CString::new(token).unwrap();
-
-            // Insecure decode should succeed without the secret.
             let decoded_ptr = hew_jwt_decode_insecure(token_c.as_ptr());
             let decoded = read_and_free(decoded_ptr);
-
             let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
             assert_eq!(claims["sub"], "user1");
             assert_eq!(claims["data"], "hello");
@@ -294,113 +661,29 @@ mod tests {
     }
 
     #[test]
-    fn algorithm_selection() {
-        let payload = CString::new(r#"{"sub":"user1"}"#).unwrap();
-        let secret = CString::new("test-key").unwrap();
+    fn validate_distinguishes_valid_invalid_and_expired() {
+        let payload = valid_payload();
+        let secret = valid_secret();
+        let wrong_secret = CString::new("wrong-secret").unwrap();
+        let token = mint_token(&payload, &secret, 0);
+        let token_c = CString::new(token).unwrap();
+
+        let expired_payload = CString::new(r#"{"sub":"user1","exp":1}"#).unwrap();
+        let expired_secret = CString::new("secret").unwrap();
+        let expired_token = mint_token(&expired_payload, &expired_secret, 0);
+        let expired_token_c = CString::new(expired_token).unwrap();
 
         // SAFETY: CStrings are valid NUL-terminated C strings.
         unsafe {
-            // HS256 (algo=0)
-            let t0 = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
-            assert!(!t0.is_null());
-            let tok0 = read_and_free(t0);
-
-            // HS384 (algo=1)
-            let t1 = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 1);
-            assert!(!t1.is_null());
-            let tok1 = read_and_free(t1);
-
-            // HS512 (algo=2)
-            let t2 = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 2);
-            assert!(!t2.is_null());
-            let tok2 = read_and_free(t2);
-
-            // Tokens should differ (different algorithms produce different signatures).
-            assert_ne!(tok0, tok1);
-            assert_ne!(tok1, tok2);
-
-            // Each token should decode with its matching algorithm.
-            let c0 = CString::new(tok0.clone()).unwrap();
-            let c1 = CString::new(tok1.clone()).unwrap();
-            let c2 = CString::new(tok2).unwrap();
-
-            assert_eq!(hew_jwt_validate(c0.as_ptr(), secret.as_ptr(), 0), 1);
-            assert_eq!(hew_jwt_validate(c1.as_ptr(), secret.as_ptr(), 1), 1);
-            assert_eq!(hew_jwt_validate(c2.as_ptr(), secret.as_ptr(), 2), 1);
-
-            // Wrong algorithm should fail.
-            assert_eq!(hew_jwt_validate(c0.as_ptr(), secret.as_ptr(), 1), 0);
-            assert_eq!(hew_jwt_validate(c1.as_ptr(), secret.as_ptr(), 0), 0);
-        }
-    }
-
-    #[test]
-    fn null_inputs_handled() {
-        // SAFETY: Null pointers are explicitly handled by all functions.
-        unsafe {
-            assert!(hew_jwt_encode(std::ptr::null(), std::ptr::null(), 0).is_null());
-            assert!(hew_jwt_decode(std::ptr::null(), std::ptr::null(), 0).is_null());
-            assert!(hew_jwt_decode_insecure(std::ptr::null()).is_null());
-            assert_eq!(hew_jwt_validate(std::ptr::null(), std::ptr::null(), 0), -2);
-
-            // Invalid algorithm.
-            let p = CString::new(r#"{"sub":"x"}"#).unwrap();
-            let s = CString::new("secret").unwrap();
-            assert!(hew_jwt_encode(p.as_ptr(), s.as_ptr(), 99).is_null());
-            assert_eq!(hew_jwt_validate(p.as_ptr(), s.as_ptr(), 99), -2);
-        }
-    }
-
-    #[test]
-    fn wrong_secret_fails_validation() {
-        let payload = CString::new(r#"{"sub":"user1"}"#).unwrap();
-        let secret = CString::new("correct-secret").unwrap();
-        let wrong = CString::new("wrong-secret").unwrap();
-
-        // SAFETY: CStrings are valid NUL-terminated C strings.
-        unsafe {
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
-            assert!(!token_ptr.is_null());
-            let token = read_and_free(token_ptr);
-            let token_c = CString::new(token).unwrap();
-
-            // Validate with wrong secret should fail.
-            assert_eq!(hew_jwt_validate(token_c.as_ptr(), wrong.as_ptr(), 0), 0);
-
-            // Decode with wrong secret should return null.
-            assert!(hew_jwt_decode(token_c.as_ptr(), wrong.as_ptr(), 0).is_null());
-        }
-    }
-
-    #[test]
-    fn malformed_json_payload_returns_null() {
-        let payload = CString::new("not valid json").unwrap();
-        let secret = CString::new("secret").unwrap();
-
-        // SAFETY: CStrings are valid NUL-terminated C strings.
-        unsafe {
-            let result = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
-            assert!(result.is_null(), "non-JSON payload must return null");
-        }
-    }
-
-    #[test]
-    fn empty_json_object_encodes_and_decodes() {
-        let payload = CString::new("{}").unwrap();
-        let secret = CString::new("secret").unwrap();
-
-        // SAFETY: CStrings are valid NUL-terminated C strings.
-        unsafe {
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
-            assert!(!token_ptr.is_null());
-            let token = read_and_free(token_ptr);
-
-            let token_c = CString::new(token).unwrap();
-            let decoded_ptr = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 0);
-            let decoded = read_and_free(decoded_ptr);
-
-            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
-            assert!(claims.as_object().unwrap().is_empty());
+            assert_eq!(hew_jwt_validate(token_c.as_ptr(), secret.as_ptr(), 0), 1);
+            assert_eq!(
+                hew_jwt_validate(token_c.as_ptr(), wrong_secret.as_ptr(), 0),
+                0
+            );
+            assert_eq!(
+                hew_jwt_validate(expired_token_c.as_ptr(), expired_secret.as_ptr(), 0),
+                -1
+            );
         }
     }
 
@@ -408,126 +691,5 @@ mod tests {
     fn free_null_is_noop() {
         // SAFETY: null is explicitly handled.
         unsafe { hew_jwt_free(std::ptr::null_mut()) };
-    }
-
-    #[test]
-    fn insecure_decode_malformed_returns_null() {
-        let bad = CString::new("definitely-not-a-jwt").unwrap();
-        // SAFETY: CString is valid.
-        unsafe {
-            assert!(hew_jwt_decode_insecure(bad.as_ptr()).is_null());
-        }
-    }
-
-    #[test]
-    fn validate_null_token_valid_secret_returns_error() {
-        let secret = CString::new("secret").unwrap();
-        // SAFETY: null token is explicitly handled.
-        unsafe {
-            assert_eq!(hew_jwt_validate(std::ptr::null(), secret.as_ptr(), 0), -2);
-        }
-    }
-
-    #[test]
-    fn validate_valid_token_null_secret_returns_error() {
-        let payload = CString::new(r#"{"sub":"x"}"#).unwrap();
-        let secret = CString::new("secret").unwrap();
-        // SAFETY: CStrings are valid.
-        unsafe {
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
-            assert!(!token_ptr.is_null());
-            let token = read_and_free(token_ptr);
-            let token_c = CString::new(token).unwrap();
-            assert_eq!(hew_jwt_validate(token_c.as_ptr(), std::ptr::null(), 0), -2);
-        }
-    }
-
-    /// HS384 encode/decode roundtrip preserves claims.
-    #[test]
-    fn hs384_roundtrip() {
-        let payload = CString::new(r#"{"sub":"user1","scope":"read"}"#).unwrap();
-        let secret = CString::new("hs384-secret").unwrap();
-
-        // SAFETY: CStrings are valid.
-        unsafe {
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 1);
-            assert!(!token_ptr.is_null());
-            let token = read_and_free(token_ptr);
-
-            let token_c = CString::new(token).unwrap();
-            let decoded_ptr = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 1);
-            let decoded = read_and_free(decoded_ptr);
-
-            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
-            assert_eq!(claims["sub"], "user1");
-            assert_eq!(claims["scope"], "read");
-        }
-    }
-
-    /// HS512 encode/decode roundtrip preserves claims.
-    #[test]
-    fn hs512_roundtrip() {
-        let payload = CString::new(r#"{"iss":"hew","tier":"premium"}"#).unwrap();
-        let secret = CString::new("hs512-secret-key").unwrap();
-
-        // SAFETY: CStrings are valid.
-        unsafe {
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 2);
-            assert!(!token_ptr.is_null());
-            let token = read_and_free(token_ptr);
-
-            let token_c = CString::new(token).unwrap();
-            let decoded_ptr = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 2);
-            let decoded = read_and_free(decoded_ptr);
-
-            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
-            assert_eq!(claims["iss"], "hew");
-            assert_eq!(claims["tier"], "premium");
-        }
-    }
-
-    /// Decoding with the wrong algorithm returns null.
-    #[test]
-    fn wrong_algorithm_decode_returns_null() {
-        let payload = CString::new(r#"{"sub":"user1"}"#).unwrap();
-        let secret = CString::new("secret").unwrap();
-
-        // SAFETY: CStrings are valid.
-        unsafe {
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0); // HS256
-            assert!(!token_ptr.is_null());
-            let token = read_and_free(token_ptr);
-            let token_c = CString::new(token).unwrap();
-
-            // Decode with HS384 — must return null, not silently succeed.
-            assert!(
-                hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 1).is_null(),
-                "decoding HS256 token with HS384 must fail"
-            );
-        }
-    }
-
-    /// A token with nested JSON claims roundtrips correctly.
-    #[test]
-    fn complex_claims_roundtrip() {
-        let payload =
-            CString::new(r#"{"sub":"user1","roles":["admin","editor"],"meta":{"org":"hew"}}"#)
-                .unwrap();
-        let secret = CString::new("complex-secret").unwrap();
-
-        // SAFETY: CStrings are valid.
-        unsafe {
-            let token_ptr = hew_jwt_encode(payload.as_ptr(), secret.as_ptr(), 0);
-            assert!(!token_ptr.is_null());
-            let token = read_and_free(token_ptr);
-
-            let token_c = CString::new(token).unwrap();
-            let decoded_ptr = hew_jwt_decode(token_c.as_ptr(), secret.as_ptr(), 0);
-            let decoded = read_and_free(decoded_ptr);
-
-            let claims: serde_json::Value = serde_json::from_str(&decoded).unwrap();
-            assert_eq!(claims["roles"][0], "admin");
-            assert_eq!(claims["meta"]["org"], "hew");
-        }
     }
 }

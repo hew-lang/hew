@@ -1,6 +1,6 @@
 //! JSON Web Token encoding and validation.
 //!
-//! Encode, decode, and validate JWTs using HMAC or RSA algorithms.
+//! Encode, decode, and validate JWTs using HMAC algorithms.
 //!
 //! # Examples
 //!
@@ -8,13 +8,49 @@
 //! import std::crypto::jwt;
 //!
 //! fn main() {
-//!     let token = jwt.encode("{\"sub\":\"1234\"}", "secret", "HS256");
-//!     if jwt.validate(token, "secret", "HS256") {
-//!         let payload = jwt.decode(token, "secret", "HS256");
-//!         println(payload);
+//!     match jwt.try_encode("{\"sub\":\"1234\"}", "secret", "HS256") {
+//!         Ok(token) => println(token),
+//!         Err(err) => println(jwt.error_message(err)),
 //!     }
 //! }
 //! ```
+
+/// Structured JWT errors surfaced by the native C ABI.
+pub enum JwtError {
+    None;
+    AlgorithmUnsupported;
+    InvalidKey;
+    TokenMalformed;
+    SignatureInvalid;
+    ClaimsExpired;
+    AllocationFailure;
+}
+
+fn jwt_error_from_i32(code: i32) -> JwtError { // INTERNAL-ABI: C ABI error tag is i32 repr(C)
+    match code {
+        0 => JwtError::None,
+        1 => JwtError::AlgorithmUnsupported,
+        2 => JwtError::InvalidKey,
+        3 => JwtError::TokenMalformed,
+        4 => JwtError::SignatureInvalid,
+        5 => JwtError::ClaimsExpired,
+        6 => JwtError::AllocationFailure,
+        _ => JwtError::TokenMalformed,
+    }
+}
+
+/// Return a human-readable message for a [`JwtError`].
+pub fn error_message(err: JwtError) -> String {
+    match err {
+        JwtError::None => "no error",
+        JwtError::AlgorithmUnsupported => "JWT algorithm is not supported",
+        JwtError::InvalidKey => "JWT key input is invalid",
+        JwtError::TokenMalformed => "JWT payload or token is malformed",
+        JwtError::SignatureInvalid => "JWT signature verification failed",
+        JwtError::ClaimsExpired => "JWT claims have expired",
+        JwtError::AllocationFailure => "JWT native allocation failed",
+    }
+}
 
 // ── Algorithm mapping (pure Hew) ─────────────────────────────────────
 
@@ -28,30 +64,62 @@ fn algo_to_i32(algorithm: String) -> i32 { // INTERNAL-ABI: C ABI algorithm code
     }
 }
 
+/// Return the last JWT error observed on this thread.
+pub fn last_error() -> JwtError {
+    jwt_error_from_i32(unsafe { hew_jwt_last_error_code() })
+}
+
 /// Encode a JSON payload into a signed JWT string.
 ///
-/// # Examples
-///
-/// ```
-/// let token = jwt.encode("{\"sub\":\"user1\"}", "my_secret", "HS256");
-/// ```
-pub fn encode(payload: String, secret: String, algorithm: String) -> String {
+/// Returns `Err(JwtError)` when the payload, key, algorithm, or allocation
+/// path fails.
+pub fn try_encode(payload: String, secret: String, algorithm: String) -> Result<String, JwtError> {
     let algo = algo_to_i32(algorithm);
-    unsafe { hew_jwt_encode(payload, secret, algo) }
+    let token = unsafe { hew_jwt_encode_hew(payload, secret, algo) };
+    match last_error() {
+        JwtError::None => Ok(token),
+        err => Err(err),
+    }
+}
+
+/// Encode a JSON payload into a signed JWT string.
+///
+/// Panics on invalid input or verification setup errors. Use `try_encode` for
+/// structured error handling.
+pub fn encode(payload: String, secret: String, algorithm: String) -> String {
+    match try_encode(payload, secret, algorithm) {
+        Ok(token) => token,
+        Err(err) => {
+            panic(f"jwt.encode failed: {error_message(err)}");
+            ""
+        },
+    }
 }
 
 /// Decode and verify a JWT, returning its payload as a JSON string.
 ///
-/// Panics if the token signature is invalid.
-///
-/// # Examples
-///
-/// ```
-/// let payload = jwt.decode(token, "my_secret", "HS256");
-/// ```
-pub fn decode(token: String, secret: String, algorithm: String) -> String {
+/// Returns `Err(JwtError)` when the token is malformed, expired, signed with a
+/// different key, or cannot be allocated.
+pub fn try_decode(token: String, secret: String, algorithm: String) -> Result<String, JwtError> {
     let algo = algo_to_i32(algorithm);
-    unsafe { hew_jwt_decode(token, secret, algo) }
+    let payload = unsafe { hew_jwt_decode_hew(token, secret, algo) };
+    match last_error() {
+        JwtError::None => Ok(payload),
+        err => Err(err),
+    }
+}
+
+/// Decode and verify a JWT, returning its payload as a JSON string.
+///
+/// Panics on invalid tokens. Use `try_decode` for structured error handling.
+pub fn decode(token: String, secret: String, algorithm: String) -> String {
+    match try_decode(token, secret, algorithm) {
+        Ok(payload) => payload,
+        Err(err) => {
+            panic(f"jwt.decode failed: {error_message(err)}");
+            ""
+        },
+    }
 }
 
 /// Decode a JWT without verifying its signature.
@@ -87,8 +155,9 @@ pub fn validate(token: String, secret: String, algorithm: String) -> bool {
 // ── FFI bindings ──────────────────────────────────────────────────────
 
 extern "C" {
-    fn hew_jwt_encode(payload: String, secret: String, algorithm: i32) -> String;
-    fn hew_jwt_decode(token: String, secret: String, algorithm: i32) -> String;
+    fn hew_jwt_encode_hew(payload: String, secret: String, algorithm: i32) -> String;
+    fn hew_jwt_decode_hew(token: String, secret: String, algorithm: i32) -> String;
+    fn hew_jwt_last_error_code() -> i32;
     fn hew_jwt_decode_insecure(token: String) -> String;
     fn hew_jwt_validate(token: String, secret: String, algorithm: i32) -> i32;
 }

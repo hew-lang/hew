@@ -1,0 +1,39 @@
+trait Speak {
+    fn say(item: Self) -> string;
+}
+
+type Dog {
+    name: string;
+}
+
+impl Speak for Dog {
+    fn say(item: Dog) -> string {
+        item.name
+    }
+}
+
+type Kennel {
+    resident: dyn Speak;
+}
+
+fn make_dyn() -> dyn Speak {
+    Dog { name: "return" }
+}
+
+fn print_say(item: dyn Speak) {
+    println(item.say());
+}
+
+fn main() {
+    let from_let: dyn Speak = Dog { name: "let" };
+    print_say(from_let);
+
+    let from_field = Kennel { resident: Dog { name: "field" } };
+    print_say(from_field.resident);
+
+    let from_return = make_dyn();
+    print_say(from_return);
+
+    let from_array: [dyn Speak; 1] = [Dog { name: "array" }];
+    print_say(from_array[0]);
+}

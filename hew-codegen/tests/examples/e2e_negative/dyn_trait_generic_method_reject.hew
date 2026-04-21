@@ -1,0 +1,38 @@
+// WASM-TODO: rejection is raised in MLIRGen before backend lowering, so this
+// negative check is backend-agnostic and does not require a wasm-specific case.
+trait Transform {
+    fn apply<U>(item: Self, f: fn(int) -> U) -> U;
+}
+
+trait Label {
+    fn text(item: Self) -> string;
+}
+
+type Holder {
+    value: int;
+}
+
+impl Transform for Holder {
+    fn apply<U>(item: Holder, f: fn(int) -> U) -> U {
+        f(item.value)
+    }
+}
+
+impl Label for Holder {
+    fn text(item: Holder) -> string {
+        "holder"
+    }
+}
+
+fn double(x: int) -> int {
+    x * 2
+}
+
+fn run(item: dyn (Transform + Label)) {
+    println(item.apply(double));
+}
+
+fn main() {
+    let holder = Holder { value: 21 };
+    run(holder);
+}

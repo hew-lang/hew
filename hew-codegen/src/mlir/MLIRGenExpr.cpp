@@ -1707,7 +1707,15 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
               if (dispIt != traitDispatchRegistry.end()) {
                 for (const auto &impl : dispIt->second.impls) {
                   if (impl.typeName == structName) {
-                    val = coerceToDynTrait(val, structName, traitName, location);
+                    bool rejectGenericMethods = false;
+                    if (callee) {
+                      if (auto attr = mlir::dyn_cast_or_null<mlir::BoolAttr>(
+                              callee.getArgAttr(i, "hew.explicit_dyn_param"))) {
+                        rejectGenericMethods = attr.getValue();
+                      }
+                    }
+                    val = coerceToDynTrait(val, structName, traitName, location,
+                                           rejectGenericMethods);
                     break;
                   }
                 }

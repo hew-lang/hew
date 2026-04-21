@@ -1299,7 +1299,7 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
       if (identStruct.isIdentified()) {
         std::string structName = identStruct.getName().str();
         std::string traitName = traitObjType.getTraitName().str();
-        auto result = coerceToDynTrait(value, structName, traitName, location);
+        auto result = coerceToDynTrait(value, structName, traitName, location, true);
         if (result)
           return result;
       }
@@ -1550,6 +1550,27 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
 
   // [T; N] → Vec<T> coercion: create Vec, push each array element
   if (auto arrayType = mlir::dyn_cast<hew::HewArrayType>(value.getType())) {
+    if (auto dstArrayType = mlir::dyn_cast<hew::HewArrayType>(targetType)) {
+      if (arrayType.getSize() == dstArrayType.getSize()) {
+        llvm::SmallVector<mlir::Value, 8> coercedElements;
+        coercedElements.reserve(arrayType.getSize());
+        for (int64_t i = 0; i < arrayType.getSize(); ++i) {
+          auto elem = hew::ArrayExtractOp::create(builder, location, arrayType.getElementType(),
+                                                  value, builder.getI64IntegerAttr(i));
+          auto coerced = coerceType(elem, dstArrayType.getElementType(), location, isUnsigned);
+          if (!coerced)
+            return nullptr;
+          if (coerced.getType() != dstArrayType.getElementType()) {
+            ++errorCount_;
+            emitError(location) << "coerceType: no known conversion from " << coerced.getType()
+                                << " to " << dstArrayType.getElementType();
+            return nullptr;
+          }
+          coercedElements.push_back(coerced);
+        }
+        return hew::ArrayCreateOp::create(builder, location, dstArrayType, coercedElements);
+      }
+    }
     if (auto vecType = mlir::dyn_cast<hew::VecType>(targetType)) {
       auto elemType = vecType.getElementType();
       auto vec = hew::VecNewOp::create(builder, location, vecType).getResult();

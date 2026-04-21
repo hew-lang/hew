@@ -8,12 +8,34 @@
 #[cfg(test)]
 extern crate hew_runtime;
 
-use hew_cabi::cabi::cstr_to_str;
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::cell::RefCell;
 use std::os::raw::c_char;
 
 use lettre::message::{header::ContentType, Mailbox};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
+
+std::thread_local! {
+    static LAST_SMTP_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn set_smtp_last_error(msg: impl Into<String>) {
+    LAST_SMTP_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+}
+
+fn clear_smtp_last_error() {
+    LAST_SMTP_ERROR.with(|error| *error.borrow_mut() = None);
+}
+
+fn get_smtp_last_error() -> String {
+    LAST_SMTP_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+}
+
+fn smtp_error_result(msg: impl Into<String>) -> i32 {
+    set_smtp_last_error(msg);
+    -1
+}
 
 /// Opaque SMTP connection handle.
 ///
@@ -21,6 +43,14 @@ use lettre::{Message, SmtpTransport, Transport};
 /// Must be closed with [`hew_smtp_close`].
 pub struct HewSmtpConn {
     transport: SmtpTransport,
+}
+
+/// Return the last SMTP client error recorded on the current thread.
+///
+/// Returns an empty string when no SMTP client error has been recorded.
+#[no_mangle]
+pub extern "C" fn hew_smtp_last_error() -> *const c_char {
+    str_to_malloc(&get_smtp_last_error()).cast_const()
 }
 
 impl std::fmt::Debug for HewSmtpConn {
@@ -164,7 +194,7 @@ pub unsafe extern "C" fn hew_smtp_connect_tls(
 
 /// Build an email [`Message`] from C string arguments.
 ///
-/// Returns `None` if any pointer is null, contains invalid UTF-8, or the
+/// Returns an error if any pointer is null, contains invalid UTF-8, or the
 /// addresses/message cannot be parsed.
 ///
 /// # Safety
@@ -176,18 +206,42 @@ unsafe fn build_message(
     subject: *const c_char,
     body: *const c_char,
     html: bool,
-) -> Option<Message> {
+) -> Result<Message, String> {
     // SAFETY: from is a valid NUL-terminated C string per caller contract.
-    let from_str = unsafe { cstr_to_str(from) }?;
+    let from_str = unsafe { cstr_to_str(from) }.ok_or_else(|| {
+        "SMTP message build failed: from address is null or invalid UTF-8".to_string()
+    })?;
     // SAFETY: to is a valid NUL-terminated C string per caller contract.
-    let to_str = unsafe { cstr_to_str(to) }?;
+    let to_str = unsafe { cstr_to_str(to) }.ok_or_else(|| {
+        "SMTP message build failed: to address is null or invalid UTF-8".to_string()
+    })?;
     // SAFETY: subject is a valid NUL-terminated C string per caller contract.
-    let subject_str = unsafe { cstr_to_str(subject) }?;
+    let subject_str = unsafe { cstr_to_str(subject) }
+        .ok_or_else(|| "SMTP message build failed: subject is null or invalid UTF-8".to_string())?;
     // SAFETY: body is a valid NUL-terminated C string per caller contract.
-    let body_str = unsafe { cstr_to_str(body) }?;
+    let body_str = unsafe { cstr_to_str(body) }
+        .ok_or_else(|| "SMTP message build failed: body is null or invalid UTF-8".to_string())?;
 
-    let from_mbox: Mailbox = from_str.parse().ok()?;
-    let to_mbox: Mailbox = to_str.parse().ok()?;
+    let from_mbox: Mailbox = match from_str.parse() {
+        Ok(mailbox) => mailbox,
+        Err(err) => {
+            return Err(format!(
+                "SMTP message build failed: could not parse from address `{from_str}`: {err}"
+            ))
+        }
+    };
+    let to_mbox: Mailbox = match to_str.parse() {
+        Ok(mailbox) => mailbox,
+        Err(err) => {
+            return Err(format!(
+                "SMTP message build failed: could not parse to address `{to_str}`: {err}"
+            ))
+        }
+    };
+
+    if subject_str.is_empty() && body_str.is_empty() {
+        return Err("SMTP message build failed: subject and body cannot both be empty".to_string());
+    }
 
     let builder = Message::builder()
         .from(from_mbox)
@@ -198,12 +252,40 @@ unsafe fn build_message(
         builder
             .header(ContentType::TEXT_HTML)
             .body(body_str.to_owned())
-            .ok()
+            .map_err(|err| format!("SMTP HTML message build failed: {err}"))
     } else {
         builder
             .header(ContentType::TEXT_PLAIN)
             .body(body_str.to_owned())
-            .ok()
+            .map_err(|err| format!("SMTP plain-text message build failed: {err}"))
+    }
+}
+
+fn smtp_send_impl(
+    conn: *mut HewSmtpConn,
+    from: *const c_char,
+    to: *const c_char,
+    subject: *const c_char,
+    body: *const c_char,
+    html: bool,
+    send: impl FnOnce(&HewSmtpConn, &Message) -> Result<(), String>,
+) -> i32 {
+    if conn.is_null() {
+        return smtp_error_result("SMTP send failed: connection pointer is null");
+    }
+    // SAFETY: from/to/subject/body are valid NUL-terminated C strings per caller contract.
+    let message = match unsafe { build_message(from, to, subject, body, html) } {
+        Ok(message) => message,
+        Err(err) => return smtp_error_result(err),
+    };
+    // SAFETY: conn is a valid HewSmtpConn pointer per caller contract.
+    let conn = unsafe { &*conn };
+    match send(conn, &message) {
+        Ok(()) => {
+            clear_smtp_last_error();
+            0
+        }
+        Err(err) => smtp_error_result(err),
     }
 }
 
@@ -224,20 +306,12 @@ pub unsafe extern "C" fn hew_smtp_send(
     subject: *const c_char,
     body: *const c_char,
 ) -> i32 {
-    if conn.is_null() {
-        return -1;
-    }
-    // SAFETY: from/to/subject/body are valid NUL-terminated C strings per caller contract.
-    let Some(message) = (unsafe { build_message(from, to, subject, body, false) }) else {
-        return -1;
-    };
-    // SAFETY: conn is a valid HewSmtpConn pointer per caller contract.
-    let conn = unsafe { &*conn };
-    if conn.transport.send(&message).is_ok() {
-        0
-    } else {
-        -1
-    }
+    smtp_send_impl(conn, from, to, subject, body, false, |conn, message| {
+        conn.transport
+            .send(message)
+            .map(|_| ())
+            .map_err(|err| format!("hew_smtp_send: send failed: {err}"))
+    })
 }
 
 /// Send an HTML email.
@@ -257,20 +331,12 @@ pub unsafe extern "C" fn hew_smtp_send_html(
     subject: *const c_char,
     html: *const c_char,
 ) -> i32 {
-    if conn.is_null() {
-        return -1;
-    }
-    // SAFETY: from/to/subject/html are valid NUL-terminated C strings per caller contract.
-    let Some(message) = (unsafe { build_message(from, to, subject, html, true) }) else {
-        return -1;
-    };
-    // SAFETY: conn is a valid HewSmtpConn pointer per caller contract.
-    let conn = unsafe { &*conn };
-    if conn.transport.send(&message).is_ok() {
-        0
-    } else {
-        -1
-    }
+    smtp_send_impl(conn, from, to, subject, html, true, |conn, message| {
+        conn.transport
+            .send(message)
+            .map(|_| ())
+            .map_err(|err| format!("hew_smtp_send_html: send failed: {err}"))
+    })
 }
 
 unsafe fn connect_send_close(
@@ -369,10 +435,25 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
     use std::ptr;
     use std::rc::Rc;
+
+    fn make_test_conn() -> *mut HewSmtpConn {
+        Box::into_raw(Box::new(HewSmtpConn {
+            transport: SmtpTransport::unencrypted_localhost(),
+        }))
+    }
+
+    fn last_error_text() -> String {
+        let err = hew_smtp_last_error();
+        assert!(!err.is_null());
+        // SAFETY: `err` was allocated by `hew_smtp_last_error`.
+        let text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
+        // SAFETY: `err` was allocated via `malloc`.
+        unsafe { libc::free(err.cast_mut().cast()) };
+        text
+    }
 
     #[test]
     fn normalize_port_rejects_out_of_range_values() {
@@ -414,10 +495,7 @@ mod tests {
                 false,
             )
         };
-        assert!(
-            msg.is_some(),
-            "plain-text message should build successfully"
-        );
+        assert!(msg.is_ok(), "plain-text message should build successfully");
     }
 
     #[test]
@@ -437,7 +515,7 @@ mod tests {
                 true,
             )
         };
-        assert!(msg.is_some(), "HTML message should build successfully");
+        assert!(msg.is_ok(), "HTML message should build successfully");
     }
 
     #[test]
@@ -533,7 +611,7 @@ mod tests {
                 false,
             )
         };
-        assert!(msg.is_none(), "null from should return None");
+        assert!(msg.is_err(), "null from should return an error");
 
         // SAFETY: Testing null-pointer handling in build_message.
         let msg = unsafe {
@@ -545,7 +623,100 @@ mod tests {
                 false,
             )
         };
-        assert!(msg.is_none(), "null to should return None");
+        assert!(msg.is_err(), "null to should return an error");
+    }
+
+    #[test]
+    fn bad_from_address_sets_last_error() {
+        clear_smtp_last_error();
+        let conn = make_test_conn();
+        let from = CString::new("not-an-email").unwrap();
+        let to = CString::new("recipient@example.com").unwrap();
+        let subject = CString::new("Hello").unwrap();
+        let body = CString::new("Body").unwrap();
+
+        // SAFETY: `conn` is a valid test connection and the strings are valid C strings.
+        let rc = unsafe {
+            hew_smtp_send(
+                conn,
+                from.as_ptr(),
+                to.as_ptr(),
+                subject.as_ptr(),
+                body.as_ptr(),
+            )
+        };
+        assert_eq!(rc, -1);
+        let err = last_error_text();
+        assert!(err.contains("parse") || err.contains("address"));
+
+        // SAFETY: `conn` came from `make_test_conn` and has not been freed yet.
+        unsafe { hew_smtp_close(conn) };
+    }
+
+    #[test]
+    fn empty_subject_and_body_set_distinct_last_error() {
+        clear_smtp_last_error();
+        let conn = make_test_conn();
+        let from = CString::new("sender@example.com").unwrap();
+        let to = CString::new("recipient@example.com").unwrap();
+        let empty = CString::new("").unwrap();
+
+        // SAFETY: `conn` is a valid test connection and the strings are valid C strings.
+        let rc = unsafe {
+            hew_smtp_send(
+                conn,
+                from.as_ptr(),
+                to.as_ptr(),
+                empty.as_ptr(),
+                empty.as_ptr(),
+            )
+        };
+        assert_eq!(rc, -1);
+        let err = last_error_text();
+        assert!(err.contains("subject"));
+        assert!(err.contains("body"));
+        assert!(!err.contains("parse"));
+
+        // SAFETY: `conn` came from `make_test_conn` and has not been freed yet.
+        unsafe { hew_smtp_close(conn) };
+    }
+
+    #[test]
+    fn successful_send_clears_last_error() {
+        clear_smtp_last_error();
+        let conn = make_test_conn();
+        let bad_from = CString::new("not-an-email").unwrap();
+        let from = CString::new("sender@example.com").unwrap();
+        let to = CString::new("recipient@example.com").unwrap();
+        let subject = CString::new("Hello").unwrap();
+        let body = CString::new("Body").unwrap();
+
+        let rc = smtp_send_impl(
+            conn,
+            bad_from.as_ptr(),
+            to.as_ptr(),
+            subject.as_ptr(),
+            body.as_ptr(),
+            false,
+            |_conn, _message| Ok(()),
+        );
+        assert_eq!(rc, -1);
+        assert!(!last_error_text().is_empty());
+
+        let rc = smtp_send_impl(
+            conn,
+            from.as_ptr(),
+            to.as_ptr(),
+            subject.as_ptr(),
+            body.as_ptr(),
+            false,
+            |_conn, _message| Ok(()),
+        );
+        assert_eq!(rc, 0);
+        assert_eq!(last_error_text(), "");
+
+        // SAFETY: `conn` came from `make_test_conn` and has not been freed yet.
+        unsafe { hew_smtp_close(conn) };
     }
 
     #[test]

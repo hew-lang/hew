@@ -188,12 +188,7 @@ pub fn link_executable(
     // Anchor the SDK explicitly so the linker finds system frameworks even
     // when invoked from a non-standard PATH (e.g. CI without Xcode on PATH).
     if plan.needs_darwin_sdk {
-        if let Some(sdk) = find_darwin_sdk().map_err(|e| {
-            format!(
-                "Error: failed to resolve the macOS SDK for target `{}`: {e}",
-                target.normalized_triple()
-            )
-        })? {
+        if let Some(sdk) = find_darwin_sdk() {
             cmd.arg("-isysroot").arg(sdk);
         }
     }
@@ -309,17 +304,23 @@ fn run_dsymutil(binary_path: &str) {
 
 /// Find the Darwin SDK path using `xcrun --show-sdk-path`.
 ///
-/// Returns `Ok(None)` on non-macOS hosts where the SDK probe is not applicable.
-/// On macOS, probe failures are surfaced immediately so linker/toolchain
-/// misconfiguration does not degrade into a later, less actionable link error.
-fn find_darwin_sdk() -> Result<Option<String>, LinkerProbeError> {
+/// Returns `None` on non-macOS hosts where the SDK probe is not applicable.
+/// On macOS, probe failures are already reported by `find_macos_sdk` and are
+/// treated as "no SDK override" here.
+fn find_darwin_sdk() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        find_macos_sdk()
+        match find_macos_sdk() {
+            Ok(sdk) => sdk,
+            Err(error) => {
+                eprintln!("warning: {error}");
+                None
+            }
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Ok(None)
+        None
     }
 }
 

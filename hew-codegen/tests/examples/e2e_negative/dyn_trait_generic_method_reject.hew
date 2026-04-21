@@ -1,3 +1,5 @@
+// WASM-TODO: rejection is raised in MLIRGen before backend lowering, so this
+// negative check is backend-agnostic and does not require a wasm-specific case.
 trait Transform {
     fn apply<U>(item: Self, f: fn(int) -> U) -> U;
 }

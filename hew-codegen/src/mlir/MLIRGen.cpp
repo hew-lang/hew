@@ -3149,9 +3149,6 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     std::ifstream sourceFile(sourcePath_);
     if (!sourceFile) {
       explicitDynTraitScanFailed = true;
-      ++errorCount_;
-      emitError(builder.getUnknownLoc())
-          << "failed to read source file '" << sourcePath_ << "' for explicit dyn-trait validation";
     } else {
       std::ostringstream buffer;
       buffer << sourceFile.rdbuf();
@@ -4801,13 +4798,23 @@ mlir::Value MLIRGen::coerceToDynTrait(mlir::Value concreteVal, const std::string
   }
 
   if (rejectGenericMethods) {
-    if (explicitDynTraitScanFailed) {
+    bool traitHasGenericMethods = false;
+    if (auto traitIt = traitRegistry.find(traitName); traitIt != traitRegistry.end()) {
+      for (const auto *tm : traitIt->second.methods) {
+        if (tm->type_params && !tm->type_params->empty()) {
+          traitHasGenericMethods = true;
+          break;
+        }
+      }
+    }
+    if (explicitDynTraitScanFailed && traitHasGenericMethods) {
       ++errorCount_;
       emitError(location) << "cannot validate explicit dyn-trait usage for '" << traitName
-                          << "' because source file '" << sourcePath_ << "' is unreadable";
+                          << "' because source file '" << sourcePath_
+                          << "' is unreadable; rejecting generic dyn dispatch";
       return nullptr;
     }
-    if (explicitDynTraitUses.count(traitName)) {
+    if (explicitDynTraitScanFailed || explicitDynTraitUses.count(traitName)) {
       const unsigned errorCountBeforeShimGen = errorCount_;
       generateTraitImplShims(typeName, traitName, location);
       if (errorCount_ != errorCountBeforeShimGen)

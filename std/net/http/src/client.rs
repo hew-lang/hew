@@ -11,6 +11,7 @@ use hew_cabi::{
     cabi::{cstr_to_str, str_to_malloc},
     vec::{ElemKind, HewVec},
 };
+use std::cell::RefCell;
 use std::ffi::{c_void, CStr};
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -18,6 +19,79 @@ use std::time::Duration;
 
 /// Global timeout for all HTTP requests, in milliseconds. Default: 30 000 ms.
 static HTTP_TIMEOUT_MS: AtomicI32 = AtomicI32::new(30_000);
+
+std::thread_local! {
+    static LAST_HTTP_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    #[cfg(test)]
+    static FAIL_NEXT_HTTP_ALLOCATIONS: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn set_http_last_error(msg: impl Into<String>) {
+    LAST_HTTP_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+}
+
+fn clear_http_last_error() {
+    LAST_HTTP_ERROR.with(|error| *error.borrow_mut() = None);
+}
+
+fn get_http_last_error() -> String {
+    LAST_HTTP_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+}
+
+#[cfg(test)]
+fn fail_http_allocations_after(successes_before_failure: usize) {
+    FAIL_NEXT_HTTP_ALLOCATIONS.with(|remaining| remaining.set(Some(successes_before_failure)));
+}
+
+#[cfg(test)]
+fn reset_http_allocation_failures() {
+    FAIL_NEXT_HTTP_ALLOCATIONS.with(|remaining| remaining.set(None));
+}
+
+#[cfg(test)]
+fn should_fail_http_allocation() -> bool {
+    FAIL_NEXT_HTTP_ALLOCATIONS.with(|remaining| match remaining.get() {
+        Some(0) => true,
+        Some(count) => {
+            remaining.set(Some(count - 1));
+            false
+        }
+        None => false,
+    })
+}
+
+#[cfg(not(test))]
+fn should_fail_http_allocation() -> bool {
+    false
+}
+
+fn http_allocation_failed(api: &str, detail: &str) {
+    set_http_last_error(format!("{api}: allocation failed while {detail}"));
+}
+
+fn raw_http_str_to_malloc(s: &str) -> *mut c_char {
+    if should_fail_http_allocation() {
+        return std::ptr::null_mut();
+    }
+    str_to_malloc(s)
+}
+
+unsafe fn raw_http_strdup(src: *const c_char) -> *mut c_char {
+    if should_fail_http_allocation() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the caller guarantees `src` is a valid NUL-terminated C string.
+    unsafe { libc::strdup(src) }
+}
+
+/// Return the last HTTP client error recorded on the current thread.
+///
+/// Returns an empty string when no HTTP client error has been recorded.
+#[no_mangle]
+pub extern "C" fn hew_http_last_error() -> *mut c_char {
+    str_to_malloc(&get_http_last_error())
+}
 
 /// Response from an HTTP request.
 ///
@@ -36,6 +110,8 @@ pub struct HewHttpResponse {
     /// Captured response headers (heap-allocated `Box<Vec<(String, String)>>`).
     /// May be null if no headers were captured.
     pub headers: *mut Vec<(String, String)>,
+    /// Whether copying the response body into malloc-owned storage failed.
+    pub body_allocation_failed: bool,
 }
 
 /// Collect all response headers into a heap-allocated `Vec<(String, String)>`.
@@ -59,12 +135,13 @@ fn build_response(
     headers: *mut Vec<(String, String)>,
 ) -> *mut HewHttpResponse {
     let body_len = body.len();
-    let body_ptr = str_to_malloc(body);
+    let body_ptr = raw_http_str_to_malloc(body);
     Box::into_raw(Box::new(HewHttpResponse {
         status_code,
         body: body_ptr,
         body_len,
         headers,
+        body_allocation_failed: body_ptr.is_null(),
     }))
 }
 
@@ -427,6 +504,40 @@ pub unsafe extern "C" fn hew_http_response_free(resp: *mut HewHttpResponse) {
     // Box is dropped here, freeing the HewHttpResponse struct.
 }
 
+unsafe fn free_hew_string_pair(pair: &mut HewStringPair) {
+    if !pair.name.is_null() {
+        // SAFETY: `pair.name` was allocated with libc::malloc-compatible storage.
+        unsafe { libc::free(pair.name.cast()) };
+        pair.name = std::ptr::null_mut();
+    }
+    if !pair.value.is_null() {
+        // SAFETY: `pair.value` was allocated with libc::malloc-compatible storage.
+        unsafe { libc::free(pair.value.cast()) };
+        pair.value = std::ptr::null_mut();
+    }
+}
+
+unsafe fn free_hew_string_pair_vec(vec: *mut HewVec) {
+    if vec.is_null() {
+        return;
+    }
+    // SAFETY: `vec` is a valid HewVec allocated by `hew_vec_new_generic`.
+    let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
+    for index in 0..len {
+        // SAFETY: `index` is in-bounds for `vec`.
+        let elem_ptr = unsafe { hew_cabi::vec::hew_vec_get_generic(vec.cast_const(), index) };
+        if elem_ptr.is_null() {
+            continue;
+        }
+        // SAFETY: every stored element is a `HewStringPair`.
+        let pair = unsafe { &mut *(elem_ptr.cast_mut().cast::<HewStringPair>()) };
+        // SAFETY: embedded strings are individually malloc-owned.
+        unsafe { free_hew_string_pair(pair) };
+    }
+    // SAFETY: the string fields have been freed above; release the buffer itself.
+    unsafe { hew_cabi::vec::hew_vec_free(vec) };
+}
+
 // ── Response accessor functions ───────────────────────────────────────
 
 /// Get the HTTP status code from a response.
@@ -455,16 +566,22 @@ pub unsafe extern "C" fn hew_http_response_status(resp: *const HewHttpResponse) 
 /// `resp` must be a valid [`HewHttpResponse`] pointer, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_response_body(resp: *const HewHttpResponse) -> *mut c_char {
+    clear_http_last_error();
     if resp.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: resp is a valid HewHttpResponse per caller contract.
     let r = unsafe { &*resp };
-    if r.body.is_null() {
-        return str_to_malloc("");
+    if r.body_allocation_failed || r.body.is_null() {
+        http_allocation_failed("hew_http_response_body", "copying response body");
+        return std::ptr::null_mut();
     }
     // SAFETY: body is a valid NUL-terminated C string from str_to_malloc.
-    unsafe { libc::strdup(r.body) }
+    let copy = unsafe { raw_http_strdup(r.body) };
+    if copy.is_null() {
+        http_allocation_failed("hew_http_response_body", "copying response body");
+    }
+    copy
 }
 
 /// Look up a response header by name (case-insensitive).
@@ -482,27 +599,60 @@ pub unsafe extern "C" fn hew_http_response_header(
     resp: *const HewHttpResponse,
     name: *const c_char,
 ) -> *mut c_char {
+    clear_http_last_error();
     if resp.is_null() {
-        return str_to_malloc("");
+        let empty = raw_http_str_to_malloc("");
+        if empty.is_null() {
+            http_allocation_failed(
+                "hew_http_response_header",
+                "returning empty response header",
+            );
+        }
+        return empty;
     }
     // SAFETY: resp is a valid HewHttpResponse per caller contract.
     let r = unsafe { &*resp };
     // SAFETY: If non-null, name is a valid NUL-terminated C string per caller contract.
     let Some(name_str) = (unsafe { cstr_to_str(name) }) else {
-        return str_to_malloc("");
+        let empty = raw_http_str_to_malloc("");
+        if empty.is_null() {
+            http_allocation_failed(
+                "hew_http_response_header",
+                "returning empty response header",
+            );
+        }
+        return empty;
     };
     let name_lower = name_str.to_lowercase();
     if r.headers.is_null() {
-        return str_to_malloc("");
+        let empty = raw_http_str_to_malloc("");
+        if empty.is_null() {
+            http_allocation_failed(
+                "hew_http_response_header",
+                "returning empty response header",
+            );
+        }
+        return empty;
     }
     // SAFETY: headers was allocated with Box::into_raw in capture_headers.
     let headers = unsafe { &*r.headers };
     for (k, v) in headers {
         if k.to_lowercase() == name_lower {
-            return str_to_malloc(v);
+            let value = raw_http_str_to_malloc(v);
+            if value.is_null() {
+                http_allocation_failed("hew_http_response_header", "copying response header");
+            }
+            return value;
         }
     }
-    str_to_malloc("")
+    let empty = raw_http_str_to_malloc("");
+    if empty.is_null() {
+        http_allocation_failed(
+            "hew_http_response_header",
+            "returning empty response header",
+        );
+    }
+    empty
 }
 
 /// Get the `content-type` response header.
@@ -539,7 +689,8 @@ struct HewStringPair {
 /// The caller owns the returned vector and its element strings. Hew's compiled
 /// destructor frees the string fields when the `Vec<(String, String)>` goes
 /// out of scope. Returns an empty vector if `resp` is null or no headers were
-/// captured; never returns null.
+/// captured. Returns null when copying the header list runs out of memory; call
+/// [`hew_http_last_error`] for details.
 ///
 /// # Safety
 ///
@@ -552,10 +703,18 @@ struct HewStringPair {
 /// platform (pointer sizes are always a small fraction of `i64::MAX`).
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse) -> *mut HewVec {
+    clear_http_last_error();
     let elem_size = i64::try_from(2 * std::mem::size_of::<*mut c_char>())
         .expect("pointer-pair elem_size always fits i64");
     // SAFETY: allocates a new HewVec with elem_size=16 (two pointers), Plain kind.
     let vec = unsafe { hew_cabi::vec::hew_vec_new_generic(elem_size, 0) };
+    if vec.is_null() {
+        http_allocation_failed(
+            "hew_http_response_headers",
+            "allocating response header vector",
+        );
+        return std::ptr::null_mut();
+    }
     if resp.is_null() {
         return vec;
     }
@@ -567,10 +726,18 @@ pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse)
     // SAFETY: headers was allocated with Box::into_raw in capture_headers.
     let headers = unsafe { &*r.headers };
     for (name, value) in headers {
-        let pair = HewStringPair {
-            name: str_to_malloc(name),
-            value: str_to_malloc(value),
+        let mut pair = HewStringPair {
+            name: raw_http_str_to_malloc(name),
+            value: raw_http_str_to_malloc(value),
         };
+        if pair.name.is_null() || pair.value.is_null() {
+            // SAFETY: any strings already allocated for this pair must be released.
+            unsafe { free_hew_string_pair(&mut pair) };
+            http_allocation_failed("hew_http_response_headers", "copying response header list");
+            // SAFETY: previously pushed pairs remain owned by `vec`.
+            unsafe { free_hew_string_pair_vec(vec) };
+            return std::ptr::null_mut();
+        }
         // SAFETY: vec is a valid HewVec; &pair is a valid elem_size-byte region.
         unsafe {
             hew_cabi::vec::hew_vec_push_generic(vec, std::ptr::addr_of!(pair).cast::<c_void>());
@@ -584,6 +751,7 @@ pub unsafe extern "C" fn hew_http_response_headers(resp: *const HewHttpResponse)
 /// Returns null when the response pointer is null or represents a transport or
 /// validation error (`status_code < 0`).
 unsafe fn take_body_string(resp: *mut HewHttpResponse) -> *mut c_char {
+    clear_http_last_error();
     if resp.is_null() {
         return std::ptr::null_mut();
     }
@@ -592,6 +760,13 @@ unsafe fn take_body_string(resp: *mut HewHttpResponse) -> *mut c_char {
 
     if resp_ref.status_code < 0 {
         // SAFETY: resp is a valid HewHttpResponse from one of the constructors.
+        unsafe { hew_http_response_free(resp) };
+        return std::ptr::null_mut();
+    }
+
+    if resp_ref.body_allocation_failed || resp_ref.body.is_null() {
+        http_allocation_failed("hew_http_request_string", "extracting response body");
+        // SAFETY: resp is valid and still owned here.
         unsafe { hew_http_response_free(resp) };
         return std::ptr::null_mut();
     }
@@ -725,15 +900,20 @@ mod tests {
             .expect("pointer-pair elem_size always fits i64");
         // SAFETY: hew_vec_new_generic allocates a valid Plain-kind HewVec.
         let vec = unsafe { hew_cabi::vec::hew_vec_new_generic(elem_size, 0) };
+        assert!(!vec.is_null(), "test setup must allocate a HewVec");
         for (name, value) in pairs {
             let name_c = CString::new(*name).unwrap();
             let value_c = CString::new(*value).unwrap();
             let pair = HewStringPair {
-                // SAFETY: strdup produces a malloc-owned copy; the vec (and Hew destructor) will free it.
-                name: unsafe { libc::strdup(name_c.as_ptr()) },
-                // SAFETY: strdup produces a malloc-owned copy; the vec (and Hew destructor) will free it.
-                value: unsafe { libc::strdup(value_c.as_ptr()) },
+                // SAFETY: `name_c` is a valid NUL-terminated string during the call.
+                name: unsafe { raw_http_strdup(name_c.as_ptr()) },
+                // SAFETY: `value_c` is a valid NUL-terminated string during the call.
+                value: unsafe { raw_http_strdup(value_c.as_ptr()) },
             };
+            assert!(
+                !(pair.name.is_null() || pair.value.is_null()),
+                "test setup must allocate header pairs"
+            );
             // SAFETY: vec is a valid HewVec; &pair is a valid elem_size-byte region.
             unsafe {
                 hew_cabi::vec::hew_vec_push_generic(vec, std::ptr::addr_of!(pair).cast::<c_void>());
@@ -835,6 +1015,7 @@ mod tests {
 
     #[test]
     fn response_body_accessor_returns_copy() {
+        clear_http_last_error();
         let resp = build_response(200, "hello", std::ptr::null_mut());
         // SAFETY: resp is a valid HewHttpResponse.
         let body_ptr = unsafe { hew_http_response_body(resp) };
@@ -849,10 +1030,42 @@ mod tests {
         // SAFETY: resp is still valid (body_ptr is a copy).
         unsafe { hew_http_response_free(resp) };
         assert_eq!(body, "hello");
+        let err_ptr = hew_http_last_error();
+        assert!(!err_ptr.is_null());
+        // SAFETY: `err_ptr` was allocated by `hew_http_last_error`.
+        let err = unsafe { CStr::from_ptr(err_ptr) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: `err_ptr` came from `hew_http_last_error`.
+        unsafe { libc::free(err_ptr.cast()) };
+        assert_eq!(err, "");
+    }
+
+    #[test]
+    fn response_body_allocation_failure_sets_last_error() {
+        clear_http_last_error();
+        let resp = build_response(200, "hello", std::ptr::null_mut());
+        fail_http_allocations_after(0);
+        // SAFETY: resp is a valid HewHttpResponse.
+        let body_ptr = unsafe { hew_http_response_body(resp) };
+        reset_http_allocation_failures();
+        assert!(body_ptr.is_null());
+        let err = hew_http_last_error();
+        assert!(!err.is_null());
+        // SAFETY: `err` is a valid NUL-terminated error string.
+        let err_text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
+        // SAFETY: `err` was allocated by `hew_http_last_error`.
+        unsafe { libc::free(err.cast()) };
+        assert!(err_text.contains("hew_http_response_body"));
+        assert!(err_text.contains("allocation failed"));
+        // SAFETY: resp is still valid after the failed copy attempt.
+        unsafe { hew_http_response_free(resp) };
     }
 
     #[test]
     fn response_header_lookup_case_insensitive() {
+        clear_http_last_error();
         let headers = Box::into_raw(Box::new(vec![(
             "Content-Type".to_string(),
             "application/json".to_string(),
@@ -1100,6 +1313,7 @@ mod tests {
 
     #[test]
     fn response_headers_returns_all_pairs_in_order() {
+        clear_http_last_error();
         let headers = Box::into_raw(Box::new(vec![
             ("content-type".to_string(), "application/json".to_string()),
             ("x-request-id".to_string(), "abc-123".to_string()),
@@ -1150,6 +1364,31 @@ mod tests {
         // SAFETY: string elements already freed above; just releases the buffer.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
         // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
+    }
+
+    #[test]
+    fn response_headers_allocation_failure_sets_last_error() {
+        clear_http_last_error();
+        let headers = Box::into_raw(Box::new(vec![(
+            "content-type".to_string(),
+            "application/json".to_string(),
+        )]));
+        let resp = build_response(200, "", headers);
+        fail_http_allocations_after(1);
+        // SAFETY: resp is a valid HewHttpResponse.
+        let vec = unsafe { hew_http_response_headers(resp) };
+        reset_http_allocation_failures();
+        assert!(vec.is_null());
+        let err = hew_http_last_error();
+        assert!(!err.is_null());
+        // SAFETY: `err` is a valid NUL-terminated error string.
+        let err_text = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
+        // SAFETY: `err` was allocated by `hew_http_last_error`.
+        unsafe { libc::free(err.cast()) };
+        assert!(err_text.contains("hew_http_response_headers"));
+        assert!(err_text.contains("allocation failed"));
+        // SAFETY: resp remains valid after the failed header-copy attempt.
         unsafe { hew_http_response_free(resp) };
     }
 

@@ -237,7 +237,7 @@ fn main() {
         return;
     }
 
-    let cfg = config::load_config();
+    let cfg = load_config_or_exit();
     let registry = registry::Registry::with_root(config::registry_path(&cfg));
 
     match cli.command {
@@ -342,7 +342,7 @@ fn cmd_completions(shell: ShellChoice) {
 fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
     match registry_name {
         Some(name) => {
-            let cfg = config::load_config();
+            let cfg = load_config_or_exit();
             let remote = config::get_named_registry(&cfg, name).unwrap_or_else(|| {
                 eprintln!("adze: unknown registry '{name}'");
                 eprintln!("Configure it in ~/.adze/config.toml under [registries.{name}]");
@@ -357,6 +357,13 @@ fn make_client(registry_name: Option<&str>) -> client::RegistryClient {
         }
         None => client::RegistryClient::new(),
     }
+}
+
+fn load_config_or_exit() -> config::AdzeConfig {
+    config::load_config().unwrap_or_else(|error| {
+        eprintln!("adze: {error}");
+        std::process::exit(1);
+    })
 }
 
 fn cmd_init(name: Option<&str>, template: manifest::ManifestTemplate, cfg: &config::AdzeConfig) {

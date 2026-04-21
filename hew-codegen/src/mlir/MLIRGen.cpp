@@ -4962,6 +4962,7 @@ void MLIRGen::generateTraitImplShims(const std::string &typeName, const std::str
       ++errorCount_;
       emitError(location) << "dyn-trait dispatch does not yet support generic methods: "
                           << tm->name;
+      currentModulePath = savedModulePath;
       return;
     }
     std::string implFuncName = resolveTraitImplBodyName(

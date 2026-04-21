@@ -1242,6 +1242,7 @@ private:
   // traitName → dispatch info
   std::unordered_map<std::string, TraitDispatchInfo> traitDispatchRegistry;
   std::unordered_set<std::string> explicitDynTraitUses;
+  bool explicitDynTraitScanFailed = false;
   // Track dyn-trait variable types: varName → traitName
   std::unordered_map<std::string, std::string> dynTraitVarTypes;
 

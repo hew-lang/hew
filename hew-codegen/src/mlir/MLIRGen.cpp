@@ -3123,16 +3123,35 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   };
 
   explicitDynTraitUses.clear();
+  explicitDynTraitScanFailed = false;
   if (!sourcePath_.empty()) {
     std::ifstream sourceFile(sourcePath_);
-    if (sourceFile) {
+    if (!sourceFile) {
+      explicitDynTraitScanFailed = true;
+      ++errorCount_;
+      emitError(builder.getUnknownLoc())
+          << "failed to read source file '" << sourcePath_ << "' for explicit dyn-trait validation";
+    } else {
       std::ostringstream buffer;
       buffer << sourceFile.rdbuf();
-      static const std::regex dynTraitPattern(R"(\bdyn\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
       const auto sourceText = buffer.str();
+
+      static const std::regex dynTraitPattern(R"(\bdyn\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
       for (auto it = std::sregex_iterator(sourceText.begin(), sourceText.end(), dynTraitPattern);
            it != std::sregex_iterator(); ++it) {
         explicitDynTraitUses.insert((*it)[1].str());
+      }
+
+      static const std::regex compositeDynPattern(R"(\bdyn\s*\(([^)]*)\))");
+      static const std::regex traitNamePattern(R"([A-Za-z_][A-Za-z0-9_]*)");
+      for (auto it =
+               std::sregex_iterator(sourceText.begin(), sourceText.end(), compositeDynPattern);
+           it != std::sregex_iterator(); ++it) {
+        const std::string members = (*it)[1].str();
+        for (auto traitIt = std::sregex_iterator(members.begin(), members.end(), traitNamePattern);
+             traitIt != std::sregex_iterator(); ++traitIt) {
+          explicitDynTraitUses.insert((*traitIt)[0].str());
+        }
       }
     }
   }
@@ -4760,23 +4779,31 @@ mlir::Value MLIRGen::coerceToDynTrait(mlir::Value concreteVal, const std::string
     return nullptr;
   }
 
-  if (rejectGenericMethods && explicitDynTraitUses.count(traitName)) {
-    const unsigned errorCountBeforeShimGen = errorCount_;
-    generateTraitImplShims(typeName, traitName, location);
-    if (errorCount_ != errorCountBeforeShimGen)
-      return nullptr;
-
-    implInfo = nullptr;
-    for (const auto &impl : dispIt->second.impls) {
-      if (impl.typeName == typeName) {
-        implInfo = &impl;
-        break;
-      }
-    }
-    if (!implInfo) {
+  if (rejectGenericMethods) {
+    if (explicitDynTraitScanFailed) {
       ++errorCount_;
-      emitError(location) << "no dispatch info for " << typeName << " as dyn " << traitName;
+      emitError(location) << "cannot validate explicit dyn-trait usage for '" << traitName
+                          << "' because source file '" << sourcePath_ << "' is unreadable";
       return nullptr;
+    }
+    if (explicitDynTraitUses.count(traitName)) {
+      const unsigned errorCountBeforeShimGen = errorCount_;
+      generateTraitImplShims(typeName, traitName, location);
+      if (errorCount_ != errorCountBeforeShimGen)
+        return nullptr;
+
+      implInfo = nullptr;
+      for (const auto &impl : dispIt->second.impls) {
+        if (impl.typeName == typeName) {
+          implInfo = &impl;
+          break;
+        }
+      }
+      if (!implInfo) {
+        ++errorCount_;
+        emitError(location) << "no dispatch info for " << typeName << " as dyn " << traitName;
+        return nullptr;
+      }
     }
   }
 

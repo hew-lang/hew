@@ -64,23 +64,28 @@ struct EventQueue {
 
 impl EventQueue {
     fn push(&self, kind: i32) -> bool {
-        let Ok(mut queue) = self.queue.lock() else {
-            return false;
-        };
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         queue.push_back(kind);
         self.ready.notify_one();
         true
     }
 
     fn pop_blocking(&self) -> Option<i32> {
-        let Ok(mut queue) = self.queue.lock() else {
-            return None;
-        };
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(kind) = queue.pop_front() {
                 return Some(kind);
             }
-            queue = self.ready.wait(queue).ok()?;
+            queue = self
+                .ready
+                .wait(queue)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 }
@@ -1459,6 +1464,7 @@ mod tests {
     use super::*;
     use std::ffi::{c_void, CStr, CString};
     use std::thread;
+    use std::time::Duration;
 
     use hew_cabi::vec::{hew_vec_free, hwvec_to_u8, u8_to_hwvec};
 
@@ -1511,6 +1517,22 @@ mod tests {
             "expected `{expected_fragment}` in resolver error: {err}"
         );
         assert_eq!(get_constructor_last_error(), err);
+    }
+
+    fn poison_event_queue(events: &Arc<EventQueue>, queued_kind: Option<i32>) {
+        let poison_events = Arc::clone(events);
+        let poisoner = thread::spawn(move || {
+            let mut guard = poison_events
+                .queue
+                .lock()
+                .expect("queue lock should not be poisoned yet");
+            if let Some(kind) = queued_kind {
+                guard.push_back(kind);
+                poison_events.ready.notify_one();
+            }
+            panic!("poison event queue mutex");
+        });
+        assert!(poisoner.join().is_err(), "poisoner thread must panic");
     }
 
     #[expect(
@@ -1852,6 +1874,69 @@ mod tests {
         assert!(!ep.is_null(), "expected non-null endpoint for server");
         // SAFETY: ep was just created.
         unsafe { hew_quic_endpoint_close(ep) };
+    }
+
+    #[test]
+    fn event_queue_push_recovers_from_poisoned_lock() {
+        let events = Arc::new(EventQueue::default());
+        poison_event_queue(&events, None);
+
+        assert!(events.push(EVENT_CONNECTED));
+        let mut queue = events
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(queue.pop_front(), Some(EVENT_CONNECTED));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn event_queue_pop_blocking_recovers_from_poisoned_initial_lock() {
+        let events = Arc::new(EventQueue::default());
+        poison_event_queue(&events, Some(EVENT_CONNECTED));
+
+        assert_eq!(events.pop_blocking(), Some(EVENT_CONNECTED));
+        let queue = events
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn event_queue_pop_blocking_recovers_from_poisoned_wait() {
+        let events = Arc::new(EventQueue::default());
+        let queue_guard = events
+            .queue
+            .lock()
+            .expect("queue lock should not be poisoned before the test starts");
+        let started = Arc::new(AtomicBool::new(false));
+        let waiter_started = Arc::clone(&started);
+        let waiter_events = Arc::clone(&events);
+        let waiter = thread::spawn(move || {
+            waiter_started.store(true, Ordering::Release);
+            waiter_events.pop_blocking()
+        });
+
+        for _ in 0..1_000 {
+            if started.load(Ordering::Acquire) {
+                break;
+            }
+            thread::yield_now();
+        }
+        assert!(
+            started.load(Ordering::Acquire),
+            "waiter thread did not start"
+        );
+        drop(queue_guard);
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            {
+                poison_event_queue(&events, Some(EVENT_CONNECTED));
+                waiter.join().expect("waiter thread must not panic")
+            },
+            Some(EVENT_CONNECTED)
+        );
     }
 
     #[test]

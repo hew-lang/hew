@@ -1,34 +1,123 @@
 //! Hew runtime: gzip, deflate, and zlib compression/decompression.
 //!
 //! Provides compression and decompression using gzip, raw deflate, and zlib
-//! formats for compiled Hew programs. All returned buffers are allocated with
-//! `libc::malloc` so callers can free them with [`hew_compress_free`].
+//! formats for compiled Hew programs. Outputs are capped at
+//! [`DEFAULT_MAX_OUTPUT_LEN`] bytes by default to fail closed on compression and
+//! decompression bombs; set [`MAX_OUTPUT_LEN_ENV`] to override the cap for a
+//! process. All returned buffers are allocated with `libc::malloc` so callers
+//! can free them with [`hew_compress_free`].
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
 // referenced by hew-cabi's object code.
 #[cfg(test)]
 extern crate hew_runtime;
 
-use std::io::Read;
+use std::ffi::c_char;
+use std::io::{self, Read};
 
 use flate2::read::{
     DeflateDecoder, DeflateEncoder, GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder,
 };
 use flate2::Compression;
+use hew_cabi::cabi::str_to_malloc;
+
+/// Default maximum number of bytes any compression/decompression operation may
+/// emit before failing closed.
+pub const DEFAULT_MAX_OUTPUT_LEN: usize = 256 * 1024 * 1024;
+
+/// Environment variable that overrides [`DEFAULT_MAX_OUTPUT_LEN`] when set.
+pub const MAX_OUTPUT_LEN_ENV: &str = "HEW_COMPRESS_MAX_OUTPUT_LEN";
+
+std::thread_local! {
+    static LAST_ERROR: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn set_last_error(msg: impl Into<String>) {
+    LAST_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+}
+
+fn clear_last_error() {
+    LAST_ERROR.with(|error| *error.borrow_mut() = None);
+}
+
+fn get_last_error() -> String {
+    LAST_ERROR.with(|error| error.borrow().clone().unwrap_or_else(String::new))
+}
+
+#[derive(Debug)]
+enum CompressError {
+    InvalidInput(&'static str),
+    InvalidLimitEnv(String),
+    OutputLimitExceeded { limit: usize },
+    Read(io::Error),
+    AllocationFailed,
+}
+
+impl std::fmt::Display for CompressError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput(message) => f.write_str(message),
+            Self::InvalidLimitEnv(message) => {
+                write!(f, "invalid {MAX_OUTPUT_LEN_ENV} override: {message}")
+            }
+            Self::OutputLimitExceeded { limit } => {
+                write!(f, "output exceeded {limit} byte limit")
+            }
+            Self::Read(err) => write!(f, "stream read failed: {err}"),
+            Self::AllocationFailed => f.write_str("malloc failed"),
+        }
+    }
+}
+
+fn configured_max_output_len() -> Result<usize, CompressError> {
+    match std::env::var(MAX_OUTPUT_LEN_ENV) {
+        Ok(raw) => raw
+            .parse::<usize>()
+            .map_err(|err| CompressError::InvalidLimitEnv(err.to_string())),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_MAX_OUTPUT_LEN),
+        Err(std::env::VarError::NotUnicode(_)) => Err(CompressError::InvalidLimitEnv(
+            "value is not valid UTF-8".to_string(),
+        )),
+    }
+}
+
+fn read_to_vec_with_limit(
+    reader: impl Read,
+    max_output_len: usize,
+) -> Result<Vec<u8>, CompressError> {
+    let take_limit = u64::try_from(max_output_len)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut limited_reader = reader.take(take_limit);
+    let mut buf = Vec::new();
+    limited_reader
+        .read_to_end(&mut buf)
+        .map_err(CompressError::Read)?;
+    if buf.len() > max_output_len {
+        return Err(CompressError::OutputLimitExceeded {
+            limit: max_output_len,
+        });
+    }
+    Ok(buf)
+}
 
 /// Read input through `reader` into a `malloc`-allocated buffer.
 ///
 /// Returns a pointer to the buffer and writes its length to `out_len`.
-/// Returns null on read or allocation failure.
+/// Returns null on read, size-limit, or allocation failure.
 ///
 /// # Safety
 ///
 /// `out_len` must point to a writable `usize`.
-unsafe fn read_to_malloc(mut reader: impl Read, out_len: *mut usize) -> *mut u8 {
-    let mut buf = Vec::new();
-    if reader.read_to_end(&mut buf).is_err() {
-        return std::ptr::null_mut();
-    }
+unsafe fn read_to_malloc(reader: impl Read, out_len: *mut usize, max_output_len: usize) -> *mut u8 {
+    let buf = match read_to_vec_with_limit(reader, max_output_len) {
+        Ok(buf) => buf,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
+    };
     let buf_len = buf.len();
     let alloc_size = if buf_len == 0 { 1 } else { buf_len };
 
@@ -36,6 +125,7 @@ unsafe fn read_to_malloc(mut reader: impl Read, out_len: *mut usize) -> *mut u8 
     // avoiding implementation-defined malloc(0).
     let ptr = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
     if ptr.is_null() {
+        set_last_error(CompressError::AllocationFailed.to_string());
         return std::ptr::null_mut();
     }
     if buf_len > 0 {
@@ -45,6 +135,7 @@ unsafe fn read_to_malloc(mut reader: impl Read, out_len: *mut usize) -> *mut u8 
     }
     // SAFETY: out_len is a valid writable pointer per caller contract.
     unsafe { *out_len = buf_len };
+    clear_last_error();
     ptr
 }
 
@@ -67,6 +158,135 @@ unsafe fn input_slice<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
     }
 }
 
+unsafe fn prepare_input<'a>(
+    data: *const u8,
+    len: usize,
+    out_len: *mut usize,
+) -> Result<&'a [u8], *mut u8> {
+    if out_len.is_null() {
+        set_last_error("output length pointer was null");
+        return Err(std::ptr::null_mut());
+    }
+    // SAFETY: out_len is non-null and writable per caller contract.
+    unsafe { *out_len = 0 };
+    // SAFETY: caller guarantees data validity; forwarding contract.
+    let Some(slice) = (unsafe { input_slice(data, len) }) else {
+        set_last_error(
+            CompressError::InvalidInput("input pointer was null with non-zero length").to_string(),
+        );
+        return Err(std::ptr::null_mut());
+    };
+    Ok(slice)
+}
+
+unsafe fn hew_gzip_compress_with_limit(
+    data: *const u8,
+    len: usize,
+    out_len: *mut usize,
+    max_output_len: usize,
+) -> *mut u8 {
+    // SAFETY: caller contract is forwarded to prepare_input.
+    let slice = match unsafe { prepare_input(data, len, out_len) } {
+        Ok(slice) => slice,
+        Err(ptr) => return ptr,
+    };
+    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
+    unsafe {
+        read_to_malloc(
+            GzEncoder::new(slice, Compression::default()),
+            out_len,
+            max_output_len,
+        )
+    }
+}
+
+unsafe fn hew_gzip_decompress_with_limit(
+    data: *const u8,
+    len: usize,
+    out_len: *mut usize,
+    max_output_len: usize,
+) -> *mut u8 {
+    // SAFETY: caller contract is forwarded to prepare_input.
+    let slice = match unsafe { prepare_input(data, len, out_len) } {
+        Ok(slice) => slice,
+        Err(ptr) => return ptr,
+    };
+    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
+    unsafe { read_to_malloc(GzDecoder::new(slice), out_len, max_output_len) }
+}
+
+unsafe fn hew_deflate_compress_with_limit(
+    data: *const u8,
+    len: usize,
+    out_len: *mut usize,
+    max_output_len: usize,
+) -> *mut u8 {
+    // SAFETY: caller contract is forwarded to prepare_input.
+    let slice = match unsafe { prepare_input(data, len, out_len) } {
+        Ok(slice) => slice,
+        Err(ptr) => return ptr,
+    };
+    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
+    unsafe {
+        read_to_malloc(
+            DeflateEncoder::new(slice, Compression::default()),
+            out_len,
+            max_output_len,
+        )
+    }
+}
+
+unsafe fn hew_deflate_decompress_with_limit(
+    data: *const u8,
+    len: usize,
+    out_len: *mut usize,
+    max_output_len: usize,
+) -> *mut u8 {
+    // SAFETY: caller contract is forwarded to prepare_input.
+    let slice = match unsafe { prepare_input(data, len, out_len) } {
+        Ok(slice) => slice,
+        Err(ptr) => return ptr,
+    };
+    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
+    unsafe { read_to_malloc(DeflateDecoder::new(slice), out_len, max_output_len) }
+}
+
+unsafe fn hew_zlib_compress_with_limit(
+    data: *const u8,
+    len: usize,
+    out_len: *mut usize,
+    max_output_len: usize,
+) -> *mut u8 {
+    // SAFETY: caller contract is forwarded to prepare_input.
+    let slice = match unsafe { prepare_input(data, len, out_len) } {
+        Ok(slice) => slice,
+        Err(ptr) => return ptr,
+    };
+    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
+    unsafe {
+        read_to_malloc(
+            ZlibEncoder::new(slice, Compression::default()),
+            out_len,
+            max_output_len,
+        )
+    }
+}
+
+unsafe fn hew_zlib_decompress_with_limit(
+    data: *const u8,
+    len: usize,
+    out_len: *mut usize,
+    max_output_len: usize,
+) -> *mut u8 {
+    // SAFETY: caller contract is forwarded to prepare_input.
+    let slice = match unsafe { prepare_input(data, len, out_len) } {
+        Ok(slice) => slice,
+        Err(ptr) => return ptr,
+    };
+    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
+    unsafe { read_to_malloc(ZlibDecoder::new(slice), out_len, max_output_len) }
+}
+
 /// Gzip compress `data`.
 ///
 /// Returns a `malloc`-allocated buffer and writes its length to `out_len`. The
@@ -83,16 +303,15 @@ pub unsafe extern "C" fn hew_gzip_compress(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    if out_len.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: Caller guarantees data validity; forwarding contract.
-    let Some(slice) = (unsafe { input_slice(data, len) }) else {
-        return std::ptr::null_mut();
+    let max_output_len = match configured_max_output_len() {
+        Ok(limit) => limit,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
     };
-    let encoder = GzEncoder::new(slice, Compression::default());
-    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
-    unsafe { read_to_malloc(encoder, out_len) }
+    // SAFETY: caller contract is forwarded to hew_gzip_compress_with_limit.
+    unsafe { hew_gzip_compress_with_limit(data, len, out_len, max_output_len) }
 }
 
 /// Gzip decompress `data`.
@@ -111,16 +330,15 @@ pub unsafe extern "C" fn hew_gzip_decompress(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    if out_len.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: Caller guarantees data validity; forwarding contract.
-    let Some(slice) = (unsafe { input_slice(data, len) }) else {
-        return std::ptr::null_mut();
+    let max_output_len = match configured_max_output_len() {
+        Ok(limit) => limit,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
     };
-    let decoder = GzDecoder::new(slice);
-    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
-    unsafe { read_to_malloc(decoder, out_len) }
+    // SAFETY: caller contract is forwarded to hew_gzip_decompress_with_limit.
+    unsafe { hew_gzip_decompress_with_limit(data, len, out_len, max_output_len) }
 }
 
 /// Raw deflate compress `data`.
@@ -139,16 +357,15 @@ pub unsafe extern "C" fn hew_deflate_compress(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    if out_len.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: Caller guarantees data validity; forwarding contract.
-    let Some(slice) = (unsafe { input_slice(data, len) }) else {
-        return std::ptr::null_mut();
+    let max_output_len = match configured_max_output_len() {
+        Ok(limit) => limit,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
     };
-    let encoder = DeflateEncoder::new(slice, Compression::default());
-    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
-    unsafe { read_to_malloc(encoder, out_len) }
+    // SAFETY: caller contract is forwarded to hew_deflate_compress_with_limit.
+    unsafe { hew_deflate_compress_with_limit(data, len, out_len, max_output_len) }
 }
 
 /// Raw deflate decompress `data`.
@@ -167,16 +384,15 @@ pub unsafe extern "C" fn hew_deflate_decompress(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    if out_len.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: Caller guarantees data validity; forwarding contract.
-    let Some(slice) = (unsafe { input_slice(data, len) }) else {
-        return std::ptr::null_mut();
+    let max_output_len = match configured_max_output_len() {
+        Ok(limit) => limit,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
     };
-    let decoder = DeflateDecoder::new(slice);
-    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
-    unsafe { read_to_malloc(decoder, out_len) }
+    // SAFETY: caller contract is forwarded to hew_deflate_decompress_with_limit.
+    unsafe { hew_deflate_decompress_with_limit(data, len, out_len, max_output_len) }
 }
 
 /// Zlib compress `data`.
@@ -195,16 +411,15 @@ pub unsafe extern "C" fn hew_zlib_compress(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    if out_len.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: Caller guarantees data validity; forwarding contract.
-    let Some(slice) = (unsafe { input_slice(data, len) }) else {
-        return std::ptr::null_mut();
+    let max_output_len = match configured_max_output_len() {
+        Ok(limit) => limit,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
     };
-    let encoder = ZlibEncoder::new(slice, Compression::default());
-    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
-    unsafe { read_to_malloc(encoder, out_len) }
+    // SAFETY: caller contract is forwarded to hew_zlib_compress_with_limit.
+    unsafe { hew_zlib_compress_with_limit(data, len, out_len, max_output_len) }
 }
 
 /// Zlib decompress `data`.
@@ -223,16 +438,24 @@ pub unsafe extern "C" fn hew_zlib_decompress(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    if out_len.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: Caller guarantees data validity; forwarding contract.
-    let Some(slice) = (unsafe { input_slice(data, len) }) else {
-        return std::ptr::null_mut();
+    let max_output_len = match configured_max_output_len() {
+        Ok(limit) => limit,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
     };
-    let decoder = ZlibDecoder::new(slice);
-    // SAFETY: out_len is valid per caller contract; forwarding to read_to_malloc.
-    unsafe { read_to_malloc(decoder, out_len) }
+    // SAFETY: caller contract is forwarded to hew_zlib_decompress_with_limit.
+    unsafe { hew_zlib_decompress_with_limit(data, len, out_len, max_output_len) }
+}
+
+/// Return the last compression/decompression error recorded on the current
+/// thread.
+///
+/// Returns an empty string when no error has been recorded.
+#[no_mangle]
+pub extern "C" fn hew_compress_last_error() -> *mut c_char {
+    str_to_malloc(&get_last_error())
 }
 
 /// Free a buffer previously returned by any `hew_gzip_*`, `hew_deflate_*`, or
@@ -364,6 +587,38 @@ pub unsafe extern "C" fn hew_zlib_decompress_hew(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    fn copy_and_free(ptr: *mut u8, len: usize) -> Vec<u8> {
+        assert!(!ptr.is_null(), "pointer must be non-null");
+        // SAFETY: ptr is valid for len bytes and allocated by this module.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        // SAFETY: ptr was allocated by this module.
+        unsafe { hew_compress_free(ptr) };
+        bytes
+    }
+
+    fn assert_limit_error_contains(expected: &str) {
+        let err = get_last_error();
+        assert!(
+            err.contains(expected),
+            "expected error containing {expected:?}, got {err:?}"
+        );
+    }
+
+    fn gzip_zeros_stream(total_len: usize) -> Vec<u8> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), Compression::default());
+        let chunk = vec![0_u8; 64 * 1024];
+        let mut remaining = total_len;
+        while remaining > 0 {
+            let take = remaining.min(chunk.len());
+            encoder
+                .write_all(&chunk[..take])
+                .expect("streaming gzip write should succeed");
+            remaining -= take;
+        }
+        encoder.finish().expect("finishing gzip should succeed")
+    }
 
     /// Helper: compress then decompress, asserting the roundtrip matches.
     unsafe fn assert_roundtrip(
@@ -464,5 +719,182 @@ mod tests {
         // Free null is a no-op.
         // SAFETY: null is explicitly allowed.
         unsafe { hew_compress_free(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn test_gzip_zero_burst_roundtrip_with_default_limit() {
+        let input = vec![0_u8; 10 * 1024 * 1024];
+
+        let mut compressed_len: usize = 0;
+        // SAFETY: input is a valid byte slice.
+        let compressed =
+            unsafe { hew_gzip_compress(input.as_ptr(), input.len(), &raw mut compressed_len) };
+        assert!(!compressed.is_null(), "compression returned null");
+        assert!(
+            compressed_len < 32 * 1024,
+            "expected 10 MiB of zeros to compress below 32 KiB, got {compressed_len}"
+        );
+
+        let mut decompressed_len: usize = 0;
+        // SAFETY: compressed is valid for compressed_len bytes.
+        let decompressed =
+            unsafe { hew_gzip_decompress(compressed, compressed_len, &raw mut decompressed_len) };
+        assert!(!decompressed.is_null(), "decompression returned null");
+        assert_eq!(decompressed_len, input.len());
+        // SAFETY: decompressed is valid for decompressed_len bytes.
+        let roundtrip = unsafe { std::slice::from_raw_parts(decompressed, decompressed_len) };
+        assert_eq!(roundtrip, input);
+
+        // SAFETY: both pointers were allocated by this module.
+        unsafe {
+            hew_compress_free(compressed);
+            hew_compress_free(decompressed);
+        };
+    }
+
+    #[test]
+    fn test_gzip_decompress_rejects_large_bomb() {
+        const BOMB_UNCOMPRESSED_LEN: usize = 1024 * 1024 * 1024;
+        const LOW_LIMIT: usize = 1024 * 1024;
+
+        let compressed = gzip_zeros_stream(BOMB_UNCOMPRESSED_LEN);
+        assert!(
+            compressed.len() < 2 * 1024 * 1024,
+            "expected ~1 MiB compressed bomb, got {} bytes",
+            compressed.len()
+        );
+
+        let mut out_len: usize = 123;
+        // SAFETY: compressed is a valid byte slice.
+        let decompressed = unsafe {
+            hew_gzip_decompress_with_limit(
+                compressed.as_ptr(),
+                compressed.len(),
+                &raw mut out_len,
+                LOW_LIMIT,
+            )
+        };
+        assert!(decompressed.is_null(), "bomb decompression should fail");
+        assert_eq!(out_len, 0, "failing decode must zero out_len");
+        assert_limit_error_contains("1048576 byte limit");
+    }
+
+    #[test]
+    fn test_gzip_decompress_boundary_at_limit() {
+        const LIMIT: usize = 64 * 1024;
+
+        let exact_input = vec![0_u8; LIMIT];
+        let over_input = vec![0_u8; LIMIT + 1];
+        let mut compressed_exact_len: usize = 0;
+        let mut compressed_over_len: usize = 0;
+        // SAFETY: both inputs are valid byte slices.
+        let compressed_exact = unsafe {
+            hew_gzip_compress_with_limit(
+                exact_input.as_ptr(),
+                exact_input.len(),
+                &raw mut compressed_exact_len,
+                usize::MAX,
+            )
+        };
+        // SAFETY: over_input is a valid byte slice.
+        let compressed_over = unsafe {
+            hew_gzip_compress_with_limit(
+                over_input.as_ptr(),
+                over_input.len(),
+                &raw mut compressed_over_len,
+                usize::MAX,
+            )
+        };
+        let compressed_exact_bytes = copy_and_free(compressed_exact, compressed_exact_len);
+        let compressed_over_bytes = copy_and_free(compressed_over, compressed_over_len);
+
+        let mut exact_len: usize = 0;
+        // SAFETY: compressed_exact_bytes is a valid byte slice.
+        let exact = unsafe {
+            hew_gzip_decompress_with_limit(
+                compressed_exact_bytes.as_ptr(),
+                compressed_exact_bytes.len(),
+                &raw mut exact_len,
+                LIMIT,
+            )
+        };
+        assert!(!exact.is_null(), "exact-limit decode should succeed");
+        assert_eq!(exact_len, LIMIT);
+        // SAFETY: exact was allocated by this module.
+        unsafe { hew_compress_free(exact) };
+
+        let mut over_len: usize = LIMIT;
+        // SAFETY: compressed_over_bytes is a valid byte slice.
+        let over = unsafe {
+            hew_gzip_decompress_with_limit(
+                compressed_over_bytes.as_ptr(),
+                compressed_over_bytes.len(),
+                &raw mut over_len,
+                LIMIT,
+            )
+        };
+        assert!(over.is_null(), "cap+1 decode should fail");
+        assert_eq!(over_len, 0, "failing decode must zero out_len");
+        assert_limit_error_contains("65536 byte limit");
+    }
+
+    #[test]
+    fn test_gzip_compress_boundary_at_limit() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test data masks values to one byte before the cast"
+        )]
+        let input: Vec<u8> = (0usize..131_072)
+            .map(|i| ((i.wrapping_mul(17) ^ (i >> 3)) & 0xff) as u8)
+            .collect();
+
+        let mut baseline_len: usize = 0;
+        // SAFETY: input is a valid byte slice.
+        let baseline = unsafe {
+            hew_gzip_compress_with_limit(
+                input.as_ptr(),
+                input.len(),
+                &raw mut baseline_len,
+                usize::MAX,
+            )
+        };
+        assert!(!baseline.is_null(), "baseline compression should succeed");
+        // SAFETY: baseline was allocated by this module.
+        unsafe { hew_compress_free(baseline) };
+
+        let mut exact_len: usize = 0;
+        // SAFETY: input is a valid byte slice.
+        let exact = unsafe {
+            hew_gzip_compress_with_limit(
+                input.as_ptr(),
+                input.len(),
+                &raw mut exact_len,
+                baseline_len,
+            )
+        };
+        assert!(
+            !exact.is_null(),
+            "exact compressed-size limit should succeed"
+        );
+        assert_eq!(exact_len, baseline_len);
+        // SAFETY: exact was allocated by this module.
+        unsafe { hew_compress_free(exact) };
+
+        let mut over_len: usize = baseline_len;
+        // SAFETY: input is a valid byte slice.
+        let over = unsafe {
+            hew_gzip_compress_with_limit(
+                input.as_ptr(),
+                input.len(),
+                &raw mut over_len,
+                baseline_len.saturating_sub(1),
+            )
+        };
+        assert!(
+            over.is_null(),
+            "compressed output above the cap should fail"
+        );
+        assert_eq!(over_len, 0, "failing encode must zero out_len");
+        assert_limit_error_contains(&format!("{} byte limit", baseline_len - 1));
     }
 }

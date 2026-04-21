@@ -27,6 +27,7 @@ class TextEntry:
 
 
 FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 
 
 def _compile(pattern: str, *, ignore_case: bool = True) -> re.Pattern[str]:
@@ -39,17 +40,17 @@ SCAN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("model", _compile(r"\bclaude-?(?:opus|sonnet|haiku)\b")),
     ("model", _compile(r"\b(?:sonnet|haiku|opus)\b")),
     ("orchestration", _compile(r"\bwave\s*\d+\b")),
-    ("orchestration", _compile(r"\borchestrat\w*\b")),
-    ("orchestration", _compile(r"\bAPPROVE(?:D)?\b")),
+    ("orchestration", _compile(r"\bAPPROVE(?:D)?\b", ignore_case=False)),
     ("orchestration", _compile(r"\bPASS:", ignore_case=False)),
     ("orchestration", _compile(r"\bR\d+\s+F\d+\b")),
     ("orchestration", _compile(r"\bfallback lane\b")),
     ("orchestration", _compile(r"\bbounded lane\b")),
     ("orchestration", _compile(r"\bpreflight lane\b")),
+    ("orchestration", _compile(r"\b(?:this|the|following|our)\s+lane\b")),
+    ("orchestration", _compile(r"\blane\s+(?:id|number|label|brief|owner)\b")),
     ("orchestration", _compile(r"\bthis lane does(?: not)?\b")),
     ("orchestration", _compile(r"\bwhat this lane does\b")),
     ("orchestration", _compile(r"\bReview PASS\b")),
-    ("orchestration", _compile(r"\blane\b")),
 )
 
 PLAINTEXT_ONLY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -62,8 +63,16 @@ ALLOWLIST_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+def _mask_match(match: re.Match[str]) -> str:
+    return re.sub(r"[^\n]", " ", match.group(0))
+
+
 def _strip_fenced_code_blocks(text: str) -> str:
-    return FENCE_RE.sub("", text)
+    return FENCE_RE.sub(_mask_match, text)
+
+
+def _strip_inline_code_spans(text: str) -> str:
+    return INLINE_CODE_RE.sub(_mask_match, text)
 
 
 def _is_allowlisted(text: str, start: int, end: int) -> bool:
@@ -88,9 +97,12 @@ def _overlaps_existing(
 def scan(texts: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     for text_index, text in enumerate(texts):
+        fenced_stripped = _strip_fenced_code_blocks(text)
+        stripped = _strip_inline_code_spans(fenced_stripped)
         for pattern_name, pattern in SCAN_PATTERNS:
-            for match in pattern.finditer(text):
-                if _is_allowlisted(text, match.start(), match.end()):
+            scan_text = fenced_stripped if pattern_name == "model" else stripped
+            for match in pattern.finditer(scan_text):
+                if _is_allowlisted(scan_text, match.start(), match.end()):
                     continue
                 if _overlaps_existing(findings, text_index, match.start(), match.end()):
                     continue
@@ -104,7 +116,6 @@ def scan(texts: list[str]) -> list[Finding]:
                     )
                 )
 
-        stripped = _strip_fenced_code_blocks(text)
         for pattern_name, pattern in PLAINTEXT_ONLY_PATTERNS:
             for match in pattern.finditer(stripped):
                 findings.append(

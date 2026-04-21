@@ -20,6 +20,10 @@ const WIRE_FIXED64: u32 = 1;
 const WIRE_LEN: u32 = 2;
 /// Protobuf wire type: 32-bit fixed.
 const WIRE_FIXED32: u32 = 5;
+/// Maximum frame size accepted by the decoder.
+const MAX_FRAME_SIZE: usize = 1 << 30;
+/// Maximum field number allowed by the protobuf wire format.
+const MAX_FIELD_NUMBER: u64 = (1 << 29) - 1;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +49,63 @@ enum ProtoValue {
     Bytes(Vec<u8>),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DecodeError {
+    TruncatedVarint { offset: usize },
+    VarintOverflow { offset: usize },
+    LengthTooLargeForPlatform { length: u64, max: usize },
+    LengthExceedsRemaining { length: usize, remaining: usize },
+    FixedWidthExceedsRemaining { width: usize, remaining: usize },
+    FrameTooLarge { value: u64, max: usize },
+    OffsetOverflow { offset: usize, addition: usize },
+    InvalidFieldNumber { field_number: u64 },
+    InvalidWireType { field_number: u32, wire_type: u32 },
+}
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TruncatedVarint { offset } => {
+                write!(f, "truncated varint at byte offset {offset}")
+            }
+            Self::VarintOverflow { offset } => {
+                write!(f, "varint at byte offset {offset} exceeds u64 range")
+            }
+            Self::LengthTooLargeForPlatform { length, max } => write!(
+                f,
+                "length field {length} exceeds platform usize capacity {max}"
+            ),
+            Self::LengthExceedsRemaining { length, remaining } => write!(
+                f,
+                "length field {length} exceeds remaining buffer {remaining}"
+            ),
+            Self::FixedWidthExceedsRemaining { width, remaining } => write!(
+                f,
+                "{width}-byte fixed-width field exceeds remaining buffer {remaining}"
+            ),
+            Self::FrameTooLarge { value, max } => {
+                write!(f, "varint length {value} exceeds MAX_FRAME_SIZE {max}")
+            }
+            Self::OffsetOverflow { offset, addition } => {
+                write!(f, "offset {offset} + length {addition} overflows usize")
+            }
+            Self::InvalidFieldNumber { field_number } => {
+                write!(
+                    f,
+                    "tag field number {field_number} exceeds protobuf maximum {MAX_FIELD_NUMBER}"
+                )
+            }
+            Self::InvalidWireType {
+                field_number,
+                wire_type,
+            } => write!(
+                f,
+                "field {field_number} uses unsupported wire type {wire_type}"
+            ),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Varint helpers
 // ---------------------------------------------------------------------------
@@ -63,25 +124,56 @@ fn encode_varint(mut val: u64, buf: &mut Vec<u8>) {
 }
 
 /// Decode a base-128 varint from `data` starting at `pos`.
-/// Returns `(value, new_pos)` or `None` on truncation / overflow.
-fn decode_varint(data: &[u8], mut pos: usize) -> Option<(u64, usize)> {
+/// Returns `(value, new_pos)` or a typed decode error on truncation / overflow.
+fn decode_varint(data: &[u8], mut pos: usize) -> Result<(u64, usize), DecodeError> {
     let mut result: u64 = 0;
     let mut shift: u32 = 0;
+    let start = pos;
     loop {
-        let byte = *data.get(pos)?;
+        let Some(&byte) = data.get(pos) else {
+            return Err(DecodeError::TruncatedVarint { offset: start });
+        };
         pos += 1;
         if shift == 63 && byte & 0x7E != 0 {
-            return None; // overflow: 10th byte has invalid upper bits
+            return Err(DecodeError::VarintOverflow { offset: start });
         }
         result |= u64::from(byte & 0x7F) << shift;
         if byte & 0x80 == 0 {
-            return Some((result, pos));
+            return Ok((result, pos));
         }
         shift += 7;
         if shift >= 64 {
-            return None; // overflow
+            return Err(DecodeError::VarintOverflow { offset: start });
         }
     }
+}
+
+fn checked_end(pos: usize, len: usize, data_len: usize) -> Result<usize, DecodeError> {
+    let end = pos.checked_add(len).ok_or(DecodeError::OffsetOverflow {
+        offset: pos,
+        addition: len,
+    })?;
+    if end > data_len {
+        return Err(DecodeError::LengthExceedsRemaining {
+            length: len,
+            remaining: data_len.saturating_sub(pos),
+        });
+    }
+    Ok(end)
+}
+
+fn checked_fixed_end(pos: usize, width: usize, data_len: usize) -> Result<usize, DecodeError> {
+    let end = pos.checked_add(width).ok_or(DecodeError::OffsetOverflow {
+        offset: pos,
+        addition: width,
+    })?;
+    if end > data_len {
+        return Err(DecodeError::FixedWidthExceedsRemaining {
+            width,
+            remaining: data_len.saturating_sub(pos),
+        });
+    }
+    Ok(end)
 }
 
 // ---------------------------------------------------------------------------
@@ -115,18 +207,21 @@ impl HewProtoMsg {
     }
 
     /// Decode a protobuf wire-format buffer into a message.
-    /// Returns `None` on malformed input.
-    fn decode(data: &[u8]) -> Option<Self> {
+    fn decode(data: &[u8]) -> Result<Self, DecodeError> {
         let mut fields = Vec::new();
         let mut pos = 0;
         while pos < data.len() {
             let (tag, new_pos) = decode_varint(data, pos)?;
             pos = new_pos;
+            let field_number = tag >> 3;
+            if field_number == 0 || field_number > MAX_FIELD_NUMBER {
+                return Err(DecodeError::InvalidFieldNumber { field_number });
+            }
             #[expect(
                 clippy::cast_possible_truncation,
-                reason = "field number fits in u32 by protobuf spec"
+                reason = "validated against protobuf field-number bound above"
             )]
-            let field_number = (tag >> 3) as u32;
+            let field_number = field_number as u32;
             let wire_type = (tag & 0x07) as u32;
             let value = match wire_type {
                 WIRE_VARINT => {
@@ -135,44 +230,58 @@ impl HewProtoMsg {
                     ProtoValue::Varint(v)
                 }
                 WIRE_FIXED64 => {
-                    if pos + 8 > data.len() {
-                        return None;
-                    }
-                    let v = u64::from_le_bytes(data[pos..pos + 8].try_into().ok()?);
-                    pos += 8;
+                    let end = checked_fixed_end(pos, 8, data.len())?;
+                    let bytes = &data[pos..end];
+                    let v = u64::from_le_bytes(
+                        <[u8; 8]>::try_from(bytes)
+                            .expect("checked_fixed_end guarantees an 8-byte slice"),
+                    );
+                    pos = end;
                     ProtoValue::Fixed64(v)
                 }
                 WIRE_LEN => {
                     let (len, new_pos) = decode_varint(data, pos)?;
                     pos = new_pos;
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "buffer lengths fit in usize on supported platforms"
-                    )]
-                    let len = len as usize;
-                    if pos + len > data.len() {
-                        return None;
+                    if len > MAX_FRAME_SIZE as u64 {
+                        return Err(DecodeError::FrameTooLarge {
+                            value: len,
+                            max: MAX_FRAME_SIZE,
+                        });
                     }
-                    let v = data[pos..pos + len].to_vec();
-                    pos += len;
+                    let len = usize::try_from(len).map_err(|_| {
+                        DecodeError::LengthTooLargeForPlatform {
+                            length: len,
+                            max: usize::MAX,
+                        }
+                    })?;
+                    let end = checked_end(pos, len, data.len())?;
+                    let v = data[pos..end].to_vec();
+                    pos = end;
                     ProtoValue::Bytes(v)
                 }
                 WIRE_FIXED32 => {
-                    if pos + 4 > data.len() {
-                        return None;
-                    }
-                    let v = u32::from_le_bytes(data[pos..pos + 4].try_into().ok()?);
-                    pos += 4;
+                    let end = checked_fixed_end(pos, 4, data.len())?;
+                    let bytes = &data[pos..end];
+                    let v = u32::from_le_bytes(
+                        <[u8; 4]>::try_from(bytes)
+                            .expect("checked_fixed_end guarantees a 4-byte slice"),
+                    );
+                    pos = end;
                     ProtoValue::Fixed32(v)
                 }
-                _ => return None, // unknown wire type
+                _ => {
+                    return Err(DecodeError::InvalidWireType {
+                        field_number,
+                        wire_type,
+                    });
+                }
             };
             fields.push(ProtoField {
                 field_number,
                 value,
             });
         }
-        Some(Self { fields })
+        Ok(Self { fields })
     }
 
     /// Find the last field with the given number (protobuf "last wins" semantics).
@@ -368,8 +477,8 @@ pub unsafe extern "C" fn hew_proto_msg_decode(data: *const u8, len: usize) -> *m
     // SAFETY: data is valid for len bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts(data, len) };
     match HewProtoMsg::decode(slice) {
-        Some(msg) => Box::into_raw(Box::new(msg)),
-        None => std::ptr::null_mut(),
+        Ok(msg) => Box::into_raw(Box::new(msg)),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
@@ -569,6 +678,12 @@ pub unsafe extern "C" fn hew_proto_msg_free(msg: *mut HewProtoMsg) {
 mod tests {
     use super::*;
     use std::ffi::CString;
+
+    fn assert_decode_error(data: &[u8], expected: &DecodeError, expected_message: &str) {
+        let error = HewProtoMsg::decode(data).expect_err("decode should fail");
+        assert_eq!(&error, expected);
+        assert_eq!(error.to_string(), expected_message);
+    }
 
     #[test]
     fn encode_decode_roundtrip() {
@@ -1008,6 +1123,14 @@ mod tests {
         unsafe {
             assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
         }
+        assert_decode_error(
+            data,
+            &DecodeError::FixedWidthExceedsRemaining {
+                width: 8,
+                remaining: 4,
+            },
+            "8-byte fixed-width field exceeds remaining buffer 4",
+        );
     }
 
     #[test]
@@ -1019,6 +1142,14 @@ mod tests {
         unsafe {
             assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
         }
+        assert_decode_error(
+            data,
+            &DecodeError::FixedWidthExceedsRemaining {
+                width: 4,
+                remaining: 2,
+            },
+            "4-byte fixed-width field exceeds remaining buffer 2",
+        );
     }
 
     #[test]
@@ -1030,6 +1161,14 @@ mod tests {
         unsafe {
             assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
         }
+        assert_decode_error(
+            data,
+            &DecodeError::LengthExceedsRemaining {
+                length: 10,
+                remaining: 3,
+            },
+            "length field 10 exceeds remaining buffer 3",
+        );
     }
 
     #[test]
@@ -1041,6 +1180,14 @@ mod tests {
         unsafe {
             assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
         }
+        assert_decode_error(
+            data,
+            &DecodeError::InvalidWireType {
+                field_number: 1,
+                wire_type: 3,
+            },
+            "field 1 uses unsupported wire type 3",
+        );
     }
 
     #[test]
@@ -1055,6 +1202,87 @@ mod tests {
         unsafe {
             assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
         }
+        assert_decode_error(
+            data,
+            &DecodeError::VarintOverflow { offset: 1 },
+            "varint at byte offset 1 exceeds u64 range",
+        );
+    }
+
+    #[test]
+    fn decode_length_usize_max_returns_typed_overflow() {
+        let data: &[u8] = &[
+            0x0A, // field 1, length-delimited
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+        ];
+
+        // SAFETY: testing with known malformed data.
+        unsafe {
+            assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
+        }
+        assert_decode_error(
+            data,
+            &DecodeError::FrameTooLarge {
+                value: u64::MAX,
+                max: MAX_FRAME_SIZE,
+            },
+            "varint length 18446744073709551615 exceeds MAX_FRAME_SIZE 1073741824",
+        );
+    }
+
+    #[test]
+    fn decode_tag_varint_overflow_returns_typed_error() {
+        let data: &[u8] = &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E];
+
+        // SAFETY: testing with known malformed data.
+        unsafe {
+            assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
+        }
+        assert_decode_error(
+            data,
+            &DecodeError::VarintOverflow { offset: 0 },
+            "varint at byte offset 0 exceeds u64 range",
+        );
+    }
+
+    #[test]
+    fn decode_field_number_out_of_range_returns_typed_error() {
+        let mut data = Vec::new();
+        encode_varint(
+            ((MAX_FIELD_NUMBER + 1) << 3) | u64::from(WIRE_VARINT),
+            &mut data,
+        );
+        data.push(0x00);
+
+        // SAFETY: testing with known malformed data.
+        unsafe {
+            assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
+        }
+        assert_decode_error(
+            &data,
+            &DecodeError::InvalidFieldNumber {
+                field_number: MAX_FIELD_NUMBER + 1,
+            },
+            "tag field number 536870912 exceeds protobuf maximum 536870911",
+        );
+    }
+
+    #[test]
+    fn decode_nested_length_exceeds_outer_buffer_returns_typed_error() {
+        let data: &[u8] = &[0x0A, 0x05, 0x08, 0x2A];
+
+        // SAFETY: testing with known malformed data.
+        unsafe {
+            assert!(hew_proto_msg_decode(data.as_ptr(), data.len()).is_null());
+        }
+        assert_decode_error(
+            data,
+            &DecodeError::LengthExceedsRemaining {
+                length: 5,
+                remaining: 2,
+            },
+            "length field 5 exceeds remaining buffer 2",
+        );
     }
 
     // ----- Empty / boundary conditions -----
@@ -1253,21 +1481,30 @@ mod tests {
         for &val in &[0u64, 1, 127, 128, 16383, 16384, u64::MAX] {
             let mut buf = Vec::new();
             encode_varint(val, &mut buf);
-            let (decoded, end) = decode_varint(&buf, 0).unwrap();
+            let (decoded, end) = decode_varint(&buf, 0).expect("roundtrip varint should decode");
             assert_eq!(decoded, val, "roundtrip failed for {val}");
             assert_eq!(end, buf.len(), "consumed wrong number of bytes for {val}");
         }
     }
 
     #[test]
-    fn decode_varint_empty_returns_none() {
-        assert!(decode_varint(&[], 0).is_none());
+    fn decode_varint_empty_returns_typed_error() {
+        assert_eq!(
+            decode_varint(&[], 0),
+            Err(DecodeError::TruncatedVarint { offset: 0 })
+        );
     }
 
     #[test]
-    fn decode_varint_truncated_returns_none() {
+    fn decode_varint_truncated_returns_typed_error() {
         // High bit set but no continuation byte.
-        assert!(decode_varint(&[0x80], 0).is_none());
-        assert!(decode_varint(&[0x80, 0x80], 0).is_none());
+        assert_eq!(
+            decode_varint(&[0x80], 0),
+            Err(DecodeError::TruncatedVarint { offset: 0 })
+        );
+        assert_eq!(
+            decode_varint(&[0x80, 0x80], 0),
+            Err(DecodeError::TruncatedVarint { offset: 0 })
+        );
     }
 }

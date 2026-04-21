@@ -21,7 +21,7 @@ Dispatch a conservative local CI preflight based on changed files.
 
 - Pass explicit paths to classify those files directly.
 - With no paths, the script inspects committed, staged, unstaged, and untracked changes.
-- If the first-slice routing is unclear, the script falls back to broader local checks.
+- If the first-slice routing is unclear, the script runs the broader local check profile.
 EOF
 }
 
@@ -288,7 +288,31 @@ else
         echo "Source: working tree"
     fi
 fi
-echo "Selected lane: $LANE"
+case "$LANE" in
+    docs)
+        PROFILE_LABEL="docs-only"
+        ;;
+    grammar)
+        PROFILE_LABEL="grammar"
+        ;;
+    parser)
+        PROFILE_LABEL="parser"
+        ;;
+    types)
+        PROFILE_LABEL="types"
+        ;;
+    cli)
+        PROFILE_LABEL="cli"
+        ;;
+    fallback)
+        PROFILE_LABEL="comprehensive"
+        ;;
+    *)
+        PROFILE_LABEL="$LANE"
+        ;;
+esac
+
+echo "Selected profile: $PROFILE_LABEL"
 echo "Reason: $LANE_REASON"
 echo "Changed files:"
 for path in "${CHANGED_FILES[@]}"; do

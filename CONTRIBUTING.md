@@ -55,7 +55,7 @@ The installer is worktree-safe and targets the shared git common dir, so linked 
 
 #### Troubleshooting / offline work
 
-If you are temporarily offline or missing local dependencies, you may set `ALLOW_SKIP_PREFLIGHT=1` for a one-off local push. Treat this as emergency-only; re-run `make ci-preflight` and push normally as soon as your environment is healthy again.
+The ci-preflight gate is mandatory on every push. There is no environment-based exemption: if you are offline you cannot push anyway, and if your local dependencies are missing you cannot verify your change works, so you should not be pushing yet either way. If `make ci-preflight` fails on your branch because `main` itself is red, stop and fix `main` first (revert the breaking PR, open a fix PR, or coordinate with the author) — do not route around the gate on a per-branch basis.
 
 ## Build System
 

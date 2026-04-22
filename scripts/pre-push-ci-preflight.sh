@@ -9,11 +9,6 @@ set -Eeuo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-if [[ "${ALLOW_SKIP_PREFLIGHT:-0}" == "1" ]]; then
-    echo "pre-push: WARNING: skipping ci-preflight because ALLOW_SKIP_PREFLIGHT=1" >&2
-    exit 0
-fi
-
 echo "pre-push: running make ci-preflight" >&2
 
 if ! make ci-preflight; then

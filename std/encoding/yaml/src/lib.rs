@@ -180,9 +180,11 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const c_char) -> *mut HewYaml
     }
 }
 
-/// Return the last YAML parse error recorded on the current thread.
+/// Return the last YAML error recorded on the current thread.
 ///
-/// Returns an empty string when no parse error has been recorded.
+/// This slot is shared by parse failures and byte-extraction failures from
+/// [`hew_yaml_get_bytes`]. Returns an empty string when the most recent
+/// operation succeeded or explicitly cleared the error slot.
 #[no_mangle]
 pub extern "C" fn hew_yaml_last_error() -> *mut c_char {
     str_to_malloc(&get_parse_last_error())
@@ -376,9 +378,10 @@ pub unsafe extern "C" fn hew_yaml_get_string(val: *const HewYamlValue) -> *mut c
 
 /// Get a base64-decoded bytes value from a [`HewYamlValue`].
 ///
-/// Returns a newly allocated [`HewVec`] for valid string inputs. Non-string
-/// values return null. Invalid base64 inputs return null and populate
-/// [`hew_yaml_last_error`].
+/// Returns a newly allocated [`HewVec`] for valid string inputs. Null,
+/// non-string, or invalid base64 inputs return null and overwrite
+/// [`hew_yaml_last_error`] so callers never observe a stale error from a prior
+/// parse or decode failure.
 ///
 /// # Safety
 ///
@@ -386,26 +389,25 @@ pub unsafe extern "C" fn hew_yaml_get_string(val: *const HewYamlValue) -> *mut c
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_get_bytes(val: *const HewYamlValue) -> *mut HewVec {
     if val.is_null() {
+        set_parse_last_error("invalid YAML bytes: value was null or key not found");
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid HewYamlValue pointer per caller contract.
     let v = unsafe { &*val };
-    match v.inner.as_str() {
-        Some(s) => {
-            let decoded = match base64::engine::general_purpose::STANDARD.decode(s) {
-                Ok(decoded) => decoded,
-                Err(err) => {
-                    set_parse_last_error(format!(
-                        "invalid YAML bytes: base64 decode failed: {err}"
-                    ));
-                    return std::ptr::null_mut();
-                }
-            };
-            clear_parse_last_error();
-            // SAFETY: allocates a new HewVec owned by the caller.
-            unsafe { u8_to_hwvec(&decoded) }
-        }
-        None => std::ptr::null_mut(),
+    if let Some(s) = v.inner.as_str() {
+        let decoded = match base64::engine::general_purpose::STANDARD.decode(s) {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                set_parse_last_error(format!("invalid YAML bytes: base64 decode failed: {err}"));
+                return std::ptr::null_mut();
+            }
+        };
+        clear_parse_last_error();
+        // SAFETY: allocates a new HewVec owned by the caller.
+        unsafe { u8_to_hwvec(&decoded) }
+    } else {
+        set_parse_last_error("invalid YAML bytes: value was not a string");
+        std::ptr::null_mut()
     }
 }
 
@@ -1681,6 +1683,7 @@ copy_three: *release
             assert!(bytes.is_null());
 
             let err = read_and_free_cstr(hew_yaml_last_error());
+            assert!(err.contains("invalid YAML bytes"));
             assert!(err.contains("base64") || err.contains("decode"));
 
             hew_yaml_free(field);
@@ -1702,6 +1705,7 @@ copy_three: *release
 
             let bytes = read_and_free_bytes(hew_yaml_get_bytes(field));
             assert!(bytes.is_empty());
+            assert!(read_and_free_cstr(hew_yaml_last_error()).is_empty());
 
             hew_yaml_free(field);
             hew_yaml_free(val);
@@ -1709,7 +1713,41 @@ copy_three: *release
     }
 
     #[test]
-    fn get_bytes_valid_base64_round_trips() {
+    fn get_bytes_missing_key_overwrites_stale_last_error() {
+        clear_parse_last_error();
+        let bad = parse("b: '!!!not-base64!!!'\n");
+        assert!(!bad.is_null());
+
+        // SAFETY: bad is a valid HewYamlValue from parse.
+        unsafe {
+            let key = CString::new("b").unwrap();
+            let field = hew_yaml_get_field(bad, key.as_ptr());
+            assert!(!field.is_null());
+            assert!(hew_yaml_get_bytes(field).is_null());
+            assert!(!read_and_free_cstr(hew_yaml_last_error()).is_empty());
+            hew_yaml_free(field);
+            hew_yaml_free(bad);
+        }
+
+        let val = parse("present: 'aGV3'\n");
+        assert!(!val.is_null());
+
+        // SAFETY: val is a valid HewYamlValue from parse.
+        unsafe {
+            let key = CString::new("missing").unwrap();
+            let field = hew_yaml_get_field(val, key.as_ptr());
+            assert!(field.is_null());
+
+            assert!(hew_yaml_get_bytes(field).is_null());
+            let err = read_and_free_cstr(hew_yaml_last_error());
+            assert!(err.contains("null") || err.contains("key not found"));
+
+            hew_yaml_free(val);
+        }
+    }
+
+    #[test]
+    fn get_bytes_valid_base64_round_trips_without_last_error() {
         clear_parse_last_error();
         let val = parse("b: 'aGV3'\n");
         assert!(!val.is_null());
@@ -1722,6 +1760,7 @@ copy_three: *release
 
             let bytes = read_and_free_bytes(hew_yaml_get_bytes(field));
             assert_eq!(bytes, b"hew");
+            assert!(read_and_free_cstr(hew_yaml_last_error()).is_empty());
 
             hew_yaml_free(field);
             hew_yaml_free(val);

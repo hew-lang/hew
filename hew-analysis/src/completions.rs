@@ -272,6 +272,7 @@ fn variant_completion_detail(variant_def: &VariantDef) -> Option<String> {
 }
 
 /// If the cursor is right after `spawn `, offer only actor and supervisor names.
+/// Returns `None` if no actors/supervisors are found, falling through to general completions.
 fn try_spawn_completions(
     source: &str,
     parse_result: &hew_parser::ParseResult,
@@ -310,7 +311,11 @@ fn try_spawn_completions(
         }
     }
 
-    Some(items)
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 /// Collect local variable names from function/actor bodies that are in scope at `offset`.
@@ -1217,5 +1222,25 @@ impl Box {
 
         assert!(labels.iter().any(|label| label == "y"));
         assert!(!labels.iter().any(|label| label == "x"));
+    }
+
+    #[test]
+    fn spawn_completions_fall_through_when_no_actors() {
+        // When there are no actors/supervisors defined, spawn completions should
+        // return None, allowing fallback to general completions (keywords, snippets, etc.)
+        let items = items_at_cursor(
+            r"fn example() {
+    let x = spawn /*cursor*/ id;
+}",
+            None,
+        );
+
+        // Should include keywords and snippets from general completions
+        // Verify we get a reasonable number of completions from the fallback path
+        assert!(
+            items.len() > 5,
+            "should fall through to keyword/snippet completions when no actors exist, got {} items",
+            items.len()
+        );
     }
 }

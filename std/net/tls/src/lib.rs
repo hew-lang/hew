@@ -130,6 +130,7 @@ fn build_hew_vec(bytes: &[u8]) -> Option<HewVec> {
 fn classify_tls_error(op: &str, err: &io::Error) -> (c_int, String) {
     match err.kind() {
         io::ErrorKind::WouldBlock => (TLS_STATUS_RETRYABLE, format!("{op}: would block")),
+        io::ErrorKind::TimedOut => (TLS_STATUS_RETRYABLE, format!("{op}: timed out")),
         io::ErrorKind::InvalidData => (
             TLS_STATUS_TLS_ERROR,
             format!("{op}: tls alert/protocol error: {err}"),
@@ -308,7 +309,7 @@ pub unsafe extern "C" fn hew_tls_write(
 /// Read up to `size` bytes from the TLS stream.
 ///
 /// Returns a `HewVec` containing the bytes read. `out_status` receives
-/// `0` for success or orderly EOF, `1` for retryable would-block/half-close
+/// `0` for success or orderly EOF, `1` for retryable would-block/timeout
 /// conditions, `2` for TLS alert/protocol failures, and `3` for I/O failures.
 ///
 /// # Safety
@@ -397,7 +398,10 @@ mod tests {
     use std::cell::Cell;
     use std::ffi::CStr;
     use std::io::ErrorKind;
+    use std::net::TcpListener;
     use std::os::raw::c_void;
+    use std::thread;
+    use std::time::Duration;
 
     #[derive(Debug)]
     enum MockReadAction {
@@ -552,6 +556,20 @@ mod tests {
         }
     }
 
+    fn timed_out_tcp_reader(client_timeout: Duration) -> (TcpStream, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let _accepted = listener.accept().unwrap();
+            thread::sleep(Duration::from_millis(200));
+        });
+
+        let tcp = TcpStream::connect(addr).unwrap();
+        tcp.set_read_timeout(Some(client_timeout)).unwrap();
+        (tcp, server)
+    }
+
     #[test]
     fn connect_null_host_returns_null() {
         // SAFETY: passing null is the test.
@@ -624,6 +642,36 @@ mod tests {
         assert_eq!(result.data.len, 0);
         assert_eq!(result.status, TLS_STATUS_RETRYABLE);
         assert_eq!(last_error_string(), "hew_tls_read: would block");
+    }
+
+    #[test]
+    fn read_socket_timeout_sets_retryable_status_and_last_error() {
+        clear_tls_last_error();
+        let (mut stream, server) = timed_out_tcp_reader(Duration::from_millis(25));
+
+        let result = read_tls_vec(&mut stream, 32);
+
+        assert_eq!(result.data.len, 0);
+        assert_eq!(result.status, TLS_STATUS_RETRYABLE);
+        // macOS surfaces SO_RCVTIMEO expirations as WouldBlock; Linux commonly
+        // reports TimedOut. Both must stay on the retryable status path.
+        let last_error = last_error_string();
+        assert!(
+            last_error == "hew_tls_read: timed out" || last_error == "hew_tls_read: would block",
+            "unexpected timeout classification: {last_error}"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn classify_timed_out_as_retryable() {
+        let (status, message) = classify_tls_error(
+            "hew_tls_read",
+            &io::Error::new(ErrorKind::TimedOut, "slow peer"),
+        );
+
+        assert_eq!(status, TLS_STATUS_RETRYABLE);
+        assert_eq!(message, "hew_tls_read: timed out");
     }
 
     #[test]

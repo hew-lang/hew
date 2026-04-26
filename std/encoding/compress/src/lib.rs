@@ -1,11 +1,12 @@
 //! Hew runtime: gzip, deflate, and zlib compression/decompression.
 //!
 //! Provides compression and decompression using gzip, raw deflate, and zlib
-//! formats for compiled Hew programs. Outputs are capped at
-//! [`DEFAULT_MAX_OUTPUT_LEN`] bytes by default to fail closed on compression and
-//! decompression bombs; set [`MAX_OUTPUT_LEN_ENV`] to override the cap for a
-//! process. All returned buffers are allocated with `libc::malloc` so callers
-//! can free them with [`hew_compress_free`].
+//! formats for compiled Hew programs. Callers must pass an explicit
+//! `max_output_len` to each decompression entry point so compressed input fails
+//! closed instead of expanding until OOM. A conservative starting cap is
+//! [`DEFAULT_MAX_OUTPUT_LEN`] bytes; tighten it per call site when a smaller
+//! decoded payload is expected. All returned buffers are allocated with
+//! `libc::malloc` so callers can free them with [`hew_compress_free`].
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
 // referenced by hew-cabi's object code.
@@ -21,12 +22,8 @@ use flate2::read::{
 use flate2::Compression;
 use hew_cabi::cabi::str_to_malloc;
 
-/// Default maximum number of bytes any compression/decompression operation may
-/// emit before failing closed.
-pub const DEFAULT_MAX_OUTPUT_LEN: usize = 256 * 1024 * 1024;
-
-/// Environment variable that overrides [`DEFAULT_MAX_OUTPUT_LEN`] when set.
-pub const MAX_OUTPUT_LEN_ENV: &str = "HEW_COMPRESS_MAX_OUTPUT_LEN";
+/// Conservative starting point for explicit decompression caps.
+pub const DEFAULT_MAX_OUTPUT_LEN: usize = 64 * 1024 * 1024;
 
 std::thread_local! {
     static LAST_ERROR: std::cell::RefCell<Option<String>> =
@@ -48,7 +45,7 @@ fn get_last_error() -> String {
 #[derive(Debug)]
 enum CompressError {
     InvalidInput(&'static str),
-    InvalidLimitEnv(String),
+    InvalidMaxOutputLen(i64),
     OutputLimitExceeded { limit: usize },
     Read(io::Error),
     AllocationFailed,
@@ -58,8 +55,8 @@ impl std::fmt::Display for CompressError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidInput(message) => f.write_str(message),
-            Self::InvalidLimitEnv(message) => {
-                write!(f, "invalid {MAX_OUTPUT_LEN_ENV} override: {message}")
+            Self::InvalidMaxOutputLen(limit) => {
+                write!(f, "max output length must be non-negative, got {limit}")
             }
             Self::OutputLimitExceeded { limit } => {
                 write!(f, "output exceeded {limit} byte limit")
@@ -70,36 +67,8 @@ impl std::fmt::Display for CompressError {
     }
 }
 
-fn configured_max_output_len() -> Result<usize, CompressError> {
-    match std::env::var(MAX_OUTPUT_LEN_ENV) {
-        Ok(raw) => raw
-            .parse::<usize>()
-            .map_err(|err| CompressError::InvalidLimitEnv(err.to_string())),
-        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_MAX_OUTPUT_LEN),
-        Err(std::env::VarError::NotUnicode(_)) => Err(CompressError::InvalidLimitEnv(
-            "value is not valid UTF-8".to_string(),
-        )),
-    }
-}
-
-fn read_to_vec_with_limit(
-    reader: impl Read,
-    max_output_len: usize,
-) -> Result<Vec<u8>, CompressError> {
-    let take_limit = u64::try_from(max_output_len)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut limited_reader = reader.take(take_limit);
-    let mut buf = Vec::new();
-    limited_reader
-        .read_to_end(&mut buf)
-        .map_err(CompressError::Read)?;
-    if buf.len() > max_output_len {
-        return Err(CompressError::OutputLimitExceeded {
-            limit: max_output_len,
-        });
-    }
-    Ok(buf)
+fn hew_max_output_len(max_output_len: i64) -> Result<usize, CompressError> {
+    usize::try_from(max_output_len).map_err(|_| CompressError::InvalidMaxOutputLen(max_output_len))
 }
 
 /// Read input through `reader` into a `malloc`-allocated buffer.
@@ -111,13 +80,22 @@ fn read_to_vec_with_limit(
 ///
 /// `out_len` must point to a writable `usize`.
 unsafe fn read_to_malloc(reader: impl Read, out_len: *mut usize, max_output_len: usize) -> *mut u8 {
-    let buf = match read_to_vec_with_limit(reader, max_output_len) {
-        Ok(buf) => buf,
-        Err(err) => {
-            set_last_error(err.to_string());
-            return std::ptr::null_mut();
-        }
-    };
+    let take_limit = (max_output_len as u64).saturating_add(1);
+    let mut limited_reader = reader.take(take_limit);
+    let mut buf = Vec::new();
+    if let Err(err) = limited_reader.read_to_end(&mut buf) {
+        set_last_error(CompressError::Read(err).to_string());
+        return std::ptr::null_mut();
+    }
+    if buf.len() > max_output_len {
+        set_last_error(
+            CompressError::OutputLimitExceeded {
+                limit: max_output_len,
+            }
+            .to_string(),
+        );
+        return std::ptr::null_mut();
+    }
     let buf_len = buf.len();
     let alloc_size = if buf_len == 0 { 1 } else { buf_len };
 
@@ -303,15 +281,8 @@ pub unsafe extern "C" fn hew_gzip_compress(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    let max_output_len = match configured_max_output_len() {
-        Ok(limit) => limit,
-        Err(err) => {
-            set_last_error(err.to_string());
-            return std::ptr::null_mut();
-        }
-    };
     // SAFETY: caller contract is forwarded to hew_gzip_compress_with_limit.
-    unsafe { hew_gzip_compress_with_limit(data, len, out_len, max_output_len) }
+    unsafe { hew_gzip_compress_with_limit(data, len, out_len, usize::MAX) }
 }
 
 /// Gzip decompress `data`.
@@ -329,14 +300,8 @@ pub unsafe extern "C" fn hew_gzip_decompress(
     data: *const u8,
     len: usize,
     out_len: *mut usize,
+    max_output_len: usize,
 ) -> *mut u8 {
-    let max_output_len = match configured_max_output_len() {
-        Ok(limit) => limit,
-        Err(err) => {
-            set_last_error(err.to_string());
-            return std::ptr::null_mut();
-        }
-    };
     // SAFETY: caller contract is forwarded to hew_gzip_decompress_with_limit.
     unsafe { hew_gzip_decompress_with_limit(data, len, out_len, max_output_len) }
 }
@@ -357,15 +322,8 @@ pub unsafe extern "C" fn hew_deflate_compress(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    let max_output_len = match configured_max_output_len() {
-        Ok(limit) => limit,
-        Err(err) => {
-            set_last_error(err.to_string());
-            return std::ptr::null_mut();
-        }
-    };
     // SAFETY: caller contract is forwarded to hew_deflate_compress_with_limit.
-    unsafe { hew_deflate_compress_with_limit(data, len, out_len, max_output_len) }
+    unsafe { hew_deflate_compress_with_limit(data, len, out_len, usize::MAX) }
 }
 
 /// Raw deflate decompress `data`.
@@ -377,20 +335,15 @@ pub unsafe extern "C" fn hew_deflate_compress(
 /// # Safety
 ///
 /// `data` must point to at least `len` readable bytes, or be null when `len`
-/// is 0. `out_len` must point to a writable `usize`.
+/// is 0. `out_len` must point to a writable `usize`. `max_output_len` is the
+/// caller-chosen decompression cap.
 #[no_mangle]
 pub unsafe extern "C" fn hew_deflate_decompress(
     data: *const u8,
     len: usize,
     out_len: *mut usize,
+    max_output_len: usize,
 ) -> *mut u8 {
-    let max_output_len = match configured_max_output_len() {
-        Ok(limit) => limit,
-        Err(err) => {
-            set_last_error(err.to_string());
-            return std::ptr::null_mut();
-        }
-    };
     // SAFETY: caller contract is forwarded to hew_deflate_decompress_with_limit.
     unsafe { hew_deflate_decompress_with_limit(data, len, out_len, max_output_len) }
 }
@@ -411,15 +364,8 @@ pub unsafe extern "C" fn hew_zlib_compress(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    let max_output_len = match configured_max_output_len() {
-        Ok(limit) => limit,
-        Err(err) => {
-            set_last_error(err.to_string());
-            return std::ptr::null_mut();
-        }
-    };
     // SAFETY: caller contract is forwarded to hew_zlib_compress_with_limit.
-    unsafe { hew_zlib_compress_with_limit(data, len, out_len, max_output_len) }
+    unsafe { hew_zlib_compress_with_limit(data, len, out_len, usize::MAX) }
 }
 
 /// Zlib decompress `data`.
@@ -431,20 +377,15 @@ pub unsafe extern "C" fn hew_zlib_compress(
 /// # Safety
 ///
 /// `data` must point to at least `len` readable bytes, or be null when `len`
-/// is 0. `out_len` must point to a writable `usize`.
+/// is 0. `out_len` must point to a writable `usize`. `max_output_len` is the
+/// caller-chosen decompression cap.
 #[no_mangle]
 pub unsafe extern "C" fn hew_zlib_decompress(
     data: *const u8,
     len: usize,
     out_len: *mut usize,
+    max_output_len: usize,
 ) -> *mut u8 {
-    let max_output_len = match configured_max_output_len() {
-        Ok(limit) => limit,
-        Err(err) => {
-            set_last_error(err.to_string());
-            return std::ptr::null_mut();
-        }
-    };
     // SAFETY: caller contract is forwarded to hew_zlib_decompress_with_limit.
     unsafe { hew_zlib_decompress_with_limit(data, len, out_len, max_output_len) }
 }
@@ -479,7 +420,8 @@ pub unsafe extern "C" fn hew_compress_free(ptr: *mut u8) {
 // HewVec-ABI wrappers (used by std/compress.hew)
 // ---------------------------------------------------------------------------
 
-/// Helper to call a compress/decompress function with `*const u8, usize, *mut usize` ABI.
+/// Helper to call a compression function with `*const u8, usize, *mut usize`
+/// ABI.
 ///
 /// # Safety
 ///
@@ -506,11 +448,57 @@ unsafe fn compress_op(
     result
 }
 
+/// Helper to call a decompression function with
+/// `*const u8, usize, *mut usize, usize` ABI.
+///
+/// # Safety
+///
+/// Caller must ensure the `f` function is called with valid pointers.
+unsafe fn decompress_op(
+    v: *mut hew_cabi::vec::HewVec,
+    max_output_len: i64,
+    f: unsafe extern "C" fn(*const u8, usize, *mut usize, usize) -> *mut u8,
+) -> *mut hew_cabi::vec::HewVec {
+    let max_output_len = match hew_max_output_len(max_output_len) {
+        Ok(limit) => limit,
+        Err(err) => {
+            set_last_error(err.to_string());
+            // SAFETY: hew_vec_new allocates a valid empty HewVec.
+            return unsafe { hew_cabi::vec::hew_vec_new() };
+        }
+    };
+    // SAFETY: v validity forwarded to hwvec_to_u8.
+    let input = unsafe { hew_cabi::vec::hwvec_to_u8(v) };
+    let mut out_len: usize = 0;
+    // SAFETY: input slice is valid; out_len is writable.
+    let ptr = unsafe {
+        f(
+            input.as_ptr(),
+            input.len(),
+            &raw mut out_len,
+            max_output_len,
+        )
+    };
+    if ptr.is_null() {
+        // SAFETY: hew_vec_new allocates a valid empty HewVec.
+        return unsafe { hew_cabi::vec::hew_vec_new() };
+    }
+    // SAFETY: ptr is valid for out_len bytes.
+    let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
+    // SAFETY: slice is valid.
+    let result = unsafe { hew_cabi::vec::u8_to_hwvec(slice) };
+    // SAFETY: ptr was allocated by the codec function via libc::malloc.
+    unsafe { hew_compress_free(ptr) };
+    result
+}
+
 /// Gzip-compress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
 ///
 /// # Safety
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `max_output_len` must be non-negative.
+/// `max_output_len` must be non-negative.
 #[no_mangle]
 pub unsafe extern "C" fn hew_gzip_compress_hew(
     v: *mut hew_cabi::vec::HewVec,
@@ -524,12 +512,14 @@ pub unsafe extern "C" fn hew_gzip_compress_hew(
 /// # Safety
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `max_output_len` must be non-negative.
 #[no_mangle]
 pub unsafe extern "C" fn hew_gzip_decompress_hew(
     v: *mut hew_cabi::vec::HewVec,
+    max_output_len: i64,
 ) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to compress_op.
-    unsafe { compress_op(v, hew_gzip_decompress) }
+    // SAFETY: v validity forwarded to decompress_op.
+    unsafe { decompress_op(v, max_output_len, hew_gzip_decompress) }
 }
 
 /// Deflate-compress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
@@ -550,12 +540,14 @@ pub unsafe extern "C" fn hew_deflate_compress_hew(
 /// # Safety
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `max_output_len` must be non-negative.
 #[no_mangle]
 pub unsafe extern "C" fn hew_deflate_decompress_hew(
     v: *mut hew_cabi::vec::HewVec,
+    max_output_len: i64,
 ) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to compress_op.
-    unsafe { compress_op(v, hew_deflate_decompress) }
+    // SAFETY: v validity forwarded to decompress_op.
+    unsafe { decompress_op(v, max_output_len, hew_deflate_decompress) }
 }
 
 /// Zlib-compress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
@@ -576,12 +568,14 @@ pub unsafe extern "C" fn hew_zlib_compress_hew(
 /// # Safety
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `max_output_len` must be non-negative.
 #[no_mangle]
 pub unsafe extern "C" fn hew_zlib_decompress_hew(
     v: *mut hew_cabi::vec::HewVec,
+    max_output_len: i64,
 ) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to compress_op.
-    unsafe { compress_op(v, hew_zlib_decompress) }
+    // SAFETY: v validity forwarded to decompress_op.
+    unsafe { decompress_op(v, max_output_len, hew_zlib_decompress) }
 }
 
 #[cfg(test)]
@@ -607,7 +601,7 @@ mod tests {
     }
 
     fn gzip_zeros_stream(total_len: usize) -> Vec<u8> {
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), Compression::default());
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), Compression::best());
         let chunk = vec![0_u8; 64 * 1024];
         let mut remaining = total_len;
         while remaining > 0 {
@@ -624,7 +618,7 @@ mod tests {
     unsafe fn assert_roundtrip(
         input: &[u8],
         compress_fn: unsafe extern "C" fn(*const u8, usize, *mut usize) -> *mut u8,
-        decompress_fn: unsafe extern "C" fn(*const u8, usize, *mut usize) -> *mut u8,
+        decompress_fn: unsafe extern "C" fn(*const u8, usize, *mut usize, usize) -> *mut u8,
     ) {
         let mut compressed_len: usize = 0;
         // SAFETY: input is a valid slice; compressed_len is writable.
@@ -635,8 +629,14 @@ mod tests {
 
         let mut decompressed_len: usize = 0;
         // SAFETY: compressed is valid for compressed_len bytes; decompressed_len is writable.
-        let decompressed =
-            unsafe { decompress_fn(compressed, compressed_len, &raw mut decompressed_len) };
+        let decompressed = unsafe {
+            decompress_fn(
+                compressed,
+                compressed_len,
+                &raw mut decompressed_len,
+                input.len(),
+            )
+        };
         assert!(!decompressed.is_null(), "decompression returned null");
         assert_eq!(decompressed_len, input.len());
 
@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gzip_zero_burst_roundtrip_with_default_limit() {
+    fn test_gzip_zero_burst_roundtrip_with_explicit_limit() {
         let input = vec![0_u8; 10 * 1024 * 1024];
 
         let mut compressed_len: usize = 0;
@@ -737,8 +737,14 @@ mod tests {
 
         let mut decompressed_len: usize = 0;
         // SAFETY: compressed is valid for compressed_len bytes.
-        let decompressed =
-            unsafe { hew_gzip_decompress(compressed, compressed_len, &raw mut decompressed_len) };
+        let decompressed = unsafe {
+            hew_gzip_decompress(
+                compressed,
+                compressed_len,
+                &raw mut decompressed_len,
+                DEFAULT_MAX_OUTPUT_LEN,
+            )
+        };
         assert!(!decompressed.is_null(), "decompression returned null");
         assert_eq!(decompressed_len, input.len());
         // SAFETY: decompressed is valid for decompressed_len bytes.
@@ -754,20 +760,20 @@ mod tests {
 
     #[test]
     fn test_gzip_decompress_rejects_large_bomb() {
-        const BOMB_UNCOMPRESSED_LEN: usize = 1024 * 1024 * 1024;
+        const BOMB_UNCOMPRESSED_LEN: usize = 10 * 1024 * 1024;
         const LOW_LIMIT: usize = 1024 * 1024;
 
         let compressed = gzip_zeros_stream(BOMB_UNCOMPRESSED_LEN);
         assert!(
-            compressed.len() < 2 * 1024 * 1024,
-            "expected ~1 MiB compressed bomb, got {} bytes",
+            compressed.len() < 16 * 1024,
+            "expected a small compressed bomb, got {} bytes",
             compressed.len()
         );
 
         let mut out_len: usize = 123;
         // SAFETY: compressed is a valid byte slice.
         let decompressed = unsafe {
-            hew_gzip_decompress_with_limit(
+            hew_gzip_decompress(
                 compressed.as_ptr(),
                 compressed.len(),
                 &raw mut out_len,

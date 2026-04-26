@@ -87,7 +87,9 @@ pub unsafe extern "C" fn hew_json_parse(json_str: *const c_char) -> *mut HewJson
 
 /// Return the last JSON error recorded on the current thread.
 ///
-/// Returns an empty string when no error has been recorded.
+/// This slot is shared by parse failures and byte-extraction failures from
+/// [`hew_json_get_bytes`]. Returns an empty string when the most recent
+/// operation succeeded or explicitly cleared the error slot.
 #[no_mangle]
 pub extern "C" fn hew_json_last_error() -> *mut c_char {
     str_to_malloc(&get_parse_last_error())
@@ -271,9 +273,10 @@ pub unsafe extern "C" fn hew_json_get_string(val: *const HewJsonValue) -> *mut c
 
 /// Get a base64-decoded bytes value from a [`HewJsonValue`].
 ///
-/// Returns a newly allocated [`HewVec`] for valid string inputs. Non-string
-/// values return null. Invalid base64 inputs return null and populate
-/// [`hew_json_last_error`].
+/// Returns a newly allocated [`HewVec`] for valid string inputs. Null,
+/// non-string, or invalid base64 inputs return null and overwrite
+/// [`hew_json_last_error`] so callers never observe a stale error from a prior
+/// parse or decode failure.
 ///
 /// # Safety
 ///

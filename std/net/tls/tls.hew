@@ -80,6 +80,13 @@ pub fn connect(host: String, port: int) -> TlsStream {
     unsafe { hew_tls_connect(host, port as i32) }
 }
 
+/// Return the last TLS client error observed on this thread.
+///
+/// Failed `connect()` calls update this string. Successful connects clear it.
+pub fn last_error() -> String {
+    unsafe { hew_tls_last_error() }
+}
+
 /// Write raw bytes to a TLS stream.
 ///
 /// Returns the number of bytes written, or −1 on error.
@@ -110,6 +117,7 @@ pub fn close(stream: TlsStream) {
 
 extern "C" {
     fn hew_tls_connect(host: String, port: i32) -> TlsStream;
+    fn hew_tls_last_error() -> String;
     fn hew_tls_write(stream: TlsStream, data: bytes) -> i32;
     fn hew_tls_read(stream: TlsStream, size: i32) -> bytes;
     fn hew_tls_close(stream: TlsStream);

@@ -34,6 +34,7 @@ JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
 # These are linked by the compiler driver when the user imports the module.
 STDLIB_PACKAGE_PREFIXES = (
     "hew_http_",
+    "hew_tls_",
     "hew_json_",
     "hew_regex_",
     "hew_sqlite_",

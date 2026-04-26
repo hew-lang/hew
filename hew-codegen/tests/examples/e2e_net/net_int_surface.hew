@@ -7,7 +7,7 @@ fn _prove_int_surface() {
     let tls_port: int = 443;
     let tls_size: int = 4096;
     let tls_stream: tls.TlsStream = tls.connect("example.com", tls_port);
-    let _tls_chunk: bytes = tls.read(tls_stream, tls_size);
+    let _tls_chunk: Result<bytes, fs.IoError> = tls.read(tls_stream, tls_size);
 
     let smtp_port: int = 587;
     let _smtp_conn: smtp.Conn = smtp.connect("smtp.example.com", smtp_port, "user", "pass");

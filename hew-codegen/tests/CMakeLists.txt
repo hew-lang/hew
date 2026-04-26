@@ -101,6 +101,20 @@ target_link_libraries(test_jit_symbol_map PRIVATE
 
 add_test(NAME jit_symbol_map COMMAND test_jit_symbol_map)
 
+# ── JIT negative link harness ────────────────────────────────────────────────
+if(UNIX)
+  add_test(
+    NAME jit_negative_link
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/e2e_jit_negative_link/run_jit_negative_link.py
+      --cc=${CMAKE_C_COMPILER}
+      --work-dir=${CMAKE_CURRENT_BINARY_DIR}/e2e_jit_negative_link
+  )
+  set_tests_properties(jit_negative_link PROPERTIES TIMEOUT 120)
+else()
+  message(STATUS "Skipping jit_negative_link — requires Unix-like shared-library linker semantics")
+endif()
+
 # ── Msgpack reader test ──────────────────────────────────────────────────
 add_executable(test_msgpack_reader test_msgpack_reader.cpp)
 

@@ -4,6 +4,7 @@ import std::encoding::compress;
 import std::testing;
 
 // WASM-TODO: Add wasm coverage once std::encoding::compress is verified on wasm32-wasip1.
+const DEFAULT_DECOMPRESS_LIMIT: int = 64 * 1024 * 1024;
 
 fn assert_bytes_eq(actual: bytes, expected: bytes) {
     testing.assert_eq(actual.len(), expected.len());
@@ -16,7 +17,7 @@ fn assert_bytes_eq(actual: bytes, expected: bytes) {
 fn test_gzip_round_trip() {
     let input = bytes [72, 101, 108, 108, 111];
     let compressed = compress.gzip_compress(input);
-    let decompressed = compress.gzip_decompress(compressed);
+    let decompressed = compress.gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
 }
 
@@ -24,7 +25,7 @@ fn test_gzip_round_trip() {
 fn test_gzip_round_trip_empty() {
     let input = bytes [];
     let compressed = compress.gzip_compress(input);
-    let decompressed = compress.gzip_decompress(compressed);
+    let decompressed = compress.gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
 }
 
@@ -32,7 +33,7 @@ fn test_gzip_round_trip_empty() {
 fn test_deflate_round_trip() {
     let input = bytes [0, 1, 2, 3, 255];
     let compressed = compress.deflate_compress(input);
-    let decompressed = compress.deflate_decompress(compressed);
+    let decompressed = compress.deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
 }
 
@@ -40,7 +41,7 @@ fn test_deflate_round_trip() {
 fn test_deflate_round_trip_empty() {
     let input = bytes [];
     let compressed = compress.deflate_compress(input);
-    let decompressed = compress.deflate_decompress(compressed);
+    let decompressed = compress.deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
 }
 
@@ -48,7 +49,7 @@ fn test_deflate_round_trip_empty() {
 fn test_zlib_round_trip() {
     let input = bytes [120, 121, 122];
     let compressed = compress.zlib_compress(input);
-    let decompressed = compress.zlib_decompress(compressed);
+    let decompressed = compress.zlib_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
 }
 
@@ -56,6 +57,6 @@ fn test_zlib_round_trip() {
 fn test_zlib_round_trip_empty() {
     let input = bytes [];
     let compressed = compress.zlib_compress(input);
-    let decompressed = compress.zlib_decompress(compressed);
+    let decompressed = compress.zlib_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
 }

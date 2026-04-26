@@ -1,7 +1,9 @@
 //! HTTP server for handling web requests.
 //!
 //! Provides a blocking HTTP server that listens on a TCP address,
-//! accepts incoming requests, and sends responses.
+//! accepts incoming requests, and sends responses. Request-body reads time out
+//! after 30 seconds by default so slow trickle-feed clients cannot hold the
+//! server indefinitely.
 //!
 //! # Examples
 //!
@@ -39,6 +41,9 @@ trait ServerMethods {
     /// Block until a client connects and return the next `Request`.
     fn accept(srv: Server) -> Request;
 
+    /// Set the per-request body read deadline in milliseconds.
+    fn set_request_timeout_ms(srv: Server, timeout_ms: int) -> int;
+
     /// Canonical release path for `Server`.
     ///
     /// Callers MUST invoke `close()` before the value goes out of scope;
@@ -50,6 +55,10 @@ impl ServerMethods for Server {
     /// Accept the next incoming HTTP request.
     fn accept(srv: Server) -> Request {
         unsafe { hew_http_server_recv(srv) }
+    }
+    /// Set the per-request body read deadline in milliseconds.
+    fn set_request_timeout_ms(srv: Server, timeout_ms: int) -> int {
+        unsafe { hew_http_server_set_request_timeout_ms(srv, timeout_ms as i64) } // INTERNAL-ABI: C ABI timeout is i64
     }
     /// Canonical release path for `Server`.
     ///
@@ -256,6 +265,7 @@ pub fn try_respond_stream(req: Request, status: int, content_type: String) -> Re
 extern "C" {
     fn hew_http_server_new(addr: String) -> Server;
     fn hew_http_server_recv(server: Server) -> Request;
+    fn hew_http_server_set_request_timeout_ms(server: Server, timeout_ms: i64) -> i32;
     fn hew_http_request_method(req: Request) -> String;
     fn hew_http_request_path(req: Request) -> String;
     fn hew_http_request_body_string(req: Request, encoding: String) -> String;

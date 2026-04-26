@@ -58,12 +58,16 @@ fn default_client_config() -> Result<rustls::ClientConfig, BoxError> {
     Ok(config)
 }
 
-fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, BoxError> {
-    let server_name = ServerName::try_from(host.to_string())?;
-    let config = default_client_config()?;
-    let connector = rustls::ClientConnection::new(Arc::new(config), server_name)?;
+fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, String> {
+    let server_name = ServerName::try_from(host.to_string())
+        .map_err(|err| format!("invalid TLS hostname `{host}`: {err}"))?;
+    let config = default_client_config()
+        .map_err(|err| format!("failed to build TLS client config: {err}"))?;
+    let connector = rustls::ClientConnection::new(Arc::new(config), server_name)
+        .map_err(|err| format!("failed to create TLS client connection for `{host}`: {err}"))?;
     let addr = format!("{host}:{port}");
-    let tcp = TcpStream::connect(addr)?;
+    let tcp =
+        TcpStream::connect(&addr).map_err(|err| format!("failed to connect to {addr}: {err}"))?;
     let stream = rustls::StreamOwned::new(connector, tcp);
     Ok(HewTlsStream { stream })
 }
@@ -76,8 +80,13 @@ fn clear_tls_last_error() {
     LAST_TLS_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
-fn get_tls_last_error() -> String {
-    LAST_TLS_ERROR.with(|error| error.borrow().as_ref().cloned().unwrap_or_else(String::new))
+fn clone_tls_last_error() -> Option<String> {
+    LAST_TLS_ERROR.with(|error| error.borrow().clone())
+}
+
+fn record_tls_connect_error(msg: impl Into<String>) -> *mut HewTlsStream {
+    set_tls_last_error(msg);
+    std::ptr::null_mut()
 }
 
 fn empty_hew_vec() -> HewVec {
@@ -162,25 +171,30 @@ fn read_tls_vec<R: Read>(reader: &mut R, size: c_int) -> HewVec {
 pub unsafe extern "C" fn hew_tls_connect(host: *const c_char, port: c_int) -> *mut HewTlsStream {
     // SAFETY: `host` is a valid NUL-terminated C string per caller contract.
     let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
-        return std::ptr::null_mut();
+        return record_tls_connect_error("invalid TLS host: null pointer or invalid UTF-8");
     };
     let Ok(port_u16) = u16::try_from(port) else {
-        return std::ptr::null_mut();
+        return record_tls_connect_error(format!("invalid TLS port: {port}"));
     };
     match connect_tls(host_str, port_u16) {
-        Ok(stream) => Box::into_raw(Box::new(stream)),
-        Err(_) => std::ptr::null_mut(),
+        Ok(stream) => {
+            clear_tls_last_error();
+            Box::into_raw(Box::new(stream))
+        }
+        Err(err) => record_tls_connect_error(err),
     }
 }
 
 /// Return the last TLS client error recorded on the current thread.
 ///
-/// Returns an empty string when no TLS client error has been recorded. The
-/// returned string is `malloc`-allocated; callers must free it with
-/// `libc::free`.
+/// Returns a `malloc`-allocated, NUL-terminated string. The caller must free it
+/// with `libc::free`. Returns null when no TLS client error has been recorded.
 #[no_mangle]
 pub extern "C" fn hew_tls_last_error() -> *mut c_char {
-    str_to_malloc(&get_tls_last_error())
+    match clone_tls_last_error() {
+        Some(message) => str_to_malloc(&message),
+        None => std::ptr::null_mut(),
+    }
 }
 
 /// Write `data` to the TLS stream.
@@ -272,9 +286,11 @@ pub unsafe extern "C" fn hew_tls_close(stream: *mut HewTlsStream) {
 mod tests {
     use super::*;
     use std::cell::Cell;
-    use std::ffi::CStr;
+    use std::ffi::{CStr, CString};
     use std::io::ErrorKind;
+    use std::net::TcpListener;
     use std::os::raw::c_void;
+    use std::thread;
 
     #[derive(Debug)]
     enum MockReadAction {
@@ -336,10 +352,10 @@ mod tests {
         }
     }
 
-    fn last_error_string() -> String {
+    fn last_error_string() -> Option<String> {
         let ptr = hew_tls_last_error();
         if ptr.is_null() {
-            return String::new();
+            return None;
         }
         // SAFETY: `ptr` is returned by `hew_tls_last_error` as a valid,
         // NUL-terminated string allocation.
@@ -348,7 +364,7 @@ mod tests {
             .into_owned();
         // SAFETY: `ptr` was allocated with `libc::malloc` by `hew_tls_last_error`.
         unsafe { libc::free(ptr.cast::<c_void>()) };
-        message
+        Some(message)
     }
 
     fn vec_bytes(vec: &HewVec) -> Vec<u8> {
@@ -404,7 +420,7 @@ mod tests {
 
         assert!(reader.called.get());
         assert_eq!(vec.len, 0);
-        assert_eq!(last_error_string(), "eof");
+        assert_eq!(last_error_string().as_deref(), Some("eof"));
     }
 
     #[test]
@@ -415,7 +431,7 @@ mod tests {
         let vec = read_tls_vec(&mut reader, 32);
 
         assert_eq!(vec.len, 0);
-        assert_eq!(last_error_string(), "timeout");
+        assert_eq!(last_error_string().as_deref(), Some("timeout"));
     }
 
     #[test]
@@ -426,7 +442,7 @@ mod tests {
         let vec = read_tls_vec(&mut reader, 32);
 
         assert_eq!(vec.len, 0);
-        assert_eq!(last_error_string(), "io: connection reset");
+        assert_eq!(last_error_string().as_deref(), Some("io: connection reset"));
     }
 
     #[test]
@@ -438,7 +454,7 @@ mod tests {
 
         assert!(!reader.called.get());
         assert_eq!(vec.len, 0);
-        assert!(last_error_string().is_empty());
+        assert!(last_error_string().is_none());
     }
 
     #[test]
@@ -449,7 +465,7 @@ mod tests {
         let vec = read_tls_vec(&mut reader, 32);
 
         assert_eq!(vec_bytes(&vec), b"hello");
-        assert!(last_error_string().is_empty());
+        assert!(last_error_string().is_none());
         free_vec(&vec);
     }
 
@@ -461,7 +477,7 @@ mod tests {
 
     #[test]
     fn connect_empty_host_returns_null() {
-        let host = std::ffi::CString::new("").unwrap();
+        let host = CString::new("").unwrap();
         // SAFETY: passing valid but empty C string.
         let ptr = unsafe { hew_tls_connect(host.as_ptr(), 443) };
         assert!(ptr.is_null());
@@ -469,10 +485,78 @@ mod tests {
 
     #[test]
     fn connect_negative_port_returns_null() {
-        let host = std::ffi::CString::new("example.com").unwrap();
+        let host = CString::new("example.com").unwrap();
         // SAFETY: passing valid host with invalid port.
         let ptr = unsafe { hew_tls_connect(host.as_ptr(), -1) };
         assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn connect_invalid_hostname_records_last_error() {
+        clear_tls_last_error();
+        let host = CString::new("bad host").unwrap();
+
+        // SAFETY: passing valid C string with an invalid TLS hostname.
+        let ptr = unsafe { hew_tls_connect(host.as_ptr(), 443) };
+
+        assert!(ptr.is_null());
+        let err = last_error_string().expect("invalid hostname should record an error");
+        assert!(
+            err.contains("hostname"),
+            "expected hostname context, got: {err}"
+        );
+        assert!(err.contains("bad host"), "expected host value, got: {err}");
+    }
+
+    #[test]
+    fn connect_unreachable_tcp_records_last_error() {
+        clear_tls_last_error();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+        let host = CString::new("localhost").unwrap();
+
+        // SAFETY: passing valid host and an unused localhost port.
+        let ptr = unsafe { hew_tls_connect(host.as_ptr(), i32::from(port)) };
+
+        assert!(ptr.is_null());
+        let err = last_error_string().expect("connect failure should record an error");
+        assert!(
+            err.contains("connect"),
+            "expected connect context, got: {err}"
+        );
+        assert!(
+            err.contains("localhost"),
+            "expected address context, got: {err}"
+        );
+    }
+
+    #[test]
+    fn connect_success_clears_stale_last_error() {
+        let stale_host = CString::new("bad host").unwrap();
+        // SAFETY: passing valid C string with an invalid TLS hostname.
+        let failed = unsafe { hew_tls_connect(stale_host.as_ptr(), 443) };
+        assert!(failed.is_null());
+        assert!(last_error_string().is_some());
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        let accept_thread = thread::spawn(move || {
+            let _ = listener.accept().expect("accept client");
+        });
+        let host = CString::new("localhost").unwrap();
+
+        // SAFETY: passing valid host and port for a listening local TCP server.
+        let stream = unsafe { hew_tls_connect(host.as_ptr(), i32::from(port)) };
+
+        assert!(!stream.is_null(), "expected TLS connect wrapper to succeed");
+        assert!(
+            last_error_string().is_none(),
+            "success should clear stale error"
+        );
+        // SAFETY: `stream` was returned by `hew_tls_connect`.
+        unsafe { hew_tls_close(stream) };
+        accept_thread.join().expect("accept thread should finish");
     }
 
     #[test]

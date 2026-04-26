@@ -97,6 +97,8 @@ const ACTOR_REF_LOCAL: c_int = 0;
 const READER_READ_TIMEOUT: Duration = Duration::from_millis(250);
 const READER_JOIN_WAIT: Duration = Duration::from_millis(500);
 const READER_WAIT_POLL: Duration = Duration::from_millis(10);
+const WEBSOCKET_MAX_MESSAGE_SIZE_ENV: &str = "HEW_WS_MAX_MESSAGE_SIZE";
+const WEBSOCKET_MAX_FRAME_SIZE_ENV: &str = "HEW_WS_MAX_FRAME_SIZE";
 /// Conservative inbound message cap for all Hew WebSocket handshakes.
 const WEBSOCKET_MAX_MESSAGE_SIZE_BYTES: usize = 8 << 20;
 /// Conservative inbound frame cap for all Hew WebSocket handshakes.
@@ -111,6 +113,33 @@ fn websocket_config(max_message_size: usize, max_frame_size: usize) -> WebSocket
     WebSocketConfig::default()
         .max_message_size(Some(max_message_size))
         .max_frame_size(Some(max_frame_size))
+}
+
+fn parse_websocket_cap_from_env(env_name: &str) -> Result<Option<usize>, String> {
+    match std::env::var(env_name) {
+        Ok(raw) => raw
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|err| format!("{env_name} must be a usize byte count: {err}")),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err(format!("{env_name} must contain valid UTF-8"))
+        }
+    }
+}
+
+fn websocket_config_from_env() -> Result<WebSocketConfig, String> {
+    let max_message_size = parse_websocket_cap_from_env(WEBSOCKET_MAX_MESSAGE_SIZE_ENV)?
+        .unwrap_or(WEBSOCKET_MAX_MESSAGE_SIZE_BYTES);
+    let max_frame_size = parse_websocket_cap_from_env(WEBSOCKET_MAX_FRAME_SIZE_ENV)?
+        .unwrap_or(WEBSOCKET_MAX_FRAME_SIZE_BYTES);
+    if max_frame_size > max_message_size {
+        return Err(format!(
+            "{WEBSOCKET_MAX_FRAME_SIZE_ENV} ({max_frame_size}) must be less than or equal to \
+{WEBSOCKET_MAX_MESSAGE_SIZE_ENV} ({max_message_size})"
+        ));
+    }
+    Ok(websocket_config(max_message_size, max_frame_size))
 }
 
 #[repr(C)]
@@ -600,14 +629,15 @@ pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
         return std::ptr::null_mut();
     };
 
-    match connect_with_config(
-        url_str,
-        Some(websocket_config(
-            WEBSOCKET_MAX_MESSAGE_SIZE_BYTES,
-            WEBSOCKET_MAX_FRAME_SIZE_BYTES,
-        )),
-        3,
-    ) {
+    let config = match websocket_config_from_env() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("[connect] invalid websocket config: {err}");
+            return std::ptr::null_mut();
+        }
+    };
+
+    match connect_with_config(url_str, Some(config), 3) {
         Ok((ws, _response)) => Box::into_raw(Box::new(HewWsConn::new(ws))),
         Err(_) => std::ptr::null_mut(),
     }
@@ -926,13 +956,14 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
                     return HewWsAcceptResult::Error;
                 }
                 let tls_stream = MaybeTlsStream::Plain(stream);
-                if let Ok(ws) = tungstenite::accept_with_config(
-                    tls_stream,
-                    Some(websocket_config(
-                        WEBSOCKET_MAX_MESSAGE_SIZE_BYTES,
-                        WEBSOCKET_MAX_FRAME_SIZE_BYTES,
-                    )),
-                ) {
+                let config = match websocket_config_from_env() {
+                    Ok(config) => config,
+                    Err(err) => {
+                        eprintln!("[accept] invalid websocket config: {err}");
+                        return HewWsAcceptResult::Error;
+                    }
+                };
+                if let Ok(ws) = tungstenite::accept_with_config(tls_stream, Some(config)) {
                     return HewWsAcceptResult::Accepted(Box::new(ws));
                 }
             }
@@ -1185,22 +1216,30 @@ mod tests {
         }
     }
 
-    fn run_in_isolated_test_process(test_name: &str, env_key: &str, body: impl FnOnce()) {
+    fn run_in_isolated_test_process_with_env(
+        test_name: &str,
+        env_key: &str,
+        extra_env: &[(&str, &str)],
+        body: impl FnOnce(),
+    ) {
         if std::env::var_os(env_key).is_some() {
             body();
             return;
         }
 
-        let output = std::process::Command::new(
+        let mut command = std::process::Command::new(
             std::env::current_exe().expect("resolve current test binary"),
-        )
-        .arg(test_name)
-        .arg("--exact")
-        .arg("--nocapture")
-        .arg("--test-threads=1")
-        .env(env_key, "1")
-        .output()
-        .expect("spawn isolated test process");
+        );
+        command
+            .arg(test_name)
+            .arg("--exact")
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(env_key, "1");
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+        let output = command.output().expect("spawn isolated test process");
 
         assert!(
             output.status.success(),
@@ -1209,6 +1248,10 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
+    }
+
+    fn run_in_isolated_test_process(test_name: &str, env_key: &str, body: impl FnOnce()) {
+        run_in_isolated_test_process_with_env(test_name, env_key, &[], body);
     }
 
     fn wait_for_condition(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -1558,103 +1601,223 @@ mod tests {
         const TEST_FRAME_CAP_BYTES: usize = 64 * 1024;
         const OVERSIZED_FRAME_BYTES: usize = 1024 * 1024;
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind oversized-frame listener");
-        let port = listener
-            .local_addr()
-            .expect("read oversized-frame listener addr")
-            .port();
-        let server_thread = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept oversized-frame client");
-            let tls_stream = MaybeTlsStream::Plain(stream);
-            let mut ws = tungstenite::accept_with_config(
-                tls_stream,
-                Some(websocket_config(TEST_FRAME_CAP_BYTES, TEST_FRAME_CAP_BYTES)),
-            )
-            .expect("handshake oversized-frame test connection");
-            match ws.read() {
-                Err(tungstenite::Error::Capacity(
-                    tungstenite::error::CapacityError::MessageTooLong { size, max_size },
-                )) => {
-                    assert_eq!(size, OVERSIZED_FRAME_BYTES);
-                    assert_eq!(max_size, TEST_FRAME_CAP_BYTES);
+        run_in_isolated_test_process_with_env(
+            "accept_with_small_frame_cap_rejects_oversized_frame",
+            "HEW_WS_FRAME_CAP_REJECT_OVERSIZED_ISOLATED",
+            &[
+                (WEBSOCKET_MAX_MESSAGE_SIZE_ENV, "65536"),
+                (WEBSOCKET_MAX_FRAME_SIZE_ENV, "65536"),
+            ],
+            || {
+                // SAFETY: Valid C string literal passed to FFI.
+                let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+                assert!(!server.is_null(), "server should bind successfully");
+                // SAFETY: server is valid.
+                let port = unsafe { hew_ws_server_port(server) };
+                assert!(port > 0, "port should be positive");
+
+                let addr = format!("ws://127.0.0.1:{port}");
+                let client_thread = std::thread::spawn(move || {
+                    let (mut ws, _) = connect_with_config(
+                        &addr,
+                        Some(websocket_config(
+                            WEBSOCKET_MAX_MESSAGE_SIZE_BYTES,
+                            WEBSOCKET_MAX_FRAME_SIZE_BYTES,
+                        )),
+                        3,
+                    )
+                    .expect("connect oversized-frame client");
+                    match ws.send(Message::binary(vec![0u8; OVERSIZED_FRAME_BYTES])) {
+                        Ok(()) => match ws.read() {
+                            Ok(Message::Close(_))
+                            | Err(
+                                tungstenite::Error::ConnectionClosed
+                                | tungstenite::Error::AlreadyClosed
+                                | tungstenite::Error::Io(_)
+                                | tungstenite::Error::Protocol(_),
+                            ) => {}
+                            other => {
+                                panic!("expected connection close after oversized frame, got {other:?}")
+                            }
+                        },
+                        Err(tungstenite::Error::Io(err))
+                            if err.kind() == io::ErrorKind::ConnectionReset
+                                || err.kind() == io::ErrorKind::BrokenPipe => {}
+                        Err(other) => panic!("expected oversized frame disconnect, got {other:?}"),
+                    }
+                });
+
+                // SAFETY: server is a valid pointer returned by hew_ws_server_new.
+                let conn = unsafe { hew_ws_server_accept(server) };
+                assert!(!conn.is_null(), "accept should succeed");
+                let read_result = {
+                    // SAFETY: conn is valid until hew_ws_close below.
+                    let conn_ref = unsafe { &*conn };
+                    let mut guard = conn_ref.inner.ws.lock().expect("websocket mutex poisoned");
+                    let ws = guard
+                        .as_mut()
+                        .expect("accepted websocket should be present");
+                    ws.read()
+                };
+                match read_result {
+                    Err(tungstenite::Error::Capacity(
+                        tungstenite::error::CapacityError::MessageTooLong { size, max_size },
+                    )) => {
+                        assert_eq!(size, OVERSIZED_FRAME_BYTES);
+                        assert_eq!(max_size, TEST_FRAME_CAP_BYTES);
+                    }
+                    other => panic!("expected message-too-large error, got {other:?}"),
                 }
-                other => panic!("expected frame size error, got {other:?}"),
-            }
-        });
 
-        let (mut client, _) = connect_with_config(
-            format!("ws://127.0.0.1:{port}"),
-            Some(websocket_config(
-                WEBSOCKET_MAX_MESSAGE_SIZE_BYTES,
-                WEBSOCKET_MAX_FRAME_SIZE_BYTES,
-            )),
-            3,
-        )
-        .expect("connect oversized-frame client");
-        match client.send(Message::binary(vec![0u8; OVERSIZED_FRAME_BYTES])) {
-            Ok(()) => match client.read() {
-                Ok(Message::Close(_))
-                | Err(
-                    tungstenite::Error::ConnectionClosed
-                    | tungstenite::Error::AlreadyClosed
-                    | tungstenite::Error::Io(_)
-                    | tungstenite::Error::Protocol(_),
-                ) => {}
-                other => panic!("expected connection close after oversized frame, got {other:?}"),
+                unsafe { hew_ws_close(conn) };
+                unsafe { hew_ws_server_close(server) };
+                client_thread
+                    .join()
+                    .expect("oversized-frame client thread should finish");
             },
-            Err(tungstenite::Error::Io(err))
-                if err.kind() == io::ErrorKind::ConnectionReset
-                    || err.kind() == io::ErrorKind::BrokenPipe => {}
-            Err(other) => panic!("expected oversized frame disconnect, got {other:?}"),
-        }
-
-        server_thread
-            .join()
-            .expect("oversized-frame server thread should finish");
+        );
     }
 
     #[test]
     fn accept_with_small_frame_cap_allows_exactly_at_cap_frame() {
         const TEST_FRAME_CAP_BYTES: usize = 64 * 1024;
+        run_in_isolated_test_process_with_env(
+            "accept_with_small_frame_cap_allows_exactly_at_cap_frame",
+            "HEW_WS_FRAME_CAP_ALLOW_EXACT_ISOLATED",
+            &[
+                (WEBSOCKET_MAX_MESSAGE_SIZE_ENV, "65536"),
+                (WEBSOCKET_MAX_FRAME_SIZE_ENV, "65536"),
+            ],
+            || {
+                // SAFETY: Valid C string literal passed to FFI.
+                let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+                assert!(!server.is_null(), "server should bind successfully");
+                // SAFETY: server is valid.
+                let port = unsafe { hew_ws_server_port(server) };
+                assert!(port > 0, "port should be positive");
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind exact-cap listener");
-        let port = listener
-            .local_addr()
-            .expect("read exact-cap listener addr")
-            .port();
-        let server_thread = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept exact-cap client");
-            let tls_stream = MaybeTlsStream::Plain(stream);
-            let mut ws = tungstenite::accept_with_config(
-                tls_stream,
-                Some(websocket_config(TEST_FRAME_CAP_BYTES, TEST_FRAME_CAP_BYTES)),
-            )
-            .expect("handshake exact-cap test connection");
-            let msg = ws.read().expect("read exact-cap frame");
-            match msg {
-                Message::Binary(payload) => assert_eq!(payload.len(), TEST_FRAME_CAP_BYTES),
-                other => panic!("expected binary frame, got {other:?}"),
-            }
-            ws.close(None).expect("close exact-cap server socket");
-        });
+                let addr = format!("ws://127.0.0.1:{port}");
+                let client_thread = std::thread::spawn(move || {
+                    let (mut ws, _) = connect_with_config(
+                        &addr,
+                        Some(websocket_config(
+                            WEBSOCKET_MAX_MESSAGE_SIZE_BYTES,
+                            WEBSOCKET_MAX_FRAME_SIZE_BYTES,
+                        )),
+                        3,
+                    )
+                    .expect("connect exact-cap client");
+                    ws.send(Message::binary(vec![7u8; TEST_FRAME_CAP_BYTES]))
+                        .expect("send exact-cap frame");
+                    ws.close(None).ok();
+                });
 
-        let (mut client, _) = connect_with_config(
-            format!("ws://127.0.0.1:{port}"),
-            Some(websocket_config(
-                WEBSOCKET_MAX_MESSAGE_SIZE_BYTES,
-                WEBSOCKET_MAX_FRAME_SIZE_BYTES,
-            )),
-            3,
-        )
-        .expect("connect exact-cap client");
-        client
-            .send(Message::binary(vec![7u8; TEST_FRAME_CAP_BYTES]))
-            .expect("send exact-cap frame");
+                // SAFETY: server is a valid pointer returned by hew_ws_server_new.
+                let conn = unsafe { hew_ws_server_accept(server) };
+                assert!(!conn.is_null(), "accept should succeed");
+                let msg = {
+                    // SAFETY: conn is valid until hew_ws_close below.
+                    let conn_ref = unsafe { &*conn };
+                    let mut guard = conn_ref.inner.ws.lock().expect("websocket mutex poisoned");
+                    let ws = guard
+                        .as_mut()
+                        .expect("accepted websocket should be present");
+                    ws.read().expect("read exact-cap frame")
+                };
+                match msg {
+                    Message::Binary(payload) => assert_eq!(payload.len(), TEST_FRAME_CAP_BYTES),
+                    other => panic!("expected binary frame, got {other:?}"),
+                }
 
-        server_thread
-            .join()
-            .expect("exact-cap server thread should finish");
-        client.close(None).ok();
+                unsafe { hew_ws_close(conn) };
+                unsafe { hew_ws_server_close(server) };
+                client_thread
+                    .join()
+                    .expect("exact-cap client thread should finish");
+            },
+        );
+    }
+
+    #[test]
+    fn accept_with_small_frame_cap_rejects_cap_plus_one_frame() {
+        const TEST_FRAME_CAP_BYTES: usize = 64 * 1024;
+        const OVERSIZED_FRAME_BYTES: usize = TEST_FRAME_CAP_BYTES + 1;
+
+        run_in_isolated_test_process_with_env(
+            "accept_with_small_frame_cap_rejects_cap_plus_one_frame",
+            "HEW_WS_FRAME_CAP_REJECT_PLUS_ONE_ISOLATED",
+            &[
+                (WEBSOCKET_MAX_MESSAGE_SIZE_ENV, "65536"),
+                (WEBSOCKET_MAX_FRAME_SIZE_ENV, "65536"),
+            ],
+            || {
+                // SAFETY: Valid C string literal passed to FFI.
+                let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
+                assert!(!server.is_null(), "server should bind successfully");
+                // SAFETY: server is valid.
+                let port = unsafe { hew_ws_server_port(server) };
+                assert!(port > 0, "port should be positive");
+
+                let addr = format!("ws://127.0.0.1:{port}");
+                let client_thread = std::thread::spawn(move || {
+                    let (mut ws, _) = connect_with_config(
+                        &addr,
+                        Some(websocket_config(
+                            WEBSOCKET_MAX_MESSAGE_SIZE_BYTES,
+                            WEBSOCKET_MAX_FRAME_SIZE_BYTES,
+                        )),
+                        3,
+                    )
+                    .expect("connect cap-plus-one client");
+                    match ws.send(Message::binary(vec![9u8; OVERSIZED_FRAME_BYTES])) {
+                        Ok(()) => match ws.read() {
+                            Ok(Message::Close(_))
+                            | Err(
+                                tungstenite::Error::ConnectionClosed
+                                | tungstenite::Error::AlreadyClosed
+                                | tungstenite::Error::Io(_)
+                                | tungstenite::Error::Protocol(_),
+                            ) => {}
+                            other => {
+                                panic!("expected connection close after cap+1 frame, got {other:?}")
+                            }
+                        },
+                        Err(tungstenite::Error::Io(err))
+                            if err.kind() == io::ErrorKind::ConnectionReset
+                                || err.kind() == io::ErrorKind::BrokenPipe => {}
+                        Err(other) => panic!("expected cap+1 frame disconnect, got {other:?}"),
+                    }
+                });
+
+                // SAFETY: server is a valid pointer returned by hew_ws_server_new.
+                let conn = unsafe { hew_ws_server_accept(server) };
+                assert!(!conn.is_null(), "accept should succeed");
+                let read_result = {
+                    // SAFETY: conn is valid until hew_ws_close below.
+                    let conn_ref = unsafe { &*conn };
+                    let mut guard = conn_ref.inner.ws.lock().expect("websocket mutex poisoned");
+                    let ws = guard
+                        .as_mut()
+                        .expect("accepted websocket should be present");
+                    ws.read()
+                };
+                match read_result {
+                    Err(tungstenite::Error::Capacity(
+                        tungstenite::error::CapacityError::MessageTooLong { size, max_size },
+                    )) => {
+                        assert_eq!(size, OVERSIZED_FRAME_BYTES);
+                        assert_eq!(max_size, TEST_FRAME_CAP_BYTES);
+                    }
+                    other => panic!("expected message-too-large error, got {other:?}"),
+                }
+
+                unsafe { hew_ws_close(conn) };
+                unsafe { hew_ws_server_close(server) };
+                client_thread
+                    .join()
+                    .expect("cap-plus-one client thread should finish");
+            },
+        );
     }
 
     #[test]

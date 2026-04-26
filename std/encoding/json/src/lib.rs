@@ -100,7 +100,9 @@ pub unsafe extern "C" fn hew_json_parse(json_str: *const c_char) -> *mut HewJson
 
 /// Return the last JSON error recorded on the current thread.
 ///
-/// Returns an empty string when no error has been recorded.
+/// This slot is shared by parse failures and byte-extraction failures from
+/// [`hew_json_get_bytes`]. Returns an empty string when the most recent
+/// operation succeeded or explicitly cleared the error slot.
 #[no_mangle]
 pub extern "C" fn hew_json_last_error() -> *mut c_char {
     str_to_malloc(&get_parse_last_error())
@@ -283,9 +285,10 @@ pub unsafe extern "C" fn hew_json_get_string(val: *const HewJsonValue) -> *mut c
 
 /// Get a base64-decoded bytes value from a [`HewJsonValue`].
 ///
-/// Returns a newly allocated [`HewVec`] for valid string inputs. Non-string
-/// values return null. Invalid base64 inputs return null and populate
-/// [`hew_json_last_error`].
+/// Returns a newly allocated [`HewVec`] for valid string inputs. Null,
+/// non-string, or invalid base64 inputs return null and overwrite
+/// [`hew_json_last_error`] so callers never observe a stale error from a prior
+/// parse or decode failure.
 ///
 /// # Safety
 ///
@@ -293,26 +296,25 @@ pub unsafe extern "C" fn hew_json_get_string(val: *const HewJsonValue) -> *mut c
 #[no_mangle]
 pub unsafe extern "C" fn hew_json_get_bytes(val: *const HewJsonValue) -> *mut HewVec {
     if val.is_null() {
+        set_parse_last_error("invalid JSON bytes: value was null or key not found");
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid HewJsonValue pointer per caller contract.
     let v = unsafe { &*val };
-    match v.inner.as_str() {
-        Some(s) => {
-            let decoded = match base64::engine::general_purpose::STANDARD.decode(s) {
-                Ok(decoded) => decoded,
-                Err(err) => {
-                    set_parse_last_error(format!(
-                        "invalid JSON bytes: base64 decode failed: {err}"
-                    ));
-                    return std::ptr::null_mut();
-                }
-            };
-            clear_parse_last_error();
-            // SAFETY: allocates a new HewVec owned by the caller.
-            unsafe { u8_to_hwvec(&decoded) }
-        }
-        None => std::ptr::null_mut(),
+    if let Some(s) = v.inner.as_str() {
+        let decoded = match base64::engine::general_purpose::STANDARD.decode(s) {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                set_parse_last_error(format!("invalid JSON bytes: base64 decode failed: {err}"));
+                return std::ptr::null_mut();
+            }
+        };
+        clear_parse_last_error();
+        // SAFETY: allocates a new HewVec owned by the caller.
+        unsafe { u8_to_hwvec(&decoded) }
+    } else {
+        set_parse_last_error("invalid JSON bytes: value was not a string");
+        std::ptr::null_mut()
     }
 }
 
@@ -1565,6 +1567,75 @@ mod tests {
         assert!(ok_err.is_empty());
         // SAFETY: hew_json_last_error returns a malloc-allocated C string.
         assert!(unsafe { read_and_free_cstr(hew_json_last_error()) }.is_empty());
+    }
+
+    #[test]
+    fn get_bytes_non_string_value_overwrites_stale_last_error() {
+        clear_parse_last_error();
+        let bad = parse(r#"{"b":"!!not-base64!!"}"#);
+        assert!(!bad.is_null());
+
+        // SAFETY: bad is a valid HewJsonValue from parse.
+        unsafe {
+            let key = CString::new("b").unwrap();
+            let field = hew_json_get_field(bad, key.as_ptr());
+            assert!(!field.is_null());
+            assert!(hew_json_get_bytes(field).is_null());
+            assert!(!read_and_free_cstr(hew_json_last_error()).is_empty());
+            hew_json_free(field);
+            hew_json_free(bad);
+        }
+
+        let val = parse(r#"{"num":42}"#);
+        assert!(!val.is_null());
+
+        // SAFETY: val is a valid HewJsonValue from parse.
+        unsafe {
+            let key = CString::new("num").unwrap();
+            let field = hew_json_get_field(val, key.as_ptr());
+            assert!(!field.is_null());
+
+            assert!(hew_json_get_bytes(field).is_null());
+            let err = read_and_free_cstr(hew_json_last_error());
+            assert!(err.contains("not a string"));
+
+            hew_json_free(field);
+            hew_json_free(val);
+        }
+    }
+
+    #[test]
+    fn get_bytes_null_value_overwrites_stale_last_error() {
+        clear_parse_last_error();
+        let bad = parse(r#"{"b":"!!not-base64!!"}"#);
+        assert!(!bad.is_null());
+
+        // SAFETY: bad is a valid HewJsonValue from parse.
+        unsafe {
+            let key = CString::new("b").unwrap();
+            let field = hew_json_get_field(bad, key.as_ptr());
+            assert!(!field.is_null());
+            assert!(hew_json_get_bytes(field).is_null());
+            assert!(!read_and_free_cstr(hew_json_last_error()).is_empty());
+            hew_json_free(field);
+            hew_json_free(bad);
+        }
+
+        let val = parse(r#"{"x":null}"#);
+        assert!(!val.is_null());
+
+        // SAFETY: val is a valid HewJsonValue from parse.
+        unsafe {
+            let key = CString::new("missing").unwrap();
+            let field = hew_json_get_field(val, key.as_ptr());
+            assert!(field.is_null());
+
+            assert!(hew_json_get_bytes(field).is_null());
+            let err = read_and_free_cstr(hew_json_last_error());
+            assert!(err.contains("null") || err.contains("key not found"));
+
+            hew_json_free(val);
+        }
     }
 
     #[test]

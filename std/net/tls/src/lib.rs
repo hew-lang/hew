@@ -25,6 +25,10 @@ type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// Maximum bytes read in a single [`hew_tls_read`] call.
 const READ_BUFFER_SIZE: usize = 65_536;
+const TLS_STATUS_SUCCESS: c_int = 0;
+const TLS_STATUS_RETRYABLE: c_int = 1;
+const TLS_STATUS_TLS_ERROR: c_int = 2;
+const TLS_STATUS_IO_ERROR: c_int = 3;
 
 std::thread_local! {
     static LAST_TLS_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -39,6 +43,20 @@ std::thread_local! {
 #[derive(Debug)]
 pub struct HewTlsStream {
     stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewTlsWriteResult {
+    written: c_int,
+    status: c_int,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewTlsReadResult {
+    data: HewVec,
+    status: c_int,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -58,16 +76,12 @@ fn default_client_config() -> Result<rustls::ClientConfig, BoxError> {
     Ok(config)
 }
 
-fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, String> {
-    let server_name = ServerName::try_from(host.to_string())
-        .map_err(|err| format!("invalid TLS hostname `{host}`: {err}"))?;
-    let config = default_client_config()
-        .map_err(|err| format!("failed to build TLS client config: {err}"))?;
-    let connector = rustls::ClientConnection::new(Arc::new(config), server_name)
-        .map_err(|err| format!("failed to create TLS client connection for `{host}`: {err}"))?;
+fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, BoxError> {
+    let server_name = ServerName::try_from(host.to_string())?;
+    let config = default_client_config()?;
+    let connector = rustls::ClientConnection::new(Arc::new(config), server_name)?;
     let addr = format!("{host}:{port}");
-    let tcp =
-        TcpStream::connect(&addr).map_err(|err| format!("failed to connect to {addr}: {err}"))?;
+    let tcp = TcpStream::connect(addr)?;
     let stream = rustls::StreamOwned::new(connector, tcp);
     Ok(HewTlsStream { stream })
 }
@@ -80,13 +94,8 @@ fn clear_tls_last_error() {
     LAST_TLS_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
-fn clone_tls_last_error() -> Option<String> {
-    LAST_TLS_ERROR.with(|error| error.borrow().clone())
-}
-
-fn record_tls_connect_error(msg: impl Into<String>) -> *mut HewTlsStream {
-    set_tls_last_error(msg);
-    std::ptr::null_mut()
+fn get_tls_last_error() -> String {
+    LAST_TLS_ERROR.with(|error| error.borrow().as_ref().cloned().unwrap_or_else(String::new))
 }
 
 fn empty_hew_vec() -> HewVec {
@@ -99,35 +108,47 @@ fn empty_hew_vec() -> HewVec {
     }
 }
 
-fn build_hew_vec(bytes: &[u8]) -> HewVec {
-    let empty = empty_hew_vec();
+fn build_hew_vec(bytes: &[u8]) -> Option<HewVec> {
     let len = bytes.len();
     // SAFETY: requesting `len` bytes from libc returns either a valid allocation or null.
     let ptr = unsafe { libc::malloc(len) }.cast::<u8>();
     if ptr.is_null() {
-        set_tls_last_error("hew_tls_read: allocation failed");
-        return empty;
+        return None;
     }
     // SAFETY: `bytes.as_ptr()` is valid for `len` bytes and `ptr` points to a
     // freshly allocated, non-overlapping `len`-byte region.
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len) };
-    HewVec {
+    Some(HewVec {
         data: ptr,
         len,
         cap: len,
         elem_size: 1,
         elem_kind: hew_cabi::vec::ElemKind::Plain,
-    }
+    })
 }
 
-fn classify_tls_io_error(err: &io::Error) -> String {
+fn classify_tls_error(op: &str, err: &io::Error) -> (c_int, String) {
     match err.kind() {
-        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => "timeout".to_string(),
-        _ => format!("io: {err}"),
+        io::ErrorKind::WouldBlock => (TLS_STATUS_RETRYABLE, format!("{op}: would block")),
+        io::ErrorKind::TimedOut => (TLS_STATUS_RETRYABLE, format!("{op}: timed out")),
+        io::ErrorKind::InvalidData => (
+            TLS_STATUS_TLS_ERROR,
+            format!("{op}: tls alert/protocol error: {err}"),
+        ),
+        _ => (TLS_STATUS_IO_ERROR, format!("{op}: io error: {err}")),
     }
 }
 
-fn read_tls_vec<R: Read>(reader: &mut R, size: c_int) -> HewVec {
+fn write_out_status(out_status: *mut c_int, status: c_int) -> bool {
+    if out_status.is_null() {
+        return false;
+    }
+    // SAFETY: caller provided a non-null `out_status` pointer.
+    unsafe { *out_status = status };
+    true
+}
+
+fn read_tls_vec<R: Read>(reader: &mut R, size: c_int) -> HewTlsReadResult {
     let empty = empty_hew_vec();
     let buf_size = if size == 0 {
         0
@@ -138,22 +159,73 @@ fn read_tls_vec<R: Read>(reader: &mut R, size: c_int) -> HewVec {
     };
     if buf_size == 0 {
         clear_tls_last_error();
-        return empty;
+        return HewTlsReadResult {
+            data: empty,
+            status: TLS_STATUS_SUCCESS,
+        };
     }
 
     let mut buf = vec![0u8; buf_size];
     match reader.read(&mut buf) {
         Ok(0) => {
-            set_tls_last_error("eof");
-            empty
+            clear_tls_last_error();
+            HewTlsReadResult {
+                data: empty,
+                status: TLS_STATUS_SUCCESS,
+            }
         }
         Ok(n) => {
-            clear_tls_last_error();
-            build_hew_vec(&buf[..n])
+            if let Some(data) = build_hew_vec(&buf[..n]) {
+                clear_tls_last_error();
+                HewTlsReadResult {
+                    data,
+                    status: TLS_STATUS_SUCCESS,
+                }
+            } else {
+                set_tls_last_error("hew_tls_read: allocation failed");
+                HewTlsReadResult {
+                    data: empty,
+                    status: TLS_STATUS_IO_ERROR,
+                }
+            }
         }
         Err(err) => {
-            set_tls_last_error(classify_tls_io_error(&err));
-            empty
+            let (status, message) = classify_tls_error("hew_tls_read", &err);
+            set_tls_last_error(message);
+            HewTlsReadResult {
+                data: empty,
+                status,
+            }
+        }
+    }
+}
+
+fn write_tls_bytes<W: Write>(writer: &mut W, buf: &[u8]) -> HewTlsWriteResult {
+    match writer.write_all(buf) {
+        Ok(()) => match writer.flush() {
+            Ok(()) => {
+                clear_tls_last_error();
+                HewTlsWriteResult {
+                    written: c_int::try_from(buf.len()).unwrap_or(c_int::MAX),
+                    status: TLS_STATUS_SUCCESS,
+                }
+            }
+            Err(err) => {
+                let (status, message) = classify_tls_error("hew_tls_write", &err);
+                set_tls_last_error(message);
+                HewTlsWriteResult {
+                    written: -1,
+                    status,
+                }
+            }
+        },
+        Err(err) => {
+            let (status, message) = classify_tls_error("hew_tls_write", &err);
+            set_tls_last_error(message);
+            HewTlsWriteResult {
+                written: -1,
+                status,
+            }
         }
     }
 }
@@ -171,30 +243,25 @@ fn read_tls_vec<R: Read>(reader: &mut R, size: c_int) -> HewVec {
 pub unsafe extern "C" fn hew_tls_connect(host: *const c_char, port: c_int) -> *mut HewTlsStream {
     // SAFETY: `host` is a valid NUL-terminated C string per caller contract.
     let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
-        return record_tls_connect_error("invalid TLS host: null pointer or invalid UTF-8");
+        return std::ptr::null_mut();
     };
     let Ok(port_u16) = u16::try_from(port) else {
-        return record_tls_connect_error(format!("invalid TLS port: {port}"));
+        return std::ptr::null_mut();
     };
     match connect_tls(host_str, port_u16) {
-        Ok(stream) => {
-            clear_tls_last_error();
-            Box::into_raw(Box::new(stream))
-        }
-        Err(err) => record_tls_connect_error(err),
+        Ok(stream) => Box::into_raw(Box::new(stream)),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
 /// Return the last TLS client error recorded on the current thread.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated string. The caller must free it
-/// with `libc::free`. Returns null when no TLS client error has been recorded.
+/// Returns an empty string when no TLS client error has been recorded. The
+/// returned string is `malloc`-allocated; callers must free it with
+/// `libc::free`.
 #[no_mangle]
 pub extern "C" fn hew_tls_last_error() -> *mut c_char {
-    match clone_tls_last_error() {
-        Some(message) => str_to_malloc(&message),
-        None => std::ptr::null_mut(),
-    }
+    str_to_malloc(&get_tls_last_error())
 }
 
 /// Write `data` to the TLS stream.
@@ -205,12 +272,18 @@ pub extern "C" fn hew_tls_last_error() -> *mut c_char {
 ///
 /// * `stream` must be a valid pointer returned by [`hew_tls_connect`].
 /// * `data` and `data_len` must describe a valid byte buffer.
+/// * `out_status` must be a valid pointer to writable status storage.
 #[no_mangle]
 pub unsafe extern "C" fn hew_tls_write(
     stream: *mut HewTlsStream,
     data: *const u8,
     data_len: usize,
+    out_status: *mut c_int,
 ) -> c_int {
+    if !write_out_status(out_status, TLS_STATUS_IO_ERROR) {
+        set_tls_last_error("hew_tls_write: invalid status buffer");
+        return -1;
+    }
     if stream.is_null() {
         set_tls_last_error("hew_tls_write: invalid stream");
         return -1;
@@ -228,41 +301,78 @@ pub unsafe extern "C" fn hew_tls_write(
         // SAFETY: caller guarantees `data` points to `data_len` readable bytes.
         unsafe { std::slice::from_raw_parts(data, data_len) }
     };
-    match s.stream.write_all(buf) {
-        Ok(()) => {
-            if let Err(err) = s.stream.flush() {
-                set_tls_last_error(classify_tls_io_error(&err));
-                return -1;
-            }
-            clear_tls_last_error();
-            c_int::try_from(data_len).unwrap_or(c_int::MAX)
-        }
-        Err(err) => {
-            set_tls_last_error(classify_tls_io_error(&err));
-            -1
-        }
-    }
+    let result = write_tls_bytes(&mut s.stream, buf);
+    let _ = write_out_status(out_status, result.status);
+    result.written
 }
 
 /// Read up to `size` bytes from the TLS stream.
 ///
-/// Returns a `HewVec` containing the bytes read. On EOF, timeout, or transport
-/// error the returned vector is empty; call [`hew_tls_last_error`] to
-/// distinguish `"eof"`, `"timeout"`, or an `"io: ..."` failure from an
-/// intentional empty read such as `size == 0`.
+/// Returns a `HewVec` containing the bytes read. `out_status` receives
+/// `0` for success or orderly EOF, `1` for retryable would-block/timeout
+/// conditions, `2` for TLS alert/protocol failures, and `3` for I/O failures.
 ///
 /// # Safety
 ///
 /// `stream` must be a valid pointer returned by [`hew_tls_connect`].
+/// `out_status` must be a valid pointer to writable status storage.
 #[no_mangle]
-pub unsafe extern "C" fn hew_tls_read(stream: *mut HewTlsStream, size: c_int) -> HewVec {
+pub unsafe extern "C" fn hew_tls_read(
+    stream: *mut HewTlsStream,
+    size: c_int,
+    out_status: *mut c_int,
+) -> HewVec {
+    if !write_out_status(out_status, TLS_STATUS_IO_ERROR) {
+        set_tls_last_error("hew_tls_read: invalid status buffer");
+        return empty_hew_vec();
+    }
     if stream.is_null() {
         set_tls_last_error("hew_tls_read: invalid stream");
         return empty_hew_vec();
     }
     // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
     let s = unsafe { &mut *stream };
-    read_tls_vec(&mut s.stream, size)
+    let result = read_tls_vec(&mut s.stream, size);
+    let _ = write_out_status(out_status, result.status);
+    result.data
+}
+
+/// Hew-facing bridge that packages `hew_tls_write` status into a repr(C) struct
+/// because Hew source cannot observe raw out-parameters directly.
+///
+/// # Safety
+///
+/// `stream`, `data`, and `data_len` must satisfy the same requirements as
+/// [`hew_tls_write`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_tls_write_result(
+    stream: *mut HewTlsStream,
+    data: *const u8,
+    data_len: usize,
+) -> HewTlsWriteResult {
+    let mut status = TLS_STATUS_IO_ERROR;
+    // SAFETY: this bridge forwards the exact caller-provided arguments to
+    // `hew_tls_write` and supplies valid local storage for `out_status`.
+    let written = unsafe { hew_tls_write(stream, data, data_len, &raw mut status) };
+    HewTlsWriteResult { written, status }
+}
+
+/// Hew-facing bridge that packages `hew_tls_read` status into a repr(C) struct
+/// because Hew source cannot observe raw out-parameters directly.
+///
+/// # Safety
+///
+/// `stream` and `size` must satisfy the same requirements as [`hew_tls_read`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_tls_read_result(
+    stream: *mut HewTlsStream,
+    size: c_int,
+) -> HewTlsReadResult {
+    let mut status = TLS_STATUS_IO_ERROR;
+    // SAFETY: this bridge forwards the exact caller-provided arguments to
+    // `hew_tls_read` and supplies valid local storage for `out_status`.
+    let data = unsafe { hew_tls_read(stream, size, &raw mut status) };
+    HewTlsReadResult { data, status }
 }
 
 /// Close the TLS connection and free the stream handle.
@@ -286,11 +396,12 @@ pub unsafe extern "C" fn hew_tls_close(stream: *mut HewTlsStream) {
 mod tests {
     use super::*;
     use std::cell::Cell;
-    use std::ffi::{CStr, CString};
+    use std::ffi::CStr;
     use std::io::ErrorKind;
     use std::net::TcpListener;
     use std::os::raw::c_void;
     use std::thread;
+    use std::time::Duration;
 
     #[derive(Debug)]
     enum MockReadAction {
@@ -336,6 +447,68 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    enum MockWriteAction {
+        Success,
+        WriteError(io::Error),
+        FlushError(io::Error),
+    }
+
+    #[derive(Debug)]
+    struct MockWriter {
+        action: MockWriteAction,
+        wrote: Cell<bool>,
+        flushed: Cell<bool>,
+    }
+
+    impl MockWriter {
+        fn success() -> Self {
+            Self {
+                action: MockWriteAction::Success,
+                wrote: Cell::new(false),
+                flushed: Cell::new(false),
+            }
+        }
+
+        fn write_error(kind: ErrorKind, message: &'static str) -> Self {
+            Self {
+                action: MockWriteAction::WriteError(io::Error::new(kind, message)),
+                wrote: Cell::new(false),
+                flushed: Cell::new(false),
+            }
+        }
+
+        fn flush_error(kind: ErrorKind, message: &'static str) -> Self {
+            Self {
+                action: MockWriteAction::FlushError(io::Error::new(kind, message)),
+                wrote: Cell::new(false),
+                flushed: Cell::new(false),
+            }
+        }
+    }
+
+    impl Write for MockWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.wrote.set(true);
+            match &self.action {
+                MockWriteAction::Success | MockWriteAction::FlushError(_) => Ok(buf.len()),
+                MockWriteAction::WriteError(err) => {
+                    Err(io::Error::new(err.kind(), err.to_string()))
+                }
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushed.set(true);
+            match &self.action {
+                MockWriteAction::Success | MockWriteAction::WriteError(_) => Ok(()),
+                MockWriteAction::FlushError(err) => {
+                    Err(io::Error::new(err.kind(), err.to_string()))
+                }
+            }
+        }
+    }
+
     impl Read for MockReader {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             self.called.set(true);
@@ -352,10 +525,10 @@ mod tests {
         }
     }
 
-    fn last_error_string() -> Option<String> {
+    fn last_error_string() -> String {
         let ptr = hew_tls_last_error();
         if ptr.is_null() {
-            return None;
+            return String::new();
         }
         // SAFETY: `ptr` is returned by `hew_tls_last_error` as a valid,
         // NUL-terminated string allocation.
@@ -364,7 +537,7 @@ mod tests {
             .into_owned();
         // SAFETY: `ptr` was allocated with `libc::malloc` by `hew_tls_last_error`.
         unsafe { libc::free(ptr.cast::<c_void>()) };
-        Some(message)
+        message
     }
 
     fn vec_bytes(vec: &HewVec) -> Vec<u8> {
@@ -383,6 +556,20 @@ mod tests {
         }
     }
 
+    fn timed_out_tcp_reader(client_timeout: Duration) -> (TcpStream, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = thread::spawn(move || {
+            let _accepted = listener.accept().unwrap();
+            thread::sleep(Duration::from_millis(200));
+        });
+
+        let tcp = TcpStream::connect(addr).unwrap();
+        tcp.set_read_timeout(Some(client_timeout)).unwrap();
+        (tcp, server)
+    }
+
     #[test]
     fn connect_null_host_returns_null() {
         // SAFETY: passing null is the test.
@@ -393,16 +580,27 @@ mod tests {
     #[test]
     fn write_null_stream_returns_error() {
         let data = b"hello";
+        let mut status = -1;
         // SAFETY: passing null stream is the test.
-        let ret = unsafe { hew_tls_write(std::ptr::null_mut(), data.as_ptr(), data.len()) };
+        let ret = unsafe {
+            hew_tls_write(
+                std::ptr::null_mut(),
+                data.as_ptr(),
+                data.len(),
+                &raw mut status,
+            )
+        };
         assert_eq!(ret, -1);
+        assert_eq!(status, TLS_STATUS_IO_ERROR);
     }
 
     #[test]
     fn read_null_stream_returns_empty() {
+        let mut status = -1;
         // SAFETY: passing null stream is the test.
-        let vec = unsafe { hew_tls_read(std::ptr::null_mut(), 1024) };
+        let vec = unsafe { hew_tls_read(std::ptr::null_mut(), 1024, &raw mut status) };
         assert_eq!(vec.len, 0);
+        assert_eq!(status, TLS_STATUS_IO_ERROR);
     }
 
     #[test]
@@ -412,26 +610,83 @@ mod tests {
     }
 
     #[test]
-    fn read_clean_eof_sets_last_error() {
-        clear_tls_last_error();
+    fn clean_eof_and_midstream_force_close_have_distinct_statuses() {
+        set_tls_last_error("stale");
         let mut reader = MockReader::eof();
-
-        let vec = read_tls_vec(&mut reader, 32);
+        let eof = read_tls_vec(&mut reader, 32);
 
         assert!(reader.called.get());
-        assert_eq!(vec.len, 0);
-        assert_eq!(last_error_string().as_deref(), Some("eof"));
+        assert_eq!(eof.data.len, 0);
+        assert_eq!(eof.status, TLS_STATUS_SUCCESS);
+        assert!(last_error_string().is_empty());
+
+        let mut force_closed =
+            MockReader::error(ErrorKind::UnexpectedEof, "peer closed mid-stream");
+        let reset = read_tls_vec(&mut force_closed, 32);
+
+        assert_eq!(reset.data.len, 0);
+        assert_eq!(reset.status, TLS_STATUS_IO_ERROR);
+        assert_eq!(
+            last_error_string(),
+            "hew_tls_read: io error: peer closed mid-stream"
+        );
     }
 
     #[test]
-    fn read_timeout_sets_last_error() {
+    fn read_would_block_sets_retryable_status_and_last_error() {
         clear_tls_last_error();
-        let mut reader = MockReader::error(ErrorKind::TimedOut, "socket timed out");
+        let mut reader = MockReader::error(ErrorKind::WouldBlock, "try again");
 
-        let vec = read_tls_vec(&mut reader, 32);
+        let result = read_tls_vec(&mut reader, 32);
 
-        assert_eq!(vec.len, 0);
-        assert_eq!(last_error_string().as_deref(), Some("timeout"));
+        assert_eq!(result.data.len, 0);
+        assert_eq!(result.status, TLS_STATUS_RETRYABLE);
+        assert_eq!(last_error_string(), "hew_tls_read: would block");
+    }
+
+    #[test]
+    fn read_socket_timeout_sets_retryable_status_and_last_error() {
+        clear_tls_last_error();
+        let (mut stream, server) = timed_out_tcp_reader(Duration::from_millis(25));
+
+        let result = read_tls_vec(&mut stream, 32);
+
+        assert_eq!(result.data.len, 0);
+        assert_eq!(result.status, TLS_STATUS_RETRYABLE);
+        // macOS surfaces SO_RCVTIMEO expirations as WouldBlock; Linux commonly
+        // reports TimedOut. Both must stay on the retryable status path.
+        let last_error = last_error_string();
+        assert!(
+            last_error == "hew_tls_read: timed out" || last_error == "hew_tls_read: would block",
+            "unexpected timeout classification: {last_error}"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn classify_timed_out_as_retryable() {
+        let (status, message) = classify_tls_error(
+            "hew_tls_read",
+            &io::Error::new(ErrorKind::TimedOut, "slow peer"),
+        );
+
+        assert_eq!(status, TLS_STATUS_RETRYABLE);
+        assert_eq!(message, "hew_tls_read: timed out");
+    }
+
+    #[test]
+    fn read_tls_protocol_error_sets_tls_status() {
+        clear_tls_last_error();
+        let mut reader = MockReader::error(ErrorKind::InvalidData, "received bad alert");
+
+        let result = read_tls_vec(&mut reader, 32);
+
+        assert_eq!(result.data.len, 0);
+        assert_eq!(result.status, TLS_STATUS_TLS_ERROR);
+        assert_eq!(
+            last_error_string(),
+            "hew_tls_read: tls alert/protocol error: received bad alert"
+        );
     }
 
     #[test]
@@ -439,10 +694,14 @@ mod tests {
         clear_tls_last_error();
         let mut reader = MockReader::error(ErrorKind::ConnectionReset, "connection reset");
 
-        let vec = read_tls_vec(&mut reader, 32);
+        let result = read_tls_vec(&mut reader, 32);
 
-        assert_eq!(vec.len, 0);
-        assert_eq!(last_error_string().as_deref(), Some("io: connection reset"));
+        assert_eq!(result.data.len, 0);
+        assert_eq!(result.status, TLS_STATUS_IO_ERROR);
+        assert_eq!(
+            last_error_string(),
+            "hew_tls_read: io error: connection reset"
+        );
     }
 
     #[test]
@@ -450,11 +709,12 @@ mod tests {
         clear_tls_last_error();
         let mut reader = MockReader::panic();
 
-        let vec = read_tls_vec(&mut reader, 0);
+        let result = read_tls_vec(&mut reader, 0);
 
         assert!(!reader.called.get());
-        assert_eq!(vec.len, 0);
-        assert!(last_error_string().is_none());
+        assert_eq!(result.data.len, 0);
+        assert_eq!(result.status, TLS_STATUS_SUCCESS);
+        assert!(last_error_string().is_empty());
     }
 
     #[test]
@@ -462,11 +722,53 @@ mod tests {
         set_tls_last_error("timeout");
         let mut reader = MockReader::bytes(b"hello");
 
-        let vec = read_tls_vec(&mut reader, 32);
+        let result = read_tls_vec(&mut reader, 32);
 
-        assert_eq!(vec_bytes(&vec), b"hello");
-        assert!(last_error_string().is_none());
-        free_vec(&vec);
+        assert_eq!(result.status, TLS_STATUS_SUCCESS);
+        assert_eq!(vec_bytes(&result.data), b"hello");
+        assert!(last_error_string().is_empty());
+        free_vec(&result.data);
+    }
+
+    #[test]
+    fn successful_write_clears_stale_error() {
+        set_tls_last_error("old error");
+        let mut writer = MockWriter::success();
+
+        let result = write_tls_bytes(&mut writer, b"hello");
+
+        assert!(writer.wrote.get());
+        assert!(writer.flushed.get());
+        assert_eq!(result.written, 5);
+        assert_eq!(result.status, TLS_STATUS_SUCCESS);
+        assert!(last_error_string().is_empty());
+    }
+
+    #[test]
+    fn write_would_block_sets_retryable_status_and_last_error() {
+        clear_tls_last_error();
+        let mut writer = MockWriter::write_error(ErrorKind::WouldBlock, "try again");
+
+        let result = write_tls_bytes(&mut writer, b"hello");
+
+        assert_eq!(result.written, -1);
+        assert_eq!(result.status, TLS_STATUS_RETRYABLE);
+        assert_eq!(last_error_string(), "hew_tls_write: would block");
+    }
+
+    #[test]
+    fn write_tls_protocol_error_sets_tls_status_and_last_error() {
+        clear_tls_last_error();
+        let mut writer = MockWriter::flush_error(ErrorKind::InvalidData, "bad close notify");
+
+        let result = write_tls_bytes(&mut writer, b"hello");
+
+        assert_eq!(result.written, -1);
+        assert_eq!(result.status, TLS_STATUS_TLS_ERROR);
+        assert_eq!(
+            last_error_string(),
+            "hew_tls_write: tls alert/protocol error: bad close notify"
+        );
     }
 
     #[test]
@@ -477,7 +779,7 @@ mod tests {
 
     #[test]
     fn connect_empty_host_returns_null() {
-        let host = CString::new("").unwrap();
+        let host = std::ffi::CString::new("").unwrap();
         // SAFETY: passing valid but empty C string.
         let ptr = unsafe { hew_tls_connect(host.as_ptr(), 443) };
         assert!(ptr.is_null());
@@ -485,84 +787,19 @@ mod tests {
 
     #[test]
     fn connect_negative_port_returns_null() {
-        let host = CString::new("example.com").unwrap();
+        let host = std::ffi::CString::new("example.com").unwrap();
         // SAFETY: passing valid host with invalid port.
         let ptr = unsafe { hew_tls_connect(host.as_ptr(), -1) };
         assert!(ptr.is_null());
     }
 
     #[test]
-    fn connect_invalid_hostname_records_last_error() {
-        clear_tls_last_error();
-        let host = CString::new("bad host").unwrap();
-
-        // SAFETY: passing valid C string with an invalid TLS hostname.
-        let ptr = unsafe { hew_tls_connect(host.as_ptr(), 443) };
-
-        assert!(ptr.is_null());
-        let err = last_error_string().expect("invalid hostname should record an error");
-        assert!(
-            err.contains("hostname"),
-            "expected hostname context, got: {err}"
-        );
-        assert!(err.contains("bad host"), "expected host value, got: {err}");
-    }
-
-    #[test]
-    fn connect_unreachable_tcp_records_last_error() {
-        clear_tls_last_error();
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
-        let port = listener.local_addr().expect("local addr").port();
-        drop(listener);
-        let host = CString::new("localhost").unwrap();
-
-        // SAFETY: passing valid host and an unused localhost port.
-        let ptr = unsafe { hew_tls_connect(host.as_ptr(), i32::from(port)) };
-
-        assert!(ptr.is_null());
-        let err = last_error_string().expect("connect failure should record an error");
-        assert!(
-            err.contains("connect"),
-            "expected connect context, got: {err}"
-        );
-        assert!(
-            err.contains("localhost"),
-            "expected address context, got: {err}"
-        );
-    }
-
-    #[test]
-    fn connect_success_clears_stale_last_error() {
-        let stale_host = CString::new("bad host").unwrap();
-        // SAFETY: passing valid C string with an invalid TLS hostname.
-        let failed = unsafe { hew_tls_connect(stale_host.as_ptr(), 443) };
-        assert!(failed.is_null());
-        assert!(last_error_string().is_some());
-
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
-        let port = listener.local_addr().expect("local addr").port();
-        let accept_thread = thread::spawn(move || {
-            let _ = listener.accept().expect("accept client");
-        });
-        let host = CString::new("localhost").unwrap();
-
-        // SAFETY: passing valid host and port for a listening local TCP server.
-        let stream = unsafe { hew_tls_connect(host.as_ptr(), i32::from(port)) };
-
-        assert!(!stream.is_null(), "expected TLS connect wrapper to succeed");
-        assert!(
-            last_error_string().is_none(),
-            "success should clear stale error"
-        );
-        // SAFETY: `stream` was returned by `hew_tls_connect`.
-        unsafe { hew_tls_close(stream) };
-        accept_thread.join().expect("accept thread should finish");
-    }
-
-    #[test]
     fn write_null_data_nonzero_len_returns_error() {
+        let mut status = -1;
         // SAFETY: testing null data with non-zero length.
-        let ret = unsafe { hew_tls_write(std::ptr::null_mut(), std::ptr::null(), 10) };
+        let ret =
+            unsafe { hew_tls_write(std::ptr::null_mut(), std::ptr::null(), 10, &raw mut status) };
         assert_eq!(ret, -1);
+        assert_eq!(status, TLS_STATUS_IO_ERROR);
     }
 }

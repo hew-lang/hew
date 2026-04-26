@@ -85,9 +85,9 @@ pub unsafe extern "C" fn hew_json_parse(json_str: *const c_char) -> *mut HewJson
     }
 }
 
-/// Return the last JSON parse error recorded on the current thread.
+/// Return the last JSON error recorded on the current thread.
 ///
-/// Returns an empty string when no parse error has been recorded.
+/// Returns an empty string when no error has been recorded.
 #[no_mangle]
 pub extern "C" fn hew_json_last_error() -> *mut c_char {
     str_to_malloc(&get_parse_last_error())
@@ -1428,6 +1428,7 @@ mod tests {
 
             let bytes = read_and_free_bytes(hew_json_get_bytes(field));
             assert!(bytes.is_empty());
+            assert!(read_and_free_cstr(hew_json_last_error()).is_empty());
 
             hew_json_free(field);
             hew_json_free(val);
@@ -1435,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn get_bytes_valid_base64_round_trips() {
+    fn get_bytes_valid_base64_round_trips_without_last_error() {
         clear_parse_last_error();
         let val = parse(r#"{"b":"aGVsbG8="}"#);
         assert!(!val.is_null());
@@ -1448,10 +1449,94 @@ mod tests {
 
             let bytes = read_and_free_bytes(hew_json_get_bytes(field));
             assert_eq!(bytes, b"hello");
+            assert!(read_and_free_cstr(hew_json_last_error()).is_empty());
 
             hew_json_free(field);
             hew_json_free(val);
         }
+    }
+
+    #[test]
+    fn get_bytes_success_clears_last_error() {
+        clear_parse_last_error();
+        let bad = parse(r#"{"b":"!!not-base64!!"}"#);
+        assert!(!bad.is_null());
+
+        // SAFETY: bad is a valid HewJsonValue from parse.
+        unsafe {
+            let key = CString::new("b").unwrap();
+            let field = hew_json_get_field(bad, key.as_ptr());
+            assert!(!field.is_null());
+            assert!(hew_json_get_bytes(field).is_null());
+            assert!(!read_and_free_cstr(hew_json_last_error()).is_empty());
+            hew_json_free(field);
+            hew_json_free(bad);
+        }
+
+        let good = parse(r#"{"b":"aGVsbG8="}"#);
+        assert!(!good.is_null());
+
+        // SAFETY: good is a valid HewJsonValue from parse.
+        unsafe {
+            let key = CString::new("b").unwrap();
+            let field = hew_json_get_field(good, key.as_ptr());
+            assert!(!field.is_null());
+            let bytes = read_and_free_bytes(hew_json_get_bytes(field));
+            assert_eq!(bytes, b"hello");
+            assert!(read_and_free_cstr(hew_json_last_error()).is_empty());
+            hew_json_free(field);
+            hew_json_free(good);
+        }
+    }
+
+    #[test]
+    fn get_bytes_last_error_is_thread_local() {
+        clear_parse_last_error();
+
+        let err_thread = std::thread::spawn(|| {
+            clear_parse_last_error();
+            let val = parse(r#"{"b":"!!not-base64!!"}"#);
+            assert!(!val.is_null());
+
+            // SAFETY: val is a valid HewJsonValue from parse.
+            unsafe {
+                let key = CString::new("b").unwrap();
+                let field = hew_json_get_field(val, key.as_ptr());
+                assert!(!field.is_null());
+                assert!(hew_json_get_bytes(field).is_null());
+                let err = read_and_free_cstr(hew_json_last_error());
+                hew_json_free(field);
+                hew_json_free(val);
+                err
+            }
+        });
+
+        let ok_thread = std::thread::spawn(|| {
+            clear_parse_last_error();
+            let val = parse(r#"{"b":"aGVsbG8="}"#);
+            assert!(!val.is_null());
+
+            // SAFETY: val is a valid HewJsonValue from parse.
+            unsafe {
+                let key = CString::new("b").unwrap();
+                let field = hew_json_get_field(val, key.as_ptr());
+                assert!(!field.is_null());
+                let bytes = read_and_free_bytes(hew_json_get_bytes(field));
+                let err = read_and_free_cstr(hew_json_last_error());
+                hew_json_free(field);
+                hew_json_free(val);
+                (bytes, err)
+            }
+        });
+
+        let err = err_thread.join().unwrap();
+        let (bytes, ok_err) = ok_thread.join().unwrap();
+
+        assert!(err.contains("base64") || err.contains("decode"));
+        assert_eq!(bytes, b"hello");
+        assert!(ok_err.is_empty());
+        // SAFETY: hew_json_last_error returns a malloc-allocated C string.
+        assert!(unsafe { read_and_free_cstr(hew_json_last_error()) }.is_empty());
     }
 
     #[test]

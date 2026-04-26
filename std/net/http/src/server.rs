@@ -2,20 +2,25 @@
 //!
 //! Provides an HTTP server built on [`tiny_http`] that can be driven from
 //! compiled Hew programs via the C ABI functions below.
+//!
+//! Request bodies are fail-closed by a conservative 30s read deadline by
+//! default so slow trickle-feed clients cannot hold the server indefinitely.
+//! Use [`hew_http_server_set_request_timeout_ms`] to tune that deadline.
 
 use hew_cabi::cabi::{malloc_cstring, str_to_malloc};
 use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
 use hew_cabi::vec::HewVec;
 use std::ffi::{c_char, c_void, CStr};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Mutex, PoisonError,
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+const DEFAULT_REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 const RESPONSE_THREAD_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const RESPONSE_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -23,6 +28,7 @@ const RESPONSE_THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct HewHttpServer {
     inner: tiny_http::Server,
     max_body_size: usize,
+    request_body_timeout: Duration,
     response_threads: ResponseThreadTracker,
 }
 
@@ -36,6 +42,7 @@ impl std::fmt::Debug for HewHttpServer {
 pub struct HewHttpRequest {
     inner: Option<tiny_http::Request>,
     max_body_size: usize,
+    request_body_timeout: Duration,
     response_threads: Option<ResponseThreadTracker>,
 }
 
@@ -190,6 +197,34 @@ fn join_response_thread(handle: JoinHandle<()>) {
     }
 }
 
+struct DeadlineReader<R> {
+    inner: R,
+    started_at: Instant,
+    timeout: Duration,
+}
+
+impl<R> DeadlineReader<R> {
+    fn new(inner: R, timeout: Duration) -> Self {
+        Self {
+            inner,
+            started_at: Instant::now(),
+            timeout,
+        }
+    }
+}
+
+impl<R: Read> Read for DeadlineReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.started_at.elapsed() >= self.timeout {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "request body read deadline exceeded",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
 impl Drop for HewHttpServer {
     fn drop(&mut self) {
         self.response_threads.cancel_and_join_all();
@@ -225,6 +260,7 @@ pub unsafe extern "C" fn hew_http_server_new(addr: *const c_char) -> *mut HewHtt
         Ok(server) => Box::into_raw(Box::new(HewHttpServer {
             inner: server,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: ResponseThreadTracker::new(),
         })),
         Err(_) => std::ptr::null_mut(),
@@ -252,6 +288,7 @@ pub unsafe extern "C" fn hew_http_server_recv(srv: *mut HewHttpServer) -> *mut H
         Ok(req) => Box::into_raw(Box::new(HewHttpRequest {
             inner: Some(req),
             max_body_size: server.max_body_size,
+            request_body_timeout: server.request_body_timeout,
             response_threads: Some(server.response_threads.clone()),
         })),
         Err(_) => std::ptr::null_mut(),
@@ -280,6 +317,32 @@ pub unsafe extern "C" fn hew_http_server_set_max_body(
     // SAFETY: srv was allocated by hew_http_server_new and is valid.
     let server = unsafe { &mut *srv };
     server.max_body_size = max_body_size;
+    0
+}
+
+/// Set the per-request body read deadline (in milliseconds) for future
+/// received requests.
+///
+/// Returns 0 on success, -1 on invalid input.
+///
+/// # Safety
+///
+/// `srv` must be a valid pointer to a [`HewHttpServer`] previously returned by
+/// [`hew_http_server_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_server_set_request_timeout_ms(
+    srv: *mut HewHttpServer,
+    timeout_ms: i64,
+) -> i32 {
+    if srv.is_null() || timeout_ms <= 0 {
+        return -1;
+    }
+    let Ok(timeout_ms) = u64::try_from(timeout_ms) else {
+        return -1;
+    };
+    // SAFETY: srv was allocated by hew_http_server_new and is valid.
+    let server = unsafe { &mut *srv };
+    server.request_body_timeout = Duration::from_millis(timeout_ms);
     0
 }
 
@@ -346,15 +409,22 @@ pub unsafe extern "C" fn hew_http_request_body(
     };
 
     let mut buf = Vec::new();
-    let mut reader = inner.as_reader();
-    if Read::take(&mut reader, request.max_body_size as u64 + 1)
-        .read_to_end(&mut buf)
-        .is_err()
+    let mut reader = DeadlineReader::new(inner.as_reader(), request.request_body_timeout);
+    if let Err(err) =
+        Read::take(&mut reader, request.max_body_size as u64 + 1).read_to_end(&mut buf)
     {
+        if err.kind() == io::ErrorKind::TimedOut {
+            drop(buf);
+            let response = tiny_http::Response::from_string("Request Timeout")
+                .with_status_code(tiny_http::StatusCode(408));
+            let _ = inner.respond(response);
+            return std::ptr::null_mut();
+        }
         request.inner = Some(inner);
         return std::ptr::null_mut();
     }
     if buf.len() > request.max_body_size {
+        drop(buf);
         let response = tiny_http::Response::from_string("Payload Too Large")
             .with_status_code(tiny_http::StatusCode(413));
         let _ = inner.respond(response);
@@ -852,7 +922,7 @@ pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
+    use std::net::{Shutdown, SocketAddr, TcpStream};
 
     fn wait_for_condition(
         description: &str,
@@ -876,6 +946,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         let dbg = format!("{req:?}");
@@ -889,6 +960,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         let ct = c"text/plain";
@@ -903,6 +975,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         let ct = c"text/plain";
@@ -1022,6 +1095,54 @@ mod tests {
         unsafe { hew_http_server_close(srv) };
     }
 
+    // -- set_request_timeout_ms ---------------------------------------
+
+    #[test]
+    fn set_request_timeout_ms_null_server_returns_error() {
+        // SAFETY: null pointer is the tested scenario.
+        let result = unsafe { hew_http_server_set_request_timeout_ms(std::ptr::null_mut(), 1000) };
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn set_request_timeout_ms_zero_returns_error() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string literal.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        // SAFETY: srv is valid; 0 is an invalid timeout.
+        let result = unsafe { hew_http_server_set_request_timeout_ms(srv, 0) };
+        assert_eq!(result, -1, "zero timeout should be rejected");
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
+    fn set_request_timeout_ms_negative_returns_error() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string literal.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        // SAFETY: srv is valid; -1 is invalid.
+        let result = unsafe { hew_http_server_set_request_timeout_ms(srv, -1) };
+        assert_eq!(result, -1, "negative timeout should be rejected");
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
+    fn set_request_timeout_ms_valid_returns_success() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string literal.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        // SAFETY: srv is valid; 250 is a valid timeout.
+        let result = unsafe { hew_http_server_set_request_timeout_ms(srv, 250) };
+        assert_eq!(result, 0);
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
     // -- Request accessors on consumed request ------------------------
 
     #[test]
@@ -1029,6 +1150,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         // SAFETY: req is a valid local struct with inner = None.
@@ -1041,6 +1163,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         // SAFETY: req is a valid local struct with inner = None.
@@ -1053,6 +1176,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         let mut out_len: usize = 99;
@@ -1066,6 +1190,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         let name = c"content-type";
@@ -1079,6 +1204,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         // SAFETY: null name is the tested scenario.
@@ -1091,6 +1217,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         // SAFETY: out_len is null (tested scenario).
@@ -1117,6 +1244,7 @@ mod tests {
         let req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         // SAFETY: req is a valid local struct with inner = None.
@@ -1305,6 +1433,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         // SAFETY: text is null (tested scenario); req is valid.
@@ -1317,6 +1446,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         // SAFETY: json is null (tested scenario); req is valid.
@@ -1348,9 +1478,13 @@ mod tests {
 
     /// Get the server's bound address as `http://127.0.0.1:<port>`.
     fn server_addr(srv: *mut HewHttpServer) -> String {
+        format!("http://{}", server_socket_addr(srv))
+    }
+
+    fn server_socket_addr(srv: *mut HewHttpServer) -> SocketAddr {
         // SAFETY: srv is valid and was just created.
         let server = unsafe { &*srv };
-        format!("http://{}", server.inner.server_addr().to_ip().unwrap())
+        server.inner.server_addr().to_ip().unwrap()
     }
 
     #[test]
@@ -1919,6 +2053,120 @@ mod tests {
     }
 
     #[test]
+    fn loopback_request_body_timeout_returns_408() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        // SAFETY: srv is valid; 100ms is a valid timeout.
+        let result = unsafe { hew_http_server_set_request_timeout_ms(srv, 100) };
+        assert_eq!(result, 0);
+        let socket_addr = server_socket_addr(srv);
+
+        let handle = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(socket_addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            stream
+                .write_all(
+                    b"POST /slow HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2048\r\n\r\nx",
+                )
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            let _ = stream.write_all(b"y");
+            let _ = stream.shutdown(Shutdown::Write);
+
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            response
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        let mut out_len: usize = usize::MAX;
+        let start = Instant::now();
+        // SAFETY: req and out_len are valid.
+        let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
+        let elapsed = start.elapsed();
+        if !body_ptr.is_null() {
+            // SAFETY: body_ptr was malloc'd.
+            unsafe { libc::free(body_ptr.cast()) };
+            let text = c"late";
+            // SAFETY: req is valid; text is a valid C string.
+            let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
+        }
+
+        let response = handle.join().unwrap();
+        assert!(body_ptr.is_null(), "timed out body should be rejected");
+        assert!(
+            response.starts_with("HTTP/1.1 408") || response.starts_with("HTTP/1.0 408"),
+            "expected 408 response, got {response:?}"
+        );
+        assert!(response.contains("Request Timeout"));
+        assert!(
+            elapsed < Duration::from_millis(350),
+            "deadline should stop slow body reads early, got {elapsed:?}"
+        );
+
+        // SAFETY: req and srv are valid.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
+    fn loopback_request_body_within_timeout_succeeds() {
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        // SAFETY: srv is valid; 250ms is a valid timeout.
+        let result = unsafe { hew_http_server_set_request_timeout_ms(srv, 250) };
+        assert_eq!(result, 0);
+        let base = server_addr(srv);
+        let body = vec![b'a'; 2048];
+
+        let handle = std::thread::spawn(move || {
+            ureq::post(&format!("{base}/timely"))
+                .header("Content-Type", "text/plain")
+                .send(body.as_slice())
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        let mut out_len: usize = 0;
+        // SAFETY: req and out_len are valid.
+        let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
+        assert!(!body_ptr.is_null());
+        assert_eq!(out_len, 2048);
+        // SAFETY: body_ptr points to `out_len` bytes allocated by libc::malloc.
+        let body = unsafe { std::slice::from_raw_parts(body_ptr, out_len) };
+        assert_eq!(body, vec![b'a'; 2048].as_slice());
+        // SAFETY: body_ptr was malloc'd.
+        unsafe { libc::free(body_ptr.cast()) };
+
+        let text = c"ok";
+        // SAFETY: req is valid; text is a valid C string.
+        let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
+
+        let client_result = handle.join().unwrap();
+        match client_result {
+            Ok(resp) => assert_eq!(resp.status().as_u16(), 200),
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+
+        // SAFETY: req and srv are valid.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
     fn loopback_request_free_drops_connection() {
         let addr = c"127.0.0.1:0";
         // SAFETY: addr is a valid C string.
@@ -1958,6 +2206,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         let encoding = c"utf-8";
@@ -1971,6 +2220,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         // SAFETY: null encoding should not crash; consumed request returns null.
@@ -1994,6 +2244,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         let ct = c"text/plain";
@@ -2009,6 +2260,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         let ct = c"text/plain";
@@ -2023,6 +2275,7 @@ mod tests {
         let mut req = HewHttpRequest {
             inner: None,
             max_body_size: MAX_BODY_SIZE,
+            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
         let body = c"hello";

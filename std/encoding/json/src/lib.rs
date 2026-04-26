@@ -50,6 +50,19 @@ fn get_parse_last_error() -> String {
     LAST_PARSE_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
 }
 
+fn stringify_result_to_malloc(result: Result<String, serde_json::Error>) -> *mut c_char {
+    match result {
+        Ok(json) => {
+            clear_parse_last_error();
+            str_to_malloc(&json)
+        }
+        Err(err) => {
+            set_parse_last_error(format!("json stringify failed: {err}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // C ABI exports
 // ---------------------------------------------------------------------------
@@ -108,8 +121,7 @@ pub unsafe extern "C" fn hew_json_stringify(val: *const HewJsonValue) -> *mut c_
     }
     // SAFETY: val is a valid HewJsonValue pointer per caller contract.
     let v = unsafe { &*val };
-    let s = serde_json::to_string(&v.inner).unwrap_or_default();
-    str_to_malloc(&s)
+    stringify_result_to_malloc(serde_json::to_string(&v.inner))
 }
 
 /// Return the type tag of a [`HewJsonValue`].
@@ -930,6 +942,7 @@ pub extern "C" fn hew_json_from_null() -> *mut HewJsonValue {
 )]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::ffi::CString;
 
     /// Helper: parse a JSON string and return the owned pointer.
@@ -1389,6 +1402,21 @@ mod tests {
 
         // SAFETY: ok is a valid pointer returned by parse.
         unsafe { hew_json_free(ok) };
+    }
+
+    #[test]
+    fn stringify_serializer_error_returns_null_and_sets_last_error() {
+        clear_parse_last_error();
+
+        let mut bad_map = BTreeMap::new();
+        bad_map.insert(vec![0xff], 1);
+
+        let json = stringify_result_to_malloc(serde_json::to_string(&bad_map));
+        assert!(json.is_null());
+
+        // SAFETY: hew_json_last_error returns a malloc-allocated C string.
+        let err = unsafe { read_and_free_cstr(hew_json_last_error()) };
+        assert!(err.contains("stringify"));
     }
 
     #[test]

@@ -4562,7 +4562,15 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
       if (idxIt != traitIt->second.methodIndex.end())
         methodIdx = idxIt->second;
       for (const auto *tm : traitIt->second.methods) {
-        if (tm->name == methodName && tm->return_type.has_value()) {
+        if (tm->name != methodName)
+          continue;
+        if (tm->type_params && !tm->type_params->empty()) {
+          ++errorCount_;
+          emitError(location) << "dyn-trait dispatch does not yet support generic methods: "
+                              << methodName;
+          return nullptr;
+        }
+        if (tm->return_type.has_value()) {
           returnType = convertType(tm->return_type->value);
           break;
         }
@@ -4869,6 +4877,7 @@ mlir::Value MLIRGen::generateTupleExpr(const ast::ExprTuple &tup,
 mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr,
                                        std::optional<mlir::Type> typeHint) {
   auto location = currentLoc;
+  auto targetArrayType = mlir::dyn_cast_or_null<hew::HewArrayType>(typeHint.value_or(mlir::Type{}));
 
   if (arr.elements.empty()) {
     // Empty array literal: coerce to Vec<T> if type context expects it
@@ -4905,6 +4914,34 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr,
       hew::VecPushOp::create(builder, location, vec, val);
     }
     return vec;
+  }
+
+  if (targetArrayType) {
+    if (targetArrayType.getSize() != static_cast<int64_t>(arr.elements.size())) {
+      ++errorCount_;
+      emitError(location) << "array literal length " << arr.elements.size()
+                          << " does not match annotated size " << targetArrayType.getSize();
+      return nullptr;
+    }
+    llvm::SmallVector<mlir::Value, 8> coercedElements;
+    coercedElements.reserve(arr.elements.size());
+    auto targetElemType = targetArrayType.getElementType();
+    for (const auto &elem : arr.elements) {
+      auto val = generateExpression(elem->value, targetElemType);
+      if (!val)
+        return nullptr;
+      val = coerceType(val, targetElemType, location);
+      if (!val)
+        return nullptr;
+      if (val.getType() != targetElemType) {
+        ++errorCount_;
+        emitError(location) << "coerceType: no known conversion from " << val.getType() << " to "
+                            << targetElemType;
+        return nullptr;
+      }
+      coercedElements.push_back(val);
+    }
+    return hew::ArrayCreateOp::create(builder, location, targetArrayType, coercedElements);
   }
 
   llvm::SmallVector<mlir::Value, 8> values;

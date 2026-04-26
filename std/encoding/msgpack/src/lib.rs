@@ -12,7 +12,164 @@
 extern crate hew_runtime;
 
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::cell::RefCell;
 use std::ffi::c_char;
+
+const MAX_MSGPACK_DEPTH: usize = 128;
+const MALFORMED_MSGPACK_ERROR: &str = "msgpack: malformed input during depth pre-scan";
+
+std::thread_local! {
+    static LAST_MSGPACK_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn set_msgpack_last_error(msg: impl Into<String>) {
+    LAST_MSGPACK_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+}
+
+fn clear_msgpack_last_error() {
+    LAST_MSGPACK_ERROR.with(|error| *error.borrow_mut() = None);
+}
+
+fn get_msgpack_last_error() -> String {
+    LAST_MSGPACK_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+}
+
+fn depth_exceeded_error() -> String {
+    format!("msgpack: maximum nesting depth ({MAX_MSGPACK_DEPTH}) exceeded")
+}
+
+fn read_u8(slice: &[u8], cursor: &mut usize) -> Result<u8, String> {
+    let value = *slice
+        .get(*cursor)
+        .ok_or_else(|| MALFORMED_MSGPACK_ERROR.to_string())?;
+    *cursor += 1;
+    Ok(value)
+}
+
+fn read_u16_be(slice: &[u8], cursor: &mut usize) -> Result<u16, String> {
+    let end = cursor
+        .checked_add(2)
+        .ok_or_else(|| MALFORMED_MSGPACK_ERROR.to_string())?;
+    let bytes = slice
+        .get(*cursor..end)
+        .ok_or_else(|| MALFORMED_MSGPACK_ERROR.to_string())?;
+    *cursor = end;
+    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+fn read_u32_be(slice: &[u8], cursor: &mut usize) -> Result<u32, String> {
+    let end = cursor
+        .checked_add(4)
+        .ok_or_else(|| MALFORMED_MSGPACK_ERROR.to_string())?;
+    let bytes = slice
+        .get(*cursor..end)
+        .ok_or_else(|| MALFORMED_MSGPACK_ERROR.to_string())?;
+    *cursor = end;
+    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn skip_bytes(slice: &[u8], cursor: &mut usize, len: usize) -> Result<(), String> {
+    let end = cursor
+        .checked_add(len)
+        .ok_or_else(|| MALFORMED_MSGPACK_ERROR.to_string())?;
+    if end > slice.len() {
+        return Err(MALFORMED_MSGPACK_ERROR.to_string());
+    }
+    *cursor = end;
+    Ok(())
+}
+
+fn read_u32_len(slice: &[u8], cursor: &mut usize) -> Result<usize, String> {
+    let len = read_u32_be(slice, cursor)?;
+    usize::try_from(len).map_err(|_| MALFORMED_MSGPACK_ERROR.to_string())
+}
+
+fn push_container(stack: &mut Vec<u64>, child_slots: u64) -> Result<(), String> {
+    stack.push(child_slots);
+    if stack.len() - 1 > MAX_MSGPACK_DEPTH {
+        return Err(depth_exceeded_error());
+    }
+    Ok(())
+}
+
+fn check_depth(slice: &[u8]) -> Result<(), String> {
+    let mut cursor = 0usize;
+    let mut stack = vec![1u64];
+
+    while let Some(remaining) = stack.last_mut() {
+        if *remaining == 0 {
+            stack.pop();
+            continue;
+        }
+        *remaining -= 1;
+
+        let opcode = read_u8(slice, &mut cursor)?;
+        match opcode {
+            0x00..=0x7f | 0xc0 | 0xc2 | 0xc3 | 0xe0..=0xff => {}
+            0x80..=0x8f => push_container(&mut stack, u64::from(opcode & 0x0f) * 2)?,
+            0x90..=0x9f => push_container(&mut stack, u64::from(opcode & 0x0f))?,
+            0xa0..=0xbf => skip_bytes(slice, &mut cursor, usize::from(opcode & 0x1f))?,
+            0xc1 => return Err(MALFORMED_MSGPACK_ERROR.to_string()),
+            0xc4 | 0xd9 => {
+                let len = usize::from(read_u8(slice, &mut cursor)?);
+                skip_bytes(slice, &mut cursor, len)?;
+            }
+            0xc5 | 0xda => {
+                let len = usize::from(read_u16_be(slice, &mut cursor)?);
+                skip_bytes(slice, &mut cursor, len)?;
+            }
+            0xc6 | 0xdb => {
+                let len = read_u32_len(slice, &mut cursor)?;
+                skip_bytes(slice, &mut cursor, len)?;
+            }
+            0xc7 => {
+                let len = usize::from(read_u8(slice, &mut cursor)?);
+                skip_bytes(slice, &mut cursor, len + 1)?;
+            }
+            0xc8 => {
+                let len = usize::from(read_u16_be(slice, &mut cursor)?);
+                skip_bytes(slice, &mut cursor, len + 1)?;
+            }
+            0xc9 => {
+                let len = usize::try_from(read_u32_be(slice, &mut cursor)?)
+                    .map_err(|_| MALFORMED_MSGPACK_ERROR.to_string())?;
+                skip_bytes(slice, &mut cursor, len + 1)?;
+            }
+            0xca | 0xce | 0xd2 => skip_bytes(slice, &mut cursor, 4)?,
+            0xcb | 0xcf | 0xd3 => skip_bytes(slice, &mut cursor, 8)?,
+            0xcc | 0xd0 => skip_bytes(slice, &mut cursor, 1)?,
+            0xcd | 0xd1 | 0xd4 => skip_bytes(slice, &mut cursor, 2)?,
+            0xd5 => skip_bytes(slice, &mut cursor, 3)?,
+            0xd6 => skip_bytes(slice, &mut cursor, 5)?,
+            0xd7 => skip_bytes(slice, &mut cursor, 9)?,
+            0xd8 => skip_bytes(slice, &mut cursor, 17)?,
+            0xdc => push_container(&mut stack, u64::from(read_u16_be(slice, &mut cursor)?))?,
+            0xdd => push_container(&mut stack, u64::from(read_u32_be(slice, &mut cursor)?))?,
+            0xde => push_container(
+                &mut stack,
+                u64::from(read_u16_be(slice, &mut cursor)?)
+                    .checked_mul(2)
+                    .ok_or_else(|| MALFORMED_MSGPACK_ERROR.to_string())?,
+            )?,
+            0xdf => push_container(
+                &mut stack,
+                u64::from(read_u32_be(slice, &mut cursor)?)
+                    .checked_mul(2)
+                    .ok_or_else(|| MALFORMED_MSGPACK_ERROR.to_string())?,
+            )?,
+        }
+
+        while matches!(stack.last(), Some(0)) {
+            stack.pop();
+        }
+    }
+
+    if cursor != slice.len() {
+        return Err(MALFORMED_MSGPACK_ERROR.to_string());
+    }
+
+    Ok(())
+}
 
 /// Allocate a buffer via `libc::malloc`, copying `len` bytes from `src`.
 /// Returns null on allocation failure.
@@ -79,23 +236,42 @@ pub unsafe extern "C" fn hew_msgpack_from_json(
 /// it as JSON. Returns a `malloc`-allocated, NUL-terminated C string. Returns
 /// null on deserialization or serialization failure.
 ///
+/// Call [`hew_msgpack_last_error`] to retrieve the current thread's parse
+/// failure.
+///
 /// # Safety
 ///
 /// `data` must point to at least `len` readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_msgpack_to_json(data: *const u8, len: usize) -> *mut c_char {
     if data.is_null() || len == 0 {
+        set_msgpack_last_error("msgpack: invalid input buffer");
         return std::ptr::null_mut();
     }
     // SAFETY: data is valid for len bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    if let Err(err) = check_depth(slice) {
+        set_msgpack_last_error(err);
+        return std::ptr::null_mut();
+    }
     let Ok(value) = rmp_serde::from_slice::<serde_json::Value>(slice) else {
+        set_msgpack_last_error("msgpack: failed to deserialize input");
         return std::ptr::null_mut();
     };
     let Ok(json) = serde_json::to_string(&value) else {
+        set_msgpack_last_error("msgpack: failed to serialize JSON output");
         return std::ptr::null_mut();
     };
+    clear_msgpack_last_error();
     str_to_malloc(&json)
+}
+
+/// Return the last `MessagePack` parse error recorded on the current thread.
+///
+/// Returns an empty string when no parse error has been recorded.
+#[no_mangle]
+pub extern "C" fn hew_msgpack_last_error() -> *mut c_char {
+    str_to_malloc(&get_msgpack_last_error())
 }
 
 /// Encode a single integer as `MessagePack`.
@@ -332,6 +508,15 @@ mod tests {
     use super::*;
     use std::ffi::{CStr, CString};
 
+    unsafe fn read_and_free(ptr: *mut c_char) -> String {
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a valid NUL-terminated C string allocated with malloc.
+        let value = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        // SAFETY: ptr was allocated with malloc.
+        unsafe { libc::free(ptr.cast()) };
+        value
+    }
+
     #[test]
     fn json_roundtrip_object() {
         let json = r#"{"name":"hew","version":42}"#;
@@ -554,6 +739,74 @@ mod tests {
         // SAFETY: truncated is a valid buffer.
         unsafe {
             assert!(hew_msgpack_to_json(truncated.as_ptr(), truncated.len()).is_null());
+        }
+    }
+
+    #[test]
+    fn to_json_rejects_deeply_nested_arrays_before_deserializing() {
+        let mut nested = vec![0x91; 10_000];
+        nested.push(0xc0);
+
+        // SAFETY: nested is a valid buffer.
+        unsafe {
+            assert!(hew_msgpack_to_json(nested.as_ptr(), nested.len()).is_null());
+            assert_eq!(
+                read_and_free(hew_msgpack_last_error()),
+                depth_exceeded_error()
+            );
+        }
+    }
+
+    #[test]
+    fn to_json_rejects_deeply_nested_maps_before_deserializing() {
+        let mut nested = vec![0x81; 200];
+        nested.push(0xc0);
+
+        // SAFETY: nested is a valid buffer.
+        unsafe {
+            assert!(hew_msgpack_to_json(nested.as_ptr(), nested.len()).is_null());
+            assert_eq!(
+                read_and_free(hew_msgpack_last_error()),
+                depth_exceeded_error()
+            );
+        }
+    }
+
+    #[test]
+    fn to_json_allows_normal_nested_msgpack() {
+        let msgpack = rmp_serde::to_vec(&serde_json::json!({
+            "level1": [{"level2": {"level3": [{"level4": {"level5": null}}]}}]
+        }))
+        .unwrap();
+
+        // SAFETY: msgpack is a valid buffer.
+        unsafe {
+            let json = hew_msgpack_to_json(msgpack.as_ptr(), msgpack.len());
+            assert!(!json.is_null());
+
+            let json_str = CStr::from_ptr(json).to_str().unwrap();
+            let expected = serde_json::json!({
+                "level1": [{"level2": {"level3": [{"level4": {"level5": null}}]}}]
+            });
+            let actual: serde_json::Value = serde_json::from_str(json_str).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(read_and_free(hew_msgpack_last_error()), "");
+
+            libc::free(json.cast());
+        }
+    }
+
+    #[test]
+    fn to_json_allows_empty_array() {
+        let empty_array = [0x90u8];
+
+        // SAFETY: empty_array is a valid buffer.
+        unsafe {
+            let json = hew_msgpack_to_json(empty_array.as_ptr(), empty_array.len());
+            assert!(!json.is_null());
+            assert_eq!(CStr::from_ptr(json).to_str().unwrap(), "[]");
+            assert_eq!(read_and_free(hew_msgpack_last_error()), "");
+            libc::free(json.cast());
         }
     }
 

@@ -19,6 +19,11 @@ use std::str::FromStr;
 use chrono::Utc;
 use cron::Schedule;
 
+const HEW_CRON_STATUS_SUCCESS: i32 = 0;
+const HEW_CRON_STATUS_NO_NEXT_OCCURRENCE: i32 = 1;
+const HEW_CRON_STATUS_INVALID_INPUT: i32 = 2;
+const HEW_CRON_STATUS_INVALID_EPOCH: i32 = 3;
+
 std::thread_local! {
     static LAST_CRON_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
 }
@@ -50,6 +55,13 @@ fn ensure_cron_last_error(msg: impl Into<String>) {
 #[derive(Debug)]
 pub struct HewCronExpr {
     inner: Schedule,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HewCronNextResult {
+    pub status: i32,
+    pub timestamp: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -85,70 +97,110 @@ pub unsafe extern "C" fn hew_cron_parse(expr: *const c_char) -> *mut HewCronExpr
 
 /// Return the next occurrence after the given epoch timestamp (seconds).
 ///
-/// Returns the epoch timestamp (seconds) of the next matching time, or `-1`
-/// if no future occurrence can be computed. Call [`hew_cron_last_error`] to
-/// distinguish an error from a valid pre-epoch `-1` timestamp.
+/// Writes the epoch timestamp (seconds) of the next matching time into
+/// `out_ts`.
+///
+/// Return codes:
+/// - `0`: success; `*out_ts` was written
+/// - `1`: no next occurrence
+/// - `2`: invalid input
+/// - `3`: invalid epoch timestamp
 ///
 /// # Safety
 ///
-/// `expr` must be a valid pointer returned by [`hew_cron_parse`].
+/// - `expr` must be a valid pointer returned by [`hew_cron_parse`].
+/// - `out_ts` must be a valid writable pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_cron_next(expr: *const HewCronExpr, after_epoch_secs: i64) -> i64 {
+pub unsafe extern "C" fn hew_cron_next(
+    expr: *const HewCronExpr,
+    after_epoch_secs: i64,
+    out_ts: *mut i64,
+) -> i32 {
     if expr.is_null() {
         ensure_cron_last_error("invalid cron expression handle: null pointer");
-        return -1;
+        return HEW_CRON_STATUS_INVALID_INPUT;
+    }
+    if out_ts.is_null() {
+        set_cron_last_error("invalid output timestamp pointer: null pointer");
+        return HEW_CRON_STATUS_INVALID_INPUT;
     }
     // SAFETY: expr is a valid HewCronExpr pointer per caller contract.
     let cron_expr = unsafe { &*expr };
     let Some(dt) = chrono::DateTime::<Utc>::from_timestamp(after_epoch_secs, 0) else {
         set_cron_last_error(format!("invalid epoch timestamp: {after_epoch_secs}"));
-        return -1;
+        return HEW_CRON_STATUS_INVALID_EPOCH;
     };
-    if let Some(next_dt) = cron_expr.inner.after(&dt).next() {
-        clear_cron_last_error();
-        next_dt.timestamp()
-    } else {
+    let Some(next_dt) = cron_expr.inner.after(&dt).next() else {
         set_cron_last_error("cron schedule has no next occurrence after the given timestamp");
-        -1
-    }
+        return HEW_CRON_STATUS_NO_NEXT_OCCURRENCE;
+    };
+    // SAFETY: out_ts is a valid writable pointer per caller contract.
+    unsafe { *out_ts = next_dt.timestamp() };
+    clear_cron_last_error();
+    HEW_CRON_STATUS_SUCCESS
+}
+
+/// Hew-facing convenience wrapper around [`hew_cron_next`].
+///
+/// # Safety
+///
+/// `expr` must be a valid pointer returned by [`hew_cron_parse`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_cron_next_hew(
+    expr: *const HewCronExpr,
+    after_epoch_secs: i64,
+) -> HewCronNextResult {
+    let mut timestamp = 0_i64;
+    // SAFETY: `timestamp` is a valid writable out-pointer for this stack frame.
+    let status = unsafe { hew_cron_next(expr, after_epoch_secs, &raw mut timestamp) };
+    HewCronNextResult { status, timestamp }
 }
 
 /// Write up to `count` next occurrences after the given epoch timestamp into
 /// the `out` array.
 ///
-/// Returns the number of timestamps actually written (may be less than
-/// `count` if the schedule has fewer future occurrences). When this function
-/// returns `0`, call [`hew_cron_last_error`] to distinguish an error from a
-/// schedule with no remaining matches.
+/// On success, writes the number of timestamps stored into `out_written`.
+///
+/// Return codes:
+/// - `0`: success; `*out_written` was written
+/// - `1`: no next occurrence
+/// - `2`: invalid input
+/// - `3`: invalid epoch timestamp
 ///
 /// # Safety
 ///
 /// - `expr` must be a valid pointer returned by [`hew_cron_parse`].
 /// - `out` must point to a writable array of at least `count` `i64` elements.
+/// - `out_written` must be a valid writable pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cron_next_n(
     expr: *const HewCronExpr,
     after_epoch_secs: i64,
     count: i32,
     out: *mut i64,
+    out_written: *mut i32,
 ) -> i32 {
     if expr.is_null() {
         ensure_cron_last_error("invalid cron expression handle: null pointer");
-        return 0;
+        return HEW_CRON_STATUS_INVALID_INPUT;
     }
     if out.is_null() {
         set_cron_last_error("invalid output buffer: null pointer");
-        return 0;
+        return HEW_CRON_STATUS_INVALID_INPUT;
+    }
+    if out_written.is_null() {
+        set_cron_last_error("invalid output count pointer: null pointer");
+        return HEW_CRON_STATUS_INVALID_INPUT;
     }
     if count <= 0 {
         set_cron_last_error(format!("invalid occurrence count: {count}"));
-        return 0;
+        return HEW_CRON_STATUS_INVALID_INPUT;
     }
     // SAFETY: expr is a valid HewCronExpr pointer per caller contract.
     let cron_expr = unsafe { &*expr };
     let Some(dt) = chrono::DateTime::<Utc>::from_timestamp(after_epoch_secs, 0) else {
         set_cron_last_error(format!("invalid epoch timestamp: {after_epoch_secs}"));
-        return 0;
+        return HEW_CRON_STATUS_INVALID_EPOCH;
     };
     #[expect(clippy::cast_sign_loss, reason = "C ABI: negative count checked above")]
     let max = count as usize;
@@ -164,9 +216,14 @@ pub unsafe extern "C" fn hew_cron_next_n(
         reason = "C ABI: written <= count which fits in i32"
     )]
     {
-        let written = written as i32;
+        if written == 0 {
+            set_cron_last_error("cron schedule has no next occurrence after the given timestamp");
+            return HEW_CRON_STATUS_NO_NEXT_OCCURRENCE;
+        }
+        // SAFETY: out_written is a valid writable pointer per caller contract.
+        unsafe { *out_written = written as i32 };
         clear_cron_last_error();
-        written
+        HEW_CRON_STATUS_SUCCESS
     }
 }
 
@@ -256,6 +313,13 @@ mod tests {
         Some(text)
     }
 
+    unsafe fn next_status_and_value(expr: *const HewCronExpr, after_epoch_secs: i64) -> (i32, i64) {
+        let mut next = 0_i64;
+        // SAFETY: `next` is a valid writable out-pointer for this stack frame.
+        let status = unsafe { hew_cron_next(expr, after_epoch_secs, &raw mut next) };
+        (status, next)
+    }
+
     #[test]
     fn parse_valid_expression() {
         let expr_str = CString::new("0 30 9 * * Mon-Fri *").unwrap();
@@ -292,8 +356,8 @@ mod tests {
         assert!(expr.is_null());
 
         // SAFETY: null expr should be rejected without erasing the parse error.
-        let next = unsafe { hew_cron_next(expr, 0) };
-        assert_eq!(next, -1);
+        let (status, _) = unsafe { next_status_and_value(expr, 0) };
+        assert_eq!(status, HEW_CRON_STATUS_INVALID_INPUT);
         // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
         let err = unsafe { read_and_free_optional(hew_cron_last_error()) };
         assert!(err
@@ -312,7 +376,8 @@ mod tests {
         // 2024-01-01 00:00:00 UTC = 1_704_067_200
         let after = 1_704_067_200_i64;
         // SAFETY: expr is valid.
-        let next = unsafe { hew_cron_next(expr, after) };
+        let (status, next) = unsafe { next_status_and_value(expr, after) };
+        assert_eq!(status, HEW_CRON_STATUS_SUCCESS);
         assert!(next > after, "next ({next}) should be after {after}");
         // Should be exactly one minute later.
         assert_eq!(next, after + 60);
@@ -331,8 +396,8 @@ mod tests {
         assert!(!expr.is_null());
 
         // SAFETY: expr is valid.
-        let next = unsafe { hew_cron_next(expr, 1_735_689_600) };
-        assert_eq!(next, -1);
+        let (status, _) = unsafe { next_status_and_value(expr, 1_735_689_600) };
+        assert_eq!(status, HEW_CRON_STATUS_NO_NEXT_OCCURRENCE);
         // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
         assert!(unsafe { read_and_free_optional(hew_cron_last_error()) }
             .is_some_and(|message| message.contains("no next occurrence")));
@@ -351,8 +416,10 @@ mod tests {
 
         let after = 1_704_067_200_i64;
         let mut out = [0_i64; 5];
+        let mut written = 0_i32;
         // SAFETY: expr is valid, out has 5 elements.
-        let written = unsafe { hew_cron_next_n(expr, after, 5, out.as_mut_ptr()) };
+        let status = unsafe { hew_cron_next_n(expr, after, 5, out.as_mut_ptr(), &raw mut written) };
+        assert_eq!(status, HEW_CRON_STATUS_SUCCESS);
         assert_eq!(written, 5);
 
         // Each should be 60 seconds apart.
@@ -391,11 +458,21 @@ mod tests {
     fn null_safety() {
         // SAFETY: testing null pointer handling — should not crash.
         unsafe {
-            assert_eq!(hew_cron_next(std::ptr::null(), 0), -1);
+            let mut next = 0_i64;
+            assert_eq!(
+                hew_cron_next(std::ptr::null(), 0, &raw mut next),
+                HEW_CRON_STATUS_INVALID_INPUT
+            );
             assert!(read_and_free_optional(hew_cron_last_error()).is_some());
             assert_eq!(
-                hew_cron_next_n(std::ptr::null(), 0, 5, std::ptr::null_mut()),
-                0
+                hew_cron_next_n(
+                    std::ptr::null(),
+                    0,
+                    5,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                HEW_CRON_STATUS_INVALID_INPUT
             );
             assert!(hew_cron_to_string(std::ptr::null()).is_null());
             hew_cron_free(std::ptr::null_mut());
@@ -405,7 +482,10 @@ mod tests {
     #[test]
     fn successful_next_clears_last_error() {
         // SAFETY: testing invalid handle error recording.
-        assert_eq!(unsafe { hew_cron_next(std::ptr::null(), 0) }, -1);
+        let mut next = 0_i64;
+        // SAFETY: `next` is a valid writable out-pointer for this stack frame.
+        let status = unsafe { hew_cron_next(std::ptr::null(), 0, &raw mut next) };
+        assert_eq!(status, HEW_CRON_STATUS_INVALID_INPUT);
         // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
         assert!(unsafe { read_and_free_optional(hew_cron_last_error()) }.is_some());
 
@@ -415,10 +495,43 @@ mod tests {
         assert!(!expr.is_null());
 
         // SAFETY: expr is valid.
-        let next = unsafe { hew_cron_next(expr, 1_704_067_200) };
+        let (status, next) = unsafe { next_status_and_value(expr, 1_704_067_200) };
+        assert_eq!(status, HEW_CRON_STATUS_SUCCESS);
         assert!(next > 1_704_067_200);
         // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
         assert!(unsafe { read_and_free_optional(hew_cron_last_error()) }.is_none());
+
+        // SAFETY: expr was returned by hew_cron_parse.
+        unsafe { hew_cron_free(expr) };
+    }
+
+    #[test]
+    fn success_status_can_carry_negative_one_timestamp() {
+        // The upstream `cron` crate currently restricts years to 1970..=2100, so
+        // it cannot synthesize a real pre-epoch `-1` match. This still exercises
+        // the fail-closed ABI contract from issue #1419: success is encoded in
+        // the status code, so `-1` remains a valid output payload.
+        let result = HewCronNextResult {
+            status: HEW_CRON_STATUS_SUCCESS,
+            timestamp: -1,
+        };
+        assert_eq!(result.status, HEW_CRON_STATUS_SUCCESS);
+        assert_eq!(result.timestamp, -1);
+    }
+
+    #[test]
+    fn invalid_epoch_returns_distinct_status() {
+        let expr_str = CString::new("0 * * * * * *").unwrap();
+        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
+        assert!(!expr.is_null());
+
+        // SAFETY: test helper writes to a valid stack-allocated out-pointer.
+        let (status, _) = unsafe { next_status_and_value(expr, i64::MIN) };
+        assert_eq!(status, HEW_CRON_STATUS_INVALID_EPOCH);
+        // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
+        assert!(unsafe { read_and_free_optional(hew_cron_last_error()) }
+            .is_some_and(|message| message.contains("invalid epoch timestamp")));
 
         // SAFETY: expr was returned by hew_cron_parse.
         unsafe { hew_cron_free(expr) };

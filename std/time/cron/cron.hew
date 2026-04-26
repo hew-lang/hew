@@ -23,10 +23,51 @@
 /// no longer needed to avoid leaking memory.
 type Expr {}
 
+/// Structured cron scheduling errors surfaced by the native ABI.
+pub enum CronError {
+    NoNextOccurrence(String);
+    InvalidInput(String);
+    InvalidEpoch(String);
+}
+
+#[repr(C)]
+type CronNextResult {
+    status: i32;
+    timestamp: i64;
+}
+
+fn cron_last_error_message() -> String {
+    unsafe { hew_cron_last_error() }
+}
+
+fn cron_error_message(err: CronError) -> String {
+    match err {
+        CronError::NoNextOccurrence(message) => message,
+        CronError::InvalidInput(message) => message,
+        CronError::InvalidEpoch(message) => message,
+    }
+}
+
+fn cron_error_from_result(result: CronNextResult) -> CronError {
+    let message = cron_last_error_message();
+    match result.status {
+        1 => CronError::NoNextOccurrence(message),
+        2 => CronError::InvalidInput(message),
+        3 => CronError::InvalidEpoch(message),
+        _ => CronError::InvalidInput(message),
+    }
+}
+
 /// Methods available on a parsed `Expr`.
 trait ExprMethods {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
     fn next(expr: Expr, after_epoch_secs: int) -> int;
+
+    /// Compute the next firing time (epoch seconds) after the given timestamp.
+    ///
+    /// Returns `Err(CronError)` when the schedule has no future match or the
+    /// native ABI rejects the input.
+    fn try_next(expr: Expr, after_epoch_secs: int) -> Result<int, CronError>;
 
     /// Return the cron expression as a string.
     fn to_string(expr: Expr) -> String;
@@ -37,7 +78,24 @@ trait ExprMethods {
 
 impl ExprMethods for Expr {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(expr: Expr, after_epoch_secs: int) -> int { unsafe { hew_cron_next(expr, after_epoch_secs) } }
+    fn next(expr: Expr, after_epoch_secs: int) -> int {
+        match try_next(expr, after_epoch_secs) {
+            Ok(epoch_secs) => epoch_secs,
+            Err(err) => {
+                panic(f"cron.next failed: {cron_error_message(err)}");
+                0
+            },
+        }
+    }
+    /// Compute the next firing time (epoch seconds) after the given timestamp.
+    fn try_next(expr: Expr, after_epoch_secs: int) -> Result<int, CronError> {
+        let result = unsafe { hew_cron_next_hew(expr, after_epoch_secs as i64) };
+        if result.status == 0 {
+            Ok(result.timestamp as int)
+        } else {
+            Err(cron_error_from_result(result))
+        }
+    }
     /// Return the cron expression as a string.
     fn to_string(expr: Expr) -> String { unsafe { hew_cron_to_string(expr) } }
     /// Release the parsed expression resources.
@@ -64,7 +122,9 @@ pub fn parse(expr: String) -> Expr {
 
 extern "C" {
     fn hew_cron_parse(expr: String) -> Expr;
-    fn hew_cron_next(expr: Expr, after_epoch_secs: i64) -> i64;
+    fn hew_cron_next(expr: Expr, after_epoch_secs: i64, out_ts: *var i64) -> i32;
+    fn hew_cron_next_hew(expr: Expr, after_epoch_secs: i64) -> CronNextResult;
+    fn hew_cron_last_error() -> String;
     fn hew_cron_to_string(expr: Expr) -> String;
     fn hew_cron_free(expr: Expr);
 }

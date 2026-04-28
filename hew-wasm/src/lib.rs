@@ -11,6 +11,22 @@
 //! - **Navigation** — go-to-definition, find references, rename.
 //! - **Editing** — completions, signature help, code actions.
 //! - **Presentation** — semantic tokens, document symbols, inlay hints, folding ranges.
+//!
+//! ## Empty-result encoding convention
+//!
+//! All exports use the following canonical encodings:
+//!
+//! - **Collections** (exports returning an array of items) always return a JSON
+//!   array, including `"[]"` when there are no items. Callers can always parse
+//!   and iterate without special-casing.
+//! - **Optional scalar / single-object** (exports returning a single value that
+//!   may be absent) return `"null"` — the JSON null literal as a string — when
+//!   there is no value.
+//! - **Errors**: a JavaScript error value (see each export's `# Errors` doc).
+//!
+//! Exports never return an empty string `""` to indicate "no result"; that
+//! ambiguous encoding has been replaced with `"null"` / `"[]"` per the
+//! convention above.
 
 use std::fmt;
 
@@ -43,7 +59,7 @@ pub fn get_keywords() -> Result<String, JsValue> {
 
 /// Get hover information for a position in the source.
 ///
-/// Returns JSON `{ contents, span? }` or an empty string if nothing to display.
+/// Returns JSON `{ contents, span? }` or `"null"` if nothing to display.
 ///
 /// # Errors
 ///
@@ -83,7 +99,7 @@ pub fn complete(source: &str, offset: usize) -> Result<String, JsValue> {
 
 // ── Navigation ───────────────────────────────────────────────────────────
 
-/// Go to definition. Returns JSON `{ start, end }` or empty string.
+/// Go to definition. Returns JSON `{ start, end }` or `"null"` if no definition found.
 ///
 /// # Errors
 ///
@@ -103,7 +119,7 @@ pub fn goto_definition(source: &str, offset: usize) -> Result<String, JsValue> {
     })
 }
 
-/// Find all references at offset. Returns JSON `{ name, spans }` or empty string.
+/// Find all references at offset. Returns JSON `{ name, spans }` or `"null"` if no symbol found.
 ///
 /// # Errors
 ///
@@ -121,7 +137,7 @@ pub fn find_references(source: &str, offset: usize) -> Result<String, JsValue> {
 
 // ── Rename ───────────────────────────────────────────────────────────────
 
-/// Prepare rename at offset. Returns JSON `{ start, end }` or empty string.
+/// Prepare rename at offset. Returns JSON `{ start, end }` or `"null"` if rename not possible.
 ///
 /// # Errors
 ///
@@ -138,14 +154,14 @@ pub fn prepare_rename(source: &str, offset: usize) -> Result<String, JsValue> {
     })
 }
 
-/// Compute rename edits. Returns JSON array of `{ span, new_text }` or empty string.
+/// Compute rename edits. Returns JSON array of `{ span, new_text }` or `"[]"` if no edits.
 ///
 /// # Errors
 ///
 /// Returns a JavaScript error if the rename edits cannot be serialized.
 #[wasm_bindgen]
 pub fn rename(source: &str, offset: usize, new_name: &str) -> Result<String, JsValue> {
-    export_optional_json("rename", || {
+    export_optional_collection_json("rename", || {
         let parse_result = hew_parser::parse(source);
         Ok(hew_analysis::rename::rename(
             source,
@@ -204,7 +220,7 @@ pub fn folding_ranges(source: &str) -> Result<String, JsValue> {
 
 // ── Type information ─────────────────────────────────────────────────────
 
-/// Get signature help at offset. Returns JSON `SignatureHelpResult` or empty string.
+/// Get signature help at offset. Returns JSON `SignatureHelpResult` or `"null"` if not in a call.
 ///
 /// # Errors
 ///
@@ -224,14 +240,14 @@ pub fn signature_help(source: &str, offset: usize) -> Result<String, JsValue> {
     })
 }
 
-/// Get inlay hints. Returns JSON array of `{ offset, label, kind, padding_left }`.
+/// Get inlay hints. Returns JSON array of `{ offset, label, kind, padding_left }` or `"[]"`.
 ///
 /// # Errors
 ///
 /// Returns a JavaScript error if the inlay hints cannot be serialized.
 #[wasm_bindgen]
 pub fn inlay_hints(source: &str) -> Result<String, JsValue> {
-    export_optional_json("inlay_hints", || {
+    export_optional_collection_json("inlay_hints", || {
         let analysis = parse_and_type_check(source);
         let Some(type_output) = analysis.type_output.as_ref() else {
             return Ok(None);
@@ -311,13 +327,30 @@ fn export_json<T: Serialize>(
     export(|| serialize_json(api, run()?))
 }
 
+/// Serialize `Some(value)` as JSON or return the JSON null literal `"null"` for `None`.
+///
+/// Use for optional scalar / single-object exports (`hover`, `goto_definition`, etc.).
 fn export_optional_json<T: Serialize>(
     api: &'static str,
     run: impl FnOnce() -> Result<Option<T>, WasmExportError>,
 ) -> Result<String, JsValue> {
     export(|| match run()? {
         Some(value) => serialize_json(api, value),
-        None => Ok(String::new()),
+        None => Ok("null".to_string()),
+    })
+}
+
+/// Serialize `Some(collection)` as JSON or return the empty JSON array `"[]"` for `None`.
+///
+/// Use for optional collection exports (`rename`, `inlay_hints`) so callers can always
+/// parse and iterate without special-casing an absent result.
+fn export_optional_collection_json<T: Serialize>(
+    api: &'static str,
+    run: impl FnOnce() -> Result<Option<T>, WasmExportError>,
+) -> Result<String, JsValue> {
+    export(|| match run()? {
+        Some(value) => serialize_json(api, value),
+        None => Ok("[]".to_string()),
     })
 }
 
@@ -693,7 +726,7 @@ mod tests {
         let source = "fn main() { let x = 42; }";
         let result = ok(inlay_hints(source));
         // May or may not produce hints depending on type checker, but should not panic.
-        let _: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
+        let _: serde_json::Value = serde_json::from_str(&result).unwrap();
     }
 
     #[test]
@@ -708,7 +741,7 @@ mod tests {
     fn prepare_rename_no_panic() {
         let source = "fn foo() {} fn main() { foo(); }";
         let result = ok(prepare_rename(source, 3)); // on 'foo' definition
-                                                    // Should return a span or empty string.
+                                                    // Should return a span or null.
         let _ = result;
     }
 
@@ -1355,6 +1388,195 @@ mod tests {
         assert_eq!(
             corrected, "fn main() { let _ = Vec::new(); }",
             "applying the edit must yield Vec::new() with parentheses intact"
+        );
+    }
+
+    // ── Empty-result encoding contract ──────────────────────────────────────
+    //
+    // Convention (see crate-level doc):
+    //   - Optional scalar / single-object → `"null"` when absent.
+    //   - Collections                     → `"[]"`  when absent.
+
+    /// `hover` at a whitespace offset has no result; must return the JSON null literal.
+    #[test]
+    fn hover_empty_result_is_null() {
+        // Hover on a space — no token, so None is returned.
+        let source = "fn main() { }";
+        let result = ok(hover(source, 11)); // space inside braces
+        assert_eq!(
+            result, "null",
+            "hover empty result must be JSON null literal"
+        );
+    }
+
+    /// `hover` on a real token returns a non-null, non-empty JSON object.
+    #[test]
+    fn hover_non_empty_result_is_json_object() {
+        let source = "fn main() { let x: i64 = 42; }";
+        let result = ok(hover(source, 25)); // on `42`
+                                            // Either null (type output absent) or a non-empty JSON object.
+                                            // Crucially it must not be an empty string.
+        assert_ne!(result, "", "hover must never return an empty string");
+        // If type output is present, must be a JSON object, not null.
+        if result != "null" {
+            assert!(
+                result.starts_with('{'),
+                "non-null hover result must be a JSON object"
+            );
+        }
+    }
+
+    /// `goto_definition` at whitespace has no definition; must return the JSON null literal.
+    #[test]
+    fn goto_definition_empty_result_is_null() {
+        let source = "fn main() { }";
+        let result = ok(goto_definition(source, 11)); // space — no word
+        assert_eq!(
+            result, "null",
+            "goto_definition empty result must be JSON null literal"
+        );
+    }
+
+    /// `goto_definition` on a call site with a definition returns a non-null JSON object.
+    #[test]
+    fn goto_definition_non_empty_result_is_json_object() {
+        let source = "fn foo() {} fn main() { foo(); }";
+        let result = ok(goto_definition(source, 25)); // on 'f' in second foo()
+        assert_ne!(
+            result, "",
+            "goto_definition must never return an empty string"
+        );
+        assert_ne!(
+            result, "null",
+            "goto_definition for a valid call must return a span object"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed.get("start").is_some(),
+            "result must carry a `start` field"
+        );
+    }
+
+    /// `find_references` at whitespace finds no symbol; must return the JSON null literal.
+    #[test]
+    fn find_references_empty_result_is_null() {
+        let source = "fn main() { }";
+        let result = ok(find_references(source, 11)); // space — no word
+        assert_eq!(
+            result, "null",
+            "find_references empty result must be JSON null literal"
+        );
+    }
+
+    /// `find_references` on a real binding returns a non-null JSON object.
+    #[test]
+    fn find_references_non_empty_result_is_json_object() {
+        let source = "fn main() { let x = 1; let y = x; }";
+        let result = ok(find_references(source, 17)); // on 'x' definition
+        assert_ne!(
+            result, "",
+            "find_references must never return an empty string"
+        );
+        assert_ne!(
+            result, "null",
+            "find_references for a valid binding must return an object"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed.get("spans").is_some(),
+            "result must carry a `spans` field"
+        );
+    }
+
+    /// `prepare_rename` at whitespace has no rename target; must return the JSON null literal.
+    #[test]
+    fn prepare_rename_empty_result_is_null() {
+        let source = "fn main() { }";
+        let result = ok(prepare_rename(source, 11)); // space — no word
+        assert_eq!(
+            result, "null",
+            "prepare_rename empty result must be JSON null literal"
+        );
+    }
+
+    /// `prepare_rename` on a valid symbol returns a non-null JSON object.
+    #[test]
+    fn prepare_rename_non_empty_result_is_json_object() {
+        let source = "fn foo() {} fn main() { foo(); }";
+        let result = ok(prepare_rename(source, 3)); // on 'foo' definition
+        assert_ne!(
+            result, "",
+            "prepare_rename must never return an empty string"
+        );
+        assert_ne!(
+            result, "null",
+            "prepare_rename on a valid symbol must return a span object"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed.get("start").is_some(),
+            "result must carry a `start` field"
+        );
+    }
+
+    /// `rename` at whitespace (no valid target) must return the empty JSON array.
+    #[test]
+    fn rename_empty_result_is_empty_array() {
+        let source = "fn main() { }";
+        let result = ok(rename(source, 11, "bar")); // space — no word
+        assert_eq!(
+            result, "[]",
+            "rename empty result must be the empty JSON array"
+        );
+    }
+
+    /// `rename` on a valid symbol returns a non-empty JSON array of edits.
+    #[test]
+    fn rename_non_empty_result_is_json_array() {
+        let source = "fn foo() {} fn main() { foo(); }";
+        let result = ok(rename(source, 3, "bar")); // rename 'foo' at its definition
+        assert_ne!(result, "", "rename must never return an empty string");
+        assert_ne!(result, "[]", "rename of a valid symbol must produce edits");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed.as_array().is_some_and(|a| !a.is_empty()),
+            "rename must return a non-empty JSON array of edits"
+        );
+    }
+
+    /// `signature_help` outside a call has no result; must return the JSON null literal.
+    #[test]
+    fn signature_help_empty_result_is_null() {
+        // At offset 0, on `fn`, there is no call context.
+        let source = "fn main() { }";
+        let result = ok(signature_help(source, 0));
+        assert_eq!(
+            result, "null",
+            "signature_help empty result must be JSON null literal"
+        );
+    }
+
+    /// `inlay_hints` on source with parse errors (type checker skipped) returns empty array.
+    #[test]
+    fn inlay_hints_empty_result_is_empty_array() {
+        // A parse error causes the type checker to be skipped, producing None.
+        let result = ok(inlay_hints("fn {"));
+        assert_eq!(
+            result, "[]",
+            "inlay_hints empty result must be the empty JSON array"
+        );
+    }
+
+    /// `inlay_hints` on valid source returns a valid JSON array (may be empty for simple code).
+    #[test]
+    fn inlay_hints_valid_source_returns_json_array() {
+        let source = "fn main() { let x = 42; }";
+        let result = ok(inlay_hints(source));
+        assert_ne!(result, "", "inlay_hints must never return an empty string");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed.as_array().is_some(),
+            "inlay_hints must always return a JSON array, got: {result}"
         );
     }
 }

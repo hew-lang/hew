@@ -4,6 +4,13 @@
 
 ### Changed
 
+- **`hew-wasm` empty-result encoding (BREAKING for browser consumers):** WASM
+  exports that returned an empty string `""` to indicate "no result" now return
+  `"null"` (optional scalar exports — `hover`, `goto_definition`,
+  `find_references`, `prepare_rename`, `signature_help`) or `"[]"` (collection
+  exports — `rename`, `inlay_hints`). Browser/editor integrations that special-
+  cased `result === ""` must update to handle the canonical JSON literals
+  (#1358).
 - **Explicit HTTP/regex handle teardown:** `http.Server` and `regex.Pattern`
   no longer auto-release on scope exit. Callers must invoke `close()` /
   `free()` explicitly before those values go out of scope to avoid leaks

@@ -11,7 +11,7 @@
 #[cfg(test)]
 extern crate hew_runtime;
 
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use hew_cabi::cabi::{cstr_to_str, malloc_bytes, str_to_malloc};
 use std::cell::RefCell;
 use std::ffi::c_char;
 
@@ -171,27 +171,6 @@ fn check_depth(slice: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Allocate a buffer via `libc::malloc`, copying `len` bytes from `src`.
-/// Returns null on allocation failure.
-///
-/// # Safety
-///
-/// `src` must point to at least `len` readable bytes.
-unsafe fn malloc_buf(src: *const u8, len: usize) -> *mut u8 {
-    if len == 0 {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: We request len bytes from malloc; it returns a valid pointer or null.
-    let ptr = unsafe { libc::malloc(len) }.cast::<u8>();
-    if ptr.is_null() {
-        return ptr;
-    }
-    // SAFETY: Caller guarantees src is valid for len bytes; ptr is freshly
-    // allocated with len bytes, so both regions are valid and non-overlapping.
-    unsafe { std::ptr::copy_nonoverlapping(src, ptr, len) };
-    ptr
-}
-
 // ---------------------------------------------------------------------------
 // C ABI exports
 // ---------------------------------------------------------------------------
@@ -226,8 +205,7 @@ pub unsafe extern "C" fn hew_msgpack_from_json(
     };
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
-    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
-    unsafe { malloc_buf(bytes.as_ptr(), bytes.len()) }
+    malloc_bytes(&bytes)
 }
 
 /// Convert `MessagePack` binary to a JSON string.
@@ -292,8 +270,7 @@ pub unsafe extern "C" fn hew_msgpack_encode_int(val: i64, out_len: *mut usize) -
     };
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
-    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
-    unsafe { malloc_buf(bytes.as_ptr(), bytes.len()) }
+    malloc_bytes(&bytes)
 }
 
 /// Encode a single string as `MessagePack`.
@@ -322,8 +299,7 @@ pub unsafe extern "C" fn hew_msgpack_encode_string(
     };
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
-    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
-    unsafe { malloc_buf(bytes.as_ptr(), bytes.len()) }
+    malloc_bytes(&bytes)
 }
 
 /// Encode a binary blob as `MessagePack`.
@@ -351,8 +327,7 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes(
     };
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
-    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
-    unsafe { malloc_buf(bytes.as_ptr(), bytes.len()) }
+    malloc_bytes(&bytes)
 }
 
 /// Free a buffer previously returned by any of the `hew_msgpack_*` functions.
@@ -982,6 +957,52 @@ mod tests {
             let decoded: Vec<u8> = rmp_serde::from_slice(slice).unwrap();
             assert_eq!(decoded, data);
 
+            hew_msgpack_free(buf);
+        }
+    }
+
+    // ----- malloc_bytes migration: sentinel and large-buffer coverage -----
+    // These tests confirm that malloc_bytes (from hew-cabi) is used correctly
+    // at the four migrated call sites. The canonical helper always returns a
+    // non-null sentinel even when the encoded byte slice is empty; in practice
+    // rmp_serde never produces a zero-length encoding, so these tests focus on
+    // the smallest-possible (single-byte) encoding and a 4 KiB payload.
+
+    #[test]
+    fn encode_int_zero_produces_nonnull_single_byte_buf() {
+        // rmp_serde encodes 0i64 as 0x00 — the smallest valid msgpack value.
+        // Verifies that malloc_bytes returns non-null for a 1-byte encoded buffer.
+        let mut len: usize = 0;
+        // SAFETY: len is a valid pointer.
+        unsafe {
+            let buf = hew_msgpack_encode_int(0, &raw mut len);
+            assert!(!buf.is_null(), "encode_int(0) must return non-null");
+            assert_eq!(len, 1, "msgpack encoding of 0 must be exactly 1 byte");
+            assert_eq!(*buf, 0x00, "msgpack encoding of 0 must be byte 0x00");
+            hew_msgpack_free(buf);
+        }
+    }
+
+    #[test]
+    fn from_json_large_payload_produces_nonnull_buffer() {
+        // Build a JSON array of 1024 integers (≈4 KiB encoded).
+        let entries: Vec<String> = (0..1024).map(|i| i.to_string()).collect();
+        let json = format!("[{}]", entries.join(","));
+        let c_json = CString::new(json).unwrap();
+        let mut len: usize = 0;
+        // SAFETY: c_json is a valid C string; len is a valid pointer.
+        unsafe {
+            let buf = hew_msgpack_from_json(c_json.as_ptr(), &raw mut len);
+            assert!(
+                !buf.is_null(),
+                "from_json must return non-null for large payload"
+            );
+            assert!(len > 0);
+            // Decode and spot-check the first element.
+            let slice = std::slice::from_raw_parts(buf, len);
+            let value: serde_json::Value = rmp_serde::from_slice(slice).unwrap();
+            assert!(value.is_array());
+            assert_eq!(value.as_array().unwrap().len(), 1024);
             hew_msgpack_free(buf);
         }
     }

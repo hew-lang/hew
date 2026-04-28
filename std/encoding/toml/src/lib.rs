@@ -27,21 +27,16 @@ fn boxed_value(v: toml::Value) -> *mut HewTomlValue {
     Box::into_raw(Box::new(HewTomlValue { inner: v }))
 }
 
-std::thread_local! {
-    static LAST_PARSE_ERROR: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 fn set_parse_last_error(msg: impl Into<String>) {
-    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_parse_error(msg);
 }
 
 fn clear_parse_last_error() {
-    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_parse_error();
 }
 
 fn get_parse_last_error() -> String {
-    LAST_PARSE_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+    hew_runtime::parse_error_slot::get_parse_error().unwrap_or_default()
 }
 
 /// Parse a TOML string into an opaque [`HewTomlValue`].

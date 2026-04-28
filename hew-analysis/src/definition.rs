@@ -1,9 +1,10 @@
 //! Go-to-definition analysis: find the definition site of an identifier in the AST.
 
-use hew_parser::ast::{Block, FnDecl, Item, Param, Pattern, Span, Stmt, TraitItem, TypeBodyItem};
+use hew_parser::ast::{FnDecl, Item, Param, Span, TraitItem, TypeBodyItem};
 use hew_parser::ParseResult;
 use hew_types::{Ty, TypeCheckOutput};
 
+use crate::ast_visit::{self, BindingKind};
 use crate::OffsetSpan;
 
 /// Search for a definition matching `word` in the AST, including nested items.
@@ -124,243 +125,44 @@ pub fn find_local_binding_definition(
     word: &str,
     offset: usize,
 ) -> Option<OffsetSpan> {
-    for (item, _) in &parse_result.program.items {
-        if let Some(span) = find_local_in_item(source, item, word, offset) {
-            return Some(span);
-        }
-    }
-    None
+    find_visible_binding(source, parse_result, word, offset, BindingKind::Local)
 }
 
 /// Find the definition site of a function or method parameter whose binding is
 /// in scope at `offset`.
+///
+/// Parameters live on declaration metadata (`fn_span`, `params`) rather than
+/// inside item bodies, so this stays as a thin item-level scan rather than
+/// going through `visible_bindings_at` — that helper would require a `&str`
+/// source argument which is not part of the public signature here.
 #[must_use]
 pub fn find_param_definition(
     parse_result: &ParseResult,
     word: &str,
     offset: usize,
 ) -> Option<OffsetSpan> {
-    for (item, _) in &parse_result.program.items {
-        if let Some(span) = find_param_in_item(item, word, offset) {
-            return Some(span);
-        }
-    }
-    None
+    parse_result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| find_param_in_item(item, word, offset))
 }
 
-/// Find the definition site of a struct field accessed at `offset`, such as the
-/// `x` in `p.x`.
-#[must_use]
-pub fn find_field_definition(
+fn find_visible_binding(
     source: &str,
     parse_result: &ParseResult,
-    type_output: &TypeCheckOutput,
-    offset: usize,
-) -> Option<OffsetSpan> {
-    let (field_name, field_span) = crate::util::simple_word_at_offset(source, offset)?;
-    let receiver_end = find_field_receiver_end(source, field_span.start)?;
-    let receiver_ty = crate::method_lookup::find_receiver_type(type_output, receiver_end)?;
-    let receiver_type_name = receiver_ty.type_name()?;
-    let resolved_type_name = type_output
-        .type_defs
-        .keys()
-        .find(|name| Ty::names_match_qualified(name, receiver_type_name))?;
-    find_type_field_definition(source, parse_result, resolved_type_name, &field_name)
-}
-
-fn find_local_in_item(source: &str, item: &Item, word: &str, offset: usize) -> Option<OffsetSpan> {
-    match item {
-        Item::Function(function) => find_local_in_block(source, &function.body, word, offset),
-        Item::Actor(actor) => {
-            if let Some(init) = &actor.init {
-                if let Some(span) = find_local_in_block(source, &init.body, word, offset) {
-                    return Some(span);
-                }
-            }
-            if let Some(term) = &actor.terminate {
-                if let Some(span) = find_local_in_block(source, &term.body, word, offset) {
-                    return Some(span);
-                }
-            }
-            for recv in &actor.receive_fns {
-                if let Some(span) = find_local_in_block(source, &recv.body, word, offset) {
-                    return Some(span);
-                }
-            }
-            for method in &actor.methods {
-                if let Some(span) = find_local_in_block(source, &method.body, word, offset) {
-                    return Some(span);
-                }
-            }
-            None
-        }
-        Item::TypeDecl(type_decl) => {
-            for body_item in &type_decl.body {
-                if let TypeBodyItem::Method(method) = body_item {
-                    if let Some(span) = find_local_in_block(source, &method.body, word, offset) {
-                        return Some(span);
-                    }
-                }
-            }
-            None
-        }
-        Item::Impl(impl_decl) => {
-            for method in &impl_decl.methods {
-                if let Some(span) = find_local_in_block(source, &method.body, word, offset) {
-                    return Some(span);
-                }
-            }
-            None
-        }
-        Item::Trait(trait_decl) => {
-            for trait_item in &trait_decl.items {
-                if let TraitItem::Method(method) = trait_item {
-                    if let Some(body) = &method.body {
-                        if let Some(span) = find_local_in_block(source, body, word, offset) {
-                            return Some(span);
-                        }
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn find_local_in_block(
-    source: &str,
-    block: &Block,
     word: &str,
     offset: usize,
+    kind: BindingKind,
 ) -> Option<OffsetSpan> {
-    let mut found = None;
-    for (stmt, stmt_span) in &block.stmts {
-        if stmt_span.start > offset {
-            break;
-        }
-        if let Some(span) = find_local_in_stmt(source, stmt, stmt_span, word, offset) {
-            found = Some(span);
-        }
-    }
-    found
-}
-
-fn find_local_in_stmt(
-    source: &str,
-    stmt: &Stmt,
-    stmt_span: &Span,
-    word: &str,
-    offset: usize,
-) -> Option<OffsetSpan> {
-    match stmt {
-        Stmt::Let { pattern, .. } => find_binding_definition(source, pattern, word, offset),
-        Stmt::Var { name, .. } => {
-            if name == word {
-                Some(crate::util::find_name_span(source, stmt_span.start, word))
-            } else {
-                None
-            }
-        }
-        Stmt::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            let mut found = None;
-            if block_contains_offset(then_block, offset) {
-                found = find_local_in_block(source, then_block, word, offset);
-            }
-            if let Some(else_block) = else_block {
-                if let Some(if_stmt) = &else_block.if_stmt {
-                    if span_contains_offset(&if_stmt.1, offset) {
-                        found = find_local_in_stmt(source, &if_stmt.0, &if_stmt.1, word, offset);
-                    }
-                } else if let Some(block) = &else_block.block {
-                    if block_contains_offset(block, offset) {
-                        found = find_local_in_block(source, block, word, offset);
-                    }
-                }
-            }
-            found
-        }
-        Stmt::IfLet {
-            pattern,
-            body,
-            else_body,
-            ..
-        } => {
-            if block_contains_offset(body, offset) {
-                return find_binding_definition(source, pattern, word, offset)
-                    .or_else(|| find_local_in_block(source, body, word, offset));
-            }
-            else_body.as_ref().and_then(|block| {
-                block_contains_offset(block, offset)
-                    .then(|| find_local_in_block(source, block, word, offset))
-                    .flatten()
-            })
-        }
-        Stmt::For { pattern, body, .. } => block_contains_offset(body, offset)
-            .then(|| {
-                find_binding_definition(source, pattern, word, offset)
-                    .or_else(|| find_local_in_block(source, body, word, offset))
-            })
-            .flatten(),
-        Stmt::Loop { body, .. } | Stmt::While { body, .. } => block_contains_offset(body, offset)
-            .then(|| find_local_in_block(source, body, word, offset))
-            .flatten(),
-        Stmt::WhileLet { pattern, body, .. } => block_contains_offset(body, offset)
-            .then(|| {
-                find_binding_definition(source, pattern, word, offset)
-                    .or_else(|| find_local_in_block(source, body, word, offset))
-            })
-            .flatten(),
-        Stmt::Match { arms, .. } => arms.iter().find_map(|arm| {
-            let in_arm_scope = arm
-                .guard
-                .as_ref()
-                .is_some_and(|(_, guard_span)| span_contains_offset(guard_span, offset))
-                || span_contains_offset(&arm.body.1, offset);
-            if in_arm_scope {
-                find_binding_definition(source, &arm.pattern, word, offset)
-            } else {
-                None
-            }
-        }),
-        _ => None,
-    }
-}
-
-fn find_binding_definition(
-    source: &str,
-    pattern: &(Pattern, Span),
-    word: &str,
-    offset: usize,
-) -> Option<OffsetSpan> {
-    if pattern.1.start > offset {
-        return None;
-    }
-    match &pattern.0 {
-        Pattern::Identifier(name) => {
-            if name == word {
-                Some(crate::util::find_name_span(source, pattern.1.start, word))
-            } else {
-                None
-            }
-        }
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
-            .iter()
-            .find_map(|pattern| find_binding_definition(source, pattern, word, offset)),
-        Pattern::Struct { fields, .. } => fields.iter().find_map(|field| {
-            field
-                .pattern
-                .as_ref()
-                .and_then(|pattern| find_binding_definition(source, pattern, word, offset))
-        }),
-        Pattern::Or(left, right) => find_binding_definition(source, left, word, offset)
-            .or_else(|| find_binding_definition(source, right, word, offset)),
-        Pattern::Wildcard | Pattern::Literal(_) => None,
-    }
+    let bindings = ast_visit::visible_bindings_at(source, parse_result, offset);
+    bindings
+        .into_iter()
+        .find(|binding| binding.kind == kind && binding.name == word)
+        .map(|binding| OffsetSpan {
+            start: binding.span.start,
+            end: binding.span.end,
+        })
 }
 
 fn find_param_in_item(item: &Item, word: &str, offset: usize) -> Option<OffsetSpan> {
@@ -425,7 +227,8 @@ fn find_param_in_decl(
     word: &str,
     offset: usize,
 ) -> Option<OffsetSpan> {
-    if !span_contains_offset(decl_span, offset) {
+    let in_decl = decl_span.is_empty() || (decl_span.start <= offset && offset <= decl_span.end);
+    if !in_decl {
         return None;
     }
     params
@@ -438,6 +241,26 @@ fn param_name_span(param: &Param) -> OffsetSpan {
     let end = param.ty.1.start.saturating_sub(2);
     let start = end.saturating_sub(param.name.len());
     OffsetSpan { start, end }
+}
+
+/// Find the definition site of a struct field accessed at `offset`, such as the
+/// `x` in `p.x`.
+#[must_use]
+pub fn find_field_definition(
+    source: &str,
+    parse_result: &ParseResult,
+    type_output: &TypeCheckOutput,
+    offset: usize,
+) -> Option<OffsetSpan> {
+    let (field_name, field_span) = crate::util::simple_word_at_offset(source, offset)?;
+    let receiver_end = find_field_receiver_end(source, field_span.start)?;
+    let receiver_ty = crate::method_lookup::find_receiver_type(type_output, receiver_end)?;
+    let receiver_type_name = receiver_ty.type_name()?;
+    let resolved_type_name = type_output
+        .type_defs
+        .keys()
+        .find(|name| Ty::names_match_qualified(name, receiver_type_name))?;
+    find_type_field_definition(source, parse_result, resolved_type_name, &field_name)
 }
 
 pub(crate) fn find_field_receiver_end(source: &str, field_start: usize) -> Option<usize> {
@@ -483,24 +306,6 @@ fn find_type_field_definition(
         }
     }
     None
-}
-
-fn block_contains_offset(block: &Block, offset: usize) -> bool {
-    let start = block
-        .stmts
-        .first()
-        .map(|(_, span)| span.start)
-        .or_else(|| block.trailing_expr.as_ref().map(|expr| expr.1.start));
-    let end = block
-        .trailing_expr
-        .as_ref()
-        .map(|expr| expr.1.end)
-        .or_else(|| block.stmts.last().map(|(_, span)| span.end));
-    matches!((start, end), (Some(start), Some(end)) if start <= offset && offset <= end)
-}
-
-fn span_contains_offset(span: &Span, offset: usize) -> bool {
-    span.is_empty() || (span.start <= offset && offset <= span.end)
 }
 
 #[cfg(test)]

@@ -86,10 +86,6 @@ pub(crate) fn walk_named_body<'ast, V: AstVisitor<'ast>>(
     walker.walk_named_body(item, body_name)
 }
 
-#[allow(
-    dead_code,
-    reason = "scope snapshot helper is staged for later migrations"
-)]
 pub(crate) fn visible_bindings_at<'ast>(
     source: &str,
     parse_result: &'ast ParseResult,
@@ -104,10 +100,6 @@ pub(crate) fn visible_bindings_at<'ast>(
     collector.matches
 }
 
-#[allow(
-    dead_code,
-    reason = "scope snapshot helper is staged for later migrations"
-)]
 struct VisibleBindingsCollector<'ast> {
     offset: usize,
     matches: Vec<BindingInfo<'ast>>,

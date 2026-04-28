@@ -39,6 +39,43 @@ pub fn str_to_malloc(s: &str) -> *mut c_char {
     unsafe { malloc_cstring(s.as_ptr(), s.len()) }
 }
 
+/// Allocate `src.len()` bytes via `libc::malloc`, copying all bytes from
+/// `src`. If `src` is empty, allocates 1 byte (a sentinel) so the returned
+/// pointer is always valid for a subsequent `libc::free`. Returns null on
+/// allocation failure.
+///
+/// Null handling is the caller's responsibility.
+#[must_use]
+pub fn malloc_bytes(src: &[u8]) -> *mut u8 {
+    let len = src.len();
+    // Allocate at least 1 byte so malloc(0) implementation-defined behaviour
+    // is avoided and the sentinel pointer can always be freed by the caller.
+    // SAFETY: We request len.max(1) bytes from malloc; it returns a valid
+    // pointer or null.
+    let ptr = unsafe { libc::malloc(len.max(1)) }.cast::<u8>();
+    if ptr.is_null() {
+        return ptr;
+    }
+    if len > 0 {
+        // SAFETY: src is a valid Rust slice of len bytes; ptr is freshly
+        // allocated with len bytes, so both regions are valid and
+        // non-overlapping.
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), ptr, len) };
+    }
+    ptr
+}
+
+/// Allocate a 1-byte sentinel via `libc::malloc`. Use this when a zero-length
+/// allocation is needed but a non-null, freeable pointer is required (e.g. an
+/// empty body buffer). Returns null on allocation failure.
+///
+/// Null handling is the caller's responsibility.
+#[must_use]
+pub fn malloc_empty() -> *mut u8 {
+    // SAFETY: We request 1 byte from malloc; it returns a valid pointer or null.
+    unsafe { libc::malloc(1) }.cast::<u8>()
+}
+
 /// Extract a NUL-terminated C string pointer into a `&str`, returning `None`
 /// if the pointer is null or contains invalid UTF-8.
 ///
@@ -202,6 +239,56 @@ mod tests {
             assert_eq!(recovered, input);
             free_ptr(ptr);
         }
+    }
+
+    // ── malloc_bytes ─────────────────────────────────────────────────────
+
+    #[test]
+    fn malloc_bytes_empty_returns_nonnull_and_freeable() {
+        let ptr = malloc_bytes(&[]);
+        assert!(!ptr.is_null(), "empty slice must yield a non-null sentinel");
+        // SAFETY: ptr was allocated by malloc_bytes via libc::malloc.
+        unsafe { libc::free(ptr.cast::<c_void>()) };
+    }
+
+    #[test]
+    fn malloc_bytes_roundtrips_1kb_buffer() {
+        // Build a 1 KiB buffer with a known pattern.
+        let src: Vec<u8> = (0u8..=255).cycle().take(1024).collect();
+        let ptr = malloc_bytes(&src);
+        assert!(!ptr.is_null());
+        // SAFETY: ptr was allocated with 1024 bytes by malloc_bytes.
+        unsafe {
+            for (i, &expected) in src.iter().enumerate() {
+                assert_eq!(*ptr.add(i), expected, "byte mismatch at index {i}");
+            }
+            libc::free(ptr.cast::<c_void>());
+        }
+    }
+
+    #[test]
+    fn malloc_bytes_single_byte_roundtrip() {
+        let src = [0x42u8];
+        let ptr = malloc_bytes(&src);
+        assert!(!ptr.is_null());
+        // SAFETY: ptr points to 1 byte allocated by malloc_bytes.
+        unsafe {
+            assert_eq!(*ptr, 0x42);
+            libc::free(ptr.cast::<c_void>());
+        }
+    }
+
+    // ── malloc_empty ─────────────────────────────────────────────────────
+
+    #[test]
+    fn malloc_empty_returns_nonnull_and_freeable() {
+        let ptr = malloc_empty();
+        assert!(
+            !ptr.is_null(),
+            "malloc_empty must return a non-null sentinel"
+        );
+        // SAFETY: ptr was allocated by malloc_empty via libc::malloc.
+        unsafe { libc::free(ptr.cast::<c_void>()) };
     }
 
     // ── cstr_to_str ──────────────────────────────────────────────────────

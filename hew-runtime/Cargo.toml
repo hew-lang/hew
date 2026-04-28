@@ -23,6 +23,7 @@ encryption = ["dep:snow"]
 quic = [
   "dep:quinn",
   "dep:rustls",
+  "dep:rustls-webpki",
   "dep:rcgen",
   "dep:tokio",
   "dep:rustls-pemfile",
@@ -66,6 +67,9 @@ rustls = { version = "0.23", optional = true, default-features = false, features
   "ring",
   "std",
 ] }
+# Explicit rustls-webpki pin to fix CRL parse panic (GHSA-82j2-j2ch-gfr8) and name constraint validation.
+# rustls v0.23 accepts ^0.103.5; we pin to 0.103.13 which includes both security fixes.
+rustls-webpki = { version = "0.103.13", optional = true }
 rcgen = { version = "0.14", optional = true }
 tokio = { version = "1", optional = true, default-features = false, features = [
   "rt-multi-thread",

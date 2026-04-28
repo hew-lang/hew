@@ -76,12 +76,13 @@ Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` direct
 | Parser / lexer | `make test-parser` | `hew-parser` + `hew-lexer` | fast |
 | Type checker | `make test-types` | `hew-types` + `hew-parser` + `hew-lexer` | fast |
 | CLI | `make test-cli` | `hew-cli` + `adze-cli` | fast |
+| Runtime / net | `make test-runtime-net` | `hew-runtime` + `hew-analysis` + `hew-lsp` + `hew-std-net-*` | fast |
 | Codegen E2E | `make test-codegen` | Native CMake/ctest suite (builds runtime first) | slow |
 | WASM E2E | `make test-wasm` | Same ctest suite, `wasm`-labelled tests only; requires `wasmtime` | slow |
 | C++ unit | `make test-cpp` | `mlir_dialect`, `mlirgen`, `translate`, `codegen_capi`, `msgpack_reader` | medium |
 | Hew test files | `make test-hew` | `tests/hew/` via `hew test` | medium |
 
-Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`) during inner-loop iteration and `make test` before opening a PR.
+Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`, `test-runtime-net`) during inner-loop iteration and `make test` before opening a PR.
 
 `make ci-preflight` dispatches a conservative local preflight from your current diff and is the recommended manual gate before opening a PR or tagging a release. Pass `ARGS="--dry-run"` to preview without running. CI runs this on every PR regardless.
 

@@ -51,6 +51,7 @@ struct MonitorShard {
 ///
 /// The `terminal_reasons` field inside each `MonitorShard` was added by #1202
 /// and is preserved intact by this migration.
+// native-only: monitor globals use OS thread primitives absent in single-threaded WASM
 static MONITOR_TABLE: LazyLock<[PoisonSafeRw<MonitorShard>; MONITOR_SHARDS]> =
     LazyLock::new(|| {
         std::array::from_fn(|_| {

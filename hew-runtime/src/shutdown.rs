@@ -57,6 +57,7 @@ struct SupervisorPtr(*mut crate::supervisor::HewSupervisor);
 // the runtime is in a controlled wind-down state.
 unsafe impl Send for SupervisorPtr {}
 
+// native-only: supervisor shutdown assumes multi-threaded runtime; unreachable on WASM
 /// Registered top-level supervisors to stop during shutdown.
 static TOP_LEVEL_SUPERVISORS: PoisonSafe<Vec<SupervisorPtr>> = PoisonSafe::new(Vec::new());
 

@@ -176,6 +176,7 @@ pub(crate) fn drain_is_idle() -> bool {
 /// Worker thread handles are stored behind a `PoisonSafe` so they can be
 /// `take`-n during shutdown (`JoinHandle` is `Send` but not `Sync`).
 struct Scheduler {
+    // native-only: worker_handles are OS JoinHandles; no WASM scheduler thread model
     worker_handles: PoisonSafe<Vec<Option<JoinHandle<()>>>>,
     global_queue: GlobalQueue,
     stealers: Vec<WorkStealer>,

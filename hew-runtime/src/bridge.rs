@@ -151,6 +151,7 @@ struct MetaState {
     /// last-registered wins.  This is a pre-existing ambiguity in the bridge
     /// model for AOT programs; collision is a codegen concern tracked
     /// separately.  See [`resolve_handler_name`] for the lookup path.
+    // WASM-TODO: hew_register_handler_name ABI call not yet emitted by WASM codegen
     handler_names: HashMap<i32, String>,
     cache_all: Option<String>,
 }

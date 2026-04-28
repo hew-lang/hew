@@ -1,3 +1,4 @@
+// native-only: reader thread model requires OS threads; not available on WASM
 //! Per-connection transport actors for the Hew runtime.
 //!
 //! Replaces the global-mutex-protected connection array in [`crate::node`]
@@ -182,6 +183,7 @@ struct ConnectionActor {
 /// with a growable `Vec` of per-connection actors.
 #[derive(Debug)]
 pub struct HewConnMgr {
+    // native-only: ConnectionActor reader threads do not exist on WASM
     /// Active connections (protected by [`PoisonSafe`] for concurrent add/remove).
     connections: PoisonSafe<Vec<ConnectionActor>>,
     /// Transport used for I/O operations.

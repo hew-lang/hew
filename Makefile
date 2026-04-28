@@ -33,14 +33,14 @@
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen + Hew)
-#   make test-rust    — just Rust workspace tests
-#   make test-parser  — parser + lexer crate tests (narrow)
-#   make test-types   — type-checker + parser + lexer crate tests (narrow)
+#   make test-rust        — just Rust workspace tests
+#   make test-parser      — parser + lexer crate tests (narrow)
+#   make test-types       — type-checker + parser + lexer crate tests (narrow)
 #   make test-cli         — CLI crate tests (narrow)
 #   make test-runtime-net — runtime / analysis / lsp / std-net crate tests (narrow)
-#   make test-codegen — just hew-codegen ctest (native E2E + unit)
-#   make test-hew     — run Hew test files (std/ *_test.hew)
-#   make test-wasm    — just WASM E2E tests (requires wasmtime)
+#   make test-codegen     — just hew-codegen ctest (native E2E + unit)
+#   make test-hew         — run Hew test files (std/ *_test.hew)
+#   make test-wasm        — just WASM E2E tests (requires wasmtime)
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make lsan         — run the nightly codegen sanitizer tests with CI leak env
 #   make tsan         — run the nightly rust-runtime TSan test command locally

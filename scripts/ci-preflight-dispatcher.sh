@@ -232,10 +232,18 @@ for path in "${CHANGED_FILES[@]}"; do
             needs_codegen_lint=1
             ;;
         std/*)
-            # std/net/* is covered by the runtime-net lane; other std/* still need stdlib-lint
-            if ! is_stdlib_net_path "$path"; then
-                needs_stdlib_lint=1
-            fi
+            # .hew sources under std/net/* still need stdlib-lint (int-surface / errno-gate);
+            # only Rust files there are fully covered by the runtime-net lane.
+            case "$path" in
+                *.hew)
+                    needs_stdlib_lint=1
+                    ;;
+                *)
+                    if ! is_stdlib_net_path "$path"; then
+                        needs_stdlib_lint=1
+                    fi
+                    ;;
+            esac
             ;;
     esac
 

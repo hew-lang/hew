@@ -20,21 +20,16 @@ fn epoch_ms_to_utc(epoch_ms: i64) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_millis(epoch_ms)
 }
 
-std::thread_local! {
-    static LAST_DATETIME_ERROR: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 fn set_datetime_last_error(msg: impl Into<String>) {
-    LAST_DATETIME_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_parse_error(msg);
 }
 
 fn clear_datetime_last_error() {
-    LAST_DATETIME_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_parse_error();
 }
 
 fn clone_datetime_last_error() -> Option<String> {
-    LAST_DATETIME_ERROR.with(|error| error.borrow().clone())
+    hew_runtime::parse_error_slot::get_parse_error()
 }
 
 // ---------------------------------------------------------------------------

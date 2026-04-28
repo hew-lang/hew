@@ -1,0 +1,27 @@
+// Regression: explicitly freeing an http.Request inside a scope must remain
+// safe when the function returns. Mirrors http_close_scope_exit.hew for the
+// Request migration off implicit Drop (issue #1310).
+//
+// `handle_request` is intentionally not invoked from main(); a Request can
+// only be obtained via server.accept(), which requires a live client. The
+// helper exists to exercise the codegen path for explicit free + scope
+// exit on http.Request: typecheck, mlirgen, and link must all accept the
+// shape. If implicit Drop were still attached to http.Request, the scope
+// exit after `req.free()` would attempt a second free of the same
+// allocation; with the migration in this PR, free() is the sole release
+// path and scope exit is a no-op.
+
+import std::net::http;
+
+fn handle_request(srv: http.Server) {
+    let req = srv.accept();
+    req.free();
+    // scope exit must not free `req` a second time
+}
+
+fn main() {
+    // Exercise the bind/close path so the test runs without a live client.
+    let server = http.listen("127.0.0.1:18733");
+    server.close();
+    println("ok");
+}

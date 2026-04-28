@@ -12,6 +12,8 @@
 //!     let val = json.parse("{\"name\": \"Hew\", \"version\": 1}");
 //!     let name = val.get_field("name");
 //!     println(name.get_string());
+//!     name.free();
+//!     val.free();
 //! }
 //! ```
 
@@ -32,8 +34,8 @@ pub enum ParseError {
 ///
 /// Represents any JSON type: null, bool, integer, float, String, array,
 /// or object. Created by `json.parse(s)` or by navigating into a
-/// parsed value. Values are released automatically at scope exit; call
-/// `free()` for explicit early release.
+/// parsed value. Call `free()` before the value goes out of scope;
+/// dropping without `free()` is a resource leak.
 type Value {}
 
 /// Methods available on a JSON `Value`.
@@ -61,7 +63,10 @@ trait ValueMethods: CanonicalValueMethods {
     fn array_get(val: Value, index: int) -> Value;
     /// Return a JSON array of the object's keys.
     fn keys(val: Value) -> Value;
-    /// Release the value resources before scope exit.
+    /// Canonical release path for `Value`.
+    ///
+    /// Callers MUST invoke `free()` before the value goes out of scope;
+    /// dropping without `free()` is a resource leak.
     fn free(val: Value);
 
     // ── Fluent builders (return self for chaining) ──────────────
@@ -184,13 +189,6 @@ impl ValueMethods for Value {
     }
     fn push_null(arr: Value) -> Value {
         unsafe { hew_json_array_push_null(arr) }; arr
-    }
-}
-
-impl Drop for Value {
-    /// Release the underlying JSON resources at scope exit.
-    fn drop(val: Value) {
-        unsafe { hew_json_free(val) };
     }
 }
 

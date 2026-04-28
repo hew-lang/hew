@@ -460,13 +460,13 @@ mod tests {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
         assert!(
-            reg.is_drop_type("json.Value"),
-            "json.Value should be a drop type"
+            !reg.is_drop_type("json.Value"),
+            "json.Value should not be a drop type"
         );
         reg.load("std::net::http").unwrap();
         assert!(
-            reg.is_drop_type("http.Request"),
-            "http.Request should be a drop type"
+            !reg.is_drop_type("http.Request"),
+            "http.Request should not be a drop type"
         );
         reg.load("std::process").unwrap();
         assert!(
@@ -490,14 +490,14 @@ mod tests {
         reg.load("std::encoding::json").unwrap();
         assert_eq!(
             reg.drop_func_for("json.Value"),
-            Some("hew_json_free"),
-            "json.Value drop func should be hew_json_free"
+            None,
+            "json.Value should not have a drop func"
         );
         reg.load("std::net::http").unwrap();
         assert_eq!(
             reg.drop_func_for("http.Request"),
-            Some("hew_http_request_free"),
-            "http.Request drop func should be hew_http_request_free"
+            None,
+            "http.Request should not have a drop func"
         );
         reg.load("std::process").unwrap();
         assert_eq!(
@@ -517,7 +517,7 @@ mod tests {
             "regex.Pattern should not have a drop func"
         );
         let all = reg.all_drop_funcs();
-        assert!(all.len() >= 2, "should have at least 2 drop funcs");
+        assert!(!all.is_empty(), "should have at least one drop func");
     }
 
     #[test]

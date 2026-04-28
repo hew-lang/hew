@@ -593,16 +593,13 @@ mod tests {
             "json module should declare json.Value handle type"
         );
         assert!(
-            info.drop_types.contains(&"json.Value".to_string()),
-            "json module should mark json.Value as a drop type"
+            !info.drop_types.contains(&"json.Value".to_string()),
+            "json.Value should not be a drop type after impl Drop removal"
         );
-        assert_eq!(
+        assert!(
+            info.drop_funcs.iter().all(|(ty, _)| ty != "json.Value"),
+            "json.Value should not have a drop func, got: {:?}",
             info.drop_funcs
-                .iter()
-                .find(|(ty, _)| ty == "json.Value")
-                .map(|(_, func)| func.as_str()),
-            Some("hew_json_free"),
-            "json.Value drop func should be hew_json_free"
         );
 
         // Should have clean name mapping for "parse"
@@ -984,13 +981,8 @@ mod tests {
         let info = load_module("std::net::http", &test_root()).unwrap();
 
         assert!(
-            !info.drop_types.is_empty(),
-            "http module should have drop types"
-        );
-
-        assert!(
-            info.drop_types.contains(&"http.Request".to_string()),
-            "http.Request should be a drop type, got: {:?}",
+            !info.drop_types.contains(&"http.Request".to_string()),
+            "http.Request should not be a drop type after impl Drop removal, got: {:?}",
             info.drop_types
         );
 
@@ -1007,20 +999,31 @@ mod tests {
 
         let request_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Request");
         assert!(
-            request_drop.is_some(),
-            "http.Request should have a drop func, got: {:?}",
+            request_drop.is_none(),
+            "http.Request should not have a drop func, got: {:?}",
             info.drop_funcs
-        );
-        assert_eq!(
-            request_drop.unwrap().1,
-            "hew_http_request_free",
-            "http.Request drop func should be hew_http_request_free"
         );
 
         let server_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Server");
         assert!(
             server_drop.is_none(),
             "http.Server should not have a drop func, got: {:?}",
+            info.drop_funcs
+        );
+    }
+
+    #[test]
+    fn json_module_no_drop_type_without_impl_drop() {
+        let info = load_module("std::encoding::json", &test_root()).unwrap();
+
+        assert!(
+            !info.drop_types.contains(&"json.Value".to_string()),
+            "json.Value should not be a drop type, got: {:?}",
+            info.drop_types
+        );
+        assert!(
+            info.drop_funcs.iter().all(|(ty, _)| ty != "json.Value"),
+            "json.Value should not have a drop func, got: {:?}",
             info.drop_funcs
         );
     }

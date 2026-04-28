@@ -9585,80 +9585,13 @@ fn main() -> int {
   PASS();
 }
 
-// ============================================================================
-// Test: imported json.Value metadata drives scope-exit auto-drop
-// ============================================================================
-
-static void test_imported_json_value_scope_drop_uses_metadata() {
-  TEST(imported_json_value_scope_drop_uses_metadata);
-
-  hew::ast::Program program;
-  if (!loadProgramFromSource(R"(
-import std::encoding::json;
-
-fn main() {
-    let val = json.parse("{\"name\":\"Hew\"}");
-    let name = val.get_field("name");
-    println(name.get_string());
-    println(val.stringify());
-}
-  )",
-                             program)) {
-    FAIL("failed to load typed json scope-drop program");
-    return;
-  }
-
-  bool jsonValueInHandleTypes = std::find(program.handle_types.begin(), program.handle_types.end(),
-                                          "json.Value") != program.handle_types.end();
-  if (!jsonValueInHandleTypes) {
-    FAIL("json.Value missing from handle metadata");
-    return;
-  }
-
-  auto dropIt = program.drop_funcs.find("json.Value");
-  if (dropIt == program.drop_funcs.end() || dropIt->second != "hew_json_free") {
-    FAIL("expected json.Value drop metadata to map to hew_json_free");
-    return;
-  }
-
-  mlir::MLIRContext ctx;
-  initContext(ctx);
-
-  auto module = generateMLIR(ctx, program);
-  if (!module) {
-    FAIL("MLIR generation failed for json.Value scope-drop program");
-    return;
-  }
-
-  auto mainFn = module.lookupSymbol<mlir::func::FuncOp>("main");
-  if (!mainFn) {
-    FAIL("expected main function for json.Value scope-drop program");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  auto dropWrapper = lookupFuncBySuffix(module, "json.ValueF4drop");
-  if (!dropWrapper) {
-    FAIL("expected a generated json.Value drop wrapper");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  if (countCallsByCallee(dropWrapper, "hew_json_free") < 1) {
-    FAIL("expected generated json.Value drop wrapper to call hew_json_free");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  if (countDropOpsByDropFn(mainFn, dropWrapper.getName(), true) < 2) {
-    FAIL("expected scope-exit auto-drop to emit user drop ops for imported json.Value locals");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  module.getOperation()->destroy();
-  PASS();
-}
+// NOTE: test_imported_json_value_scope_drop_uses_metadata was removed when
+// json.Value migrated off implicit Drop (issue #1310). The test asserted that
+// imported json.Value handle metadata drove scope-exit auto-drop emission;
+// after the migration there is no `impl Drop for Value`, so json.Value carries
+// no drop metadata and scope-exit produces no hew.drop for it. Coverage of
+// the imported-handle-metadata-drives-scope-drop pattern remains for handles
+// that still have implicit Drop (e.g. process.Child).
 
 // ============================================================================
 // Test: shared resolved-type classifier canonicalizes aliases + qualified names
@@ -12990,90 +12923,12 @@ static bool hasDropGuardSlotPopulatedInNestedRegion(mlir::Operation *funcOp) {
   return found;
 }
 
-// ============================================================================
-// Test: nullOutDropSlot guard slot is populated when handle defOp is inside a
-// nested SCF region (regression for the dominance/leak edge).
-//
-// Before the fix, nullOutDropSlot skipped the retroactive guard-slot store
-// when the handle-defining op lived inside a nested SCF if region.  The slot
-// stayed null-initialized, so the scope-exit drop was always skipped → LEAK.
-// After the fix, the store is inserted inside the nested region so the slot
-// holds the live handle value when .free() is NOT called.
-// ============================================================================
-static void test_json_nested_scope_free_guard_slot_populated() {
-  TEST(json_nested_scope_free_guard_slot_populated);
-
-  mlir::MLIRContext ctx;
-  initContext(ctx);
-
-  auto module = generateMLIR(ctx, R"(
-import std::encoding::json;
-
-fn test(do_free: bool) -> i32 {
-    if true {
-        let val = json.parse("{\"n\": 1}");
-        let t = val.type_of();
-        if do_free {
-            val.free();
-        }
-        t
-    } else {
-        0
-    }
-}
-
-fn main() {
-    println(test(true));
-    println(test(false));
-}
-  )");
-
-  if (!module) {
-    FAIL("MLIR generation failed for json nested-scope free guard test");
-    return;
-  }
-
-  auto testFn = lookupFuncBySuffix(module, "test");
-  if (!testFn) {
-    FAIL("test function not found");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  // The scope-exit drop for val must be present (null-guarded hew.drop).
-  auto dropWrapper = lookupFuncBySuffix(module, "json.ValueF4drop");
-  if (!dropWrapper) {
-    FAIL("expected a generated json.Value drop wrapper");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  if (countDropOpsByDropFn(testFn, dropWrapper.getName(), true) < 1) {
-    FAIL("expected scope-exit hew.drop for json.Value inside nested if block");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  // The explicit .free() must still emit exactly one hew_json_free call.
-  if (countCallsByCallee(testFn, "hew_json_free") != 1) {
-    FAIL("expected exactly one hew_json_free call for the explicit .free()");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  // The guard slot must have been populated with the live handle value inside
-  // the nested SCF if region (the retroactive store fix).  Without the fix,
-  // only the null-out store (from the .free() site) would be present.
-  if (!hasDropGuardSlotPopulatedInNestedRegion(testFn)) {
-    FAIL("guard slot for json.Value was not populated inside the nested SCF if "
-         "region — the scope-exit drop will always be skipped (ASAN leak)");
-    module.getOperation()->destroy();
-    return;
-  }
-
-  module.getOperation()->destroy();
-  PASS();
-}
+// NOTE: test_json_nested_scope_free_guard_slot_populated was removed when
+// json.Value migrated off implicit Drop (issue #1310). Without an `impl Drop
+// for Value`, scope-exit no longer emits a hew.drop for json.Value, so the
+// nested-region guard-slot population path it exercised is unreachable for
+// this type. Equivalent guard-slot coverage for handles that still have
+// implicit Drop (e.g. process.Child) lives elsewhere in this file.
 
 // ============================================================================
 // if-let / while-let pattern contract tests
@@ -13950,7 +13805,6 @@ int main() {
   test_actor_receive_regex_pattern_drop();
   test_lambda_actor_receive_string_param_drop();
   test_lambda_actor_receive_clears_enclosing_drop_excludes();
-  test_imported_json_value_scope_drop_uses_metadata();
   test_resolved_type_classifier_canonicalizes_aliases_and_qualified_receivers();
   test_handle_registry_uses_metadata_not_hardcoded_list();
   test_local_actor_non_void_ask_panics_on_null_reply_before_load();
@@ -13998,7 +13852,6 @@ int main() {
   test_prim_struct_static_serial_call_emits_demanded_wrapper();
   test_break_outside_loop_stmt_fails_closed();
   test_match_arm_unknown_constructor_fails_closed();
-  test_json_nested_scope_free_guard_slot_populated();
   test_wildcard_let_droppable_temporary_is_materialized();
   test_str_annotated_let_registers_string_drop();
   test_iflet_stmt_wildcard_pattern_lowers();

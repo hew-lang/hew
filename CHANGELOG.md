@@ -8,6 +8,11 @@
   no longer auto-release on scope exit. Callers must invoke `close()` /
   `free()` explicitly before those values go out of scope to avoid leaks
   (#1281).
+- **Explicit HTTP request and JSON value teardown:** `http.Request` and
+  `json.Value` no longer auto-release on scope exit. Callers must invoke
+  `free()` explicitly before those values go out of scope. This mirrors
+  the `Server`/`Pattern` migration and decouples handle release from the
+  codegen drop-slot null-after-move path (#1310).
 
 ## [0.4.0] - 2026-04-15
 

@@ -270,7 +270,7 @@ pub fn render_warning_with_raw_notes(
 /// Build a map from dotted module path to `(source_text, display_filename)` for
 /// every non-root module in the program that has an on-disk source file.
 ///
-/// // WASM-TODO: `std::fs` is unavailable in WASM / no-fs contexts, so this
+/// // WASM-TODO(#1451): `std::fs` is unavailable in WASM / no-fs contexts, so this
 /// // map is empty there and non-root diagnostics fall back to root-source
 /// // rendering until the WASM diagnostic pass grows a source-provider hook.
 pub(crate) fn build_module_source_map(program: &hew_parser::ast::Program) -> ModuleSourceMap {

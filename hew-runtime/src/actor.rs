@@ -1690,7 +1690,7 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
     drain_outcome_from_lists(still_live, crashed)
 }
 
-/// WASM-TODO: drain_actors primitive pending WASM scheduler integration.
+/// WASM-TODO(#1451): drain_actors primitive pending WASM scheduler integration.
 #[cfg(target_arch = "wasm32")]
 pub fn drain_actors(ids: &[ActorId], _deadline: std::time::Instant) -> DrainOutcome {
     let mut still_live = ids.to_vec();

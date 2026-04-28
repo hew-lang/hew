@@ -318,7 +318,7 @@ pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> 
 // TCP transport
 // ===========================================================================
 
-// WASM-TODO: TcpCounters always returns zeros on WASM; no TCP transport
+// WASM-TODO(#1451): TcpCounters always returns zeros on WASM; no TCP transport
 #[derive(Debug, Default)]
 struct TcpCounters {
     bytes_read: AtomicU64,

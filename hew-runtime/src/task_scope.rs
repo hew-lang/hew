@@ -779,7 +779,7 @@ pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
         return;
     }
 
-    // WASM-TODO: task_scope uses OS threads throughout and has no WASM target;
+    // WASM-TODO(#1451): task_scope uses OS threads throughout and has no WASM target;
     // the reaper thread below is likewise native-only.
     #[cfg(test)]
     if should_fail_task_reaper_spawn() {

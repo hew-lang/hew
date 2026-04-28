@@ -31,7 +31,7 @@
 //! }
 //! ```
 //
-// WASM-TODO: outbound std::net::http client wrappers remain native-only until
+// WASM-TODO(#1451): outbound std::net::http client wrappers remain native-only until
 // a browser/WASM networking bridge exists.
 
 /// An opaque HTTP response handle.

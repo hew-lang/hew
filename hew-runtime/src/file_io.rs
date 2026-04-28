@@ -261,7 +261,7 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
 }
 
 /// Return a malloc-owned copy of the current thread's last file I/O error.
-// WASM-TODO: confirm whether file-I/O error reporting needs a dedicated wasm-visible contract.
+// WASM-TODO(#1451): confirm whether file-I/O error reporting needs a dedicated wasm-visible contract.
 #[no_mangle]
 pub extern "C" fn hew_file_last_error() -> *mut c_char {
     let ptr = crate::hew_last_error();

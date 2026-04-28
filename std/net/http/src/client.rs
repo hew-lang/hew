@@ -4,7 +4,7 @@
 //! All returned strings and response structs are allocated with `libc::malloc`
 //! / `Box` so callers can free them with the corresponding free function.
 
-// WASM-TODO: std::net::http outbound client requests remain native-only until
+// WASM-TODO(#1451): std::net::http outbound client requests remain native-only until
 // Hew has a browser/WASM networking bridge.
 
 use hew_cabi::{

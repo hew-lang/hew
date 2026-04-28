@@ -111,14 +111,14 @@ When adding new language features, add an end-to-end test:
    add_wasm_file_test(my_feature e2e_my_feature my_feature)
    ```
    The `add_wasm_file_test` macro requires that you create the corresponding `examples/e2e_my_feature/my_feature.expected` file (read by the WASM CMake helpers) containing the expected output.
-   If WASM support is deferred, add a `// WASM-TODO: <reason>` comment at the registration site.
+   If WASM support is deferred, add a `// WASM-TODO(#NNN): <reason>` comment at the registration site, where `#NNN` is a GitHub issue tracking the gap (use [#1451](https://github.com/hew-lang/hew/issues/1451) for general WASM parity work).
 4. Add type-checker tests in `hew-types/src/check/tests.rs` for any new type rules.
 
 ### WASM / native parity
 
 New runtime behaviour — channels, ask/reply, timers, schedulers, bounded execution — must ship with a WASM implementation or an explicit tracked gap. Per LESSONS.md `native-wasm-parity` (P1):
 
-- Implement both native and WASM paths, or add `// WASM-TODO: <reason>` where the WASM path is deferred.
+- Implement both native and WASM paths, or add `// WASM-TODO(#NNN): <reason>` where the WASM path is deferred. The `#NNN` must be an open GitHub issue; use [#1451](https://github.com/hew-lang/hew/issues/1451) for general WASM parity gaps. `make lint-wasm-todo` rejects bare `WASM-TODO:` markers without an issue reference.
 - New `hew_*` runtime exports must be classified `jit: stable` or `jit: internal` in `scripts/jit-symbol-classification.toml` alongside their WASM disposition declaration; `scripts/verify-ffi-symbols.py --classify stable --validate` rejects unclassified exports.
 - Add contract tests for timeout, cancel, and budget edges.
 - Document intentional divergence where parity cannot land yet.

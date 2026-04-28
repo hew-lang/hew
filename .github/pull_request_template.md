@@ -22,5 +22,5 @@
 - [ ] No new `.ok()?` or `unwrap_or_default()` in codegen without `// JUSTIFIED` comment
 - [ ] New allocations have cleanup paths for sync, async, and actor shutdown contexts
 - [ ] Serialization changes include round-trip encode/decode tests
-- [ ] New runtime features have WASM implementation or `// WASM-TODO` marker, and new `hew_*` exports are classified in `scripts/jit-symbol-classification.toml`
+- [ ] New runtime features have WASM implementation or `// WASM-TODO(#NNN):` marker (with issue ref, e.g. `#1451`), and new `hew_*` exports are classified in `scripts/jit-symbol-classification.toml`
 - [ ] No duplicated logic — checked for existing helpers before adding new ones

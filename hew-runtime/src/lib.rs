@@ -213,6 +213,7 @@ pub mod vecdeque;
 
 pub mod bytes;
 mod channel_common;
+pub mod parse_error_slot;
 
 pub mod internal;
 mod tagged_union;

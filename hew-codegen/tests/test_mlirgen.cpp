@@ -9,14 +9,12 @@
 #include "../src/mlir/MLIRGenHelpers.h"
 #include "hew/ast_helpers.h"
 #include "hew/codegen.h"
-#include "hew/mlir/HewDialect.h"
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/MLIRGen.h"
 #include "hew/msgpack_reader.h"
 #include "test_utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -12879,48 +12877,6 @@ static void test_match_arm_unknown_constructor_fails_closed() {
   }
 
   PASS();
-}
-
-// ============================================================================
-// ============================================================================
-// Helper: verify that a guard slot used for a user-drop has a non-null store
-// that lives inside a nested SCF if region.  This proves that
-// nullOutDropSlot's retroactive store was inserted inside the nested region
-// (fixing the dominance/leak edge) rather than left null-initialized.
-// ============================================================================
-static bool hasDropGuardSlotPopulatedInNestedRegion(mlir::Operation *funcOp) {
-  bool found = false;
-  funcOp->walk([&](hew::DropOp drop) {
-    if (found || !drop.getIsUserDrop())
-      return;
-    // Unwrap any hew.bitcast ops between the drop and the underlying load.
-    mlir::Value dropVal = drop.getValue();
-    while (auto *defOp = dropVal.getDefiningOp()) {
-      if (defOp->getName().getStringRef() == "hew.bitcast" && defOp->getNumOperands() == 1)
-        dropVal = defOp->getOperand(0);
-      else
-        break;
-    }
-    auto load = dropVal.getDefiningOp<mlir::memref::LoadOp>();
-    if (!load)
-      return;
-    auto slot = load.getMemref();
-    if (!slot.getDefiningOp<mlir::memref::AllocaOp>())
-      return;
-    // Look for a non-null store to this slot inside a nested SCF if region.
-    funcOp->walk([&](mlir::memref::StoreOp store) {
-      if (found || store.getMemref() != slot)
-        return;
-      if (store.getValue().getDefiningOp<mlir::LLVM::ZeroOp>())
-        return;
-      if (isZeroLiteralValue(store.getValue()))
-        return;
-      auto *parentRegion = store->getParentRegion();
-      if (parentRegion && mlir::isa<mlir::scf::IfOp>(parentRegion->getParentOp()))
-        found = true;
-    });
-  });
-  return found;
 }
 
 // NOTE: test_json_nested_scope_free_guard_slot_populated was removed when

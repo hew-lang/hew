@@ -268,9 +268,8 @@ static mut INITIALIZED: bool = false;
 /// when the deadline passes (see [`drain_expired_sleepers`]).
 ///
 /// Drop/cleanup contract: cleared in [`hew_sched_shutdown`].
-// WASM-TODO: replace this sorted Vec sleep queue with a WASM-compatible shared
+// WASM-TODO(#1451): replace this sorted Vec sleep queue with a WASM-compatible shared
 // timer queue helper; insert/drain/cancel are still O(n)/O(n²).
-// Tracking: <https://github.com/hew-lang/hew/issues/1338>
 static mut SLEEP_QUEUE: Vec<(u64, *mut HewActor)> = Vec::new();
 
 /// Pending sleep deadline set by the currently-dispatching actor via
@@ -1335,10 +1334,10 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
 /// while still allowing wait-loop callers (ask/await/reply) to drive the
 /// scheduler to completion.
 ///
-/// WASM-TODO: native `hew_actor_cooperate` yields to the OS scheduler instead
+/// WASM-TODO(#1451): native `hew_actor_cooperate` yields to the OS scheduler instead
 /// of suppressing progress. Replace this depth cap with a stack-safe,
 /// non-recursive cooperative driver so yielding never returns `1` without a
-/// scheduler tick. Tracking: <https://github.com/hew-lang/hew/issues/1338>
+/// scheduler tick.
 ///
 /// Returns 0 if the actor should continue, 1 if it yielded.
 ///

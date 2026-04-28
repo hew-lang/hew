@@ -134,7 +134,7 @@ pub(crate) fn runtime_test_guard() -> RuntimeTestGuard {
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 pub mod profiler;
 
-// WASM-TODO: pprof/sampler require OS threads + HTTP; no WASM path planned until WASI threads land
+// WASM-TODO(#1451): pprof/sampler require OS threads + HTTP; no WASM path planned until WASI threads land
 // When the profiler feature is disabled (or on WASM), provide a minimal stub
 // so that scheduler.rs can still call profiler::maybe_start() etc.
 #[cfg(any(not(feature = "profiler"), target_arch = "wasm32"))]

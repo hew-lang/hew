@@ -1,4 +1,4 @@
-// WASM-TODO: WebSocket transport not available on WASM (requires OS threads)
+// WASM-TODO(#1451): WebSocket transport not available on WASM (requires OS threads)
 //! Hew runtime: `websocket` module.
 //!
 //! Provides synchronous WebSocket client functionality for compiled Hew programs.

@@ -49,7 +49,7 @@
 # ============================================================================
 
 .PHONY: all bootstrap install-hooks hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
-.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate lint-wasm-todo grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -596,7 +596,7 @@ tsan:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint verify-ffi
+lint: runtime-poison-safe-lint lint-wasm-todo verify-ffi
 	cargo clippy --workspace --tests -- -D warnings
 
 codegen-lint:
@@ -655,6 +655,12 @@ runtime-poison-safe-lint: runtime-poison-safe-lint-self-test
 # Runs synthetic violations through the linter to confirm every guard fires.
 runtime-poison-safe-lint-self-test:
 	bash scripts/lint-runtime-poison-safe.sh --self-test
+
+# Reject WASM-TODO comments that do not carry an issue reference.
+# Every actionable WASM-TODO must use: WASM-TODO(#NNN): <description>
+# Umbrella issue: https://github.com/hew-lang/hew/issues/1451
+lint-wasm-todo:
+	bash scripts/lint-wasm-todo-issue-ref.sh
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #

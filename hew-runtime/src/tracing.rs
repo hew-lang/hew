@@ -557,7 +557,7 @@ pub fn drain_events_json() -> String {
                 (type_id, type_name, hname)
             };
 
-            // WASM-TODO: WASM codegen registration not yet implemented; actor_type_id/actor_type are zeroed on WASM path
+            // WASM-TODO(#1451): WASM codegen registration not yet implemented; actor_type_id/actor_type are zeroed on WASM path
             #[cfg(any(target_arch = "wasm32", test))]
             let (actor_type_id, actor_type_str, handler_name): (
                 u64,

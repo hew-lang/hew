@@ -33,13 +33,14 @@
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen + Hew)
-#   make test-rust    — just Rust workspace tests
-#   make test-parser  — parser + lexer crate tests (narrow)
-#   make test-types   — type-checker + parser + lexer crate tests (narrow)
-#   make test-cli     — CLI crate tests (narrow)
-#   make test-codegen — just hew-codegen ctest (native E2E + unit)
-#   make test-hew     — run Hew test files (std/ *_test.hew)
-#   make test-wasm    — just WASM E2E tests (requires wasmtime)
+#   make test-rust        — just Rust workspace tests
+#   make test-parser      — parser + lexer crate tests (narrow)
+#   make test-types       — type-checker + parser + lexer crate tests (narrow)
+#   make test-cli         — CLI crate tests (narrow)
+#   make test-runtime-net — runtime / analysis / lsp / std-net crate tests (narrow)
+#   make test-codegen     — just hew-codegen ctest (native E2E + unit)
+#   make test-hew         — run Hew test files (std/ *_test.hew)
+#   make test-wasm        — just WASM E2E tests (requires wasmtime)
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make lsan         — run the nightly codegen sanitizer tests with CI leak env
 #   make tsan         — run the nightly rust-runtime TSan test command locally
@@ -48,7 +49,7 @@
 # ============================================================================
 
 .PHONY: all bootstrap install-hooks hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
-.PHONY: test test-all test-rust test-parser test-types test-cli test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -497,6 +498,21 @@ test-types:
 
 test-cli:
 	cargo test -p hew-cli -p adze-cli
+
+test-runtime-net:
+	cargo test --no-fail-fast \
+		-p hew-runtime \
+		-p hew-analysis \
+		-p hew-lsp \
+		-p hew-std-net-dns \
+		-p hew-std-net-http \
+		-p hew-std-net-ipnet \
+		-p hew-std-net-mime \
+		-p hew-std-net-quic \
+		-p hew-std-net-smtp \
+		-p hew-std-net-tls \
+		-p hew-std-net-url \
+		-p hew-std-net-websocket
 
 test-codegen: hew codegen runtime stdlib
 	cd hew-codegen/build && ctest --output-on-failure -LE wasm

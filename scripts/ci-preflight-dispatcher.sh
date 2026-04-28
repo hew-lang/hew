@@ -119,6 +119,42 @@ is_cli_path() {
     return 1
 }
 
+is_runtime_path() {
+    case "$1" in
+        hew-runtime/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_stdlib_net_path() {
+    case "$1" in
+        std/net/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_analysis_path() {
+    case "$1" in
+        hew-analysis/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_lsp_path() {
+    case "$1" in
+        hew-lsp/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)
@@ -186,6 +222,7 @@ has_grammar=0
 has_parser=0
 has_types=0
 has_cli=0
+has_runtime_net=0
 needs_codegen_lint=0
 needs_stdlib_lint=0
 
@@ -195,7 +232,18 @@ for path in "${CHANGED_FILES[@]}"; do
             needs_codegen_lint=1
             ;;
         std/*)
-            needs_stdlib_lint=1
+            # .hew sources under std/net/* still need stdlib-lint (int-surface / errno-gate);
+            # only Rust files there are fully covered by the runtime-net lane.
+            case "$path" in
+                *.hew)
+                    needs_stdlib_lint=1
+                    ;;
+                *)
+                    if ! is_stdlib_net_path "$path"; then
+                        needs_stdlib_lint=1
+                    fi
+                    ;;
+            esac
             ;;
     esac
 
@@ -209,12 +257,14 @@ for path in "${CHANGED_FILES[@]}"; do
         has_types=1
     elif is_cli_path "$path"; then
         has_cli=1
+    elif is_runtime_path "$path" || is_stdlib_net_path "$path" || is_analysis_path "$path" || is_lsp_path "$path"; then
+        has_runtime_net=1
     else
         fallback_lane=1
     fi
 done
 
-bucket_count=$((has_grammar + has_parser + has_types + has_cli))
+bucket_count=$((has_grammar + has_parser + has_types + has_cli + has_runtime_net))
 
 if (( fallback_lane == 1 )); then
     LANE="fallback"
@@ -234,6 +284,9 @@ elif (( has_parser == 1 )); then
 elif (( has_types == 1 )); then
     LANE="types"
     LANE_REASON="type-checker surface changed"
+elif (( has_runtime_net == 1 )); then
+    LANE="runtime-net"
+    LANE_REASON="runtime / std/net / analysis / lsp surface changed"
 else
     LANE="cli"
     LANE_REASON="CLI surface changed"
@@ -258,6 +311,9 @@ case "$LANE" in
         ;;
     cli)
         add_command "make test-cli"
+        ;;
+    runtime-net)
+        add_command "make test-runtime-net"
         ;;
     fallback)
         add_command "make lint"
@@ -303,6 +359,9 @@ case "$LANE" in
         ;;
     cli)
         PROFILE_LABEL="cli"
+        ;;
+    runtime-net)
+        PROFILE_LABEL="runtime-net"
         ;;
     fallback)
         PROFILE_LABEL="comprehensive"

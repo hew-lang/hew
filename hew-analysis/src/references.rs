@@ -7,6 +7,7 @@ use hew_parser::ast::{
 };
 use hew_parser::ParseResult;
 
+use crate::ast_visit::{self, AstVisitor, BindingInfo, VisitContext};
 use crate::util::simple_word_at_offset;
 use crate::OffsetSpan;
 
@@ -47,9 +48,7 @@ pub fn find_import_binding_references(parse_result: &ParseResult, name: &str) ->
     }
 
     let mut spans = Vec::new();
-    for (item, _span) in &parse_result.program.items {
-        collect_import_binding_refs_in_item(item, name, &mut spans);
-    }
+    collect_import_binding_refs(parse_result, name, &mut spans);
 
     spans
         .into_iter()
@@ -118,9 +117,7 @@ fn find_all_references_raw(
             .or_else(|| crate::definition::find_param_definition(parse_result, &name, offset));
 
     let mut spans = Vec::new();
-    for (item, _span) in &parse_result.program.items {
-        collect_refs_in_item(source, item, &name, &mut spans);
-    }
+    collect_refs_in_parse_result(source, parse_result, &name, &mut spans);
 
     // For top-level names (functions, actors, types, receive handlers, fields),
     // return all references globally.
@@ -139,9 +136,7 @@ fn find_all_references_raw(
     if is_cursor_on_import_binding(source, parse_result, &name, offset) {
         // Use shadow-aware reference collection to skip shadowed bindings.
         spans.clear();
-        for (item, _span) in &parse_result.program.items {
-            collect_import_binding_refs_in_item(item, &name, &mut spans);
-        }
+        collect_import_binding_refs(parse_result, &name, &mut spans);
         // Also include the import token itself as a reference site.
         if let Some(import_span) = find_import_binding_span(source, parse_result, &name, offset) {
             spans.insert(0, import_span);
@@ -272,667 +267,122 @@ fn find_import_binding_span(
 /// Collect the start offsets of all binding (declaration) sites for `name`
 /// across all items in the parse result.
 ///
-/// Walks `Stmt::Let { pattern }`, `Stmt::Var { name }`, and `Stmt::For { pattern }`
-/// in the AST rather than using source-text prefix heuristics.
+/// Tracks `let`, `var`, and `for`/`if let`/`while let`/`match`-arm patterns —
+/// the same set of constructs the bespoke walker covered. Function and lambda
+/// parameters are excluded so the resulting offsets only mark in-body shadow
+/// boundaries.
 fn collect_binding_starts_in_parse_result(parse_result: &ParseResult, name: &str) -> Vec<usize> {
-    let mut out = Vec::new();
-    for (item, _) in &parse_result.program.items {
-        collect_binding_starts_in_item(item, name, &mut out);
-    }
-    out
+    let mut visitor = BindingStartsVisitor {
+        name,
+        starts: Vec::new(),
+    };
+    ast_visit::walk_parse_result(None, parse_result, &mut visitor);
+    visitor.starts
 }
 
-fn collect_binding_starts_in_item(item: &Item, name: &str, out: &mut Vec<usize>) {
-    match item {
-        Item::Function(f) => {
-            collect_binding_starts_in_block(&f.body, name, out);
-        }
-        Item::Actor(a) => {
-            if let Some(init) = &a.init {
-                collect_binding_starts_in_block(&init.body, name, out);
-            }
-            if let Some(term) = &a.terminate {
-                collect_binding_starts_in_block(&term.body, name, out);
-            }
-            for recv in &a.receive_fns {
-                collect_binding_starts_in_block(&recv.body, name, out);
-            }
-            for method in &a.methods {
-                collect_binding_starts_in_block(&method.body, name, out);
-            }
-        }
-        Item::TypeDecl(td) => {
-            for body_item in &td.body {
-                if let TypeBodyItem::Method(m) = body_item {
-                    collect_binding_starts_in_block(&m.body, name, out);
-                }
-            }
-        }
-        Item::Impl(i) => {
-            for method in &i.methods {
-                collect_binding_starts_in_block(&method.body, name, out);
-            }
-        }
-        Item::Trait(t) => {
-            for trait_item in &t.items {
-                if let TraitItem::Method(m) = trait_item {
-                    if let Some(body) = &m.body {
-                        collect_binding_starts_in_block(body, name, out);
-                    }
-                }
-            }
-        }
-        Item::Supervisor(s) => {
-            for child in &s.children {
-                for arg in &child.args {
-                    collect_binding_starts_in_expr(&arg.0, name, out);
-                }
-            }
-        }
-        Item::Machine(m) => {
-            for transition in &m.transitions {
-                if let Some(guard) = &transition.guard {
-                    collect_binding_starts_in_expr(&guard.0, name, out);
-                }
-                collect_binding_starts_in_expr(&transition.body.0, name, out);
-            }
-        }
-        Item::Const(c) => {
-            collect_binding_starts_in_expr(&c.value.0, name, out);
-        }
-        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
-    }
+struct BindingStartsVisitor<'a> {
+    name: &'a str,
+    starts: Vec<usize>,
 }
 
-fn collect_binding_starts_in_block(block: &Block, name: &str, out: &mut Vec<usize>) {
-    for (stmt, stmt_span) in &block.stmts {
-        collect_binding_starts_in_stmt(stmt, stmt_span, name, out);
-    }
-}
-
-/// Recurse into expressions that can introduce new bindings (block-containing
-/// expressions only). Used when an arm body or similar is `Spanned<Expr>`.
-fn collect_binding_starts_in_expr(expr: &Expr, name: &str, out: &mut Vec<usize>) {
-    match expr {
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block) => {
-            collect_binding_starts_in_block(block, name, out);
-        }
-        Expr::Scope { body, .. } => {
-            collect_binding_starts_in_block(body, name, out);
-        }
-        Expr::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_binding_starts_in_expr(&then_block.0, name, out);
-            if let Some(eb) = else_block {
-                collect_binding_starts_in_expr(&eb.0, name, out);
+impl<'ast> AstVisitor<'ast> for BindingStartsVisitor<'_> {
+    fn visit_stmt(&mut self, stmt: &'ast Stmt, span: &'ast Span, _ctx: VisitContext<'ast>) {
+        match stmt {
+            Stmt::Let { pattern, .. } | Stmt::For { pattern, .. }
+                if pattern_binds_name(&pattern.0, self.name) =>
+            {
+                self.starts.push(pattern.1.start);
             }
-        }
-        Expr::IfLet {
-            pattern,
-            body,
-            else_body,
-            ..
-        } => {
-            if pattern_binds_name(&pattern.0, name) {
-                out.push(pattern.1.start);
+            Stmt::IfLet { pattern, .. } | Stmt::WhileLet { pattern, .. }
+                if pattern_binds_name(&pattern.0, self.name) =>
+            {
+                self.starts.push(pattern.1.start);
             }
-            collect_binding_starts_in_block(body, name, out);
-            if let Some(block) = else_body {
-                collect_binding_starts_in_block(block, name, out);
-            }
-        }
-        Expr::Match { arms, .. } => {
-            for arm in arms {
-                if pattern_binds_name(&arm.pattern.0, name) {
-                    out.push(arm.pattern.1.start);
-                }
-                collect_binding_starts_in_expr(&arm.body.0, name, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_binding_starts_in_stmt(stmt: &Stmt, stmt_span: &Span, name: &str, out: &mut Vec<usize>) {
-    match stmt {
-        Stmt::Let { pattern, .. } => {
-            if pattern_binds_name(&pattern.0, name) {
-                out.push(pattern.1.start);
-            }
-        }
-        Stmt::Var {
-            name: binding_name, ..
-        } => {
-            if binding_name == name {
+            Stmt::Var {
+                name: binding_name, ..
+            } if binding_name == self.name => {
                 // Stmt::Var carries no dedicated name-span; use the statement span.
-                out.push(stmt_span.start);
+                self.starts.push(span.start);
             }
-        }
-        Stmt::For { pattern, body, .. } => {
-            if pattern_binds_name(&pattern.0, name) {
-                out.push(pattern.1.start);
-            }
-            collect_binding_starts_in_block(body, name, out);
-        }
-        Stmt::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_binding_starts_in_block(then_block, name, out);
-            if let Some(eb) = else_block {
-                if let Some(if_stmt) = &eb.if_stmt {
-                    collect_binding_starts_in_stmt(&if_stmt.0, &if_stmt.1, name, out);
-                }
-                if let Some(block) = &eb.block {
-                    collect_binding_starts_in_block(block, name, out);
-                }
-            }
-        }
-        Stmt::IfLet {
-            pattern,
-            body,
-            else_body,
-            ..
-        } => {
-            if pattern_binds_name(&pattern.0, name) {
-                out.push(pattern.1.start);
-            }
-            collect_binding_starts_in_block(body, name, out);
-            if let Some(block) = else_body {
-                collect_binding_starts_in_block(block, name, out);
-            }
-        }
-        Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
-            collect_binding_starts_in_block(body, name, out);
-        }
-        Stmt::WhileLet { pattern, body, .. } => {
-            if pattern_binds_name(&pattern.0, name) {
-                out.push(pattern.1.start);
-            }
-            collect_binding_starts_in_block(body, name, out);
-        }
-        Stmt::Match { arms, .. } => {
-            for arm in arms {
-                if pattern_binds_name(&arm.pattern.0, name) {
-                    out.push(arm.pattern.1.start);
-                }
-                collect_binding_starts_in_expr(&arm.body.0, name, out);
-            }
-        }
-        Stmt::Assign { .. }
-        | Stmt::Return(_)
-        | Stmt::Break { .. }
-        | Stmt::Continue { .. }
-        | Stmt::Expression(_)
-        | Stmt::Defer(_) => {}
-    }
-}
-
-fn collect_import_binding_refs_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
-    match item {
-        Item::Function(f) => {
-            let shadowed = f.params.iter().any(|param| param.name == name);
-            collect_import_binding_refs_in_block(&f.body, name, shadowed, spans);
-        }
-        Item::Actor(a) => {
-            let field_shadowed = a.fields.iter().any(|field| field.name == name);
-            if let Some(init) = &a.init {
-                collect_import_binding_refs_in_block(&init.body, name, field_shadowed, spans);
-            }
-            if let Some(term) = &a.terminate {
-                collect_import_binding_refs_in_block(&term.body, name, field_shadowed, spans);
-            }
-            for recv in &a.receive_fns {
-                let shadowed = field_shadowed || recv.params.iter().any(|param| param.name == name);
-                collect_import_binding_refs_in_block(&recv.body, name, shadowed, spans);
-            }
-            for method in &a.methods {
-                let shadowed =
-                    field_shadowed || method.params.iter().any(|param| param.name == name);
-                collect_import_binding_refs_in_block(&method.body, name, shadowed, spans);
-            }
-        }
-        Item::TypeDecl(td) => {
-            for body_item in &td.body {
-                if let TypeBodyItem::Method(method) = body_item {
-                    let shadowed = method.params.iter().any(|param| param.name == name);
-                    collect_import_binding_refs_in_block(&method.body, name, shadowed, spans);
-                }
-            }
-        }
-        Item::Impl(i) => {
-            for method in &i.methods {
-                let shadowed = method.params.iter().any(|param| param.name == name);
-                collect_import_binding_refs_in_block(&method.body, name, shadowed, spans);
-            }
-        }
-        Item::Trait(t) => {
-            for trait_item in &t.items {
-                if let TraitItem::Method(method) = trait_item {
-                    if let Some(body) = &method.body {
-                        let shadowed = method.params.iter().any(|param| param.name == name);
-                        collect_import_binding_refs_in_block(body, name, shadowed, spans);
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    if pattern_binds_name(&arm.pattern.0, self.name) {
+                        self.starts.push(arm.pattern.1.start);
                     }
                 }
             }
+            _ => {}
         }
-        Item::Const(c) => {
-            collect_import_binding_refs_in_expr(&c.value.0, &c.value.1, name, false, spans);
-        }
-        Item::Supervisor(s) => {
-            for child in &s.children {
-                for arg in &child.args {
-                    collect_import_binding_refs_in_expr(&arg.0, &arg.1, name, false, spans);
+    }
+
+    fn visit_expr(&mut self, expr: &'ast Expr, _span: &'ast Span, _ctx: VisitContext<'ast>) {
+        match expr {
+            Expr::IfLet { pattern, .. } if pattern_binds_name(&pattern.0, self.name) => {
+                self.starts.push(pattern.1.start);
+            }
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    if pattern_binds_name(&arm.pattern.0, self.name) {
+                        self.starts.push(arm.pattern.1.start);
+                    }
                 }
             }
+            _ => {}
         }
-        Item::Machine(m) => {
-            for transition in &m.transitions {
-                if let Some(guard) = &transition.guard {
-                    collect_import_binding_refs_in_expr(&guard.0, &guard.1, name, false, spans);
-                }
-                collect_import_binding_refs_in_expr(
-                    &transition.body.0,
-                    &transition.body.1,
-                    name,
-                    false,
-                    spans,
-                );
-            }
-        }
-        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
     }
 }
 
-fn collect_import_binding_refs_in_block(
-    block: &Block,
-    name: &str,
-    shadowed: bool,
-    spans: &mut Vec<Span>,
-) {
-    let mut shadowed = shadowed;
-    for (stmt, _span) in &block.stmts {
-        shadowed = collect_import_binding_refs_in_stmt(stmt, name, shadowed, spans);
-    }
-    if let Some(trailing) = &block.trailing_expr {
-        collect_import_binding_refs_in_expr(&trailing.0, &trailing.1, name, shadowed, spans);
-    }
+/// Collect every body-side reference to an import-bound name, skipping any
+/// usage that a local binding shadows. The `AstWalker`'s scope stack handles
+/// parameter, lambda, scope, and pattern-binding shadowing automatically; the
+/// only out-of-band case is `actor` field shadowing, which is detected up
+/// front per actor item span and applied while walking inside that span.
+fn collect_import_binding_refs(parse_result: &ParseResult, name: &str, spans: &mut Vec<Span>) {
+    let actor_shadow_spans: Vec<Span> = parse_result
+        .program
+        .items
+        .iter()
+        .filter_map(|(item, item_span)| match item {
+            Item::Actor(a) if a.fields.iter().any(|field| field.name == name) => {
+                Some(item_span.clone())
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut visitor = ImportBindingRefsVisitor {
+        name,
+        actor_shadow_spans: &actor_shadow_spans,
+        spans,
+    };
+    ast_visit::walk_parse_result(None, parse_result, &mut visitor);
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "statement traversal must preserve shadowing order across variants"
-)]
-fn collect_import_binding_refs_in_stmt(
-    stmt: &Stmt,
-    name: &str,
-    shadowed: bool,
-    spans: &mut Vec<Span>,
-) -> bool {
-    match stmt {
-        Stmt::Let { pattern, value, .. } => {
-            if let Some(val) = value {
-                collect_import_binding_refs_in_expr(&val.0, &val.1, name, shadowed, spans);
-            }
-            shadowed || pattern_binds_name(&pattern.0, name)
-        }
-        Stmt::Var {
-            name: binding_name,
-            value,
-            ..
-        } => {
-            if let Some(val) = value {
-                collect_import_binding_refs_in_expr(&val.0, &val.1, name, shadowed, spans);
-            }
-            shadowed || binding_name == name
-        }
-        Stmt::Assign { target, value, .. } => {
-            collect_import_binding_refs_in_expr(&target.0, &target.1, name, shadowed, spans);
-            collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
-            shadowed
-        }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            collect_import_binding_refs_in_expr(&condition.0, &condition.1, name, shadowed, spans);
-            collect_import_binding_refs_in_block(then_block, name, shadowed, spans);
-            if let Some(else_block) = else_block {
-                if let Some(if_stmt) = &else_block.if_stmt {
-                    collect_import_binding_refs_in_stmt(&if_stmt.0, name, shadowed, spans);
-                }
-                if let Some(block) = &else_block.block {
-                    collect_import_binding_refs_in_block(block, name, shadowed, spans);
-                }
-            }
-            shadowed
-        }
-        Stmt::IfLet {
-            pattern,
-            expr,
-            body,
-            else_body,
-        } => {
-            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
-            collect_import_binding_refs_in_block(
-                body,
-                name,
-                shadowed || pattern_binds_name(&pattern.0, name),
-                spans,
-            );
-            if let Some(block) = else_body {
-                collect_import_binding_refs_in_block(block, name, shadowed, spans);
-            }
-            shadowed
-        }
-        Stmt::Match { scrutinee, arms } => {
-            collect_import_binding_refs_in_expr(&scrutinee.0, &scrutinee.1, name, shadowed, spans);
-            for arm in arms {
-                let arm_shadowed = shadowed || pattern_binds_name(&arm.pattern.0, name);
-                if let Some(guard) = &arm.guard {
-                    collect_import_binding_refs_in_expr(
-                        &guard.0,
-                        &guard.1,
-                        name,
-                        arm_shadowed,
-                        spans,
-                    );
-                }
-                collect_import_binding_refs_in_expr(
-                    &arm.body.0,
-                    &arm.body.1,
-                    name,
-                    arm_shadowed,
-                    spans,
-                );
-            }
-            shadowed
-        }
-        Stmt::Loop { body, .. } => {
-            collect_import_binding_refs_in_block(body, name, shadowed, spans);
-            shadowed
-        }
-        Stmt::While {
-            condition, body, ..
-        } => {
-            collect_import_binding_refs_in_expr(&condition.0, &condition.1, name, shadowed, spans);
-            collect_import_binding_refs_in_block(body, name, shadowed, spans);
-            shadowed
-        }
-        Stmt::WhileLet {
-            pattern,
-            expr,
-            body,
-            ..
-        } => {
-            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
-            collect_import_binding_refs_in_block(
-                body,
-                name,
-                shadowed || pattern_binds_name(&pattern.0, name),
-                spans,
-            );
-            shadowed
-        }
-        Stmt::For {
-            pattern,
-            iterable,
-            body,
-            ..
-        } => {
-            collect_import_binding_refs_in_expr(&iterable.0, &iterable.1, name, shadowed, spans);
-            collect_import_binding_refs_in_block(
-                body,
-                name,
-                shadowed || pattern_binds_name(&pattern.0, name),
-                spans,
-            );
-            shadowed
-        }
-        Stmt::Return(Some(val)) => {
-            collect_import_binding_refs_in_expr(&val.0, &val.1, name, shadowed, spans);
-            shadowed
-        }
-        Stmt::Defer(expr) => {
-            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
-            shadowed
-        }
-        Stmt::Expression(expr) => {
-            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
-            shadowed
-        }
-        Stmt::Break { value: Some(v), .. } => {
-            collect_import_binding_refs_in_expr(&v.0, &v.1, name, shadowed, spans);
-            shadowed
-        }
-        Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => shadowed,
-    }
+struct ImportBindingRefsVisitor<'a> {
+    name: &'a str,
+    actor_shadow_spans: &'a [Span],
+    spans: &'a mut Vec<Span>,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "match arms over all Expr variants is clearest as one function"
-)]
-fn collect_import_binding_refs_in_expr(
-    expr: &Expr,
-    span: &Span,
-    name: &str,
-    shadowed: bool,
-    spans: &mut Vec<Span>,
-) {
-    match expr {
-        Expr::Identifier(ident) if !shadowed && ident == name => {
-            spans.push(span.clone());
+impl<'ast> AstVisitor<'ast> for ImportBindingRefsVisitor<'_> {
+    fn visit_identifier(
+        &mut self,
+        name: &'ast str,
+        span: &'ast Span,
+        binding: Option<BindingInfo<'ast>>,
+        _ctx: VisitContext<'ast>,
+    ) {
+        if name != self.name || binding.is_some() {
+            return;
         }
-        Expr::Binary { left, right, .. } => {
-            collect_import_binding_refs_in_expr(&left.0, &left.1, name, shadowed, spans);
-            collect_import_binding_refs_in_expr(&right.0, &right.1, name, shadowed, spans);
+        if self
+            .actor_shadow_spans
+            .iter()
+            .any(|actor_span| span.start >= actor_span.start && span.end <= actor_span.end)
+        {
+            return;
         }
-        Expr::Unary { operand, .. } => {
-            collect_import_binding_refs_in_expr(&operand.0, &operand.1, name, shadowed, spans);
-        }
-        Expr::Call { function, args, .. } => {
-            collect_import_binding_refs_in_expr(&function.0, &function.1, name, shadowed, spans);
-            for arg in args {
-                let expr = arg.expr();
-                collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
-            }
-        }
-        Expr::MethodCall { receiver, args, .. } => {
-            collect_import_binding_refs_in_expr(&receiver.0, &receiver.1, name, shadowed, spans);
-            for arg in args {
-                let expr = arg.expr();
-                collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
-            }
-        }
-        Expr::FieldAccess { object, .. } => {
-            collect_import_binding_refs_in_expr(&object.0, &object.1, name, shadowed, spans);
-        }
-        Expr::Index { object, index } => {
-            collect_import_binding_refs_in_expr(&object.0, &object.1, name, shadowed, spans);
-            collect_import_binding_refs_in_expr(&index.0, &index.1, name, shadowed, spans);
-        }
-        Expr::StructInit { fields, .. } => {
-            for (_, value) in fields {
-                collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
-            }
-        }
-        Expr::Spawn { target, args } => {
-            collect_import_binding_refs_in_expr(&target.0, &target.1, name, shadowed, spans);
-            for (_, value) in args {
-                collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
-            }
-        }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block) => {
-            collect_import_binding_refs_in_block(block, name, shadowed, spans);
-        }
-        Expr::Scope { binding, body } => {
-            collect_import_binding_refs_in_block(
-                body,
-                name,
-                shadowed || binding.as_deref() == Some(name),
-                spans,
-            );
-        }
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            collect_import_binding_refs_in_expr(&condition.0, &condition.1, name, shadowed, spans);
-            collect_import_binding_refs_in_expr(
-                &then_block.0,
-                &then_block.1,
-                name,
-                shadowed,
-                spans,
-            );
-            if let Some(else_block) = else_block {
-                collect_import_binding_refs_in_expr(
-                    &else_block.0,
-                    &else_block.1,
-                    name,
-                    shadowed,
-                    spans,
-                );
-            }
-        }
-        Expr::IfLet {
-            pattern,
-            expr,
-            body,
-            else_body,
-        } => {
-            collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
-            collect_import_binding_refs_in_block(
-                body,
-                name,
-                shadowed || pattern_binds_name(&pattern.0, name),
-                spans,
-            );
-            if let Some(block) = else_body {
-                collect_import_binding_refs_in_block(block, name, shadowed, spans);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            collect_import_binding_refs_in_expr(&scrutinee.0, &scrutinee.1, name, shadowed, spans);
-            for arm in arms {
-                let arm_shadowed = shadowed || pattern_binds_name(&arm.pattern.0, name);
-                if let Some(guard) = &arm.guard {
-                    collect_import_binding_refs_in_expr(
-                        &guard.0,
-                        &guard.1,
-                        name,
-                        arm_shadowed,
-                        spans,
-                    );
-                }
-                collect_import_binding_refs_in_expr(
-                    &arm.body.0,
-                    &arm.body.1,
-                    name,
-                    arm_shadowed,
-                    spans,
-                );
-            }
-        }
-        Expr::Lambda { params, body, .. } | Expr::SpawnLambdaActor { params, body, .. } => {
-            let shadowed = shadowed || params.iter().any(|param| param.name == name);
-            collect_import_binding_refs_in_expr(&body.0, &body.1, name, shadowed, spans);
-        }
-        Expr::ArrayRepeat { value, count } => {
-            collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
-            collect_import_binding_refs_in_expr(&count.0, &count.1, name, shadowed, spans);
-        }
-        Expr::MapLiteral { entries } => {
-            for (key, value) in entries {
-                collect_import_binding_refs_in_expr(&key.0, &key.1, name, shadowed, spans);
-                collect_import_binding_refs_in_expr(&value.0, &value.1, name, shadowed, spans);
-            }
-        }
-        Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) => {
-            for elem in elems {
-                collect_import_binding_refs_in_expr(&elem.0, &elem.1, name, shadowed, spans);
-            }
-        }
-        Expr::Send { target, message } => {
-            collect_import_binding_refs_in_expr(&target.0, &target.1, name, shadowed, spans);
-            collect_import_binding_refs_in_expr(&message.0, &message.1, name, shadowed, spans);
-        }
-        Expr::Select { arms, timeout } => {
-            for arm in arms {
-                collect_import_binding_refs_in_expr(
-                    &arm.source.0,
-                    &arm.source.1,
-                    name,
-                    shadowed,
-                    spans,
-                );
-                collect_import_binding_refs_in_expr(
-                    &arm.body.0,
-                    &arm.body.1,
-                    name,
-                    shadowed || pattern_binds_name(&arm.binding.0, name),
-                    spans,
-                );
-            }
-            if let Some(timeout) = timeout {
-                collect_import_binding_refs_in_expr(
-                    &timeout.duration.0,
-                    &timeout.duration.1,
-                    name,
-                    shadowed,
-                    spans,
-                );
-                collect_import_binding_refs_in_expr(
-                    &timeout.body.0,
-                    &timeout.body.1,
-                    name,
-                    shadowed,
-                    spans,
-                );
-            }
-        }
-        Expr::Timeout {
-            expr: inner,
-            duration,
-        } => {
-            collect_import_binding_refs_in_expr(&inner.0, &inner.1, name, shadowed, spans);
-            collect_import_binding_refs_in_expr(&duration.0, &duration.1, name, shadowed, spans);
-        }
-        Expr::Await(inner)
-        | Expr::PostfixTry(inner)
-        | Expr::Yield(Some(inner))
-        | Expr::Cast { expr: inner, .. } => {
-            collect_import_binding_refs_in_expr(&inner.0, &inner.1, name, shadowed, spans);
-        }
-        Expr::Range { start, end, .. } => {
-            if let Some(start) = start {
-                collect_import_binding_refs_in_expr(&start.0, &start.1, name, shadowed, spans);
-            }
-            if let Some(end) = end {
-                collect_import_binding_refs_in_expr(&end.0, &end.1, name, shadowed, spans);
-            }
-        }
-        Expr::InterpolatedString(parts) => {
-            for part in parts {
-                if let StringPart::Expr(expr) = part {
-                    collect_import_binding_refs_in_expr(&expr.0, &expr.1, name, shadowed, spans);
-                }
-            }
-        }
-        _ => {}
+        self.spans.push(span.clone());
     }
 }
 
@@ -955,365 +405,129 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
     }
 }
 
-fn collect_refs_in_item(source: &str, item: &Item, name: &str, spans: &mut Vec<Span>) {
-    match item {
-        Item::Function(f) => {
-            collect_refs_in_block(source, &f.body, name, spans);
-        }
-        Item::Actor(a) => {
-            if let Some(init) = &a.init {
-                collect_refs_in_block(source, &init.body, name, spans);
-            }
-            if let Some(term) = &a.terminate {
-                collect_refs_in_block(source, &term.body, name, spans);
-            }
-            for recv in &a.receive_fns {
-                collect_refs_in_block(source, &recv.body, name, spans);
-            }
-            for method in &a.methods {
-                collect_refs_in_block(source, &method.body, name, spans);
-            }
-        }
-        Item::TypeDecl(td) => {
-            for body_item in &td.body {
-                if let TypeBodyItem::Method(m) = body_item {
-                    collect_refs_in_block(source, &m.body, name, spans);
+/// Collect every span where `name` appears as an identifier, field name, or
+/// pattern binding across all item bodies in `parse_result`.
+///
+/// This is the unscoped collection step the public reference walkers feed
+/// into; callers narrow the result to the cursor's binding region with
+/// `find_defining_scope` and `collect_binding_starts_in_parse_result`.
+fn collect_refs_in_parse_result(
+    source: &str,
+    parse_result: &ParseResult,
+    name: &str,
+    spans: &mut Vec<Span>,
+) {
+    let mut visitor = RefsVisitor {
+        source,
+        name,
+        spans,
+    };
+    ast_visit::walk_parse_result(Some(source), parse_result, &mut visitor);
+}
+
+struct RefsVisitor<'a> {
+    source: &'a str,
+    name: &'a str,
+    spans: &'a mut Vec<Span>,
+}
+
+impl RefsVisitor<'_> {
+    fn push_pattern_matches(&mut self, pattern: &Pattern, span: &Span) {
+        match pattern {
+            Pattern::Identifier(ident) => {
+                if ident == self.name {
+                    self.spans.push(span.clone());
                 }
             }
-        }
-        Item::Impl(i) => {
-            for method in &i.methods {
-                collect_refs_in_block(source, &method.body, name, spans);
+            Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+                for (p, s) in patterns {
+                    self.push_pattern_matches(p, s);
+                }
             }
-        }
-        Item::Trait(t) => {
-            for trait_item in &t.items {
-                if let TraitItem::Method(m) = trait_item {
-                    if let Some(body) = &m.body {
-                        collect_refs_in_block(source, body, name, spans);
+            Pattern::Struct { fields, .. } => {
+                for field in fields {
+                    if let Some((p, s)) = &field.pattern {
+                        self.push_pattern_matches(p, s);
                     }
                 }
             }
-        }
-        Item::Const(c) => {
-            collect_refs_in_expr(source, &c.value.0, &c.value.1, name, spans);
-        }
-        Item::Supervisor(s) => {
-            for child in &s.children {
-                for arg in &child.args {
-                    collect_refs_in_expr(source, &arg.0, &arg.1, name, spans);
-                }
+            Pattern::Or(left, right) => {
+                self.push_pattern_matches(&left.0, &left.1);
+                self.push_pattern_matches(&right.0, &right.1);
             }
+            Pattern::Wildcard | Pattern::Literal(_) => {}
         }
-        Item::Machine(m) => {
-            for transition in &m.transitions {
-                if let Some(guard) = &transition.guard {
-                    collect_refs_in_expr(source, &guard.0, &guard.1, name, spans);
-                }
-                collect_refs_in_expr(source, &transition.body.0, &transition.body.1, name, spans);
-            }
-        }
-        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
     }
 }
 
-fn collect_refs_in_block(source: &str, block: &Block, name: &str, spans: &mut Vec<Span>) {
-    for (stmt, _span) in &block.stmts {
-        collect_refs_in_stmt(source, stmt, name, spans);
+impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
+    fn visit_stmt(&mut self, stmt: &'ast Stmt, _span: &'ast Span, _ctx: VisitContext<'ast>) {
+        match stmt {
+            Stmt::Let { pattern, .. } | Stmt::For { pattern, .. } => {
+                self.push_pattern_matches(&pattern.0, &pattern.1);
+            }
+            Stmt::IfLet { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
+                self.push_pattern_matches(&pattern.0, &pattern.1);
+            }
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    self.push_pattern_matches(&arm.pattern.0, &arm.pattern.1);
+                }
+            }
+            _ => {}
+        }
     }
-    if let Some(trailing) = &block.trailing_expr {
-        collect_refs_in_expr(source, &trailing.0, &trailing.1, name, spans);
-    }
-}
 
-fn collect_refs_in_stmt(source: &str, stmt: &Stmt, name: &str, spans: &mut Vec<Span>) {
-    match stmt {
-        Stmt::Let { pattern, value, .. } => {
-            collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
-            if let Some(val) = value {
-                collect_refs_in_expr(source, &val.0, &val.1, name, spans);
+    fn visit_expr(&mut self, expr: &'ast Expr, span: &'ast Span, _ctx: VisitContext<'ast>) {
+        match expr {
+            Expr::FieldAccess { field, .. } if field == self.name => {
+                self.spans
+                    .push(field_access_name_span(self.source, span, field));
             }
-        }
-        Stmt::Var { value, .. } => {
-            if let Some(val) = value {
-                collect_refs_in_expr(source, &val.0, &val.1, name, spans);
-            }
-        }
-        Stmt::Assign { target, value, .. } => {
-            collect_refs_in_expr(source, &target.0, &target.1, name, spans);
-            collect_refs_in_expr(source, &value.0, &value.1, name, spans);
-        }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            collect_refs_in_expr(source, &condition.0, &condition.1, name, spans);
-            collect_refs_in_block(source, then_block, name, spans);
-            if let Some(eb) = else_block {
-                if let Some(if_stmt) = &eb.if_stmt {
-                    collect_refs_in_stmt(source, &if_stmt.0, name, spans);
-                }
-                if let Some(block) = &eb.block {
-                    collect_refs_in_block(source, block, name, spans);
-                }
-            }
-        }
-        Stmt::IfLet {
-            pattern,
-            expr,
-            body,
-            else_body,
-        } => {
-            collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
-            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
-            collect_refs_in_block(source, body, name, spans);
-            if let Some(block) = else_body {
-                collect_refs_in_block(source, block, name, spans);
-            }
-        }
-        Stmt::Match { scrutinee, arms } => {
-            collect_refs_in_expr(source, &scrutinee.0, &scrutinee.1, name, spans);
-            for arm in arms {
-                collect_refs_in_pattern(&arm.pattern.0, &arm.pattern.1, name, spans);
-                if let Some(guard) = &arm.guard {
-                    collect_refs_in_expr(source, &guard.0, &guard.1, name, spans);
-                }
-                collect_refs_in_expr(source, &arm.body.0, &arm.body.1, name, spans);
-            }
-        }
-        Stmt::Loop { body, .. } => {
-            collect_refs_in_block(source, body, name, spans);
-        }
-        Stmt::While {
-            condition, body, ..
-        } => {
-            collect_refs_in_expr(source, &condition.0, &condition.1, name, spans);
-            collect_refs_in_block(source, body, name, spans);
-        }
-        Stmt::WhileLet {
-            pattern,
-            expr,
-            body,
-            ..
-        } => {
-            collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
-            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
-            collect_refs_in_block(source, body, name, spans);
-        }
-        Stmt::For {
-            pattern,
-            iterable,
-            body,
-            ..
-        } => {
-            collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
-            collect_refs_in_expr(source, &iterable.0, &iterable.1, name, spans);
-            collect_refs_in_block(source, body, name, spans);
-        }
-        Stmt::Return(Some(val)) => {
-            collect_refs_in_expr(source, &val.0, &val.1, name, spans);
-        }
-        Stmt::Defer(expr) => {
-            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
-        }
-        Stmt::Expression(expr) => {
-            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
-        }
-        Stmt::Break { value: Some(v), .. } => {
-            collect_refs_in_expr(source, &v.0, &v.1, name, spans);
-        }
-        Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
-    }
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "match arms over all Expr variants is clearest as one function"
-)]
-fn collect_refs_in_expr(source: &str, expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Span>) {
-    match expr {
-        Expr::Identifier(ident) if ident == name => {
-            spans.push(span.clone());
-        }
-        Expr::Binary { left, right, .. } => {
-            collect_refs_in_expr(source, &left.0, &left.1, name, spans);
-            collect_refs_in_expr(source, &right.0, &right.1, name, spans);
-        }
-        Expr::Unary { operand, .. } => {
-            collect_refs_in_expr(source, &operand.0, &operand.1, name, spans);
-        }
-        Expr::Call { function, args, .. } => {
-            collect_refs_in_expr(source, &function.0, &function.1, name, spans);
-            for arg in args {
-                let e = arg.expr();
-                collect_refs_in_expr(source, &e.0, &e.1, name, spans);
-            }
-        }
-        Expr::MethodCall { receiver, args, .. } => {
-            collect_refs_in_expr(source, &receiver.0, &receiver.1, name, spans);
-            for arg in args {
-                let e = arg.expr();
-                collect_refs_in_expr(source, &e.0, &e.1, name, spans);
-            }
-        }
-        Expr::FieldAccess { object, field } => {
-            collect_refs_in_expr(source, &object.0, &object.1, name, spans);
-            if field == name {
-                spans.push(field_access_name_span(source, span, field));
-            }
-        }
-        Expr::Index { object, index } => {
-            collect_refs_in_expr(source, &object.0, &object.1, name, spans);
-            collect_refs_in_expr(source, &index.0, &index.1, name, spans);
-        }
-        Expr::StructInit { fields, .. } => {
-            let mut search_from = span.start;
-            for (field, val) in fields {
-                if field == name {
-                    if let Some(field_span) =
-                        struct_init_field_name_span(source, span, search_from, field, &val.1)
-                    {
-                        spans.push(field_span);
+            Expr::StructInit { fields, .. } => {
+                let mut search_from = span.start;
+                for (field, val) in fields {
+                    if field == self.name {
+                        if let Some(field_span) = struct_init_field_name_span(
+                            self.source,
+                            span,
+                            search_from,
+                            field,
+                            &val.1,
+                        ) {
+                            self.spans.push(field_span);
+                        }
                     }
-                }
-                collect_refs_in_expr(source, &val.0, &val.1, name, spans);
-                search_from = val.1.end;
-            }
-        }
-        Expr::Spawn { target, args } => {
-            collect_refs_in_expr(source, &target.0, &target.1, name, spans);
-            for (_, val) in args {
-                collect_refs_in_expr(source, &val.0, &val.1, name, spans);
-            }
-        }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block) => {
-            collect_refs_in_block(source, block, name, spans);
-        }
-        Expr::Scope { body, .. } => {
-            collect_refs_in_block(source, body, name, spans);
-        }
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            collect_refs_in_expr(source, &condition.0, &condition.1, name, spans);
-            collect_refs_in_expr(source, &then_block.0, &then_block.1, name, spans);
-            if let Some(eb) = else_block {
-                collect_refs_in_expr(source, &eb.0, &eb.1, name, spans);
-            }
-        }
-        Expr::IfLet {
-            pattern,
-            expr,
-            body,
-            else_body,
-        } => {
-            collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
-            collect_refs_in_expr(source, &expr.0, &expr.1, name, spans);
-            collect_refs_in_block(source, body, name, spans);
-            if let Some(block) = else_body {
-                collect_refs_in_block(source, block, name, spans);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            collect_refs_in_expr(source, &scrutinee.0, &scrutinee.1, name, spans);
-            for arm in arms {
-                collect_refs_in_pattern(&arm.pattern.0, &arm.pattern.1, name, spans);
-                if let Some(guard) = &arm.guard {
-                    collect_refs_in_expr(source, &guard.0, &guard.1, name, spans);
-                }
-                collect_refs_in_expr(source, &arm.body.0, &arm.body.1, name, spans);
-            }
-        }
-        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-            collect_refs_in_expr(source, &body.0, &body.1, name, spans);
-        }
-        Expr::ArrayRepeat { value, count } => {
-            collect_refs_in_expr(source, &value.0, &value.1, name, spans);
-            collect_refs_in_expr(source, &count.0, &count.1, name, spans);
-        }
-        Expr::MapLiteral { entries } => {
-            for (k, v) in entries {
-                collect_refs_in_expr(source, &k.0, &k.1, name, spans);
-                collect_refs_in_expr(source, &v.0, &v.1, name, spans);
-            }
-        }
-        Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) => {
-            for elem in elems {
-                collect_refs_in_expr(source, &elem.0, &elem.1, name, spans);
-            }
-        }
-        Expr::Send { target, message } => {
-            collect_refs_in_expr(source, &target.0, &target.1, name, spans);
-            collect_refs_in_expr(source, &message.0, &message.1, name, spans);
-        }
-        Expr::Select { arms, timeout } => {
-            for arm in arms {
-                collect_refs_in_pattern(&arm.binding.0, &arm.binding.1, name, spans);
-                collect_refs_in_expr(source, &arm.source.0, &arm.source.1, name, spans);
-                collect_refs_in_expr(source, &arm.body.0, &arm.body.1, name, spans);
-            }
-            if let Some(to) = timeout {
-                collect_refs_in_expr(source, &to.duration.0, &to.duration.1, name, spans);
-                collect_refs_in_expr(source, &to.body.0, &to.body.1, name, spans);
-            }
-        }
-        Expr::Timeout { expr: e, duration } => {
-            collect_refs_in_expr(source, &e.0, &e.1, name, spans);
-            collect_refs_in_expr(source, &duration.0, &duration.1, name, spans);
-        }
-        Expr::Await(inner)
-        | Expr::PostfixTry(inner)
-        | Expr::Yield(Some(inner))
-        | Expr::Cast { expr: inner, .. } => {
-            collect_refs_in_expr(source, &inner.0, &inner.1, name, spans);
-        }
-        Expr::Range { start, end, .. } => {
-            if let Some(s) = start {
-                collect_refs_in_expr(source, &s.0, &s.1, name, spans);
-            }
-            if let Some(e) = end {
-                collect_refs_in_expr(source, &e.0, &e.1, name, spans);
-            }
-        }
-        Expr::InterpolatedString(parts) => {
-            for part in parts {
-                if let StringPart::Expr(e) = part {
-                    collect_refs_in_expr(source, &e.0, &e.1, name, spans);
+                    search_from = val.1.end;
                 }
             }
+            Expr::IfLet { pattern, .. } => {
+                self.push_pattern_matches(&pattern.0, &pattern.1);
+            }
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    self.push_pattern_matches(&arm.pattern.0, &arm.pattern.1);
+                }
+            }
+            Expr::Select { arms, .. } => {
+                for arm in arms {
+                    self.push_pattern_matches(&arm.binding.0, &arm.binding.1);
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
-}
 
-fn collect_refs_in_pattern(pattern: &Pattern, span: &Span, name: &str, spans: &mut Vec<Span>) {
-    match pattern {
-        Pattern::Identifier(ident) if ident == name => {
-            spans.push(span.clone());
+    fn visit_identifier(
+        &mut self,
+        name: &'ast str,
+        span: &'ast Span,
+        _binding: Option<BindingInfo<'ast>>,
+        _ctx: VisitContext<'ast>,
+    ) {
+        if name == self.name {
+            self.spans.push(span.clone());
         }
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
-            for (p, s) in patterns {
-                collect_refs_in_pattern(p, s, name, spans);
-            }
-        }
-        Pattern::Struct { fields, .. } => {
-            for field in fields {
-                if let Some((p, s)) = &field.pattern {
-                    collect_refs_in_pattern(p, s, name, spans);
-                }
-            }
-        }
-        Pattern::Or(left, right) => {
-            collect_refs_in_pattern(&left.0, &left.1, name, spans);
-            collect_refs_in_pattern(&right.0, &right.1, name, spans);
-        }
-        _ => {}
     }
 }
 

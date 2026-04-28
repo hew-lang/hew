@@ -58,6 +58,12 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Stephen Olesen <slepp@slepp.ca>"]
 
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
 [workspace.lints.rust]
 ambiguous_negative_literals = "warn"
 missing_debug_implementations = "warn"

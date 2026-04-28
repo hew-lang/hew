@@ -37,7 +37,7 @@ otel = ["dep:ureq"]
 # Core dependencies — always linked (collections, print, string, etc.)
 hew-cabi = { path = "../hew-cabi" }
 libc = "0.2"
-tracing = "0.1"
+tracing.workspace = true
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # Threading/networking deps — not available on wasm32
@@ -80,11 +80,11 @@ rustls-pemfile = { version = "2", optional = true }
 # For unit tests
 rand = "0.10"
 tempfile = "3"
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-subscriber.workspace = true
 # For the OTel integration test mock receiver (direct HTTP POST)
 ureq = { version = "3", default-features = false }
 # For profiler server JSON-escape unit tests
-serde_json = "1"
+serde_json.workspace = true
 
 [lints]
 workspace = true

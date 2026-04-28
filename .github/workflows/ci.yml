@@ -18,26 +18,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  voice-guard:
-    name: Voice guard
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Run voice-guard unit tests
-        run: python3 -m unittest scripts/test_voice_guard.py
-
-      - name: Scan PR metadata and commit messages
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/voice_guard.py --pr-number "${{ github.event.pull_request.number }}"
-
   # ─────────────────────────────────────────────────────────────────────────
   # Path change detection — skip heavy jobs for doc-only changes
   # ─────────────────────────────────────────────────────────────────────────

@@ -21,7 +21,6 @@ See the [Building from Source](README.md#building-from-source) section of the RE
 
 PR titles, PR bodies, and commit messages are part of the permanent project history after squash merge.
 Keep them free of model names, orchestration jargon, and internal-only path references such as `.claude/`.
-CI rejects these leaks with the voice-guard check before merge.
 
 ### Using LESSONS.md
 

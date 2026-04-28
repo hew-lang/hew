@@ -72,7 +72,8 @@ fn run_timeout_kills_grandchild_process_tree() {
     );
 
     // Give the OS a brief window to finish reaping processes.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // 50 ms is sufficient on contemporary OSes; 300 ms was conservative overhead.
+    std::thread::sleep(std::time::Duration::from_millis(50));
 
     // Poll for the PID file to exist rather than assuming it is present.
     // Under load during the test run, the Hew program's startup and shell

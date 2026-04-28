@@ -3518,6 +3518,14 @@ mod tests {
     static DRAIN_BUSY_LOOP_STARTED: AtomicBool = AtomicBool::new(false);
     static DRAIN_BUSY_LOOP_RELEASE: AtomicBool = AtomicBool::new(false);
     static DRAIN_TRAP_ON_STOP_STARTED: AtomicBool = AtomicBool::new(false);
+    /// Release flag for `drain_trap_on_stop_dispatch`: the dispatch holds
+    /// in `Running` state until the test sets this, guaranteeing that
+    /// `drain_actors` calls `hew_actor_stop` while the actor is still
+    /// `Running` (not yet `Idle`). Without this gate the 50-ms dispatch
+    /// window can expire before drain calls stop, causing the actor to
+    /// transition `Running → Idle → Stopped` instead of `Running → Crashed`,
+    /// and drain returns `Drained` instead of `Incomplete { crashed }`.
+    static DRAIN_TRAP_ON_STOP_RELEASE: AtomicBool = AtomicBool::new(false);
 
     struct NativeSchedulerGuard;
 
@@ -3600,7 +3608,15 @@ mod tests {
             return;
         }
         DRAIN_TRAP_ON_STOP_STARTED.store(true, Ordering::Release);
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Hold in Running until the test sets the release flag. This prevents
+        // the dispatch from finishing before drain_actors calls hew_actor_stop,
+        // which would let the actor transition Running→Idle→Stopped instead of
+        // Running→Crashed, causing drain to return Drained rather than
+        // Incomplete{crashed}.
+        while !DRAIN_TRAP_ON_STOP_RELEASE.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     fn wait_for_condition(
@@ -5078,6 +5094,7 @@ mod tests {
         let _scheduler = NativeSchedulerGuard::new();
 
         DRAIN_TRAP_ON_STOP_STARTED.store(false, Ordering::Release);
+        DRAIN_TRAP_ON_STOP_RELEASE.store(false, Ordering::Release);
 
         // SAFETY: null state + valid dispatch are valid spawn args.
         let actor =
@@ -5095,10 +5112,30 @@ mod tests {
             "trap-on-stop actor should begin running before drain starts"
         );
 
+        // Spawn a thread that releases the dispatch spin after a delay long
+        // enough for drain_actors to call hew_actor_stop. drain_actors calls
+        // hew_actor_stop synchronously before entering its poll loop, so any
+        // release that fires after drain starts is guaranteed to arrive after
+        // the stop message is queued. A 50 ms delay is ≫ the few microseconds
+        // needed for the synchronous stop call.
+        //
+        // Without this gate the 50-ms dispatch could finish before drain called
+        // stop, letting the actor reach Running→Idle→Stopped instead of
+        // Running→Crashed and causing drain to return Drained.
+        let release_handle = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            DRAIN_TRAP_ON_STOP_RELEASE.store(true, Ordering::Release);
+        });
+
         let outcome = drain_actors(
             &[actor_id],
-            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
         );
+
+        release_handle
+            .join()
+            .expect("release thread should not panic");
+
         assert_eq!(
             outcome,
             DrainOutcome::Incomplete {

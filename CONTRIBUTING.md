@@ -48,13 +48,17 @@ Key boundary checks most contributors encounter:
 
 ## Formatting
 
-All code should pass the project's formatters (`rustfmt`, `clang-format`, `taplo`, `shfmt`, `prettier`). Run `make install-hooks` after cloning. This wires pre-commit formatting/clippy and a pre-push ci-preflight gate.
+All code should pass the project's formatters (`rustfmt`, `clang-format`, `taplo`, `shfmt`, `prettier`). Run `make install-hooks` after cloning. This wires pre-commit formatting/clippy and a pre-push fast gate.
 
 The installer is worktree-safe and targets the shared git common dir, so linked worktrees inherit the same hooks; run it once from the main checkout.
 
-#### Troubleshooting / offline work
+#### Pre-push gate
 
-The ci-preflight gate is mandatory on every push. There is no environment-based exemption: if you are offline you cannot push anyway, and if your local dependencies are missing you cannot verify your change works, so you should not be pushing yet either way. If `make ci-preflight` fails on your branch because `main` itself is red, stop and fix `main` first (revert the breaking PR, open a fix PR, or coordinate with the author) — do not route around the gate on a per-branch basis.
+The pre-push hook runs `cargo fmt --all -- --check` — it is intentionally fast. Its job is to catch unformatted code before it reaches review; it is not a substitute for CI.
+
+For substantive changes, run `make ci-preflight` yourself before opening a PR. CI runs `make ci-preflight` (or its dispatcher) on every PR regardless, so formatting errors, clippy violations, and test failures will be caught there. The pre-push hook just keeps the signal fast and local.
+
+If `cargo fmt --check` fails: run `cargo fmt --all` and re-push. There is no environment-based exemption and no `--no-verify` bypass.
 
 ## Build System
 
@@ -79,7 +83,7 @@ Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` direct
 
 Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`) during inner-loop iteration and `make test` before opening a PR.
 
-`make ci-preflight` dispatches a conservative local preflight from your current diff. Pass `ARGS="--dry-run"` to preview without running.
+`make ci-preflight` dispatches a conservative local preflight from your current diff and is the recommended manual gate before opening a PR or tagging a release. Pass `ARGS="--dry-run"` to preview without running. CI runs this on every PR regardless.
 
 ### AST codegen self-test
 

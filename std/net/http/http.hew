@@ -31,7 +31,8 @@ type Server {}
 ///
 /// Obtained from `server.accept()`. Provides accessors for the request
 /// method, path, headers, and body. Must be responded to with one of
-/// the `respond` methods.
+/// the `respond` methods. Call `free()` before the value goes out of
+/// scope; dropping without `free()` is a resource leak.
 type Request {}
 
 // ── Server methods ────────────────────────────────────────────────────
@@ -168,7 +169,10 @@ impl RequestMethods for Request {
     fn respond_stream(req: Request, status: int, content_type: String) -> Sink<String> {
         unsafe { hew_http_respond_stream(req, status as i32, content_type) } // INTERNAL-ABI: C ABI status is i32
     }
-    /// Release the underlying request resources.
+    /// Canonical release path for `Request`.
+    ///
+    /// Callers MUST invoke `free()` before the value goes out of scope;
+    /// dropping without `free()` is a resource leak.
     fn free(req: Request) {
         unsafe { hew_http_request_free(req) };
     }
@@ -211,13 +215,6 @@ impl RequestMethods for Request {
             let _ = unsafe { hew_stream_last_error() }; // consume the error message
             Err(fs.io_error_from_errno(0))
         }
-    }
-}
-
-impl Drop for Request {
-    /// Release the underlying request resources.
-    fn drop(req: Request) {
-        unsafe { hew_http_request_free(req) };
     }
 }
 

@@ -1,0 +1,23 @@
+// Regression: explicitly freeing a json.Value must remain safe when the
+// handle later goes out of scope. Mirrors http_close_scope_exit.hew for the
+// Value migration off implicit Drop (issue #1310).
+//
+// If implicit Drop were still attached to json.Value, the scope-exit drop
+// would double-free the underlying allocation after the explicit free();
+// with the migration in this PR, free() is the sole release path and scope
+// exit is a no-op for the freed handle.
+
+import std::encoding::json;
+
+fn parse_and_release() {
+    let val = json.parse("{\"x\": 1}");
+    val.free();
+    // scope exit must not free `val` a second time
+}
+
+fn main() {
+    parse_and_release();
+    parse_and_release();
+    parse_and_release();
+    println("ok");
+}

@@ -39,6 +39,7 @@ pub(crate) struct ActorPtr(pub(crate) *mut HewActor);
 // SAFETY: see doc on ActorPtr above.
 unsafe impl Send for ActorPtr {}
 
+// native-only: actor globals use OS thread primitives absent in single-threaded WASM
 static LIVE_ACTORS: PoisonSafe<Option<HashMap<u64, ActorPtr>>> = PoisonSafe::new(None);
 
 /// Register an actor in the live tracking map.

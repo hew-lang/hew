@@ -46,6 +46,7 @@ struct LinkShard {
 /// consistent with the rationale documented in `poison_safe.rs`.
 /// We use usize to store actor pointers to make it Send+Sync safe.
 /// The runtime guarantees actors remain valid while linked.
+// native-only: LINK_TABLE state does not exist in the single-threaded WASM model
 static LINK_TABLE: LazyLock<[PoisonSafeRw<LinkShard>; LINK_SHARDS]> = LazyLock::new(|| {
     std::array::from_fn(|_| {
         PoisonSafeRw::new(LinkShard {

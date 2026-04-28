@@ -557,9 +557,7 @@ pub fn drain_events_json() -> String {
                 (type_id, type_name, hname)
             };
 
-            // WASM and test builds use the bridge metadata registry for handler
-            // names; actor_type_id and actor_type are not yet populated in those
-            // paths (WASM codegen registration is a separate follow-up).
+            // WASM-TODO: WASM codegen registration not yet implemented; actor_type_id/actor_type are zeroed on WASM path
             #[cfg(any(target_arch = "wasm32", test))]
             let (actor_type_id, actor_type_str, handler_name): (
                 u64,

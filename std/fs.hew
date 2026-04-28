@@ -63,6 +63,7 @@ pub enum IoError {
     Other(int);
 }
 
+// WASM-TODO: WASI uses wasi_errno codes; needs a WASI branch or separate mapping
 /// Map an OS errno integer to a structured `IoError` variant.
 ///
 /// The int payload carried in each variant is the raw OS errno so callers

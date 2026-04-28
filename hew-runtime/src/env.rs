@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 ///
 /// Note: External C code calling `setenv`/`getenv`/`unsetenv` bypasses this lock
 /// (POSIX limitation). Hew programs should use the `hew_env_*` functions exclusively.
+// native-only: ENV_LOCK wraps std::env which has no WASI equivalent
 pub(crate) static ENV_LOCK: std::sync::LazyLock<PoisonSafeRw<()>> =
     // `()` is intentional; this lock only synchronizes environ access.
     std::sync::LazyLock::new(|| PoisonSafeRw::new(()));

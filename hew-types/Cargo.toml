@@ -14,5 +14,5 @@ workspace = true
 
 [dependencies]
 hew-parser = { path = "../hew-parser" }
-serde = { version = "1", features = ["derive"] }
+serde.workspace = true
 stacker = "0.1"

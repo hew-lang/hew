@@ -15,7 +15,7 @@ hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
 hew-serialize = { path = "../hew-serialize" }
 hew-types = { path = "../hew-types" }
-serde = { version = "1", features = ["derive"] }
+serde.workspace = true
 toml = "1"
 
 [dev-dependencies]

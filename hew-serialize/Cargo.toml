@@ -18,8 +18,8 @@ hew-types = { path = "../hew-types" }
 hew-wirecodec = { path = "../hew-wirecodec" }
 stacker = "0.1"
 rmp-serde = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde.workspace = true
+serde_json.workspace = true
 
 [features]
 # Keep the legacy hand-written WireDecl msgpack path compiled only when

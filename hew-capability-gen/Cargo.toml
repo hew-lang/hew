@@ -13,5 +13,5 @@ readme = "README.md"
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde.workspace = true
 toml = "1"

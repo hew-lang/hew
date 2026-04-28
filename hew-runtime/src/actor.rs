@@ -481,21 +481,45 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
     0
 }
 
-/// Run the `hew_actor_free` pre-untrack cleanup ordering for a drained actor.
+/// Run the canonical pre-untrack cleanup ordering for a quiescent actor.
+///
+/// Cancels periodic timers and (on native targets) removes link/monitor
+/// entries plus named-node bindings. Used by all four teardown paths
+/// (`hew_actor_free`, `drain_actors`, `cleanup_all_actors`, and the WASM
+/// `actor_free_wasm_impl`) so that the ordering invariant is identical
+/// regardless of how an actor is being torn down.
+///
+/// On `wasm32` the link/monitor/named-node modules are not compiled in,
+/// so this collapses to a timer cancellation. The native and WASM call
+/// sites share the same surface, which keeps callers honest about
+/// ordering when the WASM build eventually grows the missing primitives.
 ///
 /// # Safety
 ///
-/// `actor` must be valid, quiescent, and still tracked in `LIVE_ACTORS`.
-#[cfg(not(target_arch = "wasm32"))]
+/// `actor` must be valid and quiescent. Callers that run while the
+/// scheduler is still live must invoke this *before* untracking the actor
+/// from `LIVE_ACTORS` so that any in-flight timer callback or signal
+/// propagation observes the actor as live and bails out cooperatively.
+/// Callers that run after the runtime has been shut down (such as
+/// `cleanup_all_actors`) may call this whether or not the actor is still
+/// tracked, because no concurrent dispatch is possible.
 unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
-    // SAFETY: caller guarantees `actor` is valid and quiescent.
-    let a = unsafe { &*actor };
-    crate::timer_periodic::cancel_all_timers_for_actor(actor);
-    let actor_id = a.id;
-    crate::link::remove_all_links_for_actor(actor_id, actor);
-    crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
-    // SAFETY: actor is still tracked here, so named-node cleanup can resolve it.
-    unsafe { crate::hew_node::unregister_actor_names(actor_id) };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // SAFETY: caller guarantees `actor` is valid and quiescent.
+        let actor_id = unsafe { (*actor).id };
+        crate::timer_periodic::cancel_all_timers_for_actor(actor);
+        crate::link::remove_all_links_for_actor(actor_id, actor);
+        crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
+        // SAFETY: caller guarantees `actor` is valid; `unregister_actor_names`
+        // does not require LIVE_ACTORS membership, only the actor id.
+        unsafe { crate::hew_node::unregister_actor_names(actor_id) };
+    }
+    #[cfg(target_arch = "wasm32")]
+    // SAFETY: caller guarantees `actor` is valid and not being dispatched.
+    unsafe {
+        crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor);
+    }
 }
 
 /// Finish the `hew_actor_free` cleanup path after the actor has been untracked.
@@ -530,41 +554,35 @@ pub(crate) unsafe fn cleanup_all_actors() {
         if actor.is_null() {
             continue;
         }
-        // Run terminate for actors that never reached a terminal state
-        // (still IDLE at process exit). Skip crashed actors — their state
-        // may be corrupted. The terminate_called flag inside
-        // call_terminate_fn prevents double-execution for actors that
-        // already ran their terminate at a state transition.
         // SAFETY: actor is valid (from LIVE_ACTORS); scheduler is shut down.
         let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
-        if state != HewActorState::Crashed as i32 {
-            // SAFETY: No concurrent dispatch — scheduler is shut down.
-            unsafe { call_terminate_fn(actor) };
-        }
 
-        // Clean up periodic timers, links, and monitors before freeing.
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            crate::timer_periodic::cancel_all_timers_for_actor(actor);
-            // SAFETY: actor is valid (from live tracking, not yet freed).
-            let actor_id = unsafe { (*actor).id };
-            crate::link::remove_all_links_for_actor(actor_id, actor);
-            crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
-        }
+        // Cancel periodic timers, drop link/monitor entries, and unregister
+        // named-node bindings BEFORE running terminate or freeing the
+        // allocation. This matches the canonical ordering used by
+        // `hew_actor_free` and `drain_actors`; previously this path inverted
+        // the order and skipped the named-node unregister entirely, which
+        // leaked global registry entries on shutdown.
+        // SAFETY: actor is quiescent (scheduler is shut down) and the helper
+        // tolerates already-untracked actors when no concurrent dispatch is
+        // possible.
+        unsafe { prepare_quiescent_actor_for_cleanup(actor) };
 
         // Remove any SLEEP_QUEUE entry for this actor before freeing it.
-        // This prevents a use-after-free if hew_wasm_timer_tick is called after
-        // cleanup but before the queue entry is drained naturally.
+        // This prevents a use-after-free if hew_wasm_timer_tick is called
+        // after cleanup but before the queue entry is drained naturally.
         // SAFETY: scheduler is shut down; no concurrent SLEEP_QUEUE access.
         #[cfg(target_arch = "wasm32")]
         unsafe {
-            crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor);
             crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor);
         }
 
-        // SAFETY: Caller guarantees no concurrent dispatch.
-        // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
-        unsafe { free_actor_resources(actor) };
+        // Run terminate for actors that never reached a terminal state
+        // (still IDLE at process exit). Skip crashed actors — their state
+        // may be corrupted. `finalize_quiescent_actor_cleanup` performs the
+        // terminate-or-skip dance plus the resource free.
+        // SAFETY: actor is quiescent and no longer tracked.
+        unsafe { finalize_quiescent_actor_cleanup(actor, state) };
     }
 }
 
@@ -3463,8 +3481,12 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
         return -2;
     }
 
+    // Cancel periodic timers, drop link/monitor entries, and unregister
+    // named-node bindings BEFORE untracking. Previously this path called
+    // only `cancel_all_timers_for_actor`, leaving dangling link/monitor
+    // entries on WASM so DOWN signals never fired against a freed actor.
     // SAFETY: the wait loop above ensures the actor is quiescent and not dispatching.
-    unsafe { crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor) };
+    unsafe { prepare_quiescent_actor_for_cleanup(actor) };
 
     if !live_actors::untrack_actor(actor) {
         crate::set_last_error("hew_actor_free: actor already freed or not tracked");
@@ -5094,6 +5116,95 @@ mod tests {
         // SAFETY: crashed actors are quiescent and can be explicitly freed.
         let free_rc = unsafe { hew_actor_free(actor) };
         assert_eq!(free_rc, 0);
+    }
+
+    #[test]
+    fn drain_actors_with_pending_timer_cancels_timer() {
+        // Pin the canonical ordering: when an actor with a registered
+        // periodic timer is drained, the timer must be cancelled before
+        // the actor is freed. This guards against the inverted ordering
+        // that previously lived in `cleanup_all_actors`.
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+        let _ticker_guard = crate::timer_periodic::TICKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: the spawned actor remains live until the assertions below finish.
+        let actor_id = unsafe { (*actor).id };
+
+        // SAFETY: actor is a valid live actor pointer returned by spawn.
+        let timer = unsafe { crate::timer_periodic::hew_actor_schedule_periodic(actor, 7, 100) };
+        assert!(
+            !timer.is_null(),
+            "periodic timer should register successfully"
+        );
+        assert_eq!(crate::timer_periodic::timer_count_for_actor(actor), 1);
+
+        let outcome = drain_actors(
+            &[actor_id],
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(outcome, DrainOutcome::Drained);
+        assert!(
+            !is_actor_live(actor),
+            "drained actor should be removed from live tracking"
+        );
+        assert_eq!(
+            crate::timer_periodic::timer_count_for_actor(actor),
+            0,
+            "drain must cancel pending periodic timers"
+        );
+    }
+
+    #[test]
+    fn drain_actors_with_active_link_removes_link() {
+        // Pin the canonical ordering: draining an actor with active link
+        // entries must drop both sides of the link before the actor is
+        // freed. This guards against teardown paths that skipped link
+        // cleanup and left dangling references.
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor_one = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor_two = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor_one.is_null());
+        assert!(!actor_two.is_null());
+
+        // SAFETY: spawned actors remain live until the assertions below finish.
+        let actor_one_id = unsafe { (*actor_one).id };
+        // SAFETY: spawned actors remain live until the assertions below finish.
+        let actor_two_id = unsafe { (*actor_two).id };
+
+        // SAFETY: both actor pointers were returned by spawn and are still live.
+        unsafe {
+            crate::link::hew_actor_link(actor_one, actor_two);
+        }
+        assert!(crate::link::has_links_for_actor(actor_one_id, actor_one));
+        assert!(crate::link::has_links_for_actor(actor_two_id, actor_two));
+
+        // Drain only `actor_one`. The peer side of the link must be cleared
+        // even though `actor_two` is being drained in the same batch.
+        let outcome = drain_actors(
+            &[actor_one_id, actor_two_id],
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(outcome, DrainOutcome::Drained);
+        assert!(!is_actor_live(actor_one));
+        assert!(!is_actor_live(actor_two));
+        assert!(
+            !crate::link::has_links_for_actor(actor_one_id, actor_one),
+            "drain must remove links owned by drained actors"
+        );
+        assert!(
+            !crate::link::has_links_for_actor(actor_two_id, actor_two),
+            "drain must remove links owned by drained actors"
+        );
     }
 
     #[test]

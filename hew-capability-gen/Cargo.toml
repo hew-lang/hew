@@ -14,4 +14,4 @@ workspace = true
 
 [dependencies]
 serde.workspace = true
-toml = "1"
+toml.workspace = true

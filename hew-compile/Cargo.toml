@@ -16,10 +16,10 @@ hew-parser = { path = "../hew-parser" }
 hew-serialize = { path = "../hew-serialize" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
-toml = "1"
+toml.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -63,6 +63,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
+toml = "1"
+libc = "0.2"
+tempfile = "3"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+base64 = "0.22"
+rmp-serde = "1"
+stacker = "0.1"
 
 [workspace.lints.rust]
 ambiguous_negative_literals = "warn"

@@ -16,7 +16,7 @@ workspace = true
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
-rmp-serde = "1"
+rmp-serde.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

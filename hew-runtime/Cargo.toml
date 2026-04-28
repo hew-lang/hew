@@ -36,7 +36,7 @@ otel = ["dep:ureq"]
 [dependencies]
 # Core dependencies — always linked (collections, print, string, etc.)
 hew-cabi = { path = "../hew-cabi" }
-libc = "0.2"
+libc.workspace = true
 tracing.workspace = true
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
@@ -79,7 +79,7 @@ rustls-pemfile = { version = "2", optional = true }
 [dev-dependencies]
 # For unit tests
 rand = "0.10"
-tempfile = "3"
+tempfile.workspace = true
 tracing-subscriber.workspace = true
 # For the OTel integration test mock receiver (direct HTTP POST)
 ureq = { version = "3", default-features = false }

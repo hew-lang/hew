@@ -1464,7 +1464,6 @@ mod tests {
     use super::*;
     use std::ffi::{c_void, CStr, CString};
     use std::thread;
-    use std::time::Duration;
 
     use hew_cabi::vec::{hew_vec_free, hwvec_to_u8, u8_to_hwvec};
 
@@ -1928,8 +1927,11 @@ mod tests {
             started.load(Ordering::Acquire),
             "waiter thread did not start"
         );
+        // Drop the guard to let the waiter proceed into condvar.wait().
+        // No explicit sleep is needed: poison_event_queue internally acquires
+        // queue.lock(), which blocks until the waiter has released it via
+        // condvar.wait() — that lock acquisition is the deterministic signal.
         drop(queue_guard);
-        thread::sleep(Duration::from_millis(50));
         assert_eq!(
             {
                 poison_event_queue(&events, Some(EVENT_CONNECTED));

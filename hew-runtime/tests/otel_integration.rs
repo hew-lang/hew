@@ -22,7 +22,7 @@ use std::time::Duration;
 use hew_runtime::otel::{build_otlp_json, flush_stale_begins, reconstruct_spans};
 use hew_runtime::tracing::{
     drain_events, hew_trace_begin, hew_trace_enable, hew_trace_end, hew_trace_lifecycle,
-    hew_trace_reset, SPAN_SPAWN,
+    hew_trace_reset, trace_now_ns, SPAN_SPAWN,
 };
 
 // ── Mock OTLP receiver ────────────────────────────────────────────────────────
@@ -214,26 +214,47 @@ fn otel_exporter_posts_valid_otlp_json() {
     hew_trace_reset();
 }
 
-/// Verify that span reconstruction correctly pairs begin/end events.
+/// Verify that span reconstruction correctly pairs begin/end events and
+/// assigns timestamps from the originating trace events.
+///
+/// The old version slept 1 ms so that `end_ns > start_ns` would hold, but
+/// that assertion is tautological on any real CPU and does not actually
+/// exercise reconstruction logic. This version bounds `start_ns`/`end_ns`
+/// against samples taken before and after the recording, which would fail
+/// if reconstruction swapped the events or invented its own timestamps.
 #[test]
-fn span_reconstruction_timing_invariants() {
+fn span_reconstruction_pairs_begin_and_end_events() {
     let _guard = TEST_LOCK.lock().unwrap();
     hew_trace_reset();
     hew_trace_enable(1);
 
-    // Record with a measurable delay to ensure start < end.
+    let t_before = trace_now_ns();
     hew_trace_begin(10, 1);
-    thread::sleep(Duration::from_millis(1));
     hew_trace_end(10, 1);
+    let t_after = trace_now_ns();
 
     let events = drain_events(16);
     let mut pending = std::collections::HashMap::new();
     let spans = reconstruct_spans(events, &mut pending);
-    assert_eq!(spans.len(), 1);
+    assert_eq!(spans.len(), 1, "expected exactly one reconstructed span");
     let s = &spans[0];
     assert!(
-        s.end_ns > s.start_ns,
-        "end timestamp must be after start timestamp"
+        s.start_ns >= t_before,
+        "start_ns ({}) must be >= sample taken before begin ({})",
+        s.start_ns,
+        t_before
+    );
+    assert!(
+        s.end_ns <= t_after,
+        "end_ns ({}) must be <= sample taken after end ({})",
+        s.end_ns,
+        t_after
+    );
+    assert!(
+        s.start_ns <= s.end_ns,
+        "start_ns ({}) must not exceed end_ns ({})",
+        s.start_ns,
+        s.end_ns
     );
 
     hew_trace_reset();

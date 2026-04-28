@@ -112,6 +112,32 @@ pub fn get_parse_error() -> Option<String> {
     }
 }
 
+// ── Test helpers (public so integration tests in other crates can use them) ──
+
+/// Write a parse error directly for a specific actor ID.
+///
+/// Intended for integration tests that cannot inject actor context via the
+/// scheduler.  Callers should clean up with [`clear_parse_error_for_actor_id`]
+/// to avoid polluting other tests.
+pub fn set_parse_error_for_actor_id(actor_id: u64, msg: impl Into<String>) {
+    actor_map_set(actor_id, msg.into());
+}
+
+/// Read the parse error for a specific actor ID.
+///
+/// Intended for integration tests.
+#[must_use]
+pub fn get_parse_error_for_actor_id(actor_id: u64) -> Option<String> {
+    actor_map_get(actor_id)
+}
+
+/// Clear the parse error for a specific actor ID.
+///
+/// Intended for integration tests.
+pub fn clear_parse_error_for_actor_id(actor_id: u64) {
+    actor_map_clear(actor_id);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

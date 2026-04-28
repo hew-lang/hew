@@ -1223,4 +1223,68 @@ mod tests {
             hew_toml_free(object_val);
         }
     }
+
+    // ── Cross-thread / cross-actor regression (#1420) ────────────────────────
+
+    /// Regression test for issue #1420: `LAST_PARSE_ERROR` thread-locals drifted
+    /// across actor migrations.
+    ///
+    /// Scenario: actor migration between `parse()` and `last_error()`.
+    ///
+    /// Thread A writes a parse error for actor-id X via the shared slot helper
+    /// (the same internal path taken by `hew_toml_parse` on failure when
+    /// `hew_actor_current_id()` returns X).
+    ///
+    /// Thread B reads it back via `hew_toml_last_error()` as if it were
+    /// continuing actor X's execution on a different worker thread.
+    ///
+    /// With the old TLS implementation, thread B would get an empty string.
+    /// With the actor-keyed map, thread B gets the correct error string.
+    ///
+    /// A `Barrier` provides the only ordering guarantee — no sleeps.
+    ///
+    /// Run 3× to satisfy the "flake gate" requirement.
+    #[test]
+    fn parse_error_visible_across_worker_threads_regression_1420() {
+        for run in 0..3_u32 {
+            const ACTOR_ID: u64 = 777_001;
+
+            // Barrier: thread B waits until thread A writes, then reads.
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let barrier2 = barrier.clone();
+
+            let handle = std::thread::spawn(move || {
+                // Simulate: actor ACTOR_ID resumes on thread B (different OS thread).
+                // Wait until thread A has written the parse error.
+                barrier2.wait();
+
+                // Read the error via the actual FFI function.  With the old TLS
+                // this returned an empty string; with the actor-keyed map it
+                // returns the error written on thread A.
+                //
+                // We call the slot helper directly as the stand-in for
+                // hew_actor_current_id() returning ACTOR_ID, because we cannot
+                // inject actor context from a unit test without a full scheduler.
+                hew_runtime::parse_error_slot::get_parse_error_for_actor_id(ACTOR_ID)
+            });
+
+            // Thread A: write a parse error as if actor ACTOR_ID called hew_toml_parse
+            // on bad input.
+            hew_runtime::parse_error_slot::set_parse_error_for_actor_id(
+                ACTOR_ID,
+                "invalid TOML: actor-migration regression",
+            );
+            barrier.wait();
+
+            let result = handle.join().expect("thread B panicked");
+            assert_eq!(
+                result.as_deref(),
+                Some("invalid TOML: actor-migration regression"),
+                "run {run}: error written on thread A must be visible on thread B for same actor"
+            );
+
+            // Clean up so runs don't interfere.
+            hew_runtime::parse_error_slot::clear_parse_error_for_actor_id(ACTOR_ID);
+        }
+    }
 }

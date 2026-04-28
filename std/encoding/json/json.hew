@@ -12,6 +12,8 @@
 //!     let val = json.parse("{\"name\": \"Hew\", \"version\": 1}");
 //!     let name = val.get_field("name");
 //!     println(name.get_string());
+//!     name.free();
+//!     val.free();
 //! }
 //! ```
 

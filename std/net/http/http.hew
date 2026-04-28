@@ -14,6 +14,7 @@
 //!     let server = http.listen(":8080");
 //!     let req = server.accept();
 //!     req.respond_text(200, "Hello from Hew!");
+//!     req.free();
 //!     server.close();
 //! }
 //! ```

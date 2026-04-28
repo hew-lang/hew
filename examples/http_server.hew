@@ -38,6 +38,7 @@ actor Handler {
                 }
             }
         }
+        req.free();
     }
 }
 

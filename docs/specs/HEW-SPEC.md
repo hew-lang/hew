@@ -2094,7 +2094,7 @@ These provide type-safe method access:
 | Type             | Created by                                 | Methods/Properties                                                                                                                              |
 | ---------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `http.Server`    | `http.listen(addr)`                        | `.accept()` → `http.Request`, `.close()`                                                                                                        |
-| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)` |
+| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.free()` |
 | `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `.close()`                                                                                                      |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()`, `.write(data)`, `.close()`                                                                                                           |
 | `regex.Pattern`  | `re"pattern"` or `regex.new(pattern)`      | `.is_match(text)`, `.find(text)`, `.replace(text, replacement)`, `.free()`                                                                      |
@@ -2102,7 +2102,7 @@ These provide type-safe method access:
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and returned from functions.
-`http.Server` and `regex.Pattern` must be released explicitly with `close()` / `free()` before they go out of scope.
+`http.Server`, `http.Request`, `regex.Pattern`, and `json.Value` must be released explicitly with `close()` / `free()` before they go out of scope.
 
 #### 3.10.8 Regular Expressions
 

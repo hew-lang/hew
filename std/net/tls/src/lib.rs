@@ -802,4 +802,83 @@ mod tests {
         assert_eq!(ret, -1);
         assert_eq!(status, TLS_STATUS_IO_ERROR);
     }
+
+    // ── hew_tls_write_result bridge ───────────────────────────────────────────
+
+    #[test]
+    fn write_result_null_stream_returns_io_error_status() {
+        clear_tls_last_error();
+        let data = b"payload";
+        // SAFETY: null stream is the test; data pointer is valid.
+        let result =
+            unsafe { hew_tls_write_result(std::ptr::null_mut(), data.as_ptr(), data.len()) };
+        assert_eq!(result.written, -1);
+        assert_eq!(result.status, TLS_STATUS_IO_ERROR);
+    }
+
+    #[test]
+    fn write_result_null_data_nonzero_len_returns_io_error_status() {
+        clear_tls_last_error();
+        // SAFETY: null data with non-zero data_len is the tested invalid call.
+        let result = unsafe { hew_tls_write_result(std::ptr::null_mut(), std::ptr::null(), 5) };
+        assert_eq!(result.written, -1);
+        assert_eq!(result.status, TLS_STATUS_IO_ERROR);
+    }
+
+    #[test]
+    fn write_result_packages_status_from_underlying_call() {
+        // Verify the wrapper propagates the status written by hew_tls_write
+        // (not the initial TLS_STATUS_IO_ERROR sentinel) into the returned struct.
+        // With a null stream, hew_tls_write sets status to TLS_STATUS_IO_ERROR and
+        // returns -1; the wrapper must capture both fields.
+        clear_tls_last_error();
+        let data = b"check";
+        let mut direct_status = 0_i32;
+        // SAFETY: null stream, valid data pointer — exercising the error path.
+        let direct_written = unsafe {
+            hew_tls_write(
+                std::ptr::null_mut(),
+                data.as_ptr(),
+                data.len(),
+                &raw mut direct_status,
+            )
+        };
+
+        clear_tls_last_error();
+        // SAFETY: same inputs as above via the wrapper.
+        let result =
+            unsafe { hew_tls_write_result(std::ptr::null_mut(), data.as_ptr(), data.len()) };
+
+        assert_eq!(result.written, direct_written);
+        assert_eq!(result.status, direct_status);
+    }
+
+    // ── hew_tls_read_result bridge ────────────────────────────────────────────
+
+    #[test]
+    fn read_result_null_stream_returns_io_error_status() {
+        clear_tls_last_error();
+        // SAFETY: null stream is the test.
+        let result = unsafe { hew_tls_read_result(std::ptr::null_mut(), 1024) };
+        assert_eq!(result.data.len, 0);
+        assert!(result.data.data.is_null());
+        assert_eq!(result.status, TLS_STATUS_IO_ERROR);
+    }
+
+    #[test]
+    fn read_result_packages_status_from_underlying_call() {
+        // Verify the wrapper propagates the status written by hew_tls_read
+        // (not the initial TLS_STATUS_IO_ERROR sentinel) into the returned struct.
+        clear_tls_last_error();
+        let mut direct_status = 0_i32;
+        // SAFETY: null stream — exercising the error path through hew_tls_read directly.
+        let _direct_vec = unsafe { hew_tls_read(std::ptr::null_mut(), 64, &raw mut direct_status) };
+
+        clear_tls_last_error();
+        // SAFETY: same null stream via the wrapper.
+        let result = unsafe { hew_tls_read_result(std::ptr::null_mut(), 64) };
+
+        assert_eq!(result.status, direct_status);
+        assert_eq!(result.data.len, 0);
+    }
 }

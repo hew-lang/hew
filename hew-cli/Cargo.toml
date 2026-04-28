@@ -20,18 +20,18 @@ hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 hew-serialize = { path = "../hew-serialize" }
-clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
+clap.workspace = true
+clap_complete.workspace = true
 pulldown-cmark = "0.13"
 rustyline = "17"
-tempfile = "3"
-toml = "1"
+tempfile.workspace = true
+toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 notify = "8"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [dev-dependencies]
 fd-lock = "4"

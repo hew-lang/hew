@@ -11,7 +11,7 @@ readme = "README.md"
 repository = "https://github.com/hew-lang/hew"
 
 [dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [lints]
 workspace = true

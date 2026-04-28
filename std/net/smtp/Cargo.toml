@@ -20,7 +20,7 @@ lettre = { version = "0.11", default-features = false, features = [
   "smtp-transport",
   "rustls-tls",
 ] }
-libc = "0.2"
+libc.workspace = true
 
 [lints]
 workspace = true

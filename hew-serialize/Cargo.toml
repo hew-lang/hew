@@ -16,8 +16,8 @@ workspace = true
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 hew-wirecodec = { path = "../hew-wirecodec" }
-stacker = "0.1"
-rmp-serde = "1"
+stacker.workspace = true
+rmp-serde.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

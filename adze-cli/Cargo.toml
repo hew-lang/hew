@@ -14,22 +14,22 @@ name = "adze"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
+clap.workspace = true
+clap_complete.workspace = true
 semver = "1"
-toml = "1"
+toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
-base64 = "0.22"
+base64.workspace = true
 tar = "0.4"
 zstd = "0.13"
 ureq = { version = "3", features = ["json"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 tiny_http = "0.12"
 serde_json.workspace = true
 

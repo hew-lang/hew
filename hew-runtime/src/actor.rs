@@ -1766,7 +1766,6 @@ pub unsafe extern "C" fn hew_actor_drain_outcome_free(out: *mut DrainOutcomeRepr
 ///
 /// - `ids_ptr` must point to `ids_len` actor IDs when `ids_len > 0`.
 /// - `out` must be a valid mutable pointer to writable [`DrainOutcomeRepr`] storage.
-// JIT-CLASSIFY-TODO: stable — rebase once #1229 lands
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_drain_set(
     ids_ptr: *const ActorId,

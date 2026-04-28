@@ -297,8 +297,8 @@ pub struct TraceEvent {
     pub timestamp_ns: u64,
     /// Fully-qualified handler name (`"ActorType::handler_name"`), or `None`
     /// when the runtime's metadata registry has not been populated for this
-    /// `(actor_type, msg_type)` pair.  Populated on native builds once
-    /// `hew_register_handler_name` codegen emission lands (see #1259).
+    /// `(actor_type, msg_type)` pair.  Populated on native builds via
+    /// codegen-emitted `hew_register_handler_name` calls at actor-type init time.
     #[serde(default)]
     pub handler_name: Option<String>,
 }

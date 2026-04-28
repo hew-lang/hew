@@ -536,4 +536,105 @@ mod tests {
         // SAFETY: expr was returned by hew_cron_parse.
         unsafe { hew_cron_free(expr) };
     }
+
+    // ── hew_cron_next_hew bridge ──────────────────────────────────────────────
+
+    #[test]
+    fn cron_next_hew_success_returns_timestamp_greater_than_input() {
+        // Every minute — guaranteed to have a next occurrence.
+        let expr_str = CString::new("0 * * * * * *").unwrap();
+        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
+        assert!(!expr.is_null());
+
+        let after = 1_704_067_200_i64; // 2024-01-01 00:00:00 UTC
+                                       // SAFETY: expr is a valid pointer returned by hew_cron_parse.
+        let result = unsafe { hew_cron_next_hew(expr, after) };
+
+        assert_eq!(result.status, HEW_CRON_STATUS_SUCCESS);
+        assert!(
+            result.timestamp > after,
+            "timestamp ({}) must be after the input ({})",
+            result.timestamp,
+            after
+        );
+        // Every-minute schedule: next occurrence is exactly 60 s later.
+        assert_eq!(result.timestamp, after + 60);
+
+        // SAFETY: expr was returned by hew_cron_parse.
+        unsafe { hew_cron_free(expr) };
+    }
+
+    #[test]
+    fn cron_next_hew_success_timestamp_matches_hew_cron_next_out_param() {
+        // The wrapper must report the same timestamp that hew_cron_next writes
+        // into its out-parameter — verifying the packaging step is correct.
+        let expr_str = CString::new("0 * * * * * *").unwrap();
+        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
+        assert!(!expr.is_null());
+
+        let after = 1_704_067_200_i64;
+        // SAFETY: expr and next are both valid for this call.
+        let (direct_status, direct_ts) = unsafe { next_status_and_value(expr, after) };
+
+        // SAFETY: expr is a valid pointer returned by hew_cron_parse.
+        let result = unsafe { hew_cron_next_hew(expr, after) };
+
+        assert_eq!(result.status, direct_status);
+        assert_eq!(result.timestamp, direct_ts);
+
+        // SAFETY: expr was returned by hew_cron_parse.
+        unsafe { hew_cron_free(expr) };
+    }
+
+    #[test]
+    fn cron_next_hew_null_expr_returns_invalid_input() {
+        // Null expr must propagate as INVALID_INPUT with zero timestamp.
+        clear_cron_last_error();
+        // SAFETY: null expr is the tested invalid input.
+        let result = unsafe { hew_cron_next_hew(std::ptr::null(), 1_704_067_200) };
+
+        assert_eq!(result.status, HEW_CRON_STATUS_INVALID_INPUT);
+        // timestamp field is the zero-initialised sentinel; status encodes the error.
+        assert_eq!(result.timestamp, 0);
+    }
+
+    #[test]
+    fn cron_next_hew_no_next_occurrence_returns_correct_status() {
+        // Fixed-year expression in the past has no future occurrence.
+        let expr_str = CString::new("0 0 0 1 1 * 2024").unwrap();
+        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
+        assert!(!expr.is_null());
+
+        // 2026-01-01 00:00:01 UTC — well past the only occurrence in 2024.
+        let after = 1_735_689_601_i64;
+        // SAFETY: expr is a valid pointer returned by hew_cron_parse.
+        let result = unsafe { hew_cron_next_hew(expr, after) };
+
+        assert_eq!(result.status, HEW_CRON_STATUS_NO_NEXT_OCCURRENCE);
+        // timestamp stays at the zero sentinel when no occurrence is found.
+        assert_eq!(result.timestamp, 0);
+
+        // SAFETY: expr was returned by hew_cron_parse.
+        unsafe { hew_cron_free(expr) };
+    }
+
+    #[test]
+    fn cron_next_hew_invalid_epoch_returns_correct_status() {
+        let expr_str = CString::new("0 * * * * * *").unwrap();
+        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
+        assert!(!expr.is_null());
+
+        // SAFETY: expr is a valid pointer returned by hew_cron_parse.
+        let result = unsafe { hew_cron_next_hew(expr, i64::MIN) };
+
+        assert_eq!(result.status, HEW_CRON_STATUS_INVALID_EPOCH);
+        assert_eq!(result.timestamp, 0);
+
+        // SAFETY: expr was returned by hew_cron_parse.
+        unsafe { hew_cron_free(expr) };
+    }
 }

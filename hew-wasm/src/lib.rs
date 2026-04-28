@@ -22,9 +22,8 @@
 //!   may be absent): `"null"` — the JSON null literal as a string.
 //! - **Errors**: a JavaScript error value (see each export's `# Errors` doc).
 //!
-//! Exports that always produce a result (e.g. `analyze`, `complete`) never
-//! return `"null"` or `"[]"` for empty — they always return a valid JSON
-//! object or array.
+//! Exports that always produce a result (e.g. `analyze`, `complete`) always
+//! return a valid JSON object or array, never the empty representations above.
 
 use std::fmt;
 
@@ -724,7 +723,7 @@ mod tests {
         let source = "fn main() { let x = 42; }";
         let result = ok(inlay_hints(source));
         // May or may not produce hints depending on type checker, but should not panic.
-        let _: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
+        let _: serde_json::Value = serde_json::from_str(&result).unwrap();
     }
 
     #[test]
@@ -739,7 +738,7 @@ mod tests {
     fn prepare_rename_no_panic() {
         let source = "fn foo() {} fn main() { foo(); }";
         let result = ok(prepare_rename(source, 3)); // on 'foo' definition
-                                                    // Should return a span or empty string.
+                                                    // Should return a span or null.
         let _ = result;
     }
 
@@ -1415,6 +1414,13 @@ mod tests {
                                             // Either null (type output absent) or a non-empty JSON object.
                                             // Crucially it must not be an empty string.
         assert_ne!(result, "", "hover must never return an empty string");
+        // If type output is present, must be a JSON object, not null.
+        if result != "null" {
+            assert!(
+                result.starts_with('{'),
+                "non-null hover result must be a JSON object"
+            );
+        }
     }
 
     /// `goto_definition` at whitespace has no definition; must return the JSON null literal.

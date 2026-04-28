@@ -14,16 +14,19 @@
 //!
 //! ## Empty-result encoding convention
 //!
-//! All exports use the following canonical encodings when there is no result:
+//! All exports use the following canonical encodings:
 //!
-//! - **Collections** (exports returning an array of items): `"[]"` — callers
-//!   can always parse and iterate without special-casing.
+//! - **Collections** (exports returning an array of items) always return a JSON
+//!   array, including `"[]"` when there are no items. Callers can always parse
+//!   and iterate without special-casing.
 //! - **Optional scalar / single-object** (exports returning a single value that
-//!   may be absent): `"null"` — the JSON null literal as a string.
+//!   may be absent) return `"null"` — the JSON null literal as a string — when
+//!   there is no value.
 //! - **Errors**: a JavaScript error value (see each export's `# Errors` doc).
 //!
-//! Exports that always produce a result (e.g. `analyze`, `complete`) always
-//! return a valid JSON object or array, never the empty representations above.
+//! Exports never return an empty string `""` to indicate "no result"; that
+//! ambiguous encoding has been replaced with `"null"` / `"[]"` per the
+//! convention above.
 
 use std::fmt;
 

@@ -151,6 +151,86 @@ impl ResponseThreadTracker {
         }
     }
 
+    /// Spawn a worker that reads the request body and either returns the
+    /// finished `(body, request)` pair or sends an error response itself.
+    ///
+    /// WHY: `tiny_http::Request::as_reader()` returns a `&mut dyn Read` whose
+    /// underlying stream has no read timeout (`tiny_http` never calls
+    /// `set_read_timeout` on its accepted sockets). A peer that completes the
+    /// headers but sends zero body bytes parks the inner `read()` call
+    /// indefinitely — there is no `WouldBlock` for an in-trait poll loop to
+    /// react to. Moving the read onto a worker thread lets the calling thread
+    /// bound the wait via a channel `recv_timeout`, while the worker itself is
+    /// tracked here so server shutdown can join (or detach) it.
+    ///
+    /// Returns the receiver. The worker drops the sender on any error path
+    /// (overflow, IO error, or trickle-deadline expiry). The trickle-deadline
+    /// 408 reply is dispatched from inside the worker so a slow-reader peer
+    /// can only park the worker thread, not the request-handling thread; the
+    /// 2 s join timeout on shutdown then backstops a stuck write.
+    fn spawn_body_read(
+        &self,
+        request: tiny_http::Request,
+        max_body_size: usize,
+        request_body_timeout: Duration,
+    ) -> mpsc::Receiver<(Vec<u8>, tiny_http::Request)> {
+        self.reap_completed();
+        let (body_tx, body_rx) = mpsc::sync_channel::<(Vec<u8>, tiny_http::Request)>(1);
+        let (done_tx, done_rx) = mpsc::channel();
+        let active_count = Arc::clone(&self.active_count);
+        active_count.fetch_add(1, Ordering::AcqRel);
+        let handle = thread::spawn(move || {
+            struct ActiveCountGuard(Arc<AtomicUsize>);
+
+            impl Drop for ActiveCountGuard {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+
+            let _active_count = ActiveCountGuard(active_count);
+            let mut request = request;
+            let mut buf = Vec::new();
+            let read_result = {
+                let mut reader = DeadlineReader::new(request.as_reader(), request_body_timeout);
+                Read::take(&mut reader, max_body_size as u64 + 1).read_to_end(&mut buf)
+            };
+            match read_result {
+                Ok(_) if buf.len() > max_body_size => {
+                    let response = tiny_http::Response::from_string("Payload Too Large")
+                        .with_status_code(tiny_http::StatusCode(413));
+                    if let Err(err) = request.respond(response) {
+                        eprintln!("hew_http: failed to send 413 response: {err}");
+                    }
+                }
+                Ok(_) => {
+                    if body_tx.send((buf, request)).is_err() {
+                        // Receiver was dropped (caller already returned). The
+                        // request is dropped here; the connection closes.
+                    }
+                }
+                Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                    let response = tiny_http::Response::from_string("Request Timeout")
+                        .with_status_code(tiny_http::StatusCode(408));
+                    if let Err(err) = request.respond(response) {
+                        eprintln!("hew_http: failed to send 408 response: {err}");
+                    }
+                }
+                Err(_) => {
+                    // Other IO errors: drop the request, peer sees connection close.
+                }
+            }
+            if done_tx.send(()).is_err() {
+                eprintln!("hew_http: body-read thread completion receiver dropped before join");
+            }
+        });
+        self.threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(TrackedResponseThread { done_rx, handle });
+        body_rx
+    }
+
     fn cancel_and_join_all(&self) {
         self.cancel.store(true, Ordering::Release);
         let threads =
@@ -404,33 +484,36 @@ pub unsafe extern "C" fn hew_http_request_body(
     }
     // SAFETY: req was allocated by hew_http_server_recv and is valid.
     let request = unsafe { &mut *req };
-    let Some(mut inner) = request.inner.take() else {
+    let Some(inner) = request.inner.take() else {
+        return std::ptr::null_mut();
+    };
+    let Some(response_threads) = request.response_threads.clone() else {
+        // No tracker means the request was constructed in a unit test without
+        // server backing — drop the request and signal failure.
+        drop(inner);
         return std::ptr::null_mut();
     };
 
-    let mut buf = Vec::new();
-    let mut reader = DeadlineReader::new(inner.as_reader(), request.request_body_timeout);
-    if let Err(err) =
-        Read::take(&mut reader, request.max_body_size as u64 + 1).read_to_end(&mut buf)
-    {
-        if err.kind() == io::ErrorKind::TimedOut {
-            drop(buf);
-            let response = tiny_http::Response::from_string("Request Timeout")
-                .with_status_code(tiny_http::StatusCode(408));
-            let _ = inner.respond(response);
-            return std::ptr::null_mut();
-        }
-        request.inner = Some(inner);
+    // WHY: the body read happens on a worker thread because tiny_http's
+    // `as_reader()` returns a blocking `&mut dyn Read` we cannot interrupt
+    // from outside. The main thread bounds its wait via `recv_timeout`; the
+    // worker is tracked by `ResponseThreadTracker` so server shutdown can
+    // join (or detach) it. The deadline budget is doubled here so the
+    // trickle-feed `DeadlineReader` inside the worker normally fires before
+    // the outer recv_timeout, which is reserved for the full-stall case
+    // where zero bytes ever arrive.
+    let request_body_timeout = request.request_body_timeout;
+    let max_body_size = request.max_body_size;
+    let body_rx = response_threads.spawn_body_read(inner, max_body_size, request_body_timeout);
+    let outer_deadline = request_body_timeout.saturating_mul(2);
+    let Ok((buf, returned_inner)) = body_rx.recv_timeout(outer_deadline) else {
+        // Worker either timed out (full stall), errored, or sent a 408/413.
+        // The worker still owns the request; the connection will close
+        // when it eventually unwinds (or on server drop, bounded by the
+        // 2 s join timeout).
         return std::ptr::null_mut();
-    }
-    if buf.len() > request.max_body_size {
-        drop(buf);
-        let response = tiny_http::Response::from_string("Payload Too Large")
-            .with_status_code(tiny_http::StatusCode(413));
-        let _ = inner.respond(response);
-        return std::ptr::null_mut();
-    }
-    request.inner = Some(inner);
+    };
+    request.inner = Some(returned_inner);
 
     let len = buf.len();
     // SAFETY: We allocate len bytes (or 1 if empty) via malloc.
@@ -2437,5 +2520,205 @@ mod tests {
         unsafe { hew_http_request_free(req) };
         // SAFETY: srv was allocated by hew_http_server_new.
         unsafe { hew_http_server_close(srv) };
+    }
+
+    // -- DeadlineReader unit tests ------------------------------------
+
+    /// `Read` impl that returns `WouldBlock` for every call until cancelled
+    /// (then returns `Ok(0)` to signal EOF). Used to drive the trickle-poll
+    /// path of `DeadlineReader` without involving sockets.
+    struct WouldBlockReader {
+        cancel: Arc<AtomicBool>,
+    }
+
+    impl Read for WouldBlockReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            if self.cancel.load(Ordering::Acquire) {
+                return Ok(0);
+            }
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "no data yet"))
+        }
+    }
+
+    #[test]
+    fn deadline_reader_returns_timed_out_when_inner_keeps_blocking() {
+        // The deadline check runs before each inner `read`, so a reader that
+        // returns `WouldBlock` (the trickle case) lets `DeadlineReader` fire
+        // its deadline reliably.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let inner = WouldBlockReader {
+            cancel: Arc::clone(&cancel),
+        };
+        let mut reader = DeadlineReader::new(inner, Duration::from_millis(100));
+        let started = Instant::now();
+        let mut buf = [0u8; 16];
+        // Loop because the WouldBlock errors propagate; we want to see TimedOut
+        // eventually within the deadline.
+        let result = loop {
+            match reader.read(&mut buf) {
+                Err(err) if err.kind() == io::ErrorKind::TimedOut => break Err(err),
+                Err(_) => {}
+                Ok(n) => break Ok(n),
+            }
+        };
+        let elapsed = started.elapsed();
+        let err = result.expect_err("DeadlineReader should return an error");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "deadline should fire near the configured timeout, got {elapsed:?}"
+        );
+        cancel.store(true, Ordering::Release);
+    }
+
+    #[test]
+    fn deadline_reader_passes_through_when_data_arrives() {
+        // A reader that immediately returns data should yield `Ok(n)` and not
+        // be misclassified as a timeout.
+        let inner: &[u8] = b"hello";
+        let mut reader = DeadlineReader::new(inner, Duration::from_secs(1));
+        let mut buf = [0u8; 8];
+        let n = reader.read(&mut buf).expect("inner read should succeed");
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..5], b"hello");
+    }
+
+    // -- Full-stall and slow-reader integration tests -----------------
+
+    #[test]
+    fn loopback_request_body_full_stall_returns_within_deadline() {
+        // Regression for #1480: a peer that sends complete headers but zero
+        // body bytes must not park the request-handling thread indefinitely.
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        // SAFETY: srv is valid; 200ms is a valid timeout.
+        let result = unsafe { hew_http_server_set_request_timeout_ms(srv, 200) };
+        assert_eq!(result, 0);
+        let socket_addr = server_socket_addr(srv);
+
+        let stall_done = Arc::new(AtomicBool::new(false));
+        let stall_done_for_thread = Arc::clone(&stall_done);
+        let handle = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(socket_addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            // Send headers announcing a 4096-byte body, then send zero body
+            // bytes. Content-Length must exceed 1024 because tiny_http
+            // eagerly buffers the body during header parsing for shorter
+            // requests (which is its own header-parse-time stall — out of
+            // scope for this fix). Above the threshold the body read is
+            // deferred to `as_reader()`, which is where our worker bounds it.
+            stream
+                .write_all(
+                    b"POST /stall HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4096\r\n\r\n",
+                )
+                .unwrap();
+            // Do not send any body bytes; just hold the connection open until
+            // the test releases us.
+            while !stall_done_for_thread.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let _ = stream.shutdown(Shutdown::Both);
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        let mut out_len: usize = usize::MAX;
+        let started = Instant::now();
+        // SAFETY: req and out_len are valid.
+        let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
+        let elapsed = started.elapsed();
+
+        assert!(
+            body_ptr.is_null(),
+            "full-stall body read should return null"
+        );
+        // Outer deadline is 2 * request_body_timeout = 400ms. Allow generous
+        // slack for thread scheduling on loaded CI runners.
+        assert!(
+            elapsed < Duration::from_millis(900),
+            "full-stall request_body must return within the bounded deadline, got {elapsed:?}"
+        );
+
+        stall_done.store(true, Ordering::Release);
+        let _ = handle.join();
+
+        // SAFETY: req and srv are valid.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+    }
+
+    #[test]
+    fn loopback_slow_reader_408_does_not_block_server_close() {
+        // Regression for #1481: a peer that triggers the trickle deadline
+        // (some bytes arrive, then it stalls) and then refuses to drain its
+        // receive buffer must not park the server beyond the 2s join window.
+        const DETACH_EPSILON: Duration = Duration::from_millis(800);
+
+        let addr = c"127.0.0.1:0";
+        // SAFETY: addr is a valid C string.
+        let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
+        assert!(!srv.is_null());
+        // SAFETY: srv is valid; 100ms is a valid timeout.
+        let result = unsafe { hew_http_server_set_request_timeout_ms(srv, 100) };
+        assert_eq!(result, 0);
+        let socket_addr = server_socket_addr(srv);
+
+        let release = Arc::new(AtomicBool::new(false));
+        let release_for_thread = Arc::clone(&release);
+        let client_handle = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(socket_addr).unwrap();
+            // Announce a body but only ever send one byte. Critically, the
+            // peer never reads from the socket; if the server's 408 write is
+            // not bounded, it will park on a full kernel send buffer.
+            stream
+                .write_all(
+                    b"POST /slow-reader HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4096\r\n\r\nx",
+                )
+                .unwrap();
+            // Hold the connection until the test ends.
+            while !release_for_thread.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let _ = stream.shutdown(Shutdown::Both);
+        });
+
+        // SAFETY: srv is valid.
+        let req = unsafe { hew_http_server_recv(srv) };
+        assert!(!req.is_null());
+
+        let mut out_len: usize = usize::MAX;
+        // SAFETY: req and out_len are valid.
+        let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
+        assert!(
+            body_ptr.is_null(),
+            "trickle-deadline body read should return null"
+        );
+
+        // The body-read worker is still alive trying to send the 408 to a
+        // peer that will never read. Closing the server must still return
+        // within the join timeout because the cancel + join machinery
+        // backstops the stuck write.
+        let close_started = Instant::now();
+        // SAFETY: srv was allocated by hew_http_server_new and req is the
+        // only outstanding handle for this server.
+        unsafe { hew_http_request_free(req) };
+        // SAFETY: srv was allocated by hew_http_server_new.
+        unsafe { hew_http_server_close(srv) };
+        let close_elapsed = close_started.elapsed();
+        let close_limit = RESPONSE_THREAD_JOIN_TIMEOUT + DETACH_EPSILON;
+        assert!(
+            close_elapsed <= close_limit,
+            "server close should return within {close_limit:?}, got {close_elapsed:?}"
+        );
+
+        release.store(true, Ordering::Release);
+        let _ = client_handle.join();
     }
 }

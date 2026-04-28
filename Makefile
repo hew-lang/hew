@@ -33,14 +33,15 @@
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen + Hew)
-#   make test-rust        — just Rust workspace tests
-#   make test-parser      — parser + lexer crate tests (narrow)
-#   make test-types       — type-checker + parser + lexer crate tests (narrow)
-#   make test-cli         — CLI crate tests (narrow)
-#   make test-runtime-net — runtime / analysis / lsp / std-net crate tests (narrow)
-#   make test-codegen     — just hew-codegen ctest (native E2E + unit)
-#   make test-hew         — run Hew test files (std/ *_test.hew)
-#   make test-wasm        — just WASM E2E tests (requires wasmtime)
+#   make test-rust         — just Rust workspace tests
+#   make test-parser       — parser + lexer crate tests (narrow)
+#   make test-types        — type-checker + parser + lexer crate tests (narrow)
+#   make test-cli          — CLI crate tests (narrow)
+#   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
+#   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
+#   make test-codegen      — just hew-codegen ctest (native E2E + unit)
+#   make test-hew          — run Hew test files (std/ *_test.hew)
+#   make test-wasm         — just WASM E2E tests (requires wasmtime)
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make lsan         — run the nightly codegen sanitizer tests with CI leak env
 #   make tsan         — run the nightly rust-runtime TSan test command locally
@@ -49,7 +50,7 @@
 # ============================================================================
 
 .PHONY: all bootstrap install-hooks hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
-.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate lint-wasm-todo grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate lint-wasm-todo grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -513,6 +514,14 @@ test-runtime-net:
 		-p hew-std-net-tls \
 		-p hew-std-net-url \
 		-p hew-std-net-websocket
+
+# Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
+# QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).
+# Compile time is ~3× lower than the default-features build (measured: ~32s vs ~85s per binary).
+# Profiler allocator tests in transport.rs are skipped (they require feature = "profiler").
+# Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
+test-runtime-unit:
+	cargo test -p hew-runtime --no-default-features
 
 test-codegen: hew codegen runtime stdlib
 	cd hew-codegen/build && ctest --output-on-failure -LE wasm

@@ -1306,6 +1306,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "profiler")]
     fn read_rust_allocs(payload: &[u8]) -> u64 {
         let (server, mut client) = connected_streams();
         let handle = register_stream(server);
@@ -1401,6 +1402,7 @@ mod tests {
         crate::hew_clear_error();
     }
 
+    #[cfg(feature = "profiler")]
     #[test]
     fn tcp_write_streams_hwvec_without_rust_allocating() {
         run_in_isolated_test_process(
@@ -1445,6 +1447,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "profiler")]
     #[test]
     fn tcp_read_stays_at_zero_rust_allocs_across_payload_sizes() {
         run_in_isolated_test_process(

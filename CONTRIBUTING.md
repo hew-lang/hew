@@ -77,12 +77,15 @@ Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` direct
 | Type checker | `make test-types` | `hew-types` + `hew-parser` + `hew-lexer` | fast |
 | CLI | `make test-cli` | `hew-cli` + `adze-cli` | fast |
 | Runtime / net | `make test-runtime-net` | `hew-runtime` + `hew-analysis` + `hew-lsp` + `hew-std-net-*` | fast |
+| Runtime (no-net) | `make test-runtime-unit` | `hew-runtime` unit + integration tests, without QUIC/TLS/profiler stack (~3× faster compile) | fast |
 | Codegen E2E | `make test-codegen` | Native CMake/ctest suite (builds runtime first) | slow |
 | WASM E2E | `make test-wasm` | Same ctest suite, `wasm`-labelled tests only; requires `wasmtime` | slow |
 | C++ unit | `make test-cpp` | `mlir_dialect`, `mlirgen`, `translate`, `codegen_capi`, `msgpack_reader` | medium |
 | Hew test files | `make test-hew` | `tests/hew/` via `hew test` | medium |
 
-Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`, `test-runtime-net`) during inner-loop iteration and `make test` before opening a PR.
+Use the fast narrow suites (`test-parser`, `test-types`, `test-cli`, `test-runtime-net`, `test-runtime-unit`) during inner-loop iteration and `make test` before opening a PR.
+
+`make test-runtime-unit` is the recommended target when iterating on `hew-runtime` logic that does not touch QUIC, TLS, or the profiler. It runs the full `hew-runtime` test suite (lib unit tests + all integration tests) with `--no-default-features`, cutting compile time roughly 3× (measured: ~32 s vs ~85 s per integration test binary on a warm build cache). The two profiler allocator tests in `transport.rs` are excluded under this target because they require active allocation counters to be meaningful; they still run under `cargo test -p hew-runtime` (default features).
 
 `make ci-preflight` dispatches a conservative local preflight from your current diff and is the recommended manual gate before opening a PR or tagging a release. Pass `ARGS="--dry-run"` to preview without running. CI runs this on every PR regardless.
 

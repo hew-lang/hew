@@ -22,6 +22,7 @@ pub mod kind;
 pub mod msgpack_desc;
 pub(crate) mod op_codec;
 pub mod plan;
+pub(crate) mod primitives;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 pub mod value;

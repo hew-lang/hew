@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kind::PrimitiveWireKind;
 use crate::plan::{FieldPlan, IntegerBounds, WireCodecPlan};
+use crate::primitives::{desc_for_kind, PrimitiveClass};
 
 /// The msgpack wire operation for a single field.
 ///
@@ -119,39 +120,43 @@ fn field_op_from_plan(f: &FieldPlan) -> MsgpackFieldOp {
 
 /// Map a [`PrimitiveWireKind`] to its msgpack dispatch operation.
 ///
-/// Exhaustive over all variants — adding a new kind forces a compile error.
+/// Derived from the [`PrimitiveClass`] recorded in the canonical primitive
+/// descriptor table ([`crate::primitives::PRIMITIVE_DESCS`]).  Adding a new
+/// primitive kind requires only a new row in that table plus the new
+/// `PrimitiveWireKind` variant; this function requires no edit.
+///
+/// `Nested` is handled by a direct pattern match outside the table because it
+/// is the open-ended fallthrough that carries an arbitrary user-defined name.
 fn field_op_for_kind(kind: &PrimitiveWireKind) -> MsgpackOp {
-    match kind {
+    if let PrimitiveWireKind::Nested(name) = kind {
+        return MsgpackOp::Nested {
+            type_name: name.clone(),
+        };
+    }
+    let class = desc_for_kind(kind)
+        .expect("every non-Nested PrimitiveWireKind must have a descriptor")
+        .class;
+    match class {
         // Bool and Duration share the msgpack shape with zigzag-less, non-
         // unsigned varints — Bool is a 0/1 byte and Duration is an i64
         // nanosecond count that happens to always be non-negative in the
         // supported API surface.
-        PrimitiveWireKind::Bool | PrimitiveWireKind::Duration => MsgpackOp::Varint {
+        PrimitiveClass::Bool | PrimitiveClass::Duration => MsgpackOp::Varint {
             zigzag: false,
             unsigned: false,
         },
-        PrimitiveWireKind::I8
-        | PrimitiveWireKind::I16
-        | PrimitiveWireKind::I32
-        | PrimitiveWireKind::I64 => MsgpackOp::Varint {
+        PrimitiveClass::SignedInt => MsgpackOp::Varint {
             zigzag: true,
             unsigned: false,
         },
-        PrimitiveWireKind::U8
-        | PrimitiveWireKind::U16
-        | PrimitiveWireKind::U32
-        | PrimitiveWireKind::U64
-        | PrimitiveWireKind::Char => MsgpackOp::Varint {
+        PrimitiveClass::UnsignedInt | PrimitiveClass::Char => MsgpackOp::Varint {
             zigzag: false,
             unsigned: true,
         },
-        PrimitiveWireKind::F32 => MsgpackOp::Fixed32,
-        PrimitiveWireKind::F64 => MsgpackOp::Fixed64,
-        PrimitiveWireKind::String => MsgpackOp::String,
-        PrimitiveWireKind::Bytes => MsgpackOp::Bytes,
-        PrimitiveWireKind::Nested(name) => MsgpackOp::Nested {
-            type_name: name.clone(),
-        },
+        PrimitiveClass::F32 => MsgpackOp::Fixed32,
+        PrimitiveClass::F64 => MsgpackOp::Fixed64,
+        PrimitiveClass::Str => MsgpackOp::String,
+        PrimitiveClass::Bytes => MsgpackOp::Bytes,
     }
 }
 

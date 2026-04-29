@@ -342,7 +342,7 @@ pub unsafe extern "C" fn hew_xml_parse(xml_str: *const c_char) -> *mut HewXmlNod
     }
 }
 
-/// Return the last XML parse error recorded on the current thread.
+/// Return this actor's last XML parse error.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
 /// it with [`hew_xml_string_free`]. Returns null when no XML error has been

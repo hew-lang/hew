@@ -46,7 +46,7 @@ pub struct HewSmtpConn {
     transport: SmtpTransport,
 }
 
-/// Return the last SMTP client error recorded on the current thread.
+/// Return this actor's last SMTP client error.
 ///
 /// Returns an empty string when no SMTP client error has been recorded.
 #[no_mangle]

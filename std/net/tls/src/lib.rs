@@ -254,7 +254,7 @@ pub unsafe extern "C" fn hew_tls_connect(host: *const c_char, port: c_int) -> *m
     }
 }
 
-/// Return the last TLS client error recorded on the current thread.
+/// Return this actor's last TLS client error.
 ///
 /// Returns an empty string when no TLS client error has been recorded. The
 /// returned string is `malloc`-allocated; callers must free it with

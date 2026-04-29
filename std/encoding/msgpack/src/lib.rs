@@ -214,8 +214,7 @@ pub unsafe extern "C" fn hew_msgpack_from_json(
 /// it as JSON. Returns a `malloc`-allocated, NUL-terminated C string. Returns
 /// null on deserialization or serialization failure.
 ///
-/// Call [`hew_msgpack_last_error`] to retrieve the current thread's parse
-/// failure.
+/// Call [`hew_msgpack_last_error`] to retrieve this actor's parse failure.
 ///
 /// # Safety
 ///
@@ -244,7 +243,7 @@ pub unsafe extern "C" fn hew_msgpack_to_json(data: *const u8, len: usize) -> *mu
     str_to_malloc(&json)
 }
 
-/// Return the last `MessagePack` parse error recorded on the current thread.
+/// Return this actor's last `MessagePack` parse error.
 ///
 /// Returns an empty string when no parse error has been recorded.
 #[no_mangle]

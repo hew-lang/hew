@@ -85,7 +85,7 @@ unsafe fn raw_http_strdup(src: *const c_char) -> *mut c_char {
     unsafe { libc::strdup(src) }
 }
 
-/// Return the last HTTP client error recorded on the current thread.
+/// Return this actor's last HTTP client error.
 ///
 /// Returns an empty string when no HTTP client error has been recorded.
 #[no_mangle]

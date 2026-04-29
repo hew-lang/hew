@@ -650,7 +650,7 @@ pub unsafe extern "C" fn hew_quic_new_server_with_tls(
 }
 
 #[no_mangle]
-/// Return the last constructor/setup error for the current thread.
+/// Return this actor's last constructor/setup error.
 pub extern "C" fn hew_quic_last_error() -> *mut c_char {
     str_to_malloc(&get_constructor_last_error())
 }

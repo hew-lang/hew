@@ -381,8 +381,7 @@ pub unsafe extern "C" fn hew_zlib_decompress(
     unsafe { hew_zlib_decompress_with_limit(data, len, out_len, max_output_len) }
 }
 
-/// Return the last compression/decompression error recorded on the current
-/// thread.
+/// Return this actor's last compression/decompression error.
 ///
 /// Returns an empty string when no error has been recorded.
 #[no_mangle]

@@ -227,7 +227,7 @@ pub unsafe extern "C" fn hew_cron_next_n(
     }
 }
 
-/// Return the last cron error recorded on the current thread.
+/// Return this actor's last cron error.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
 /// it with [`hew_cron_free_string`] or `libc::free`. Returns null when no cron

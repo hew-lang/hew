@@ -9,10 +9,10 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::Ordering;
-use std::sync::Mutex;
 
 use crate::actor::{self, HewActor};
 use crate::internal::types::HewActorState;
+use crate::lifetime::PoisonSafe;
 use crate::mailbox_wasm::HewMailboxWasm;
 
 #[derive(Debug)]
@@ -43,54 +43,50 @@ unsafe impl Sync for PeriodicEntry {}
 
 // WASM-TODO(#1451): replace this cooperative Vec-backed timer queue with the shared
 // timer wheel backend used natively; insert/drain/cancel are still O(n)/O(n²).
-static PERIODIC_QUEUE: Mutex<Vec<PeriodicEntry>> = Mutex::new(Vec::new());
-static PERIODIC_REGISTRY: Mutex<Option<HashMap<usize, Vec<usize>>>> = Mutex::new(None);
+static PERIODIC_QUEUE: PoisonSafe<Vec<PeriodicEntry>> = PoisonSafe::new(Vec::new());
+static PERIODIC_REGISTRY: PoisonSafe<Option<HashMap<usize, Vec<usize>>>> = PoisonSafe::new(None);
 
 fn register_timer(actor: *mut HewActor, handle: *mut PeriodicHandle) {
-    let mut lock = PERIODIC_REGISTRY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    lock.get_or_insert_with(HashMap::new)
-        .entry(actor as usize)
-        .or_default()
-        .push(handle as usize);
+    PERIODIC_REGISTRY.access(|lock| {
+        lock.get_or_insert_with(HashMap::new)
+            .entry(actor as usize)
+            .or_default()
+            .push(handle as usize);
+    });
 }
 
 fn unregister_timer(actor: *mut HewActor, handle: *mut PeriodicHandle) {
-    let mut lock = PERIODIC_REGISTRY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(map) = lock.as_mut() {
-        if let Some(handles) = map.get_mut(&(actor as usize)) {
-            handles.retain(|addr| *addr != handle as usize);
-            if handles.is_empty() {
-                map.remove(&(actor as usize));
+    PERIODIC_REGISTRY.access(|lock| {
+        if let Some(map) = lock.as_mut() {
+            if let Some(handles) = map.get_mut(&(actor as usize)) {
+                handles.retain(|addr| *addr != handle as usize);
+                if handles.is_empty() {
+                    map.remove(&(actor as usize));
+                }
             }
         }
-    }
+    });
 }
 
 fn insert_sorted(entry: PeriodicEntry) {
-    let mut queue = PERIODIC_QUEUE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let pos = queue.partition_point(|existing| existing.next_fire_ms <= entry.next_fire_ms);
-    queue.insert(pos, entry);
+    PERIODIC_QUEUE.access(|queue| {
+        let pos = queue.partition_point(|existing| existing.next_fire_ms <= entry.next_fire_ms);
+        queue.insert(pos, entry);
+    });
 }
 
 /// Remove and return all periodic entries whose fire time has passed.
 fn drain_due_entries(now_ms: u64) -> Vec<PeriodicEntry> {
-    let mut queue = PERIODIC_QUEUE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut ready = Vec::new();
-    while queue
-        .first()
-        .is_some_and(|entry| entry.next_fire_ms <= now_ms)
-    {
-        ready.push(queue.remove(0));
-    }
-    ready
+    PERIODIC_QUEUE.access(|queue| {
+        let mut ready = Vec::new();
+        while queue
+            .first()
+            .is_some_and(|entry| entry.next_fire_ms <= now_ms)
+        {
+            ready.push(queue.remove(0));
+        }
+        ready
+    })
 }
 
 unsafe fn free_handle(handle: *mut PeriodicHandle) {
@@ -147,10 +143,7 @@ fn actor_has_live_mailbox(actor: *mut HewActor) -> bool {
 }
 
 pub(crate) fn pending_periodic_count() -> usize {
-    PERIODIC_QUEUE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len()
+    PERIODIC_QUEUE.access(|queue| queue.len())
 }
 
 /// Deliver any due periodic messages and re-arm surviving timers.
@@ -202,24 +195,19 @@ pub(crate) unsafe fn drain_ready_periodic(now_ms: u64) -> u32 {
 ///
 /// `actor` must be a live actor pointer or one that is about to be freed.
 pub(crate) unsafe fn cancel_all_timers_for_actor(actor: *mut HewActor) {
-    let handles = {
-        let mut lock = PERIODIC_REGISTRY
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let handles = PERIODIC_REGISTRY.access(|lock| {
         lock.as_mut()
             .and_then(|map| map.remove(&(actor as usize)))
             .unwrap_or_default()
-    };
+    });
 
     if handles.is_empty() {
         return;
     }
 
-    let mut queue = PERIODIC_QUEUE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    queue.retain(|entry| !ptr::eq(entry.actor, actor));
-    drop(queue);
+    PERIODIC_QUEUE.access(|queue| {
+        queue.retain(|entry| !ptr::eq(entry.actor, actor));
+    });
 
     for handle in handles {
         // SAFETY: handles were removed from registry/queue above and are uniquely owned here.
@@ -276,11 +264,9 @@ pub unsafe extern "C" fn hew_actor_cancel_periodic(handle: *mut c_void) {
     let actor = unsafe { (*handle).actor };
     unregister_timer(actor, handle);
 
-    let mut queue = PERIODIC_QUEUE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    queue.retain(|entry| !ptr::eq(entry.handle, handle));
-    drop(queue);
+    PERIODIC_QUEUE.access(|queue| {
+        queue.retain(|entry| !ptr::eq(entry.handle, handle));
+    });
 
     // SAFETY: the handle has been removed from queue/registry above.
     unsafe { free_handle(handle) };
@@ -293,23 +279,18 @@ pub unsafe extern "C" fn hew_actor_cancel_periodic(handle: *mut c_void) {
 /// Must not race with timer queue mutation; the WASM scheduler is single-threaded.
 #[cfg_attr(not(test), no_mangle)]
 pub unsafe extern "C" fn hew_periodic_shutdown() {
-    let handles = {
-        let mut queue = PERIODIC_QUEUE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let handles = PERIODIC_QUEUE.access(|queue| {
         let handles = queue
             .iter()
             .map(|entry| entry.handle as usize)
             .collect::<Vec<_>>();
         queue.clear();
         handles
-    };
+    });
 
-    let mut registry = PERIODIC_REGISTRY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *registry = None;
-    drop(registry);
+    PERIODIC_REGISTRY.access(|registry| {
+        *registry = None;
+    });
 
     for handle in handles {
         // SAFETY: shutdown drained the queue, so each handle is uniquely owned here.

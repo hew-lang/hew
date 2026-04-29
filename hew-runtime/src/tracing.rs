@@ -27,7 +27,7 @@
 //! - [`hew_trace_event_count`] — Number of recorded events.
 //! - [`hew_trace_drain`] — Drain recorded events into a buffer.
 
-use crate::util::MutexExt;
+use crate::lifetime::PoisonSafe;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
@@ -103,7 +103,7 @@ static TRACING_ENABLED: AtomicBool = AtomicBool::new(false);
 static SPAN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Recorded trace events (bounded ring buffer).
-static TRACE_EVENTS: Mutex<VecDeque<HewTraceEvent>> = Mutex::new(VecDeque::new());
+static TRACE_EVENTS: PoisonSafe<VecDeque<HewTraceEvent>> = PoisonSafe::new(VecDeque::new());
 
 /// Maximum number of trace events to retain.
 const MAX_TRACE_EVENTS: usize = 16384;
@@ -241,15 +241,16 @@ pub fn drain_events(max: usize) -> Vec<HewTraceEvent> {
     if max == 0 {
         return Vec::new();
     }
-    let mut events = TRACE_EVENTS.lock_or_recover();
-    let count = events.len().min(max);
-    let mut out = Vec::with_capacity(count);
-    for _ in 0..count {
-        if let Some(ev) = events.pop_front() {
-            out.push(ev);
+    TRACE_EVENTS.access(|events| {
+        let count = events.len().min(max);
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            if let Some(ev) = events.pop_front() {
+                out.push(ev);
+            }
         }
-    }
-    out
+        out
+    })
 }
 
 // ── Recording ──────────────────────────────────────────────────────────
@@ -259,11 +260,12 @@ fn record_event(event: HewTraceEvent) {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    let mut events = TRACE_EVENTS.lock_or_recover();
-    while events.len() >= MAX_TRACE_EVENTS {
-        events.pop_front();
-    }
-    events.push_back(event);
+    TRACE_EVENTS.access(|events| {
+        while events.len() >= MAX_TRACE_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(event);
+    });
 }
 
 fn record_lifecycle_event(actor_id: u64, event_type: i32, msg_type: i32) {
@@ -553,8 +555,7 @@ pub extern "C" fn hew_trace_is_enabled() -> c_int {
 /// Return the number of recorded trace events.
 #[no_mangle]
 pub extern "C" fn hew_trace_event_count() -> u64 {
-    let events = TRACE_EVENTS.lock_or_recover();
-    events.len() as u64
+    TRACE_EVENTS.access(|events| events.len() as u64)
 }
 
 /// Drain up to `max_count` trace events into the provided buffer.
@@ -567,28 +568,28 @@ pub extern "C" fn hew_trace_event_count() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32) -> u32 {
     cabi_guard!(out.is_null() || max_count == 0, 0);
-    let mut events = TRACE_EVENTS.lock_or_recover();
-    let count = events.len().min(max_count as usize);
-    for i in 0..count {
-        if let Some(event) = events.pop_front() {
-            // SAFETY: out has space for at least max_count events.
-            unsafe { *out.add(i) = event };
+    TRACE_EVENTS.access(|events| {
+        let count = events.len().min(max_count as usize);
+        for i in 0..count {
+            if let Some(event) = events.pop_front() {
+                // SAFETY: out has space for at least max_count events.
+                unsafe { *out.add(i) = event };
+            }
         }
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "count <= max_count which is u32"
-    )]
-    {
-        count as u32
-    }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "count <= max_count which is u32"
+        )]
+        {
+            count as u32
+        }
+    })
 }
 
 /// Clear all recorded trace events.
 #[no_mangle]
 pub extern "C" fn hew_trace_clear() {
-    let mut events = TRACE_EVENTS.lock_or_recover();
-    events.clear();
+    TRACE_EVENTS.access(std::collections::VecDeque::clear);
 }
 
 /// Register `hew_trace_reset` as a session reset hook.
@@ -614,8 +615,7 @@ pub(crate) fn register_trace_reset_hook() {
 #[no_mangle]
 pub extern "C" fn hew_trace_reset() {
     TRACING_ENABLED.store(false, Ordering::Release);
-    let mut events = TRACE_EVENTS.lock_or_recover();
-    events.clear();
+    TRACE_EVENTS.access(std::collections::VecDeque::clear);
     CURRENT_CONTEXT.with(|c| c.set(HewTraceContext::default()));
     IO_SPAN_TABLE.lock_or_recover().clear();
 }
@@ -655,8 +655,7 @@ pub extern "C" fn hew_trace_reset() {
 pub fn drain_events_json() -> String {
     use std::fmt::Write as _;
 
-    let mut events = TRACE_EVENTS.lock_or_recover();
-
+    TRACE_EVENTS.access(|events| {
     let count = events.len().min(256);
     let mut json = String::from("[");
     for i in 0..count {
@@ -737,6 +736,7 @@ pub fn drain_events_json() -> String {
     }
     json.push(']');
     json
+    })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -744,9 +744,12 @@ pub fn drain_events_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     /// Serialize tracing tests since they share global state
     /// (`TRACE_EVENTS`, `TRACING_ENABLED`, `CURRENT_CONTEXT`).
+    // INTENTIONAL: TEST_LOCK uses .lock().unwrap() — short-lived test
+    // serialisation barrier; closure API adds no value here.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn setup() -> std::sync::MutexGuard<'static, ()> {

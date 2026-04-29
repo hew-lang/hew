@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
+use crate::lifetime::PoisonSafe;
+
 use crate::actor::{hew_actor_send, HewActor};
 use crate::timer_wheel::{
     hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_schedule, hew_timer_wheel_tick,
@@ -29,7 +31,7 @@ unsafe impl Send for WheelSlot {}
 // SAFETY: Only accessed under the GLOBAL_WHEEL Mutex; no unsynchronised sharing.
 unsafe impl Sync for WheelSlot {}
 
-static GLOBAL_WHEEL: Mutex<WheelSlot> = Mutex::new(WheelSlot(ptr::null_mut()));
+static GLOBAL_WHEEL: PoisonSafe<WheelSlot> = PoisonSafe::new(WheelSlot(ptr::null_mut()));
 pub(crate) static TICKER_RUNNING: AtomicBool = AtomicBool::new(false);
 static TICKER_STOP: AtomicBool = AtomicBool::new(false);
 static TICKER_HANDLE: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
@@ -37,30 +39,29 @@ static TICKER_HANDLE: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
 /// Return (or create) the global timer wheel and ensure the ticker thread
 /// is running.
 pub(crate) fn global_wheel() -> *mut HewTimerWheel {
-    let mut guard = GLOBAL_WHEEL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if guard.0.is_null() {
-        // SAFETY: hew_timer_wheel_new has no preconditions.
-        let tw = unsafe { hew_timer_wheel_new() };
-        if tw.is_null() {
-            return ptr::null_mut();
-        }
-        guard.0 = tw;
-        if !start_ticker_thread(tw) {
-            guard.0 = ptr::null_mut();
-            // SAFETY: tw was just allocated above and no ticker thread started.
-            unsafe {
-                hew_timer_wheel_free(tw);
+    GLOBAL_WHEEL.access(|guard| {
+        if guard.0.is_null() {
+            // SAFETY: hew_timer_wheel_new has no preconditions.
+            let tw = unsafe { hew_timer_wheel_new() };
+            if tw.is_null() {
+                return ptr::null_mut();
+            }
+            guard.0 = tw;
+            if !start_ticker_thread(tw) {
+                guard.0 = ptr::null_mut();
+                // SAFETY: tw was just allocated above and no ticker thread started.
+                unsafe {
+                    hew_timer_wheel_free(tw);
+                }
+            }
+        } else if !TICKER_RUNNING.load(Ordering::SeqCst) {
+            // Wheel exists but ticker was shut down - restart it
+            if !start_ticker_thread(guard.0) {
+                return ptr::null_mut();
             }
         }
-    } else if !TICKER_RUNNING.load(Ordering::SeqCst) {
-        // Wheel exists but ticker was shut down - restart it
-        if !start_ticker_thread(guard.0) {
-            return ptr::null_mut();
-        }
-    }
-    guard.0
+        guard.0
+    })
 }
 
 /// Spawn a background thread that ticks the global timer wheel every 1 ms.
@@ -121,7 +122,7 @@ fn start_ticker_thread(tw: *mut HewTimerWheel) -> bool {
 /// `cancel_all_timers_for_actor` never dereferences raw ctx pointers.
 type TimerEntry = (usize, Arc<AtomicBool>, Arc<AtomicBool>);
 type TimerRegistry = HashMap<usize, Vec<TimerEntry>>;
-static ACTOR_TIMERS: Mutex<Option<TimerRegistry>> = Mutex::new(None);
+static ACTOR_TIMERS: PoisonSafe<Option<TimerRegistry>> = PoisonSafe::new(None);
 
 fn register_timer(
     actor: *mut HewActor,
@@ -129,27 +130,25 @@ fn register_timer(
     cancelled: Arc<AtomicBool>,
     in_flight: Arc<AtomicBool>,
 ) {
-    let mut lock = ACTOR_TIMERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    lock.get_or_insert_with(HashMap::new)
-        .entry(actor as usize)
-        .or_default()
-        .push((ctx_ptr as usize, cancelled, in_flight));
+    ACTOR_TIMERS.access(|lock| {
+        lock.get_or_insert_with(HashMap::new)
+            .entry(actor as usize)
+            .or_default()
+            .push((ctx_ptr as usize, cancelled, in_flight));
+    });
 }
 
 fn unregister_timer(actor: *mut HewActor, ctx_ptr: *mut c_void) {
-    let mut lock = ACTOR_TIMERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(map) = lock.as_mut() {
-        if let Some(timers) = map.get_mut(&(actor as usize)) {
-            timers.retain(|(addr, _, _)| *addr != ctx_ptr as usize);
-            if timers.is_empty() {
-                map.remove(&(actor as usize));
+    ACTOR_TIMERS.access(|lock| {
+        if let Some(map) = lock.as_mut() {
+            if let Some(timers) = map.get_mut(&(actor as usize)) {
+                timers.retain(|(addr, _, _)| *addr != ctx_ptr as usize);
+                if timers.is_empty() {
+                    map.remove(&(actor as usize));
+                }
             }
         }
-    }
+    });
 }
 
 /// Cancel all periodic timers for a given actor. Called from `hew_actor_free`
@@ -160,14 +159,11 @@ fn unregister_timer(actor: *mut HewActor, ctx_ptr: *mut c_void) {
 /// Both Arcs survive ctx deallocation so the entire function is safe even
 /// if a concurrent callback frees its ctx between phases.
 pub(crate) fn cancel_all_timers_for_actor(actor: *mut HewActor) {
-    let timers = {
-        let mut lock = ACTOR_TIMERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let timers = ACTOR_TIMERS.access(|lock| {
         lock.as_mut()
             .and_then(|map| map.remove(&(actor as usize)))
             .unwrap_or_default()
-    };
+    });
 
     // Phase 1: mark all as cancelled via the Arc (never deref raw ctx).
     for (_, cancelled, _) in &timers {
@@ -201,12 +197,11 @@ pub(crate) unsafe fn is_timer_cancelled(handle: *mut c_void) -> bool {
 /// Returns the number of active (registered) periodic timers for an actor.
 #[cfg(test)]
 pub(crate) fn timer_count_for_actor(actor: *mut HewActor) -> usize {
-    let lock = ACTOR_TIMERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    lock.as_ref()
-        .and_then(|map| map.get(&(actor as usize)))
-        .map_or(0, Vec::len)
+    ACTOR_TIMERS.access(|lock| {
+        lock.as_ref()
+            .and_then(|map| map.get(&(actor as usize)))
+            .map_or(0, Vec::len)
+    })
 }
 
 /// Heap-allocated context for a periodic timer callback.
@@ -397,18 +392,17 @@ pub unsafe extern "C" fn hew_periodic_shutdown() {
     // First, shutdown the ticker thread to prevent access to the wheel
     shutdown_ticker();
 
-    let mut guard = GLOBAL_WHEEL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let tw = guard.0;
-    if !tw.is_null() {
-        guard.0 = ptr::null_mut();
-        // SAFETY: tw was allocated by hew_timer_wheel_new, and the ticker
-        // thread has been stopped.
-        unsafe {
-            hew_timer_wheel_free(tw);
+    GLOBAL_WHEEL.access(|guard| {
+        let tw = guard.0;
+        if !tw.is_null() {
+            guard.0 = ptr::null_mut();
+            // SAFETY: tw was allocated by hew_timer_wheel_new, and the ticker
+            // thread has been stopped.
+            unsafe {
+                hew_timer_wheel_free(tw);
+            }
         }
-    }
+    });
 }
 
 #[cfg(test)]
@@ -706,14 +700,11 @@ mod tests {
             !TICKER_RUNNING.load(Ordering::SeqCst),
             "ticker should not remain marked running after spawn failure"
         );
-        let wheel_guard = GLOBAL_WHEEL
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let wheel_is_null = GLOBAL_WHEEL.access(|guard| guard.0.is_null());
         assert!(
-            wheel_guard.0.is_null(),
+            wheel_is_null,
             "newly created wheel should be freed when ticker spawn fails"
         );
-        drop(wheel_guard);
 
         // SAFETY: hew_last_error returns a valid C string pointer for the current thread.
         let err = unsafe { CStr::from_ptr(crate::hew_last_error()) }

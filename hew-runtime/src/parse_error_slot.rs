@@ -36,9 +36,8 @@
 //! changed to accept an out-parameter for the error.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
-use crate::util::MutexExt;
+use crate::lifetime::PoisonSafe;
 
 // ── Parser discriminant ──────────────────────────────────────────────────────
 
@@ -69,32 +68,35 @@ pub enum ErrorSlotKind {
 /// Global map from `(actor_id, ErrorSlotKind)` → last error message.
 ///
 /// Only populated when `hew_actor_current_id()` returns a non-negative value.
-static ACTOR_PARSE_ERRORS: Mutex<Option<HashMap<(u64, ErrorSlotKind), String>>> = Mutex::new(None);
+static ACTOR_PARSE_ERRORS: PoisonSafe<Option<HashMap<(u64, ErrorSlotKind), String>>> =
+    PoisonSafe::new(None);
 
 fn actor_map_set(actor_id: u64, kind: ErrorSlotKind, msg: String) {
-    let mut guard = ACTOR_PARSE_ERRORS.lock_or_recover();
-    guard
-        .get_or_insert_with(HashMap::new)
-        .insert((actor_id, kind), msg);
+    ACTOR_PARSE_ERRORS.access(|guard| {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert((actor_id, kind), msg);
+    });
 }
 
 fn actor_map_get(actor_id: u64, kind: ErrorSlotKind) -> Option<String> {
-    let guard = ACTOR_PARSE_ERRORS.lock_or_recover();
-    guard.as_ref()?.get(&(actor_id, kind)).cloned()
+    ACTOR_PARSE_ERRORS.access(|guard| guard.as_ref()?.get(&(actor_id, kind)).cloned())
 }
 
 fn actor_map_clear(actor_id: u64, kind: ErrorSlotKind) {
-    let mut guard = ACTOR_PARSE_ERRORS.lock_or_recover();
-    if let Some(map) = guard.as_mut() {
-        map.remove(&(actor_id, kind));
-    }
+    ACTOR_PARSE_ERRORS.access(|guard| {
+        if let Some(map) = guard.as_mut() {
+            map.remove(&(actor_id, kind));
+        }
+    });
 }
 
 fn actor_map_clear_all_for_actor(actor_id: u64) {
-    let mut guard = ACTOR_PARSE_ERRORS.lock_or_recover();
-    if let Some(map) = guard.as_mut() {
-        map.retain(|&(id, _), _| id != actor_id);
-    }
+    ACTOR_PARSE_ERRORS.access(|guard| {
+        if let Some(map) = guard.as_mut() {
+            map.retain(|&(id, _), _| id != actor_id);
+        }
+    });
 }
 
 // ── Per-thread fallback (non-actor callers) ─────────────────────────────────

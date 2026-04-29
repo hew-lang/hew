@@ -35,10 +35,9 @@
 //! - [`hew_fault_clear`] — Remove all faults for an actor.
 //! - [`hew_fault_clear_all`] — Remove all faults system-wide.
 
-use crate::util::MutexExt;
+use crate::lifetime::PoisonSafe;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::Mutex;
 
 // ── PRNG Seed Control ──────────────────────────────────────────────────
 
@@ -175,9 +174,9 @@ pub(crate) enum FaultKind {
     },
 }
 
-/// Global fault injection table. Protected by a mutex because fault
-/// injection is a testing-only path and performance is not critical.
-static FAULTS: Mutex<Vec<ActorFault>> = Mutex::new(Vec::new());
+/// Global fault injection table. Protected by `PoisonSafe` so a panicked
+/// fault-injection helper does not cascade-crash independent actors.
+static FAULTS: PoisonSafe<Vec<ActorFault>> = PoisonSafe::new(Vec::new());
 
 /// Inject a crash fault: the actor's next `count` dispatches will
 /// simulate a crash (supervisor sees it as a SIGABRT-style failure).
@@ -185,15 +184,16 @@ static FAULTS: Mutex<Vec<ActorFault>> = Mutex::new(Vec::new());
 /// `actor_id` is the ID returned by `hew_actor_get_id()`.
 #[no_mangle]
 pub extern "C" fn hew_fault_inject_crash(actor_id: u64, count: u32) {
-    let mut faults = FAULTS.lock_or_recover();
-    // Remove any existing crash fault for this actor.
-    faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Crash { .. })));
-    if count > 0 {
-        faults.push(ActorFault {
-            actor_id,
-            kind: FaultKind::Crash { remaining: count },
-        });
-    }
+    FAULTS.access(|faults| {
+        // Remove any existing crash fault for this actor.
+        faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Crash { .. })));
+        if count > 0 {
+            faults.push(ActorFault {
+                actor_id,
+                kind: FaultKind::Crash { remaining: count },
+            });
+        }
+    });
 }
 
 /// Inject a delay fault: add `ms` milliseconds of latency to every
@@ -202,14 +202,15 @@ pub extern "C" fn hew_fault_inject_crash(actor_id: u64, count: u32) {
 /// Set `ms = 0` to clear.
 #[no_mangle]
 pub extern "C" fn hew_fault_inject_delay(actor_id: u64, ms: u32) {
-    let mut faults = FAULTS.lock_or_recover();
-    faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Delay { .. })));
-    if ms > 0 {
-        faults.push(ActorFault {
-            actor_id,
-            kind: FaultKind::Delay { ms },
-        });
-    }
+    FAULTS.access(|faults| {
+        faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Delay { .. })));
+        if ms > 0 {
+            faults.push(ActorFault {
+                actor_id,
+                kind: FaultKind::Delay { ms },
+            });
+        }
+    });
 }
 
 /// Inject a drop fault: silently drop the next `count` messages sent
@@ -218,41 +219,41 @@ pub extern "C" fn hew_fault_inject_delay(actor_id: u64, ms: u32) {
 /// Set `count = 0` to clear.
 #[no_mangle]
 pub extern "C" fn hew_fault_inject_drop(actor_id: u64, count: u32) {
-    let mut faults = FAULTS.lock_or_recover();
-    faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Drop { .. })));
-    if count > 0 {
-        faults.push(ActorFault {
-            actor_id,
-            kind: FaultKind::Drop { remaining: count },
-        });
-    }
+    FAULTS.access(|faults| {
+        faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Drop { .. })));
+        if count > 0 {
+            faults.push(ActorFault {
+                actor_id,
+                kind: FaultKind::Drop { remaining: count },
+            });
+        }
+    });
 }
 
 /// Clear all faults for a specific actor.
 #[no_mangle]
 pub extern "C" fn hew_fault_clear(actor_id: u64) {
-    let mut faults = FAULTS.lock_or_recover();
-    faults.retain(|f| f.actor_id != actor_id);
+    FAULTS.access(|faults| faults.retain(|f| f.actor_id != actor_id));
 }
 
 /// Clear all faults for all actors.
 #[no_mangle]
 pub extern "C" fn hew_fault_clear_all() {
-    let mut faults = FAULTS.lock_or_recover();
-    faults.clear();
+    FAULTS.access(Vec::clear);
 }
 
 /// Return the number of active faults (for testing).
 #[no_mangle]
 pub extern "C" fn hew_fault_count() -> u32 {
-    let faults = FAULTS.lock_or_recover();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "fault count will never exceed u32::MAX in practice"
-    )]
-    {
-        faults.len() as u32
-    }
+    FAULTS.access(|faults| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "fault count will never exceed u32::MAX in practice"
+        )]
+        {
+            faults.len() as u32
+        }
+    })
 }
 
 /// Check and consume a crash fault for the given actor.
@@ -260,71 +261,74 @@ pub extern "C" fn hew_fault_count() -> u32 {
 /// Returns `true` if a crash should be simulated (caller should mark
 /// the actor as `Crashed` and notify the supervisor).
 pub(crate) fn check_crash_fault(actor_id: u64) -> bool {
-    let mut faults = FAULTS.lock_or_recover();
-    for fault in faults.iter_mut() {
-        if fault.actor_id == actor_id {
-            if let FaultKind::Crash { remaining } = &mut fault.kind {
-                if *remaining > 0 {
-                    *remaining -= 1;
-                    return true;
+    FAULTS.access(|faults| {
+        for fault in faults.iter_mut() {
+            if fault.actor_id == actor_id {
+                if let FaultKind::Crash { remaining } = &mut fault.kind {
+                    if *remaining > 0 {
+                        *remaining -= 1;
+                        return true;
+                    }
                 }
             }
         }
-    }
-    // Clean up exhausted crash faults.
-    faults.retain(|f| {
-        !matches!(
-            f,
-            ActorFault {
-                kind: FaultKind::Crash { remaining: 0 },
-                ..
-            }
-        )
-    });
-    false
+        // Clean up exhausted crash faults.
+        faults.retain(|f| {
+            !matches!(
+                f,
+                ActorFault {
+                    kind: FaultKind::Crash { remaining: 0 },
+                    ..
+                }
+            )
+        });
+        false
+    })
 }
 
 /// Check and apply a delay fault for the given actor.
 ///
 /// Returns the delay in milliseconds (0 = no delay).
 pub(crate) fn check_delay_fault(actor_id: u64) -> u32 {
-    let faults = FAULTS.lock_or_recover();
-    for fault in &*faults {
-        if fault.actor_id == actor_id {
-            if let FaultKind::Delay { ms } = fault.kind {
-                return ms;
+    FAULTS.access(|faults| {
+        for fault in faults.iter() {
+            if fault.actor_id == actor_id {
+                if let FaultKind::Delay { ms } = fault.kind {
+                    return ms;
+                }
             }
         }
-    }
-    0
+        0
+    })
 }
 
 /// Check and consume a drop fault for the given actor.
 ///
 /// Returns `true` if the message should be dropped.
 pub(crate) fn check_drop_fault(actor_id: u64) -> bool {
-    let mut faults = FAULTS.lock_or_recover();
-    for fault in faults.iter_mut() {
-        if fault.actor_id == actor_id {
-            if let FaultKind::Drop { remaining } = &mut fault.kind {
-                if *remaining > 0 {
-                    *remaining -= 1;
-                    return true;
+    FAULTS.access(|faults| {
+        for fault in faults.iter_mut() {
+            if fault.actor_id == actor_id {
+                if let FaultKind::Drop { remaining } = &mut fault.kind {
+                    if *remaining > 0 {
+                        *remaining -= 1;
+                        return true;
+                    }
                 }
             }
         }
-    }
-    // Clean up exhausted drop faults.
-    faults.retain(|f| {
-        !matches!(
-            f,
-            ActorFault {
-                kind: FaultKind::Drop { remaining: 0 },
-                ..
-            }
-        )
-    });
-    false
+        // Clean up exhausted drop faults.
+        faults.retain(|f| {
+            !matches!(
+                f,
+                ActorFault {
+                    kind: FaultKind::Drop { remaining: 0 },
+                    ..
+                }
+            )
+        });
+        false
+    })
 }
 
 // ── Reset (for test isolation) ─────────────────────────────────────────
@@ -338,8 +342,7 @@ pub extern "C" fn hew_deterministic_reset() {
     GLOBAL_SEED.store(0, Ordering::Release);
     SIMTIME_ENABLED.store(false, Ordering::Release);
     SIMTIME_MS.store(0, Ordering::Release);
-    let mut faults = FAULTS.lock_or_recover();
-    faults.clear();
+    FAULTS.access(Vec::clear);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -347,9 +350,13 @@ pub extern "C" fn hew_deterministic_reset() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     /// Serialize deterministic tests since they share global state
     /// (`GLOBAL_SEED`, `SIMTIME_ENABLED`, `SIMTIME_MS`, FAULTS).
+    // INTENTIONAL: TEST_LOCK uses .lock().unwrap() below — this is a
+    // short-lived test serialisation barrier that does not outlive the
+    // test function, so closure-style access adds no value.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]

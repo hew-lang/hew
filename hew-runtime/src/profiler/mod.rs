@@ -22,6 +22,7 @@ pub mod metrics;
 pub mod pprof;
 mod server;
 
+use crate::lifetime::PoisonSafe;
 use crate::util::MutexExt;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -37,7 +38,7 @@ pub use server::ProfilerContext;
 ///
 /// Stores thread handles and shutdown signal so [`shutdown()`] can cleanly
 /// terminate threads before node resources are freed.
-static PROFILER_STATE: Mutex<Option<ProfilerThreads>> = Mutex::new(None);
+static PROFILER_STATE: PoisonSafe<Option<ProfilerThreads>> = PoisonSafe::new(None);
 
 /// Shutdown signal shared with profiler threads.
 pub(super) static PROFILER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -45,7 +46,7 @@ pub(super) static PROFILER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 /// Discovery directory path, stored so shutdown can clean up the socket
 /// and discovery file.
 #[cfg(unix)]
-static PROFILER_DISCOVERY_DIR: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+static PROFILER_DISCOVERY_DIR: PoisonSafe<Option<std::path::PathBuf>> = PoisonSafe::new(None);
 
 #[derive(Debug)]
 struct ProfilerThreads {
@@ -167,7 +168,7 @@ pub fn maybe_start_with_context(
             let _ = std::fs::remove_file(&sock_path);
 
             // Store discovery dir so shutdown() can clean up.
-            *PROFILER_DISCOVERY_DIR.lock_or_recover() = Some(disc_dir.clone());
+            PROFILER_DISCOVERY_DIR.access(|d| *d = Some(disc_dir.clone()));
 
             thread::Builder::new()
                 .name("hew-pprof-server".into())
@@ -188,20 +189,21 @@ pub fn maybe_start_with_context(
 
     // For unix mode, write the discovery file now that the thread is running.
     #[cfg(unix)]
-    if let Some(disc_dir) = PROFILER_DISCOVERY_DIR.lock_or_recover().as_ref() {
-        let sock_path = discovery::socket_path(disc_dir);
-        if let Err(e) = discovery::write_discovery_file(disc_dir, &sock_path) {
-            eprintln!("[hew-pprof] failed to write discovery file: {e}");
+    PROFILER_DISCOVERY_DIR.access(|disc_dir_opt| {
+        if let Some(disc_dir) = disc_dir_opt.as_ref() {
+            let sock_path = discovery::socket_path(disc_dir);
+            if let Err(e) = discovery::write_discovery_file(disc_dir, &sock_path) {
+                eprintln!("[hew-pprof] failed to write discovery file: {e}");
+            }
         }
-    }
+    });
 
     // Store thread handles for shutdown.
     let threads = ProfilerThreads {
         sampler_handle,
         server_handle,
     };
-    let mut state_guard = PROFILER_STATE.lock_or_recover();
-    *state_guard = Some(threads);
+    PROFILER_STATE.access(|state| *state = Some(threads));
 }
 
 /// Parse the `HEW_PPROF` env var into a listen mode.
@@ -306,18 +308,20 @@ pub(crate) fn shutdown() {
     // this flag every 200ms via `tokio::select!` with a sleep timeout.
     PROFILER_SHUTDOWN.store(true, Ordering::Release);
 
-    // Take the thread handles and join them.
-    let mut state_guard = PROFILER_STATE.lock_or_recover();
-    if let Some(threads) = state_guard.take() {
-        drop(state_guard); // Release lock before joining.
-
+    // Take the thread handles out of the global; release the lock before
+    // joining so no other path is blocked while we wait for the threads.
+    let threads = PROFILER_STATE.access(Option::take);
+    if let Some(threads) = threads {
         let _ = threads.server_handle.join();
         let _ = threads.sampler_handle.join();
     }
 
     // Clean up unix socket and discovery file if we were in unix mode.
     #[cfg(unix)]
-    if let Some(disc_dir) = PROFILER_DISCOVERY_DIR.lock_or_recover().take() {
-        discovery::cleanup(&disc_dir);
+    {
+        let disc_dir = PROFILER_DISCOVERY_DIR.access(Option::take);
+        if let Some(disc_dir) = disc_dir {
+            discovery::cleanup(&disc_dir);
+        }
     }
 }

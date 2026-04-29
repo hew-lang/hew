@@ -150,7 +150,7 @@ pub fn get_error(kind: ErrorSlotKind) -> Option<String> {
     }
 }
 
-/// Remove all parse-error entries for `actor_id` across every [`ParserKind`].
+/// Remove all error entries for `actor_id` across every [`ErrorSlotKind`].
 ///
 /// Called from `actor::prepare_quiescent_actor_for_cleanup` on actor death so
 /// that long-running nodes do not accumulate entries for reaped actors.
@@ -200,51 +200,6 @@ pub fn __clear_error_for_actor(actor_id: u64, kind: ErrorSlotKind) {
 pub fn __clear_all_errors_for_actor(actor_id: u64) {
     actor_map_clear_all_for_actor(actor_id);
 }
-
-// ── Backward compatibility aliases ──────────────────────────────────────────
-//
-// These aliases are provided for gradual migration of downstream code.
-// Prefer the new names (set_error, clear_error, get_error, ErrorSlotKind).
-
-#[doc(hidden)]
-pub fn set_parse_error(kind: ErrorSlotKind, msg: impl Into<String>) {
-    set_error(kind, msg);
-}
-
-#[doc(hidden)]
-pub fn clear_parse_error(kind: ErrorSlotKind) {
-    clear_error(kind);
-}
-
-#[doc(hidden)]
-#[must_use]
-pub fn get_parse_error(kind: ErrorSlotKind) -> Option<String> {
-    get_error(kind)
-}
-
-#[doc(hidden)]
-pub fn __set_parse_error_for_actor(actor_id: u64, kind: ErrorSlotKind, msg: impl Into<String>) {
-    __set_error_for_actor(actor_id, kind, msg);
-}
-
-#[doc(hidden)]
-#[must_use]
-pub fn __get_parse_error_for_actor(actor_id: u64, kind: ErrorSlotKind) -> Option<String> {
-    __get_error_for_actor(actor_id, kind)
-}
-
-#[doc(hidden)]
-pub fn __clear_parse_error_for_actor(actor_id: u64, kind: ErrorSlotKind) {
-    __clear_error_for_actor(actor_id, kind);
-}
-
-#[doc(hidden)]
-pub fn __clear_all_parse_errors_for_actor(actor_id: u64) {
-    __clear_all_errors_for_actor(actor_id);
-}
-
-#[doc(hidden)]
-pub type ParserKind = ErrorSlotKind;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -313,10 +268,14 @@ mod tests {
 
         let handle = std::thread::spawn(move || {
             barrier2.wait();
-            actor_map_get(ACTOR_ID, ParserKind::Toml)
+            actor_map_get(ACTOR_ID, ErrorSlotKind::Toml)
         });
 
-        actor_map_set(ACTOR_ID, ParserKind::Toml, "cross-thread error".to_owned());
+        actor_map_set(
+            ACTOR_ID,
+            ErrorSlotKind::Toml,
+            "cross-thread error".to_owned(),
+        );
         barrier.wait();
 
         let result = handle.join().expect("thread B panicked");

@@ -1272,17 +1272,17 @@ mod tests {
                 // We call the slot helper directly as the stand-in for
                 // hew_actor_current_id() returning ACTOR_ID, because we cannot
                 // inject actor context from a unit test without a full scheduler.
-                hew_runtime::parse_error_slot::__get_parse_error_for_actor(
+                hew_runtime::parse_error_slot::__get_error_for_actor(
                     ACTOR_ID,
-                    hew_runtime::parse_error_slot::ParserKind::Toml,
+                    hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
                 )
             });
 
             // Thread A: write a parse error as if actor ACTOR_ID called hew_toml_parse
             // on bad input.
-            hew_runtime::parse_error_slot::__set_parse_error_for_actor(
+            hew_runtime::parse_error_slot::__set_error_for_actor(
                 ACTOR_ID,
-                hew_runtime::parse_error_slot::ParserKind::Toml,
+                hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
                 "invalid TOML: actor-migration regression",
             );
             barrier.wait();
@@ -1295,9 +1295,9 @@ mod tests {
             );
 
             // Clean up so runs don't interfere.
-            hew_runtime::parse_error_slot::__clear_parse_error_for_actor(
+            hew_runtime::parse_error_slot::__clear_error_for_actor(
                 ACTOR_ID,
-                hew_runtime::parse_error_slot::ParserKind::Toml,
+                hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
             );
         }
     }

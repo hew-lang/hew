@@ -6,8 +6,8 @@
 //! [`hew_datetime_last_error`] returns null when no error has been recorded.
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code.
-#[cfg(test)]
+// referenced by hew-cabi's object code, and to access the shared
+// parse-error slot.
 extern crate hew_runtime;
 
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
@@ -20,21 +20,23 @@ fn epoch_ms_to_utc(epoch_ms: i64) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_millis(epoch_ms)
 }
 
-std::thread_local! {
-    static LAST_DATETIME_ERROR: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 fn set_datetime_last_error(msg: impl Into<String>) {
-    LAST_DATETIME_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_parse_error(
+        hew_runtime::parse_error_slot::ParserKind::Datetime,
+        msg,
+    );
 }
 
 fn clear_datetime_last_error() {
-    LAST_DATETIME_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_parse_error(
+        hew_runtime::parse_error_slot::ParserKind::Datetime,
+    );
 }
 
 fn clone_datetime_last_error() -> Option<String> {
-    LAST_DATETIME_ERROR.with(|error| error.borrow().clone())
+    hew_runtime::parse_error_slot::get_parse_error(
+        hew_runtime::parse_error_slot::ParserKind::Datetime,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -107,10 +109,13 @@ pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char
     }
 }
 
-/// Return the last datetime parse error recorded on the current thread.
+/// Return the most recent parse error for this Hew actor.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null when no datetime error has been recorded.
+/// it with `libc::free`. Returns null when no error is set.
+///
+/// Errors are keyed per (actor, parser-kind), so a different parser's success
+/// does not clear this slot.
 #[no_mangle]
 pub extern "C" fn hew_datetime_last_error() -> *mut c_char {
     match clone_datetime_last_error() {

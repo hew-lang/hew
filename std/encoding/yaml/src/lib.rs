@@ -6,8 +6,8 @@
 //! via `Box` and must be freed with [`hew_yaml_free`].
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code.
-#[cfg(test)]
+// referenced by hew-cabi's object code, and to access the shared
+// parse-error slot.
 extern crate hew_runtime;
 
 use base64::Engine as _;
@@ -40,21 +40,22 @@ fn boxed_value(v: serde_yaml::Value) -> *mut HewYamlValue {
     Box::into_raw(Box::new(HewYamlValue { inner: v }))
 }
 
-std::thread_local! {
-    static LAST_PARSE_ERROR: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 fn set_parse_last_error(msg: impl Into<String>) {
-    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_parse_error(
+        hew_runtime::parse_error_slot::ParserKind::Yaml,
+        msg,
+    );
 }
 
 fn clear_parse_last_error() {
-    LAST_PARSE_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_parse_error(
+        hew_runtime::parse_error_slot::ParserKind::Yaml,
+    );
 }
 
 fn get_parse_last_error() -> String {
-    LAST_PARSE_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+    hew_runtime::parse_error_slot::get_parse_error(hew_runtime::parse_error_slot::ParserKind::Yaml)
+        .unwrap_or_default()
 }
 
 fn validate_yaml_input_limits(input: &str) -> Result<(), String> {
@@ -148,7 +149,7 @@ fn is_yaml_anchor_alias_name_byte(byte: u8) -> bool {
 /// Parse a YAML string into a [`HewYamlValue`].
 ///
 /// Returns null on parse error or invalid input.
-/// Call [`hew_yaml_last_error`] to retrieve the current thread's parse failure.
+/// Call [`hew_yaml_last_error`] to retrieve this actor's last YAML parse failure.
 ///
 /// # Safety
 ///
@@ -180,11 +181,12 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const c_char) -> *mut HewYaml
     }
 }
 
-/// Return the last YAML error recorded on the current thread.
+/// Return the most recent parse error for this Hew actor.
 ///
-/// This slot is shared by parse failures and byte-extraction failures from
-/// [`hew_yaml_get_bytes`]. Returns an empty string when the most recent
-/// operation succeeded or explicitly cleared the error slot.
+/// Returns an empty string when no error is set.
+///
+/// Errors are keyed per (actor, parser-kind), so a different parser's success
+/// does not clear this slot.
 #[no_mangle]
 pub extern "C" fn hew_yaml_last_error() -> *mut c_char {
     str_to_malloc(&get_parse_last_error())

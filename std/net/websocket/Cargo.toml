@@ -15,6 +15,7 @@ crate-type = ["staticlib", "lib"]
 [dependencies]
 tungstenite = "0.29"
 libc.workspace = true
+hew-cabi = { path = "../../../hew-cabi" }
 hew-runtime = { path = "../../../hew-runtime" }
 
 [lints]

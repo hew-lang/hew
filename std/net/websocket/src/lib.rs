@@ -9,6 +9,7 @@
 // available when this crate's tests run (and when linked into the final binary).
 extern crate hew_runtime;
 
+use hew_cabi::cabi::malloc_bytes;
 use std::ffi::{c_void, CStr};
 use std::io;
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -535,31 +536,13 @@ fn spawn_attach_reader(
     });
 }
 
-/// Allocate `len` bytes via `libc::malloc`, copying from `src`.
-/// Returns null on allocation failure.
-///
-/// # Safety
-///
-/// If `len > 0`, `src` must point to at least `len` readable bytes.
-unsafe fn malloc_copy(src: *const u8, len: usize) -> *mut u8 {
-    if len == 0 {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: We request `len` bytes from malloc; it returns a valid pointer or null.
-    let ptr = unsafe { libc::malloc(len) }.cast::<u8>();
-    if ptr.is_null() {
-        return ptr;
-    }
-    // SAFETY: Caller guarantees `src` is valid for `len` bytes; `ptr` is freshly
-    // allocated with `len` bytes, so both regions are valid and non-overlapping.
-    unsafe { std::ptr::copy_nonoverlapping(src, ptr, len) };
-    ptr
-}
-
 /// Build a heap-allocated [`HewWsMessage`] from a type tag and byte slice.
+///
+/// For empty payloads, `data` will be a non-null 1-byte sentinel (canonical
+/// `malloc_bytes` empty behaviour); callers check `data_len` to distinguish
+/// empty from non-empty content.
 fn build_message(msg_type: i32, payload: &[u8]) -> *mut HewWsMessage {
-    // SAFETY: payload.as_ptr() is valid for payload.len() bytes.
-    let data = unsafe { malloc_copy(payload.as_ptr(), payload.len()) };
+    let data = malloc_bytes(payload);
     Box::into_raw(Box::new(HewWsMessage {
         msg_type,
         data,
@@ -837,7 +820,7 @@ pub unsafe extern "C" fn hew_ws_message_free(msg: *mut HewWsMessage) {
     // SAFETY: `msg` was allocated with Box::into_raw in build_message.
     let message = unsafe { Box::from_raw(msg) };
     if !message.data.is_null() {
-        // SAFETY: `data` was allocated with libc::malloc in malloc_copy.
+        // SAFETY: `data` was allocated with libc::malloc in malloc_bytes.
         unsafe { libc::free(message.data.cast()) };
     }
     // Box is dropped here, freeing the HewWsMessage struct.
@@ -1435,7 +1418,7 @@ mod tests {
         let msg_ref = unsafe { &*msg };
         assert_eq!(msg_ref.msg_type, 0);
         assert_eq!(msg_ref.data_len, payload.len());
-        // SAFETY: data was allocated with malloc_copy from payload.
+        // SAFETY: data was allocated with malloc_bytes from payload.
         let data_slice = unsafe { std::slice::from_raw_parts(msg_ref.data, msg_ref.data_len) };
         assert_eq!(data_slice, payload);
         // SAFETY: msg was allocated by build_message.
@@ -1496,7 +1479,8 @@ mod tests {
         unsafe { hew_ws_close(std::ptr::null_mut()) };
     }
 
-    /// `build_message` with empty payload creates a valid message with null data.
+    /// `build_message` with empty payload creates a valid message with a non-null
+    /// sentinel data pointer (canonical `malloc_bytes` empty behaviour).
     #[test]
     fn build_message_empty_payload() {
         let msg = build_message(4, &[]);
@@ -1505,9 +1489,10 @@ mod tests {
         let msg_ref = unsafe { &*msg };
         assert_eq!(msg_ref.msg_type, 4);
         assert_eq!(msg_ref.data_len, 0);
+        // malloc_bytes returns a non-null 1-byte sentinel for empty input.
         assert!(
-            msg_ref.data.is_null(),
-            "empty payload should have null data"
+            !msg_ref.data.is_null(),
+            "empty payload should have a non-null sentinel"
         );
         // SAFETY: msg was allocated by build_message.
         unsafe { hew_ws_message_free(msg) };

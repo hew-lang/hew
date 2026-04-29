@@ -72,7 +72,7 @@ pub(crate) fn session_reset() {
 /// duration of the test.  Acquiring it from outside `session::tests` ensures
 /// safe cross-module test isolation.
 ///
-/// INTENTIONAL: SESSION_TEST_LOCK uses raw Mutex (not PoisonSafe) because it
+/// INTENTIONAL: `SESSION_TEST_LOCK` uses raw Mutex (not `PoisonSafe`) because it
 /// is a test-serialisation barrier — the guard is held across the test body
 /// and the closure API provides no benefit here.
 #[cfg(test)]
@@ -86,7 +86,7 @@ pub(crate) fn reset_hooks_for_test() -> std::sync::MutexGuard<'static, ()> {
     let guard = SESSION_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    RESET_HOOKS.access(|hooks| hooks.clear());
+    RESET_HOOKS.access(std::vec::Vec::clear);
     guard
 }
 

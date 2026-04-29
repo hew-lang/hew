@@ -20,7 +20,7 @@ use flate2::read::{
     DeflateDecoder, DeflateEncoder, GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder,
 };
 use flate2::Compression;
-use hew_cabi::cabi::str_to_malloc;
+use hew_cabi::cabi::{malloc_bytes, str_to_malloc};
 
 /// Conservative starting point for explicit decompression caps.
 pub const DEFAULT_MAX_OUTPUT_LEN: usize = 64 * 1024 * 1024;
@@ -97,19 +97,10 @@ unsafe fn read_to_malloc(reader: impl Read, out_len: *mut usize, max_output_len:
         return std::ptr::null_mut();
     }
     let buf_len = buf.len();
-    let alloc_size = if buf_len == 0 { 1 } else { buf_len };
-
-    // SAFETY: We request alloc_size bytes from malloc; alloc_size >= 1,
-    // avoiding implementation-defined malloc(0).
-    let ptr = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
+    let ptr = malloc_bytes(&buf);
     if ptr.is_null() {
         set_last_error(CompressError::AllocationFailed.to_string());
         return std::ptr::null_mut();
-    }
-    if buf_len > 0 {
-        // SAFETY: ptr is freshly allocated with at least buf_len bytes;
-        // buf bytes are valid and non-overlapping with the malloc'd region.
-        unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, buf_len) };
     }
     // SAFETY: out_len is a valid writable pointer per caller contract.
     unsafe { *out_len = buf_len };
@@ -670,6 +661,42 @@ mod tests {
         let input = b"Zlib roundtrip test data";
         // SAFETY: input is a valid byte slice.
         unsafe { assert_roundtrip(input, hew_zlib_compress, hew_zlib_decompress) };
+    }
+
+    #[test]
+    fn empty_input_compress_returns_nonnull_and_roundtrips() {
+        // Empty-input path exercises the malloc_bytes sentinel allocation.
+        // Gzip always emits a non-empty stream (header + trailer) even for
+        // empty input, so compressed_len > 0 and the decompressed result is
+        // empty but the returned pointer is non-null (1-byte sentinel).
+        // SAFETY: empty slice is a valid input for all compression functions.
+        unsafe {
+            let mut compressed_len: usize = 0;
+            let compressed = hew_gzip_compress([].as_ptr(), 0, &raw mut compressed_len);
+            assert!(
+                !compressed.is_null(),
+                "gzip compress empty must return non-null"
+            );
+
+            let mut decompressed_len: usize = 999;
+            let decompressed = hew_gzip_decompress(
+                compressed,
+                compressed_len,
+                &raw mut decompressed_len,
+                DEFAULT_MAX_OUTPUT_LEN,
+            );
+            assert!(
+                !decompressed.is_null(),
+                "gzip decompress empty must return non-null"
+            );
+            assert_eq!(
+                decompressed_len, 0,
+                "decompressed length of empty input must be 0"
+            );
+
+            hew_compress_free(compressed);
+            hew_compress_free(decompressed);
+        }
     }
 
     #[test]

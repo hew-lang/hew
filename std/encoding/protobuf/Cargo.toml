@@ -13,6 +13,7 @@ categories = ["compilers"]
 crate-type = ["staticlib", "lib"]
 
 [dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
 libc.workspace = true
 
 [lints]

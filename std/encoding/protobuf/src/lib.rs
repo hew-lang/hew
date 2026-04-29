@@ -6,6 +6,7 @@
 //! tuples. All returned [`HewProtoMsg`] pointers are heap-allocated via `Box`
 //! and must be freed with [`hew_proto_msg_free`].
 
+use hew_cabi::cabi::malloc_bytes;
 use std::os::raw::c_char;
 
 // ---------------------------------------------------------------------------
@@ -445,17 +446,9 @@ pub unsafe extern "C" fn hew_proto_msg_encode(
     let m = unsafe { &*msg };
     let encoded = m.encode();
     let len = encoded.len();
-
-    let alloc_size = if len == 0 { 1 } else { len };
-    // SAFETY: allocating alloc_size bytes via malloc (at least 1 to avoid malloc(0)).
-    let ptr = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
+    let ptr = malloc_bytes(&encoded);
     if ptr.is_null() {
         return std::ptr::null_mut();
-    }
-    if len > 0 {
-        // SAFETY: encoded.as_ptr() is valid for len bytes; ptr is freshly
-        // allocated with len bytes; regions do not overlap.
-        unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), ptr, len) };
     }
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = len };

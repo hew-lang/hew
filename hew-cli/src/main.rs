@@ -25,6 +25,7 @@ mod compile;
 mod diagnostic;
 mod doc;
 mod eval;
+mod jit;
 mod link;
 mod machine;
 mod platform;

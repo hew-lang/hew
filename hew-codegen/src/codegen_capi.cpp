@@ -1,6 +1,7 @@
 #include "hew/codegen_capi.h"
 
 #include "hew/codegen.h"
+#include "hew/jit_session.h"
 #include "hew/mlir/HewDialect.h"
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/MLIRGen.h"
@@ -214,6 +215,28 @@ void hew_codegen_buffer_free(HewCodegenBuffer buffer) {
 
 const char *hew_codegen_last_error(void) {
   return lastError.c_str();
+}
+
+// ── JIT session C ABI ─────────────────────────────────────────────────────────
+// Thin wrappers that delegate to hew::HewJitSession free functions.
+// The C API uses snake_case names; the C++ API uses camelCase internally.
+
+HewJitSession *hew_jit_session_create(void) {
+  return reinterpret_cast<HewJitSession *>(hew::hewJitSessionCreate());
+}
+
+int hew_jit_session_eval_msgpack(HewJitSession *session, const uint8_t *data, size_t size,
+                                 int64_t *out_exit_code) {
+  return hew::hewJitSessionEvalMsgpack(reinterpret_cast<hew::HewJitSession *>(session), data, size,
+                                       out_exit_code);
+}
+
+void hew_jit_session_destroy(HewJitSession *session) {
+  hew::hewJitSessionDestroy(reinterpret_cast<hew::HewJitSession *>(session));
+}
+
+const char *hew_jit_session_last_error(void) {
+  return hew::hewJitSessionLastError();
 }
 
 } // extern "C"

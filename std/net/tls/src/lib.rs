@@ -6,10 +6,11 @@
 //! with `libc::malloc`; callers must free it with `libc::free`.
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code, and to access the shared
-// error slot.
+// referenced by hew-cabi's object code.
+#[cfg(test)]
 extern crate hew_runtime;
 
+use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::os::raw::{c_char, c_int};
@@ -28,6 +29,10 @@ const TLS_STATUS_SUCCESS: c_int = 0;
 const TLS_STATUS_RETRYABLE: c_int = 1;
 const TLS_STATUS_TLS_ERROR: c_int = 2;
 const TLS_STATUS_IO_ERROR: c_int = 3;
+
+std::thread_local! {
+    static LAST_TLS_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 
 // ── Opaque handle ─────────────────────────────────────────────────────────────
 
@@ -82,23 +87,15 @@ fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, BoxError> {
 }
 
 fn set_tls_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
-        msg,
-    );
+    LAST_TLS_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
 }
 
 fn clear_tls_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
-    );
+    LAST_TLS_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
 fn get_tls_last_error() -> String {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
-    )
-    .unwrap_or_default()
+    LAST_TLS_ERROR.with(|error| error.borrow().as_ref().cloned().unwrap_or_else(String::new))
 }
 
 fn empty_hew_vec() -> HewVec {
@@ -257,7 +254,7 @@ pub unsafe extern "C" fn hew_tls_connect(host: *const c_char, port: c_int) -> *m
     }
 }
 
-/// Return the last TLS client error recorded on the current thread.
+/// Return this actor's last TLS client error.
 ///
 /// Returns an empty string when no TLS client error has been recorded. The
 /// returned string is `malloc`-allocated; callers must free it with

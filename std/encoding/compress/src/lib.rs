@@ -9,8 +9,8 @@
 //! `libc::malloc` so callers can free them with [`hew_compress_free`].
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code, and to access the shared
-// error slot.
+// referenced by hew-cabi's object code.
+#[cfg(test)]
 extern crate hew_runtime;
 
 use std::ffi::c_char;
@@ -25,24 +25,21 @@ use hew_cabi::cabi::str_to_malloc;
 /// Conservative starting point for explicit decompression caps.
 pub const DEFAULT_MAX_OUTPUT_LEN: usize = 64 * 1024 * 1024;
 
+std::thread_local! {
+    static LAST_ERROR: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn set_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Compress,
-        msg,
-    );
+    LAST_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
 }
 
 fn clear_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Compress,
-    );
+    LAST_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
 fn get_last_error() -> String {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Compress,
-    )
-    .unwrap_or_default()
+    LAST_ERROR.with(|error| error.borrow().clone().unwrap_or_else(String::new))
 }
 
 #[derive(Debug)]
@@ -393,8 +390,7 @@ pub unsafe extern "C" fn hew_zlib_decompress(
     unsafe { hew_zlib_decompress_with_limit(data, len, out_len, max_output_len) }
 }
 
-/// Return the last compression/decompression error recorded on the current
-/// thread.
+/// Return this actor's last compression/decompression error.
 ///
 /// Returns an empty string when no error has been recorded.
 #[no_mangle]

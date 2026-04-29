@@ -41,23 +41,19 @@ fn boxed_value(v: serde_yaml::Value) -> *mut HewYamlValue {
 }
 
 fn set_parse_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
+    hew_runtime::parse_error_slot::set_error(
         hew_runtime::parse_error_slot::ErrorSlotKind::Yaml,
         msg,
     );
 }
 
 fn clear_parse_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Yaml,
-    );
+    hew_runtime::parse_error_slot::clear_error(hew_runtime::parse_error_slot::ErrorSlotKind::Yaml);
 }
 
 fn get_parse_last_error() -> String {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Yaml,
-    )
-    .unwrap_or_default()
+    hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Yaml)
+        .unwrap_or_default()
 }
 
 fn validate_yaml_input_limits(input: &str) -> Result<(), String> {

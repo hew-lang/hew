@@ -6,33 +6,31 @@
 //! via `Box` and must be freed with [`hew_xml_free`].
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code, and to access the shared
-// error slot.
+// referenced by hew-cabi's object code.
+#[cfg(test)]
 extern crate hew_runtime;
 
 use hew_cabi::cabi::str_to_malloc;
+use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
 const MAX_XML_DEPTH: usize = 256;
 
+std::thread_local! {
+    static LAST_XML_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
 fn set_xml_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Xml,
-        msg,
-    );
+    LAST_XML_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
 }
 
 fn clear_xml_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Xml,
-    );
+    LAST_XML_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
 fn clone_xml_last_error() -> Option<String> {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Xml,
-    )
+    LAST_XML_ERROR.with(|error| error.borrow().clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -344,7 +342,7 @@ pub unsafe extern "C" fn hew_xml_parse(xml_str: *const c_char) -> *mut HewXmlNod
     }
 }
 
-/// Return the last XML parse error recorded on the current thread.
+/// Return this actor's last XML parse error.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
 /// it with [`hew_xml_string_free`]. Returns null when no XML error has been

@@ -47,16 +47,16 @@ std::thread_local! {
 
 /// Store `err` in the per-actor slot by encoding its discriminant as a string.
 ///
-/// Option A: `HewJwtError` has only unit variants 0..=6 with no payload, so
-/// the integer discriminant round-trips losslessly.  When `err` is `None`
-/// the slot is cleared (matching the "no entry == None" invariant).
+/// `HewJwtError` has only unit variants 0..=6 with no payload, so the integer
+/// discriminant round-trips losslessly. When `err` is `None` the slot is cleared
+/// (matching the "no entry == None" invariant).
 fn set_last_jwt_error(err: HewJwtError) {
     if err == HewJwtError::None {
-        hew_runtime::parse_error_slot::clear_parse_error(
+        hew_runtime::parse_error_slot::clear_error(
             hew_runtime::parse_error_slot::ErrorSlotKind::Jwt,
         );
     } else {
-        hew_runtime::parse_error_slot::set_parse_error(
+        hew_runtime::parse_error_slot::set_error(
             hew_runtime::parse_error_slot::ErrorSlotKind::Jwt,
             (err as i32).to_string(),
         );
@@ -65,15 +65,17 @@ fn set_last_jwt_error(err: HewJwtError) {
 
 /// Retrieve the last JWT error from the per-actor slot.
 ///
-/// Returns `HewJwtError::None` when no error is stored (slot absent or
-/// unparseable — the latter should never occur in practice).
+/// Returns `HewJwtError::None` when no error is stored (slot absent).
+/// If the slot contains an unparseable discriminant, returns the fail-closed
+/// sentinel `HewJwtError::TokenMalformed` to ensure a poisoned slot never
+/// silently maps to success.
 fn last_jwt_error() -> HewJwtError {
-    let Some(s) = hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Jwt,
-    ) else {
+    let Some(s) =
+        hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Jwt)
+    else {
         return HewJwtError::None;
     };
-    match s.parse::<i32>().unwrap_or(0) {
+    match s.parse::<i32>().unwrap_or(-1) {
         1 => HewJwtError::AlgorithmUnsupported,
         2 => HewJwtError::InvalidKey,
         3 => HewJwtError::TokenMalformed,
@@ -722,5 +724,29 @@ mod tests {
     fn free_null_is_noop() {
         // SAFETY: null is explicitly handled.
         unsafe { hew_jwt_free(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn jwt_error_slot_round_trips_known_variants() {
+        // Verify that each HewJwtError variant encodes and decodes losslessly.
+        // This guards against silent truncation or loss of discriminant bits.
+        let variants = [
+            HewJwtError::None,
+            HewJwtError::AlgorithmUnsupported,
+            HewJwtError::InvalidKey,
+            HewJwtError::TokenMalformed,
+            HewJwtError::SignatureInvalid,
+            HewJwtError::ClaimsExpired,
+            HewJwtError::AllocationFailure,
+        ];
+
+        for variant in variants {
+            set_last_jwt_error(variant);
+            let recovered = last_jwt_error();
+            assert_eq!(
+                recovered, variant,
+                "error variant {variant:?} did not round-trip through error slot"
+            );
+        }
     }
 }

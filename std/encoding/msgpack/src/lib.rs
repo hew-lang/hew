@@ -7,34 +7,31 @@
 //! strings are allocated with `libc::malloc` and NUL-terminated.
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code, and to access the shared
-// error slot.
+// referenced by hew-cabi's object code.
+#[cfg(test)]
 extern crate hew_runtime;
 
 use hew_cabi::cabi::{cstr_to_str, malloc_bytes, str_to_malloc};
+use std::cell::RefCell;
 use std::ffi::c_char;
 
 const MAX_MSGPACK_DEPTH: usize = 128;
 const MALFORMED_MSGPACK_ERROR: &str = "msgpack: malformed input during depth pre-scan";
 
+std::thread_local! {
+    static LAST_MSGPACK_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
 fn set_msgpack_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Msgpack,
-        msg,
-    );
+    LAST_MSGPACK_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
 }
 
 fn clear_msgpack_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Msgpack,
-    );
+    LAST_MSGPACK_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
 fn get_msgpack_last_error() -> String {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Msgpack,
-    )
-    .unwrap_or_default()
+    LAST_MSGPACK_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
 }
 
 fn depth_exceeded_error() -> String {
@@ -217,8 +214,7 @@ pub unsafe extern "C" fn hew_msgpack_from_json(
 /// it as JSON. Returns a `malloc`-allocated, NUL-terminated C string. Returns
 /// null on deserialization or serialization failure.
 ///
-/// Call [`hew_msgpack_last_error`] to retrieve the current thread's parse
-/// failure.
+/// Call [`hew_msgpack_last_error`] to retrieve this actor's parse failure.
 ///
 /// # Safety
 ///
@@ -247,7 +243,7 @@ pub unsafe extern "C" fn hew_msgpack_to_json(data: *const u8, len: usize) -> *mu
     str_to_malloc(&json)
 }
 
-/// Return the last `MessagePack` parse error recorded on the current thread.
+/// Return this actor's last `MessagePack` parse error.
 ///
 /// Returns an empty string when no parse error has been recorded.
 #[no_mangle]

@@ -28,23 +28,19 @@ fn boxed_value(v: toml::Value) -> *mut HewTomlValue {
 }
 
 fn set_parse_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
+    hew_runtime::parse_error_slot::set_error(
         hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
         msg,
     );
 }
 
 fn clear_parse_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
-    );
+    hew_runtime::parse_error_slot::clear_error(hew_runtime::parse_error_slot::ErrorSlotKind::Toml);
 }
 
 fn get_parse_last_error() -> String {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
-    )
-    .unwrap_or_default()
+    hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Toml)
+        .unwrap_or_default()
 }
 
 /// Parse a TOML string into an opaque [`HewTomlValue`].
@@ -1278,7 +1274,7 @@ mod tests {
                 // inject actor context from a unit test without a full scheduler.
                 hew_runtime::parse_error_slot::__get_parse_error_for_actor(
                     ACTOR_ID,
-                    hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
+                    hew_runtime::parse_error_slot::ParserKind::Toml,
                 )
             });
 
@@ -1286,7 +1282,7 @@ mod tests {
             // on bad input.
             hew_runtime::parse_error_slot::__set_parse_error_for_actor(
                 ACTOR_ID,
-                hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
+                hew_runtime::parse_error_slot::ParserKind::Toml,
                 "invalid TOML: actor-migration regression",
             );
             barrier.wait();
@@ -1301,7 +1297,7 @@ mod tests {
             // Clean up so runs don't interfere.
             hew_runtime::parse_error_slot::__clear_parse_error_for_actor(
                 ACTOR_ID,
-                hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
+                hew_runtime::parse_error_slot::ParserKind::Toml,
             );
         }
     }

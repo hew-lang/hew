@@ -7,11 +7,12 @@
 //! [`hew_cron_free_string`] or `libc::free`.
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code, and to access the shared
-// error slot.
+// referenced by hew-cabi's object code.
+#[cfg(test)]
 extern crate hew_runtime;
 
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::cell::RefCell;
 use std::ffi::c_char;
 use std::str::FromStr;
 
@@ -23,29 +24,29 @@ const HEW_CRON_STATUS_NO_NEXT_OCCURRENCE: i32 = 1;
 const HEW_CRON_STATUS_INVALID_INPUT: i32 = 2;
 const HEW_CRON_STATUS_INVALID_EPOCH: i32 = 3;
 
+std::thread_local! {
+    static LAST_CRON_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
 fn set_cron_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Cron,
-        msg,
-    );
+    LAST_CRON_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
 }
 
 fn clear_cron_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Cron,
-    );
+    LAST_CRON_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
 fn clone_cron_last_error() -> Option<String> {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Cron,
-    )
+    LAST_CRON_ERROR.with(|error| error.borrow().clone())
 }
 
 fn ensure_cron_last_error(msg: impl Into<String>) {
-    if clone_cron_last_error().is_none() {
-        set_cron_last_error(msg);
-    }
+    let msg = msg.into();
+    LAST_CRON_ERROR.with(|error| {
+        if error.borrow().is_none() {
+            *error.borrow_mut() = Some(msg);
+        }
+    });
 }
 
 /// Opaque handle wrapping a compiled [`cron::Schedule`].
@@ -226,7 +227,7 @@ pub unsafe extern "C" fn hew_cron_next_n(
     }
 }
 
-/// Return the last cron error recorded on the current thread.
+/// Return this actor's last cron error.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
 /// it with [`hew_cron_free_string`] or `libc::free`. Returns null when no cron

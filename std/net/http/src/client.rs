@@ -11,6 +11,7 @@ use hew_cabi::{
     cabi::{cstr_to_str, str_to_malloc},
     vec::{ElemKind, HewVec},
 };
+use std::cell::RefCell;
 use std::ffi::{c_void, CStr};
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -19,30 +20,23 @@ use std::time::Duration;
 /// Global timeout for all HTTP requests, in milliseconds. Default: 30 000 ms.
 static HTTP_TIMEOUT_MS: AtomicI32 = AtomicI32::new(30_000);
 
-#[cfg(test)]
 std::thread_local! {
+    static LAST_HTTP_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    #[cfg(test)]
     static FAIL_NEXT_HTTP_ALLOCATIONS: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
 }
 
 fn set_http_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Http,
-        msg,
-    );
+    LAST_HTTP_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
 }
 
 fn clear_http_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Http,
-    );
+    LAST_HTTP_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
 fn get_http_last_error() -> String {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Http,
-    )
-    .unwrap_or_default()
+    LAST_HTTP_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -91,7 +85,7 @@ unsafe fn raw_http_strdup(src: *const c_char) -> *mut c_char {
     unsafe { libc::strdup(src) }
 }
 
-/// Return the last HTTP client error recorded on the current thread.
+/// Return this actor's last HTTP client error.
 ///
 /// Returns an empty string when no HTTP client error has been recorded.
 #[no_mangle]

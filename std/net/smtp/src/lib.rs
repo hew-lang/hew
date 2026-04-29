@@ -5,35 +5,32 @@
 //! / `Box` so callers can free them with the corresponding free function.
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code, and to access the shared
-// error slot.
+// referenced by hew-cabi's object code.
+#[cfg(test)]
 extern crate hew_runtime;
 
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::cell::RefCell;
 use std::os::raw::c_char;
 
 use lettre::message::{header::ContentType, Mailbox};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 
+std::thread_local! {
+    static LAST_SMTP_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
 fn set_smtp_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
-        msg,
-    );
+    LAST_SMTP_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
 }
 
 fn clear_smtp_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
-    );
+    LAST_SMTP_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
 fn get_smtp_last_error() -> String {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Smtp,
-    )
-    .unwrap_or_default()
+    LAST_SMTP_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
 }
 
 fn smtp_error_result(msg: impl Into<String>) -> i32 {
@@ -49,7 +46,7 @@ pub struct HewSmtpConn {
     transport: SmtpTransport,
 }
 
-/// Return the last SMTP client error recorded on the current thread.
+/// Return this actor's last SMTP client error.
 ///
 /// Returns an empty string when no SMTP client error has been recorded.
 #[no_mangle]
@@ -439,7 +436,6 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
     use std::ffi::{CStr, CString};
     use std::ptr;
     use std::rc::Rc;

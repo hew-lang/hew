@@ -34,23 +34,19 @@ fn boxed_value(v: serde_json::Value) -> *mut HewJsonValue {
 }
 
 fn set_parse_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(
+    hew_runtime::parse_error_slot::set_error(
         hew_runtime::parse_error_slot::ErrorSlotKind::Json,
         msg,
     );
 }
 
 fn clear_parse_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Json,
-    );
+    hew_runtime::parse_error_slot::clear_error(hew_runtime::parse_error_slot::ErrorSlotKind::Json);
 }
 
 fn get_parse_last_error() -> String {
-    hew_runtime::parse_error_slot::get_parse_error(
-        hew_runtime::parse_error_slot::ErrorSlotKind::Json,
-    )
-    .unwrap_or_default()
+    hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Json)
+        .unwrap_or_default()
 }
 
 fn stringify_result_to_malloc(result: Result<String, serde_json::Error>) -> *mut c_char {

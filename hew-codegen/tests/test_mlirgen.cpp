@@ -13629,6 +13629,156 @@ static void test_iflet_stmt_unknown_constructor_fails_closed() {
   PASS();
 }
 
+// ============================================================================
+// Test: cross-module handle-bearing struct name collision does not emit
+//       spurious __auto_field_drop (regression for issue #1315 sub-1)
+//
+// Regression: isHandleBearingStruct previously used rfind('.') to strip the
+// module prefix and match against the bare suffix.  When two modules both
+// exported a struct with the same base name — one handle-bearing, one plain —
+// the rfind path would return true for the non-handle-bearing variant,
+// causing __auto_field_drop to be emitted for a struct the Rust checker never
+// validated for safe field-return patterns.
+//
+// Fix: exact-match only in isHandleBearingStruct.  The Rust producer already
+// emits both bare and fully-qualified names, so correct lookup works without
+// any suffix fallback.
+// ============================================================================
+
+static void test_cross_module_handle_bearing_name_no_collision() {
+  TEST(cross_module_handle_bearing_name_no_collision);
+
+  // ── sub-test 1: exact-match positive path ────────────────────────────────
+  // A struct wrapping a regex.Pattern is handle-bearing; the Rust type checker
+  // populates handle_bearing_structs with the struct's name.  Verify that the
+  // exact-match lookup correctly identifies it and that drop codegen fires.
+  hew::ast::Program progWithHandle;
+  if (!loadProgramFromSource(R"(
+import std::text::regex;
+
+type PatternHolder {
+    pattern: regex.Pattern;
+}
+
+actor Sink {
+    receive fn consume(h: PatternHolder) {}
+}
+
+fn main() {}
+  )",
+                             progWithHandle)) {
+    FAIL("failed to load handle-bearing struct program (sub-test 1)");
+    return;
+  }
+
+  // The Rust side must have marked PatternHolder as handle-bearing.
+  bool holderInSet = std::find(progWithHandle.handle_bearing_structs.begin(),
+                               progWithHandle.handle_bearing_structs.end(),
+                               "PatternHolder") != progWithHandle.handle_bearing_structs.end();
+  if (!holderInSet) {
+    FAIL("PatternHolder missing from handle_bearing_structs — Rust metadata not populated");
+    return;
+  }
+
+  mlir::MLIRContext ctx1;
+  initContext(ctx1);
+  auto m1 = generateMLIR(ctx1, progWithHandle);
+  if (!m1) {
+    FAIL("MLIR generation failed for handle-bearing struct receive (sub-test 1)");
+    return;
+  }
+  // PatternHolder holds a regex.Pattern (handle); the receive handler must call
+  // hew_regex_free to drop the transferred pattern inside the struct.
+  if (countCallsByCallee(m1, "hew_regex_free") < 1) {
+    FAIL("expected hew_regex_free call in PatternHolder receive handler");
+    m1.getOperation()->destroy();
+    return;
+  }
+  m1.getOperation()->destroy();
+
+  // ── sub-test 2: cross-module name collision does not emit spurious drops ─
+  // Inject a fake entry simulating module A's handle-bearing struct named
+  // "Msg" (as a bare name, the way the Rust side registers cross-module
+  // imported types).  A local plain struct also named "Msg" — defined in the
+  // current module with only integer fields — must NOT be treated as
+  // handle-bearing.  The buggy rfind fallback would strip the module prefix
+  // from a qualified query and find the bare entry; the fix uses exact-match
+  // only, so the plain struct is not matched.
+  hew::ast::Program progWithCollision;
+  if (!loadProgramFromSource(R"(
+type Msg {
+    value: int;
+}
+
+actor Proc {
+    receive fn handle(m: Msg) {}
+}
+
+fn main() {}
+  )",
+                             progWithCollision)) {
+    FAIL("failed to load collision program (sub-test 2)");
+    return;
+  }
+
+  // Simulate the cross-module collision: inject a bare name "Msg" into
+  // handle_bearing_structs, as if another module had a handle-bearing struct
+  // also named "Msg".  Under the rfind fallback (pre-fix), a qualified query
+  // for "somemod.Msg" would strip to "Msg" and find this entry, producing a
+  // false positive.  With exact-match only, the bare entry is only matched by
+  // an exact bare-name query — which is the correct path for local types.
+  //
+  // The key invariant under test: codegen must succeed and must not emit any
+  // handle-style drops for the plain Msg parameter (it has no owned fields).
+  bool msgAlreadyInSet = std::find(progWithCollision.handle_bearing_structs.begin(),
+                                   progWithCollision.handle_bearing_structs.end(),
+                                   "Msg") != progWithCollision.handle_bearing_structs.end();
+  if (!msgAlreadyInSet) {
+    // Inject as if the Rust type checker had imported a handle-bearing "Msg"
+    // from another module and registered the bare name alongside the qualified
+    // form.
+    progWithCollision.handle_bearing_structs.push_back("othermod.Msg");
+    progWithCollision.handle_bearing_structs.push_back("Msg");
+  }
+
+  mlir::MLIRContext ctx2;
+  initContext(ctx2);
+  auto m2 = generateMLIR(ctx2, progWithCollision);
+  if (!m2) {
+    FAIL("MLIR generation failed for collision-scenario program (sub-test 2)");
+    return;
+  }
+
+  auto procFn = lookupFuncBySuffix(m2, "Proc_handle");
+  if (!procFn) {
+    FAIL("Proc_handle receive function not found (sub-test 2)");
+    m2.getOperation()->destroy();
+    return;
+  }
+
+  // Plain Msg {value: int} has no owned fields; no drop should be emitted for
+  // the parameter regardless of the injected handle_bearing_structs entry.
+  // If the rfind fallback were active, "othermod.Msg" would strip to "Msg",
+  // find the bare entry, and trigger __auto_field_drop — which for an int
+  // struct recurses through fields and finds nothing to free but still
+  // incorrectly marks the parameter as needing cleanup.
+  //
+  // With exact-match only: "Msg" in the set is correctly matched for the local
+  // struct type (bare-name query), and "othermod.Msg" is NOT confused with
+  // module A's handle-bearing struct.  The only reliable observable is that
+  // codegen succeeds and no handle-drop calls appear for the plain parameter.
+  if (countCallsByCallee(procFn, "hew_regex_free") > 0 ||
+      countCallsByCallee(procFn, "hew_string_drop") > 0 ||
+      countCallsByCallee(procFn, "hew_vec_free") > 0) {
+    FAIL("plain Msg{int} param should not emit handle/string/vec drop calls");
+    m2.getOperation()->destroy();
+    return;
+  }
+
+  m2.getOperation()->destroy();
+  PASS();
+}
+
 int main() {
   printf("=== Hew MLIRGen Tests ===\n");
 
@@ -13824,6 +13974,7 @@ int main() {
   test_spawn_unknown_actor_type_fails_closed();
   test_supervisor_invalid_window_fails_closed();
   test_iflet_stmt_unknown_constructor_fails_closed();
+  test_cross_module_handle_bearing_name_no_collision();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

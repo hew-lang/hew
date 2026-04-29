@@ -1064,4 +1064,215 @@ mod tests {
             "tracing must be disabled after session_reset"
         );
     }
+
+    // ── I/O span chain tests ───────────────────────────────────────────
+
+    /// Verify that `io_accept_span_begin` emits a `SPAN_IO_ACCEPT` begin event
+    /// followed by a `SPAN_END` event, and stashes a non-zero context.
+    #[test]
+    fn io_accept_span_emits_begin_and_end() {
+        let _guard = setup();
+
+        io_accept_span_begin(42);
+
+        // Two events: SPAN_IO_ACCEPT (begin) + SPAN_END.
+        assert_eq!(
+            hew_trace_event_count(),
+            2,
+            "io_accept_span_begin must emit exactly 2 events"
+        );
+
+        let events = drain_events(2);
+        assert_eq!(
+            events[0].event_type, SPAN_IO_ACCEPT,
+            "first event must be SPAN_IO_ACCEPT"
+        );
+        assert_eq!(
+            events[1].event_type, SPAN_END,
+            "second event must be SPAN_END"
+        );
+
+        // Both events must share the same trace and span ID.
+        assert_eq!(events[0].trace_id_hi, events[1].trace_id_hi);
+        assert_eq!(events[0].trace_id_lo, events[1].trace_id_lo);
+        assert_eq!(events[0].span_id, events[1].span_id);
+        assert_ne!(events[0].span_id, 0, "span_id must be non-zero");
+        assert_eq!(
+            events[0].parent_span_id, 0,
+            "accept span must be a root span"
+        );
+
+        // Side table must contain the stashed context.
+        let stashed = IO_SPAN_TABLE.lock_or_recover().get(&42).copied();
+        assert!(
+            stashed.is_some(),
+            "accept span context must be stashed in IO_SPAN_TABLE"
+        );
+        assert_eq!(stashed.unwrap().span_id, events[0].span_id);
+
+        // Cleanup.
+        io_span_evict(42);
+    }
+
+    /// Verify that `io_recv_span_begin`/`io_recv_span_end` emits an `SPAN_IO_RECV`
+    /// begin event parented under the accept span, and a `SPAN_END` event after.
+    #[test]
+    fn io_recv_span_parented_under_accept() {
+        let _guard = setup();
+
+        // Stash a fake accept context.
+        let accept_ctx = HewTraceContext {
+            trace_id_hi: 0xdead,
+            trace_id_lo: 0xbeef,
+            span_id: 0x1111,
+            parent_span_id: 0,
+            flags: 1,
+        };
+        io_span_stash(99, accept_ctx);
+
+        let saved = io_recv_span_begin(99);
+        assert!(
+            saved.is_some(),
+            "io_recv_span_begin must return Some when tracing is enabled"
+        );
+
+        io_recv_span_end(saved.unwrap());
+
+        // Events: SPAN_IO_RECV (begin) + SPAN_END.
+        let events = drain_events(2);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, SPAN_IO_RECV);
+        assert_eq!(events[1].event_type, SPAN_END);
+
+        // recv span must inherit the accept span's trace ID.
+        assert_eq!(events[0].trace_id_hi, 0xdead);
+        assert_eq!(events[0].trace_id_lo, 0xbeef);
+        // recv span must be parented under the accept span.
+        assert_eq!(events[0].parent_span_id, 0x1111);
+        assert_ne!(
+            events[0].span_id, 0x1111,
+            "recv span_id must differ from accept span_id"
+        );
+
+        // Both events must share the recv span ID.
+        assert_eq!(events[0].span_id, events[1].span_id);
+
+        io_span_evict(99);
+    }
+
+    /// Verify that `io_recv_span_begin` sets the thread-local context so that
+    /// a mailbox-enqueue (which captures `current_context()`) sees the `io_recv`
+    /// span as its parent — this is the causal link to the actor-dispatch span.
+    #[test]
+    fn io_recv_span_propagates_context_to_mailbox_boundary() {
+        let _guard = setup();
+
+        // Simulate a stashed accept context.
+        let accept_ctx = HewTraceContext {
+            trace_id_hi: 0xaaaa,
+            trace_id_lo: 0xbbbb,
+            span_id: 0x2222,
+            parent_span_id: 0,
+            flags: 1,
+        };
+        io_span_stash(77, accept_ctx);
+
+        // Simulate what reader_loop does before calling router_fn.
+        let saved = io_recv_span_begin(77).expect("begin must succeed when tracing enabled");
+
+        // At this point the thread-local context should be the io_recv span.
+        let ctx_inside = current_context();
+        assert_ne!(
+            ctx_inside.span_id, 0,
+            "context inside recv span must have non-zero span_id"
+        );
+        assert_eq!(
+            ctx_inside.parent_span_id, 0x2222,
+            "context inside recv span must be parented under accept span"
+        );
+        assert_eq!(ctx_inside.trace_id_hi, 0xaaaa);
+        assert_eq!(ctx_inside.trace_id_lo, 0xbbbb);
+
+        // Simulate router_fn → msg_node_alloc capturing current_context().
+        let captured = current_context();
+
+        io_recv_span_end(saved);
+
+        // After end the thread-local context is restored to the prior default.
+        let ctx_after = current_context();
+        assert_eq!(
+            ctx_after.span_id, 0,
+            "thread-local context must be restored after io_recv_span_end"
+        );
+
+        // The captured context (as mailbox would record it) links to the recv span.
+        assert_eq!(captured.parent_span_id, 0x2222);
+
+        io_span_evict(77);
+    }
+
+    /// Verify that when tracing is disabled, `io_accept_span_begin` emits no events
+    /// and stashes nothing, and `io_recv_span_begin` returns `None`.
+    #[test]
+    fn io_span_disabled_path_emits_nothing() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        hew_trace_reset();
+        // Tracing is disabled after reset.
+
+        io_accept_span_begin(55);
+        assert_eq!(
+            hew_trace_event_count(),
+            0,
+            "disabled io_accept_span_begin must emit no events"
+        );
+        assert!(
+            IO_SPAN_TABLE.lock_or_recover().get(&55).is_none(),
+            "disabled io_accept_span_begin must not stash context"
+        );
+
+        let result = io_recv_span_begin(55);
+        assert!(
+            result.is_none(),
+            "disabled io_recv_span_begin must return None"
+        );
+        assert_eq!(
+            hew_trace_event_count(),
+            0,
+            "disabled io_recv_span_begin must emit no events"
+        );
+    }
+
+    /// Verify that `io_span_evict` removes the stashed context for a `conn_id`.
+    #[test]
+    fn io_span_evict_removes_entry() {
+        let _guard = setup();
+
+        io_accept_span_begin(33);
+        assert!(IO_SPAN_TABLE.lock_or_recover().get(&33).is_some());
+
+        io_span_evict(33);
+        assert!(
+            IO_SPAN_TABLE.lock_or_recover().get(&33).is_none(),
+            "evict must remove the stashed context"
+        );
+
+        // Second evict is idempotent.
+        io_span_evict(33);
+    }
+
+    /// Verify that `hew_trace_reset` also clears the I/O span side table.
+    #[test]
+    fn trace_reset_clears_io_span_table() {
+        let _guard = setup();
+
+        io_accept_span_begin(11);
+        assert!(IO_SPAN_TABLE.lock_or_recover().get(&11).is_some());
+
+        hew_trace_reset();
+
+        assert!(
+            IO_SPAN_TABLE.lock_or_recover().get(&11).is_none(),
+            "hew_trace_reset must clear IO_SPAN_TABLE"
+        );
+    }
 }

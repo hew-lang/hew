@@ -6,6 +6,10 @@ use super::*;
 
 impl Checker {
     fn refresh_handle_bearing_structs(&mut self) {
+        // Tracked for testing: callers can assert this stays O(1) after the
+        // deferred-refresh fix (see `ensure_handle_bearing_fresh`).
+        self.refresh_call_count += 1;
+
         let struct_names: Vec<String> = self
             .type_defs
             .iter()
@@ -18,6 +22,16 @@ impl Checker {
             .into_iter()
             .filter(|name| self.type_name_contains_owned_handle(name, &mut HashSet::new()))
             .collect();
+    }
+
+    /// Refresh the handle-bearing set once, iff it has been dirtied since the
+    /// last refresh. Converts O(N²) repeated full scans during batch
+    /// registration into a single fixpoint pass before the first lookup.
+    pub(super) fn ensure_handle_bearing_fresh(&mut self) {
+        if self.handle_bearing_dirty {
+            self.handle_bearing_dirty = false;
+            self.refresh_handle_bearing_structs();
+        }
     }
 
     fn type_name_contains_owned_handle(
@@ -613,7 +627,7 @@ impl Checker {
         self.register_rcfree_members_for_type(&td.name, &type_def);
         self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
-        self.refresh_handle_bearing_structs();
+        self.handle_bearing_dirty = true;
     }
 
     pub(super) fn register_type_namespace_name(&mut self, name: &str, span: &Span) -> bool {
@@ -780,7 +794,7 @@ impl Checker {
 
         self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
-        self.refresh_handle_bearing_structs();
+        self.handle_bearing_dirty = true;
 
         // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
         if let Some(ref wire) = td.wire {
@@ -2366,7 +2380,7 @@ impl Checker {
                             self.register_stdlib_hew_items(&short, resolved_items);
                         }
                     }
-                    self.refresh_handle_bearing_structs();
+                    self.handle_bearing_dirty = true;
                     return;
                 }
                 Some(format!(
@@ -3002,7 +3016,7 @@ impl Checker {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified, span);
             }
-            self.refresh_handle_bearing_structs();
+            self.handle_bearing_dirty = true;
         }
     }
 }

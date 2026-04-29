@@ -170,6 +170,9 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
     checker.register_type_decl(&plain);
     checker.register_qualified_type_alias("regexwrap", "Outer");
 
+    // Registrations set handle_bearing_dirty; flush before reading the set.
+    checker.ensure_handle_bearing_fresh();
+
     assert!(checker.handle_bearing_structs.contains("Inner"));
     assert!(checker.handle_bearing_structs.contains("Outer"));
     assert!(checker.handle_bearing_structs.contains("regexwrap.Outer"));
@@ -13076,4 +13079,293 @@ mod for_loop_iterable_fail_closed {
             "Ty::Never iterable must not emit InvalidOperation; got: {errors:?}",
         );
     }
+}
+
+// ── Sub-issue 2: bind-then-return bypass regression tests ──────────────────
+
+/// Parse and type-check a program with one fictional owned-handle type registered.
+fn check_source_with_handle(source: &str, handle_type: &str) -> TypeCheckOutput {
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "parse errors in test source: {:#?}",
+        parse_result.errors
+    );
+    let mut registry = ModuleRegistry::new(vec![]);
+    registry.insert_handle_type_for_test(handle_type.to_string());
+    let mut checker = Checker::new(registry);
+    checker.check_program(&parse_result.program)
+}
+
+/// Direct `return self.field` — the existing check; must still fire after the
+/// bind-then-return refactor.
+#[test]
+fn direct_handle_field_return_is_rejected() {
+    let output = check_source_with_handle(
+        r"
+        type PatternWrapper { pattern: regex.Pattern }
+
+        impl PatternWrapper {
+            fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
+                wrapper.pattern
+            }
+        }
+        ",
+        "regex.Pattern",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("pattern")
+                && e.message.contains("double-free")),
+        "direct return of owned handle field must be rejected; got: {:?}",
+        output.errors
+    );
+}
+
+/// `let p = wrapper.pattern; p` — the bind-then-return bypass from issue #1315 sub-2.
+#[test]
+fn bind_then_return_handle_field_is_rejected() {
+    let output = check_source_with_handle(
+        r"
+        type PatternWrapper { pattern: regex.Pattern }
+
+        impl PatternWrapper {
+            fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
+                let p = wrapper.pattern;
+                p
+            }
+        }
+        ",
+        "regex.Pattern",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("pattern")
+                && e.message.contains("double-free")),
+        "let-binding alias of owned handle field must be rejected; got: {:?}",
+        output.errors
+    );
+}
+
+/// Diagnostic message for bind-then-return must name the binding so the user
+/// can locate the alias.
+#[test]
+fn bind_then_return_diagnostic_names_binding() {
+    let output = check_source_with_handle(
+        r"
+        type PatternWrapper { pattern: regex.Pattern }
+
+        impl PatternWrapper {
+            fn extract(wrapper: PatternWrapper) -> regex.Pattern {
+                let p = wrapper.pattern;
+                p
+            }
+        }
+        ",
+        "regex.Pattern",
+    );
+    let msg = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::InvalidOperation)
+        .map_or("", |e| e.message.as_str());
+    assert!(
+        msg.contains("via let-binding `p`"),
+        "error message must identify the binding name; got: {msg:?}"
+    );
+}
+
+/// `let p = wrapper.pattern; printDebug(p); return p` — intermediate use
+/// does not suppress the diagnostic.
+#[test]
+fn bind_then_return_with_intermediate_use_is_rejected() {
+    let output = check_source_with_handle(
+        r"
+        type PatternWrapper { pattern: regex.Pattern }
+
+        impl PatternWrapper {
+            fn get_pattern(wrapper: PatternWrapper) -> regex.Pattern {
+                let p = wrapper.pattern;
+                println(p);
+                p
+            }
+        }
+        ",
+        "regex.Pattern",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("double-free")),
+        "alias with intermediate use must still be rejected; got: {:?}",
+        output.errors
+    );
+}
+
+/// A method that returns a non-handle field must not trigger the diagnostic.
+#[test]
+fn non_handle_field_return_is_allowed() {
+    let output = check_source_with_handle(
+        r"
+        type PatternWrapper { pattern: regex.Pattern, label: string }
+
+        impl PatternWrapper {
+            fn get_label(wrapper: PatternWrapper) -> string {
+                wrapper.label
+            }
+        }
+        ",
+        "regex.Pattern",
+    );
+    assert!(
+        output.errors.iter().all(
+            |e| e.kind != TypeErrorKind::InvalidOperation || !e.message.contains("double-free")
+        ),
+        "returning a non-handle field must not be rejected; got: {:?}",
+        output.errors
+    );
+}
+
+/// A let-binding whose value is NOT a receiver field access must not be
+/// flagged when it appears in return position.
+#[test]
+fn non_field_let_binding_return_is_allowed() {
+    let output = check_source_with_handle(
+        r"
+        type PatternWrapper { pattern: regex.Pattern }
+
+        impl PatternWrapper {
+            fn get_label(wrapper: PatternWrapper) -> string {
+                let s = to_string(42);
+                s
+            }
+        }
+        ",
+        "regex.Pattern",
+    );
+    assert!(
+        output.errors.iter().all(
+            |e| e.kind != TypeErrorKind::InvalidOperation || !e.message.contains("double-free")
+        ),
+        "returning a non-field binding must not be rejected; got: {:?}",
+        output.errors
+    );
+}
+
+// ── Sub-issue 3: O(N²) registration scaling tests ──────────────────────────
+
+/// Registering N struct types should trigger `refresh_handle_bearing_structs`
+/// exactly once (lazy fixpoint), not N times.
+///
+/// This is an operation-count assertion — deterministic and never flaky.
+/// For N=100, N=200, N=400 we expect `refresh_call_count` == 1 after the first
+/// lookup, regardless of N.
+#[test]
+fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
+    fn register_n_plain_structs(n: usize) -> usize {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        for i in 0..n {
+            let td = hew_parser::ast::TypeDecl {
+                visibility: hew_parser::ast::Visibility::Private,
+                kind: hew_parser::ast::TypeDeclKind::Struct,
+                name: format!("S{i}"),
+                type_params: None,
+                where_clause: None,
+                body: vec![hew_parser::ast::TypeBodyItem::Field {
+                    name: "value".to_string(),
+                    ty: (
+                        hew_parser::ast::TypeExpr::Named {
+                            name: "int".to_string(),
+                            type_args: None,
+                        },
+                        0..0,
+                    ),
+                    attributes: vec![],
+                    doc_comment: None,
+                }],
+                doc_comment: None,
+                wire: None,
+                is_indirect: false,
+            };
+            checker.register_type_decl(&td);
+        }
+        // Trigger the lazy refresh with one lookup.
+        checker.ensure_handle_bearing_fresh();
+        checker.refresh_call_count
+    }
+
+    let count_100 = register_n_plain_structs(100);
+    let count_200 = register_n_plain_structs(200);
+    let count_400 = register_n_plain_structs(400);
+
+    // Each run should refresh exactly once regardless of N.
+    assert_eq!(count_100, 1, "N=100: expected 1 refresh, got {count_100}");
+    assert_eq!(count_200, 1, "N=200: expected 1 refresh, got {count_200}");
+    assert_eq!(count_400, 1, "N=400: expected 1 refresh, got {count_400}");
+}
+
+/// Timing check: registering 400 structs must run in at most 4× the time it
+/// takes for 100 structs, demonstrating linear (not quadratic) scaling.
+///
+/// Uses `Instant::elapsed`-bounded ratio rather than an absolute wall-clock
+/// threshold so CI hardware differences don't cause false failures.
+/// Gated with `#[ignore]` so it does not run in the standard `cargo test`
+/// sweep — invoke explicitly with `cargo test -- --include-ignored` when you
+/// want the timing signal.
+#[test]
+#[ignore = "wall-clock ratio test; run explicitly with --include-ignored"]
+fn handle_bearing_registration_scales_linearly_not_quadratically() {
+    use std::time::Instant;
+
+    fn time_register_n(n: usize) -> std::time::Duration {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let start = Instant::now();
+        for i in 0..n {
+            let td = hew_parser::ast::TypeDecl {
+                visibility: hew_parser::ast::Visibility::Private,
+                kind: hew_parser::ast::TypeDeclKind::Struct,
+                name: format!("T{i}"),
+                type_params: None,
+                where_clause: None,
+                body: vec![hew_parser::ast::TypeBodyItem::Field {
+                    name: "x".to_string(),
+                    ty: (
+                        hew_parser::ast::TypeExpr::Named {
+                            name: "int".to_string(),
+                            type_args: None,
+                        },
+                        0..0,
+                    ),
+                    attributes: vec![],
+                    doc_comment: None,
+                }],
+                doc_comment: None,
+                wire: None,
+                is_indirect: false,
+            };
+            checker.register_type_decl(&td);
+        }
+        checker.ensure_handle_bearing_fresh();
+        start.elapsed()
+    }
+
+    let t100 = time_register_n(100);
+    let t400 = time_register_n(400);
+
+    // Use as_secs_f64 to avoid u128->f64 precision-loss lints; nanosecond
+    // precision is far more than this test needs.
+    let ratio = t400.as_secs_f64() / t100.as_secs_f64().max(f64::EPSILON);
+    assert!(
+        ratio < 16.0,
+        "registration of 400 structs took {ratio:.1}× as long as 100 structs — expected < 16× \
+         (quadratic would be ~16×, linear is ~4×). t100={t100:?} t400={t400:?}"
+    );
 }

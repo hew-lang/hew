@@ -2304,15 +2304,21 @@ impl Checker {
             return;
         };
 
+        // `bindings` maps let-binding variable names to the (field_name,
+        // handle_type_name) they alias, so `return p` after `let p = self.field`
+        // fires the same diagnostic as a direct `return self.field`.
+        let mut bindings: HashMap<String, (String, String)> = HashMap::new();
         self.scan_block_for_owned_handle_field_return(
             &fd.body,
             &receiver_name,
             &type_name,
             &fd.name,
+            &mut bindings,
         );
     }
 
-    fn struct_is_handle_bearing(&self, type_name: &str) -> bool {
+    fn struct_is_handle_bearing(&mut self, type_name: &str) -> bool {
+        self.ensure_handle_bearing_fresh();
         self.handle_bearing_structs.contains(type_name)
             || self
                 .registered_type_def_name(type_name)
@@ -2328,12 +2334,14 @@ impl Checker {
         receiver_name: &str,
         type_name: &str,
         method_name: &str,
+        bindings: &mut HashMap<String, (String, String)>,
     ) {
         self.scan_stmts_for_owned_handle_field_return(
             &block.stmts,
             receiver_name,
             type_name,
             method_name,
+            bindings,
         );
         if let Some(trailing) = &block.trailing_expr {
             self.check_expr_for_owned_handle_field_return(
@@ -2342,25 +2350,46 @@ impl Checker {
                 receiver_name,
                 type_name,
                 method_name,
+                bindings,
             );
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "owned-handle bind-then-return scanning covers many statement forms"
+    )]
     fn scan_stmts_for_owned_handle_field_return(
         &mut self,
         stmts: &[Spanned<Stmt>],
         receiver_name: &str,
         type_name: &str,
         method_name: &str,
+        bindings: &mut HashMap<String, (String, String)>,
     ) {
         for (stmt, _) in stmts {
             match stmt {
+                // Track `let p = receiver.field` when `field` is an owned
+                // handle — a subsequent `return p` is the same double-free risk
+                // as `return receiver.field` directly.
+                Stmt::Let {
+                    pattern: (Pattern::Identifier(var_name), _),
+                    value: Some((Expr::FieldAccess { object, field }, _)),
+                    ..
+                } if matches!(&object.0, Expr::Identifier(n) if n == receiver_name) => {
+                    if let Some((field_name, handle_name)) =
+                        self.owned_handle_field_return_by_name(field, type_name)
+                    {
+                        bindings.insert(var_name.clone(), (field_name, handle_name));
+                    }
+                }
                 Stmt::Return(Some((expr, span))) => self.check_expr_for_owned_handle_field_return(
                     expr,
                     span,
                     receiver_name,
                     type_name,
                     method_name,
+                    bindings,
                 ),
                 Stmt::Expression((Expr::Block(block), _))
                 | Stmt::Loop { body: block, .. }
@@ -2372,6 +2401,7 @@ impl Checker {
                         receiver_name,
                         type_name,
                         method_name,
+                        bindings,
                     ),
                 Stmt::If {
                     then_block,
@@ -2383,6 +2413,7 @@ impl Checker {
                         receiver_name,
                         type_name,
                         method_name,
+                        bindings,
                     );
                     if let Some(else_block) = else_block {
                         if let Some(if_stmt) = &else_block.if_stmt {
@@ -2391,6 +2422,7 @@ impl Checker {
                                 receiver_name,
                                 type_name,
                                 method_name,
+                                bindings,
                             );
                         }
                         if let Some(block) = &else_block.block {
@@ -2399,6 +2431,7 @@ impl Checker {
                                 receiver_name,
                                 type_name,
                                 method_name,
+                                bindings,
                             );
                         }
                     }
@@ -2411,6 +2444,7 @@ impl Checker {
                         receiver_name,
                         type_name,
                         method_name,
+                        bindings,
                     );
                     if let Some(block) = else_body {
                         self.scan_block_for_owned_handle_field_return(
@@ -2418,6 +2452,7 @@ impl Checker {
                             receiver_name,
                             type_name,
                             method_name,
+                            bindings,
                         );
                     }
                 }
@@ -2429,6 +2464,7 @@ impl Checker {
                             receiver_name,
                             type_name,
                             method_name,
+                            bindings,
                         );
                     }
                 }
@@ -2455,28 +2491,40 @@ impl Checker {
         receiver_name: &str,
         type_name: &str,
         method_name: &str,
+        bindings: &mut HashMap<String, (String, String)>,
     ) {
+        // Direct `return receiver.field` — the original check.
         if let Some((field_name, handle_name)) =
             self.owned_handle_field_return(expr, receiver_name, type_name)
         {
-            self.errors.push(TypeError {
-                severity: crate::error::Severity::Error,
-                kind: TypeErrorKind::InvalidOperation,
-                span: span.clone(),
-                message: format!(
-                    "method `{method_name}` exposes owned handle field `{field_name}` from `{type_name}` — returning the raw `{handle_name}` aliases the wrapper's drop path and can double-free the handle"
-                ),
-                notes: vec![(
-                    span.clone(),
-                    "handle-bearing structs are dropped field-by-field; returning the raw handle bypasses that ownership proof".to_string(),
-                )],
-                suggestions: vec![
-                    "use a dedicated consume/release API instead of returning the raw handle field".to_string(),
-                    "prefer a borrow-style accessor once mutable receivers / borrow returns land (#1295)".to_string(),
-                ],
-                source_module: self.current_module.clone(),
-            });
+            self.report_owned_handle_field_return(
+                span,
+                method_name,
+                type_name,
+                &field_name,
+                &handle_name,
+                None,
+            );
             return;
+        }
+
+        // Bind-then-return: `let p = receiver.field; … return p`
+        // The alias `p` is still an unprotected return path — same double-free
+        // risk as returning the field directly. The check is conservative: if
+        // `p` has been observed as an alias of any owned handle field in this
+        // method body, we always flag it, even if there are intermediate uses.
+        if let Expr::Identifier(var_name) = expr {
+            if let Some((field_name, handle_name)) = bindings.get(var_name).cloned() {
+                self.report_owned_handle_field_return(
+                    span,
+                    method_name,
+                    type_name,
+                    &field_name,
+                    &handle_name,
+                    Some(var_name),
+                );
+                return;
+            }
         }
 
         match expr {
@@ -2485,6 +2533,7 @@ impl Checker {
                 receiver_name,
                 type_name,
                 method_name,
+                bindings,
             ),
             Expr::If {
                 then_block,
@@ -2497,6 +2546,7 @@ impl Checker {
                     receiver_name,
                     type_name,
                     method_name,
+                    bindings,
                 );
                 if let Some(else_expr) = else_block {
                     self.check_expr_for_owned_handle_field_return(
@@ -2505,6 +2555,7 @@ impl Checker {
                         receiver_name,
                         type_name,
                         method_name,
+                        bindings,
                     );
                 }
             }
@@ -2516,6 +2567,7 @@ impl Checker {
                     receiver_name,
                     type_name,
                     method_name,
+                    bindings,
                 );
                 if let Some(block) = else_body {
                     self.scan_block_for_owned_handle_field_return(
@@ -2523,6 +2575,7 @@ impl Checker {
                         receiver_name,
                         type_name,
                         method_name,
+                        bindings,
                     );
                 }
             }
@@ -2534,6 +2587,7 @@ impl Checker {
                         receiver_name,
                         type_name,
                         method_name,
+                        bindings,
                     );
                 }
             }
@@ -2576,6 +2630,43 @@ impl Checker {
         }
     }
 
+    fn report_owned_handle_field_return(
+        &mut self,
+        span: &Span,
+        method_name: &str,
+        type_name: &str,
+        field_name: &str,
+        handle_name: &str,
+        via_binding: Option<&str>,
+    ) {
+        let via_note =
+            via_binding.map_or_else(String::new, |b| format!(" (via let-binding `{b}`)"));
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::InvalidOperation,
+            span: span.clone(),
+            message: format!(
+                "method `{method_name}` exposes owned handle field `{field_name}` from \
+                 `{type_name}`{via_note} — returning the raw `{handle_name}` aliases the \
+                 wrapper's drop path and can double-free the handle"
+            ),
+            notes: vec![(
+                span.clone(),
+                "handle-bearing structs are dropped field-by-field; returning the raw handle \
+                 bypasses that ownership proof"
+                    .to_string(),
+            )],
+            suggestions: vec![
+                "use a dedicated consume/release API instead of returning the raw handle field"
+                    .to_string(),
+                "prefer a borrow-style accessor once mutable receivers / borrow returns land \
+                 (#1295)"
+                    .to_string(),
+            ],
+            source_module: self.current_module.clone(),
+        });
+    }
+
     fn owned_handle_field_return(
         &self,
         expr: &Expr,
@@ -2588,6 +2679,17 @@ impl Checker {
         if !matches!(&object.0, Expr::Identifier(name) if name == receiver_name) {
             return None;
         }
+        self.owned_handle_field_return_by_name(field, type_name)
+    }
+
+    /// Check whether the named field of `type_name` holds an owned handle.
+    /// Returns `Some((field_name, handle_type_name))` when it does.
+    /// Used by both the direct-return check and the bind-then-return scan.
+    fn owned_handle_field_return_by_name(
+        &self,
+        field: &str,
+        type_name: &str,
+    ) -> Option<(String, String)> {
         let type_def = self.lookup_type_def(type_name)?;
         let field_ty = type_def.fields.get(field)?;
         let Ty::Named {
@@ -2598,7 +2700,7 @@ impl Checker {
             return None;
         };
         self.canonical_owned_handle_type_name(field_type_name)
-            .map(|handle_name| (field.clone(), handle_name))
+            .map(|handle_name| (field.to_string(), handle_name))
     }
 
     #[expect(

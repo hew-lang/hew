@@ -13696,86 +13696,146 @@ fn main() {}
   }
   m1.getOperation()->destroy();
 
-  // ── sub-test 2: cross-module name collision does not emit spurious drops ─
-  // Inject a fake entry simulating module A's handle-bearing struct named
-  // "Msg" (as a bare name, the way the Rust side registers cross-module
-  // imported types).  A local plain struct also named "Msg" — defined in the
-  // current module with only integer fields — must NOT be treated as
-  // handle-bearing.  The buggy rfind fallback would strip the module prefix
-  // from a qualified query and find the bare entry; the fix uses exact-match
-  // only, so the plain struct is not matched.
-  hew::ast::Program progWithCollision;
-  if (!loadProgramFromSource(R"(
-type Msg {
-    value: int;
-}
-
-actor Proc {
-    receive fn handle(m: Msg) {}
-}
-
-fn main() {}
-  )",
-                             progWithCollision)) {
-    FAIL("failed to load collision program (sub-test 2)");
-    return;
-  }
-
-  // Simulate the cross-module collision: inject a bare name "Msg" into
-  // handle_bearing_structs, as if another module had a handle-bearing struct
-  // also named "Msg".  Under the rfind fallback (pre-fix), a qualified query
-  // for "somemod.Msg" would strip to "Msg" and find this entry, producing a
-  // false positive.  With exact-match only, the bare entry is only matched by
-  // an exact bare-name query — which is the correct path for local types.
+  // ── sub-test 2: rfind false-positive path — qualified struct name must not ─
+  // match a bare entry via suffix stripping                                  ─
   //
-  // The key invariant under test: codegen must succeed and must not emit any
-  // handle-style drops for the plain Msg parameter (it has no owned fields).
-  bool msgAlreadyInSet = std::find(progWithCollision.handle_bearing_structs.begin(),
-                                   progWithCollision.handle_bearing_structs.end(),
-                                   "Msg") != progWithCollision.handle_bearing_structs.end();
-  if (!msgAlreadyInSet) {
-    // Inject as if the Rust type checker had imported a handle-bearing "Msg"
-    // from another module and registered the bare name alongside the qualified
-    // form.
-    progWithCollision.handle_bearing_structs.push_back("othermod.Msg");
-    progWithCollision.handle_bearing_structs.push_back("Msg");
-  }
-
-  mlir::MLIRContext ctx2;
-  initContext(ctx2);
-  auto m2 = generateMLIR(ctx2, progWithCollision);
-  if (!m2) {
-    FAIL("MLIR generation failed for collision-scenario program (sub-test 2)");
-    return;
-  }
-
-  auto procFn = lookupFuncBySuffix(m2, "Proc_handle");
-  if (!procFn) {
-    FAIL("Proc_handle receive function not found (sub-test 2)");
-    m2.getOperation()->destroy();
-    return;
-  }
-
-  // Plain Msg {value: int} has no owned fields; no drop should be emitted for
-  // the parameter regardless of the injected handle_bearing_structs entry.
-  // If the rfind fallback were active, "othermod.Msg" would strip to "Msg",
-  // find the bare entry, and trigger __auto_field_drop — which for an int
-  // struct recurses through fields and finds nothing to free but still
-  // incorrectly marks the parameter as needing cleanup.
+  // The buggy code used rfind('.') to strip the module prefix and then matched
+  // the bare suffix against handleBearingStructs.  Concretely:
   //
-  // With exact-match only: "Msg" in the set is correctly matched for the local
-  // struct type (bare-name query), and "othermod.Msg" is NOT confused with
-  // module A's handle-bearing struct.  The only reliable observable is that
-  // codegen succeeds and no handle-drop calls appear for the plain parameter.
-  if (countCallsByCallee(procFn, "hew_regex_free") > 0 ||
-      countCallsByCallee(procFn, "hew_string_drop") > 0 ||
-      countCallsByCallee(procFn, "hew_vec_free") > 0) {
-    FAIL("plain Msg{int} param should not emit handle/string/vec drop calls");
+  //   isHandleBearingStruct("modB.Msg")
+  //     → exact miss
+  //     → rfind('.') → suffix "Msg"
+  //     → handleBearingStructs.count("Msg") == 1  ← false positive
+  //     → return true
+  //
+  // This test exercises that path by constructing, at the AST level, a
+  // TypeDecl with decl.name = "modB.Msg" (a qualified struct name) so that the
+  // MLIR identified struct type is registered as "modB.Msg" and all subsequent
+  // structHasOwnedFields / isHandleBearingStruct lookups use that key.  A
+  // wrapping struct "Carrier { inner: modB.Msg }" is also registered.  Only
+  // the bare name "Msg" is placed in handle_bearing_structs (no qualified
+  // entry) — the collision scenario.
+  //
+  // With the fix (exact-match only): isHandleBearingStruct("modB.Msg") → exact
+  // miss → returns false → structHasOwnedFields("modB.Msg") falls through to
+  // field iteration, finds only an int, returns false → Carrier's inner field
+  // gets cloneFunc = {} (empty) → no "Carrier" entry in hew.struct_clone_fields.
+  //
+  // With the bug: isHandleBearingStruct("modB.Msg") → rfind("Msg") → hit →
+  // returns true → structHasOwnedFields("modB.Msg") returns true early →
+  // Carrier's inner field gets cloneFunc = "__recurse" → "Carrier" entry IS
+  // added to hew.struct_clone_fields.
+  {
+    using namespace hew::ast;
+
+    const Span span{0, 0};
+
+    auto mkNamedType = [&](const std::string &n) -> Spanned<TypeExpr> {
+      TypeExpr te;
+      te.kind = TypeNamed{n, std::nullopt};
+      return {std::move(te), span};
+    };
+
+    // type modB.Msg { value: int }  — registered first so Carrier can find it
+    TypeDecl msgDecl;
+    msgDecl.visibility = Visibility::Pub;
+    msgDecl.kind = TypeDeclKind::Struct;
+    msgDecl.name = "modB.Msg"; // qualified name: becomes the MLIR struct key
+    {
+      TypeBodyItemField f;
+      f.name = "value";
+      f.ty = mkNamedType("int");
+      TypeBodyItem bi;
+      bi.kind = std::move(f);
+      msgDecl.body.push_back(std::move(bi));
+    }
+
+    // type Carrier { inner: modB.Msg }
+    TypeDecl carrierDecl;
+    carrierDecl.visibility = Visibility::Pub;
+    carrierDecl.kind = TypeDeclKind::Struct;
+    carrierDecl.name = "Carrier";
+    {
+      TypeBodyItemField f;
+      f.name = "inner";
+      f.ty = mkNamedType("modB.Msg");
+      TypeBodyItem bi;
+      bi.kind = std::move(f);
+      carrierDecl.body.push_back(std::move(bi));
+    }
+
+    // actor Proc { receive fn handle(c: Carrier) {} }
+    ReceiveFnDecl receive;
+    receive.is_generator = false;
+    receive.is_pure = false;
+    receive.name = "handle";
+    {
+      Param p;
+      p.name = "c";
+      p.ty = mkNamedType("Carrier");
+      p.is_mutable = false;
+      receive.params.push_back(std::move(p));
+    }
+    receive.span = span;
+
+    ActorDecl actor;
+    actor.name = "Proc";
+    actor.receive_fns.push_back(std::move(receive));
+
+    // fn main() -> int { 0 }
+    FnDecl mainFn;
+    mainFn.is_async = false;
+    mainFn.is_generator = false;
+    mainFn.is_pure = false;
+    mainFn.visibility = Visibility::Pub;
+    mainFn.name = "main";
+    mainFn.return_type = mkNamedType("int");
+    {
+      Expr e;
+      e.kind = ExprLiteral{LitInteger{0}};
+      mainFn.body.trailing_expr =
+          std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(e), span});
+    }
+
+    Program prog;
+    prog.items.push_back({Item{std::move(msgDecl)}, span}); // must precede Carrier
+    prog.items.push_back({Item{std::move(carrierDecl)}, span});
+    prog.items.push_back({Item{std::move(actor)}, span});
+    prog.items.push_back({Item{std::move(mainFn)}, span});
+
+    // Collision: only the bare name "Msg" is in the set — NOT "modB.Msg".
+    // This simulates the other-module's handle-bearing "Msg" registration.
+    // The fixed code must NOT false-positive on the qualified "modB.Msg" key.
+    prog.handle_bearing_structs.push_back("Msg");
+
+    mlir::MLIRContext ctx2;
+    initContext(ctx2);
+    auto m2 = generateMLIR(ctx2, prog);
+    if (!m2) {
+      FAIL("MLIR generation failed for qualified-name collision program (sub-test 2)");
+      return;
+    }
+
+    // The key observable: with exact-match only, structHasOwnedFields("modB.Msg")
+    // returns false (the bare "Msg" entry does NOT match the qualified key), so
+    // Carrier's inner field gets no clone function and no "Carrier" entry appears
+    // in the hew.struct_clone_fields module attribute.
+    //
+    // With the buggy rfind code: structHasOwnedFields("modB.Msg") returns true
+    // (strips to "Msg", finds the bare entry), and hew.struct_clone_fields gains
+    // a "Carrier" entry with cloneFunc "__recurse".
+    auto cloneFields = m2->getAttrOfType<mlir::DictionaryAttr>("hew.struct_clone_fields");
+    bool carrierInCloneFields = cloneFields && cloneFields.get("Carrier") != nullptr;
+    if (carrierInCloneFields) {
+      FAIL("rfind false-positive: Carrier should have no struct_clone_fields entry "
+           "when only bare 'Msg' is in handle_bearing_structs (not 'modB.Msg')");
+      m2.getOperation()->destroy();
+      return;
+    }
+
     m2.getOperation()->destroy();
-    return;
   }
 
-  m2.getOperation()->destroy();
   PASS();
 }
 

@@ -244,6 +244,12 @@ mod tests {
     /// actor-id X is active — simulating an actor migrating across workers.
     ///
     /// This is the core cross-thread regression for issue #1420.
+    ///
+    /// Native-only: `wasm32-wasip1` has no preemptive thread support, so the
+    /// migration this test simulates is meaningless on that target. The
+    /// invariant the test guards still holds on WASM (the slot is keyed by
+    /// `(actor_id, kind)`, not by thread identity); native coverage is enough.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn actor_keyed_error_survives_thread_migration() {
         const ACTOR_ID: u64 = 999_999;

@@ -71,7 +71,7 @@ fn stringify_result_to_malloc(result: Result<String, serde_json::Error>) -> *mut
 /// Parse a JSON string into a [`HewJsonValue`].
 ///
 /// Returns null on parse error or invalid input.
-/// Call [`hew_json_last_error`] to retrieve the current thread's parse failure.
+/// Call [`hew_json_last_error`] to retrieve this actor's last JSON parse failure.
 ///
 /// # Safety
 ///
@@ -1522,7 +1522,7 @@ mod tests {
     }
 
     #[test]
-    fn get_bytes_last_error_is_thread_local() {
+    fn get_bytes_last_error_is_per_actor() {
         clear_parse_last_error();
 
         let err_thread = std::thread::spawn(|| {

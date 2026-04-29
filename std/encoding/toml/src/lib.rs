@@ -48,7 +48,7 @@ fn get_parse_last_error() -> String {
 /// Parse a TOML string into an opaque [`HewTomlValue`].
 ///
 /// Returns null on parse error or invalid input.
-/// Call [`hew_toml_last_error`] to retrieve the current thread's parse failure.
+/// Call [`hew_toml_last_error`] to retrieve this actor's last TOML parse failure.
 ///
 /// # Safety
 ///

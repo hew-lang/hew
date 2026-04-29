@@ -149,7 +149,7 @@ fn is_yaml_anchor_alias_name_byte(byte: u8) -> bool {
 /// Parse a YAML string into a [`HewYamlValue`].
 ///
 /// Returns null on parse error or invalid input.
-/// Call [`hew_yaml_last_error`] to retrieve the current thread's parse failure.
+/// Call [`hew_yaml_last_error`] to retrieve this actor's last YAML parse failure.
 ///
 /// # Safety
 ///

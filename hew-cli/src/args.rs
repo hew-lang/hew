@@ -301,6 +301,35 @@ pub struct DocArgs {
 // Eval
 // ---------------------------------------------------------------------------
 
+/// JIT execution mode for `hew eval`.
+///
+/// # Contract for downstream lanes
+///
+/// This enum intentionally has only two variants: `Inprocess` and `Worker`.
+/// The `Auto` variant is reserved for issue #1227, which will extend this
+/// to a tri-state (auto | inprocess | worker) and add `catch_unwind` +
+/// crash-counter logic.  Downstream lanes MUST add `Auto` as an additive
+/// extension — do not rename or reorder the existing variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum JitMode {
+    /// Run the compiled module in-process via LLJIT (fast, no subprocess).
+    ///
+    /// SHIM: stdout goes directly to the parent fd; no capture yet.
+    /// WHY: the M1 keystone (#1235) requires in-process execution.
+    /// WHEN obsolete: when #1227 wraps the call in `catch_unwind`.
+    Inprocess,
+
+    /// AOT-compile and spawn a child process (current default behaviour).
+    ///
+    /// Selecting this mode explicitly routes through the existing
+    /// `run_inprocess_compiled` AOT+spawn path unchanged.
+    Worker,
+    // NOTE: `Auto` variant is reserved for issue #1227.  Add it there as:
+    //   Auto,
+    // and update cmd_eval in eval/mod.rs to select the mode automatically
+    // based on the crash counter state.
+}
+
 #[derive(Debug, Args)]
 #[command(after_help = EVAL_AFTER_HELP)]
 pub struct EvalArgs {
@@ -313,6 +342,15 @@ pub struct EvalArgs {
     /// Compilation target triple (e.g. `wasm32-wasi`).
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
+    /// JIT execution mode.
+    ///
+    /// `inprocess` — compile and run in-process via LLJIT (no subprocess).
+    /// `worker`    — AOT-compile and spawn a child process (default when
+    ///               this flag is absent).
+    ///
+    /// `auto` is reserved for issue #1227 and not yet accepted.
+    #[arg(long, value_name = "MODE")]
+    pub jit: Option<JitMode>,
     /// Emit a machine-readable JSON run contract on stdout instead of raw program output.
     ///
     /// The JSON object always contains:

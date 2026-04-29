@@ -101,11 +101,11 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
     validate_eval_request(&request, args.json, target);
 
     if args.json {
-        emit_json_eval(&request, timeout, target);
+        emit_json_eval(&request, timeout, target, args.jit);
         return;
     }
 
-    execute_eval_request(&request, timeout, target);
+    execute_eval_request(&request, timeout, target, args.jit);
 }
 
 fn resolve_eval_timeout(raw: &str) -> std::time::Duration {
@@ -161,10 +161,17 @@ fn validate_eval_request(request: &EvalRequest, json: bool, target: Option<&str>
     }
 }
 
-fn emit_json_eval(request: &EvalRequest, timeout: std::time::Duration, target: Option<&str>) {
+fn emit_json_eval(
+    request: &EvalRequest,
+    timeout: std::time::Duration,
+    target: Option<&str>,
+    jit: Option<crate::args::JitMode>,
+) {
     let result = match request {
-        EvalRequest::File(path) => capture_json_eval(|| repl::eval_file(path, timeout, target)),
-        EvalRequest::Expr(expr) => capture_json_eval(|| repl::eval_one(expr, timeout, target)),
+        EvalRequest::File(path) => {
+            capture_json_eval(|| repl::eval_file(path, timeout, target, jit))
+        }
+        EvalRequest::Expr(expr) => capture_json_eval(|| repl::eval_one(expr, timeout, target, jit)),
         EvalRequest::Repl => unreachable!("validated before JSON evaluation"),
     };
 
@@ -186,10 +193,15 @@ where
     eval_result_to_json(result, diagnostics)
 }
 
-fn execute_eval_request(request: &EvalRequest, timeout: std::time::Duration, target: Option<&str>) {
+fn execute_eval_request(
+    request: &EvalRequest,
+    timeout: std::time::Duration,
+    target: Option<&str>,
+    jit: Option<crate::args::JitMode>,
+) {
     match request {
-        EvalRequest::File(path) => emit_eval_output(repl::eval_file(path, timeout, target)),
-        EvalRequest::Expr(expr) => emit_eval_output(repl::eval_one(expr, timeout, target)),
+        EvalRequest::File(path) => emit_eval_output(repl::eval_file(path, timeout, target, jit)),
+        EvalRequest::Expr(expr) => emit_eval_output(repl::eval_one(expr, timeout, target, jit)),
         EvalRequest::Repl => {
             if let Err(e) = repl::run_interactive(timeout, target) {
                 eprintln!("Error: {e}");

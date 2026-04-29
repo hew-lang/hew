@@ -31,6 +31,9 @@ pub struct ReplSession {
     /// Target triple for compilation (e.g. `wasm32-wasi`). When `None` the
     /// host native target is used.
     eval_target: Option<String>,
+    /// JIT execution mode.  When `None` (or `Worker`), uses the existing
+    /// AOT+spawn path.  When `Inprocess`, routes through LLJIT.
+    jit_mode: Option<crate::args::JitMode>,
 }
 
 #[derive(Debug)]
@@ -336,6 +339,7 @@ impl ReplSession {
             execution_timeout,
             project_dir: None,
             eval_target: None,
+            jit_mode: None,
         }
     }
 
@@ -354,6 +358,7 @@ impl ReplSession {
             execution_timeout,
             project_dir,
             eval_target: None,
+            jit_mode: None,
         }
     }
 
@@ -376,6 +381,14 @@ impl ReplSession {
         let mut session = Self::with_timeout(execution_timeout);
         session.eval_target = target.map(str::to_owned);
         session
+    }
+
+    /// Set the JIT execution mode for this session.
+    ///
+    /// `Inprocess` routes through LLJIT; `Worker` (or `None`) uses the
+    /// existing AOT+spawn path.
+    pub fn set_jit_mode(&mut self, mode: Option<crate::args::JitMode>) {
+        self.jit_mode = mode;
     }
 
     fn is_wasm_target(&self) -> bool {
@@ -439,6 +452,7 @@ impl ReplSession {
             self.execution_timeout,
             self.project_dir.clone(),
             self.eval_target.as_deref(),
+            self.jit_mode,
         ) {
             Ok(output) => {
                 // On success, persist the input into session state.
@@ -528,6 +542,7 @@ impl ReplSession {
             self.execution_timeout,
             self.project_dir.clone(),
             self.eval_target.as_deref(),
+            self.jit_mode,
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &checked_program.kind);
@@ -601,6 +616,7 @@ impl ReplSession {
             self.execution_timeout,
             self.project_dir.clone(),
             self.eval_target.as_deref(),
+            self.jit_mode,
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &kind);
@@ -1125,12 +1141,13 @@ fn run_inprocess_compiled(
     }
 }
 
-/// Dispatch to native or WASM execution depending on the requested target.
+/// Dispatch to JIT, native, or WASM execution depending on mode and target.
 ///
-/// When `target` is `None` (or a non-WASM triple), falls through to the
-/// existing native `run_inprocess_compiled` path.  When `target` resolves to a
-/// WASM target, the program is compiled to a `.wasm` module and executed via
-/// `wasmtime` with captured output.
+/// When `jit_mode` is `Some(Inprocess)`, compiles via the frontend pipeline
+/// and executes in-process through LLJIT — no temp dir, no subprocess.
+/// When `target` resolves to a WASM target, routes through wasmtime.
+/// Otherwise falls through to the existing native `run_inprocess_compiled`
+/// AOT+spawn path.
 fn run_eval_compiled(
     program: hew_parser::ast::Program,
     source: &str,
@@ -1138,7 +1155,13 @@ fn run_eval_compiled(
     timeout: Duration,
     project_dir: Option<PathBuf>,
     target: Option<&str>,
+    jit_mode: Option<crate::args::JitMode>,
 ) -> Result<String, CompiledEvalError> {
+    // JIT in-process path — no temp dir, no subprocess.
+    if matches!(jit_mode, Some(crate::args::JitMode::Inprocess)) {
+        return run_inprocess_jit(program, source, source_label, project_dir);
+    }
+
     let is_wasm = target.is_some_and(|t| {
         crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
     });
@@ -1147,6 +1170,56 @@ fn run_eval_compiled(
         run_wasm_eval_compiled(program, source, source_label, timeout, project_dir, target)
     } else {
         run_inprocess_compiled(program, source, source_label, timeout, project_dir, target)
+    }
+}
+
+/// Compile and execute a single cell via LLJIT in the current process.
+///
+/// Runs the frontend pipeline (parse → typecheck → msgpack serialisation)
+/// and hands the result to `crate::jit::run_jit`, which invokes the C++
+/// `HewJitSession` wrapper.
+///
+/// Output from `print`/`println` goes directly to the parent's stdout fd
+/// and is not captured; this function returns `Ok(String::new())` on
+/// success.
+///
+/// SHIM: stdout is not captured.  WHY: the synchronous per-cell model
+/// writes directly to the parent fd — the M1 warm-path does not need
+/// capture.  WHEN obsolete: when #1227 adds output redirection.
+fn run_inprocess_jit(
+    program: hew_parser::ast::Program,
+    source: &str,
+    source_label: &str,
+    project_dir: Option<PathBuf>,
+) -> Result<String, CompiledEvalError> {
+    let options = crate::compile::CompileOptions {
+        project_dir,
+        // JIT always targets the host native triple — no cross-compilation.
+        target: None,
+        ..crate::compile::CompileOptions::default()
+    };
+
+    let msgpack_data = crate::compile::frontend_to_msgpack(program, source, source_label, &options)
+        .map_err(CompiledEvalError::from)?;
+
+    match crate::jit::run_jit(&msgpack_data) {
+        Ok(_exit_code) => {
+            // JIT output went directly to stdout; return empty to avoid
+            // double-printing in emit_eval_output.
+            Ok(String::new())
+        }
+        Err(crate::jit::JitError::ExecFailed(msg)) => {
+            // Treat JIT exec failure as a runtime failure with exit code 1.
+            // #1227 will replace this with a proper catch_unwind seam.
+            Err(CompiledEvalError::RuntimeFailure {
+                stdout: String::new(),
+                stderr: msg,
+                exit_code: 1,
+            })
+        }
+        Err(crate::jit::JitError::SessionCreateFailed(msg)) => Err(CompiledEvalError::Message(
+            format!("JIT session failed to initialise: {msg}"),
+        )),
     }
 }
 
@@ -1274,8 +1347,10 @@ pub fn eval_one(
     expr: &str,
     timeout: Duration,
     target: Option<&str>,
+    jit: Option<crate::args::JitMode>,
 ) -> Result<String, CliEvalError> {
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
+    session.set_jit_mode(jit);
     session.eval_cli(expr, "<eval>")
 }
 
@@ -1288,6 +1363,7 @@ pub fn eval_file(
     path: &str,
     timeout: Duration,
     target: Option<&str>,
+    jit: Option<crate::args::JitMode>,
 ) -> Result<String, CliEvalError> {
     let (source, input_name) = if path == "-" {
         let mut source = String::new();
@@ -1306,6 +1382,7 @@ pub fn eval_file(
     } else {
         ReplSession::for_path_with_target(path, timeout, target)
     };
+    session.set_jit_mode(jit);
     session.eval_source_file_cli(&source, &input_name, &input_name)
 }
 
@@ -1588,7 +1665,7 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT, None);
+        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT, None, None);
         assert_eq!(result.unwrap(), "6\n");
     }
 
@@ -1734,7 +1811,7 @@ mod tests {
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
         )
         .unwrap();
-        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None);
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -1747,7 +1824,7 @@ mod tests {
         let path = dir.path().join("hew_eval_balanced_incomplete_expr.hew");
         std::fs::write(&path, "1 +\n2\n").unwrap();
 
-        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None);
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -1846,6 +1923,7 @@ mod tests {
         let result = eval_file(
             main_path.to_str().expect("main path is valid UTF-8"),
             DEFAULT_EVAL_TIMEOUT,
+            None,
             None,
         );
         assert!(
@@ -2005,7 +2083,7 @@ mod tests {
         if !require_wasi_toolchain() {
             return;
         }
-        let result = eval_one("1 + 2", DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
+        let result = eval_one("1 + 2", DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"), None);
         assert_eq!(result.unwrap(), "3\n");
     }
 
@@ -2018,6 +2096,7 @@ mod tests {
             r#"println("hello from wasi")"#,
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
+            None,
         );
         assert_eq!(result.unwrap(), "hello from wasi\n");
     }
@@ -2064,6 +2143,7 @@ mod tests {
             path.to_str().unwrap(),
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
+            None,
         );
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
     }

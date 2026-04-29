@@ -421,6 +421,38 @@ pub fn compile(
     compile_and_link(&ast_data, input, output, &target, options)
 }
 
+/// Compile a parsed program through the frontend pipeline only, yielding the
+/// MessagePack-encoded AST bytes ready for the JIT backend.
+///
+/// Renders frontend diagnostics as a side effect. Returns `Err` on compile
+/// failure with the same semantics as [`compile_from_source_checked`].
+pub(crate) fn frontend_to_msgpack(
+    program: hew_parser::ast::Program,
+    source: &str,
+    source_label: &str,
+    options: &CompileOptions,
+) -> Result<Vec<u8>, CompileFromSourceError> {
+    let target = TargetSpec::from_requested(options.target.as_deref())
+        .map_err(CompileFromSourceError::Message)?;
+    let frontend_options = frontend_options(&target, options);
+
+    let frontend =
+        match frontend_compile_program_to_msgpack(program, source, source_label, &frontend_options)
+        {
+            Ok(frontend) => frontend,
+            Err(failure) => {
+                render_frontend_diagnostics(&failure.diagnostics);
+                return Err(if failure.diagnostics.is_empty() {
+                    CompileFromSourceError::Message(failure.message)
+                } else {
+                    CompileFromSourceError::DiagnosticsRendered
+                });
+            }
+        };
+    render_frontend_diagnostics(&frontend.diagnostics);
+    Ok(frontend.data)
+}
+
 pub(crate) fn compile_from_source_checked(
     program: hew_parser::ast::Program,
     source: &str,

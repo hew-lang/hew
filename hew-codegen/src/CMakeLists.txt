@@ -266,6 +266,7 @@ add_library(HewCodegen STATIC
   codegen.cpp
   debug_info.cpp
   jit_symbol_map.cpp
+  jit_session.cpp
 )
 
 target_include_directories(HewCodegen PUBLIC

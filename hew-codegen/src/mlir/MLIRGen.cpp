@@ -2986,8 +2986,11 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   }
 
   // Populate handle type metadata from the Rust type checker.
-  // convertType() uses this for imported / qualified handles; the defining
-  // stdlib module still falls back to local bare-name cases for self-compiles.
+  // The Rust side emits both bare names (e.g. "Widget") for locally-defined
+  // structs and fully-qualified names (e.g. "modA.Widget") for cross-module
+  // types.  Both forms are inserted verbatim; isHandleBearingStruct uses
+  // exact-match only so that a bare name from one module cannot collide with
+  // a qualified name from another module that happens to share the struct name.
   for (const auto &ht : program.handle_types) {
     knownHandleTypes.insert(ht);
   }
@@ -6433,10 +6436,19 @@ bool MLIRGen::structHasOwnedFields(const std::string &name) const {
 }
 
 bool MLIRGen::isHandleBearingStruct(const std::string &name) const {
-  if (handleBearingStructs.count(name))
-    return true;
-  auto dot = name.rfind('.');
-  return dot != std::string::npos && handleBearingStructs.count(name.substr(dot + 1));
+  // Exact-match only.  The Rust producer populates handleBearingStructs with
+  // both bare names ("Widget") for locally-defined structs and fully-qualified
+  // names ("modA.Widget") for cross-module types, so a bare-name query
+  // correctly matches local types and a qualified-name query correctly matches
+  // imported types.
+  //
+  // A previous rfind('.') fallback stripped the module prefix and matched on
+  // the bare suffix alone.  That is unsafe: if two modules each export a struct
+  // with the same base name — one handle-bearing, one not — the suffix match
+  // would false-positive on the non-handle-bearing variant, emitting spurious
+  // __auto_field_drop instructions for a struct the Rust checker never
+  // validated for safe field-return patterns.
+  return handleBearingStructs.count(name) != 0;
 }
 
 void MLIRGen::maybeRegisterBorrowedFieldReturn(const ast::FnDecl &fn, llvm::StringRef symbolName) {

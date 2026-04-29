@@ -428,13 +428,24 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
     }
 }
 
-fn run_analysis(source: &str) -> AnalysisResult {
-    let tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
+fn build_tokens(source: &str) -> Vec<hew_analysis::SemanticToken> {
+    hew_analysis::semantic_tokens::build_semantic_tokens(source)
+}
 
-    let analysis = parse_and_type_check(source);
+fn build_symbols(
+    source: &str,
+    parse_result: &hew_parser::ParseResult,
+) -> Vec<hew_analysis::SymbolInfo> {
+    hew_analysis::symbols::build_document_symbols(source, parse_result)
+}
+
+fn convert_diagnostics(
+    parse_errors: &[hew_parser::ParseError],
+    type_output: Option<&hew_types::TypeCheckOutput>,
+) -> Vec<WasmDiagnostic> {
     let mut diagnostics = Vec::new();
 
-    for err in &analysis.parse_result.errors {
+    for err in parse_errors {
         let severity = match err.severity {
             hew_parser::Severity::Warning => "warning",
             hew_parser::Severity::Error => "error",
@@ -450,7 +461,7 @@ fn run_analysis(source: &str) -> AnalysisResult {
         });
     }
 
-    if let Some(type_output) = analysis.type_output.as_ref() {
+    if let Some(type_output) = type_output {
         for err in &type_output.errors {
             let severity = match err.severity {
                 hew_types::error::Severity::Warning => "warning",
@@ -476,7 +487,15 @@ fn run_analysis(source: &str) -> AnalysisResult {
         }
     }
 
-    let symbols = hew_analysis::symbols::build_document_symbols(source, &analysis.parse_result);
+    diagnostics
+}
+
+fn run_analysis(source: &str) -> AnalysisResult {
+    let tokens = build_tokens(source);
+    let analysis = parse_and_type_check(source);
+    let diagnostics =
+        convert_diagnostics(&analysis.parse_result.errors, analysis.type_output.as_ref());
+    let symbols = build_symbols(source, &analysis.parse_result);
 
     AnalysisResult {
         diagnostics,

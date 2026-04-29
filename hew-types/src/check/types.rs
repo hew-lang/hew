@@ -568,6 +568,14 @@ pub struct Checker {
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
     pub(super) handle_bearing_structs: HashSet<String>,
+    /// Set on every type registration; cleared once `ensure_handle_bearing_fresh`
+    /// runs the fixpoint refresh. Converts O(N²) per-registration rescans to a
+    /// single pass before the first lookup — see `ensure_handle_bearing_fresh`.
+    pub(super) handle_bearing_dirty: bool,
+    /// Incremented inside `refresh_handle_bearing_structs` to let tests verify
+    /// the deferred-refresh optimisation holds (should be O(1) across N
+    /// registrations, not O(N)).
+    pub(super) refresh_call_count: usize,
     /// Qualified `Actor::method` names declared with `receive gen fn`.
     pub(super) receive_generator_methods: HashSet<String>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
@@ -727,6 +735,8 @@ impl Checker {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: HashSet::new(),
+            handle_bearing_dirty: false,
+            refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),

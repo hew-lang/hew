@@ -999,6 +999,9 @@ unsafe fn upgrade_noise(
 /// Cleanup after reader loop exit: remove from manager and attempt reconnection
 /// if the drop was unexpected (not triggered by explicit stop).
 fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
+    // Evict any stashed I/O span context (idempotent; no-op if tracing was disabled).
+    crate::tracing::io_span_evict(conn_id);
+
     let unexpected_drop = stop_flag.load(Ordering::Acquire) == 0;
     if unexpected_drop {
         if !mgr.is_null() {
@@ -1140,6 +1143,12 @@ fn reader_loop(
                             );
                         }
                     } else {
+                        // I/O recv span: bracket the router call so the
+                        // mailbox enqueue captures the io_recv span as the
+                        // parent of the actor-dispatch span.
+                        // Fast path: `io_recv_span_begin` returns None when
+                        // tracing is disabled (a single atomic load).
+                        let saved_ctx = crate::tracing::io_recv_span_begin(conn_id);
                         router_fn(
                             envelope.target_actor_id,
                             envelope.msg_type,
@@ -1149,6 +1158,9 @@ fn reader_loop(
                             envelope.source_node_id,
                             mgr,
                         );
+                        if let Some(saved) = saved_ctx {
+                            crate::tracing::io_recv_span_end(saved);
+                        }
                     }
                 }
             }
@@ -1528,6 +1540,10 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     // SAFETY: hew_now_ms has no preconditions.
     let now = unsafe { crate::io_time::hew_now_ms() };
     actor.last_activity_ms.store(now, Ordering::Release);
+
+    // I/O span: record accept span and stash context for reader_loop.
+    // Fast path: atomic load only when tracing is disabled.
+    crate::tracing::io_accept_span_begin(conn_id);
 
     // Spawn reader thread.
     let stop = Arc::clone(&actor.reader_stop);

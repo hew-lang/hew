@@ -29,10 +29,10 @@
 
 use crate::util::MutexExt;
 use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, Once};
+use std::sync::{LazyLock, Mutex, Once};
 
 // ── Trace context ──────────────────────────────────────────────────────
 
@@ -67,6 +67,10 @@ pub const SPAN_CRASH: i32 = 3;
 pub const SPAN_STOP: i32 = 4;
 /// Message send event.
 pub const SPAN_SEND: i32 = 5;
+/// I/O accept event: a new TCP connection was accepted by the cluster transport.
+pub const SPAN_IO_ACCEPT: i32 = 6;
+/// I/O recv event: a decoded envelope was received and is being delivered to an actor.
+pub const SPAN_IO_RECV: i32 = 7;
 
 /// A recorded trace event.
 #[repr(C)]
@@ -103,6 +107,38 @@ static TRACE_EVENTS: Mutex<VecDeque<HewTraceEvent>> = Mutex::new(VecDeque::new()
 
 /// Maximum number of trace events to retain.
 const MAX_TRACE_EVENTS: usize = 16384;
+
+// ── Per-connection I/O span side table ────────────────────────────────
+//
+// Associates a `conn_id` (transport handle, an `i32`) with the
+// `HewTraceContext` produced when the connection was accepted.  The reader
+// thread looks this up to parent the `SPAN_IO_RECV` span under the accept
+// span, propagating causal IDs into the actor mailbox.
+//
+// SHIM: WHY — `hew_connmgr_add` (accept site) and `reader_loop` (recv site)
+//       run on different OS threads and share only `conn_id`.  A
+//       `Mutex<HashMap>` is the minimal safe cross-thread store.
+//       WHEN — Remove or upgrade if a sharded or lock-free structure is
+//       warranted by profiler data showing this as a bottleneck.
+//       REAL — A per-shard table or embedding the context in `ConnectionActor`
+//       would be lower-contention, but requires ABI/struct changes.
+static IO_SPAN_TABLE: LazyLock<Mutex<HashMap<c_int, HewTraceContext>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Stash the `HewTraceContext` of an accepted connection by `conn_id`.
+///
+/// Only called when `TRACING_ENABLED` is true.  No-op if tracing is later
+/// disabled — the entry will be evicted on connection close.
+pub(crate) fn io_span_stash(conn_id: c_int, ctx: HewTraceContext) {
+    IO_SPAN_TABLE.lock_or_recover().insert(conn_id, ctx);
+}
+
+/// Evict any stashed context for `conn_id` on connection close.
+///
+/// Safe to call even when no entry exists (eviction is idempotent).
+pub(crate) fn io_span_evict(conn_id: c_int) {
+    IO_SPAN_TABLE.lock_or_recover().remove(&conn_id);
+}
 
 // ── Per-thread trace context ───────────────────────────────────────────
 
@@ -394,6 +430,111 @@ pub(crate) fn record_send(actor_id: u64, msg_type: i32) {
     record_lifecycle_event(actor_id, SPAN_SEND, msg_type);
 }
 
+/// Record a single I/O-level event using an explicit `HewTraceContext`.
+///
+/// Used for `SPAN_IO_ACCEPT` and `SPAN_IO_RECV` which are not bound to any
+/// actor ID (`actor_id` = 0) and carry their own freshly generated span context.
+fn record_io_event(ctx: &HewTraceContext, event_type: i32) {
+    record_event(HewTraceEvent {
+        trace_id_hi: ctx.trace_id_hi,
+        trace_id_lo: ctx.trace_id_lo,
+        span_id: ctx.span_id,
+        parent_span_id: ctx.parent_span_id,
+        actor_id: 0,
+        event_type,
+        msg_type: 0,
+        timestamp_ns: monotonic_ns(),
+    });
+}
+
+/// Called at `hew_connmgr_add` when a TCP connection is accepted.
+///
+/// Creates a new root I/O span, emits `SPAN_IO_ACCEPT` begin and end events
+/// (accept is synchronous — the span collapses to an instant), then stashes
+/// the context by `conn_id` so `reader_loop` can parent per-envelope
+/// `SPAN_IO_RECV` spans under this accept span.
+///
+/// Fast path: returns immediately (no allocation) when tracing is disabled.
+pub(crate) fn io_accept_span_begin(conn_id: c_int) {
+    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let ctx = HewTraceContext {
+        trace_id_hi: next_random_id(),
+        trace_id_lo: next_random_id(),
+        span_id: next_random_id(),
+        parent_span_id: 0,
+        flags: 1, // sampled
+    };
+    record_io_event(&ctx, SPAN_IO_ACCEPT);
+    // Accept is synchronous: immediately emit the end so the span is closed.
+    record_io_event(&ctx, SPAN_END);
+    // Stash so reader_loop can parent io_recv spans under this accept span.
+    io_span_stash(conn_id, ctx);
+}
+
+/// Called in `reader_loop` before `router_fn` is invoked for a decoded envelope.
+///
+/// Looks up the accept span for `conn_id`, creates a child `SPAN_IO_RECV`
+/// span, emits its `SPAN_IO_RECV` begin event, and sets the thread-local
+/// context so that `msg_node_alloc` captures this span as the parent for
+/// the subsequent actor-dispatch span.
+///
+/// Returns the prior thread-local context so the caller can restore it after
+/// `router_fn` returns.  If tracing is disabled, returns `None` (caller
+/// skips tracing entirely).
+pub(crate) fn io_recv_span_begin(conn_id: c_int) -> Option<HewTraceContext> {
+    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    // Look up the accept span context.  NOT consumed — many envelopes arrive
+    // per connection, each parented under the same accept span.
+    let parent_ctx = IO_SPAN_TABLE
+        .lock_or_recover()
+        .get(&conn_id)
+        .copied()
+        .unwrap_or_default();
+
+    // Build the io_recv span as a child of the accept span.
+    let recv_ctx = HewTraceContext {
+        trace_id_hi: if parent_ctx.trace_id_hi != 0 {
+            parent_ctx.trace_id_hi
+        } else {
+            next_random_id()
+        },
+        trace_id_lo: if parent_ctx.trace_id_lo != 0 {
+            parent_ctx.trace_id_lo
+        } else {
+            next_random_id()
+        },
+        span_id: next_random_id(),
+        parent_span_id: parent_ctx.span_id,
+        flags: 1, // sampled
+    };
+
+    record_io_event(&recv_ctx, SPAN_IO_RECV);
+
+    // Install the io_recv context so mailbox enqueue captures it as the
+    // parent for the subsequent actor-dispatch span.
+    let saved = CURRENT_CONTEXT.with(Cell::get);
+    CURRENT_CONTEXT.with(|c| c.set(recv_ctx));
+
+    Some(saved)
+}
+
+/// Called in `reader_loop` after `router_fn` returns.
+///
+/// Emits `SPAN_END` for the current `io_recv` span and restores `saved_ctx`.
+///
+/// `saved_ctx` must be the value returned by the matching `io_recv_span_begin`.
+pub(crate) fn io_recv_span_end(saved_ctx: HewTraceContext) {
+    // Emit SPAN_END using the current (recv) context that was installed in begin.
+    let recv_ctx = CURRENT_CONTEXT.with(Cell::get);
+    record_io_event(&recv_ctx, SPAN_END);
+    CURRENT_CONTEXT.with(|c| c.set(saved_ctx));
+}
+
 /// Enable or disable tracing globally.
 ///
 /// When disabled, all tracing functions are near-zero-cost no-ops
@@ -469,13 +610,14 @@ pub(crate) fn register_trace_reset_hook() {
     });
 }
 
-/// Reset all tracing state (disable + clear events + reset context).
+/// Reset all tracing state (disable + clear events + reset context + clear I/O span table).
 #[no_mangle]
 pub extern "C" fn hew_trace_reset() {
     TRACING_ENABLED.store(false, Ordering::Release);
     let mut events = TRACE_EVENTS.lock_or_recover();
     events.clear();
     CURRENT_CONTEXT.with(|c| c.set(HewTraceContext::default()));
+    IO_SPAN_TABLE.lock_or_recover().clear();
 }
 
 // ── Profiler snapshot ───────────────────────────────────────────────────
@@ -529,6 +671,8 @@ pub fn drain_events_json() -> String {
                 SPAN_CRASH => "crash",
                 SPAN_STOP => "stop",
                 SPAN_SEND => "send",
+                SPAN_IO_ACCEPT => "io_accept",
+                SPAN_IO_RECV => "io_recv",
                 _ => "unknown",
             };
 

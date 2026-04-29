@@ -428,55 +428,80 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
     }
 }
 
+fn build_tokens(source: &str) -> Vec<hew_analysis::SemanticToken> {
+    hew_analysis::semantic_tokens::build_semantic_tokens(source)
+}
+
+fn build_symbols(
+    source: &str,
+    parse_result: &hew_parser::ParseResult,
+) -> Vec<hew_analysis::SymbolInfo> {
+    hew_analysis::symbols::build_document_symbols(source, parse_result)
+}
+
+fn parse_error_to_wasm(err: hew_parser::ParseError) -> WasmDiagnostic {
+    let severity = match err.severity {
+        hew_parser::Severity::Warning => "warning",
+        hew_parser::Severity::Error => "error",
+    };
+    WasmDiagnostic {
+        severity: severity.to_string(),
+        message: err.message,
+        start_offset: err.span.start,
+        end_offset: err.span.end,
+        kind: "parse_error".to_string(),
+        notes: Vec::new(),
+        suggestions: Vec::new(),
+    }
+}
+
+fn type_error_to_wasm(err: hew_types::error::TypeError) -> WasmDiagnostic {
+    let severity = match err.severity {
+        hew_types::error::Severity::Warning => "warning",
+        hew_types::error::Severity::Error => "error",
+    };
+    WasmDiagnostic {
+        severity: severity.to_string(),
+        message: err.message,
+        start_offset: err.span.start,
+        end_offset: err.span.end,
+        kind: err.kind.as_kind_str().to_string(),
+        notes: err
+            .notes
+            .into_iter()
+            .map(|(span, msg)| WasmNote {
+                start_offset: span.start,
+                end_offset: span.end,
+                message: msg,
+            })
+            .collect(),
+        suggestions: err.suggestions,
+    }
+}
+
+fn convert_diagnostics(
+    parse_errors: Vec<hew_parser::ParseError>,
+    type_output: Option<hew_types::TypeCheckOutput>,
+) -> Vec<WasmDiagnostic> {
+    let mut diagnostics: Vec<WasmDiagnostic> =
+        parse_errors.into_iter().map(parse_error_to_wasm).collect();
+    if let Some(type_output) = type_output {
+        diagnostics.extend(type_output.errors.into_iter().map(type_error_to_wasm));
+    }
+    diagnostics
+}
+
 fn run_analysis(source: &str) -> AnalysisResult {
-    let tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
-
+    let tokens = build_tokens(source);
     let analysis = parse_and_type_check(source);
-    let mut diagnostics = Vec::new();
-
-    for err in &analysis.parse_result.errors {
-        let severity = match err.severity {
-            hew_parser::Severity::Warning => "warning",
-            hew_parser::Severity::Error => "error",
-        };
-        diagnostics.push(WasmDiagnostic {
-            severity: severity.to_string(),
-            message: err.message.clone(),
-            start_offset: err.span.start,
-            end_offset: err.span.end,
-            kind: "parse_error".to_string(),
-            notes: Vec::new(),
-            suggestions: Vec::new(),
-        });
-    }
-
-    if let Some(type_output) = analysis.type_output.as_ref() {
-        for err in &type_output.errors {
-            let severity = match err.severity {
-                hew_types::error::Severity::Warning => "warning",
-                hew_types::error::Severity::Error => "error",
-            };
-            diagnostics.push(WasmDiagnostic {
-                severity: severity.to_string(),
-                message: err.message.clone(),
-                start_offset: err.span.start,
-                end_offset: err.span.end,
-                kind: err.kind.as_kind_str().to_string(),
-                notes: err
-                    .notes
-                    .iter()
-                    .map(|(span, msg)| WasmNote {
-                        start_offset: span.start,
-                        end_offset: span.end,
-                        message: msg.clone(),
-                    })
-                    .collect(),
-                suggestions: err.suggestions.clone(),
-            });
-        }
-    }
-
-    let symbols = hew_analysis::symbols::build_document_symbols(source, &analysis.parse_result);
+    // Build symbols first while parse_result is still fully owned, then
+    // destructure to pass errors and type_output by value to convert_diagnostics.
+    let symbols = build_symbols(source, &analysis.parse_result);
+    let AnalyzedSource {
+        parse_result,
+        type_output,
+    } = analysis;
+    let diagnostics = convert_diagnostics(parse_result.errors, type_output);
 
     AnalysisResult {
         diagnostics,

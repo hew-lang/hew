@@ -11,7 +11,6 @@ use hew_cabi::{
     cabi::{cstr_to_str, str_to_malloc},
     vec::{ElemKind, HewVec},
 };
-use std::cell::RefCell;
 use std::ffi::{c_void, CStr};
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -20,23 +19,30 @@ use std::time::Duration;
 /// Global timeout for all HTTP requests, in milliseconds. Default: 30 000 ms.
 static HTTP_TIMEOUT_MS: AtomicI32 = AtomicI32::new(30_000);
 
+#[cfg(test)]
 std::thread_local! {
-    static LAST_HTTP_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
-    #[cfg(test)]
     static FAIL_NEXT_HTTP_ALLOCATIONS: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
 }
 
 fn set_http_last_error(msg: impl Into<String>) {
-    LAST_HTTP_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_parse_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Http,
+        msg,
+    );
 }
 
 fn clear_http_last_error() {
-    LAST_HTTP_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_parse_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Http,
+    );
 }
 
 fn get_http_last_error() -> String {
-    LAST_HTTP_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+    hew_runtime::parse_error_slot::get_parse_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Http,
+    )
+    .unwrap_or_default()
 }
 
 #[cfg(test)]

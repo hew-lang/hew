@@ -99,11 +99,12 @@ pub unsafe extern "C" fn hew_json_parse(json_str: *const c_char) -> *mut HewJson
     }
 }
 
-/// Return the last JSON error recorded on the current thread.
+/// Return the most recent parse error for this Hew actor.
 ///
-/// This slot is shared by parse failures and byte-extraction failures from
-/// [`hew_json_get_bytes`]. Returns an empty string when the most recent
-/// operation succeeded or explicitly cleared the error slot.
+/// Returns an empty string when no error is set.
+///
+/// Errors are keyed per (actor, parser-kind), so a different parser's success
+/// does not clear this slot.
 #[no_mangle]
 pub extern "C" fn hew_json_last_error() -> *mut c_char {
     str_to_malloc(&get_parse_last_error())

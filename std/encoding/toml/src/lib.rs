@@ -6,8 +6,8 @@
 //! freed with [`hew_toml_free`].
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code.
-#[cfg(test)]
+// referenced by hew-cabi's object code, and to access the shared
+// parse-error slot.
 extern crate hew_runtime;
 
 use hew_cabi::cabi::str_to_malloc;
@@ -78,9 +78,12 @@ pub unsafe extern "C" fn hew_toml_parse(s: *const c_char) -> *mut HewTomlValue {
     }
 }
 
-/// Return the last TOML parse error recorded on the current thread.
+/// Return the most recent parse error for this Hew actor.
 ///
-/// Returns an empty string when no parse error has been recorded.
+/// Returns an empty string when no error is set.
+///
+/// Errors are keyed per (actor, parser-kind), so a different parser's success
+/// does not clear this slot.
 #[no_mangle]
 pub extern "C" fn hew_toml_last_error() -> *mut c_char {
     str_to_malloc(&get_parse_last_error())

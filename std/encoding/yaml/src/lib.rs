@@ -6,8 +6,8 @@
 //! via `Box` and must be freed with [`hew_yaml_free`].
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code.
-#[cfg(test)]
+// referenced by hew-cabi's object code, and to access the shared
+// parse-error slot.
 extern crate hew_runtime;
 
 use base64::Engine as _;
@@ -181,11 +181,12 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const c_char) -> *mut HewYaml
     }
 }
 
-/// Return the last YAML error recorded on the current thread.
+/// Return the most recent parse error for this Hew actor.
 ///
-/// This slot is shared by parse failures and byte-extraction failures from
-/// [`hew_yaml_get_bytes`]. Returns an empty string when the most recent
-/// operation succeeded or explicitly cleared the error slot.
+/// Returns an empty string when no error is set.
+///
+/// Errors are keyed per (actor, parser-kind), so a different parser's success
+/// does not clear this slot.
 #[no_mangle]
 pub extern "C" fn hew_yaml_last_error() -> *mut c_char {
     str_to_malloc(&get_parse_last_error())

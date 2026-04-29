@@ -6,8 +6,8 @@
 //! [`hew_datetime_last_error`] returns null when no error has been recorded.
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code.
-#[cfg(test)]
+// referenced by hew-cabi's object code, and to access the shared
+// parse-error slot.
 extern crate hew_runtime;
 
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
@@ -109,10 +109,13 @@ pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char
     }
 }
 
-/// Return the last datetime parse error recorded on the current thread.
+/// Return the most recent parse error for this Hew actor.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with `libc::free`. Returns null when no datetime error has been recorded.
+/// it with `libc::free`. Returns null when no error is set.
+///
+/// Errors are keyed per (actor, parser-kind), so a different parser's success
+/// does not clear this slot.
 #[no_mangle]
 pub extern "C" fn hew_datetime_last_error() -> *mut c_char {
     match clone_datetime_last_error() {

@@ -38,6 +38,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use crate::util::MutexExt;
+
 // ── Parser discriminant ──────────────────────────────────────────────────────
 
 /// Identifies which parser owns a parse-error slot entry.
@@ -61,34 +63,26 @@ pub enum ParserKind {
 static ACTOR_PARSE_ERRORS: Mutex<Option<HashMap<(u64, ParserKind), String>>> = Mutex::new(None);
 
 fn actor_map_set(actor_id: u64, kind: ParserKind, msg: String) {
-    let mut guard = ACTOR_PARSE_ERRORS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = ACTOR_PARSE_ERRORS.lock_or_recover();
     guard
         .get_or_insert_with(HashMap::new)
         .insert((actor_id, kind), msg);
 }
 
 fn actor_map_get(actor_id: u64, kind: ParserKind) -> Option<String> {
-    let guard = ACTOR_PARSE_ERRORS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = ACTOR_PARSE_ERRORS.lock_or_recover();
     guard.as_ref()?.get(&(actor_id, kind)).cloned()
 }
 
 fn actor_map_clear(actor_id: u64, kind: ParserKind) {
-    let mut guard = ACTOR_PARSE_ERRORS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = ACTOR_PARSE_ERRORS.lock_or_recover();
     if let Some(map) = guard.as_mut() {
         map.remove(&(actor_id, kind));
     }
 }
 
 fn actor_map_clear_all_for_actor(actor_id: u64) {
-    let mut guard = ACTOR_PARSE_ERRORS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = ACTOR_PARSE_ERRORS.lock_or_recover();
     if let Some(map) = guard.as_mut() {
         map.retain(|&(id, _), _| id != actor_id);
     }

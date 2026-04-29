@@ -14,6 +14,11 @@
 //! - `6 = object`
 //!
 //! Encoding-specific variants, if any, start at `7+`.
+//!
+//! Note: TOML has no null type, so `hew_toml_type` never returns `0`. The `0`
+//! slot is reserved in the shared prefix so that cross-encoding consumers can
+//! use a uniform `0..6` tag range. Downstream TOML consumers should not add a
+//! `0 =>` arm expecting a real null — it will never fire.
 
 /// Common `Value` methods implemented by stdlib encodings with opaque handles.
 trait CanonicalValueMethods {

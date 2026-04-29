@@ -6,6 +6,12 @@
 //! tuples. All returned [`HewProtoMsg`] pointers are heap-allocated via `Box`
 //! and must be freed with [`hew_proto_msg_free`].
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols that
+// hew-cabi declares as `extern "C"`. Required on MSVC (Windows) where the
+// linker is strict about unresolved externs even when the calling code path
+// is unreached. Matches the pattern used by msgpack and compress.
+extern crate hew_runtime;
+
 use hew_cabi::cabi::malloc_bytes;
 use std::os::raw::c_char;
 

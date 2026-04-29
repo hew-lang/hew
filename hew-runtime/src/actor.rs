@@ -5589,29 +5589,29 @@ mod tests {
             // Inject parse errors for all four parser kinds.
             crate::parse_error_slot::__set_parse_error_for_actor(
                 actor_id,
-                crate::parse_error_slot::ParserKind::Datetime,
+                crate::parse_error_slot::ErrorSlotKind::Datetime,
                 "datetime error",
             );
             crate::parse_error_slot::__set_parse_error_for_actor(
                 actor_id,
-                crate::parse_error_slot::ParserKind::Yaml,
+                crate::parse_error_slot::ErrorSlotKind::Yaml,
                 "yaml error",
             );
             crate::parse_error_slot::__set_parse_error_for_actor(
                 actor_id,
-                crate::parse_error_slot::ParserKind::Toml,
+                crate::parse_error_slot::ErrorSlotKind::Toml,
                 "toml error",
             );
             crate::parse_error_slot::__set_parse_error_for_actor(
                 actor_id,
-                crate::parse_error_slot::ParserKind::Json,
+                crate::parse_error_slot::ErrorSlotKind::Json,
                 "json error",
             );
 
             // Verify they are present before free.
             assert!(crate::parse_error_slot::__get_parse_error_for_actor(
                 actor_id,
-                crate::parse_error_slot::ParserKind::Datetime
+                crate::parse_error_slot::ErrorSlotKind::Datetime
             )
             .is_some());
 
@@ -5623,10 +5623,10 @@ mod tests {
 
             // All four slots must now be empty.
             for kind in [
-                crate::parse_error_slot::ParserKind::Datetime,
-                crate::parse_error_slot::ParserKind::Yaml,
-                crate::parse_error_slot::ParserKind::Toml,
-                crate::parse_error_slot::ParserKind::Json,
+                crate::parse_error_slot::ErrorSlotKind::Datetime,
+                crate::parse_error_slot::ErrorSlotKind::Yaml,
+                crate::parse_error_slot::ErrorSlotKind::Toml,
+                crate::parse_error_slot::ErrorSlotKind::Json,
             ] {
                 assert_eq!(
                     crate::parse_error_slot::__get_parse_error_for_actor(actor_id, kind),

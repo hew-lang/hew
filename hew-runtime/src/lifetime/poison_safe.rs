@@ -37,17 +37,9 @@ pub(crate) struct PoisonedLock;
 ///
 /// Use [`PoisonSafe::access`] for exclusive access; the `&mut T`
 /// passed to the closure is valid only for the closure body.
-#[allow(
-    dead_code,
-    reason = "Mutex variant ships alongside PoisonSafeRw; first callers land with the next sweep (LIVE_ACTORS, MONITOR_TABLE, ...)"
-)]
 #[derive(Debug)]
 pub(crate) struct PoisonSafe<T>(Mutex<T>);
 
-#[allow(
-    dead_code,
-    reason = "Mutex variant ships alongside PoisonSafeRw; first callers land with the next sweep"
-)]
 impl<T> PoisonSafe<T> {
     /// Construct a new `PoisonSafe<T>` wrapping `value`.
     pub(crate) const fn new(value: T) -> Self {
@@ -68,6 +60,10 @@ impl<T> PoisonSafe<T> {
     /// transparently — a poisoned-but-uncontended mutex yields
     /// `Some(f(..))`, not `None`.
     #[inline]
+    #[allow(
+        dead_code,
+        reason = "called only from #[cfg(test)] paths in scheduler and connection; provided for parity with PoisonSafeRw::try_access"
+    )]
     pub(crate) fn try_access<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         match self.0.try_lock() {
             Ok(mut guard) => Some(f(&mut *guard)),

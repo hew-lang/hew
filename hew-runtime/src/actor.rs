@@ -514,11 +514,17 @@ unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
         // SAFETY: caller guarantees `actor` is valid; `unregister_actor_names`
         // does not require LIVE_ACTORS membership, only the actor id.
         unsafe { crate::hew_node::unregister_actor_names(actor_id) };
+        // Remove all parse-error slots for this actor across every parser kind.
+        // Prevents unbounded growth of the global map on long-running nodes that
+        // spawn and reap many actors.
+        crate::parse_error_slot::clear_all_for_actor(actor_id);
     }
     #[cfg(target_arch = "wasm32")]
-    // SAFETY: caller guarantees `actor` is valid and not being dispatched.
-    unsafe {
-        crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor);
+    {
+        // SAFETY: caller guarantees `actor` is valid and not being dispatched.
+        let actor_id = unsafe { (*actor).id };
+        unsafe { crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor) };
+        crate::parse_error_slot::clear_all_for_actor(actor_id);
     }
 }
 
@@ -5560,6 +5566,75 @@ mod tests {
             msg.contains("OOM"),
             "error message should mention OOM, got: {msg}"
         );
+    }
+
+    /// Freeing an actor via `hew_actor_free` must remove all parse-error slot
+    /// entries for that actor across every parser kind.
+    ///
+    /// This guards against unbounded growth of the global parse-error map on
+    /// long-running nodes that spawn and reap many actors.
+    ///
+    /// Run 3× to satisfy the flake gate.
+    #[test]
+    fn hew_actor_free_clears_parse_error_slots() {
+        for _run in 0..3 {
+            let _guard = crate::runtime_test_guard();
+
+            // SAFETY: null state, valid dispatch.
+            let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+            assert!(!actor.is_null());
+            // SAFETY: actor is valid — returned by hew_actor_spawn.
+            let actor_id = unsafe { (*actor).id };
+
+            // Inject parse errors for all four parser kinds.
+            crate::parse_error_slot::__set_parse_error_for_actor(
+                actor_id,
+                crate::parse_error_slot::ParserKind::Datetime,
+                "datetime error",
+            );
+            crate::parse_error_slot::__set_parse_error_for_actor(
+                actor_id,
+                crate::parse_error_slot::ParserKind::Yaml,
+                "yaml error",
+            );
+            crate::parse_error_slot::__set_parse_error_for_actor(
+                actor_id,
+                crate::parse_error_slot::ParserKind::Toml,
+                "toml error",
+            );
+            crate::parse_error_slot::__set_parse_error_for_actor(
+                actor_id,
+                crate::parse_error_slot::ParserKind::Json,
+                "json error",
+            );
+
+            // Verify they are present before free.
+            assert!(crate::parse_error_slot::__get_parse_error_for_actor(
+                actor_id,
+                crate::parse_error_slot::ParserKind::Datetime
+            )
+            .is_some());
+
+            // Free the actor — this calls prepare_quiescent_actor_for_cleanup
+            // which calls parse_error_slot::clear_all_for_actor.
+            // SAFETY: actor is valid and was spawned by hew_actor_spawn above.
+            let rc = unsafe { hew_actor_free(actor) };
+            assert_eq!(rc, 0, "hew_actor_free must succeed");
+
+            // All four slots must now be empty.
+            for kind in [
+                crate::parse_error_slot::ParserKind::Datetime,
+                crate::parse_error_slot::ParserKind::Yaml,
+                crate::parse_error_slot::ParserKind::Toml,
+                crate::parse_error_slot::ParserKind::Json,
+            ] {
+                assert_eq!(
+                    crate::parse_error_slot::__get_parse_error_for_actor(actor_id, kind),
+                    None,
+                    "parse-error slot for {kind:?} must be cleared after actor free"
+                );
+            }
+        }
     }
 }
 

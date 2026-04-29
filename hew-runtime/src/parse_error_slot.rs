@@ -1,4 +1,4 @@
-//! Per-actor parse-error slot.
+//! Per-actor, per-parser parse-error slot.
 //!
 //! Hew actors run on a pooled, work-stealing cooperative scheduler.  An actor
 //! that calls a parser and is then parked may be resumed on a different OS
@@ -6,23 +6,25 @@
 //! `*_last_error` accessor on the new thread would read either an empty slot
 //! or another actor's error.
 //!
-//! This module provides a slot keyed by **logical actor identity**, not OS
-//! thread identity:
+//! This module provides a slot keyed by **(logical actor identity, parser kind)**,
+//! not OS thread identity:
 //!
 //! - When a Hew actor is currently dispatched (`hew_actor_current_id() >= 0`),
-//!   the slot is stored in a process-wide `Mutex<HashMap<u64, String>>` keyed
-//!   by the actor ID.
+//!   the slot is stored in a process-wide `Mutex<HashMap<(u64, ParserKind), String>>`
+//!   keyed by the actor ID and parser kind.  Each parser has its own per-actor
+//!   slot, so a yaml success cannot clear a datetime error and vice-versa.
 //! - When called from outside any actor (main, test, blocking-pool helper),
 //!   `hew_actor_current_id()` returns -1 and the slot falls back to a
-//!   `thread_local!` so that non-actor callers remain isolated from each other.
+//!   `thread_local!` `HashMap<ParserKind, String>` so that non-actor callers
+//!   remain isolated from each other and from other parsers.
 //!
 //! # Slot lifecycle
 //!
-//! Entries in the actor map are removed when [`clear_parse_error`] is called
-//! on a successful parse (the parser already clears on success).  Long-running
-//! actors that fail repeatedly accumulate at most one entry each.  Full
-//! reaping on actor death is deferred: no actor-destruction hook is wired
-//! here yet.
+//! Entries in the actor map are removed:
+//! - On each successful parse (the caller invokes [`clear_parse_error`]).
+//! - On actor death, via [`clear_all_for_actor`], which is called from
+//!   `hew_actor_free` / `cleanup_all_actors` through
+//!   `actor::prepare_quiescent_actor_for_cleanup`.
 //!
 //! # WHY this module exists (marking the approximation)
 //!
@@ -36,106 +38,164 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+// ── Parser discriminant ──────────────────────────────────────────────────────
+
+/// Identifies which parser owns a parse-error slot entry.
+///
+/// Adding a new parser requires: (1) adding a variant here, (2) passing it at
+/// every `set_parse_error` / `clear_parse_error` / `get_parse_error` call site,
+/// and (3) calling `clear_all_for_actor` on actor death (already wired).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParserKind {
+    Datetime,
+    Yaml,
+    Toml,
+    Json,
+}
+
 // ── Process-wide actor-keyed error map ──────────────────────────────────────
 
-/// Global map from actor ID → last parse error message.
+/// Global map from `(actor_id, ParserKind)` → last parse error message.
 ///
 /// Only populated when `hew_actor_current_id()` returns a non-negative value.
-static ACTOR_PARSE_ERRORS: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
+static ACTOR_PARSE_ERRORS: Mutex<Option<HashMap<(u64, ParserKind), String>>> = Mutex::new(None);
 
-fn actor_map_set(actor_id: u64, msg: String) {
+fn actor_map_set(actor_id: u64, kind: ParserKind, msg: String) {
     let mut guard = ACTOR_PARSE_ERRORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.get_or_insert_with(HashMap::new).insert(actor_id, msg);
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert((actor_id, kind), msg);
 }
 
-fn actor_map_get(actor_id: u64) -> Option<String> {
+fn actor_map_get(actor_id: u64, kind: ParserKind) -> Option<String> {
     let guard = ACTOR_PARSE_ERRORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.as_ref()?.get(&actor_id).cloned()
+    guard.as_ref()?.get(&(actor_id, kind)).cloned()
 }
 
-fn actor_map_clear(actor_id: u64) {
+fn actor_map_clear(actor_id: u64, kind: ParserKind) {
     let mut guard = ACTOR_PARSE_ERRORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(map) = guard.as_mut() {
-        map.remove(&actor_id);
+        map.remove(&(actor_id, kind));
+    }
+}
+
+fn actor_map_clear_all_for_actor(actor_id: u64) {
+    let mut guard = ACTOR_PARSE_ERRORS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(map) = guard.as_mut() {
+        map.retain(|&(id, _), _| id != actor_id);
     }
 }
 
 // ── Per-thread fallback (non-actor callers) ─────────────────────────────────
 
 thread_local! {
-    /// Error slot for callers outside any Hew actor context.
-    static THREAD_PARSE_ERROR: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
+    /// Per-parser error slot for callers outside any Hew actor context.
+    ///
+    /// Keyed by [`ParserKind`] so that non-actor callers cannot alias each
+    /// other's errors across parsers, matching the per-actor-map invariant.
+    static THREAD_PARSE_ERROR: std::cell::RefCell<HashMap<ParserKind, String>> =
+        std::cell::RefCell::new(HashMap::new());
 }
 
 // ── Public interface ─────────────────────────────────────────────────────────
 
-/// Record `msg` as the most recent parse error for the current logical context
-/// (actor or thread).
-pub fn set_parse_error(msg: impl Into<String>) {
+/// Record `msg` as the most recent parse error for `kind` in the current
+/// logical context (actor or thread).
+pub fn set_parse_error(kind: ParserKind, msg: impl Into<String>) {
     let id = crate::actor::hew_actor_current_id();
     if id >= 0 {
         #[expect(clippy::cast_sign_loss, reason = "checked: id >= 0")]
-        actor_map_set(id as u64, msg.into());
+        actor_map_set(id as u64, kind, msg.into());
     } else {
-        THREAD_PARSE_ERROR.with(|slot| *slot.borrow_mut() = Some(msg.into()));
+        THREAD_PARSE_ERROR.with(|slot| {
+            slot.borrow_mut().insert(kind, msg.into());
+        });
     }
 }
 
-/// Clear the parse error for the current logical context.
-pub fn clear_parse_error() {
+/// Clear the parse error for `kind` in the current logical context.
+pub fn clear_parse_error(kind: ParserKind) {
     let id = crate::actor::hew_actor_current_id();
     if id >= 0 {
         #[expect(clippy::cast_sign_loss, reason = "checked: id >= 0")]
-        actor_map_clear(id as u64);
+        actor_map_clear(id as u64, kind);
     } else {
-        THREAD_PARSE_ERROR.with(|slot| *slot.borrow_mut() = None);
+        THREAD_PARSE_ERROR.with(|slot| {
+            slot.borrow_mut().remove(&kind);
+        });
     }
 }
 
-/// Return (and clone) the last parse error for the current logical context,
-/// or `None` if no error has been set.
+/// Return (and clone) the last parse error for `kind` in the current logical
+/// context, or `None` if no error has been set.
 #[must_use]
-pub fn get_parse_error() -> Option<String> {
+pub fn get_parse_error(kind: ParserKind) -> Option<String> {
     let id = crate::actor::hew_actor_current_id();
     if id >= 0 {
         #[expect(clippy::cast_sign_loss, reason = "checked: id >= 0")]
-        actor_map_get(id as u64)
+        actor_map_get(id as u64, kind)
     } else {
-        THREAD_PARSE_ERROR.with(|slot| slot.borrow().clone())
+        THREAD_PARSE_ERROR.with(|slot| slot.borrow().get(&kind).cloned())
     }
 }
 
-// ── Test helpers (public so integration tests in other crates can use them) ──
+/// Remove all parse-error entries for `actor_id` across every [`ParserKind`].
+///
+/// Called from `actor::prepare_quiescent_actor_for_cleanup` on actor death so
+/// that long-running nodes do not accumulate entries for reaped actors.
+pub fn clear_all_for_actor(actor_id: u64) {
+    actor_map_clear_all_for_actor(actor_id);
+}
 
-/// Write a parse error directly for a specific actor ID.
+// ── Test helpers (cross-crate, doc-hidden) ───────────────────────────────────
+//
+// These helpers let integration tests in other crates (e.g. hew-std-encoding-toml)
+// inject and inspect actor-keyed errors without a running scheduler.  They are
+// not part of the public API: they are `#[doc(hidden)]` and prefixed with `__`
+// to signal test-only intent without gating behind `#[cfg(test)]` (which would
+// make them invisible to the other crates' test compilations).
+
+/// Write a parse error directly for a specific actor ID and parser kind.
 ///
 /// Intended for integration tests that cannot inject actor context via the
-/// scheduler.  Callers should clean up with [`clear_parse_error_for_actor_id`]
+/// scheduler.  Callers must clean up with [`__clear_parse_error_for_actor`]
 /// to avoid polluting other tests.
-pub fn set_parse_error_for_actor_id(actor_id: u64, msg: impl Into<String>) {
-    actor_map_set(actor_id, msg.into());
+#[doc(hidden)]
+pub fn __set_parse_error_for_actor(actor_id: u64, kind: ParserKind, msg: impl Into<String>) {
+    actor_map_set(actor_id, kind, msg.into());
 }
 
-/// Read the parse error for a specific actor ID.
+/// Read the parse error for a specific actor ID and parser kind.
 ///
 /// Intended for integration tests.
+#[doc(hidden)]
 #[must_use]
-pub fn get_parse_error_for_actor_id(actor_id: u64) -> Option<String> {
-    actor_map_get(actor_id)
+pub fn __get_parse_error_for_actor(actor_id: u64, kind: ParserKind) -> Option<String> {
+    actor_map_get(actor_id, kind)
 }
 
-/// Clear the parse error for a specific actor ID.
+/// Clear the parse error for a specific actor ID and parser kind.
 ///
 /// Intended for integration tests.
-pub fn clear_parse_error_for_actor_id(actor_id: u64) {
-    actor_map_clear(actor_id);
+#[doc(hidden)]
+pub fn __clear_parse_error_for_actor(actor_id: u64, kind: ParserKind) {
+    actor_map_clear(actor_id, kind);
+}
+
+/// Clear all parse errors for a specific actor ID (all parser kinds).
+///
+/// Intended for integration tests.
+#[doc(hidden)]
+pub fn __clear_all_parse_errors_for_actor(actor_id: u64) {
+    actor_map_clear_all_for_actor(actor_id);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -145,68 +205,156 @@ mod tests {
     use super::*;
 
     /// A slot set and retrieved within the same non-actor thread returns the
-    /// same string.
+    /// same string for the same parser kind.
     #[test]
     fn thread_fallback_set_get_clear() {
-        set_parse_error("test error");
-        assert_eq!(get_parse_error().as_deref(), Some("test error"));
-        clear_parse_error();
-        assert_eq!(get_parse_error(), None);
+        set_parse_error(ParserKind::Toml, "test error");
+        assert_eq!(
+            get_parse_error(ParserKind::Toml).as_deref(),
+            Some("test error")
+        );
+        clear_parse_error(ParserKind::Toml);
+        assert_eq!(get_parse_error(ParserKind::Toml), None);
+    }
+
+    /// Different parser kinds have independent TLS slots — a yaml error does not
+    /// clear or overwrite a datetime error.
+    #[test]
+    fn thread_fallback_parsers_are_independent() {
+        // Use large IDs unlikely to collide with other test state.
+        set_parse_error(ParserKind::Datetime, "datetime error");
+        set_parse_error(ParserKind::Yaml, "yaml error");
+
+        assert_eq!(
+            get_parse_error(ParserKind::Datetime).as_deref(),
+            Some("datetime error"),
+            "datetime error should not be overwritten by yaml write"
+        );
+        assert_eq!(
+            get_parse_error(ParserKind::Yaml).as_deref(),
+            Some("yaml error"),
+        );
+
+        // Clearing yaml must not touch datetime.
+        clear_parse_error(ParserKind::Yaml);
+        assert_eq!(
+            get_parse_error(ParserKind::Datetime).as_deref(),
+            Some("datetime error"),
+            "datetime error must survive yaml clear"
+        );
+
+        clear_parse_error(ParserKind::Datetime);
     }
 
     /// A slot written on thread A for actor-id X is visible on thread B when
     /// actor-id X is active — simulating an actor migrating across workers.
     ///
     /// This is the core cross-thread regression for issue #1420.
-    ///
-    /// Thread A sets the error while "running as actor 99".
-    /// Thread B reads the error while "running as actor 99".
-    /// Both threads reach their synchronisation points without any sleep or
-    /// timing assumption; the barrier provides the only ordering guarantee.
     #[test]
     fn actor_keyed_error_survives_thread_migration() {
-        // We cannot inject actor context via the scheduler in a unit test, so
-        // we write directly to the actor map (same internal path that
-        // `set_parse_error` takes when actor_id >= 0) and read it back from a
-        // different OS thread.  This is not the same as exercising
-        // hew_actor_current_id(), but it is the precise path the three
-        // parsers travel when the actor has a non-negative id.
         const ACTOR_ID: u64 = 999_999;
 
-        // Barrier to ensure thread B reads only after thread A writes.
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let barrier2 = barrier.clone();
 
         let handle = std::thread::spawn(move || {
-            // Simulate: actor 999_999 runs on thread B, reads the error slot.
-            barrier2.wait(); // wait until thread A has written
-            actor_map_get(ACTOR_ID)
+            barrier2.wait();
+            actor_map_get(ACTOR_ID, ParserKind::Toml)
         });
 
-        // Thread A: write the error as if running actor 999_999.
-        actor_map_set(ACTOR_ID, "cross-thread error".to_owned());
-        barrier.wait(); // release thread B
+        actor_map_set(ACTOR_ID, ParserKind::Toml, "cross-thread error".to_owned());
+        barrier.wait();
 
         let result = handle.join().expect("thread B panicked");
         assert_eq!(result.as_deref(), Some("cross-thread error"));
 
-        // Cleanup to avoid polluting other tests.
-        actor_map_clear(ACTOR_ID);
+        actor_map_clear(ACTOR_ID, ParserKind::Toml);
     }
 
-    /// Two different actor IDs have independent error slots.
+    /// Two different actor IDs have independent error slots for the same parser.
     #[test]
     fn separate_actor_ids_have_independent_slots() {
         const A: u64 = 1_000_001;
         const B: u64 = 1_000_002;
 
-        actor_map_set(A, "error for A".to_owned());
-        actor_map_set(B, "error for B".to_owned());
+        actor_map_set(A, ParserKind::Yaml, "error for A".to_owned());
+        actor_map_set(B, ParserKind::Yaml, "error for B".to_owned());
 
-        assert_eq!(actor_map_get(A).as_deref(), Some("error for A"));
-        assert_eq!(actor_map_get(B).as_deref(), Some("error for B"));
+        assert_eq!(
+            actor_map_get(A, ParserKind::Yaml).as_deref(),
+            Some("error for A")
+        );
+        assert_eq!(
+            actor_map_get(B, ParserKind::Yaml).as_deref(),
+            Some("error for B")
+        );
 
-        actor_map_clear(A);
-        actor_map_clear(B);
+        actor_map_clear(A, ParserKind::Yaml);
+        actor_map_clear(B, ParserKind::Yaml);
+    }
+
+    /// Actor-map slots for different parsers on the same actor are independent.
+    /// Writing a Json error must not clear or overwrite a Toml error for the
+    /// same actor.
+    #[test]
+    fn actor_cross_parser_slots_are_independent() {
+        const ACTOR_ID: u64 = 2_000_001;
+
+        actor_map_set(ACTOR_ID, ParserKind::Toml, "toml error".to_owned());
+        actor_map_set(ACTOR_ID, ParserKind::Json, "json error".to_owned());
+        actor_map_set(
+            ACTOR_ID,
+            ParserKind::Yaml,
+            "yaml success — cleared".to_owned(),
+        );
+
+        // Simulating yaml success path clearing its slot.
+        actor_map_clear(ACTOR_ID, ParserKind::Yaml);
+
+        // Toml and Json errors must survive the yaml clear.
+        assert_eq!(
+            actor_map_get(ACTOR_ID, ParserKind::Toml).as_deref(),
+            Some("toml error"),
+            "toml error must survive yaml clear"
+        );
+        assert_eq!(
+            actor_map_get(ACTOR_ID, ParserKind::Json).as_deref(),
+            Some("json error"),
+            "json error must survive yaml clear"
+        );
+        assert_eq!(
+            actor_map_get(ACTOR_ID, ParserKind::Yaml),
+            None,
+            "yaml slot must be cleared"
+        );
+
+        // clear_all_for_actor must remove all parsers.
+        actor_map_clear_all_for_actor(ACTOR_ID);
+        assert_eq!(actor_map_get(ACTOR_ID, ParserKind::Toml), None);
+        assert_eq!(actor_map_get(ACTOR_ID, ParserKind::Json), None);
+    }
+
+    /// `clear_all_for_actor` removes entries for the target actor without
+    /// touching entries for other actors.
+    #[test]
+    fn clear_all_for_actor_does_not_touch_other_actors() {
+        const TARGET: u64 = 3_000_001;
+        const OTHER: u64 = 3_000_002;
+
+        actor_map_set(TARGET, ParserKind::Datetime, "target datetime".to_owned());
+        actor_map_set(TARGET, ParserKind::Json, "target json".to_owned());
+        actor_map_set(OTHER, ParserKind::Toml, "other toml".to_owned());
+
+        actor_map_clear_all_for_actor(TARGET);
+
+        assert_eq!(actor_map_get(TARGET, ParserKind::Datetime), None);
+        assert_eq!(actor_map_get(TARGET, ParserKind::Json), None);
+        assert_eq!(
+            actor_map_get(OTHER, ParserKind::Toml).as_deref(),
+            Some("other toml"),
+            "unrelated actor entry must survive"
+        );
+
+        actor_map_clear(OTHER, ParserKind::Toml);
     }
 }

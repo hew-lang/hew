@@ -21,15 +21,22 @@ fn epoch_ms_to_utc(epoch_ms: i64) -> Option<DateTime<Utc>> {
 }
 
 fn set_datetime_last_error(msg: impl Into<String>) {
-    hew_runtime::parse_error_slot::set_parse_error(msg);
+    hew_runtime::parse_error_slot::set_parse_error(
+        hew_runtime::parse_error_slot::ParserKind::Datetime,
+        msg,
+    );
 }
 
 fn clear_datetime_last_error() {
-    hew_runtime::parse_error_slot::clear_parse_error();
+    hew_runtime::parse_error_slot::clear_parse_error(
+        hew_runtime::parse_error_slot::ParserKind::Datetime,
+    );
 }
 
 fn clone_datetime_last_error() -> Option<String> {
-    hew_runtime::parse_error_slot::get_parse_error()
+    hew_runtime::parse_error_slot::get_parse_error(
+        hew_runtime::parse_error_slot::ParserKind::Datetime,
+    )
 }
 
 // ---------------------------------------------------------------------------

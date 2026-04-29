@@ -11,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::primitives::{desc_for_kind, PRIMITIVE_DESCS};
+
 /// Exhaustive, non-`Unknown` mirror of C++ `PrimitiveTypeKind` augmented with a
 /// `Nested` variant for user-defined wire-type references.
 ///
@@ -87,69 +89,42 @@ impl PrimitiveWireKind {
         if name.is_empty() {
             return Err(KindError::Empty);
         }
-        let k = match name {
-            "bool" | "Bool" => Self::Bool,
-            "i8" => Self::I8,
-            "i16" => Self::I16,
-            "i32" => Self::I32,
-            "i64" | "int" | "Int" | "isize" => Self::I64,
-            "u8" | "byte" => Self::U8,
-            "u16" => Self::U16,
-            "u32" => Self::U32,
-            "u64" | "uint" | "usize" => Self::U64,
-            "char" | "Char" => Self::Char,
-            "f32" => Self::F32,
-            "f64" | "float" | "Float" => Self::F64,
-            "string" | "String" | "str" => Self::String,
-            "bytes" | "Bytes" => Self::Bytes,
-            "duration" | "Duration" => Self::Duration,
-            // WHY: any non-primitive name is treated as a reference to a
-            // user-defined wire-type. Whether that reference resolves to an
-            // actual WireDecl is the caller's responsibility (plan-build
-            // enforces it via the resolved-types map).
-            // WHEN: can be tightened once all nested wire references are
-            // statically known at the plan-build site.
-            // WHAT: see WireCodecPlan::build_struct for the resolution step.
-            other => Self::Nested(other.to_string()),
-        };
-        Ok(k)
+        // Search the closed primitive table first.  Any name not found there is
+        // treated as a reference to a user-defined wire-type.
+        // WHY: any non-primitive name is treated as a reference to a
+        // user-defined wire-type. Whether that reference resolves to an
+        // actual WireDecl is the caller's responsibility (plan-build
+        // enforces it via the resolved-types map).
+        // WHEN: can be tightened once all nested wire references are
+        // statically known at the plan-build site.
+        // WHAT: see WireCodecPlan::build_struct for the resolution step.
+        for desc in PRIMITIVE_DESCS {
+            if desc.aliases.contains(&name) {
+                return Ok(desc.kind.clone());
+            }
+        }
+        Ok(Self::Nested(name.to_string()))
     }
 
     /// `true` if this kind is a fixed-width scalar that the msgpack wire
     /// protocol encodes as a varint.
     #[must_use]
     pub fn is_varint(&self) -> bool {
-        matches!(
-            self,
-            Self::Bool
-                | Self::I8
-                | Self::I16
-                | Self::I32
-                | Self::I64
-                | Self::U8
-                | Self::U16
-                | Self::U32
-                | Self::U64
-                | Self::Char
-                | Self::Duration
-        )
+        desc_for_kind(self).is_some_and(|d| d.class.is_varint())
     }
 
     /// `true` if this kind is a signed integer (requires zigzag encoding for
     /// varint wire output).
     #[must_use]
     pub fn is_signed_integer(&self) -> bool {
-        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64)
+        desc_for_kind(self).is_some_and(|d| d.class.is_signed_integer())
     }
 
     /// `true` if this kind is an unsigned integer or `Char` (zero-extend for
     /// JSON output, no zigzag).
     #[must_use]
     pub fn is_unsigned_integer(&self) -> bool {
-        matches!(
-            self,
-            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Char
-        )
+        desc_for_kind(self).is_some_and(|d| d.class.is_unsigned_integer())
     }
 }
 

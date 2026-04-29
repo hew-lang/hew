@@ -14,6 +14,7 @@ use hew_parser::ast::{NamingCase, WireDecl, WireDeclKind, WireFieldDecl};
 use serde::{Deserialize, Serialize};
 
 use crate::kind::{KindError, PrimitiveWireKind};
+use crate::primitives::desc_for_kind;
 
 /// Inclusive integer bounds for narrowing guards (mirrors the helpers emitted
 /// by `hew-astgen/src/special_cases.rs:1173` for the Rust→C++ boundary).
@@ -28,63 +29,11 @@ pub struct IntegerBounds {
 impl IntegerBounds {
     /// Bounds for the given primitive integer kind, or `None` if the kind is
     /// not an integer type.
+    ///
+    /// Derived from the canonical bounds in [`crate::primitives::PRIMITIVE_DESCS`].
     #[must_use]
     pub fn for_kind(kind: &PrimitiveWireKind) -> Option<Self> {
-        match kind {
-            PrimitiveWireKind::I8 => Some(Self {
-                min: i64::from(i8::MIN),
-                max: u64::try_from(i64::from(i8::MAX)).unwrap_or(0),
-            }),
-            PrimitiveWireKind::I16 => Some(Self {
-                min: i64::from(i16::MIN),
-                max: u64::try_from(i64::from(i16::MAX)).unwrap_or(0),
-            }),
-            PrimitiveWireKind::I32 => Some(Self {
-                min: i64::from(i32::MIN),
-                max: u64::try_from(i64::from(i32::MAX)).unwrap_or(0),
-            }),
-            // Duration stores nanoseconds as i64 (negative = past), so it
-            // shares I64's signed range rather than U64's unsigned range.
-            PrimitiveWireKind::I64 | PrimitiveWireKind::Duration => Some(Self {
-                min: i64::MIN,
-                max: u64::try_from(i64::MAX).unwrap_or(u64::MAX),
-            }),
-            PrimitiveWireKind::U8 => Some(Self {
-                min: 0,
-                max: u64::from(u8::MAX),
-            }),
-            PrimitiveWireKind::U16 => Some(Self {
-                min: 0,
-                max: u64::from(u16::MAX),
-            }),
-            PrimitiveWireKind::Char => Some(Self {
-                min: 0,
-                // SHIM(#1276): Char is not BMP-bound on the wire.
-                //
-                // Audit result:
-                // - msgpack descriptors route Char through the same unsigned
-                //   varint op as U32/U64 (`hew-wirecodec/src/msgpack_desc.rs`)
-                // - the C++ reader decodes UTF-8 Char literals up to 4-byte
-                //   codepoints (`hew-codegen/src/msgpack_reader.cpp`)
-                // - MLIR wire JSON/YAML lowering already carries Char as an
-                //   integer codepoint via the dedicated get/set_char ABI and
-                //   validates against 0..=0x10_FFFF
-                //
-                // The old U16 reuse was incidental plan plumbing, not a wire
-                // invariant, so the public descriptor API exposes the existing
-                // full-Unicode ceiling used by the consumer.
-                max: 0x10_FFFF,
-            }),
-            PrimitiveWireKind::U32 => Some(Self {
-                min: 0,
-                max: u64::from(u32::MAX),
-            }),
-            PrimitiveWireKind::U64 => Some(Self {
-                min: 0,
-                max: u64::MAX,
-            }),
-            _ => None,
-        }
+        desc_for_kind(kind)?.bounds
     }
 }
 

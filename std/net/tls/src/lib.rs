@@ -6,11 +6,10 @@
 //! with `libc::malloc`; callers must free it with `libc::free`.
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code.
-#[cfg(test)]
+// referenced by hew-cabi's object code, and to access the shared
+// error slot.
 extern crate hew_runtime;
 
-use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::os::raw::{c_char, c_int};
@@ -29,10 +28,6 @@ const TLS_STATUS_SUCCESS: c_int = 0;
 const TLS_STATUS_RETRYABLE: c_int = 1;
 const TLS_STATUS_TLS_ERROR: c_int = 2;
 const TLS_STATUS_IO_ERROR: c_int = 3;
-
-std::thread_local! {
-    static LAST_TLS_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
-}
 
 // ── Opaque handle ─────────────────────────────────────────────────────────────
 
@@ -87,15 +82,23 @@ fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, BoxError> {
 }
 
 fn set_tls_last_error(msg: impl Into<String>) {
-    LAST_TLS_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_parse_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
+        msg,
+    );
 }
 
 fn clear_tls_last_error() {
-    LAST_TLS_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_parse_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
+    );
 }
 
 fn get_tls_last_error() -> String {
-    LAST_TLS_ERROR.with(|error| error.borrow().as_ref().cloned().unwrap_or_else(String::new))
+    hew_runtime::parse_error_slot::get_parse_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Tls,
+    )
+    .unwrap_or_default()
 }
 
 fn empty_hew_vec() -> HewVec {

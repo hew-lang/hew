@@ -6,13 +6,12 @@
 
 // Force-link hew-runtime so the linker can resolve hew_vec_* symbols
 // referenced by hew-cabi's object code (which shares a single compilation
-// unit in debug builds).
-#[cfg(test)]
+// unit in debug builds), and to access the shared error slot.
 extern crate hew_runtime;
 
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use jsonwebtoken::{errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use std::{cell::Cell, os::raw::c_char};
+use std::os::raw::c_char;
 
 /// Map an algorithm integer to a [`jsonwebtoken::Algorithm`].
 ///
@@ -39,18 +38,50 @@ pub enum HewJwtError {
     AllocationFailure = 6,
 }
 
+#[cfg(test)]
+use std::cell::Cell;
+#[cfg(test)]
 std::thread_local! {
-    static LAST_JWT_ERROR: Cell<HewJwtError> = const { Cell::new(HewJwtError::None) };
-    #[cfg(test)]
     static FAIL_NEXT_JWT_ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
+/// Store `err` in the per-actor slot by encoding its discriminant as a string.
+///
+/// Option A: `HewJwtError` has only unit variants 0..=6 with no payload, so
+/// the integer discriminant round-trips losslessly.  When `err` is `None`
+/// the slot is cleared (matching the "no entry == None" invariant).
 fn set_last_jwt_error(err: HewJwtError) {
-    LAST_JWT_ERROR.with(|slot| slot.set(err));
+    if err == HewJwtError::None {
+        hew_runtime::parse_error_slot::clear_parse_error(
+            hew_runtime::parse_error_slot::ErrorSlotKind::Jwt,
+        );
+    } else {
+        hew_runtime::parse_error_slot::set_parse_error(
+            hew_runtime::parse_error_slot::ErrorSlotKind::Jwt,
+            (err as i32).to_string(),
+        );
+    }
 }
 
+/// Retrieve the last JWT error from the per-actor slot.
+///
+/// Returns `HewJwtError::None` when no error is stored (slot absent or
+/// unparseable — the latter should never occur in practice).
 fn last_jwt_error() -> HewJwtError {
-    LAST_JWT_ERROR.with(Cell::get)
+    let Some(s) = hew_runtime::parse_error_slot::get_parse_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Jwt,
+    ) else {
+        return HewJwtError::None;
+    };
+    match s.parse::<i32>().unwrap_or(0) {
+        1 => HewJwtError::AlgorithmUnsupported,
+        2 => HewJwtError::InvalidKey,
+        3 => HewJwtError::TokenMalformed,
+        4 => HewJwtError::SignatureInvalid,
+        5 => HewJwtError::ClaimsExpired,
+        6 => HewJwtError::AllocationFailure,
+        _ => HewJwtError::None,
+    }
 }
 
 #[cfg(test)]

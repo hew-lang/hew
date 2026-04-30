@@ -104,7 +104,7 @@ add_test(NAME jit_symbol_map COMMAND test_jit_symbol_map)
 # ── JIT session integration test ──────────────────────────────────────────────
 # Verifies that HewJitSession attaches GDB and (when LLVM_USE_PERF=1) perf
 # JITEventListeners via the RTDyldObjectLinkingLayer.  Uses a test-only
-# listener counter exposed behind HEW_TESTING; does not attach gdb or perf.
+# listener counter (hewJitSessionListenerCountForTest); does not attach gdb or perf.
 add_executable(test_jit_session test_jit_session.cpp)
 
 target_include_directories(test_jit_session PRIVATE

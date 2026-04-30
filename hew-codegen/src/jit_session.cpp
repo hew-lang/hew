@@ -84,11 +84,10 @@ public:
   /// Resets to 0 at the start of each call.
   ///
   /// WHY always compiled: avoids multiply-defined-symbol pitfalls from
-  /// compiling different .o files with/without HEW_TESTING.  The field is
+  /// compiling different .o files with different macro guards.  The field is
   /// private to this translation unit (opaque class) and adds no ABI surface.
-  /// The public accessor (hewJitSessionListenerCountForTest) is declared
-  /// unconditionally in the header; the test-only contract is conveyed by
-  /// its name, not by a compile-time guard.
+  /// The public accessor (hewJitSessionListenerCountForTest) is a test-only API
+  /// conveyed by the ForTest suffix in the function name, not by a compile-time guard.
   int listenerCount_ = 0;
 };
 

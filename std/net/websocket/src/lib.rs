@@ -20,9 +20,19 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tungstenite::client::connect_with_config;
-use tungstenite::protocol::WebSocketConfig;
+use tungstenite::protocol::{Role, WebSocketConfig};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
+
+/// Test-only drop counter for the outer `HewWsConn` Box.
+///
+/// WHY: Validates that `hew_ws_close` reclaims the outer Box on every close
+///      path (attached and unattached). Only enabled in `#[cfg(test)]` so
+///      there is zero overhead in production builds.
+/// WHEN: Remove when the counter is no longer needed for leak detection.
+/// WHAT: A production alternative is an external allocator hook.
+#[cfg(test)]
+static OUTER_CONN_DROPS: AtomicUsize = AtomicUsize::new(0);
 
 /// Opaque WebSocket connection handle.
 ///
@@ -35,7 +45,22 @@ pub struct HewWsConn {
 
 #[derive(Debug)]
 struct HewWsConnInner {
+    /// The primary WebSocket handle.  In attached mode this is used for reading
+    /// only; user sends go through `write_ws` when available.  In non-attached
+    /// (recv) mode the single mutex covers both directions as before.
     ws: Mutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>,
+    /// Separate write-only WebSocket for plain-TCP connections.
+    ///
+    /// WHY: tungstenite's `WebSocket` is single-owner with a blocking `read()`
+    ///      that holds the mutex for up to `READER_READ_TIMEOUT` (250 ms).
+    ///      `hew_ws_send_text`/`hew_ws_send_binary` acquire the same mutex, so
+    ///      each send stalls up to 250 ms in attached mode. Fix #1324.
+    /// WHEN: This split is only possible for plain TCP; TLS connections still
+    ///       use the single `ws` mutex (the TLS record layer is not thread-safe
+    ///       across two independently-created contexts).
+    /// WHAT: A proper TLS split would require a mutex-protected TLS write half
+    ///       that the two WebSocket frames share — out of scope for this lane.
+    write_ws: Option<Mutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>>,
     shutdown_stream: Option<TcpStream>,
     reader: Mutex<Option<ReaderControl>>,
     closed: AtomicBool,
@@ -178,11 +203,14 @@ struct HewActorRef {
 unsafe impl Send for HewActorRef {}
 
 impl HewWsConn {
-    fn new(ws: WebSocket<MaybeTlsStream<TcpStream>>) -> Self {
+    fn new(ws: WebSocket<MaybeTlsStream<TcpStream>>, role: Role) -> Self {
         let shutdown_stream = clone_shutdown_stream(&ws);
+        let config = *ws.get_config();
+        let write_ws = try_split_write_ws(&ws, role, config).map(|w| Mutex::new(Some(w)));
         Self {
             inner: Arc::new(HewWsConnInner {
                 ws: Mutex::new(Some(ws)),
+                write_ws,
                 shutdown_stream,
                 reader: Mutex::new(None),
                 closed: AtomicBool::new(false),
@@ -225,6 +253,8 @@ impl HewWsConn {
 impl Drop for HewWsConn {
     fn drop(&mut self) {
         self.close_handle();
+        #[cfg(test)]
+        OUTER_CONN_DROPS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -239,6 +269,46 @@ fn clone_shutdown_stream(ws: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<Tc
         MaybeTlsStream::NativeTls(stream) => stream.get_ref().try_clone().ok(),
         #[cfg(feature = "__rustls-tls")]
         MaybeTlsStream::Rustls(stream) => stream.sock.try_clone().ok(),
+        #[allow(
+            unreachable_patterns,
+            reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
+        )]
+        _ => None,
+    }
+}
+
+/// Attempt to create an independent write-side WebSocket from a cloned TCP stream.
+///
+/// Only succeeds for plain (non-TLS) connections. TLS connections cannot be split
+/// because the TLS record layer is stateful and not safe to share across two
+/// independently-created contexts writing to the same underlying file descriptor.
+///
+/// WHY: Fixes the 250 ms send stall in attached mode (issue #1324). The reader
+///      holds `inner.ws` for up to 250 ms per read; with a split write WebSocket,
+///      sends acquire an independent mutex and never contend with the reader.
+/// WHEN: Extend to TLS once a thread-safe TLS write-half abstraction is available.
+/// WHAT: TLS split would require sharing a single `TlsStream` write half under a
+///       mutex between both the read-context and the write-context.
+#[allow(
+    unexpected_cfgs,
+    reason = "Matching tungstenite TLS variants depends on dependency feature cfgs"
+)]
+fn try_split_write_ws(
+    ws: &WebSocket<MaybeTlsStream<TcpStream>>,
+    role: Role,
+    config: WebSocketConfig,
+) -> Option<WebSocket<MaybeTlsStream<TcpStream>>> {
+    match ws.get_ref() {
+        MaybeTlsStream::Plain(stream) => {
+            let cloned = stream.try_clone().ok()?;
+            Some(WebSocket::from_raw_socket(
+                MaybeTlsStream::Plain(cloned),
+                role,
+                Some(config),
+            ))
+        }
+        // TLS connections: cannot safely split the write half.
+        // Sends will fall back to the single `ws` mutex (250 ms stall remains for TLS).
         #[allow(
             unreachable_patterns,
             reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
@@ -340,6 +410,10 @@ fn join_reader(inner: &Arc<HewWsConnInner>) {
 }
 
 fn drop_ws(inner: &Arc<HewWsConnInner>) {
+    // Drop the write-side WebSocket first; it holds only a clone of the TCP fd.
+    if let Some(write_ws_mutex) = inner.write_ws.as_ref() {
+        drop(lock_or_recover(write_ws_mutex).take());
+    }
     let mut ws = lock_or_recover(&inner.ws);
     let Some(mut ws) = ws.take() else {
         return;
@@ -622,9 +696,35 @@ pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
     };
 
     match connect_with_config(url_str, Some(config), 3) {
-        Ok((ws, _response)) => Box::into_raw(Box::new(HewWsConn::new(ws))),
+        Ok((ws, _response)) => Box::into_raw(Box::new(HewWsConn::new(ws, Role::Client))),
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+/// Route an outbound WebSocket message through the write-side socket when available.
+///
+/// In attached mode (where the reader holds `ws` for up to 250 ms), `write_ws`
+/// is an independent WebSocket on a cloned plain-TCP file descriptor. Sends
+/// acquire only the `write_ws` mutex and never contend with the reader's
+/// blocking `read()`. For TLS connections `write_ws` is absent and sends fall
+/// back to the shared `ws` mutex (the 250 ms stall persists for TLS; see
+/// `try_split_write_ws` for details).
+fn send_ws_message(
+    inner: &Arc<HewWsConnInner>,
+    message: Message,
+) -> Result<(), tungstenite::Error> {
+    if let Some(write_ws_mutex) = inner.write_ws.as_ref() {
+        let mut guard = lock_or_recover(write_ws_mutex);
+        let Some(ws) = guard.as_mut() else {
+            return Err(tungstenite::Error::AlreadyClosed);
+        };
+        return ws.send(message);
+    }
+    let mut guard = lock_or_recover(&inner.ws);
+    let Some(ws) = guard.as_mut() else {
+        return Err(tungstenite::Error::AlreadyClosed);
+    };
+    ws.send(message)
 }
 
 /// Send a text message over a WebSocket connection.
@@ -650,11 +750,7 @@ pub unsafe extern "C" fn hew_ws_send_text(ws: *mut HewWsConn, msg: *const c_char
     if inner.closed.load(Ordering::Acquire) {
         return -1;
     }
-    let mut guard = lock_or_recover(&inner.ws);
-    let Some(ws) = guard.as_mut() else {
-        return -1;
-    };
-    match ws.send(Message::text(text)) {
+    match send_ws_message(&inner, Message::text(text)) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -693,11 +789,7 @@ pub unsafe extern "C" fn hew_ws_send_binary(
         unsafe { std::slice::from_raw_parts(data, len) }
     };
 
-    let mut guard = lock_or_recover(&inner.ws);
-    let Some(ws) = guard.as_mut() else {
-        return -1;
-    };
-    match ws.send(Message::binary(slice.to_vec())) {
+    match send_ws_message(&inner, Message::binary(slice.to_vec())) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -740,21 +832,12 @@ pub unsafe extern "C" fn hew_ws_close(ws: *mut HewWsConn) {
     if ws.is_null() {
         return;
     }
-    // SAFETY: `ws` points to a live connection handle returned by connect/accept.
-    let conn = unsafe { &*ws };
-    let attached = conn
-        .inner
-        .reader
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .is_some();
-    if attached {
-        conn.close_handle();
-        return;
-    }
-
-    // SAFETY: unattached handles have a single owning raw pointer, so reclaiming
-    // the Box preserves the pre-attach close behaviour.
+    // SAFETY: `ws` was allocated with `Box::into_raw` in `hew_ws_connect` or
+    // `hew_ws_server_accept`. `Drop for HewWsConn` calls `close_handle`, which
+    // signals and joins the reader thread (if any) before freeing the WebSocket.
+    // This path is correct for both attached and unattached connections: the
+    // previous code omitted `Box::from_raw` on the attached branch, leaking the
+    // outer `HewWsConn` struct (~16 bytes) on every attached close. Fixes #1324.
     drop(unsafe { Box::from_raw(ws) });
 }
 
@@ -1028,7 +1111,9 @@ pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut 
     // SAFETY: Caller guarantees `server` is a valid pointer returned by hew_ws_server_new.
     let inner = Arc::clone(&unsafe { &*server }.inner);
     match accept_connection(&inner) {
-        HewWsAcceptResult::Accepted(ws) => Box::into_raw(Box::new(HewWsConn::new(*ws))),
+        HewWsAcceptResult::Accepted(ws) => {
+            Box::into_raw(Box::new(HewWsConn::new(*ws, Role::Server)))
+        }
         HewWsAcceptResult::Cancelled | HewWsAcceptResult::Error => std::ptr::null_mut(),
     }
 }

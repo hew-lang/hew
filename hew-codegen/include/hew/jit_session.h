@@ -49,4 +49,12 @@ void hewJitSessionDestroy(HewJitSession *session);
 /// Thread-local error message from the most recent failed operation.
 const char *hewJitSessionLastError();
 
+/// Return the number of JITEventListeners registered during the most recent
+/// evalMsgpack call.  Used by integration tests to assert that GDB and perf
+/// listeners were (or were not) attached.
+///
+/// WHY exists: gives tests a deterministic white-box invariant without
+/// forking a gdb or perf process.  Not meaningful outside an eval context.
+int hewJitSessionListenerCountForTest(const HewJitSession *session);
+
 } // namespace hew

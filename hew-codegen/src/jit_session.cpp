@@ -29,11 +29,14 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/MLIRContext.h"
 
+#include "llvm/ExecutionEngine/JITEventListener.h"
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+#include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/TargetSelect.h"
 
@@ -76,6 +79,17 @@ public:
   /// Compile and run the given MessagePack-encoded AST.
   /// Returns 0 on success (exit code placed into *outExitCode).
   int evalMsgpack(const uint8_t *data, size_t size, int64_t *outExitCode);
+
+  /// Number of JITEventListeners registered during the most recent evalMsgpack.
+  /// Resets to 0 at the start of each call.
+  ///
+  /// WHY always compiled: avoids multiply-defined-symbol pitfalls from
+  /// compiling different .o files with/without HEW_TESTING.  The field is
+  /// private to this translation unit (opaque class) and adds no ABI surface.
+  /// The public accessor (hewJitSessionListenerCountForTest) is declared
+  /// unconditionally in the header; the test-only contract is conveyed by
+  /// its name, not by a compile-time guard.
+  int listenerCount_ = 0;
 };
 
 int HewJitSession::evalMsgpack(const uint8_t *data, size_t size, int64_t *outExitCode) {
@@ -116,14 +130,72 @@ int HewJitSession::evalMsgpack(const uint8_t *data, size_t size, int64_t *outExi
   }
 
   // ── 4. Build LLJIT ────────────────────────────────────────────────────────
-  // Create with default settings (single compile thread, native target).
-  auto jitExpected = llvm::orc::LLJITBuilder().create();
+  // We explicitly request an RTDyldObjectLinkingLayer (backed by
+  // SectionMemoryManager) so that JITEventListener-based debugger and profiler
+  // registration is available on all platforms.
+  //
+  // WHY RTDyld: the JITEventListener API (createGDBRegistrationListener,
+  // createPerfJITEventListener) is implemented on RTDyldObjectLinkingLayer.
+  // LLVM 22 on Apple arm64 defaults to the newer JITLink-based
+  // ObjectLinkingLayer, which requires a separate plugin API
+  // (GDBJITDebugInfoRegistrationPlugin) instead.  Until those two paths are
+  // unified (tracked upstream and as a follow-up to #1232), we pin to RTDyld
+  // to get the two LLVM-provided listeners on all CI targets.
+  // WHEN obsolete: when LLVM unifies JITEventListener support across both
+  // linking layers, or when a follow-up issue extends #1232 to use
+  // ObjectLinkingLayer::Plugin for JITLink builds.
+  // WHAT the real solution looks like: detect the layer at runtime, and for
+  // JITLink use GDBJITDebugInfoRegistrationPlugin / a perf plugin.
+  listenerCount_ = 0;
+  auto jitExpected = llvm::orc::LLJITBuilder()
+                         .setObjectLinkingLayerCreator(
+                             [](llvm::orc::ExecutionSession &ES)
+                                 -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
+                               return std::make_unique<llvm::orc::RTDyldObjectLinkingLayer>(
+                                   ES, [](const llvm::MemoryBuffer &) {
+                                     return std::make_unique<llvm::SectionMemoryManager>();
+                                   });
+                             })
+                         .create();
   if (!jitExpected) {
     setJitError("JIT eval: LLJIT creation failed: " + llvm::toString(jitExpected.takeError()));
     mlirModule->destroy();
     return 1;
   }
   auto &jit = *jitExpected;
+
+  // ── 4a. Register GDB and perf JITEventListeners ───────────────────────────
+  // These let external debuggers and profilers observe JIT'd code without any
+  // changes to the JIT'd code itself:
+  //   - createGDBRegistrationListener: registers ELF/DWARF objects via the
+  //     GDB JIT interface (__jit_debug_register_code hook), enabling
+  //     source-level debugging of JIT'd frames in gdb and lldb.
+  //   - createPerfJITEventListener: writes a perf jitdump file so that
+  //     `perf record` / `perf report` can attribute samples to JIT'd symbols.
+  //
+  // LLVM keeps listeners alive for the process lifetime; we must not delete
+  // them.  registerJITEventListener takes a reference, not ownership.
+  //
+  // createPerfJITEventListener returns nullptr when LLVM_USE_PERF=0 (e.g.
+  // Homebrew LLVM on macOS).  The nullptr check prevents a null-dereference
+  // crash on those builds; the listener is simply not registered.
+  {
+    auto &layer = llvm::cast<llvm::orc::RTDyldObjectLinkingLayer>(jit->getObjLinkingLayer());
+
+    auto *gdbListener = llvm::JITEventListener::createGDBRegistrationListener();
+    if (gdbListener) {
+      layer.registerJITEventListener(*gdbListener);
+      ++listenerCount_;
+    }
+
+#if LLVM_USE_PERF
+    auto *perfListener = llvm::JITEventListener::createPerfJITEventListener();
+    if (perfListener) {
+      layer.registerJITEventListener(*perfListener);
+      ++listenerCount_;
+    }
+#endif // LLVM_USE_PERF
+  }
 
   // ── 5. Register host symbols via HewJitSymbolMap ──────────────────────────
   // HewJitSymbolMap lists symbols from the host process that are safe to
@@ -266,6 +338,10 @@ void hewJitSessionDestroy(HewJitSession *session) {
 
 const char *hewJitSessionLastError() {
   return gJitLastError.c_str();
+}
+
+int hewJitSessionListenerCountForTest(const HewJitSession *session) {
+  return session ? session->listenerCount_ : 0;
 }
 
 } // namespace hew

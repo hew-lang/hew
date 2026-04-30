@@ -62,12 +62,15 @@ pub enum EvalStatus {
 ///
 /// Returns `Ok(None)` when no target was supplied (native path).
 /// Returns `Ok(Some(spec))` for the exact supported WASI targets
-/// (`wasm32-wasi` and `wasm32-wasip1` both normalize to `wasm32-wasip1`).
+/// (`wasm32-wasi` and `wasm32-wasip1` both normalize to `wasm32-wasip1`),
+/// provided `--jit` is not also set (JIT is native-only).
 /// Returns `Err(message)` for non-WASM explicit targets **and** wasi-shaped
 /// triples that do not normalize to `wasm32-wasip1` (e.g.
-/// `wasm32-unknown-unknown-wasi`).
+/// `wasm32-unknown-unknown-wasi`), and when `--jit` is combined with a
+/// `wasm32-*` target.
 fn resolve_eval_target(
     triple: Option<&str>,
+    jit: Option<crate::args::JitMode>,
 ) -> Result<Option<crate::target::ExecutionTarget>, String> {
     let target = match triple {
         None => return Ok(None),
@@ -78,6 +81,14 @@ fn resolve_eval_target(
     // Other wasi-shaped triples like `wasm32-unknown-unknown-wasi` parse as
     // WASM but do not normalize to wasm32-wasip1 and must be rejected.
     if target.is_wasi() && target.normalized_triple() == "wasm32-wasip1" {
+        if matches!(jit, Some(crate::args::JitMode::Inprocess)) {
+            return Err(format!(
+                "`--jit=inprocess` is native-only and cannot be used with `--target {}`. \
+                 Omit `--jit` for AOT WASM eval, use `--jit=worker` to keep the AOT+spawn path, \
+                 or omit `--target` for native JIT.",
+                target.normalized_triple()
+            ));
+        }
         Ok(Some(target))
     } else {
         Err(format!(
@@ -91,7 +102,7 @@ fn resolve_eval_target(
 /// Run the `hew eval` subcommand.
 pub fn cmd_eval(args: &crate::args::EvalArgs) {
     let timeout = resolve_eval_timeout(&args.timeout);
-    let target_spec = resolve_eval_target(args.target.as_deref()).unwrap_or_else(|e| {
+    let target_spec = resolve_eval_target(args.target.as_deref(), args.jit).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
@@ -292,15 +303,16 @@ fn exit_eval_error(error: repl::CliEvalError) -> ! {
 #[cfg(test)]
 mod target_validation_tests {
     use super::resolve_eval_target;
+    use crate::args::JitMode;
 
     #[test]
     fn no_target_is_native() {
-        assert!(resolve_eval_target(None).unwrap().is_none());
+        assert!(resolve_eval_target(None, None).unwrap().is_none());
     }
 
     #[test]
     fn wasm32_wasi_is_accepted() {
-        let spec = resolve_eval_target(Some("wasm32-wasi"))
+        let spec = resolve_eval_target(Some("wasm32-wasi"), None)
             .expect("wasm32-wasi should be accepted")
             .expect("should return Some");
         assert!(spec.is_wasi());
@@ -308,7 +320,7 @@ mod target_validation_tests {
 
     #[test]
     fn wasm32_wasip1_is_accepted() {
-        let spec = resolve_eval_target(Some("wasm32-wasip1"))
+        let spec = resolve_eval_target(Some("wasm32-wasip1"), None)
             .expect("wasm32-wasip1 should be accepted")
             .expect("should return Some");
         assert!(spec.is_wasi());
@@ -316,7 +328,7 @@ mod target_validation_tests {
 
     #[test]
     fn native_cross_target_is_rejected() {
-        let err = resolve_eval_target(Some("x86_64-unknown-linux-gnu"))
+        let err = resolve_eval_target(Some("x86_64-unknown-linux-gnu"), None)
             .expect_err("native cross-target should be rejected");
         assert!(
             err.contains("not supported"),
@@ -330,7 +342,7 @@ mod target_validation_tests {
 
     #[test]
     fn aarch64_apple_darwin_is_rejected() {
-        let err = resolve_eval_target(Some("aarch64-apple-darwin"))
+        let err = resolve_eval_target(Some("aarch64-apple-darwin"), None)
             .expect_err("native target should be rejected");
         assert!(
             err.contains("not supported"),
@@ -343,11 +355,42 @@ mod target_validation_tests {
         // wasm32-unknown-unknown-wasi parses as WASM (contains "wasi") but
         // does not normalize to wasm32-wasip1, so it must be rejected up front
         // rather than silently falling through to a broken eval path.
-        let err = resolve_eval_target(Some("wasm32-unknown-unknown-wasi"))
+        let err = resolve_eval_target(Some("wasm32-unknown-unknown-wasi"), None)
             .expect_err("unsupported wasi-like triple should be rejected");
         assert!(
             err.contains("not supported"),
             "expected 'not supported' in error: {err}"
         );
+    }
+
+    #[test]
+    fn wasm32_wasi_with_jit_is_rejected() {
+        let err = resolve_eval_target(Some("wasm32-wasi"), Some(JitMode::Inprocess))
+            .expect_err("--jit with wasm32-wasi should be rejected");
+        assert!(
+            err.contains("native-only"),
+            "expected 'native-only' in error: {err}"
+        );
+        assert!(err.contains("wasm32"), "expected 'wasm32' in error: {err}");
+    }
+
+    #[test]
+    fn wasm32_wasip1_with_jit_is_rejected() {
+        let err = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Inprocess))
+            .expect_err("--jit=inprocess with wasm32-wasip1 should be rejected");
+        assert!(
+            err.contains("native-only"),
+            "expected 'native-only' in error: {err}"
+        );
+        assert!(err.contains("wasm32"), "expected 'wasm32' in error: {err}");
+    }
+
+    #[test]
+    fn wasm32_wasip1_with_jit_worker_is_accepted() {
+        // --jit=worker keeps the AOT+spawn path, which is compatible with
+        // wasm32-wasip1; only --jit=inprocess (LLJIT) is native-only.
+        let target = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Worker))
+            .expect("--jit=worker with wasm32-wasip1 should be accepted");
+        assert!(target.is_some(), "expected Some(target) for wasm32-wasip1");
     }
 }

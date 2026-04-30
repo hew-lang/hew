@@ -101,6 +101,34 @@ target_link_libraries(test_jit_symbol_map PRIVATE
 
 add_test(NAME jit_symbol_map COMMAND test_jit_symbol_map)
 
+# ── JIT session integration test ──────────────────────────────────────────────
+# Verifies that HewJitSession attaches GDB and (when LLVM_USE_PERF=1) perf
+# JITEventListeners via the RTDyldObjectLinkingLayer.  Uses a test-only
+# listener counter (hewJitSessionListenerCountForTest); does not attach gdb or perf.
+add_executable(test_jit_session test_jit_session.cpp)
+
+target_include_directories(test_jit_session PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_BINARY_DIR}/include
+)
+
+# Ensure exceptions are enabled — evalMsgpack uses try/catch internally.
+target_compile_options(test_jit_session PRIVATE
+  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fexceptions>
+  $<$<CXX_COMPILER_ID:MSVC>:/EHsc>
+)
+
+target_link_libraries(test_jit_session PRIVATE
+  HewCodegen
+  HewMLIRDialect
+  $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
+)
+
+add_test(NAME jit_session COMMAND test_jit_session)
+if(HEW_CLI)
+  set_tests_properties(jit_session PROPERTIES ENVIRONMENT "HEW_CLI=${HEW_CLI}")
+endif()
+
 # ── JIT negative link harness ────────────────────────────────────────────────
 if(UNIX)
   add_test(

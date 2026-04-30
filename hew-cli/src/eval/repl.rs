@@ -1217,10 +1217,19 @@ fn run_inprocess_jit(
         }
         Err(crate::jit::JitError::ExecFailed(msg)) => {
             // Treat JIT exec failure as a runtime failure with exit code 1.
-            // #1227 will replace this with a proper catch_unwind seam.
             Err(CompiledEvalError::RuntimeFailure {
                 stdout: String::new(),
                 stderr: msg,
+                exit_code: 1,
+            })
+        }
+        Err(crate::jit::JitError::PanicCaught(msg)) => {
+            // A Rust panic propagated out of JIT-emitted code and was caught
+            // by the catch_unwind seam in run_jit.  Surface it as a runtime
+            // failure so the REPL can recover and continue.
+            Err(CompiledEvalError::RuntimeFailure {
+                stdout: String::new(),
+                stderr: format!("JIT panic: {msg}"),
                 exit_code: 1,
             })
         }

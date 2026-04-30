@@ -81,10 +81,11 @@ fn resolve_eval_target(
     // Other wasi-shaped triples like `wasm32-unknown-unknown-wasi` parse as
     // WASM but do not normalize to wasm32-wasip1 and must be rejected.
     if target.is_wasi() && target.normalized_triple() == "wasm32-wasip1" {
-        if jit.is_some() {
+        if matches!(jit, Some(crate::args::JitMode::Inprocess)) {
             return Err(format!(
-                "`--jit` is native-only and cannot be used with `--target {}`. \
-                 Omit `--jit` for AOT WASM eval, or omit `--target` for native JIT.",
+                "`--jit=inprocess` is native-only and cannot be used with `--target {}`. \
+                 Omit `--jit` for AOT WASM eval, use `--jit=worker` to keep the AOT+spawn path, \
+                 or omit `--target` for native JIT.",
                 target.normalized_triple()
             ));
         }
@@ -376,11 +377,20 @@ mod target_validation_tests {
     #[test]
     fn wasm32_wasip1_with_jit_is_rejected() {
         let err = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Inprocess))
-            .expect_err("--jit with wasm32-wasip1 should be rejected");
+            .expect_err("--jit=inprocess with wasm32-wasip1 should be rejected");
         assert!(
             err.contains("native-only"),
             "expected 'native-only' in error: {err}"
         );
         assert!(err.contains("wasm32"), "expected 'wasm32' in error: {err}");
+    }
+
+    #[test]
+    fn wasm32_wasip1_with_jit_worker_is_accepted() {
+        // --jit=worker keeps the AOT+spawn path, which is compatible with
+        // wasm32-wasip1; only --jit=inprocess (LLJIT) is native-only.
+        let target = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Worker))
+            .expect("--jit=worker with wasm32-wasip1 should be accepted");
+        assert!(target.is_some(), "expected Some(target) for wasm32-wasip1");
     }
 }

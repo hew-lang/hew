@@ -28,14 +28,13 @@
 //! registers from `bridge::bridge_init`, and profiler registers from
 //! `profiler::register_reset_hooks`.
 
-use crate::util::MutexExt;
-use std::sync::Mutex;
+use crate::lifetime::PoisonSafe;
 
 /// A zero-argument, infallible cleanup callback.
 pub(crate) type ResetHook = fn();
 
 /// Global list of reset hooks, populated at init time.
-static RESET_HOOKS: Mutex<Vec<ResetHook>> = Mutex::new(Vec::new());
+static RESET_HOOKS: PoisonSafe<Vec<ResetHook>> = PoisonSafe::new(Vec::new());
 
 /// Register a reset hook.
 ///
@@ -43,7 +42,7 @@ static RESET_HOOKS: Mutex<Vec<ResetHook>> = Mutex::new(Vec::new());
 /// Callers are responsible for guarding against duplicate registration (e.g.
 /// with `std::sync::Once`).
 pub(crate) fn register_reset_hook(hook: ResetHook) {
-    RESET_HOOKS.lock_or_recover().push(hook);
+    RESET_HOOKS.access(|hooks| hooks.push(hook));
 }
 
 /// Fire all registered reset hooks in registration order.
@@ -55,7 +54,7 @@ pub(crate) fn session_reset() {
     // Snapshot the hooks under the lock, then release the lock before
     // calling each hook.  This avoids a potential deadlock if a hook
     // attempts to register another hook during teardown.
-    let hooks: Vec<ResetHook> = RESET_HOOKS.lock_or_recover().clone();
+    let hooks: Vec<ResetHook> = RESET_HOOKS.access(|hooks| hooks.clone());
     for hook in hooks {
         hook();
     }
@@ -72,8 +71,12 @@ pub(crate) fn session_reset() {
 /// Any test that modifies or reads `RESET_HOOKS` must hold this lock for the
 /// duration of the test.  Acquiring it from outside `session::tests` ensures
 /// safe cross-module test isolation.
+///
+/// INTENTIONAL: `SESSION_TEST_LOCK` uses raw Mutex (not `PoisonSafe`) because it
+/// is a test-serialisation barrier — the guard is held across the test body
+/// and the closure API provides no benefit here.
 #[cfg(test)]
-pub(crate) static SESSION_TEST_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Clear all registered reset hooks and return the serialisation guard.
 ///
@@ -83,7 +86,7 @@ pub(crate) fn reset_hooks_for_test() -> std::sync::MutexGuard<'static, ()> {
     let guard = SESSION_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    RESET_HOOKS.lock_or_recover().clear();
+    RESET_HOOKS.access(std::vec::Vec::clear);
     guard
 }
 
@@ -92,10 +95,14 @@ pub(crate) fn reset_hooks_for_test() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::MutexExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     // ── Shared hook-ordering helpers ──────────────────────────────────────
 
+    // INTENTIONAL: CALL_ORDER uses Mutex + lock_or_recover — it is a
+    // test-local accumulator; no PoisonSafe benefit in this context.
     static CALL_ORDER: Mutex<Vec<usize>> = Mutex::new(Vec::new());
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 

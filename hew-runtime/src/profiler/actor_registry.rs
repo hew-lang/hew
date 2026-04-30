@@ -15,10 +15,9 @@
 //! instance of that type; `snapshot_all` consults the table when building
 //! snapshots.  Unregistered dispatch functions fall back to `"Actor"`.
 
-use crate::util::MutexExt;
+use crate::lifetime::PoisonSafe;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::Mutex;
 
 use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
@@ -37,7 +36,7 @@ struct SendPtr(*mut HewActor);
 unsafe impl Send for SendPtr {}
 
 /// Global registry of live actors. Keyed by actor ID.
-static REGISTRY: Mutex<Option<HashMap<u64, SendPtr>>> = Mutex::new(None);
+static REGISTRY: PoisonSafe<Option<HashMap<u64, SendPtr>>> = PoisonSafe::new(None);
 
 /// Side table mapping dispatch function pointer (as `usize`) to Hew type name.
 ///
@@ -55,7 +54,8 @@ static REGISTRY: Mutex<Option<HashMap<u64, SendPtr>>> = Mutex::new(None);
 ///       pointer as a key.
 /// REAL: Embed the type name directly in `HewActor` once the C ABI is
 ///       versioned and codegen is updated to fill the new field.
-static DISPATCH_TYPE_REGISTRY: Mutex<Option<HashMap<usize, &'static str>>> = Mutex::new(None);
+static DISPATCH_TYPE_REGISTRY: PoisonSafe<Option<HashMap<usize, &'static str>>> =
+    PoisonSafe::new(None);
 
 /// Side table mapping `(dispatch_fn_ptr_as_usize, msg_type)` to the fully-qualified
 /// handler name `"ActorName::handler_name"`.
@@ -74,7 +74,8 @@ static DISPATCH_TYPE_REGISTRY: Mutex<Option<HashMap<usize, &'static str>>> = Mut
 ///       `hew_register_handler_name` instead of (or alongside)
 ///       `hew_wasm_register_actor_meta`.  Tracked in #1259.
 /// REAL: Unify WASM and native paths onto this compound-key registry.
-static HANDLER_NAME_REGISTRY: Mutex<Option<HashMap<(usize, i32), String>>> = Mutex::new(None);
+static HANDLER_NAME_REGISTRY: PoisonSafe<Option<HashMap<(usize, i32), String>>> =
+    PoisonSafe::new(None);
 
 /// Register a Hew type name for a dispatch function.
 ///
@@ -92,11 +93,12 @@ pub fn register_dispatch_type(
     if key == 0 {
         return;
     }
-    let mut guard = DISPATCH_TYPE_REGISTRY.lock_or_recover();
-    guard
-        .get_or_insert_with(HashMap::new)
-        .entry(key)
-        .or_insert(type_name);
+    DISPATCH_TYPE_REGISTRY.access(|guard| {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .entry(key)
+            .or_insert(type_name);
+    });
 }
 
 /// Look up the Hew type name for a dispatch function pointer.
@@ -122,11 +124,12 @@ pub fn lookup_dispatch_type_by_ptr(dispatch_ptr: usize) -> &'static str {
     if dispatch_ptr == 0 {
         return "Actor";
     }
-    let guard = DISPATCH_TYPE_REGISTRY.lock_or_recover();
-    guard
-        .as_ref()
-        .and_then(|m| m.get(&dispatch_ptr).copied())
-        .unwrap_or("Actor")
+    DISPATCH_TYPE_REGISTRY.access(|guard| {
+        guard
+            .as_ref()
+            .and_then(|m| m.get(&dispatch_ptr).copied())
+            .unwrap_or("Actor")
+    })
 }
 
 /// Look up the fully-qualified handler name by raw dispatch pointer and `msg_type`.
@@ -137,10 +140,11 @@ pub fn lookup_handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<
     if dispatch_ptr == 0 {
         return None;
     }
-    let guard = HANDLER_NAME_REGISTRY.lock_or_recover();
-    guard
-        .as_ref()
-        .and_then(|m| m.get(&(dispatch_ptr, msg_type)).cloned())
+    HANDLER_NAME_REGISTRY.access(|guard| {
+        guard
+            .as_ref()
+            .and_then(|m| m.get(&(dispatch_ptr, msg_type)).cloned())
+    })
 }
 
 /// Register a fully-qualified handler name for a `(dispatch_fn_ptr, msg_type)` pair.
@@ -161,11 +165,12 @@ pub fn register_handler_name(
     if key == 0 {
         return;
     }
-    let mut guard = HANDLER_NAME_REGISTRY.lock_or_recover();
-    guard
-        .get_or_insert_with(HashMap::new)
-        .entry((key, msg_type))
-        .or_insert(handler_name);
+    HANDLER_NAME_REGISTRY.access(|guard| {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .entry((key, msg_type))
+            .or_insert(handler_name);
+    });
 }
 
 /// Look up the fully-qualified handler name for a `(dispatch_fn_ptr, msg_type)` pair.
@@ -182,10 +187,11 @@ pub fn lookup_handler_name(
     if key == 0 {
         return None;
     }
-    let guard = HANDLER_NAME_REGISTRY.lock_or_recover();
-    guard
-        .as_ref()
-        .and_then(|m| m.get(&(key, msg_type)).cloned())
+    HANDLER_NAME_REGISTRY.access(|guard| {
+        guard
+            .as_ref()
+            .and_then(|m| m.get(&(key, msg_type)).cloned())
+    })
 }
 
 /// Look up the dispatch function pointer (as `usize`) for a live actor by its ID.
@@ -203,14 +209,15 @@ pub fn lookup_handler_name(
 /// REAL: Embed the dispatch pointer (or a stable type ID) directly in
 ///       `HewTraceEvent` when the C ABI is versioned.
 pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
-    let guard = REGISTRY.lock_or_recover();
-    let map = guard.as_ref()?;
-    let SendPtr(ptr) = map.get(&actor_id)?;
-    // SAFETY: The actor pointer is valid while it is registered.  We take only
-    // the dispatch fn value (a function pointer cast to usize) without
-    // dereferencing any managed data.
-    let dispatch = unsafe { (**ptr).dispatch };
-    dispatch.map(|f| f as usize)
+    REGISTRY.access(|guard| {
+        let map = guard.as_ref()?;
+        let SendPtr(ptr) = map.get(&actor_id)?;
+        // SAFETY: The actor pointer is valid while it is registered.  We take only
+        // the dispatch fn value (a function pointer cast to usize) without
+        // dereferencing any managed data.
+        let dispatch = unsafe { (**ptr).dispatch };
+        dispatch.map(|f| f as usize)
+    })
 }
 
 /// Clear all registered dispatch-type mappings.
@@ -222,14 +229,16 @@ pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
 /// After this call, `lookup_dispatch_type` returns `"Actor"` for all pointers
 /// until `register_dispatch_type` is called again.
 pub(crate) fn clear_dispatch_registry() {
-    let mut guard = DISPATCH_TYPE_REGISTRY.lock_or_recover();
-    if let Some(map) = guard.as_mut() {
-        map.clear();
-    }
-    let mut hguard = HANDLER_NAME_REGISTRY.lock_or_recover();
-    if let Some(map) = hguard.as_mut() {
-        map.clear();
-    }
+    DISPATCH_TYPE_REGISTRY.access(|guard| {
+        if let Some(map) = guard.as_mut() {
+            map.clear();
+        }
+    });
+    HANDLER_NAME_REGISTRY.access(|guard| {
+        if let Some(map) = guard.as_mut() {
+            map.clear();
+        }
+    });
 }
 
 /// Register a newly spawned actor.
@@ -243,10 +252,11 @@ pub unsafe fn register(actor: *mut HewActor) {
     }
     // SAFETY: Actor was just allocated and is valid.
     let id = unsafe { (*actor).id };
-    let mut guard = REGISTRY.lock_or_recover();
-    guard
-        .get_or_insert_with(HashMap::new)
-        .insert(id, SendPtr(actor));
+    REGISTRY.access(|guard| {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(id, SendPtr(actor));
+    });
 }
 
 /// Unregister an actor about to be freed.
@@ -260,10 +270,11 @@ pub unsafe fn unregister(actor: *mut HewActor) {
     }
     // SAFETY: Actor is still valid at this point (called before free).
     let id = unsafe { (*actor).id };
-    let mut guard = REGISTRY.lock_or_recover();
-    if let Some(map) = guard.as_mut() {
-        map.remove(&id);
-    }
+    REGISTRY.access(|guard| {
+        if let Some(map) = guard.as_mut() {
+            map.remove(&id);
+        }
+    });
 }
 
 /// Snapshot of a single actor's stats for the profiler API.
@@ -290,73 +301,78 @@ pub struct ActorSnapshot {
 
 /// Enumerate all live actors and return a snapshot of their stats.
 pub fn snapshot_all() -> Vec<ActorSnapshot> {
-    let guard = REGISTRY.lock_or_recover();
-
-    let Some(map) = guard.as_ref() else {
-        return Vec::new();
-    };
-
-    let mut result = Vec::with_capacity(map.len());
-    for SendPtr(actor_ptr) in map.values() {
-        // SAFETY: Actor is registered and not yet freed. The pointer
-        // is valid and the atomic fields can be read concurrently.
-        let a = unsafe { &**actor_ptr };
-
-        let state_int = a.actor_state.load(Ordering::Relaxed);
-        let state_name = if state_int == HewActorState::Idle as i32 {
-            "idle"
-        } else if state_int == HewActorState::Runnable as i32 {
-            "runnable"
-        } else if state_int == HewActorState::Running as i32 {
-            "running"
-        } else if state_int == HewActorState::Blocked as i32 {
-            "blocked"
-        } else if state_int == HewActorState::Stopping as i32 {
-            "stopping"
-        } else if state_int == HewActorState::Crashed as i32 {
-            "crashed"
-        } else if state_int == HewActorState::Stopped as i32 {
-            "stopped"
-        } else {
-            "unknown"
+    REGISTRY.access(|guard| {
+        let Some(map) = guard.as_ref() else {
+            return Vec::new();
         };
 
-        let (depth, hwm) = if a.mailbox.is_null() {
-            (0, 0)
-        } else {
-            let mb = a.mailbox.cast::<HewMailbox>();
-            // SAFETY: Mailbox is valid while actor is registered.
-            let mb_ref = unsafe { &*mb };
-            (
-                mb_ref.count.load(Ordering::Relaxed),
-                mb_ref.high_water_mark.load(Ordering::Relaxed),
-            )
-        };
+        let mut result = Vec::with_capacity(map.len());
+        for SendPtr(actor_ptr) in map.values() {
+            // SAFETY: Actor is registered and not yet freed. The pointer
+            // is valid and the atomic fields can be read concurrently.
+            let a = unsafe { &**actor_ptr };
 
-        let actor_type = lookup_dispatch_type(a.dispatch);
+            let state_int = a.actor_state.load(Ordering::Relaxed);
+            let state_name = if state_int == HewActorState::Idle as i32 {
+                "idle"
+            } else if state_int == HewActorState::Runnable as i32 {
+                "runnable"
+            } else if state_int == HewActorState::Running as i32 {
+                "running"
+            } else if state_int == HewActorState::Blocked as i32 {
+                "blocked"
+            } else if state_int == HewActorState::Stopping as i32 {
+                "stopping"
+            } else if state_int == HewActorState::Crashed as i32 {
+                "crashed"
+            } else if state_int == HewActorState::Stopped as i32 {
+                "stopped"
+            } else {
+                "unknown"
+            };
 
-        result.push(ActorSnapshot {
-            id: a.id,
-            pid: a.pid,
-            actor_type,
-            state: state_name,
-            messages_processed: a.prof_messages_processed.load(Ordering::Relaxed),
-            processing_time_ns: a.prof_processing_time_ns.load(Ordering::Relaxed),
-            mailbox_depth: depth,
-            mailbox_hwm: hwm,
-        });
-    }
+            let (depth, hwm) = if a.mailbox.is_null() {
+                (0, 0)
+            } else {
+                let mb = a.mailbox.cast::<HewMailbox>();
+                // SAFETY: Mailbox is valid while actor is registered.
+                let mb_ref = unsafe { &*mb };
+                (
+                    mb_ref.count.load(Ordering::Relaxed),
+                    mb_ref.high_water_mark.load(Ordering::Relaxed),
+                )
+            };
 
-    // Sort by ID for stable ordering.
-    result.sort_by_key(|s| s.id);
-    result
+            // lookup_dispatch_type acquires DISPATCH_TYPE_REGISTRY — a
+            // different mutex, so nesting here is safe.
+            let actor_type = lookup_dispatch_type(a.dispatch);
+
+            result.push(ActorSnapshot {
+                id: a.id,
+                pid: a.pid,
+                actor_type,
+                state: state_name,
+                messages_processed: a.prof_messages_processed.load(Ordering::Relaxed),
+                processing_time_ns: a.prof_processing_time_ns.load(Ordering::Relaxed),
+                mailbox_depth: depth,
+                mailbox_hwm: hwm,
+            });
+        }
+
+        // Sort by ID for stable ordering.
+        result.sort_by_key(|s| s.id);
+        result
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     /// Serialise tests that modify shared registry state.
+    // INTENTIONAL: TEST_LOCK uses raw Mutex; short-lived test serialisation
+    // barrier, closure API adds no value here.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     unsafe extern "C" fn fake_dispatch_a(
@@ -484,11 +500,11 @@ mod tests {
 
         // Clear registries to a known state before the test.
         clear_dispatch_registry();
-        let mut reg = REGISTRY.lock_or_recover();
-        if let Some(m) = reg.as_mut() {
-            m.clear();
-        }
-        drop(reg);
+        REGISTRY.access(|reg| {
+            if let Some(m) = reg.as_mut() {
+                m.clear();
+            }
+        });
 
         // Register the dispatch type for the fake actor.
         register_dispatch_type(Some(fake_dispatch_e), "ProfiledActor");
@@ -635,11 +651,11 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Clear registry to known state.
-        let mut reg = REGISTRY.lock_or_recover();
-        if let Some(m) = reg.as_mut() {
-            m.clear();
-        }
-        drop(reg);
+        REGISTRY.access(|reg| {
+            if let Some(m) = reg.as_mut() {
+                m.clear();
+            }
+        });
 
         let mut actor: Box<crate::actor::HewActor> =
             // SAFETY: zero-initialising is valid for all atomic and ptr fields.

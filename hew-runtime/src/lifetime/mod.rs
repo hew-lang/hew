@@ -18,8 +18,4 @@
 pub(crate) mod live_actors;
 pub(crate) mod poison_safe;
 
-#[allow(
-    unused_imports,
-    reason = "PoisonSafe (Mutex variant) used by live_actors; both re-exported here for crate-wide use"
-)]
 pub(crate) use poison_safe::{PoisonSafe, PoisonSafeRw};

@@ -40,7 +40,6 @@ The **Checker disposition** column documents what the type checker emits when
 
 | Feature | Checker disposition | Runtime status | Tracking |
 |---------|-------------------|----------------|----------|
-| `--jit` flag (`hew eval --jit`) | 🚫 native-only (rejected at CLI) | JIT executes compiled modules in-process via LLJIT; no WASM JIT path | #1231 |
 | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | ✅ Pass | Implemented | — |
 | Generators / async streams | ✅ Pass | Implemented | — |
 | Pattern matching, ADTs, generics | ✅ Pass | Implemented | — |

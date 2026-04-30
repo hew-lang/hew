@@ -1604,6 +1604,33 @@ fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
     (delay.saturating_mul(2)).min(std::time::Duration::from_millis(50))
 }
 
+/// Quiesce and free an actor that has already reached a terminal state inside
+/// `drain_actors`.
+///
+/// This consolidates the three-step sequence — cancel timers/links/monitors,
+/// take ownership from `LIVE_ACTORS`, and run `finalize_quiescent_actor_cleanup`
+/// — into one call site so both the inner loop and the post-deadline pass use
+/// the same ordering. Both call sites in `drain_actors` were already identical;
+/// this is a behaviour-equivalent extraction with no normalisation.
+///
+/// # Safety
+///
+/// `expected` must be a valid, quiescent actor pointer that is still tracked
+/// in `LIVE_ACTORS`. `state` must be the value loaded from `actor_state`
+/// immediately before this call.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn drain_quiesced_actor(actor_id: ActorId, expected: *mut HewActor, state: i32) {
+    // SAFETY: caller guarantees `expected` is quiescent and still tracked in
+    // LIVE_ACTORS. prepare_quiescent_actor_for_cleanup must run before
+    // untracking so that any in-flight timer callback or signal propagation
+    // still observes the actor as live and bails out cooperatively.
+    unsafe { prepare_quiescent_actor_for_cleanup(expected) };
+    if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
+        // SAFETY: the actor is quiescent, prepared for cleanup, and no longer tracked.
+        unsafe { finalize_quiescent_actor_cleanup(actor, state) };
+    }
+}
+
 /// Cooperatively stop a set of native actors and wait for quiescence with a shared deadline.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutcome {
@@ -1643,12 +1670,8 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
                     pending.swap_remove(index);
                 }
                 Some(state) if actor_free_state_is_quiescent(state) => {
-                    // SAFETY: prepare_quiescent_actor_for_cleanup must run while the quiescent actor is still tracked in LIVE_ACTORS.
-                    unsafe { prepare_quiescent_actor_for_cleanup(expected) };
-                    if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
-                        // SAFETY: the actor is quiescent, prepared for cleanup, and no longer tracked.
-                        unsafe { finalize_quiescent_actor_cleanup(actor, state) };
-                    }
+                    // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
+                    unsafe { drain_quiesced_actor(actor_id, expected, state) };
                     pending.swap_remove(index);
                 }
                 Some(_) => {
@@ -1682,12 +1705,8 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
             None => {}
             Some(state) if state == HewActorState::Crashed as i32 => crashed.push(actor_id),
             Some(state) if actor_free_state_is_quiescent(state) => {
-                // SAFETY: prepare_quiescent_actor_for_cleanup must run while the quiescent actor is still tracked in LIVE_ACTORS.
-                unsafe { prepare_quiescent_actor_for_cleanup(expected) };
-                if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
-                    // SAFETY: the actor is quiescent, prepared for cleanup, and no longer tracked.
-                    unsafe { finalize_quiescent_actor_cleanup(actor, state) };
-                }
+                // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
+                unsafe { drain_quiesced_actor(actor_id, expected, state) };
             }
             Some(_) => still_live.push(actor_id),
         }
@@ -5247,6 +5266,57 @@ mod tests {
         assert!(
             !crate::link::has_links_for_actor(actor_two_id, actor_two),
             "drain must remove links owned by drained actors"
+        );
+    }
+
+    #[test]
+    fn drain_actors_with_active_monitor_removes_monitor() {
+        // Pin the canonical ordering: draining an actor that is being monitored
+        // must remove both the monitored and the observer side of the monitor
+        // entry before the actors are freed. This guards against teardown paths
+        // that skipped monitor cleanup and left dangling references.
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = NativeSchedulerGuard::new();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let monitored = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let observer = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!monitored.is_null());
+        assert!(!observer.is_null());
+
+        // SAFETY: spawned actors remain live until the assertions below finish.
+        let monitored_id = unsafe { (*monitored).id };
+        // SAFETY: spawned actors remain live until the assertions below finish.
+        let observer_id = unsafe { (*observer).id };
+
+        // Register `observer` as a monitor of `monitored`.
+        // SAFETY: both actor pointers were returned by spawn and are still live.
+        let monitor_ref = unsafe { crate::monitor::hew_actor_monitor(observer, monitored) };
+        assert_ne!(monitor_ref, 0, "monitor registration should succeed");
+        assert!(
+            crate::monitor::has_monitors_for_actor(monitored_id, monitored),
+            "monitored actor should have a monitor entry"
+        );
+        assert!(
+            crate::monitor::has_monitors_for_actor(observer_id, observer),
+            "observer actor should have a monitor entry"
+        );
+
+        let outcome = drain_actors(
+            &[monitored_id, observer_id],
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(outcome, DrainOutcome::Drained);
+        assert!(!is_actor_live(monitored));
+        assert!(!is_actor_live(observer));
+        assert!(
+            !crate::monitor::has_monitors_for_actor(monitored_id, monitored),
+            "drain must remove monitor entries owned by the monitored actor"
+        );
+        assert!(
+            !crate::monitor::has_monitors_for_actor(observer_id, observer),
+            "drain must remove monitor entries owned by the observer actor"
         );
     }
 

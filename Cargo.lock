@@ -1723,6 +1723,7 @@ name = "hew-std-encoding-protobuf"
 version = "0.3.0"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
 ]
 
@@ -1856,6 +1857,7 @@ dependencies = [
 name = "hew-std-net-websocket"
 version = "0.3.0"
 dependencies = [
+ "hew-cabi",
  "hew-runtime",
  "libc",
  "tungstenite",

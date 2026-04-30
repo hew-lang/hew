@@ -7,7 +7,7 @@
 //! default so slow trickle-feed clients cannot hold the server indefinitely.
 //! Use [`hew_http_server_set_request_timeout_ms`] to tune that deadline.
 
-use hew_cabi::cabi::{malloc_cstring, str_to_malloc};
+use hew_cabi::cabi::{malloc_bytes, malloc_cstring, str_to_malloc};
 use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
 use hew_cabi::vec::HewVec;
 use std::ffi::{c_char, c_void, CStr};
@@ -516,15 +516,9 @@ pub unsafe extern "C" fn hew_http_request_body(
     request.inner = Some(returned_inner);
 
     let len = buf.len();
-    // SAFETY: We allocate len bytes (or 1 if empty) via malloc.
-    let ptr = unsafe { libc::malloc(if len == 0 { 1 } else { len }) }.cast::<u8>();
+    let ptr = malloc_bytes(&buf);
     if ptr.is_null() {
         return std::ptr::null_mut();
-    }
-    if len > 0 {
-        // SAFETY: buf.as_ptr() is valid for len bytes; ptr is freshly
-        // allocated with at least len bytes.
-        unsafe { std::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, len) };
     }
     // SAFETY: out_len is valid per caller contract.
     unsafe { *out_len = len };

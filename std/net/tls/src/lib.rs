@@ -16,7 +16,7 @@ use std::net::TcpStream;
 use std::os::raw::{c_char, c_int};
 use std::sync::Arc;
 
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use hew_cabi::cabi::{cstr_to_str, malloc_bytes, str_to_malloc};
 use hew_cabi::vec::HewVec;
 use rustls::pki_types::ServerName;
 use rustls::RootCertStore;
@@ -110,18 +110,14 @@ fn empty_hew_vec() -> HewVec {
 
 fn build_hew_vec(bytes: &[u8]) -> Option<HewVec> {
     let len = bytes.len();
-    // SAFETY: requesting `len` bytes from libc returns either a valid allocation or null.
-    let ptr = unsafe { libc::malloc(len) }.cast::<u8>();
+    let ptr = malloc_bytes(bytes);
     if ptr.is_null() {
         return None;
     }
-    // SAFETY: `bytes.as_ptr()` is valid for `len` bytes and `ptr` points to a
-    // freshly allocated, non-overlapping `len`-byte region.
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len) };
     Some(HewVec {
         data: ptr,
         len,
-        cap: len,
+        cap: len.max(1),
         elem_size: 1,
         elem_kind: hew_cabi::vec::ElemKind::Plain,
     })

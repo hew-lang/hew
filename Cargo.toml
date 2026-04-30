@@ -71,6 +71,7 @@ clap_complete = "4"
 base64 = "0.22"
 rmp-serde = "1"
 stacker = "0.1"
+dirs = "6"
 
 [workspace.lints.rust]
 ambiguous_negative_literals = "warn"

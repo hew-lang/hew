@@ -29,6 +29,7 @@ toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 notify = "8"
+dirs.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

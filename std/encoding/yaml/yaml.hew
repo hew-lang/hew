@@ -39,13 +39,54 @@ type Value {}
 /// Methods available on a YAML `Value`.
 ///
 /// Extends the shared opaque-handle contract from
-/// `std::encoding::wire::value_trait`. Canonical methods (stringify, type_of,
-/// get_bool, get_int, get_float, get_string, get_field, array_len, array_get,
-/// free, and all builders except with_null/push_null) are inherited from
-/// CanonicalValueMethods and not redeclared here.
+/// `std::encoding::wire::value_trait`. Canonical methods are redeclared here
+/// with YAML-specific docstrings for documentation purposes.
 trait ValueMethods: CanonicalValueMethods {
+    /// Serialize the value back to a YAML string.
+    fn stringify(val: Value) -> String;
+    /// Return the type tag (0=null, 1=bool, 2=int, 3=float, 4=string, 5=sequence, 6=mapping).
+    fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
+    /// Extract the boolean value (0 or 1).
+    fn get_bool(val: Value) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
+    /// Extract the integer value.
+    fn get_int(val: Value) -> int;
+    /// Extract the floating-point value.
+    fn get_float(val: Value) -> f64;
+    /// Extract the string value.
+    fn get_string(val: Value) -> String;
+    /// Look up a field by key in a YAML mapping.
+    fn get_field(val: Value, key: String) -> Value;
+    /// Return the number of elements in a YAML sequence.
+    fn array_len(val: Value) -> int;
+    /// Return the element at the given index in a YAML sequence.
+    fn array_get(val: Value, index: int) -> Value;
+    /// Release the value resources.
+    fn free(val: Value);
+
+    // ── Fluent builders ─────────────────────────────────────────
+
+    /// Set a string field on a mapping. Returns the mapping for chaining.
+    fn with_string(obj: Value, key: String, val: String) -> Value;
+    /// Set an integer field. Returns the mapping for chaining.
+    fn with_int(obj: Value, key: String, val: int) -> Value;
+    /// Set a float field. Returns the mapping for chaining.
+    fn with_float(obj: Value, key: String, val: f64) -> Value;
+    /// Set a boolean field. Returns the mapping for chaining.
+    fn with_bool(obj: Value, key: String, val: bool) -> Value;
     /// Set a null field. Returns the mapping for chaining.
     fn with_null(obj: Value, key: String) -> Value;
+    /// Set a Value child on a mapping. The child is consumed. Returns the mapping.
+    fn with(obj: Value, key: String, child: Value) -> Value;
+    /// Push a Value onto a sequence. The child is consumed. Returns the sequence.
+    fn push(arr: Value, child: Value) -> Value;
+    /// Push an integer onto a sequence. Returns the sequence.
+    fn push_int(arr: Value, val: int) -> Value;
+    /// Push a string onto a sequence. Returns the sequence.
+    fn push_string(arr: Value, val: String) -> Value;
+    /// Push a float onto a sequence. Returns the sequence.
+    fn push_float(arr: Value, val: f64) -> Value;
+    /// Push a boolean onto a sequence. Returns the sequence.
+    fn push_bool(arr: Value, val: bool) -> Value;
     /// Push null onto a sequence. Returns the sequence.
     fn push_null(arr: Value) -> Value;
 }

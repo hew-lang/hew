@@ -1143,8 +1143,10 @@ fn run_inprocess_compiled(
 
 /// Dispatch to JIT, native, or WASM execution depending on mode and target.
 ///
-/// When `jit_mode` is `Some(Inprocess)`, compiles via the frontend pipeline
-/// and executes in-process through LLJIT — no temp dir, no subprocess.
+/// When `jit_mode` is `Some(Inprocess | Auto)`, compiles via the frontend
+/// pipeline and executes in-process through LLJIT — no temp dir, no subprocess.
+/// `Auto` today always selects the `Inprocess` path; future work (#1227 counter)
+/// may downgrade it to `Worker` when crash-survivability warrants it.
 /// When `target` resolves to a WASM target, routes through wasmtime.
 /// Otherwise falls through to the existing native `run_inprocess_compiled`
 /// AOT+spawn path.
@@ -1158,7 +1160,12 @@ fn run_eval_compiled(
     jit_mode: Option<crate::args::JitMode>,
 ) -> Result<String, CompiledEvalError> {
     // JIT in-process path — no temp dir, no subprocess.
-    if matches!(jit_mode, Some(crate::args::JitMode::Inprocess)) {
+    // `Auto` resolves to `Inprocess` today; `Worker` and `None` fall through to
+    // the AOT+spawn path below.
+    if matches!(
+        jit_mode,
+        Some(crate::args::JitMode::Inprocess | crate::args::JitMode::Auto)
+    ) {
         return run_inprocess_jit(program, source, source_label, project_dir);
     }
 

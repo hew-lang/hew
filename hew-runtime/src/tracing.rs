@@ -28,6 +28,7 @@
 //! - [`hew_trace_drain`] — Drain recorded events into a buffer.
 
 use crate::lifetime::PoisonSafe;
+use crate::util::MutexExt;
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
@@ -744,7 +745,6 @@ pub fn drain_events_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     /// Serialize tracing tests since they share global state
     /// (`TRACE_EVENTS`, `TRACING_ENABLED`, `CURRENT_CONTEXT`).

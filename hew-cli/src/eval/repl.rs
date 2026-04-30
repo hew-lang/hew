@@ -1304,7 +1304,19 @@ pub fn run_interactive(
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
 
+    // Record startup in the host-death counter and retrieve the crash count.
+    // `startup()` writes the clean-exit marker for this session; `on_clean_exit()`
+    // below removes it on normal exit.
+    let death_count = crate::host_death::startup();
+
     println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
+    if death_count > 0 {
+        eprintln!(
+            "warning: last session ended in an uncaught signal \
+             ({death_count} such event{} in the last 7 days)",
+            if death_count == 1 { "" } else { "s" }
+        );
+    }
     println!("Type :help for commands, :session to inspect state, :quit to exit.\n");
 
     loop {
@@ -1317,7 +1329,10 @@ pub fn run_interactive(
                 println!();
                 break;
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => {
+                crate::host_death::on_clean_exit();
+                return Err(e.into());
+            }
         };
 
         let mut input = line.clone();
@@ -1351,6 +1366,7 @@ pub fn run_interactive(
         }
     }
 
+    crate::host_death::on_clean_exit();
     Ok(())
 }
 

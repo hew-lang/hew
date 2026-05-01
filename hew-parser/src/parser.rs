@@ -2410,6 +2410,7 @@ impl<'src> Parser<'src> {
         let mut functions = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::Fn) {
+                let item_start = self.peek_span().start;
                 self.advance();
                 let name = self.expect_ident()?;
 
@@ -2423,11 +2424,19 @@ impl<'src> Parser<'src> {
 
                 self.expect(&Token::Semicolon)?;
 
+                // peek_span().start is now the first token after the `;`,
+                // so the byte range item_start..item_end covers the full
+                // extern fn declaration including any trailing comment
+                // on the same line (comments are not lex tokens, but
+                // extract_comments scans the raw source for them).
+                let item_end = self.peek_span().start;
+
                 functions.push(ExternFnDecl {
                     name,
                     params,
                     return_type,
                     is_variadic,
+                    span: item_start..item_end,
                 });
             } else {
                 self.error(format!(

@@ -10112,6 +10112,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
             params: vec![],
             return_type: Some((i64_ty.clone(), 0..3)),
             is_variadic: false,
+            span: 0..0,
         }],
     };
     let ok_fn = FnDecl {
@@ -10157,6 +10158,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
             params: vec![],
             return_type: Some((string_ty, 20..26)),
             is_variadic: false,
+            span: 0..0,
         }],
     };
 
@@ -11481,6 +11483,7 @@ actor MyActor {
                 }],
                 return_type: None,
                 is_variadic: false,
+                span: 0..0,
             }],
         })
     }

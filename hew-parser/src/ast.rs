@@ -1011,6 +1011,13 @@ pub struct ExternFnDecl {
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
     pub is_variadic: bool,
+    /// Source byte range covering this declaration. Spans from the `fn`
+    /// keyword (after any doc-comment trivia) through the position
+    /// immediately after the trailing `;`. The formatter uses this to
+    /// flush inline comments around each extern fn. Defaults to `0..0`
+    /// for synthetic decls (e.g. wire enrichment, test fixtures).
+    #[serde(skip)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

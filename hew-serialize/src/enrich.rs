@@ -894,6 +894,7 @@ fn synthesize_stdlib_externs_from_imports(
                         params: param_exprs,
                         return_type,
                         is_variadic: false,
+                        span: 0..0,
                     })
                 })
                 .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
@@ -5601,6 +5602,7 @@ mod tests {
                         0..0,
                     )),
                     is_variadic: false,
+                    span: 0..0,
                 }],
             }),
             0..0,

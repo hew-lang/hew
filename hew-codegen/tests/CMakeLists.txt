@@ -826,6 +826,19 @@ foreach(_cat ${_E2E_CATEGORIES})
   endforeach()
 endforeach()
 
+# Serialise three e2e tests that race on the hew compiler's working-directory
+# scratch space when run in parallel.  RESOURCE_LOCK prevents concurrent
+# execution without disabling parallelism for the rest of the suite.
+foreach(_flake
+  e2e_bytes_stream_write_string
+  e2e_canonicalize_cast_chain
+  e2e_canonicalize_string_concat_identity
+)
+  if(TEST ${_flake})
+    set_tests_properties(${_flake} PROPERTIES RESOURCE_LOCK "hew_codegen_build_dir")
+  endif()
+endforeach()
+
 add_e2e_file_test(for_await_typed_receiver_param e2e_concurrency channel_for_await_typed_receiver_param)
 
 # quic_string_loopback uses send_string/recv_string which are only present in

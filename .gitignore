@@ -60,3 +60,9 @@ rust_out
 actor_fib
 examples/actor_fib
 .env.pre-release
+
+# LSP integration test artifacts (machine-local, not source)
+hew-lsp/.test-artifacts/
+
+# Scratchpad output directory (local tooling, not committed)
+out/

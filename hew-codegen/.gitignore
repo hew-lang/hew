@@ -2,3 +2,6 @@ Testing/
 build/
 build-*/
 deps/
+
+# clangd LSP index files (machine-local, regenerated on demand)
+.cache/

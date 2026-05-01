@@ -1779,3 +1779,24 @@ fn eval_repl_piped_stdout_flushes_per_submission() {
          within 5 seconds while the process was still alive — stdout flush missing"
     );
 }
+
+/// Smoke test: `--jit=inprocess` must be accepted and forwarded to the
+/// interactive REPL, not silently ignored.
+///
+/// Previously `run_interactive` did not receive the `jit` argument, so
+/// `--jit=inprocess` was dropped at the call site and the REPL always ran
+/// via the AOT+spawn path.  After the fix the argument reaches
+/// `ReplSession::set_jit_mode`, and the REPL exits cleanly.
+#[test]
+fn eval_repl_jit_inprocess_flag_accepted() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(&["eval", "--jit=inprocess"], "1 + 1\n:quit\n");
+
+    assert!(
+        output.status.success(),
+        "hew eval --jit=inprocess exited non-zero\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

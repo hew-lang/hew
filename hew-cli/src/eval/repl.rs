@@ -1300,9 +1300,11 @@ fn run_wasm_eval_compiled(
 pub fn run_interactive(
     timeout: Duration,
     target: Option<&str>,
+    jit: Option<crate::args::JitMode>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
+    session.set_jit_mode(jit);
 
     // Record startup in the host-death counter and retrieve the crash count.
     // `startup()` writes the clean-exit marker for this session; `on_clean_exit()`

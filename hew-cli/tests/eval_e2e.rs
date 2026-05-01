@@ -1,8 +1,10 @@
 mod support;
 
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use support::{hew_binary, repo_root, require_codegen, strip_ansi};
 
@@ -1694,5 +1696,86 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     assert!(
         captured.contains("prior-chunk"),
         "stdout from earlier chunk was absent in JSON contract: {v}"
+    );
+}
+
+/// Assert that per-submission output appears in the pipe *before* the process exits.
+///
+/// When `hew eval`'s stdout is piped, libc uses full block-buffering by
+/// default.  Without an explicit `stdout().flush()` after each `print!`,
+/// output is held in the buffer until exit — the reported symptom.
+///
+/// The test spawns `hew eval` with a piped stdin, sends one statement, reads
+/// from the child's stdout on a background thread with a 5-second deadline,
+/// and only sends `:quit` after the expected line arrives.  If the flush is
+/// absent, the background read blocks until the process exits (which never
+/// happens without `:quit`), causing the test to fail by timeout.
+#[test]
+fn eval_repl_piped_stdout_flushes_per_submission() {
+    require_codegen();
+
+    let mut child = Command::new(hew_binary())
+        .args(["eval"])
+        .current_dir(repo_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn hew eval");
+
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let stdout = child.stdout.take().expect("stdout piped");
+
+    // Read lines from child stdout on a background thread, forwarding each
+    // line to the channel so the main thread can time-bound the wait.
+    let (tx, rx) = mpsc::channel::<String>();
+    let reader_thread = std::thread::spawn(move || {
+        let buf = std::io::BufReader::new(stdout);
+        for line in buf.lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Send one statement that produces output.
+    stdin
+        .write_all(b"println(\"flush-check\");\n")
+        .expect("write to hew eval stdin");
+    // Ensure the line reaches the child's stdin buffer.
+    stdin.flush().expect("flush hew eval stdin");
+
+    // Wait up to 5 seconds for the output line.  If the flush is missing the
+    // child will buffer the output and this recv_timeout will return Err.
+    let deadline = Duration::from_secs(5);
+    let mut found = false;
+    let start = std::time::Instant::now();
+    while start.elapsed() < deadline {
+        match rx.recv_timeout(deadline.saturating_sub(start.elapsed())) {
+            Ok(line) if line.contains("flush-check") => {
+                found = true;
+                break;
+            }
+            Ok(_) => {}      // banner or blank line — keep waiting
+            Err(_) => break, // timeout or channel closed
+        }
+    }
+
+    // Gracefully terminate the process regardless of outcome.
+    let _ = stdin.write_all(b":quit\n");
+    let _ = stdin.flush();
+    drop(stdin);
+    let _ = reader_thread.join();
+    let _ = child.wait();
+
+    assert!(
+        found,
+        "output from println(\"flush-check\") did not arrive in the pipe \
+         within 5 seconds while the process was still alive — stdout flush missing"
     );
 }

@@ -3,7 +3,7 @@
 use super::classify::{self, InputCompleteness, InputKind, ReplCommand};
 use super::session::{Session, SessionCounts, SyntheticDiagnosticView};
 use std::fmt;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -1360,7 +1360,10 @@ pub fn run_interactive(
 
         match handle_interactive_input(&mut session, trimmed) {
             InteractiveEvalOutcome::Continue | InteractiveEvalOutcome::RenderedDiagnostics => {}
-            InteractiveEvalOutcome::Output(output) => print!("{output}"),
+            InteractiveEvalOutcome::Output(output) => {
+                print!("{output}");
+                let _ = std::io::stdout().flush();
+            }
             InteractiveEvalOutcome::MessageError(message) => eprintln!("error: {message}"),
             InteractiveEvalOutcome::Quit => break,
         }
@@ -1518,7 +1521,6 @@ mod tests {
     #[cfg(unix)]
     fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {
         use std::fs::File;
-        use std::io::Write;
         use std::os::fd::{AsRawFd, FromRawFd};
 
         // SAFETY: We temporarily redirect the process stderr fd to a pipe,

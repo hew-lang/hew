@@ -134,9 +134,26 @@ impl TypeMap {
 }
 
 /// Map a `RustType` to a C++ type string.
+///
+/// Aborts with a diagnostic if the type contains an unsupported form (e.g. a
+/// tuple with arity other than 2). This is a build-time code-generation tool;
+/// producing silently incorrect C++ is worse than a clear failure.
 pub fn cpp_type(ty: &crate::model::RustType) -> String {
+    match cpp_type_result(ty) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hew-astgen: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Inner implementation returning `Err` on unsupported types instead of exiting.
+/// Used directly by unit tests so they can assert on the error message without
+/// killing the test process.
+pub fn cpp_type_result(ty: &crate::model::RustType) -> Result<String, String> {
     use crate::model::RustType;
-    match ty {
+    let s = match ty {
         RustType::Bool => "bool".to_string(),
         RustType::I64 => "int64_t".to_string(),
         RustType::U64 | RustType::Usize => "uint64_t".to_string(),
@@ -144,33 +161,43 @@ pub fn cpp_type(ty: &crate::model::RustType) -> String {
         RustType::F64 => "double".to_string(),
         RustType::Char => "char".to_string(),
         RustType::String | RustType::PathBuf => "std::string".to_string(),
-        RustType::Vec(inner) => format!("std::vector<{}>", cpp_type(inner)),
+        RustType::Vec(inner) => format!("std::vector<{}>", cpp_type_result(inner)?),
         RustType::Option(inner) => {
             match inner.as_ref() {
                 // Option<unique_ptr<T>> stays as unique_ptr (nullptr = none)
-                RustType::Box(t) => format!("std::unique_ptr<{}>", cpp_type(t)),
-                _ => format!("std::optional<{}>", cpp_type(inner)),
+                RustType::Box(t) => format!("std::unique_ptr<{}>", cpp_type_result(t)?),
+                _ => format!("std::optional<{}>", cpp_type_result(inner)?),
             }
         }
-        RustType::Box(inner) => format!("std::unique_ptr<{}>", cpp_type(inner)),
-        RustType::Spanned(inner) => format!("ast::Spanned<{}>", cpp_type(inner)),
+        RustType::Box(inner) => format!("std::unique_ptr<{}>", cpp_type_result(inner)?),
+        RustType::Spanned(inner) => format!("ast::Spanned<{}>", cpp_type_result(inner)?),
         RustType::Named(name) => format!("ast::{name}"),
         RustType::Tuple(elems) => {
             if elems.len() == 2 {
                 format!(
                     "std::pair<{}, {}>",
-                    cpp_type(&elems[0]),
-                    cpp_type(&elems[1])
+                    cpp_type_result(&elems[0])?,
+                    cpp_type_result(&elems[1])?
                 )
             } else {
-                "/* unsupported tuple */".to_string()
+                return Err(format!(
+                    "unsupported tuple arity {} in cpp_type (only 2-tuples map to std::pair; \
+                     got {} elements)",
+                    elems.len(),
+                    elems.len()
+                ));
             }
         }
         RustType::HashMap(k, v) => {
-            format!("std::unordered_map<{}, {}>", cpp_type(k), cpp_type(v))
+            format!(
+                "std::unordered_map<{}, {}>",
+                cpp_type_result(k)?,
+                cpp_type_result(v)?
+            )
         }
         RustType::Range(_) => "ast::Span".to_string(),
-    }
+    };
+    Ok(s)
 }
 
 #[cfg(test)]
@@ -251,6 +278,27 @@ mod tests {
     fn maps_pair_tuple_to_std_pair() {
         let ty = RustType::Tuple(vec![RustType::String, RustType::U64]);
         assert_eq!(cpp_type(&ty), "std::pair<std::string, uint64_t>");
+    }
+
+    #[test]
+    fn unsupported_tuple_arity_returns_err() {
+        // 1-tuple: not a valid C++ pair
+        let ty_one = RustType::Tuple(vec![RustType::String]);
+        let err = cpp_type_result(&ty_one);
+        assert!(err.is_err(), "1-tuple should return Err");
+        assert!(
+            err.unwrap_err().contains("arity 1"),
+            "error should mention the actual arity"
+        );
+
+        // 3-tuple: also unsupported
+        let ty_three = RustType::Tuple(vec![RustType::String, RustType::U64, RustType::Bool]);
+        let err = cpp_type_result(&ty_three);
+        assert!(err.is_err(), "3-tuple should return Err");
+        assert!(
+            err.unwrap_err().contains("arity 3"),
+            "error should mention the actual arity"
+        );
     }
 
     #[test]

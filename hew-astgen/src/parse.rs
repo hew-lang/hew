@@ -337,7 +337,12 @@ fn extract_single_generic(seg: &syn::PathSegment) -> RustType {
             return parse_type(ty);
         }
     }
-    RustType::Named("unknown".to_string())
+    eprintln!(
+        "hew-astgen: could not extract single generic argument from `{}`; \
+         expected a type of the form `Name<T>`",
+        seg.ident
+    );
+    std::process::exit(1);
 }
 
 fn extract_double_generic(seg: &syn::PathSegment) -> (RustType, RustType) {
@@ -361,10 +366,12 @@ fn extract_double_generic(seg: &syn::PathSegment) -> (RustType, RustType) {
             return (k, v);
         }
     }
-    (
-        RustType::Named("unknown".to_string()),
-        RustType::Named("unknown".to_string()),
-    )
+    eprintln!(
+        "hew-astgen: could not extract two generic arguments from `{}`; \
+         expected a type of the form `Name<K, V>`",
+        seg.ident
+    );
+    std::process::exit(1);
 }
 
 fn quote_type(ty: &syn::Type) -> String {

@@ -629,7 +629,12 @@ fn gen_parse_expr(
             if elems.len() == 2 {
                 gen_tuple2_parse(&elems[0], &elems[1], obj, current_type, dep_closures)
             } else {
-                format!("/* unsupported tuple parse from {obj} */")
+                eprintln!(
+                    "hew-astgen: unsupported tuple arity {} in parse expression (source \
+                     object: {obj}); only 2-tuples map to std::pair",
+                    elems.len()
+                );
+                std::process::exit(1);
             }
         }
         RustType::HashMap(k, v) => {
@@ -678,7 +683,13 @@ fn gen_parse_fn_ref(ty: &RustType) -> String {
                 "[](const msgpack::object &o) {{ return parseSpanned<{cpp_inner}>(o, {inner_fn}); }}"
             )
         }
-        _ => format!("/* unsupported parse fn ref for {ty:?} */"),
+        _ => {
+            eprintln!(
+                "hew-astgen: unsupported type in parse-fn-ref position: {ty:?}; \
+                 only primitive types, Named, and Spanned<Named> are supported here"
+            );
+            std::process::exit(1);
+        }
     }
 }
 

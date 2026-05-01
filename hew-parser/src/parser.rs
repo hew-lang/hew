@@ -1466,6 +1466,10 @@ impl<'src> Parser<'src> {
         // Collect any doc comments before attributes or the field/variant/method
         // itself. Support both `/// docs #[attr]` and `#[attr] /// docs`.
         let mut doc_comment = self.collect_doc_comments();
+        // Capture the start of this item after doc-comment trivia is consumed.
+        // The formatter uses this position to flush inline `//` comments that
+        // appear in the source before this item without being doc comments.
+        let item_start = self.peek_span().start;
         match kind {
             TypeDeclKind::Struct => {
                 let attributes = self.parse_attributes();
@@ -1495,11 +1499,17 @@ impl<'src> Parser<'src> {
                     if !self.eat(&Token::Semicolon) {
                         self.eat(&Token::Comma);
                     }
+                    // peek_span().start is now the first token after the `;` or `,`,
+                    // which captures any trailing comment on this field's line in the
+                    // range item_start..item_end (comments are skipped by the lexer,
+                    // but extract_comments scans the raw source for them).
+                    let item_end = self.peek_span().start;
                     Some(TypeBodyItem::Field {
                         name,
                         ty,
                         attributes,
                         doc_comment,
+                        span: item_start..item_end,
                     })
                 }
             }
@@ -1537,10 +1547,13 @@ impl<'src> Parser<'src> {
                     self.error("use `;` instead of `,` to separate variants".to_string());
                     self.advance();
                 }
+                // peek_span() is now the position after the trailing `;`
+                let item_end = self.peek_span().start;
                 Some(TypeBodyItem::Variant(VariantDecl {
                     name,
                     kind,
                     doc_comment,
+                    span: item_start..item_end,
                 }))
             }
         }
@@ -2397,6 +2410,7 @@ impl<'src> Parser<'src> {
         let mut functions = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::Fn) {
+                let item_start = self.peek_span().start;
                 self.advance();
                 let name = self.expect_ident()?;
 
@@ -2410,11 +2424,19 @@ impl<'src> Parser<'src> {
 
                 self.expect(&Token::Semicolon)?;
 
+                // peek_span().start is now the first token after the `;`,
+                // so the byte range item_start..item_end covers the full
+                // extern fn declaration including any trailing comment
+                // on the same line (comments are not lex tokens, but
+                // extract_comments scans the raw source for them).
+                let item_end = self.peek_span().start;
+
                 functions.push(ExternFnDecl {
                     name,
                     params,
                     return_type,
                     is_variadic,
+                    span: item_start..item_end,
                 });
             } else {
                 self.error(format!(
@@ -2499,6 +2521,7 @@ impl<'src> Parser<'src> {
                 ty,
                 attributes: Vec::new(),
                 doc_comment: None,
+                span: 0..0,
             });
             field_meta.push((
                 field_name,
@@ -2718,6 +2741,7 @@ impl<'src> Parser<'src> {
                         name: variant_name,
                         kind,
                         doc_comment: None,
+                        span: 0..0,
                     });
                 }
             }

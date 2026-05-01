@@ -894,6 +894,7 @@ fn synthesize_stdlib_externs_from_imports(
                         params: param_exprs,
                         return_type,
                         is_variadic: false,
+                        span: 0..0,
                     })
                 })
                 .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
@@ -5601,6 +5602,7 @@ mod tests {
                         0..0,
                     )),
                     is_variadic: false,
+                    span: 0..0,
                 }],
             }),
             0..0,
@@ -5647,6 +5649,7 @@ mod tests {
                         ),
                         attributes: Vec::new(),
                         doc_comment: None,
+                        span: 0..0,
                     },
                     hew_parser::ast::TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
                         name: "TupleV".into(),
@@ -5664,6 +5667,7 @@ mod tests {
                             0..0,
                         )]),
                         doc_comment: None,
+                        span: 0..0,
                     }),
                     hew_parser::ast::TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
                         name: "StructV".into(),
@@ -5684,6 +5688,7 @@ mod tests {
                             ),
                         )]),
                         doc_comment: None,
+                        span: 0..0,
                     }),
                 ],
                 doc_comment: None,

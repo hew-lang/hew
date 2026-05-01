@@ -32,10 +32,10 @@
 //! ```
 
 import std::io;
+
 import std::path;
 
 // ── Error type ───────────────────────────────────────────────────────
-
 /// Structured error type for file-system and network operations.
 ///
 /// Define `Result<T, IoError>` return types in your own functions for
@@ -112,14 +112,14 @@ pub fn io_error_from_errno(errno: int) -> IoError {
 /// ```
 pub fn io_error_message(e: IoError) -> String {
     match e {
-        IoError::NotFound(code)            => f"NotFound({code})",
-        IoError::PermissionDenied(code)    => f"PermissionDenied({code})",
-        IoError::AlreadyExists(code)       => f"AlreadyExists({code})",
-        IoError::ConnectionRefused(code)   => f"ConnectionRefused({code})",
-        IoError::AddressInUse(code)        => f"AddressInUse({code})",
-        IoError::TimedOut(code)            => f"TimedOut({code})",
+        IoError::NotFound(code) => f"NotFound({code})",
+        IoError::PermissionDenied(code) => f"PermissionDenied({code})",
+        IoError::AlreadyExists(code) => f"AlreadyExists({code})",
+        IoError::ConnectionRefused(code) => f"ConnectionRefused({code})",
+        IoError::AddressInUse(code) => f"AddressInUse({code})",
+        IoError::TimedOut(code) => f"TimedOut({code})",
         IoError::AddressNotAvailable(code) => f"AddressNotAvailable({code})",
-        IoError::Other(code)               => f"Other({code})",
+        IoError::Other(code) => f"Other({code})",
     }
 }
 
@@ -183,7 +183,7 @@ fn move_copy_error(source: String, target: String) -> IoError {
 
 fn clone_bytes(data: bytes) -> bytes {
     let out: bytes = bytes::new();
-    for i in 0..data.len() {
+    for i in 0 .. data.len() {
         out.push(data.get(i));
     }
     out
@@ -200,7 +200,9 @@ fn clone_bytes(data: bytes) -> bytes {
 /// let src = fs.read("main.hew");
 /// ```
 pub fn read(path: String) -> String {
-    unsafe { hew_file_read(path) }
+    unsafe {
+        hew_file_read(path)
+    }
 }
 
 /// Read the entire contents of a file as a UTF-8 string.
@@ -224,14 +226,18 @@ pub fn try_read(file_path: String) -> Result<String, IoError> {
 /// Returns 0 on success, non-zero on error.
 /// Use `try_write` for a structured `Result<int, IoError>` surface.
 pub fn write(path: String, content: String) -> int {
-    unsafe { hew_file_write(path, content) }
+    unsafe {
+        hew_file_write(path, content)
+    }
 }
 
 /// Write a string to a file, creating or overwriting it.
 ///
 /// Lifts the native status code into `Result<int, IoError>`.
 pub fn try_write(file_path: String, content: String) -> Result<int, IoError> {
-    match unsafe { hew_file_write(file_path, content) } {
+    match unsafe {
+        hew_file_write(file_path, content)
+    } {
         0 => Ok(0),
         _ => Err(write_error(file_path)),
     }
@@ -242,14 +248,18 @@ pub fn try_write(file_path: String, content: String) -> Result<int, IoError> {
 /// Creates the file if it does not exist. Returns 0 on success.
 /// Use `try_append` for a structured `Result<int, IoError>` surface.
 pub fn append(path: String, content: String) -> int {
-    unsafe { hew_file_append(path, content) }
+    unsafe {
+        hew_file_append(path, content)
+    }
 }
 
 /// Append a string to the end of a file.
 ///
 /// Lifts the native status code into `Result<int, IoError>`.
 pub fn try_append(file_path: String, content: String) -> Result<int, IoError> {
-    match unsafe { hew_file_append(file_path, content) } {
+    match unsafe {
+        hew_file_append(file_path, content)
+    } {
         0 => Ok(0),
         _ => Err(write_error(file_path)),
     }
@@ -264,19 +274,25 @@ pub fn try_append(file_path: String, content: String) -> Result<int, IoError> {
 /// }
 /// ```
 pub fn exists(path: String) -> bool {
-    unsafe { hew_file_exists(path) }
+    unsafe {
+        hew_file_exists(path)
+    }
 }
 
 /// Delete a file. Returns 0 on success.
 pub fn delete(path: String) -> int {
-    unsafe { hew_file_delete(path) }
+    unsafe {
+        hew_file_delete(path)
+    }
 }
 
 /// Delete a file.
 ///
 /// Returns `Err(IoError::NotFound(_))` when the path is missing.
 pub fn try_delete(file_path: String) -> Result<int, IoError> {
-    match unsafe { hew_file_delete(file_path) } {
+    match unsafe {
+        hew_file_delete(file_path)
+    } {
         0 => Ok(0),
         _ => Err(missing_path_error(file_path)),
     }
@@ -284,7 +300,9 @@ pub fn try_delete(file_path: String) -> Result<int, IoError> {
 
 /// Returns the size of a file in bytes.
 pub fn size(path: String) -> int {
-    unsafe { hew_file_size(path) }
+    unsafe {
+        hew_file_size(path)
+    }
 }
 
 /// Read a single line from standard input.
@@ -317,7 +335,9 @@ pub fn read_line() -> String {
 /// println(data.len());
 /// ```
 pub fn read_bytes(path: String) -> bytes {
-    unsafe { hew_file_read_bytes(path) }
+    unsafe {
+        hew_file_read_bytes(path)
+    }
 }
 
 /// Read the raw bytes of a file into a `bytes` value.
@@ -348,32 +368,39 @@ pub fn try_read_bytes(file_path: String) -> Result<bytes, IoError> {
 /// Returns 0 on success, non-zero on error.
 /// Use `try_write_bytes` for a structured `Result<int, IoError>` surface.
 pub fn write_bytes(path: String, data: bytes) -> int {
-    unsafe { hew_file_write_bytes(path, data) }
+    unsafe {
+        hew_file_write_bytes(path, data)
+    }
 }
 
 /// Write a `bytes` value to a file, creating or overwriting it.
 ///
 /// Lifts the native status code into `Result<int, IoError>`.
 pub fn try_write_bytes(file_path: String, data: bytes) -> Result<int, IoError> {
-    match unsafe { hew_file_write_bytes(file_path, data) } {
+    match unsafe {
+        hew_file_write_bytes(file_path, data)
+    } {
         0 => Ok(0),
         _ => Err(write_error(file_path)),
     }
 }
 
 // ── Directory operations ──────────────────────────────────────────────
-
 /// Create a directory. Returns 0 on success, -1 on error.
 ///
 /// Fails if any parent directory does not exist. Use `mkdir_all` to create
 /// parent directories automatically.
 pub fn mkdir(path: String) -> int {
-    unsafe { hew_fs_mkdir(path) }
+    unsafe {
+        hew_fs_mkdir(path)
+    }
 }
 
 /// Create a directory with structured `IoError` results.
 pub fn try_mkdir(dir_path: String) -> Result<int, IoError> {
-    match unsafe { hew_fs_mkdir(dir_path) } {
+    match unsafe {
+        hew_fs_mkdir(dir_path)
+    } {
         0 => Ok(0),
         _ => Err(mkdir_error(dir_path)),
     }
@@ -383,14 +410,18 @@ pub fn try_mkdir(dir_path: String) -> Result<int, IoError> {
 ///
 /// Returns 0 on success, -1 on error.
 pub fn mkdir_all(path: String) -> int {
-    unsafe { hew_fs_mkdir_all(path) }
+    unsafe {
+        hew_fs_mkdir_all(path)
+    }
 }
 
 /// Create a directory and all its parent components.
 ///
 /// Lifts the native status code into `Result<int, IoError>`.
 pub fn try_mkdir_all(dir_path: String) -> Result<int, IoError> {
-    match unsafe { hew_fs_mkdir_all(dir_path) } {
+    match unsafe {
+        hew_fs_mkdir_all(dir_path)
+    } {
         0 => Ok(0),
         _ => {
             if exists(dir_path) {
@@ -416,7 +447,9 @@ pub fn try_mkdir_all(dir_path: String) -> Result<int, IoError> {
 /// }
 /// ```
 pub fn list_dir(path: String) -> Vec<String> {
-    unsafe { hew_fs_list_dir(path) }
+    unsafe {
+        hew_fs_list_dir(path)
+    }
 }
 
 /// List the entries in a directory.
@@ -429,21 +462,27 @@ pub fn try_list_dir(dir_path: String) -> Result<Vec<String>, IoError> {
     if !is_dir(dir_path) {
         return Err(IoError::Other(0));
     }
-    Ok(unsafe { hew_fs_list_dir(dir_path) })
+    Ok(unsafe {
+        hew_fs_list_dir(dir_path)
+    })
 }
 
 /// Rename or move a file or directory.
 ///
 /// Returns 0 on success, -1 on error.
 pub fn rename(from: String, to: String) -> int {
-    unsafe { hew_fs_rename(from, to) }
+    unsafe {
+        hew_fs_rename(from, to)
+    }
 }
 
 /// Rename or move a file or directory.
 ///
 /// Lifts the native status code into `Result<int, IoError>`.
 pub fn try_rename(from: String, to: String) -> Result<int, IoError> {
-    match unsafe { hew_fs_rename(from, to) } {
+    match unsafe {
+        hew_fs_rename(from, to)
+    } {
         0 => Ok(0),
         _ => Err(move_copy_error(from, to)),
     }
@@ -453,14 +492,18 @@ pub fn try_rename(from: String, to: String) -> Result<int, IoError> {
 ///
 /// Returns 0 on success, -1 on error.
 pub fn copy(from: String, to: String) -> int {
-    unsafe { hew_fs_copy(from, to) }
+    unsafe {
+        hew_fs_copy(from, to)
+    }
 }
 
 /// Copy a file.
 ///
 /// Lifts the native status code into `Result<int, IoError>`.
 pub fn try_copy(from: String, to: String) -> Result<int, IoError> {
-    match unsafe { hew_fs_copy(from, to) } {
+    match unsafe {
+        hew_fs_copy(from, to)
+    } {
         0 => Ok(0),
         _ => Err(move_copy_error(from, to)),
     }
@@ -468,12 +511,14 @@ pub fn try_copy(from: String, to: String) -> Result<int, IoError> {
 
 /// Check whether a path is a directory.
 pub fn is_dir(path: String) -> bool {
-    unsafe { hew_fs_is_dir(path) }
+    unsafe {
+        hew_fs_is_dir(path)
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
-type FileReadStream {}
+type FileReadStream {
+}
 
 extern "C" {
     fn hew_file_read(path: String) -> String;

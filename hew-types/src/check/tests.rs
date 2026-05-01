@@ -115,6 +115,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
             ),
             attributes: vec![],
             doc_comment: None,
+            span: 0..0,
         }],
         doc_comment: None,
         wire: None,
@@ -137,6 +138,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
             ),
             attributes: vec![],
             doc_comment: None,
+            span: 0..0,
         }],
         doc_comment: None,
         wire: None,
@@ -159,6 +161,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
             ),
             attributes: vec![],
             doc_comment: None,
+            span: 0..0,
         }],
         doc_comment: None,
         wire: None,
@@ -4019,6 +4022,7 @@ fn user_module_registers_types() {
             ),
             attributes: Vec::new(),
             doc_comment: None,
+            span: 0..0,
         }],
         doc_comment: None,
         wire: None,
@@ -9885,6 +9889,7 @@ fn module_graph_body_private_local_type_is_available() {
             ),
             attributes: Vec::new(),
             doc_comment: None,
+            span: 0..0,
         }],
         is_indirect: false,
         doc_comment: None,
@@ -10107,6 +10112,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
             params: vec![],
             return_type: Some((i64_ty.clone(), 0..3)),
             is_variadic: false,
+            span: 0..0,
         }],
     };
     let ok_fn = FnDecl {
@@ -10152,6 +10158,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
             params: vec![],
             return_type: Some((string_ty, 20..26)),
             is_variadic: false,
+            span: 0..0,
         }],
     };
 
@@ -11476,6 +11483,7 @@ actor MyActor {
                 }],
                 return_type: None,
                 is_variadic: false,
+                span: 0..0,
             }],
         })
     }
@@ -13290,6 +13298,7 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
                     ),
                     attributes: vec![],
                     doc_comment: None,
+                    span: 0..0,
                 }],
                 doc_comment: None,
                 wire: None,
@@ -13346,6 +13355,7 @@ fn handle_bearing_registration_scales_linearly_not_quadratically() {
                     ),
                     attributes: vec![],
                     doc_comment: None,
+                    span: 0..0,
                 }],
                 doc_comment: None,
                 wire: None,

@@ -155,32 +155,7 @@ impl<'a> Formatter<'a> {
         while self.next_comment < self.comments.len()
             && self.comments[self.next_comment].span.start < pos
         {
-            let idx = self.next_comment;
-            if is_trailing_comment(self.source, self.comments[idx].span.start) {
-                if self.output.ends_with('\n') {
-                    self.output.pop();
-                }
-                self.write(" ");
-            } else {
-                let gap_start = self.prev_source_pos.min(self.source.len());
-                let gap_end = self.comments[idx].span.start.min(self.source.len());
-                if gap_start < gap_end {
-                    let newlines = self.source[gap_start..gap_end]
-                        .chars()
-                        .filter(|&c| c == '\n')
-                        .count();
-                    if self.prev_source_pos > 0 && newlines > 1 && !self.output.ends_with("\n\n") {
-                        self.newline();
-                    }
-                }
-                self.write_indent();
-            }
-
-            let text = self.comments[idx].text.clone();
-            self.write(&text);
-            self.newline();
-            self.prev_source_pos = self.comments[idx].span.end;
-            self.next_comment += 1;
+            self.flush_one_comment();
         }
     }
 
@@ -203,11 +178,68 @@ impl<'a> Formatter<'a> {
                 self.prev_source_pos,
                 scope_end.min(self.source.len()),
             );
-            self.flush_comments_before(brace);
+            // Comments in `[prev_source_pos, brace)` whose source column is at
+            // or before the closing `}`'s column are typed at outer indent and
+            // logically document the next branch in an `if/else if/else` chain
+            // (or a similar trailing construct), e.g.
+            //     if cond {
+            //         body
+            //     // documents next branch
+            //     } else if other {
+            // Emit those at the outer indent so they round-trip stably; emit
+            // anything at deeper column with the inner indent (the default).
+            let brace_col = source_column(self.source, brace);
+            while self.next_comment < self.comments.len()
+                && self.comments[self.next_comment].span.start < brace
+            {
+                let c_start = self.comments[self.next_comment].span.start;
+                let outer = !is_trailing_comment(self.source, c_start)
+                    && source_column(self.source, c_start) <= brace_col
+                    && self.indent > 0;
+                if outer {
+                    self.indent -= 1;
+                    self.flush_one_comment();
+                    self.indent += 1;
+                } else {
+                    self.flush_one_comment();
+                }
+            }
             if brace < self.source.len() {
                 self.prev_source_pos = brace + 1;
             }
         }
+    }
+
+    /// Emit exactly one pending comment (the next one) using the comment-flush
+    /// rules that `flush_comments_before` applies. Caller is responsible for
+    /// any indent adjustment around the call.
+    fn flush_one_comment(&mut self) {
+        let idx = self.next_comment;
+        if is_trailing_comment(self.source, self.comments[idx].span.start) {
+            if self.output.ends_with('\n') {
+                self.output.pop();
+            }
+            self.write(" ");
+        } else {
+            let gap_start = self.prev_source_pos.min(self.source.len());
+            let gap_end = self.comments[idx].span.start.min(self.source.len());
+            if gap_start < gap_end {
+                let newlines = self.source[gap_start..gap_end]
+                    .chars()
+                    .filter(|&c| c == '\n')
+                    .count();
+                if self.prev_source_pos > 0 && newlines > 1 && !self.output.ends_with("\n\n") {
+                    self.newline();
+                }
+            }
+            self.write_indent();
+        }
+
+        let text = self.comments[idx].text.clone();
+        self.write(&text);
+        self.newline();
+        self.prev_source_pos = self.comments[idx].span.end;
+        self.next_comment += 1;
     }
 
     fn find_keyword_after(&self, keyword: &str, after: usize) -> usize {
@@ -356,8 +388,15 @@ impl<'a> Formatter<'a> {
                     name,
                     ty,
                     doc_comment,
+                    span,
                     ..
                 } => {
+                    // flush inline comments that appear before this field
+                    self.flush_comments_before(span.start);
+                    // position at item start so the blank-line heuristic in
+                    // the trailing-comment flush below counts only newlines
+                    // between the field name and any trailing comment
+                    self.prev_source_pos = span.start;
                     self.write_outer_doc(doc_comment.as_ref());
                     self.write_indent();
                     self.write(name);
@@ -365,11 +404,33 @@ impl<'a> Formatter<'a> {
                     self.format_type_expr(&ty.0);
                     self.write(";");
                     self.newline();
+                    // flush any trailing comment on this line; span.end is the
+                    // first token of the next item (or closing brace), so any
+                    // comment between content and span.end is captured here
+                    self.flush_comments_before(span.end);
+                    self.prev_source_pos = span.end;
                 }
                 TypeBodyItem::Variant(v) => {
+                    // flush inline comments that appear before this variant
+                    self.flush_comments_before(v.span.start);
+                    // position at item start so the blank-line heuristic in
+                    // the trailing-comment flush below counts only newlines
+                    // between the variant name and any trailing comment
+                    self.prev_source_pos = v.span.start;
                     self.format_variant(v, true);
+                    // flush any trailing comment on this line; v.span.end is
+                    // the first token of the next item (or closing brace), so
+                    // any comment between content and v.span.end is captured
+                    self.flush_comments_before(v.span.end);
+                    self.prev_source_pos = v.span.end;
                 }
                 TypeBodyItem::Method(f) => {
+                    let pos = if self.has_comments() {
+                        self.find_keyword_after(&format!("fn {}", f.name), self.prev_source_pos)
+                    } else {
+                        usize::MAX
+                    };
+                    self.flush_comments_before(pos);
                     self.format_fn(f, self.source.len());
                 }
             }
@@ -731,11 +792,18 @@ impl<'a> Formatter<'a> {
         self.write("\" {\n");
         self.indent += 1;
         for f in &decl.functions {
-            if self.has_comments() {
-                let pos = self.find_keyword_after(&format!("fn {}", f.name), self.prev_source_pos);
-                self.flush_comments_before(pos);
-            }
+            // flush inline comments that appear before this fn
+            self.flush_comments_before(f.span.start);
+            // position at fn start so the blank-line heuristic in the
+            // trailing-comment flush below counts only newlines between
+            // the fn declaration and any trailing comment on its line
+            self.prev_source_pos = f.span.start;
             self.format_extern_fn(f);
+            // flush any trailing comment on this fn's line; f.span.end
+            // is the first byte after the trailing `;`, so any same-line
+            // comment falls in the range [f.span.start, f.span.end)
+            self.flush_comments_before(f.span.end);
+            self.prev_source_pos = f.span.end;
         }
         if self.has_comments() {
             self.flush_block_end_comments(span_end);
@@ -1437,8 +1505,30 @@ impl<'a> Formatter<'a> {
                 self.format_expr(&scrutinee.0);
                 self.write(" {\n");
                 self.indent += 1;
+                // advance past the opening `{` so the blank-line heuristic in
+                // flush_comments_before counts only lines within the block;
+                // search from the scrutinee's end to the first arm's pattern start
+                if self.has_comments() {
+                    let search_from = scrutinee.1.end.min(self.source.len());
+                    let search_to = arms
+                        .first()
+                        .map_or(self.source.len(), |a| a.pattern.1.start);
+                    if let Some(off) = self.source[search_from..search_to].find('{') {
+                        self.prev_source_pos = search_from + off + 1;
+                    }
+                }
                 for arm in arms {
+                    self.flush_comments_before(arm.pattern.1.start);
                     self.format_match_arm(arm);
+                    self.prev_source_pos = arm.body.1.end;
+                }
+                if self.has_comments() {
+                    let close =
+                        find_block_close(self.source, self.prev_source_pos, self.source.len());
+                    self.flush_comments_before(close);
+                    if close < self.source.len() {
+                        self.prev_source_pos = close + 1;
+                    }
                 }
                 self.indent -= 1;
                 self.write_indent();
@@ -1768,8 +1858,30 @@ impl<'a> Formatter<'a> {
                 self.format_expr(&scrutinee.0);
                 self.write(" {\n");
                 self.indent += 1;
+                // advance past the opening `{` so the blank-line heuristic in
+                // flush_comments_before counts only lines within the block;
+                // search from the scrutinee's end to the first arm's pattern start
+                if self.has_comments() {
+                    let search_from = scrutinee.1.end.min(self.source.len());
+                    let search_to = arms
+                        .first()
+                        .map_or(self.source.len(), |a| a.pattern.1.start);
+                    if let Some(off) = self.source[search_from..search_to].find('{') {
+                        self.prev_source_pos = search_from + off + 1;
+                    }
+                }
                 for arm in arms {
+                    self.flush_comments_before(arm.pattern.1.start);
                     self.format_match_arm(arm);
+                    self.prev_source_pos = arm.body.1.end;
+                }
+                if self.has_comments() {
+                    let close =
+                        find_block_close(self.source, self.prev_source_pos, self.source.len());
+                    self.flush_comments_before(close);
+                    if close < self.source.len() {
+                        self.prev_source_pos = close + 1;
+                    }
                 }
                 self.indent -= 1;
                 self.write_indent();
@@ -2430,6 +2542,21 @@ fn is_trailing_comment(source: &str, comment_start: usize) -> bool {
     source[i..comment_start].chars().any(|c| !c.is_whitespace())
 }
 
+/// Source column (0-based) of `pos` within its line. Used by the block-end
+/// comment dedent heuristic to decide whether a comment is at outer or inner
+/// indent — a comment at or before the closing `}`'s column documents the
+/// next branch in an if/else-if chain (or similar) and must be re-emitted at
+/// outer indent so the chain idiom round-trips.
+fn source_column(source: &str, pos: usize) -> usize {
+    let bytes = source.as_bytes();
+    let end = pos.min(bytes.len());
+    let mut i = end;
+    while i > 0 && bytes[i - 1] != b'\n' {
+        i -= 1;
+    }
+    end - i
+}
+
 fn find_block_close(source: &str, from: usize, before: usize) -> usize {
     let bytes = source.as_bytes();
     let end = before.min(bytes.len());
@@ -2700,5 +2827,251 @@ struct Msg {
 }
 ";
         assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn enum_inline_comments_preserved() {
+        let src = "\
+pub enum IoError {
+    // The target path does not exist.
+    NotFound(int);
+    // The process lacks permission for the operation.
+    PermissionDenied(int);
+    Other(int); // catch-all
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn struct_field_comments_preserved() {
+        let src = "\
+type Config {
+    // The server port to bind on.
+    port: int;
+    host: string; // hostname or IP
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn match_arm_comments_preserved() {
+        let src = "\
+fn classify(e: IoError) -> string {
+    match e {
+        // file not found
+        IoError::NotFound(_) => \"missing\",
+        IoError::PermissionDenied(_) => \"denied\", // access error
+        _ => \"other\",
+    }
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn match_arm_trailing_on_last_arm() {
+        let src = "\
+fn classify(e: IoError) -> string {
+    match e {
+        IoError::NotFound(_) => \"missing\",
+        IoError::Other(_) => \"error\", // catch-all trailing
+    }
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn match_expr_arm_comments_preserved() {
+        let src = "\
+fn main() -> string {
+    let msg = match get_error() {
+        // success path
+        IoError::NotFound(_) => \"not found\",
+        _ => \"error\",
+    };
+    msg
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn combined_comments_idempotent() {
+        let src = "\
+// module-level comment
+enum Status {
+    // ok variant
+    Ok;
+    // error variant
+    Err(int); // with payload
+}
+
+type Cfg {
+    // host to connect to
+    host: string;
+    port: int; // default 8080
+}
+
+fn handle(s: Status) -> int {
+    match s {
+        // success
+        Status::Ok => 0,
+        // failure
+        Status::Err(code) => code,
+    }
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve comments");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_comment_above_else_if_branch_header() {
+        let src = "\
+fn classify(x: int) -> int {
+    if x == 0 {
+        0
+    // documents the next branch
+    } else if x == 1 {
+        1
+    } else {
+        -1
+    }
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve comment");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_comment_above_else_branch_header() {
+        let src = "\
+fn classify(x: int) -> int {
+    if x == 0 {
+        0
+    // fallback case
+    } else {
+        -1
+    }
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve comment");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_long_else_if_chain_comments() {
+        let src = "\
+fn lookup(errno: int) -> int {
+    // ENOENT
+    if errno == 2 {
+        1
+    // EACCES
+    } else if errno == 13 {
+        2
+    // EEXIST
+    } else if errno == 17 {
+        3
+    } else {
+        0
+    }
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve comments");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_comment_above_match_arm_block_close() {
+        let src = "\
+fn handle(x: int) -> int {
+    match x {
+        0 => {
+            1
+        // documents next arm
+        },
+        _ => 2,
+    }
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve comment");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_trailing_comment_on_extern_fn() {
+        let src = "\
+extern \"C\" {
+    fn foo(x: i32) -> i32; // returns the value untouched
+    fn bar(y: i32);
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve trailing comment");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_trailing_comment_on_last_extern_fn() {
+        let src = "\
+extern \"C\" {
+    fn foo(x: i32) -> i32;
+    fn bar(y: i32) -> i32; // last fn trailing comment
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(
+            once, src,
+            "first pass must preserve trailing comment on last fn"
+        );
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_leading_comment_above_extern_fn() {
+        let src = "\
+extern \"C\" {
+    fn first(x: i32) -> i32;
+    // groups the read variants
+    fn read_u8(buf: i32) -> i32;
+    fn read_u16(buf: i32) -> i32;
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve leading comment");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_internal_abi_marker_on_extern_fn() {
+        let src = "\
+extern \"C\" {
+    fn hew_stream_last_error() -> string;
+    fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(
+            once, src,
+            "INTERNAL-ABI marker must remain on the fn it documents"
+        );
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
     }
 }

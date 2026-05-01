@@ -767,6 +767,12 @@ pub enum TypeBodyItem {
         attributes: Vec<Attribute>,
         #[serde(default)]
         doc_comment: Option<String>,
+        /// Source byte range of this field (after any doc comments), used by
+        /// the formatter to flush inline comments before each field.
+        /// Set to `0..0` for synthetically constructed fields (e.g., wire
+        /// decls) that have no source position.
+        #[serde(skip)]
+        span: Span,
     },
     Variant(VariantDecl),
     Method(FnDecl),
@@ -778,6 +784,11 @@ pub struct VariantDecl {
     pub kind: VariantKind,
     #[serde(default)]
     pub doc_comment: Option<String>,
+    /// Source byte range of this variant (after any doc comments), used by
+    /// the formatter to flush inline comments before each variant.
+    /// Set to `0..0` for synthetically constructed variants.
+    #[serde(skip)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -890,6 +901,7 @@ impl WireDecl {
                 ),
                 attributes: Vec::new(),
                 doc_comment: None,
+                span: 0..0,
             })
             .chain(
                 self.variants
@@ -999,6 +1011,13 @@ pub struct ExternFnDecl {
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
     pub is_variadic: bool,
+    /// Source byte range covering this declaration. Spans from the `fn`
+    /// keyword (after any doc-comment trivia) through the position
+    /// immediately after the trailing `;`. The formatter uses this to
+    /// flush inline comments around each extern fn. Defaults to `0..0`
+    /// for synthetic decls (e.g. wire enrichment, test fixtures).
+    #[serde(skip)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

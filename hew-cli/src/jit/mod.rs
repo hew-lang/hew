@@ -204,7 +204,7 @@ pub fn run_jit(msgpack_data: &[u8]) -> Result<i64, JitError> {
     drop(guard);
 
     match catch_result {
-        Ok(status) if status == 0 => Ok(exit_code),
+        Ok(0) => Ok(exit_code),
         Ok(_) => Err(JitError::ExecFailed(last_jit_error())),
         Err(payload) => {
             let msg = payload

@@ -1496,10 +1496,14 @@ impl<'src> Parser<'src> {
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    let item_end = ty.1.end;
                     if !self.eat(&Token::Semicolon) {
                         self.eat(&Token::Comma);
                     }
+                    // peek_span().start is now the first token after the `;` or `,`,
+                    // which captures any trailing comment on this field's line in the
+                    // range item_start..item_end (comments are skipped by the lexer,
+                    // but extract_comments scans the raw source for them).
+                    let item_end = self.peek_span().start;
                     Some(TypeBodyItem::Field {
                         name,
                         ty,

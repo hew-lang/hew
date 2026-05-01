@@ -356,8 +356,15 @@ impl<'a> Formatter<'a> {
                     name,
                     ty,
                     doc_comment,
+                    span,
                     ..
                 } => {
+                    // flush inline comments that appear before this field
+                    self.flush_comments_before(span.start);
+                    // position at item start so the blank-line heuristic in
+                    // the trailing-comment flush below counts only newlines
+                    // between the field name and any trailing comment
+                    self.prev_source_pos = span.start;
                     self.write_outer_doc(doc_comment.as_ref());
                     self.write_indent();
                     self.write(name);
@@ -365,11 +372,33 @@ impl<'a> Formatter<'a> {
                     self.format_type_expr(&ty.0);
                     self.write(";");
                     self.newline();
+                    // flush any trailing comment on this line; span.end is the
+                    // first token of the next item (or closing brace), so any
+                    // comment between content and span.end is captured here
+                    self.flush_comments_before(span.end);
+                    self.prev_source_pos = span.end;
                 }
                 TypeBodyItem::Variant(v) => {
+                    // flush inline comments that appear before this variant
+                    self.flush_comments_before(v.span.start);
+                    // position at item start so the blank-line heuristic in
+                    // the trailing-comment flush below counts only newlines
+                    // between the variant name and any trailing comment
+                    self.prev_source_pos = v.span.start;
                     self.format_variant(v, true);
+                    // flush any trailing comment on this line; v.span.end is
+                    // the first token of the next item (or closing brace), so
+                    // any comment between content and v.span.end is captured
+                    self.flush_comments_before(v.span.end);
+                    self.prev_source_pos = v.span.end;
                 }
                 TypeBodyItem::Method(f) => {
+                    let pos = if self.has_comments() {
+                        self.find_keyword_after(&format!("fn {}", f.name), self.prev_source_pos)
+                    } else {
+                        usize::MAX
+                    };
+                    self.flush_comments_before(pos);
                     self.format_fn(f, self.source.len());
                 }
             }
@@ -1437,8 +1466,30 @@ impl<'a> Formatter<'a> {
                 self.format_expr(&scrutinee.0);
                 self.write(" {\n");
                 self.indent += 1;
+                // advance past the opening `{` so the blank-line heuristic in
+                // flush_comments_before counts only lines within the block;
+                // search from the scrutinee's end to the first arm's pattern start
+                if self.has_comments() {
+                    let search_from = scrutinee.1.end.min(self.source.len());
+                    let search_to = arms
+                        .first()
+                        .map_or(self.source.len(), |a| a.pattern.1.start);
+                    if let Some(off) = self.source[search_from..search_to].find('{') {
+                        self.prev_source_pos = search_from + off + 1;
+                    }
+                }
                 for arm in arms {
+                    self.flush_comments_before(arm.pattern.1.start);
                     self.format_match_arm(arm);
+                    self.prev_source_pos = arm.body.1.end;
+                }
+                if self.has_comments() {
+                    let close =
+                        find_block_close(self.source, self.prev_source_pos, self.source.len());
+                    self.flush_comments_before(close);
+                    if close < self.source.len() {
+                        self.prev_source_pos = close + 1;
+                    }
                 }
                 self.indent -= 1;
                 self.write_indent();
@@ -1768,8 +1819,30 @@ impl<'a> Formatter<'a> {
                 self.format_expr(&scrutinee.0);
                 self.write(" {\n");
                 self.indent += 1;
+                // advance past the opening `{` so the blank-line heuristic in
+                // flush_comments_before counts only lines within the block;
+                // search from the scrutinee's end to the first arm's pattern start
+                if self.has_comments() {
+                    let search_from = scrutinee.1.end.min(self.source.len());
+                    let search_to = arms
+                        .first()
+                        .map_or(self.source.len(), |a| a.pattern.1.start);
+                    if let Some(off) = self.source[search_from..search_to].find('{') {
+                        self.prev_source_pos = search_from + off + 1;
+                    }
+                }
                 for arm in arms {
+                    self.flush_comments_before(arm.pattern.1.start);
                     self.format_match_arm(arm);
+                    self.prev_source_pos = arm.body.1.end;
+                }
+                if self.has_comments() {
+                    let close =
+                        find_block_close(self.source, self.prev_source_pos, self.source.len());
+                    self.flush_comments_before(close);
+                    if close < self.source.len() {
+                        self.prev_source_pos = close + 1;
+                    }
                 }
                 self.indent -= 1;
                 self.write_indent();
@@ -2700,5 +2773,106 @@ struct Msg {
 }
 ";
         assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn enum_inline_comments_preserved() {
+        let src = "\
+pub enum IoError {
+    // The target path does not exist.
+    NotFound(int);
+    // The process lacks permission for the operation.
+    PermissionDenied(int);
+    Other(int); // catch-all
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn struct_field_comments_preserved() {
+        let src = "\
+type Config {
+    // The server port to bind on.
+    port: int;
+    host: string; // hostname or IP
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn match_arm_comments_preserved() {
+        let src = "\
+fn classify(e: IoError) -> string {
+    match e {
+        // file not found
+        IoError::NotFound(_) => \"missing\",
+        IoError::PermissionDenied(_) => \"denied\", // access error
+        _ => \"other\",
+    }
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn match_arm_trailing_on_last_arm() {
+        let src = "\
+fn classify(e: IoError) -> string {
+    match e {
+        IoError::NotFound(_) => \"missing\",
+        IoError::Other(_) => \"error\", // catch-all trailing
+    }
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn match_expr_arm_comments_preserved() {
+        let src = "\
+fn main() -> string {
+    let msg = match get_error() {
+        // success path
+        IoError::NotFound(_) => \"not found\",
+        _ => \"error\",
+    };
+    msg
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn combined_comments_idempotent() {
+        let src = "\
+// module-level comment
+enum Status {
+    // ok variant
+    Ok;
+    // error variant
+    Err(int); // with payload
+}
+
+type Cfg {
+    // host to connect to
+    host: string;
+    port: int; // default 8080
+}
+
+fn handle(s: Status) -> int {
+    match s {
+        // success
+        Status::Ok => 0,
+        // failure
+        Status::Err(code) => code,
+    }
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve comments");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
     }
 }

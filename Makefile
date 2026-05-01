@@ -489,7 +489,13 @@ test: test-rust test-codegen test-hew test-cpp
 test-all: test-rust test-codegen test-stdlib test-hew test-wasm
 
 test-rust:
-	cargo test
+	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
+		cargo nextest run --workspace --profile ci; \
+	else \
+		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
+		echo "         Install with: cargo install cargo-nextest" >&2; \
+		cargo test; \
+	fi
 
 test-parser:
 	cargo test -p hew-parser -p hew-lexer

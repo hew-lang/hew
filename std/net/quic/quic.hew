@@ -357,11 +357,11 @@ trait QUICEventMethods {
 }
 
 impl QUICEventMethods for QUICEvent {
-    fn kind(evt: QUICEvent) -> i32 {
+    fn kind(evt: QUICEvent) -> i32 { // INTERNAL-ABI: opaque event-kind enum; planned enum migration
         unsafe {
             hew_quic_event_kind(evt)
         }
-    } // INTERNAL-ABI: opaque event-kind enum; planned enum migration
+    }
     fn free(evt: QUICEvent) {
         unsafe {
             hew_quic_event_free(evt)

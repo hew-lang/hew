@@ -122,11 +122,11 @@ trait MessageMethods {
 }
 
 impl MessageMethods for Message {
-    fn msg_type(msg: Message) -> i32 {
+    fn msg_type(msg: Message) -> i32 { // INTERNAL-ABI: opaque frame-type enum; planned enum migration
         unsafe {
             hew_ws_message_type(msg)
         }
-    } // INTERNAL-ABI: opaque frame-type enum; planned enum migration
+    }
     fn text(msg: Message) -> String {
         unsafe {
             hew_ws_message_text(msg)

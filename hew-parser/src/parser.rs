@@ -1466,6 +1466,10 @@ impl<'src> Parser<'src> {
         // Collect any doc comments before attributes or the field/variant/method
         // itself. Support both `/// docs #[attr]` and `#[attr] /// docs`.
         let mut doc_comment = self.collect_doc_comments();
+        // Capture the start of this item after doc-comment trivia is consumed.
+        // The formatter uses this position to flush inline `//` comments that
+        // appear in the source before this item without being doc comments.
+        let item_start = self.peek_span().start;
         match kind {
             TypeDeclKind::Struct => {
                 let attributes = self.parse_attributes();
@@ -1492,6 +1496,7 @@ impl<'src> Parser<'src> {
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
+                    let item_end = ty.1.end;
                     if !self.eat(&Token::Semicolon) {
                         self.eat(&Token::Comma);
                     }
@@ -1500,6 +1505,7 @@ impl<'src> Parser<'src> {
                         ty,
                         attributes,
                         doc_comment,
+                        span: item_start..item_end,
                     })
                 }
             }
@@ -1537,10 +1543,13 @@ impl<'src> Parser<'src> {
                     self.error("use `;` instead of `,` to separate variants".to_string());
                     self.advance();
                 }
+                // peek_span() is now the position after the trailing `;`
+                let item_end = self.peek_span().start;
                 Some(TypeBodyItem::Variant(VariantDecl {
                     name,
                     kind,
                     doc_comment,
+                    span: item_start..item_end,
                 }))
             }
         }
@@ -2499,6 +2508,7 @@ impl<'src> Parser<'src> {
                 ty,
                 attributes: Vec::new(),
                 doc_comment: None,
+                span: 0..0,
             });
             field_meta.push((
                 field_name,
@@ -2718,6 +2728,7 @@ impl<'src> Parser<'src> {
                         name: variant_name,
                         kind,
                         doc_comment: None,
+                        span: 0..0,
                     });
                 }
             }

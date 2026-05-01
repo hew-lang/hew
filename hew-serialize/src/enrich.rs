@@ -5647,6 +5647,7 @@ mod tests {
                         ),
                         attributes: Vec::new(),
                         doc_comment: None,
+                        span: 0..0,
                     },
                     hew_parser::ast::TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
                         name: "TupleV".into(),
@@ -5664,6 +5665,7 @@ mod tests {
                             0..0,
                         )]),
                         doc_comment: None,
+                        span: 0..0,
                     }),
                     hew_parser::ast::TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
                         name: "StructV".into(),
@@ -5684,6 +5686,7 @@ mod tests {
                             ),
                         )]),
                         doc_comment: None,
+                        span: 0..0,
                     }),
                 ],
                 doc_comment: None,

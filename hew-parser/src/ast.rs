@@ -767,6 +767,12 @@ pub enum TypeBodyItem {
         attributes: Vec<Attribute>,
         #[serde(default)]
         doc_comment: Option<String>,
+        /// Source byte range of this field (after any doc comments), used by
+        /// the formatter to flush inline comments before each field.
+        /// Set to `0..0` for synthetically constructed fields (e.g., wire
+        /// decls) that have no source position.
+        #[serde(skip)]
+        span: Span,
     },
     Variant(VariantDecl),
     Method(FnDecl),
@@ -778,6 +784,11 @@ pub struct VariantDecl {
     pub kind: VariantKind,
     #[serde(default)]
     pub doc_comment: Option<String>,
+    /// Source byte range of this variant (after any doc comments), used by
+    /// the formatter to flush inline comments before each variant.
+    /// Set to `0..0` for synthetically constructed variants.
+    #[serde(skip)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -890,6 +901,7 @@ impl WireDecl {
                 ),
                 attributes: Vec::new(),
                 doc_comment: None,
+                span: 0..0,
             })
             .chain(
                 self.variants

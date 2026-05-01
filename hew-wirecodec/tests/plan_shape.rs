@@ -162,11 +162,13 @@ fn build_plan_for_enum_emits_variant_list() {
                 name: "Red".into(),
                 kind: VariantKind::Unit,
                 doc_comment: None,
+                span: 0..0,
             },
             VariantDecl {
                 name: "Green".into(),
                 kind: VariantKind::Unit,
                 doc_comment: None,
+                span: 0..0,
             },
         ],
         json_case: None,

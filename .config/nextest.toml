@@ -11,12 +11,11 @@ default-filter = "not package(hew-wasm)"
 # and the same scenarios are covered by the ctest E2E suite that runs after the
 # codegen build step.
 default-filter = "not package(hew-wasm) - binary(test_runner_e2e)"
-
-[[profile.ci.overrides]]
-# Keep nextest's default 60s "slow" threshold, but terminate hung tests on
-# Windows before they can consume the full 60-minute job timeout.
-platform = { host = 'cfg(target_os = "windows")' }
-slow-timeout = { period = "60s", terminate-after = 5 }
+# Terminate tests that hang: after 3 × 60 s = 180 s of no output the test
+# process is killed and reported as a failure rather than blocking the job
+# indefinitely.  Applies to all platforms.  Replaces the previous Windows-only
+# override (terminate-after = 5, i.e. 300 s) with a stricter cross-platform bound.
+slow-timeout = { period = "60s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # connection_drop_wakes_pending_remote_ask is a known timing-sensitive test

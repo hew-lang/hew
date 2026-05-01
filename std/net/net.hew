@@ -365,5 +365,5 @@ extern "C" {
     fn hew_listener_is_valid(ln: Listener) -> bool;
     fn hew_connection_is_valid(conn: Connection) -> bool;
     fn hew_stream_last_error() -> String;
-    fn hew_stream_last_errno() -> i32;
-} // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
+    fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
+}

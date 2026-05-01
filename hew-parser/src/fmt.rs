@@ -792,11 +792,18 @@ impl<'a> Formatter<'a> {
         self.write("\" {\n");
         self.indent += 1;
         for f in &decl.functions {
-            if self.has_comments() {
-                let pos = self.find_keyword_after(&format!("fn {}", f.name), self.prev_source_pos);
-                self.flush_comments_before(pos);
-            }
+            // flush inline comments that appear before this fn
+            self.flush_comments_before(f.span.start);
+            // position at fn start so the blank-line heuristic in the
+            // trailing-comment flush below counts only newlines between
+            // the fn declaration and any trailing comment on its line
+            self.prev_source_pos = f.span.start;
             self.format_extern_fn(f);
+            // flush any trailing comment on this fn's line; f.span.end
+            // is the first byte after the trailing `;`, so any same-line
+            // comment falls in the range [f.span.start, f.span.end)
+            self.flush_comments_before(f.span.end);
+            self.prev_source_pos = f.span.end;
         }
         if self.has_comments() {
             self.flush_block_end_comments(span_end);
@@ -3000,6 +3007,70 @@ fn handle(x: int) -> int {
 ";
         let once = roundtrip_source(src);
         assert_eq!(once, src, "first pass must preserve comment");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_trailing_comment_on_extern_fn() {
+        let src = "\
+extern \"C\" {
+    fn foo(x: i32) -> i32; // returns the value untouched
+    fn bar(y: i32);
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve trailing comment");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_trailing_comment_on_last_extern_fn() {
+        let src = "\
+extern \"C\" {
+    fn foo(x: i32) -> i32;
+    fn bar(y: i32) -> i32; // last fn trailing comment
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(
+            once, src,
+            "first pass must preserve trailing comment on last fn"
+        );
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_leading_comment_above_extern_fn() {
+        let src = "\
+extern \"C\" {
+    fn first(x: i32) -> i32;
+    // groups the read variants
+    fn read_u8(buf: i32) -> i32;
+    fn read_u16(buf: i32) -> i32;
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(once, src, "first pass must preserve leading comment");
+        let twice = roundtrip_source(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn preserves_internal_abi_marker_on_extern_fn() {
+        let src = "\
+extern \"C\" {
+    fn hew_stream_last_error() -> string;
+    fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
+}
+";
+        let once = roundtrip_source(src);
+        assert_eq!(
+            once, src,
+            "INTERNAL-ABI marker must remain on the fn it documents"
+        );
         let twice = roundtrip_source(&once);
         assert_eq!(twice, once, "second pass must be idempotent");
     }

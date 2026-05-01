@@ -39,16 +39,17 @@ import std::fs;
 ///
 /// Created by calling `websocket.connect(url)`. Use `send_text()` to
 /// send messages and `recv()` to receive them.
-type Conn {}
+type Conn {
+}
 
 /// An incoming WebSocket message handle.
 ///
 /// Obtained from `conn.recv()`. Must be freed with `free()` when no
 /// longer needed.
-type Message {}
+type Message {
+}
 
 // ── Conn methods ──────────────────────────────────────────────────────
-
 /// Methods available on a WebSocket `Conn`.
 trait ConnMethods {
     /// Send a text message over the connection. Return 0 on success.
@@ -76,44 +77,76 @@ trait ConnMethods {
 }
 
 impl ConnMethods for Conn {
-    fn send_text(conn: Conn, msg: String) -> int { unsafe { hew_ws_send_text(conn, msg) } }
-    fn try_send_text(conn: Conn, msg: String) -> Result<(), fs.IoError> {
-        let n: int = unsafe { hew_ws_send_text(conn, msg) };
-        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(()) } // WebSocket errors carry no OS errno
+    fn send_text(conn: Conn, msg: String) -> int {
+        unsafe {
+            hew_ws_send_text(conn, msg)
+        }
     }
-    fn recv(conn: Conn) -> Message { unsafe { hew_ws_recv(conn) } }
-    fn close(conn: Conn) { unsafe { hew_ws_close(conn) }; }
+    fn try_send_text(conn: Conn, msg: String) -> Result<(), fs.IoError> {
+        let n: int = unsafe {
+            hew_ws_send_text(conn, msg)
+        };
+        if n < 0 {
+            Err(fs.io_error_from_errno(0))
+        } else {
+            Ok(())
+        } // WebSocket errors carry no OS errno
+    }
+    fn recv(conn: Conn) -> Message {
+        unsafe {
+            hew_ws_recv(conn)
+        }
+    }
+    fn close(conn: Conn) {
+        unsafe {
+            hew_ws_close(conn)
+        };
+    }
     fn attach(conn: Conn, handler: ActorRef, on_message_type: int, on_close_type: int) {
-        unsafe { hew_ws_attach(conn, handler, on_message_type as i32, on_close_type as i32) }; // INTERNAL-ABI: C ABI takes i32 type indices
+        unsafe {
+            hew_ws_attach(conn, handler, on_message_type as i32, on_close_type as i32)
+        }; // INTERNAL-ABI: C ABI takes i32 type indices
     }
 }
 
 // ── Message methods ───────────────────────────────────────────────────
-
 /// Methods available on a WebSocket `Message`.
 trait MessageMethods {
     /// Get the message type (0=text, 1=binary, 2=ping, 3=pong, 4=close, -1=error).
     fn msg_type(msg: Message) -> i32; // INTERNAL-ABI: opaque frame-type enum; planned enum migration
     /// Extract the text content of a text message.
     fn text(msg: Message) -> String;
+
     /// Release the message resources.
     fn free(msg: Message);
 }
 
 impl MessageMethods for Message {
-    fn msg_type(msg: Message) -> i32 { unsafe { hew_ws_message_type(msg) } } // INTERNAL-ABI: opaque frame-type enum; planned enum migration
-    fn text(msg: Message) -> String { unsafe { hew_ws_message_text(msg) } }
+    fn msg_type(msg: Message) -> i32 {
+        unsafe {
+            hew_ws_message_type(msg)
+        }
+    } // INTERNAL-ABI: opaque frame-type enum; planned enum migration
+    fn text(msg: Message) -> String {
+        unsafe {
+            hew_ws_message_text(msg)
+        }
+    }
     /// Release the message resources.
-    fn free(msg: Message) { unsafe { hew_ws_message_free(msg) }; }
+    fn free(msg: Message) {
+        unsafe {
+            hew_ws_message_free(msg)
+        };
+    }
 }
 
 // ── Server type ─────────────────────────────────────────────────────
-
 /// A WebSocket server listening for incoming connections.
 ///
 /// Created by calling `websocket.listen(addr)`. Use `accept()` to wait
 /// for the next client connection.
-type Server {}
+type Server {
+}
 
 /// Methods available on a WebSocket `Server`.
 trait ServerMethods {
@@ -129,13 +162,24 @@ trait ServerMethods {
 }
 
 impl ServerMethods for Server {
-    fn accept(server: Server) -> Conn { unsafe { hew_ws_server_accept(server) } }
-    fn port(server: Server) -> int { unsafe { hew_ws_server_port(server) as int } }
-    fn close(server: Server) { unsafe { hew_ws_server_close(server) }; }
+    fn accept(server: Server) -> Conn {
+        unsafe {
+            hew_ws_server_accept(server)
+        }
+    }
+    fn port(server: Server) -> int {
+        unsafe {
+            hew_ws_server_port(server) as int
+        }
+    }
+    fn close(server: Server) {
+        unsafe {
+            hew_ws_server_close(server)
+        };
+    }
 }
 
 // ── WebSocket Handler trait ──────────────────────────────────────────
-
 /// Trait for actors that handle WebSocket connections.
 ///
 /// Implement this on an actor and call `conn.attach(actor)` to have
@@ -158,15 +202,17 @@ impl ServerMethods for Server {
 trait WebSocketHandler {
     /// Called when a text frame arrives from the client.
     fn on_message(text: String);
+
     /// Called when the connection closes or errors.
     fn on_close();
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Open a WebSocket connection to the given URL (client).
 pub fn connect(url: String) -> Conn {
-    unsafe { hew_ws_connect(url) }
+    unsafe {
+        hew_ws_connect(url)
+    }
 }
 
 /// Start a WebSocket server listening on the given address.
@@ -178,11 +224,12 @@ pub fn connect(url: String) -> Conn {
 /// let conn = server.accept();
 /// ```
 pub fn listen(addr: String) -> Server {
-    unsafe { hew_ws_server_new(addr) }
+    unsafe {
+        hew_ws_server_new(addr)
+    }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
-
 extern "C" {
     fn hew_ws_connect(url: String) -> Conn;
     fn hew_ws_send_text(ws: Conn, msg: String) -> i32;

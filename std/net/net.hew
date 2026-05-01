@@ -47,6 +47,7 @@
 //! ```
 
 import std::fs;
+
 import std::string;
 
 fn net_result_from_status(status: i32) -> Result<(), fs.IoError> { // INTERNAL-ABI: status from C ABI is i32; internal helper only
@@ -54,8 +55,12 @@ fn net_result_from_status(status: i32) -> Result<(), fs.IoError> { // INTERNAL-A
         // Read errno before the message: hew_stream_last_error clears errno as a
         // side-effect (they share a paired thread-local), so errno must be
         // consumed first.
-        let errno = unsafe { hew_stream_last_errno() };
-        let _ = unsafe { hew_stream_last_error() };
+        let errno = unsafe {
+            hew_stream_last_errno()
+        };
+        let _ = unsafe {
+            hew_stream_last_error()
+        };
         Err(fs.io_error_from_errno(errno as int))
     } else {
         Ok(())
@@ -66,15 +71,16 @@ fn net_result_from_status(status: i32) -> Result<(), fs.IoError> { // INTERNAL-A
 ///
 /// Created by `net.listen(addr)`. Returns a negative value (as i32)
 /// on failure when cast; use comparison to check success.
-type Listener {}
+type Listener {
+}
 
 /// An established TCP connection for reading and writing.
 ///
 /// Obtained from `listener.accept()` or `net.connect(addr)`.
-type Connection {}
+type Connection {
+}
 
 // ── Listener methods ──────────────────────────────────────────────────
-
 /// Methods available on a TCP `Listener`.
 trait ListenerMethods {
     /// Block until a client connects and return the new `Connection`.
@@ -87,17 +93,19 @@ trait ListenerMethods {
 impl ListenerMethods for Listener {
     /// Block until a client connects and return the new `Connection`.
     fn accept(ln: Listener) -> Connection {
-        unsafe { hew_tcp_accept(ln) }
+        unsafe {
+            hew_tcp_accept(ln)
+        }
     }
-
     /// Close the listener and release the listening socket.
     fn close(ln: Listener) {
-        unsafe { hew_tcp_listener_close(ln) };
+        unsafe {
+            hew_tcp_listener_close(ln)
+        };
     }
 }
 
 // ── Connection methods ────────────────────────────────────────────────
-
 /// Methods available on a TCP `Connection`.
 trait ConnectionMethods {
     /// Read raw bytes from the connection.
@@ -135,16 +143,38 @@ trait ConnectionMethods {
 
 impl ConnectionMethods for Connection {
     /// Read raw bytes from the connection.
-    fn read(conn: Connection) -> bytes { unsafe { hew_tcp_read(conn) } }
+    fn read(conn: Connection) -> bytes {
+        unsafe {
+            hew_tcp_read(conn)
+        }
+    }
     /// Read a UTF-8 string from the connection.
-    fn read_string(conn: Connection) -> String { unsafe { hew_bytes_to_string(unsafe { hew_tcp_read(conn) }) } }
+    fn read_string(conn: Connection) -> String {
+        unsafe {
+            hew_bytes_to_string(unsafe {
+                hew_tcp_read(conn)
+            })
+        }
+    }
     /// Write raw bytes to the connection.
-    fn write(conn: Connection, data: bytes) { unsafe { hew_tcp_write(conn, data) } }
+    fn write(conn: Connection, data: bytes) {
+        unsafe {
+            hew_tcp_write(conn, data)
+        }
+    }
     /// Write a UTF-8 string to the connection.
-    fn write_string(conn: Connection, data: String) { unsafe { hew_tcp_write(conn, unsafe { hew_string_to_bytes(data) }) } }
+    fn write_string(conn: Connection, data: String) {
+        unsafe {
+            hew_tcp_write(conn, unsafe {
+                hew_string_to_bytes(data)
+            })
+        }
+    }
     /// Close the connection and release resources.
     fn close(conn: Connection) {
-        unsafe { hew_tcp_close(conn) };
+        unsafe {
+            hew_tcp_close(conn)
+        };
     }
     /// Set the read timeout in milliseconds.
     fn set_read_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError> {
@@ -154,7 +184,9 @@ impl ConnectionMethods for Connection {
         // WHEN: remove once hew_tcp_set_read_timeout populates errno on error paths.
         // WHAT: switch to calling set_last_error_with_errno in the C runtime
         //   counterpart (tracked in errno-coverage follow-up).
-        net_result_from_status(unsafe { hew_tcp_set_read_timeout(conn, ms as i32) })
+        net_result_from_status(unsafe {
+            hew_tcp_set_read_timeout(conn, ms as i32)
+        })
     }
     /// Set the write timeout in milliseconds.
     fn set_write_timeout(conn: Connection, ms: int) -> Result<(), fs.IoError> {
@@ -164,12 +196,13 @@ impl ConnectionMethods for Connection {
         // WHEN: remove once hew_tcp_set_write_timeout populates errno on error paths.
         // WHAT: switch to calling set_last_error_with_errno in the C runtime
         //   counterpart (tracked in errno-coverage follow-up).
-        net_result_from_status(unsafe { hew_tcp_set_write_timeout(conn, ms as i32) })
+        net_result_from_status(unsafe {
+            hew_tcp_set_write_timeout(conn, ms as i32)
+        })
     }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Create a TCP listener bound to the given address.
 ///
 /// The address format is `"host:port"` or `":port"`.
@@ -180,7 +213,9 @@ impl ConnectionMethods for Connection {
 /// let listener = net.listen(":9000");
 /// ```
 pub fn listen(addr: String) -> Listener {
-    unsafe { hew_tcp_listen(addr) }
+    unsafe {
+        hew_tcp_listen(addr)
+    }
 }
 
 /// Create a TCP listener bound to the given address.
@@ -221,7 +256,9 @@ pub fn try_listen(addr: String) -> Result<Listener, fs.IoError> {
 /// let conn = net.connect("localhost:9000");
 /// ```
 pub fn connect(addr: String) -> Connection {
-    unsafe { hew_tcp_connect(addr) }
+    unsafe {
+        hew_tcp_connect(addr)
+    }
 }
 
 /// Connect to a TCP server at the given address.
@@ -269,8 +306,10 @@ pub fn connect_timeout(addr: String, timeout_sec: int, timeout_usec: int) -> Con
     }
     let millis_per_second: int = 1000;
     let micros_per_millisecond: int = 1000;
-    let timeout_ms = timeout_sec * millis_per_second + (timeout_usec / micros_per_millisecond);
-    unsafe { hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32) }
+    let timeout_ms = timeout_sec * millis_per_second + timeout_usec / micros_per_millisecond;
+    unsafe {
+        hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32)
+    }
 }
 
 /// Broadcast a message to all connections except the sender.
@@ -283,17 +322,25 @@ pub fn broadcast_except(sender: Connection, message: bytes) -> int {
     // WHEN: remove once hew_tcp_broadcast_except populates errno on error paths.
     // WHAT: switch to calling set_last_error_with_errno in the C runtime
     //   counterpart (tracked in errno-coverage follow-up).
-    unsafe { hew_tcp_broadcast_except(sender, message) }
+    unsafe {
+        hew_tcp_broadcast_except(sender, message)
+    }
 }
 
 /// Broadcast a message to all connections except the sender.
 ///
 /// Used in chat-server patterns to fan out messages.
 pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<int, fs.IoError> {
-    let n: i32 = unsafe { hew_tcp_broadcast_except(sender, message) };
+    let n: i32 = unsafe {
+        hew_tcp_broadcast_except(sender, message)
+    };
     if n < 0 {
-        let errno = unsafe { hew_stream_last_errno() };
-        unsafe { let _ = hew_stream_last_error(); }
+        let errno = unsafe {
+            hew_stream_last_errno()
+        };
+        unsafe {
+            let _ = hew_stream_last_error();
+        };
         Err(fs.io_error_from_errno(errno as int))
     } else {
         Ok(n as int)
@@ -301,7 +348,6 @@ pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<int, f
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_tcp_listen(addr: String) -> Listener;
     fn hew_tcp_accept(listener: Listener) -> Connection;
@@ -319,5 +365,5 @@ extern "C" {
     fn hew_listener_is_valid(ln: Listener) -> bool;
     fn hew_connection_is_valid(conn: Connection) -> bool;
     fn hew_stream_last_error() -> String;
-    fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
-}
+    fn hew_stream_last_errno() -> i32;
+} // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded

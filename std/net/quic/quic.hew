@@ -98,14 +98,16 @@ import std::fs;
 ///
 /// Created by `quic.new_client()` or `quic.new_server(addr)`.
 /// Must be released with `close()`.
-type QUICEndpoint {}
+type QUICEndpoint {
+}
 
 /// An established QUIC connection to a remote peer.
 ///
 /// A connection multiplexes many independent streams over a single UDP path.
 /// Obtained from `endpoint.connect()` (client) or `endpoint.accept()` (server).
 /// Must be released with `disconnect()`.
-type QUICConnection {}
+type QUICConnection {
+}
 
 /// A bidirectional QUIC stream within a connection.
 ///
@@ -115,13 +117,15 @@ type QUICConnection {}
 /// Obtained from `conn.open_stream()` or `conn.accept_stream()`.
 /// Finish the send side with `finish()` when no more data will be sent;
 /// the receive side drains naturally.
-type QUICStream {}
+type QUICStream {
+}
 
 /// An observed QUIC event emitted by an endpoint or connection.
 ///
 /// Used by the blocking event API to react to queued connection and channel
 /// events. Pair this with `observe()` for non-destructive snapshots.
-type QUICEvent {}
+type QUICEvent {
+}
 
 /// Non-destructive endpoint observation.
 pub type QUICEndpointObservation {
@@ -153,7 +157,6 @@ pub type QUICStreamObservation {
 }
 
 // ── QUICEndpoint methods ──────────────────────────────────────────────
-
 /// Methods available on a `QUICEndpoint`.
 trait QUICEndpointMethods {
     /// Dial a remote QUIC server.
@@ -184,16 +187,24 @@ trait QUICEndpointMethods {
 
 impl QUICEndpointMethods for QUICEndpoint {
     fn connect(ep: QUICEndpoint, addr: String, server_name: String) -> QUICConnection {
-        unsafe { hew_quic_endpoint_connect(ep, addr, server_name) }
+        unsafe {
+            hew_quic_endpoint_connect(ep, addr, server_name)
+        }
     }
     fn accept(ep: QUICEndpoint) -> QUICConnection {
-        unsafe { hew_quic_endpoint_accept(ep) }
+        unsafe {
+            hew_quic_endpoint_accept(ep)
+        }
     }
     fn close(ep: QUICEndpoint) {
-        unsafe { hew_quic_endpoint_close(ep) };
+        unsafe {
+            hew_quic_endpoint_close(ep)
+        };
     }
     fn on_event(ep: QUICEndpoint) -> QUICEvent {
-        unsafe { hew_quic_endpoint_on_event(ep) }
+        unsafe {
+            hew_quic_endpoint_on_event(ep)
+        }
     }
     fn observe(ep: QUICEndpoint) -> QUICEndpointObservation {
         endpoint_observe(ep)
@@ -201,7 +212,6 @@ impl QUICEndpointMethods for QUICEndpoint {
 }
 
 // ── QUICConnection methods ────────────────────────────────────────────
-
 /// Methods available on a `QUICConnection`.
 trait QUICConnectionMethods {
     /// Open a new bidirectional stream on this connection.
@@ -231,16 +241,22 @@ trait QUICConnectionMethods {
 
 impl QUICConnectionMethods for QUICConnection {
     fn open_stream(conn: QUICConnection) -> QUICStream {
-        unsafe { hew_quic_conn_open_stream(conn) }
+        unsafe {
+            hew_quic_conn_open_stream(conn)
+        }
     }
     fn accept_stream(conn: QUICConnection) -> QUICStream {
-        unsafe { hew_quic_conn_accept_stream(conn) }
+        unsafe {
+            hew_quic_conn_accept_stream(conn)
+        }
     }
     fn disconnect(conn: QUICConnection) -> Result<(), fs.IoError> {
         connection_disconnect(conn)
     }
     fn on_event(conn: QUICConnection) -> QUICEvent {
-        unsafe { hew_quic_conn_on_event(conn) }
+        unsafe {
+            hew_quic_conn_on_event(conn)
+        }
     }
     fn observe(conn: QUICConnection) -> QUICConnectionObservation {
         connection_observe(conn)
@@ -248,7 +264,6 @@ impl QUICConnectionMethods for QUICConnection {
 }
 
 // ── QUICStream methods ────────────────────────────────────────────────
-
 /// Methods available on a `QUICStream`.
 trait QUICStreamMethods {
     /// Send raw bytes on this stream.
@@ -301,7 +316,11 @@ impl QUICStreamMethods for QUICStream {
     fn send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError> {
         stream_send(strm, data)
     }
-    fn recv(strm: QUICStream) -> bytes { unsafe { hew_quic_stream_recv(strm) } }
+    fn recv(strm: QUICStream) -> bytes {
+        unsafe {
+            hew_quic_stream_recv(strm)
+        }
+    }
     fn finish(strm: QUICStream) -> Result<(), fs.IoError> {
         stream_finish(strm)
     }
@@ -309,7 +328,9 @@ impl QUICStreamMethods for QUICStream {
         stream_stop(strm, error_code)
     }
     fn close(strm: QUICStream) {
-        unsafe { hew_quic_stream_close(strm) };
+        unsafe {
+            hew_quic_stream_close(strm)
+        };
     }
     fn send_string(strm: QUICStream, msg: String) -> Result<(), fs.IoError> {
         stream_send_string(strm, msg)
@@ -323,7 +344,6 @@ impl QUICStreamMethods for QUICStream {
 }
 
 // ── QUICEvent methods ─────────────────────────────────────────────────
-
 /// Methods available on a `QUICEvent`.
 trait QUICEventMethods {
     /// Return the event kind as an integer.
@@ -332,18 +352,24 @@ trait QUICEventMethods {
     ///   0 — connected, 1 — disconnected, 2 — stream opened,
     ///   3 — stream closed, −1 — error.
     fn kind(evt: QUICEvent) -> i32; // INTERNAL-ABI: opaque event-kind enum (0=connected, 1=disconnected, 2=stream-opened, 3=stream-closed, -1=error); planned enum migration
-
     /// Release the event and its resources.
     fn free(evt: QUICEvent);
 }
 
 impl QUICEventMethods for QUICEvent {
-    fn kind(evt: QUICEvent) -> i32 { unsafe { hew_quic_event_kind(evt) } } // INTERNAL-ABI: opaque event-kind enum; planned enum migration
-    fn free(evt: QUICEvent) { unsafe { hew_quic_event_free(evt) }; }
+    fn kind(evt: QUICEvent) -> i32 {
+        unsafe {
+            hew_quic_event_kind(evt)
+        }
+    } // INTERNAL-ABI: opaque event-kind enum; planned enum migration
+    fn free(evt: QUICEvent) {
+        unsafe {
+            hew_quic_event_free(evt)
+        };
+    }
 }
 
 // ── Module-level constructors ─────────────────────────────────────────
-
 /// Create a QUIC client endpoint bound to an ephemeral local port.
 ///
 /// The endpoint is configured with a permissive TLS verifier suitable
@@ -356,14 +382,18 @@ impl QUICEventMethods for QUICEvent {
 /// let conn = ep.connect("node2.example.com:4433", "node2.example.com");
 /// ```
 pub fn new_client() -> QUICEndpoint {
-    unsafe { hew_quic_new_client() }
+    unsafe {
+        hew_quic_new_client()
+    }
 }
 
 /// Create a QUIC client endpoint that trusts the given CA bundle.
 ///
 /// `ca_pem` must contain one or more PEM-encoded certificates.
 pub fn new_client_with_ca(ca_pem: String) -> QUICEndpoint {
-    unsafe { hew_quic_new_client_with_ca(ca_pem) }
+    unsafe {
+        hew_quic_new_client_with_ca(ca_pem)
+    }
 }
 
 /// Bind a QUIC server endpoint on `addr`.
@@ -378,7 +408,9 @@ pub fn new_client_with_ca(ca_pem: String) -> QUICEndpoint {
 /// let conn = ep.accept();
 /// ```
 pub fn new_server(addr: String) -> QUICEndpoint {
-    unsafe { hew_quic_new_server(addr) }
+    unsafe {
+        hew_quic_new_server(addr)
+    }
 }
 
 /// Bind a QUIC server endpoint on `addr` with explicit TLS material.
@@ -386,7 +418,9 @@ pub fn new_server(addr: String) -> QUICEndpoint {
 /// `cert_pem` may contain a PEM-encoded certificate chain; `key_pem` must
 /// contain the matching PEM-encoded private key.
 pub fn new_server_with_tls(addr: String, cert_pem: String, key_pem: String) -> QUICEndpoint {
-    unsafe { hew_quic_new_server_with_tls(addr, cert_pem, key_pem) }
+    unsafe {
+        hew_quic_new_server_with_tls(addr, cert_pem, key_pem)
+    }
 }
 
 /// Return the last constructor/setup error observed on this thread.
@@ -394,31 +428,43 @@ pub fn new_server_with_tls(addr: String, cert_pem: String, key_pem: String) -> Q
 /// Failed calls to `new_client*()` and `new_server*()` update this string.
 /// Successful constructors clear it.
 pub fn last_error() -> String {
-    unsafe { hew_quic_last_error() }
+    unsafe {
+        hew_quic_last_error()
+    }
 }
 
 // Keep observation assembly in module-level wrappers so imported
 // `handle.observe()` calls rewrite during AST enrichment.
 pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
-    QUICEndpointObservation {
-        local_addr: unsafe { hew_quic_endpoint_local_addr(ep) },
-        accepted_connections: unsafe { hew_quic_endpoint_accepted_connections(ep) },
-        last_error: unsafe { hew_quic_endpoint_last_error(ep) },
-    }
+    QUICEndpointObservation { local_addr: unsafe {
+        hew_quic_endpoint_local_addr(ep)
+    }, accepted_connections: unsafe {
+        hew_quic_endpoint_accepted_connections(ep)
+    }, last_error: unsafe {
+        hew_quic_endpoint_last_error(ep)
+    } }
 }
 
 pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
-    QUICConnectionObservation {
-        local_addr: unsafe { hew_quic_conn_local_addr(conn) },
-        peer_addr: unsafe { hew_quic_conn_peer_addr(conn) },
-        opened_streams: unsafe { hew_quic_conn_opened_streams(conn) },
-        accepted_streams: unsafe { hew_quic_conn_accepted_streams(conn) },
-        rtt_ms: unsafe { hew_quic_conn_rtt_ms(conn) as int },
-        bytes_sent: unsafe { hew_quic_conn_bytes_sent(conn) },
-        bytes_received: unsafe { hew_quic_conn_bytes_received(conn) },
-        closed: unsafe { hew_quic_conn_is_closed(conn) },
-        last_error: unsafe { hew_quic_conn_last_error(conn) },
-    }
+    QUICConnectionObservation { local_addr: unsafe {
+        hew_quic_conn_local_addr(conn)
+    }, peer_addr: unsafe {
+        hew_quic_conn_peer_addr(conn)
+    }, opened_streams: unsafe {
+        hew_quic_conn_opened_streams(conn)
+    }, accepted_streams: unsafe {
+        hew_quic_conn_accepted_streams(conn)
+    }, rtt_ms: unsafe {
+        hew_quic_conn_rtt_ms(conn) as int
+    }, bytes_sent: unsafe {
+        hew_quic_conn_bytes_sent(conn)
+    }, bytes_received: unsafe {
+        hew_quic_conn_bytes_received(conn)
+    }, closed: unsafe {
+        hew_quic_conn_is_closed(conn)
+    }, last_error: unsafe {
+        hew_quic_conn_last_error(conn)
+    } }
 }
 
 pub fn connection_disconnect(conn: QUICConnection) -> Result<(), fs.IoError> {
@@ -434,13 +480,17 @@ pub fn connection_disconnect(conn: QUICConnection) -> Result<(), fs.IoError> {
 }
 
 pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
-    QUICStreamObservation {
-        bytes_sent: unsafe { hew_quic_stream_bytes_sent(stream) },
-        bytes_received: unsafe { hew_quic_stream_bytes_received(stream) },
-        send_closed: unsafe { hew_quic_stream_send_closed(stream) },
-        recv_closed: unsafe { hew_quic_stream_recv_closed(stream) },
-        last_error: unsafe { hew_quic_stream_last_error(stream) },
-    }
+    QUICStreamObservation { bytes_sent: unsafe {
+        hew_quic_stream_bytes_sent(stream)
+    }, bytes_received: unsafe {
+        hew_quic_stream_bytes_received(stream)
+    }, send_closed: unsafe {
+        hew_quic_stream_send_closed(stream)
+    }, recv_closed: unsafe {
+        hew_quic_stream_recv_closed(stream)
+    }, last_error: unsafe {
+        hew_quic_stream_last_error(stream)
+    } }
 }
 
 pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError> {
@@ -502,7 +552,6 @@ pub fn stream_recv_string(strm: QUICStream) -> String {
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     // Endpoint constructors
     fn hew_quic_new_client() -> QUICEndpoint;

@@ -70,8 +70,8 @@ Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` direct
 
 | Suite | Command | Scope | Speed |
 |---|---|---|---|
-| Full (default) | `make test` | Rust workspace + native codegen E2E + Hew test files + C++ unit | slow |
-| Extended | `make test-all` | Rust workspace + native codegen E2E + stdlib type-check sweep + Hew test files + WASM E2E (no `test-cpp`) | slowest |
+| Full (default) | `make test` | Rust workspace (via nextest) + native codegen E2E + C++ unit | slow |
+| Extended | `make test-all` | `make test` + stdlib type-check sweep + Hew test files + WASM E2E | slowest |
 | Rust only | `make test-rust` | All Rust workspace crates | fast |
 | Parser / lexer | `make test-parser` | `hew-parser` + `hew-lexer` | fast |
 | Type checker | `make test-types` | `hew-types` + `hew-parser` + `hew-lexer` | fast |

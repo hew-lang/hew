@@ -634,12 +634,22 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
             }
         }
         Item::Const(c) => count_idents_in_expr(&c.value.0, counts),
-        Item::Import(_)
-        | Item::ExternBlock(_)
-        | Item::Wire(_)
-        | Item::TypeAlias(_)
-        | Item::Supervisor(_)
-        | Item::Machine(_) => {}
+        Item::Supervisor(s) => {
+            for child in &s.children {
+                for arg in &child.args {
+                    count_idents_in_expr(&arg.0, counts);
+                }
+            }
+        }
+        Item::Machine(m) => {
+            for transition in &m.transitions {
+                if let Some(guard) = &transition.guard {
+                    count_idents_in_expr(&guard.0, counts);
+                }
+                count_idents_in_expr(&transition.body.0, counts);
+            }
+        }
+        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
     }
 }
 
@@ -1208,5 +1218,117 @@ mod tests {
             );
         }
         // None is also acceptable — means no local `foo` found at path position.
+    }
+
+    // ── count_all_references: Supervisor and Machine coverage (#1333 residual) ──
+
+    #[test]
+    fn count_matches_find_refs_for_ident_in_supervisor_child_arg() {
+        // A global function `make_config` is used as an argument to a supervisor
+        // child spec. Previously count_all_references returned 0 for it because
+        // Item::Supervisor(_) was silently skipped.
+        let source = concat!(
+            "fn make_config() -> Int { 42 }\n",
+            "actor Worker {\n",
+            "    receive fn start() {}\n",
+            "}\n",
+            "supervisor Pool {\n",
+            "    child w: Worker(make_config());\n",
+            "}",
+        );
+        let pr = parse(source);
+
+        // Cursor on `make_config` inside the child arg.
+        let ref_offset = source.rfind("make_config").unwrap();
+        let (name, find_spans) = find_all_references(source, &pr, ref_offset)
+            .expect("should find references to make_config");
+        assert_eq!(name, "make_config");
+        assert!(
+            !find_spans.is_empty(),
+            "find_all_references must see make_config inside the supervisor arg"
+        );
+
+        let counts = count_all_references(&pr);
+        let count = counts.get("make_config").copied().unwrap_or(0);
+        assert_eq!(
+            count,
+            find_spans.len(),
+            "count_all_references must agree with find_all_references for make_config \
+             (previously 0 due to Supervisor skip); count={count}, find={}",
+            find_spans.len(),
+        );
+    }
+
+    #[test]
+    fn count_matches_find_refs_for_ident_in_machine_transition_body() {
+        // A global function `compute` is referenced in a machine transition body.
+        // Previously count_all_references returned 0 because Item::Machine(_)
+        // was silently skipped.
+        let source = concat!(
+            "fn compute() -> Int { 0 }\n",
+            "machine Counter {\n",
+            "    state Idle;\n",
+            "    state Running;\n",
+            "    event Start;\n",
+            "    on Start: Idle -> Running { compute() }\n",
+            "}",
+        );
+        let pr = parse(source);
+
+        // Cursor on `compute` inside the transition body.
+        let ref_offset = source.rfind("compute").unwrap();
+        let (name, find_spans) = find_all_references(source, &pr, ref_offset)
+            .expect("should find references to compute");
+        assert_eq!(name, "compute");
+        assert!(
+            !find_spans.is_empty(),
+            "find_all_references must see compute inside the machine transition body"
+        );
+
+        let counts = count_all_references(&pr);
+        let count = counts.get("compute").copied().unwrap_or(0);
+        assert_eq!(
+            count,
+            find_spans.len(),
+            "count_all_references must agree with find_all_references for compute \
+             (previously 0 due to Machine skip); count={count}, find={}",
+            find_spans.len(),
+        );
+    }
+
+    #[test]
+    fn count_matches_find_refs_for_ident_in_machine_transition_guard() {
+        // A global `flag` constant is used as a machine transition guard.
+        // count_all_references must pick it up alongside find_all_references.
+        let source = concat!(
+            "const flag: Bool = true;\n",
+            "machine Gate {\n",
+            "    state Locked;\n",
+            "    state Open;\n",
+            "    event Try;\n",
+            "    on Try: Locked -> Open when flag { Open }\n",
+            "}",
+        );
+        let pr = parse(source);
+
+        // Cursor on `flag` in the guard.
+        let ref_offset = source.rfind("flag").unwrap();
+        let (name, find_spans) =
+            find_all_references(source, &pr, ref_offset).expect("should find references to flag");
+        assert_eq!(name, "flag");
+        assert!(
+            !find_spans.is_empty(),
+            "find_all_references must see flag inside the machine transition guard"
+        );
+
+        let counts = count_all_references(&pr);
+        let count = counts.get("flag").copied().unwrap_or(0);
+        assert_eq!(
+            count,
+            find_spans.len(),
+            "count_all_references must agree with find_all_references for flag \
+             (previously 0 due to Machine skip); count={count}, find={}",
+            find_spans.len(),
+        );
     }
 }

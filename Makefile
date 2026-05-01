@@ -32,7 +32,8 @@
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
-#   make test         — run all tests (Rust + codegen + Hew)
+#   make test         — Rust + codegen + C++ tests (fast path; excludes test-hew)
+#   make test-all     — everything in test + stdlib + Hew tests + WASM (slow)
 #   make test-rust         — just Rust workspace tests
 #   make test-parser       — parser + lexer crate tests (narrow)
 #   make test-types        — type-checker + parser + lexer crate tests (narrow)
@@ -483,13 +484,24 @@ assemble-release:
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 
-test: test-rust test-codegen test-hew test-cpp
+test: test-rust test-codegen test-cpp
 
-# TODO: Add test-stdlib to `test` target once stdlib files are type-check clean
-test-all: test-rust test-codegen test-stdlib test-hew test-wasm
+# test-all: the full sweep including the Hew JIT test suite and WASM tests.
+# Hew tests (~354 functions through JIT+LLVM) are omitted from the default
+# `test` target because they take ~5 min locally and are not called by CI
+# (which uses cargo nextest + ctest directly). Use `make test-all` when you
+# want the previous behaviour.
+# TODO: Add test-stdlib to `test-all` unconditionally once stdlib files are type-check clean
+test-all: test test-stdlib test-hew test-wasm
 
 test-rust:
-	cargo test
+	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
+		cargo nextest run --workspace --profile ci; \
+	else \
+		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
+		echo "         Install with: cargo install cargo-nextest" >&2; \
+		cargo test; \
+	fi
 
 test-parser:
 	cargo test -p hew-parser -p hew-lexer

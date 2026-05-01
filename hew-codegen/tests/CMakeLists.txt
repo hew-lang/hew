@@ -35,6 +35,8 @@ target_link_libraries(test_mlirgen PRIVATE
 )
 
 add_test(NAME mlirgen COMMAND test_mlirgen)
+# Observed wall time ~107 s on a fast machine; 180 s gives ~70% headroom.
+set_tests_properties(mlirgen PROPERTIES TIMEOUT 180)
 if(HEW_CLI)
   set_tests_properties(mlirgen PROPERTIES ENVIRONMENT "HEW_CLI=${HEW_CLI}")
 endif()
@@ -55,10 +57,11 @@ target_link_libraries(test_translate PRIVATE
 
 add_test(NAME translate COMMAND test_translate)
 # Outer process-level bound: 10 subtests × 5 s inner timeout = 50 s worst
-# case on a fast machine.  120 s gives 2.4× headroom for slow CI runners
+# case on a fast machine.  180 s gives 3.6× headroom for slow CI runners
 # while still guaranteeing the suite doesn't block indefinitely if join()
 # itself never returns (e.g. a genuine infinite hang on Windows).
-set_tests_properties(translate PROPERTIES TIMEOUT 120)
+# Bumped from 120 s to match the other slow unit tests for consistency.
+set_tests_properties(translate PROPERTIES TIMEOUT 180)
 
 # ── Codegen C API test ────────────────────────────────────────────────────
 add_executable(test_codegen_capi test_codegen_capi.cpp)
@@ -82,6 +85,8 @@ target_link_libraries(test_codegen_capi PRIVATE
 )
 
 add_test(NAME codegen_capi COMMAND test_codegen_capi)
+# Observed wall time ~138 s on a fast machine; 240 s gives ~74% headroom.
+set_tests_properties(codegen_capi PROPERTIES TIMEOUT 240)
 if(HEW_CLI)
   set_tests_properties(codegen_capi PROPERTIES ENVIRONMENT "HEW_CLI=${HEW_CLI}")
 endif()
@@ -100,6 +105,8 @@ target_link_libraries(test_jit_symbol_map PRIVATE
 )
 
 add_test(NAME jit_symbol_map COMMAND test_jit_symbol_map)
+# Observed wall time ~206 s on a fast machine; 360 s gives ~75% headroom.
+set_tests_properties(jit_symbol_map PROPERTIES TIMEOUT 360)
 
 # ── JIT session integration test ──────────────────────────────────────────────
 # Verifies that HewJitSession attaches GDB and (when LLVM_USE_PERF=1) perf
@@ -817,6 +824,19 @@ foreach(_cat ${_E2E_CATEGORIES})
       add_e2e_file_test(${_cat}_${_test_base} ${_cat} ${_test_base})
     endif()
   endforeach()
+endforeach()
+
+# Serialise three e2e tests that race on the hew compiler's working-directory
+# scratch space when run in parallel.  RESOURCE_LOCK prevents concurrent
+# execution without disabling parallelism for the rest of the suite.
+foreach(_flake
+  e2e_bytes_stream_write_string
+  e2e_canonicalize_cast_chain
+  e2e_canonicalize_string_concat_identity
+)
+  if(TEST ${_flake})
+    set_tests_properties(${_flake} PROPERTIES RESOURCE_LOCK "hew_codegen_build_dir")
+  endif()
 endforeach()
 
 add_e2e_file_test(for_await_typed_receiver_param e2e_concurrency channel_for_await_typed_receiver_param)

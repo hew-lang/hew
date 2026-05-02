@@ -61,6 +61,14 @@ trait ConnMethods {
     /// Block until a message is received and return it.
     fn recv(conn: Conn) -> Message;
 
+    /// Receive a message with a per-call deadline.
+    ///
+    /// `deadline_ms <= 0` disables the deadline and behaves like `recv`.
+    /// Returns `Err(IoError::TimedOut(0))` on deadline expiry. On other
+    /// failures returns `Err(IoError::Other(0))` (WebSocket errors carry
+    /// no OS errno channel).
+    fn recv_timeout(conn: Conn, deadline_ms: int) -> Result<Message, fs.IoError>;
+
     /// Close the WebSocket connection.
     fn close(conn: Conn);
 
@@ -95,6 +103,24 @@ impl ConnMethods for Conn {
     fn recv(conn: Conn) -> Message {
         unsafe {
             hew_ws_recv(conn)
+        }
+    }
+    fn recv_timeout(conn: Conn, deadline_ms: int) -> Result<Message, fs.IoError> {
+        let msg: Message = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI
+            hew_ws_recv_timeout(conn, deadline_ms as i32)
+        };
+        let valid: bool = unsafe {
+            hew_ws_message_is_valid(msg)
+        };
+        let timed_out: i32 = unsafe { // INTERNAL-ABI: thread-local sentinel; 1=timeout, 0=ok-or-error
+            hew_ws_recv_last_timed_out()
+        };
+        if valid {
+            Ok(msg)
+        } else if timed_out == 1 {
+            Err(fs.io_error_timed_out())
+        } else {
+            Err(fs.io_error_from_errno(0))
         }
     }
     fn close(conn: Conn) {
@@ -234,6 +260,9 @@ extern "C" {
     fn hew_ws_connect(url: String) -> Conn;
     fn hew_ws_send_text(ws: Conn, msg: String) -> i32;
     fn hew_ws_recv(ws: Conn) -> Message;
+    fn hew_ws_recv_timeout(ws: Conn, deadline_ms: i32) -> Message;
+    fn hew_ws_recv_last_timed_out() -> i32; // INTERNAL-ABI: thread-local timeout sentinel; 1=timeout, 0=ok-or-error
+    fn hew_ws_message_is_valid(msg: Message) -> bool;
     fn hew_ws_close(ws: Conn);
     fn hew_ws_message_type(msg: Message) -> i32;
     fn hew_ws_message_text(msg: Message) -> String;

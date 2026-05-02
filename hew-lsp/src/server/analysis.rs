@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
 use hew_parser::ast::{ImportDecl, Item};
-use hew_parser::ParseResult;
+use hew_parser::{ParseDiagnosticKind, ParseResult};
 use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::module_registry::build_module_search_paths;
 use hew_types::{Checker, TypeCheckOutput};
@@ -813,6 +813,7 @@ pub(super) fn build_diagnostics_by_uri(
                 severity: Some(severity),
                 source: Some("hew-parser".to_string()),
                 message,
+                data: Some(parse_diagnostic_data(&err.kind)),
                 ..Default::default()
             },
         );
@@ -904,6 +905,16 @@ pub(super) fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> s
     serde_json::json!({
         "kind": kind.as_kind_str(),
         "suggestions": suggestions,
+    })
+}
+
+/// Encode a `ParseDiagnosticKind` discriminant as JSON for `Diagnostic.data`.
+///
+/// The shape mirrors `diagnostic_data` so editor extensions can handle both
+/// parse and type errors with the same `data` consumer.
+pub(super) fn parse_diagnostic_data(kind: &ParseDiagnosticKind) -> serde_json::Value {
+    serde_json::json!({
+        "kind": kind.as_kind_str(),
     })
 }
 

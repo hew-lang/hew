@@ -6,7 +6,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::stdlib_loader::{load_module_checked, module_short_name, ModuleInfo};
+use hew_parser::module::ModuleId;
+
+use crate::stdlib_loader::{load_module_checked, ModuleInfo};
 
 /// On-demand module loader and cache.
 ///
@@ -14,8 +16,8 @@ use crate::stdlib_loader::{load_module_checked, module_short_name, ModuleInfo};
 /// by searching the filesystem and parsing `.hew` files at user compile time.
 #[derive(Debug)]
 pub struct ModuleRegistry {
-    /// Cached module info, keyed by full module path (e.g. `std::encoding::json`).
-    modules: HashMap<String, ModuleInfo>,
+    /// Cached module info, keyed by module id (e.g. `["std", "encoding", "json"]`).
+    modules: HashMap<ModuleId, ModuleInfo>,
     /// Ordered search paths for module resolution.
     search_paths: Vec<PathBuf>,
     /// Accumulated handle types from all loaded modules.
@@ -161,9 +163,11 @@ impl ModuleRegistry {
     /// Returns [`ModuleError::NotFound`] if no search path contains the module,
     /// or [`ModuleError::ParseError`] if the module file exists but cannot be parsed.
     pub fn load(&mut self, module_path: &str) -> Result<&ModuleInfo, ModuleError> {
+        let id = ModuleId::new(module_path.split("::").map(String::from).collect());
+
         // Already cached — return it.
-        if self.modules.contains_key(module_path) {
-            return Ok(&self.modules[module_path]);
+        if self.modules.contains_key(&id) {
+            return Ok(&self.modules[&id]);
         }
 
         // Try each search path in order.
@@ -180,8 +184,8 @@ impl ModuleRegistry {
                     self.drop_funcs.insert(ty.clone(), func.clone());
                 }
 
-                self.modules.insert(module_path.to_string(), info);
-                return Ok(&self.modules[module_path]);
+                self.modules.insert(id.clone(), info);
+                return Ok(&self.modules[&id]);
             }
         }
 
@@ -194,7 +198,8 @@ impl ModuleRegistry {
     /// Return cached module info if it has already been loaded.
     #[must_use]
     pub fn get(&self, module_path: &str) -> Option<&ModuleInfo> {
-        self.modules.get(module_path)
+        let id = ModuleId::new(module_path.split("::").map(String::from).collect());
+        self.modules.get(&id)
     }
 
     /// Check if a fully-qualified name is a handle type across all loaded modules.
@@ -252,8 +257,8 @@ impl ModuleRegistry {
     /// up the method in that module's `clean_names`.
     #[must_use]
     pub fn resolve_module_call(&self, module_short: &str, method: &str) -> Option<String> {
-        for (module_path, info) in &self.modules {
-            let short = module_short_name(module_path);
+        for (id, info) in &self.modules {
+            let short = id.path.last().map_or("", String::as_str);
             if short == module_short {
                 for (clean, c_sym) in &info.clean_names {
                     if clean == method {
@@ -290,9 +295,13 @@ impl ModuleRegistry {
         method: &str,
     ) -> Option<(String, Vec<crate::ty::Ty>, crate::ty::Ty)> {
         for info in self.modules.values() {
-            for ((ty, m), c_sym, params, ret) in &info.handle_methods {
-                if ty == handle_type && m == method {
-                    return Some((c_sym.clone(), params.clone(), ret.clone()));
+            for hm in &info.handle_methods {
+                if hm.type_name == handle_type && hm.method_name == method {
+                    return Some((
+                        hm.c_symbol.clone(),
+                        hm.params.clone(),
+                        hm.return_type.clone(),
+                    ));
                 }
             }
         }
@@ -535,8 +544,8 @@ mod tests {
         // json.Value should have handle methods from its impl block.
         let info = reg.get("std::encoding::json").unwrap();
         if !info.handle_methods.is_empty() {
-            let ((ty, method), _, _, _) = &info.handle_methods[0];
-            let c_sym = reg.resolve_handle_method(ty, method);
+            let hm = &info.handle_methods[0];
+            let c_sym = reg.resolve_handle_method(&hm.type_name, &hm.method_name);
             assert!(c_sym.is_some(), "should resolve handle method");
         }
     }
@@ -546,15 +555,16 @@ mod tests {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
         let info = reg.get("std::encoding::json").unwrap();
-        if let Some(((qualified, method), expected, _, _)) = info.handle_methods.first() {
-            let short = qualified
+        if let Some(hm) = info.handle_methods.first() {
+            let short = hm
+                .type_name
                 .rsplit('.')
                 .next()
                 .expect("qualified handle type should have short name");
-            let c_sym = reg.resolve_handle_method(short, method);
+            let c_sym = reg.resolve_handle_method(short, &hm.method_name);
             assert_eq!(
                 c_sym.as_deref(),
-                Some(expected.as_str()),
+                Some(hm.c_symbol.as_str()),
                 "short handle name should resolve to the same C symbol"
             );
         }

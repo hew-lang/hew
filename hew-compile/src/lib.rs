@@ -1005,7 +1005,9 @@ fn build_module_graph_with_diagnostics(
         source_paths: vec![input_canonical],
         doc: module_doc,
     };
-    graph.add_module(root_module);
+    graph
+        .add_module(root_module)
+        .expect("root module id is unique");
 
     if let Err(cycle_err) = graph.compute_topo_order() {
         return Err(FrontendFailure::message_only(cycle_err.to_string()));
@@ -1093,7 +1095,9 @@ fn extract_module_info(
                     source_paths,
                     doc: None,
                 };
-                graph.add_module(module);
+                graph
+                    .add_module(module)
+                    .expect("seen_ids prevents duplicate insertion");
             }
         }
     }

@@ -865,14 +865,15 @@ fn synthesize_stdlib_externs_from_imports(
             let extern_fns = info
                 .functions
                 .iter()
-                .map(|(name, params, ret_ty)| {
-                    let param_exprs = params
+                .map(|func| {
+                    let param_exprs = func
+                        .params
                         .iter()
                         .enumerate()
                         .map(|(index, ty)| {
                             let type_expr = require_converted(
                                 ty,
-                                format!("stdlib extern `{name}` parameter {index}"),
+                                format!("stdlib extern `{}` parameter {index}", func.name),
                             )?;
                             Ok(Param {
                                 name: format!("p{index}"),
@@ -881,16 +882,16 @@ fn synthesize_stdlib_externs_from_imports(
                             })
                         })
                         .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
-                    let return_type = if matches!(ret_ty, Ty::Unit) {
+                    let return_type = if matches!(func.return_type, Ty::Unit) {
                         None
                     } else {
                         Some(require_converted(
-                            ret_ty,
-                            format!("stdlib extern `{name}` return type"),
+                            &func.return_type,
+                            format!("stdlib extern `{}` return type", func.name),
                         )?)
                     };
                     Ok(ExternFnDecl {
-                        name: name.clone(),
+                        name: func.name.clone(),
                         params: param_exprs,
                         return_type,
                         is_variadic: false,

@@ -420,7 +420,7 @@ fn non_root_private_type_rcfree_is_registered_during_body_checking() {
         doc: None,
     };
     let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(module);
+    mg.add_module(module).unwrap();
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
         module_graph: Some(mg),
@@ -8815,7 +8815,7 @@ mod non_root_module_inference_scope {
         let root_id = ModuleId::root();
         let mod_id = module.id.clone();
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(module);
+        mg.add_module(module).unwrap();
         // Dependencies (non-root) come before the root in topo order.
         mg.topo_order = vec![mod_id, root_id];
         Program {
@@ -8944,7 +8944,7 @@ mod non_root_module_inference_scope {
 
         let root_id = ModuleId::root();
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(module);
+        mg.add_module(module).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
             module_graph: Some(mg),
@@ -9007,7 +9007,7 @@ mod non_root_module_inference_scope {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(non_root);
+        mg.add_module(non_root).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
             module_graph: Some(mg),
@@ -9088,7 +9088,7 @@ mod non_root_module_inference_scope {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(non_root);
+        mg.add_module(non_root).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
             module_graph: Some(mg),
@@ -9154,7 +9154,7 @@ mod non_root_module_inference_scope {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(non_root);
+        mg.add_module(non_root).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
             module_graph: Some(mg),
@@ -9607,7 +9607,7 @@ mod non_root_module_inference_scope {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(non_root);
+        mg.add_module(non_root).unwrap();
         mg.topo_order = vec![mod_id, root_id];
         let program = Program {
             module_graph: Some(mg),
@@ -9654,8 +9654,8 @@ fn make_program_with_module_graph(non_root_items: Vec<Spanned<Item>>) -> Program
     };
 
     let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(root_module);
-    mg.add_module(non_root_module);
+    mg.add_module(root_module).unwrap();
+    mg.add_module(non_root_module).unwrap();
     // Dependency order: non-root first, then root (root depends on mymod).
     mg.topo_order = vec![non_root_id, root_id];
 
@@ -10070,9 +10070,9 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
     };
 
     let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(root_module);
-    mg.add_module(alpha_module);
-    mg.add_module(beta_module);
+    mg.add_module(root_module).unwrap();
+    mg.add_module(alpha_module).unwrap();
+    mg.add_module(beta_module).unwrap();
     mg.topo_order = vec![alpha_id, beta_id, root_id];
 
     let program = Program {
@@ -10191,9 +10191,9 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
     };
 
     let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(root_module);
-    mg.add_module(alpha_module);
-    mg.add_module(beta_module);
+    mg.add_module(root_module).unwrap();
+    mg.add_module(alpha_module).unwrap();
+    mg.add_module(beta_module).unwrap();
     mg.topo_order = vec![alpha_id, beta_id, root_id];
 
     let program = Program {
@@ -10241,7 +10241,7 @@ mod module_body_diagnostic_envelope {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(non_root);
+        mg.add_module(non_root).unwrap();
         mg.topo_order = vec![mod_id, root_id];
 
         Program {
@@ -10412,8 +10412,8 @@ mod module_body_diagnostic_envelope {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(alpha);
-        mg.add_module(beta);
+        mg.add_module(alpha).unwrap();
+        mg.add_module(beta).unwrap();
         mg.topo_order = vec![alpha_id, beta_id, root_id];
 
         let program = Program {
@@ -10746,8 +10746,8 @@ mod warning_source_attribution {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(root_module);
-        mg.add_module(sub_module);
+        mg.add_module(root_module).unwrap();
+        mg.add_module(sub_module).unwrap();
         mg.topo_order = vec![module_id, root_id];
 
         Program {
@@ -10787,8 +10787,8 @@ mod warning_source_attribution {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(root_module);
-        mg.add_module(sub_module);
+        mg.add_module(root_module).unwrap();
+        mg.add_module(sub_module).unwrap();
         mg.topo_order = vec![submod_id, root_id];
 
         Program {
@@ -11001,9 +11001,9 @@ mod warning_source_attribution {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(root_module);
-        mg.add_module(module_a);
-        mg.add_module(module_b);
+        mg.add_module(root_module).unwrap();
+        mg.add_module(module_a).unwrap();
+        mg.add_module(module_b).unwrap();
         mg.topo_order = vec![mod_a_id, mod_b_id, root_id];
 
         let program = Program {
@@ -11160,9 +11160,9 @@ mod warning_source_attribution {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(root_module);
-        mg.add_module(module_a);
-        mg.add_module(module_b);
+        mg.add_module(root_module).unwrap();
+        mg.add_module(module_a).unwrap();
+        mg.add_module(module_b).unwrap();
         mg.topo_order = vec![mod_a_id, mod_b_id, root_id];
 
         let program = Program {
@@ -11515,8 +11515,8 @@ actor MyActor {
         };
 
         let mut mg = ModuleGraph::new(root_id.clone());
-        mg.add_module(root_module);
-        mg.add_module(mymod);
+        mg.add_module(root_module).unwrap();
+        mg.add_module(mymod).unwrap();
         mg.topo_order = vec![mymod_id, root_id];
 
         let program = Program {

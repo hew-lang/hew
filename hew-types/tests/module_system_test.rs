@@ -109,8 +109,8 @@ fn test_module_graph_preserved_through_pipeline() {
     let _lib_id = ModuleId::new(vec!["lib".to_string()]);
 
     let mut graph = ModuleGraph::new(root_id.clone());
-    graph.add_module(module_node("root", &["lib"]));
-    graph.add_module(module_node("lib", &[]));
+    graph.add_module(module_node("root", &["lib"])).unwrap();
+    graph.add_module(module_node("lib", &[])).unwrap();
     graph.compute_topo_order().expect("no cycles");
 
     // Verify graph topo order: lib before root
@@ -573,10 +573,10 @@ fn test_diamond_dependency_topo_order() {
     // A imports B and C; B and C both import D.
     // Topo order must have D before B and C, both before A.
     let mut g = ModuleGraph::new(ModuleId::new(vec!["a".to_string()]));
-    g.add_module(module_node("a", &["b", "c"]));
-    g.add_module(module_node("b", &["d"]));
-    g.add_module(module_node("c", &["d"]));
-    g.add_module(module_node("d", &[]));
+    g.add_module(module_node("a", &["b", "c"])).unwrap();
+    g.add_module(module_node("b", &["d"])).unwrap();
+    g.add_module(module_node("c", &["d"])).unwrap();
+    g.add_module(module_node("d", &[])).unwrap();
     g.compute_topo_order().expect("diamond has no cycles");
 
     let pos = |name: &str| {
@@ -597,8 +597,8 @@ fn test_diamond_dependency_topo_order() {
 fn test_cycle_detection() {
     // A imports B, B imports A → CycleError
     let mut g = ModuleGraph::new(ModuleId::new(vec!["a".to_string()]));
-    g.add_module(module_node("a", &["b"]));
-    g.add_module(module_node("b", &["a"]));
+    g.add_module(module_node("a", &["b"])).unwrap();
+    g.add_module(module_node("b", &["a"])).unwrap();
     let err = g
         .compute_topo_order()
         .expect_err("cycle should be detected");
@@ -920,8 +920,8 @@ fn test_module_graph_same_fn_different_modules_no_collision() {
     let mut beta_mod = module_node("beta", &[]);
     beta_mod.items = vec![(Item::Function(fn_foo_b), 10..20)];
 
-    graph.add_module(alpha_mod);
-    graph.add_module(beta_mod);
+    graph.add_module(alpha_mod).unwrap();
+    graph.add_module(beta_mod).unwrap();
     graph.compute_topo_order().expect("no cycles");
 
     let program = Program {

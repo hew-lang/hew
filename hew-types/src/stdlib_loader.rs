@@ -14,20 +14,56 @@ use crate::check::admissibility::signature_contains_error_type;
 use crate::module_registry::ModuleError;
 use crate::ty::Ty;
 
+/// A C function signature extracted from an `extern` block.
+#[derive(Debug, Clone)]
+pub struct CFunction {
+    /// The C symbol name (e.g. `"hew_json_parse"`).
+    pub name: String,
+    /// Parameter types.
+    pub params: Vec<Ty>,
+    /// Return type.
+    pub return_type: Ty,
+}
+
+/// A wrapper `pub fn` signature from a stdlib module.
+#[derive(Debug, Clone)]
+pub struct WrapperFn {
+    /// The Hew function name (e.g. `"parse"`).
+    pub name: String,
+    /// Parameter types.
+    pub params: Vec<Ty>,
+    /// Return type.
+    pub return_type: Ty,
+}
+
+/// A handle method mapping extracted from an `impl` block.
+#[derive(Debug, Clone)]
+pub struct HandleMethod {
+    /// Fully-qualified handle type name (e.g. `"json.Value"`).
+    pub type_name: String,
+    /// Method name (e.g. `"get_string"`).
+    pub method_name: String,
+    /// The C symbol the method resolves to (e.g. `"hew_json_value_get_string"`).
+    pub c_symbol: String,
+    /// Parameter types (excluding `self`).
+    pub params: Vec<Ty>,
+    /// Return type.
+    pub return_type: Ty,
+}
+
 /// All type information extracted from a single `.hew` module file.
 #[derive(Debug, Clone)]
 pub struct ModuleInfo {
-    /// C function signatures: (`c_name`, `param_types`, `return_type`).
-    pub functions: Vec<(String, Vec<Ty>, Ty)>,
+    /// C function signatures from `extern` blocks.
+    pub functions: Vec<CFunction>,
     /// Clean name mappings: (`user_name`, `c_symbol`).
     pub clean_names: Vec<(String, String)>,
     /// Handle type names, e.g. `"json.Value"`.
     pub handle_types: Vec<String>,
-    /// Handle method mappings:
-    /// ((`type_name`, `method_name`), `c_symbol`, `param_types`, `return_type`).
-    pub handle_methods: Vec<HandleMethodInfo>,
-    /// Wrapper `pub fn` signatures: (`method_name`, `param_types`, `return_type`).
-    pub wrapper_fns: Vec<(String, Vec<Ty>, Ty)>,
+    /// Handle method mappings extracted from `impl` blocks.
+    pub handle_methods: Vec<HandleMethod>,
+    /// Wrapper `pub fn` signatures.
+    pub wrapper_fns: Vec<WrapperFn>,
     /// Types with `impl Drop` — move-only, not Copy.
     pub drop_types: Vec<String>,
     /// Drop function for each type with `impl Drop`: (`qualified_type_name`, `c_func_name`).
@@ -42,8 +78,6 @@ pub struct ModuleInfo {
     /// signatures must be rejected before they are registered with the checker.
     pub unsupported_type_signatures: Vec<String>,
 }
-
-pub type HandleMethodInfo = ((String, String), String, Vec<Ty>, Ty);
 
 /// Load type information for a module from its `.hew` file.
 ///
@@ -169,12 +203,16 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
         match item {
             Item::ExternBlock(block) => {
                 for func in &block.functions {
-                    let (params, ret) = extern_fn_sig(func, module_short);
-                    if signature_contains_error_type(&params, &ret) {
+                    let (params, return_type) = extern_fn_sig(func, module_short);
+                    if signature_contains_error_type(&params, &return_type) {
                         info.unsupported_type_signatures
                             .push(format!("extern function `{}`", func.name));
                     }
-                    info.functions.push((func.name.clone(), params, ret));
+                    info.functions.push(CFunction {
+                        name: func.name.clone(),
+                        params,
+                        return_type,
+                    });
                 }
             }
             // Only fieldless structs are opaque handles.
@@ -192,12 +230,16 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
             }
             Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
                 // Extract wrapper function's own signature
-                let (params, ret) = wrapper_fn_sig(fn_decl, module_short);
-                if signature_contains_error_type(&params, &ret) {
+                let (params, return_type) = wrapper_fn_sig(fn_decl, module_short);
+                if signature_contains_error_type(&params, &return_type) {
                     info.unsupported_type_signatures
                         .push(format!("public function `{}`", fn_decl.name));
                 }
-                info.wrapper_fns.push((fn_decl.name.clone(), params, ret));
+                info.wrapper_fns.push(WrapperFn {
+                    name: fn_decl.name.clone(),
+                    params,
+                    return_type,
+                });
 
                 // Clean name mapping: use the C function target only for
                 // trivial pass-through wrappers (same param count). Non-trivial
@@ -500,16 +542,17 @@ fn extract_handle_methods(impl_decl: &ImplDecl, module_short: &str, info: &mut M
                 .skip(1)
                 .map(|param| type_expr_to_ty(&param.ty.0, module_short))
                 .collect();
-            let ret = method
+            let return_type = method
                 .return_type
                 .as_ref()
                 .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
-            info.handle_methods.push((
-                (type_name.clone(), method.name.clone()),
+            info.handle_methods.push(HandleMethod {
+                type_name: type_name.clone(),
+                method_name: method.name.clone(),
                 c_symbol,
                 params,
-                ret,
-            ));
+                return_type,
+            });
         }
     }
 }
@@ -653,7 +696,7 @@ mod tests {
         let has_acquire = info
             .handle_methods
             .iter()
-            .any(|((ty, method), _, _, _)| ty == "semaphore.Semaphore" && method == "acquire");
+            .any(|m| m.type_name == "semaphore.Semaphore" && m.method_name == "acquire");
         assert!(
             has_acquire,
             "semaphore.Semaphore should have acquire method"
@@ -677,7 +720,7 @@ mod tests {
             let found = info
                 .handle_methods
                 .iter()
-                .any(|((ty, name), _, _, _)| ty == "http.Request" && name == method);
+                .any(|m| m.type_name == "http.Request" && m.method_name == method);
             assert!(
                 found,
                 "http.Request.{method} should register as a handle method even when its C shim uses `status as i32`"
@@ -691,24 +734,30 @@ mod tests {
         assert!(info.is_some(), "should load net module");
         let info = info.unwrap();
 
-        let has_read = info.handle_methods.iter().any(|((ty, method), sym, _, _)| {
-            ty == "net.Connection" && method == "read" && sym == "hew_tcp_read"
+        let has_read = info.handle_methods.iter().any(|m| {
+            m.type_name == "net.Connection"
+                && m.method_name == "read"
+                && m.c_symbol == "hew_tcp_read"
         });
         assert!(
             has_read,
             "net.Connection.read should rewrite to hew_tcp_read"
         );
 
-        let rewrites_read_string = info.handle_methods.iter().any(|((ty, method), sym, _, _)| {
-            ty == "net.Connection" && method == "read_string" && sym == "hew_bytes_to_string"
+        let rewrites_read_string = info.handle_methods.iter().any(|m| {
+            m.type_name == "net.Connection"
+                && m.method_name == "read_string"
+                && m.c_symbol == "hew_bytes_to_string"
         });
         assert!(
             !rewrites_read_string,
             "net.Connection.read_string should remain a Hew wrapper, not alias hew_bytes_to_string"
         );
 
-        let rewrites_write_string = info.handle_methods.iter().any(|((ty, method), sym, _, _)| {
-            ty == "net.Connection" && method == "write_string" && sym == "hew_tcp_write"
+        let rewrites_write_string = info.handle_methods.iter().any(|m| {
+            m.type_name == "net.Connection"
+                && m.method_name == "write_string"
+                && m.c_symbol == "hew_tcp_write"
         });
         assert!(
             !rewrites_write_string,
@@ -735,18 +784,14 @@ mod tests {
 
         for name in ["try_run", "run", "try_run_argv", "run_argv", "start"] {
             assert!(
-                info.wrapper_fns
-                    .iter()
-                    .any(|(fn_name, _, _)| fn_name == name),
+                info.wrapper_fns.iter().any(|f| f.name == name),
                 "process module should expose `{name}`"
             );
         }
 
         for name in ["try_run_args", "run_args"] {
             assert!(
-                info.wrapper_fns
-                    .iter()
-                    .any(|(fn_name, _, _)| fn_name == name),
+                info.wrapper_fns.iter().any(|f| f.name == name),
                 "process module should retain legacy `{name}` wrapper for compatibility"
             );
         }
@@ -771,20 +816,20 @@ mod tests {
         let wait = info
             .handle_methods
             .iter()
-            .find(|((ty, method), _, _, _)| ty == "process.Child" && method == "wait")
+            .find(|m| m.type_name == "process.Child" && m.method_name == "wait")
             .expect("process.Child.wait should be extracted");
-        assert_eq!(wait.1, "hew_process_wait");
-        assert_eq!(wait.2, Vec::<Ty>::new());
-        assert_eq!(wait.3, Ty::I64);
+        assert_eq!(wait.c_symbol, "hew_process_wait");
+        assert_eq!(wait.params, Vec::<Ty>::new());
+        assert_eq!(wait.return_type, Ty::I64);
 
         let kill = info
             .handle_methods
             .iter()
-            .find(|((ty, method), _, _, _)| ty == "process.Child" && method == "kill")
+            .find(|m| m.type_name == "process.Child" && m.method_name == "kill")
             .expect("process.Child.kill should be extracted");
-        assert_eq!(kill.1, "hew_process_kill");
-        assert_eq!(kill.2, Vec::<Ty>::new());
-        assert_eq!(kill.3, Ty::I64);
+        assert_eq!(kill.c_symbol, "hew_process_kill");
+        assert_eq!(kill.params, Vec::<Ty>::new());
+        assert_eq!(kill.return_type, Ty::I64);
     }
 
     #[test]
@@ -793,22 +838,22 @@ mod tests {
         let close = net_info
             .handle_methods
             .iter()
-            .find(|((ty, method), _, _, _)| ty == "net.Listener" && method == "close")
+            .find(|m| m.type_name == "net.Listener" && m.method_name == "close")
             .expect("net.Listener.close should be extracted");
-        assert_eq!(close.1, "hew_tcp_listener_close");
-        assert_eq!(close.2, Vec::<Ty>::new());
-        assert_eq!(close.3, Ty::Unit);
+        assert_eq!(close.c_symbol, "hew_tcp_listener_close");
+        assert_eq!(close.params, Vec::<Ty>::new());
+        assert_eq!(close.return_type, Ty::Unit);
 
         let http_info =
             load_module("std::net::http", &test_root()).expect("should load http module");
         let free = http_info
             .handle_methods
             .iter()
-            .find(|((ty, method), _, _, _)| ty == "http.Request" && method == "free")
+            .find(|m| m.type_name == "http.Request" && m.method_name == "free")
             .expect("http.Request.free should be extracted");
-        assert_eq!(free.1, "hew_http_request_free");
-        assert_eq!(free.2, Vec::<Ty>::new());
-        assert_eq!(free.3, Ty::Unit);
+        assert_eq!(free.c_symbol, "hew_http_request_free");
+        assert_eq!(free.params, Vec::<Ty>::new());
+        assert_eq!(free.return_type, Ty::Unit);
     }
 
     #[test]
@@ -907,7 +952,7 @@ mod tests {
         let has_string_fn = info
             .functions
             .iter()
-            .any(|(_, params, _)| params.contains(&Ty::String));
+            .any(|f| f.params.contains(&Ty::String));
         assert!(
             has_string_fn,
             "json module should have String-typed functions"
@@ -921,24 +966,24 @@ mod tests {
         let clone_sig = info
             .functions
             .iter()
-            .find(|(name, _, _)| name == "hew_channel_sender_clone")
+            .find(|f| f.name == "hew_channel_sender_clone")
             .expect("channel module should expose sender clone");
         assert_eq!(
-            clone_sig.1,
+            clone_sig.params,
             vec![Ty::normalize_named("Sender".to_string(), vec![])]
         );
         assert_eq!(
-            clone_sig.2,
+            clone_sig.return_type,
             Ty::normalize_named("Sender".to_string(), vec![])
         );
 
         let new_sig = info
             .wrapper_fns
             .iter()
-            .find(|(name, _, _)| name == "new")
+            .find(|f| f.name == "new")
             .expect("channel module should expose new()");
         assert_eq!(
-            new_sig.2,
+            new_sig.return_type,
             Ty::Tuple(vec![
                 Ty::normalize_named("Sender".to_string(), vec![]),
                 Ty::normalize_named("Receiver".to_string(), vec![]),
@@ -956,24 +1001,21 @@ mod tests {
         );
 
         // `pub fn setup()` takes no params and returns Unit
-        let setup = info.wrapper_fns.iter().find(|(name, _, _)| name == "setup");
+        let setup = info.wrapper_fns.iter().find(|f| f.name == "setup");
         assert!(setup.is_some(), "log module should have 'setup' wrapper fn");
-        let (_, params, ret) = setup.unwrap();
-        assert!(params.is_empty(), "setup() takes no parameters");
-        assert_eq!(*ret, Ty::Unit, "setup() returns Unit");
+        let setup = setup.unwrap();
+        assert!(setup.params.is_empty(), "setup() takes no parameters");
+        assert_eq!(setup.return_type, Ty::Unit, "setup() returns Unit");
 
         // `pub fn set_level(level: i64)` takes one i64 param
-        let set_level = info
-            .wrapper_fns
-            .iter()
-            .find(|(name, _, _)| name == "set_level");
+        let set_level = info.wrapper_fns.iter().find(|f| f.name == "set_level");
         assert!(
             set_level.is_some(),
             "log module should have 'set_level' wrapper fn"
         );
-        let (_, params, _) = set_level.unwrap();
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0], Ty::I64);
+        let set_level = set_level.unwrap();
+        assert_eq!(set_level.params.len(), 1);
+        assert_eq!(set_level.params[0], Ty::I64);
     }
 
     #[test]
@@ -1172,7 +1214,7 @@ mod tests {
             "slice-bearing public signatures should be marked unsupported"
         );
         assert_eq!(
-            info.wrapper_fns[0].1,
+            info.wrapper_fns[0].params,
             vec![Ty::Error],
             "unsupported slice parameter should fail closed inside the loaded signature"
         );

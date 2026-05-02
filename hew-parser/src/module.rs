@@ -71,6 +71,23 @@ pub struct ModuleImport {
     pub span: Span,
 }
 
+// ── DuplicateModule ──────────────────────────────────────────────────
+
+/// Error produced when a module is inserted into the graph more than once.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuplicateModule {
+    /// The id of the module that was already present.
+    pub id: ModuleId,
+}
+
+impl fmt::Display for DuplicateModule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "duplicate module `{}`", self.id)
+    }
+}
+
+impl std::error::Error for DuplicateModule {}
+
 // ── CycleError ───────────────────────────────────────────────────────
 
 /// Error produced when the module graph contains an import cycle.
@@ -78,6 +95,13 @@ pub struct ModuleImport {
 pub struct CycleError {
     /// The cycle as a list of module ids (first == last).
     pub cycle: Vec<ModuleId>,
+    /// The source span of each import statement on the cycle path.
+    ///
+    /// `import_spans[i]` is the span of the import in `cycle[i]` that
+    /// introduces the edge to `cycle[i + 1]`.  The slice has the same length
+    /// as `cycle` minus one (there is no incoming edge for the last element,
+    /// which repeats the first module id to close the cycle).
+    pub import_spans: Vec<Span>,
 }
 
 impl fmt::Display for CycleError {
@@ -125,8 +149,21 @@ impl ModuleGraph {
         }
     }
 
-    pub fn add_module(&mut self, module: Module) {
-        self.modules.insert(module.id.clone(), module);
+    /// Insert a module into the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DuplicateModule`] if a module with the same id was already
+    /// present. The existing entry is left unchanged.
+    pub fn add_module(&mut self, module: Module) -> Result<(), DuplicateModule> {
+        use std::collections::hash_map::Entry;
+        match self.modules.entry(module.id.clone()) {
+            Entry::Vacant(e) => {
+                e.insert(module);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(DuplicateModule { id: module.id }),
+        }
     }
 
     /// Return the direct dependencies (import targets) of a module.
@@ -150,29 +187,38 @@ impl ModuleGraph {
 
         fn visit(
             id: &ModuleId,
+            entry_span: Span,
             modules: &HashMap<ModuleId, Module>,
             marks: &mut HashMap<ModuleId, Mark>,
             order: &mut Vec<ModuleId>,
-            stack: &mut Vec<ModuleId>,
+            stack: &mut Vec<(ModuleId, Span)>,
         ) -> Result<(), CycleError> {
             match marks.get(id) {
                 Some(Mark::Permanent) => return Ok(()),
                 Some(Mark::Temporary) => {
                     // Build cycle path from the stack.
-                    let start = stack.iter().position(|s| s == id).unwrap_or(0);
-                    let mut cycle: Vec<ModuleId> = stack[start..].to_vec();
-                    cycle.push(id.clone());
-                    return Err(CycleError { cycle });
+                    let start = stack.iter().position(|(s, _)| s == id).unwrap_or(0);
+                    let cycle: Vec<ModuleId> = stack[start..]
+                        .iter()
+                        .map(|(m, _)| m.clone())
+                        .chain(std::iter::once(id.clone()))
+                        .collect();
+                    let import_spans: Vec<Span> =
+                        stack[start..].iter().map(|(_, sp)| sp.clone()).collect();
+                    return Err(CycleError {
+                        cycle,
+                        import_spans,
+                    });
                 }
                 None => {}
             }
 
             marks.insert(id.clone(), Mark::Temporary);
-            stack.push(id.clone());
+            stack.push((id.clone(), entry_span));
 
             if let Some(module) = modules.get(id) {
                 for imp in &module.imports {
-                    visit(&imp.target, modules, marks, order, stack)?;
+                    visit(&imp.target, imp.span.clone(), modules, marks, order, stack)?;
                 }
             }
 
@@ -190,7 +236,14 @@ impl ModuleGraph {
 
         for id in &ids {
             if !marks.contains_key(id) {
-                visit(id, &self.modules, &mut marks, &mut order, &mut Vec::new())?;
+                visit(
+                    id,
+                    0..0,
+                    &self.modules,
+                    &mut marks,
+                    &mut order,
+                    &mut Vec::new(),
+                )?;
             }
         }
 
@@ -269,9 +322,9 @@ mod tests {
     #[test]
     fn topo_order_linear() {
         let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
-        g.add_module(module("a", &["b"]));
-        g.add_module(module("b", &["c"]));
-        g.add_module(module("c", &[]));
+        g.add_module(module("a", &["b"])).unwrap();
+        g.add_module(module("b", &["c"])).unwrap();
+        g.add_module(module("c", &[])).unwrap();
         g.compute_topo_order().unwrap();
         let names: Vec<&str> = g.topo_order.iter().map(|id| id.path[0].as_str()).collect();
         // c before b before a
@@ -281,10 +334,10 @@ mod tests {
     #[test]
     fn topo_order_diamond() {
         let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
-        g.add_module(module("a", &["b", "c"]));
-        g.add_module(module("b", &["d"]));
-        g.add_module(module("c", &["d"]));
-        g.add_module(module("d", &[]));
+        g.add_module(module("a", &["b", "c"])).unwrap();
+        g.add_module(module("b", &["d"])).unwrap();
+        g.add_module(module("c", &["d"])).unwrap();
+        g.add_module(module("d", &[])).unwrap();
         g.compute_topo_order().unwrap();
         let pos = |name: &str| {
             g.topo_order
@@ -301,8 +354,8 @@ mod tests {
     #[test]
     fn cycle_detected() {
         let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
-        g.add_module(module("a", &["b"]));
-        g.add_module(module("b", &["a"]));
+        g.add_module(module("a", &["b"])).unwrap();
+        g.add_module(module("b", &["a"])).unwrap();
         let err = g.compute_topo_order().unwrap_err();
         assert!(err.to_string().contains("import cycle detected"));
     }
@@ -310,13 +363,79 @@ mod tests {
     #[test]
     fn dependencies() {
         let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
-        g.add_module(module("a", &["b", "c"]));
-        g.add_module(module("b", &[]));
-        g.add_module(module("c", &[]));
+        g.add_module(module("a", &["b", "c"])).unwrap();
+        g.add_module(module("b", &[])).unwrap();
+        g.add_module(module("c", &[])).unwrap();
         let deps = g.dependencies(&ModuleId::new(vec!["a".into()]));
         let names: Vec<&str> = deps.iter().map(|id| id.path[0].as_str()).collect();
         assert!(names.contains(&"b"));
         assert!(names.contains(&"c"));
         assert_eq!(deps.len(), 2);
+    }
+
+    #[test]
+    fn cycle_error_carries_import_spans() {
+        // Build a two-module cycle with distinct import spans so we can
+        // verify each span is threaded into CycleError.import_spans.
+        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+
+        let module_a = Module {
+            id: ModuleId::new(vec!["a".into()]),
+            items: vec![],
+            imports: vec![ModuleImport {
+                target: ModuleId::new(vec!["b".into()]),
+                spec: None,
+                span: 10..20,
+            }],
+            source_paths: vec![],
+            doc: None,
+        };
+        let module_b = Module {
+            id: ModuleId::new(vec!["b".into()]),
+            items: vec![],
+            imports: vec![ModuleImport {
+                target: ModuleId::new(vec!["a".into()]),
+                spec: None,
+                span: 30..40,
+            }],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        g.add_module(module_a).unwrap();
+        g.add_module(module_b).unwrap();
+
+        let err = g.compute_topo_order().unwrap_err();
+
+        // cycle contains a → b → a (first == last).
+        assert_eq!(err.cycle.len(), 3);
+        // import_spans has one entry per edge — two for the a→b→a cycle.
+        assert_eq!(
+            err.import_spans.len(),
+            err.cycle.len() - 1,
+            "import_spans should have one span per cycle edge"
+        );
+        // At least one of the spans must be non-empty (from our fixtures).
+        let has_real_span = err.import_spans.iter().any(|s| !s.is_empty());
+        assert!(
+            has_real_span,
+            "cycle error should carry import spans: {err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_module_detected() {
+        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+        g.add_module(module("a", &[])).unwrap();
+
+        let err = g.add_module(module("a", &[])).unwrap_err();
+        assert_eq!(err.id, ModuleId::new(vec!["a".into()]));
+        assert!(
+            err.to_string().contains("duplicate module"),
+            "error message should describe the collision: {err}"
+        );
+
+        // Original entry must be unchanged.
+        assert!(g.modules.contains_key(&ModuleId::new(vec!["a".into()])));
     }
 }

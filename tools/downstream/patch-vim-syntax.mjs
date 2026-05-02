@@ -81,7 +81,7 @@ const categoryMap = {
 
   actors: {
     group: 'hewActor',
-    keywords: ['actor', 'receive', 'init', 'spawn', 'move'],
+    keywords: [...kw.actors],
   },
 
   supervisor: {

@@ -50,10 +50,15 @@ fn run_timeout_kills_grandchild_process_tree() {
     )
     .unwrap();
 
+    // The --timeout is a hang watchdog, not a precision timer.  30 s gives the
+    // compiled binary generous startup time (compilation + link + spawn) even
+    // on a heavily loaded CI runner.  The program loops forever, so the
+    // timeout always fires; the assertion is that the whole process group is
+    // dead, not how long it took.
     let output = Command::new(hew_binary())
         .arg("run")
         .arg("--timeout")
-        .arg("2")
+        .arg("30")
         .arg(&hew_src)
         .current_dir(dir.path())
         .output()

@@ -247,10 +247,14 @@ fn eval_large_stdout_completes_before_timeout() {
     )
     .unwrap();
 
+    // The --timeout here is a hang watchdog, not a performance gate.  20 000
+    // println calls complete in well under a second on any reasonable host;
+    // 60 s is chosen so the test can never be flaked by scheduler jitter,
+    // even on a heavily loaded CI runner.
     let output = Command::new(hew_binary())
         .arg("eval")
         .arg("--timeout")
-        .arg("5")
+        .arg("60")
         .arg("-f")
         .arg(&path)
         .current_dir(dir.path())
@@ -281,10 +285,14 @@ fn eval_large_stderr_completes_before_timeout() {
     )
     .unwrap();
 
+    // The --timeout here is a hang watchdog, not a performance gate.  20 000
+    // write_err calls complete in well under a second on any reasonable host;
+    // 60 s is chosen so the test can never be flaked by scheduler jitter,
+    // even on a heavily loaded CI runner.
     let output = Command::new(hew_binary())
         .arg("eval")
         .arg("--timeout")
-        .arg("5")
+        .arg("60")
         .arg("-f")
         .arg(&path)
         .current_dir(dir.path())

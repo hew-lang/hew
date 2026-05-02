@@ -34,20 +34,5 @@ retries = 1
 filter = "test(circuit_breaker_trips_on_repeated_crashes)"
 retries = 1
 
-[[profile.ci.overrides]]
-# eval_large_stdout_completes_before_timeout asserts that a child process
-# producing large output finishes within 5 s. Under heavy parallel load the
-# scheduler can delay the child past the assertion window. One retry absorbs
-# transient scheduler jitter without masking real timeout regressions.
-filter = "test(eval_large_stdout_completes_before_timeout)"
-retries = 1
-
-[[profile.ci.overrides]]
-# run_timeout_kills_grandchild_process_tree relies on a PID file being written
-# before an external timeout fires. Under load the file write can race the
-# timeout, causing a spurious failure. One retry absorbs transient jitter.
-filter = "test(run_timeout_kills_grandchild_process_tree)"
-retries = 1
-
 [profile.ci.junit]
 path = "junit.xml"

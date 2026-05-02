@@ -137,10 +137,16 @@ jobs:
 
             # ── Tests ──────────────────────────────────────────────────────
 
+            # Install cargo-nextest for slow-timeout envelope (FreeBSD's pkg
+            # does not yet carry cargo-nextest, so install via cargo).
+            cargo install cargo-nextest --locked
+
             # Rust workspace tests (skip WASM and hew-cabi)
             # Default features include "full" (encryption + profiler + quic),
             # so all QUIC transport tests run without an explicit flag.
-            cargo test --workspace --exclude hew-wasm --exclude hew-cabi
+            # The ci profile applies the same slow-timeout = 3x60 s envelope
+            # as all other platforms, replacing the previous bare cargo test.
+            cargo nextest run --workspace --exclude hew-wasm --exclude hew-cabi --profile ci
 
             # Codegen unit tests
             cd hew-codegen/build

@@ -71,6 +71,23 @@ pub struct ModuleImport {
     pub span: Span,
 }
 
+// ── DuplicateModule ──────────────────────────────────────────────────
+
+/// Error produced when a module is inserted into the graph more than once.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuplicateModule {
+    /// The id of the module that was already present.
+    pub id: ModuleId,
+}
+
+impl fmt::Display for DuplicateModule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "duplicate module `{}`", self.id)
+    }
+}
+
+impl std::error::Error for DuplicateModule {}
+
 // ── CycleError ───────────────────────────────────────────────────────
 
 /// Error produced when the module graph contains an import cycle.
@@ -125,8 +142,21 @@ impl ModuleGraph {
         }
     }
 
-    pub fn add_module(&mut self, module: Module) {
-        self.modules.insert(module.id.clone(), module);
+    /// Insert a module into the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DuplicateModule`] if a module with the same id was already
+    /// present. The existing entry is left unchanged.
+    pub fn add_module(&mut self, module: Module) -> Result<(), DuplicateModule> {
+        use std::collections::hash_map::Entry;
+        match self.modules.entry(module.id.clone()) {
+            Entry::Vacant(e) => {
+                e.insert(module);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(DuplicateModule { id: module.id }),
+        }
     }
 
     /// Return the direct dependencies (import targets) of a module.
@@ -269,9 +299,9 @@ mod tests {
     #[test]
     fn topo_order_linear() {
         let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
-        g.add_module(module("a", &["b"]));
-        g.add_module(module("b", &["c"]));
-        g.add_module(module("c", &[]));
+        g.add_module(module("a", &["b"])).unwrap();
+        g.add_module(module("b", &["c"])).unwrap();
+        g.add_module(module("c", &[])).unwrap();
         g.compute_topo_order().unwrap();
         let names: Vec<&str> = g.topo_order.iter().map(|id| id.path[0].as_str()).collect();
         // c before b before a
@@ -281,10 +311,10 @@ mod tests {
     #[test]
     fn topo_order_diamond() {
         let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
-        g.add_module(module("a", &["b", "c"]));
-        g.add_module(module("b", &["d"]));
-        g.add_module(module("c", &["d"]));
-        g.add_module(module("d", &[]));
+        g.add_module(module("a", &["b", "c"])).unwrap();
+        g.add_module(module("b", &["d"])).unwrap();
+        g.add_module(module("c", &["d"])).unwrap();
+        g.add_module(module("d", &[])).unwrap();
         g.compute_topo_order().unwrap();
         let pos = |name: &str| {
             g.topo_order
@@ -301,8 +331,8 @@ mod tests {
     #[test]
     fn cycle_detected() {
         let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
-        g.add_module(module("a", &["b"]));
-        g.add_module(module("b", &["a"]));
+        g.add_module(module("a", &["b"])).unwrap();
+        g.add_module(module("b", &["a"])).unwrap();
         let err = g.compute_topo_order().unwrap_err();
         assert!(err.to_string().contains("import cycle detected"));
     }
@@ -310,13 +340,29 @@ mod tests {
     #[test]
     fn dependencies() {
         let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
-        g.add_module(module("a", &["b", "c"]));
-        g.add_module(module("b", &[]));
-        g.add_module(module("c", &[]));
+        g.add_module(module("a", &["b", "c"])).unwrap();
+        g.add_module(module("b", &[])).unwrap();
+        g.add_module(module("c", &[])).unwrap();
         let deps = g.dependencies(&ModuleId::new(vec!["a".into()]));
         let names: Vec<&str> = deps.iter().map(|id| id.path[0].as_str()).collect();
         assert!(names.contains(&"b"));
         assert!(names.contains(&"c"));
         assert_eq!(deps.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_module_detected() {
+        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+        g.add_module(module("a", &[])).unwrap();
+
+        let err = g.add_module(module("a", &[])).unwrap_err();
+        assert_eq!(err.id, ModuleId::new(vec!["a".into()]));
+        assert!(
+            err.to_string().contains("duplicate module"),
+            "error message should describe the collision: {err}"
+        );
+
+        // Original entry must be unchanged.
+        assert!(g.modules.contains_key(&ModuleId::new(vec!["a".into()])));
     }
 }

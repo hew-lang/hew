@@ -253,13 +253,15 @@ pub(super) fn build_document_module_graph(
         &mut dangling_imports,
     );
 
-    graph.add_module(Module {
-        id: root_id,
-        items: program.items.clone(),
-        imports: root_imports,
-        source_paths: vec![input_path],
-        doc: program.module_doc.clone(),
-    });
+    graph
+        .add_module(Module {
+            id: root_id,
+            items: program.items.clone(),
+            imports: root_imports,
+            source_paths: vec![input_path],
+            doc: program.module_doc.clone(),
+        })
+        .expect("root module id is unique");
 
     match graph.compute_topo_order() {
         Ok(()) => Some(ModuleGraphBuildResult::Ready(ModuleGraphBuild {
@@ -332,13 +334,15 @@ pub(super) fn extract_module_info(
                 } else {
                     decl.resolved_source_paths.clone()
                 };
-                graph.add_module(Module {
-                    id: module_id,
-                    items: resolved_items.clone(),
-                    imports: child_imports,
-                    source_paths,
-                    doc: None,
-                });
+                graph
+                    .add_module(Module {
+                        id: module_id,
+                        items: resolved_items.clone(),
+                        imports: child_imports,
+                        source_paths,
+                        doc: None,
+                    })
+                    .expect("seen_ids prevents duplicate insertion");
             } else {
                 dangling_imports.push(DanglingImport {
                     source_path: current_source.to_path_buf(),

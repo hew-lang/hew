@@ -1922,20 +1922,24 @@ mod tests {
         );
 
         let mut module_graph = ModuleGraph::new(root.clone());
-        module_graph.add_module(Module {
-            id: root.clone(),
-            items: vec![],
-            imports: vec![],
-            source_paths: vec![],
-            doc: None,
-        });
-        module_graph.add_module(Module {
-            id: imported.clone(),
-            items: vec![imported_fn],
-            imports: vec![],
-            source_paths: vec![],
-            doc: None,
-        });
+        module_graph
+            .add_module(Module {
+                id: root.clone(),
+                items: vec![],
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .unwrap();
+        module_graph
+            .add_module(Module {
+                id: imported.clone(),
+                items: vec![imported_fn],
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .unwrap();
         module_graph.topo_order = vec![root, imported];
 
         let program = Program {

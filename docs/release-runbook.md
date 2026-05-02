@@ -168,6 +168,23 @@ macOS release notes:
 - [ ] Homebrew formula updated (if applicable): `brew install hew-lang/hew/hew`
 - [ ] VS Code extension published (if applicable)
 
+## Downstream grammar sync
+
+Any PR that modifies `docs/syntax-data.json` must also run the downstream sync
+before the PR merges, or immediately after on a follow-up branch:
+
+```bash
+scripts/sync-downstream.sh --check   # dry-run: confirm drift matches expectations
+scripts/sync-downstream.sh --commit  # apply and commit in each sibling repo
+```
+
+Verify the resulting commits in `tree-sitter-hew`, `vscode-hew`, `vim-hew`,
+`hew.sh`, and `hew.run` are merged before tagging the release.
+
+If the sibling-repo commits cannot land synchronously with the hew PR, open
+PRs in those repos as a follow-up immediately. Unsynced downstream grammars
+cause keyword-highlighting gaps that are invisible from this repo's CI.
+
 ## Coverage matrix summary
 
 | Check                        | Where it runs                | Blocking? |

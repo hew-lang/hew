@@ -17,6 +17,7 @@
 #   make              — build everything (debug)
 #   make release      — build everything (release, optimized)
 #   make pre-release  — release + validate on all platforms before tagging
+#   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
 #   make hew          — just the compiler driver
 #   make adze         — just the package manager
 #   make astgen       — regenerate the C++ msgpack reader from Rust AST defs
@@ -53,7 +54,7 @@
 .PHONY: all bootstrap install-hooks hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
 .PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate lint-wasm-todo grammar
 .PHONY: clean install install-check uninstall verify-ffi
-.PHONY: assemble assemble-release pre-release
+.PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
 
 # ── Configuration ───────────────────────────────────────────────────────────
@@ -449,6 +450,17 @@ release:
 #   make pre-release PLATFORMS="linux"  — linux only
 pre-release: release
 	scripts/pre-release-validate.sh $(PLATFORMS)
+
+# Build stdlib docs and print the wrangler deploy command.
+# Requires a release binary; run `make release` first if target/release/hew
+# is absent or stale.  The operator supplies the Cloudflare token via
+# `wrangler login` or CLOUDFLARE_API_TOKEN in the shell — it is never in
+# this file.
+publish-docs: target/release/hew ## Build stdlib docs; print wrangler deploy command for hew-docs
+	./target/release/hew doc std/ --output-dir target/doc/
+	@echo ""
+	@echo "Docs generated at target/doc/."
+	@echo "Deploy with: wrangler pages deploy target/doc/ --project-name hew-docs"
 
 # Assemble build/ with release symlinks.
 assemble-release:

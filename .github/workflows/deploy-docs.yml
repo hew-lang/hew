@@ -1,0 +1,29 @@
+name: Deploy docs
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    # Disabled until CLOUDFLARE_API_TOKEN secret is configured in repository
+    # settings and the operator has verified the deploy command against the
+    # hew-docs Cloudflare Pages project.  Remove this guard and the comment
+    # above to enable; see docs/release-runbook.md Phase 7 for the checklist.
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build hew
+        run: cargo build -p hew-cli --bin hew --release
+      - name: Generate stdlib docs
+        run: ./target/release/hew doc std/ --output-dir target/doc/
+      - name: Install wrangler
+        run: npm install -g wrangler
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: wrangler pages deploy target/doc/ --project-name hew-docs

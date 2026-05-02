@@ -167,7 +167,22 @@ macOS release notes:
   - `APPLE_API_ISSUER_ID`
 - If any required Apple secret is missing on a tag release, the macOS job must fail
 
-## Phase 6 — Post-release verification
+## Phase 6 — Docs publish (after release tag)
+
+- [ ] Confirm `secrets.CLOUDFLARE_API_TOKEN` is set in repository settings
+      (one-time setup — then remove the `if: false` guard in
+      `.github/workflows/deploy-docs.yml` and this checkbox).
+- [ ] On tag push: the `Deploy docs` workflow fires automatically. Verify it
+      succeeded in [Actions → Deploy docs](../../actions/workflows/deploy-docs.yml).
+- [ ] If the workflow is disabled or fails, run locally:
+      ```bash
+      make publish-docs
+      wrangler pages deploy target/doc/ --project-name hew-docs
+      ```
+- [ ] Spot-check `hew-docs.pages.dev` shows the new release's stdlib content
+      (verify module count matches `hew doc` output: currently 55 modules).
+
+## Phase 7 — Post-release verification
 
 - [ ] GitHub Release page has all platform tarballs
 - [ ] Download and smoke-test at least one tarball

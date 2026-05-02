@@ -51,6 +51,12 @@ git log --oneline -5  # confirm expected HEAD
 
 ## Phase 2 — Version bump
 
+> **Prerequisite:** The version bump must be a single commit that updates
+> `Cargo.toml`'s workspace version AND the matching `[Unreleased]` →
+> `[X.Y.Z]` rename in `CHANGELOG.md`. Tagging a commit where `Cargo.toml`
+> still reports the prior version produces binaries that self-report the
+> wrong version.
+
 ```bash
 # Bump workspace version in Cargo.toml
 # (currently: edit `version = "X.Y.Z"` in the root [workspace.package])
@@ -167,6 +173,13 @@ macOS release notes:
 - [ ] Download and smoke-test at least one tarball
 - [ ] Homebrew formula updated (if applicable): `brew install hew-lang/hew/hew`
 - [ ] VS Code extension published (if applicable)
+- [ ] Author blog post at `hew-lang/hew.sh/src/content/blog/<YYYY>/<MM>/release-v<XYZ>.md` — required for any release with breaking changes; recommended for all minor releases.
+- [ ] Verify `release.yml` downstream jobs completed:
+  - Homebrew formula update (`hew-lang/homebrew-hew`)
+  - Playground compiler bump (`hew-lang/playground`)
+  - VS Code extension version sync (`hew-lang/vscode-hew`)
+- [ ] If any downstream job failed (e.g. missing secret), re-trigger manually after fixing.
+- [ ] Verify the live `hew --version` on a freshly-installed binary matches the tagged version.
 
 ## Downstream grammar sync
 

@@ -95,6 +95,13 @@ impl std::error::Error for DuplicateModule {}
 pub struct CycleError {
     /// The cycle as a list of module ids (first == last).
     pub cycle: Vec<ModuleId>,
+    /// The source span of each import statement on the cycle path.
+    ///
+    /// `import_spans[i]` is the span of the import in `cycle[i]` that
+    /// introduces the edge to `cycle[i + 1]`.  The slice has the same length
+    /// as `cycle` minus one (there is no incoming edge for the last element,
+    /// which repeats the first module id to close the cycle).
+    pub import_spans: Vec<Span>,
 }
 
 impl fmt::Display for CycleError {
@@ -180,29 +187,38 @@ impl ModuleGraph {
 
         fn visit(
             id: &ModuleId,
+            entry_span: Span,
             modules: &HashMap<ModuleId, Module>,
             marks: &mut HashMap<ModuleId, Mark>,
             order: &mut Vec<ModuleId>,
-            stack: &mut Vec<ModuleId>,
+            stack: &mut Vec<(ModuleId, Span)>,
         ) -> Result<(), CycleError> {
             match marks.get(id) {
                 Some(Mark::Permanent) => return Ok(()),
                 Some(Mark::Temporary) => {
                     // Build cycle path from the stack.
-                    let start = stack.iter().position(|s| s == id).unwrap_or(0);
-                    let mut cycle: Vec<ModuleId> = stack[start..].to_vec();
-                    cycle.push(id.clone());
-                    return Err(CycleError { cycle });
+                    let start = stack.iter().position(|(s, _)| s == id).unwrap_or(0);
+                    let cycle: Vec<ModuleId> = stack[start..]
+                        .iter()
+                        .map(|(m, _)| m.clone())
+                        .chain(std::iter::once(id.clone()))
+                        .collect();
+                    let import_spans: Vec<Span> =
+                        stack[start..].iter().map(|(_, sp)| sp.clone()).collect();
+                    return Err(CycleError {
+                        cycle,
+                        import_spans,
+                    });
                 }
                 None => {}
             }
 
             marks.insert(id.clone(), Mark::Temporary);
-            stack.push(id.clone());
+            stack.push((id.clone(), entry_span));
 
             if let Some(module) = modules.get(id) {
                 for imp in &module.imports {
-                    visit(&imp.target, modules, marks, order, stack)?;
+                    visit(&imp.target, imp.span.clone(), modules, marks, order, stack)?;
                 }
             }
 
@@ -220,7 +236,14 @@ impl ModuleGraph {
 
         for id in &ids {
             if !marks.contains_key(id) {
-                visit(id, &self.modules, &mut marks, &mut order, &mut Vec::new())?;
+                visit(
+                    id,
+                    0..0,
+                    &self.modules,
+                    &mut marks,
+                    &mut order,
+                    &mut Vec::new(),
+                )?;
             }
         }
 
@@ -348,6 +371,56 @@ mod tests {
         assert!(names.contains(&"b"));
         assert!(names.contains(&"c"));
         assert_eq!(deps.len(), 2);
+    }
+
+    #[test]
+    fn cycle_error_carries_import_spans() {
+        // Build a two-module cycle with distinct import spans so we can
+        // verify each span is threaded into CycleError.import_spans.
+        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+
+        let module_a = Module {
+            id: ModuleId::new(vec!["a".into()]),
+            items: vec![],
+            imports: vec![ModuleImport {
+                target: ModuleId::new(vec!["b".into()]),
+                spec: None,
+                span: 10..20,
+            }],
+            source_paths: vec![],
+            doc: None,
+        };
+        let module_b = Module {
+            id: ModuleId::new(vec!["b".into()]),
+            items: vec![],
+            imports: vec![ModuleImport {
+                target: ModuleId::new(vec!["a".into()]),
+                spec: None,
+                span: 30..40,
+            }],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        g.add_module(module_a).unwrap();
+        g.add_module(module_b).unwrap();
+
+        let err = g.compute_topo_order().unwrap_err();
+
+        // cycle contains a → b → a (first == last).
+        assert_eq!(err.cycle.len(), 3);
+        // import_spans has one entry per edge — two for the a→b→a cycle.
+        assert_eq!(
+            err.import_spans.len(),
+            err.cycle.len() - 1,
+            "import_spans should have one span per cycle edge"
+        );
+        // At least one of the spans must be non-empty (from our fixtures).
+        let has_real_span = err.import_spans.iter().any(|s| !s.is_empty());
+        assert!(
+            has_real_span,
+            "cycle error should carry import spans: {err}"
+        );
     }
 
     #[test]

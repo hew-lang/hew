@@ -1780,22 +1780,27 @@ fn eval_repl_piped_stdout_flushes_per_submission() {
     );
 }
 
-/// Clap-level smoke test: `--jit=inprocess` is a recognised flag and the
+/// Clap-level smoke test: `--jit=worker` is a recognised flag and the
 /// REPL exits successfully when it is supplied.
 ///
 /// NOTE: This test does NOT verify that the flag is wired through to
 /// `ReplSession::set_jit_mode` — both the pre-fix and post-fix code paths
 /// exit 0 for this input.  The wiring invariant is covered by the unit test
 /// `eval::repl::tests::set_jit_mode_stores_mode_on_session` in `repl.rs`.
+///
+/// `--jit=worker` (AOT+spawn) is used here rather than `--jit=inprocess` or
+/// `--jit=auto` because both of those route to `run_inprocess_jit`, which
+/// SIGSEGVs on Linux (#1523).  `--jit=worker` exercises the same clap
+/// flag-routing path without triggering the in-process JIT crash.
 #[test]
-fn eval_repl_jit_inprocess_flag_accepted_by_clap() {
+fn eval_repl_jit_worker_flag_accepted_by_clap() {
     require_codegen();
 
-    let output = run_eval_with_stdin(&["eval", "--jit=inprocess"], "1 + 1\n:quit\n");
+    let output = run_eval_with_stdin(&["eval", "--jit=worker"], "1 + 1\n:quit\n");
 
     assert!(
         output.status.success(),
-        "hew eval --jit=inprocess exited non-zero\nstdout: {}\nstderr: {}",
+        "hew eval --jit=worker exited non-zero\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

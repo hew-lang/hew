@@ -17,6 +17,7 @@
 
 use crate::kind::PrimitiveWireKind;
 use crate::plan::IntegerBounds;
+use hew_types::ty::aliases_for;
 
 /// Structural class of a non-`Nested` primitive wire kind.
 ///
@@ -108,13 +109,13 @@ pub(crate) struct PrimitiveDesc {
 pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     PrimitiveDesc {
         kind: PrimitiveWireKind::Bool,
-        aliases: &["bool", "Bool"],
+        aliases: aliases_for("bool"),
         class: PrimitiveClass::Bool,
         bounds: None,
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::I8,
-        aliases: &["i8"],
+        aliases: aliases_for("i8"),
         class: PrimitiveClass::SignedInt,
         bounds: Some(IntegerBounds {
             min: i8::MIN as i64,
@@ -123,7 +124,7 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::I16,
-        aliases: &["i16"],
+        aliases: aliases_for("i16"),
         class: PrimitiveClass::SignedInt,
         bounds: Some(IntegerBounds {
             min: i16::MIN as i64,
@@ -132,7 +133,7 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::I32,
-        aliases: &["i32"],
+        aliases: aliases_for("i32"),
         class: PrimitiveClass::SignedInt,
         bounds: Some(IntegerBounds {
             min: i32::MIN as i64,
@@ -141,7 +142,7 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::I64,
-        aliases: &["i64", "int", "Int", "isize"],
+        aliases: aliases_for("i64"),
         class: PrimitiveClass::SignedInt,
         bounds: Some(IntegerBounds {
             min: i64::MIN,
@@ -151,7 +152,7 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::U8,
-        aliases: &["u8", "byte"],
+        aliases: aliases_for("u8"),
         class: PrimitiveClass::UnsignedInt,
         bounds: Some(IntegerBounds {
             min: 0,
@@ -160,7 +161,7 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::U16,
-        aliases: &["u16"],
+        aliases: aliases_for("u16"),
         class: PrimitiveClass::UnsignedInt,
         bounds: Some(IntegerBounds {
             min: 0,
@@ -169,7 +170,7 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::U32,
-        aliases: &["u32"],
+        aliases: aliases_for("u32"),
         class: PrimitiveClass::UnsignedInt,
         bounds: Some(IntegerBounds {
             min: 0,
@@ -178,7 +179,7 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::U64,
-        aliases: &["u64", "uint", "usize"],
+        aliases: aliases_for("u64"),
         class: PrimitiveClass::UnsignedInt,
         bounds: Some(IntegerBounds {
             min: 0,
@@ -187,7 +188,7 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::Char,
-        aliases: &["char", "Char"],
+        aliases: aliases_for("char"),
         class: PrimitiveClass::Char,
         bounds: Some(IntegerBounds {
             min: 0,
@@ -210,31 +211,31 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::F32,
-        aliases: &["f32"],
+        aliases: aliases_for("f32"),
         class: PrimitiveClass::F32,
         bounds: None,
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::F64,
-        aliases: &["f64", "float", "Float"],
+        aliases: aliases_for("f64"),
         class: PrimitiveClass::F64,
         bounds: None,
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::String,
-        aliases: &["string", "String", "str"],
+        aliases: aliases_for("string"),
         class: PrimitiveClass::Str,
         bounds: None,
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::Bytes,
-        aliases: &["bytes", "Bytes"],
+        aliases: aliases_for("bytes"),
         class: PrimitiveClass::Bytes,
         bounds: None,
     },
     PrimitiveDesc {
         kind: PrimitiveWireKind::Duration,
-        aliases: &["duration", "Duration"],
+        aliases: aliases_for("duration"),
         class: PrimitiveClass::Duration,
         // Duration stores nanoseconds as i64 (negative = past), so it
         // shares I64's signed range rather than U64's unsigned range.

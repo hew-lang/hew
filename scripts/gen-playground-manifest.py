@@ -9,6 +9,23 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import TypedDict
+
+
+class Capabilities(TypedDict):
+    browser: str
+    wasi: str
+
+
+class ManifestEntry(TypedDict):
+    id: str
+    category: str
+    name: str
+    description: str
+    source_path: str
+    expected_path: str
+    capabilities: Capabilities
+
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYGROUND_DIR = ROOT / "examples" / "playground"
@@ -137,11 +154,11 @@ def fail_on_curated_scope_mismatch(curated_paths: list[Path]) -> None:
     )
 
 
-def build_manifest_entries() -> list[dict[str, str]]:
+def build_manifest_entries() -> list[ManifestEntry]:
     curated_paths = curated_source_paths()
     fail_on_curated_scope_mismatch(curated_paths)
 
-    entries: list[dict[str, str]] = []
+    entries: list[ManifestEntry] = []
     for source_path in curated_paths:
         if not source_path.is_file():
             rel_path = source_path.relative_to(ROOT)
@@ -178,7 +195,7 @@ def build_manifest_entries() -> list[dict[str, str]]:
     return entries
 
 
-def render_manifest(entries: list[dict[str, str]]) -> str:
+def render_manifest(entries: list[ManifestEntry]) -> str:
     return json.dumps(entries, indent=2) + "\n"
 
 
@@ -210,7 +227,7 @@ def check_manifest(rendered: str) -> int:
     return 1
 
 
-def _verify_capability_fields(entries: list[dict], rel_output: str) -> int:
+def _verify_capability_fields(entries: list[ManifestEntry], rel_output: str) -> int:
     """Verify every entry carries well-formed capability metadata."""
     valid_wasi = {"runnable", "unsupported"}
     errors: list[str] = []

@@ -4,7 +4,7 @@
 //! drain a shared task queue. The pool is opaque to C callers (Box-allocated).
 
 use std::ffi::c_void;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -280,6 +280,48 @@ where
     }
 }
 
+/// Process-lifetime singleton wrapper around `*mut HewBlockingPool`.
+///
+/// `*mut T` is neither `Send` nor `Sync`. This wrapper asserts both based on
+/// the pool's internal Mutex/Condvar synchronization. The pointer's allocation
+/// lives for the duration of the process — the singleton is never stopped, so
+/// the inner pointer never dangles.
+struct SharedPoolHandle(*mut HewBlockingPool);
+
+// SAFETY: `HewBlockingPool` is heap-allocated by `hew_blocking_pool_new` and
+// internally synchronized via Mutex+Condvar. The singleton lives for the
+// lifetime of the process and is never freed via `hew_blocking_pool_stop`,
+// so the raw pointer remains valid for any thread that observes it.
+unsafe impl Send for SharedPoolHandle {}
+// SAFETY: see Send. All access goes through the pool's own internal locks.
+unsafe impl Sync for SharedPoolHandle {}
+
+static SHARED_POOL: OnceLock<SharedPoolHandle> = OnceLock::new();
+
+/// Return the process-wide blocking pool, creating it on first call.
+///
+/// The returned pointer is valid for the lifetime of the process. It is
+/// shared across all transport callers (DNS, TCP, HTTP, etc.) that need to
+/// offload blocking syscalls with a deadline. Callers MUST NOT pass this
+/// pointer to [`hew_blocking_pool_stop`] — the singleton is never stopped.
+///
+/// Idempotent: subsequent calls return the same pointer.
+///
+/// WASM-TODO(#1451): there is no blocking pool on WASM; transport callers
+/// on WASM keep their pre-existing unguarded blocking shape until a
+/// WASM-compatible deadline primitive exists.
+pub fn shared_blocking_pool() -> *mut HewBlockingPool {
+    SHARED_POOL
+        .get_or_init(|| {
+            // SAFETY: hew_blocking_pool_new is safe to call (no preconditions);
+            // it returns a heap-allocated pool that is owned by the singleton
+            // and never freed.
+            let raw = unsafe { hew_blocking_pool_new() };
+            SharedPoolHandle(raw)
+        })
+        .0
+}
+
 /// Stop the pool: reject new work, wake all workers, and join threads.
 ///
 /// # Safety
@@ -473,6 +515,22 @@ mod tests {
 
             hew_blocking_pool_stop(pool);
         }
+    }
+
+    /// `shared_blocking_pool` returns the same pointer on every call and
+    /// the pool is usable.
+    #[test]
+    fn shared_blocking_pool_is_idempotent_and_usable() {
+        let p1 = shared_blocking_pool();
+        let p2 = shared_blocking_pool();
+        assert_eq!(p1, p2, "shared pool must be a singleton");
+        assert!(!p1.is_null(), "shared pool must be allocated");
+
+        // Submit through the shared pool and observe the result. This proves
+        // the singleton is wired through `spawn_blocking_result` correctly.
+        // SAFETY: shared_blocking_pool returns a valid, never-stopped pool.
+        let result = unsafe { spawn_blocking_result(p1, || 1729_u32, None) };
+        assert_eq!(result, Ok(1729));
     }
 
     /// Null pool: caller gets `PoolStopped` without leaking the boxed task

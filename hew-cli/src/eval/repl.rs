@@ -3,7 +3,7 @@
 use super::classify::{self, InputCompleteness, InputKind, ReplCommand};
 use super::session::{Session, SessionCounts, SyntheticDiagnosticView};
 use std::fmt;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -1300,9 +1300,11 @@ fn run_wasm_eval_compiled(
 pub fn run_interactive(
     timeout: Duration,
     target: Option<&str>,
+    jit: Option<crate::args::JitMode>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
+    session.set_jit_mode(jit);
 
     // Record startup in the host-death counter and retrieve the crash count.
     // `startup()` writes the clean-exit marker for this session; `on_clean_exit()`
@@ -1360,7 +1362,10 @@ pub fn run_interactive(
 
         match handle_interactive_input(&mut session, trimmed) {
             InteractiveEvalOutcome::Continue | InteractiveEvalOutcome::RenderedDiagnostics => {}
-            InteractiveEvalOutcome::Output(output) => print!("{output}"),
+            InteractiveEvalOutcome::Output(output) => {
+                print!("{output}");
+                let _ = std::io::stdout().flush();
+            }
             InteractiveEvalOutcome::MessageError(message) => eprintln!("error: {message}"),
             InteractiveEvalOutcome::Quit => break,
         }
@@ -1518,7 +1523,6 @@ mod tests {
     #[cfg(unix)]
     fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {
         use std::fs::File;
-        use std::io::Write;
         use std::os::fd::{AsRawFd, FromRawFd};
 
         // SAFETY: We temporarily redirect the process stderr fd to a pipe,
@@ -2286,6 +2290,26 @@ mod tests {
         assert_eq!(
             result_no_flag, result_worker,
             "--jit=worker should produce identical output to no --jit flag"
+        );
+    }
+
+    #[test]
+    fn set_jit_mode_stores_mode_on_session() {
+        let mut session = ReplSession::new();
+        assert_eq!(
+            session.jit_mode, None,
+            "new session should have no jit mode"
+        );
+        session.set_jit_mode(Some(crate::args::JitMode::Inprocess));
+        assert_eq!(
+            session.jit_mode,
+            Some(crate::args::JitMode::Inprocess),
+            "set_jit_mode should persist the supplied mode on the session"
+        );
+        session.set_jit_mode(None);
+        assert_eq!(
+            session.jit_mode, None,
+            "set_jit_mode(None) should clear the mode"
         );
     }
 }

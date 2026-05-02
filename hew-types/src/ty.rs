@@ -226,24 +226,110 @@ impl Substitution {
     }
 }
 
+/// Canonical primitive-type alias table: each row is
+/// `(canonical_name, all_aliases_including_canonical)`.
+///
+/// The **canonical name** (`row.0`) is the first alias and is what
+/// `canonical_lowering_name` returns.  All other aliases in `row.1` are
+/// user-facing spellings that the parser and type-checker accept.
+///
+/// This is the **single source of truth** for primitive name resolution.
+/// `primitive_from_name`, `canonical_lowering_name`, and the wirecodec
+/// `PRIMITIVE_DESCS` table all derive their alias lists from here.
+///
+/// Row order: numeric types first (signed, then unsigned, then floats),
+/// followed by non-numeric scalars, then the special forms `()` and `!`.
+/// The `()` and `!` rows are consumed by `primitive_from_name` only;
+/// wirecodec has no wire representation for them.
+pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
+    ("i8", &["i8"]),
+    ("i16", &["i16"]),
+    ("i32", &["i32"]),
+    ("i64", &["i64", "int", "Int", "isize"]),
+    ("u8", &["u8", "byte"]),
+    ("u16", &["u16"]),
+    ("u32", &["u32"]),
+    ("u64", &["u64", "uint", "usize"]),
+    ("f32", &["f32"]),
+    ("f64", &["f64", "float", "Float"]),
+    ("bool", &["bool", "Bool"]),
+    ("char", &["char", "Char"]),
+    ("string", &["string", "String", "str"]),
+    ("bytes", &["bytes", "Bytes"]),
+    ("duration", &["duration", "Duration"]),
+    // Not in wirecodec: Unit and Never have no wire representation.
+    ("()", &["()"]),
+    ("!", &["!"]),
+];
+
+/// Return the alias slice for the given canonical primitive name.
+///
+/// Intended for use in `const` initializers in downstream crates so the
+/// wirecodec's `PRIMITIVE_DESCS` can reference the same alias lists without
+/// duplicating the string literals.
+///
+/// # Panics
+///
+/// Panics (at compile time when used in a `const` context) if `canonical`
+/// does not appear as a row key in `PRIMITIVE_ALIASES`.
+#[must_use]
+pub const fn aliases_for(canonical: &str) -> &'static [&'static str] {
+    let needle = canonical.as_bytes();
+    let mut i = 0;
+    while i < PRIMITIVE_ALIASES.len() {
+        let key = PRIMITIVE_ALIASES[i].0.as_bytes();
+        if bytes_eq(needle, key) {
+            return PRIMITIVE_ALIASES[i].1;
+        }
+        i += 1;
+    }
+    panic!("aliases_for: unknown canonical primitive name");
+}
+
+/// Byte-by-byte equality check usable in `const fn` context.
+const fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 impl Ty {
     fn primitive_from_name(name: &str) -> Option<Ty> {
-        Some(match name {
+        for (canonical, aliases) in PRIMITIVE_ALIASES {
+            if aliases.contains(&name) {
+                return Self::from_canonical_primitive_name(canonical);
+            }
+        }
+        None
+    }
+
+    /// Resolve a canonical primitive name (the first alias in
+    /// `PRIMITIVE_ALIASES`) to the corresponding `Ty` variant.
+    fn from_canonical_primitive_name(canonical: &str) -> Option<Ty> {
+        Some(match canonical {
             "i8" => Ty::I8,
             "i16" => Ty::I16,
             "i32" => Ty::I32,
-            "i64" | "int" | "Int" | "isize" => Ty::I64,
-            "u8" | "byte" => Ty::U8,
+            "i64" => Ty::I64,
+            "u8" => Ty::U8,
             "u16" => Ty::U16,
             "u32" => Ty::U32,
-            "u64" | "uint" | "usize" => Ty::U64,
+            "u64" => Ty::U64,
             "f32" => Ty::F32,
-            "f64" | "float" | "Float" => Ty::F64,
-            "bool" | "Bool" => Ty::Bool,
-            "char" | "Char" => Ty::Char,
-            "string" | "String" | "str" => Ty::String,
-            "bytes" | "Bytes" => Ty::Bytes,
-            "duration" | "Duration" => Ty::Duration,
+            "f64" => Ty::F64,
+            "bool" => Ty::Bool,
+            "char" => Ty::Char,
+            "string" => Ty::String,
+            "bytes" => Ty::Bytes,
+            "duration" => Ty::Duration,
             "()" => Ty::Unit,
             "!" => Ty::Never,
             _ => return None,

@@ -1780,15 +1780,15 @@ fn eval_repl_piped_stdout_flushes_per_submission() {
     );
 }
 
-/// Smoke test: `--jit=inprocess` must be accepted and forwarded to the
-/// interactive REPL, not silently ignored.
+/// Clap-level smoke test: `--jit=inprocess` is a recognised flag and the
+/// REPL exits successfully when it is supplied.
 ///
-/// Previously `run_interactive` did not receive the `jit` argument, so
-/// `--jit=inprocess` was dropped at the call site and the REPL always ran
-/// via the AOT+spawn path.  After the fix the argument reaches
-/// `ReplSession::set_jit_mode`, and the REPL exits cleanly.
+/// NOTE: This test does NOT verify that the flag is wired through to
+/// `ReplSession::set_jit_mode` — both the pre-fix and post-fix code paths
+/// exit 0 for this input.  The wiring invariant is covered by the unit test
+/// `eval::repl::tests::set_jit_mode_stores_mode_on_session` in `repl.rs`.
 #[test]
-fn eval_repl_jit_inprocess_flag_accepted() {
+fn eval_repl_jit_inprocess_flag_accepted_by_clap() {
     require_codegen();
 
     let output = run_eval_with_stdin(&["eval", "--jit=inprocess"], "1 + 1\n:quit\n");

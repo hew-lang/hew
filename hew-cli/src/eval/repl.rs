@@ -2292,4 +2292,24 @@ mod tests {
             "--jit=worker should produce identical output to no --jit flag"
         );
     }
+
+    #[test]
+    fn set_jit_mode_stores_mode_on_session() {
+        let mut session = ReplSession::new();
+        assert_eq!(
+            session.jit_mode, None,
+            "new session should have no jit mode"
+        );
+        session.set_jit_mode(Some(crate::args::JitMode::Inprocess));
+        assert_eq!(
+            session.jit_mode,
+            Some(crate::args::JitMode::Inprocess),
+            "set_jit_mode should persist the supplied mode on the session"
+        );
+        session.set_jit_mode(None);
+        assert_eq!(
+            session.jit_mode, None,
+            "set_jit_mode(None) should clear the mode"
+        );
+    }
 }

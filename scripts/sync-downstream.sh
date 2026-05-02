@@ -360,7 +360,66 @@ else
     SKIPPED=$((SKIPPED + 1))
 fi
 
-# 3d. hew-studio — copy dist/hew.tmLanguage.json → src/lib/syntax/
+# 3d. hew.run — copy hew-wasm/pkg/ artefacts → static/wasm/ and src/lib/wasm/
+next_step "hew.run (wasm artefacts)..."
+WASM_PKG="$REPO_ROOT/hew-wasm/pkg"
+if [ -d "$HEW_RUN" ]; then
+    if [ ! -f "$WASM_PKG/hew_wasm_bg.wasm" ]; then
+        warn "hew-wasm/pkg/hew_wasm_bg.wasm not found — run: wasm-pack build --target web hew-wasm/"
+        SKIPPED=$((SKIPPED + 1))
+    else
+        WASM_DEST_BIN="static/wasm/hew_wasm_bg.wasm"
+        WASM_DEST_JS="src/lib/wasm/hew_wasm.js"
+        WASM_DEST_DTS="src/lib/wasm/hew_wasm.d.ts"
+        mkdir -p "$HEW_RUN/static/wasm" "$HEW_RUN/src/lib/wasm"
+
+        if $CHECK_ONLY; then
+            info "Checking hew-wasm artefacts for drift in hew.run..."
+            wasm_drifts=0
+            for pair in "$WASM_PKG/hew_wasm_bg.wasm:$WASM_DEST_BIN" \
+                        "$WASM_PKG/hew_wasm.js:$WASM_DEST_JS" \
+                        "$WASM_PKG/hew_wasm.d.ts:$WASM_DEST_DTS"; do
+                src="${pair%%:*}"
+                rel="${pair##*:}"
+                dest="$HEW_RUN/$rel"
+                if ! cmp -s "$src" "$dest" 2>/dev/null; then
+                    fail "Drift detected in $rel"
+                    wasm_drifts=$((wasm_drifts + 1))
+                    DRIFTS=$((DRIFTS + 1))
+                fi
+            done
+            if [ $wasm_drifts -eq 0 ]; then
+                ok "Already in sync"
+            fi
+        else
+            wasm_updated=0
+            cp "$WASM_PKG/hew_wasm_bg.wasm" "$HEW_RUN/$WASM_DEST_BIN"
+            cp "$WASM_PKG/hew_wasm.js"      "$HEW_RUN/$WASM_DEST_JS"
+            cp "$WASM_PKG/hew_wasm.d.ts"    "$HEW_RUN/$WASM_DEST_DTS"
+            cd "$HEW_RUN"
+            for rel in "$WASM_DEST_BIN" "$WASM_DEST_JS" "$WASM_DEST_DTS"; do
+                if ! git diff --quiet "$rel" 2>/dev/null; then
+                    ok "Updated $rel"
+                    wasm_updated=$((wasm_updated + 1))
+                fi
+            done
+            if [ $wasm_updated -gt 0 ]; then
+                UPDATED=$((UPDATED + 1))
+                if $COMMIT; then
+                    try_commit "$HEW_RUN" "Bundle hew wasm artefacts" \
+                        "$WASM_DEST_BIN" "$WASM_DEST_JS" "$WASM_DEST_DTS"
+                fi
+            else
+                ok "Already up to date"
+            fi
+        fi
+    fi
+else
+    warn "Not found at $HEW_RUN (skipped)"
+    SKIPPED=$((SKIPPED + 1))
+fi
+
+# 3e. hew-studio — copy dist/hew.tmLanguage.json → src/lib/syntax/
 next_step "hew-studio (TextMate grammar)..."
 if [ -d "$HEW_STUDIO" ]; then
     if [ -f "$DIST_DIR/hew.tmLanguage.json" ]; then

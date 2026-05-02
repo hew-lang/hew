@@ -13,6 +13,7 @@ use crate::ast::{
     WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
+use serde::Serialize;
 use std::cell::Cell;
 
 /// Parse an integer literal string, returning both value and radix.
@@ -236,6 +237,7 @@ fn parse_string_parts(
                     span: (inner_offset + expr_start_byte)..(inner_offset + expr_end_byte),
                     hint: None,
                     severity: Severity::Error,
+                    kind: ParseDiagnosticKind::UnclosedDelimiter,
                 });
             } else if !expr_text.is_empty() {
                 let mut sub_parser = Parser::new(expr_text);
@@ -251,6 +253,7 @@ fn parse_string_parts(
                         span: (inner_offset + expr_start_byte)..(inner_offset + expr_end_byte),
                         hint: None,
                         severity: Severity::Error,
+                        kind: ParseDiagnosticKind::InvalidLiteral,
                     });
                 }
             }
@@ -346,6 +349,58 @@ pub enum Severity {
     Warning,
 }
 
+/// Structured discriminant for parse diagnostics.
+///
+/// Carries only the payload that lets a client act programmatically on the
+/// error class without re-parsing the human-readable `message` field.
+/// `Other` covers every error site that does not yet have a dedicated variant;
+/// the `message` field on `ParseError` already holds the full text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind")]
+pub enum ParseDiagnosticKind {
+    /// A token was present but a different token was required.
+    UnexpectedToken {
+        /// What the parser required (e.g. `";"`, `"identifier"`).
+        expected: String,
+        /// What was actually found (e.g. `"}"`, `"end of file"`).
+        got: String,
+    },
+    /// The input ended while more tokens were required.
+    UnexpectedEof,
+    /// A literal value (integer, float, character, byte, string interpolation) was malformed.
+    InvalidLiteral,
+    /// An expression was required but the current token cannot start one.
+    MissingExpression {
+        /// The token (or `"end of file"`) that was encountered.
+        got: String,
+    },
+    /// A pattern was required but the current token cannot start one.
+    InvalidPattern {
+        /// The token (or `"end of file"`) that was encountered.
+        got: String,
+    },
+    /// A delimiter (e.g. string interpolation `{`) was opened but never closed.
+    UnclosedDelimiter,
+    /// Every other error not yet assigned a structured variant.
+    Other,
+}
+
+impl ParseDiagnosticKind {
+    /// Returns a stable string identifier suitable for use in LSP `data` payloads.
+    #[must_use]
+    pub fn as_kind_str(&self) -> &'static str {
+        match self {
+            Self::UnexpectedToken { .. } => "UnexpectedToken",
+            Self::UnexpectedEof => "UnexpectedEof",
+            Self::InvalidLiteral => "InvalidLiteral",
+            Self::MissingExpression { .. } => "MissingExpression",
+            Self::InvalidPattern { .. } => "InvalidPattern",
+            Self::UnclosedDelimiter => "UnclosedDelimiter",
+            Self::Other => "Other",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ParseError {
     pub message: String,
@@ -353,6 +408,8 @@ pub struct ParseError {
     /// Optional actionable suggestion for fixing the error.
     pub hint: Option<String>,
     pub severity: Severity,
+    /// Structured discriminant that clients can use without re-parsing `message`.
+    pub kind: ParseDiagnosticKind,
 }
 
 #[derive(Debug)]
@@ -375,6 +432,7 @@ impl<'src> Parser<'src> {
                     span,
                     hint: None,
                     severity: Severity::Error,
+                    kind: ParseDiagnosticKind::InvalidLiteral,
                 });
             } else {
                 tokens.push((t, span));
@@ -413,7 +471,7 @@ impl<'src> Parser<'src> {
         if let Some(tok) = self.peek() {
             if std::mem::discriminant(tok) == std::mem::discriminant(expected) {
                 let Some((_, span)) = self.advance() else {
-                    self.error(format!("unexpected end of input, expected {expected:?}"));
+                    self.error_unexpected_eof(expected);
                     return None;
                 };
                 return Some(span);
@@ -425,12 +483,13 @@ impl<'src> Parser<'src> {
         };
         // Add a hint when a semicolon is expected but a statement keyword follows
         if matches!(expected, Token::Semicolon) && self.peek_starts_stmt() {
-            self.error_with_hint(
-                format!("expected {expected}, found {found}"),
+            self.error_unexpected_token_with_hint(
+                format!("{expected}"),
+                &found,
                 "add `;` at the end of the previous statement",
             );
         } else {
-            self.error(format!("expected {expected}, found {found}"));
+            self.error_unexpected_token(format!("{expected}"), &found);
         }
         None
     }
@@ -544,6 +603,7 @@ impl<'src> Parser<'src> {
             span,
             hint: None,
             severity: Severity::Error,
+            kind: ParseDiagnosticKind::Other,
         });
     }
 
@@ -558,18 +618,119 @@ impl<'src> Parser<'src> {
             span,
             hint: Some(hint.into()),
             severity: Severity::Error,
+            kind: ParseDiagnosticKind::Other,
+        });
+    }
+
+    /// Record an `UnexpectedToken` diagnostic at the current position.
+    fn error_unexpected_token(&mut self, expected: impl Into<String>, got: impl Into<String>) {
+        let span = self.peek_span();
+        self.error_unexpected_token_at(expected, got, span);
+    }
+
+    fn error_unexpected_token_at(
+        &mut self,
+        expected: impl Into<String>,
+        got: impl Into<String>,
+        span: Span,
+    ) {
+        let expected = expected.into();
+        let got = got.into();
+        let message = format!("expected {expected}, found {got}");
+        self.errors.push(ParseError {
+            message,
+            span,
+            hint: None,
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::UnexpectedToken { expected, got },
+        });
+    }
+
+    fn error_unexpected_token_with_hint(
+        &mut self,
+        expected: impl Into<String>,
+        got: impl Into<String>,
+        hint: impl Into<String>,
+    ) {
+        let span = self.peek_span();
+        let expected = expected.into();
+        let got = got.into();
+        let message = format!("expected {expected}, found {got}");
+        self.errors.push(ParseError {
+            message,
+            span,
+            hint: Some(hint.into()),
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::UnexpectedToken { expected, got },
+        });
+    }
+
+    fn error_unexpected_eof(&mut self, context: impl std::fmt::Display) {
+        let span = self.peek_span();
+        self.errors.push(ParseError {
+            message: format!("unexpected end of input, expected {context}"),
+            span,
+            hint: None,
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::UnexpectedEof,
+        });
+    }
+
+    fn error_invalid_literal(&mut self, message: String) {
+        let span = self.peek_span();
+        self.errors.push(ParseError {
+            message,
+            span,
+            hint: None,
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::InvalidLiteral,
+        });
+    }
+
+    fn error_missing_expression(&mut self, got: impl Into<String>) {
+        let got = got.into();
+        let span = self.peek_span();
+        self.errors.push(ParseError {
+            message: format!("expected expression, found {got}"),
+            span,
+            hint: None,
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::MissingExpression { got },
+        });
+    }
+
+    fn error_invalid_pattern(&mut self, got: impl Into<String>) {
+        let got = got.into();
+        let span = self.peek_span();
+        self.errors.push(ParseError {
+            message: format!("expected pattern, found {got}"),
+            span,
+            hint: None,
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::InvalidPattern { got },
+        });
+    }
+
+    fn error_invalid_literal_with_hint(&mut self, message: String, hint: impl Into<String>) {
+        let span = self.peek_span();
+        self.errors.push(ParseError {
+            message,
+            span,
+            hint: Some(hint.into()),
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::InvalidLiteral,
         });
     }
 
     fn parse_char_escape(&mut self, s: &str) -> Option<char> {
         let mut chars = s.chars();
         let Some(c) = chars.next() else {
-            self.error("invalid char literal".to_string());
+            self.error_invalid_literal("invalid char literal".to_string());
             return None;
         };
         let result = if c == '\\' {
             let Some(escaped) = chars.next() else {
-                self.error("invalid escape sequence".to_string());
+                self.error_invalid_literal("invalid escape sequence".to_string());
                 return None;
             };
             match escaped {
@@ -580,7 +741,7 @@ impl<'src> Parser<'src> {
                 '\\' => '\\',
                 '\'' => '\'',
                 _ => {
-                    self.error("invalid escape sequence".to_string());
+                    self.error_invalid_literal("invalid escape sequence".to_string());
                     return None;
                 }
             }
@@ -588,7 +749,7 @@ impl<'src> Parser<'src> {
             c
         };
         if chars.next().is_some() {
-            self.error("invalid char literal".to_string());
+            self.error_invalid_literal("invalid char literal".to_string());
             return None;
         }
         Some(result)
@@ -600,6 +761,7 @@ impl<'src> Parser<'src> {
             span,
             hint: None,
             severity: Severity::Warning,
+            kind: ParseDiagnosticKind::Other,
         });
     }
 
@@ -3218,6 +3380,7 @@ impl<'src> Parser<'src> {
                     span,
                     hint: None,
                     severity: Severity::Error,
+                    kind: ParseDiagnosticKind::Other,
                 });
                 // Consume the optional `: Type` annotation so recovery is clean
                 if self.eat(&Token::Colon) {
@@ -3878,7 +4041,7 @@ impl<'src> Parser<'src> {
                     self.advance();
                     Expr::Literal(Literal::Duration(nanos))
                 } else {
-                    self.error_with_hint(
+                    self.error_invalid_literal_with_hint(
                         "invalid duration literal".to_string(),
                         "valid formats: 100ms, 5s, 2m, 1h, 500us, 10ns",
                     );
@@ -3890,7 +4053,7 @@ impl<'src> Parser<'src> {
                     self.advance();
                     Expr::Literal(Literal::Integer { value: val, radix })
                 } else {
-                    self.error_with_hint(
+                    self.error_invalid_literal_with_hint(
                         format!("invalid integer literal '{s}'"),
                         "integer literals support decimal, 0x hex, 0o octal, and 0b binary",
                     );
@@ -3903,7 +4066,7 @@ impl<'src> Parser<'src> {
                     self.advance();
                     Expr::Literal(Literal::Float(val))
                 } else {
-                    self.error(format!("invalid float literal '{s}'"));
+                    self.error_invalid_literal(format!("invalid float literal '{s}'"));
                     return None;
                 }
             }
@@ -3974,7 +4137,9 @@ impl<'src> Parser<'src> {
                     let elem_expr = self.parse_expr()?;
                     if let Expr::Literal(Literal::Integer { value, .. }) = &elem_expr.0 {
                         if *value < 0 || *value > 255 {
-                            self.error(format!("byte value {value} out of range (must be 0..255)"));
+                            self.error_invalid_literal(format!(
+                                "byte value {value} out of range (must be 0..255)"
+                            ));
                             return None;
                         }
                         #[expect(
@@ -4520,7 +4685,7 @@ impl<'src> Parser<'src> {
                     Some(tok) => format!("{tok}"),
                     None => "end of file".to_string(),
                 };
-                self.error(format!("expected expression, found {found}"));
+                self.error_missing_expression(found);
                 return None;
             }
         };
@@ -4746,7 +4911,7 @@ impl<'src> Parser<'src> {
                         if let Ok((val, radix)) = parse_int_literal(s) {
                             Pattern::Literal(Literal::Integer { value: -val, radix })
                         } else {
-                            self.error_with_hint(
+                            self.error_invalid_literal_with_hint(
                                 format!("invalid integer literal '-{s}'"),
                                 "integer literals support decimal, 0x hex, 0o octal, and 0b binary",
                             );
@@ -4758,7 +4923,7 @@ impl<'src> Parser<'src> {
                         if let Ok(val) = cleaned.parse::<f64>() {
                             Pattern::Literal(Literal::Float(-val))
                         } else {
-                            self.error(format!("invalid float literal '-{s}'"));
+                            self.error_invalid_literal(format!("invalid float literal '-{s}'"));
                             return None;
                         }
                     }
@@ -4845,7 +5010,7 @@ impl<'src> Parser<'src> {
                     self.advance();
                     Pattern::Literal(Literal::Integer { value: val, radix })
                 } else {
-                    self.error_with_hint(
+                    self.error_invalid_literal_with_hint(
                         format!("invalid integer literal '{s}'"),
                         "integer literals support decimal, 0x hex, 0o octal, and 0b binary",
                     );
@@ -4893,7 +5058,7 @@ impl<'src> Parser<'src> {
                     Some(tok) => format!("{tok}"),
                     None => "end of file".to_string(),
                 };
-                self.error(format!("expected pattern, found {found}"));
+                self.error_invalid_pattern(found);
                 return None;
             }
         };
@@ -6557,6 +6722,124 @@ wire type Msg {
         assert_eq!(
             a.methods[0].doc_comment.as_deref(),
             Some("Reset the counter.")
+        );
+    }
+
+    // ── ParseDiagnosticKind serialisation ──────────────────────────────────
+
+    #[test]
+    fn parse_diagnostic_kind_unexpected_token_serialises() {
+        let kind = ParseDiagnosticKind::UnexpectedToken {
+            expected: ";".to_string(),
+            got: "}".to_string(),
+        };
+        let json = serde_json::to_value(&kind).unwrap();
+        assert_eq!(json["kind"], "UnexpectedToken");
+        assert_eq!(json["expected"], ";");
+        assert_eq!(json["got"], "}");
+        assert_eq!(kind.as_kind_str(), "UnexpectedToken");
+    }
+
+    #[test]
+    fn parse_diagnostic_kind_unexpected_eof_serialises() {
+        let kind = ParseDiagnosticKind::UnexpectedEof;
+        let json = serde_json::to_value(&kind).unwrap();
+        assert_eq!(json["kind"], "UnexpectedEof");
+        assert_eq!(kind.as_kind_str(), "UnexpectedEof");
+    }
+
+    #[test]
+    fn parse_diagnostic_kind_invalid_literal_serialises() {
+        let kind = ParseDiagnosticKind::InvalidLiteral;
+        let json = serde_json::to_value(&kind).unwrap();
+        assert_eq!(json["kind"], "InvalidLiteral");
+        assert_eq!(kind.as_kind_str(), "InvalidLiteral");
+    }
+
+    #[test]
+    fn parse_diagnostic_kind_missing_expression_serialises() {
+        let kind = ParseDiagnosticKind::MissingExpression {
+            got: "end of file".to_string(),
+        };
+        let json = serde_json::to_value(&kind).unwrap();
+        assert_eq!(json["kind"], "MissingExpression");
+        assert_eq!(json["got"], "end of file");
+        assert_eq!(kind.as_kind_str(), "MissingExpression");
+    }
+
+    #[test]
+    fn parse_diagnostic_kind_invalid_pattern_serialises() {
+        let kind = ParseDiagnosticKind::InvalidPattern {
+            got: "42".to_string(),
+        };
+        let json = serde_json::to_value(&kind).unwrap();
+        assert_eq!(json["kind"], "InvalidPattern");
+        assert_eq!(json["got"], "42");
+        assert_eq!(kind.as_kind_str(), "InvalidPattern");
+    }
+
+    #[test]
+    fn parse_diagnostic_kind_unclosed_delimiter_serialises() {
+        let kind = ParseDiagnosticKind::UnclosedDelimiter;
+        let json = serde_json::to_value(&kind).unwrap();
+        assert_eq!(json["kind"], "UnclosedDelimiter");
+        assert_eq!(kind.as_kind_str(), "UnclosedDelimiter");
+    }
+
+    #[test]
+    fn parse_diagnostic_kind_other_serialises() {
+        let kind = ParseDiagnosticKind::Other;
+        let json = serde_json::to_value(&kind).unwrap();
+        assert_eq!(json["kind"], "Other");
+        assert_eq!(kind.as_kind_str(), "Other");
+    }
+
+    // ── ParseDiagnosticKind round-trip through ParseError ─────────────────
+
+    #[test]
+    fn unexpected_token_kind_set_on_expect_failure() {
+        // `expect` should produce UnexpectedToken when a required token is absent.
+        let result = parse("fn foo(");
+        let missing_paren = result
+            .errors
+            .iter()
+            .find(|e| matches!(&e.kind, ParseDiagnosticKind::UnexpectedToken { .. }));
+        assert!(
+            missing_paren.is_some(),
+            "expected UnexpectedToken in errors, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn invalid_literal_kind_set_on_bad_char_escape() {
+        let result = parse("fn f() { let x: char = '\\z'; }");
+        let lit_err = result
+            .errors
+            .iter()
+            .find(|e| matches!(&e.kind, ParseDiagnosticKind::InvalidLiteral));
+        assert!(
+            lit_err.is_some(),
+            "expected InvalidLiteral in errors, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn missing_expression_kind_set_at_parse_primary_fallthrough() {
+        // `)` cannot start an expression in an expression context.
+        let result = parse("fn f() { let x = ); }");
+        let expr_err = result.errors.iter().find(|e| {
+            matches!(
+                &e.kind,
+                ParseDiagnosticKind::MissingExpression { .. }
+                    | ParseDiagnosticKind::UnexpectedToken { .. }
+            )
+        });
+        assert!(
+            expr_err.is_some(),
+            "expected MissingExpression or UnexpectedToken in errors, got: {:?}",
+            result.errors
         );
     }
 } // mod tests

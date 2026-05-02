@@ -31,7 +31,9 @@ import std::fs;
 /// let addrs = dns.resolve("localhost");  // ["127.0.0.1", "::1"]
 /// ```
 pub fn resolve(hostname: String) -> Vec<String> {
-    unsafe { hew_dns_resolve(hostname) }
+    unsafe {
+        hew_dns_resolve(hostname)
+    }
 }
 
 /// Resolve a hostname to all associated IP addresses.
@@ -62,7 +64,9 @@ pub fn try_resolve(hostname: String) -> Result<Vec<String>, fs.IoError> {
 /// let ip = dns.lookup_host("localhost");  // "127.0.0.1"
 /// ```
 pub fn lookup_host(hostname: String) -> String {
-    unsafe { hew_dns_lookup_host(hostname) }
+    unsafe {
+        hew_dns_lookup_host(hostname)
+    }
 }
 
 /// Resolve a hostname to its first IP address.
@@ -82,9 +86,38 @@ pub fn try_lookup_host(hostname: String) -> Result<String, fs.IoError> {
     }
 }
 
-// ── FFI bindings ──────────────────────────────────────────────────────
+/// Resolve a hostname to all associated IP addresses with a deadline.
+///
+/// `deadline_ms <= 0` disables the deadline. On deadline expiry returns an
+/// empty vector — the underlying `getaddrinfo` keeps running on the shared
+/// blocking pool (its result is discarded), so the calling scheduler thread
+/// returns within `deadline_ms` even if the resolver is stalled.
+///
+/// # Examples
+///
+/// ```
+/// let addrs = dns.resolve_timed("slow.example.com", 500);
+/// ```
+pub fn resolve_timed(hostname: String, deadline_ms: int) -> Vec<String> {
+    unsafe {
+        hew_dns_resolve_timed(hostname, deadline_ms as i64)
+    } // INTERNAL-ABI: C ABI takes i64 deadline
+}
 
+/// Resolve a hostname to its first IP address with a deadline.
+///
+/// `deadline_ms <= 0` disables the deadline. On deadline expiry or resolution
+/// failure returns an empty string.
+pub fn lookup_host_timed(hostname: String, deadline_ms: int) -> String {
+    unsafe {
+        hew_dns_lookup_host_timed(hostname, deadline_ms as i64)
+    } // INTERNAL-ABI: C ABI takes i64 deadline
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_dns_resolve(hostname: String) -> Vec<String>;
     fn hew_dns_lookup_host(hostname: String) -> String;
+    fn hew_dns_resolve_timed(hostname: String, deadline_ms: i64) -> Vec<String>;
+    fn hew_dns_lookup_host_timed(hostname: String, deadline_ms: i64) -> String;
 }

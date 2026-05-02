@@ -1229,6 +1229,267 @@ pub unsafe extern "C" fn hew_quic_stream_recv(stream: *mut HewQuicStream) -> *mu
 }
 
 #[no_mangle]
+/// Send bytes on a QUIC stream with a per-call deadline.
+///
+/// `deadline_ms <= 0` disables the deadline (matches `hew_quic_stream_send`).
+///
+/// Returns:
+/// - 0 on success
+/// - -1 on send error (poisoned lock, transport error)
+/// - -2 on deadline expiry. The future is dropped at the next `.await`,
+///   releasing the `SendStream` guard; the stream's `last_error` reflects
+///   the timeout for `observe()` consumers.
+///
+/// # Safety
+///
+/// `stream` must be null or a live stream pointer returned by this module.
+/// `data` must be null or a valid Hew byte vector pointer for the duration of
+/// this call. Ownership of `data` is not transferred.
+pub unsafe extern "C" fn hew_quic_stream_send_timeout(
+    stream: *mut HewQuicStream,
+    data: *mut HewVec,
+    deadline_ms: i32,
+) -> c_int {
+    if stream.is_null() || data.is_null() {
+        return -1;
+    }
+    // SAFETY: `stream` is non-null and must come from this module per caller
+    // contract.
+    let stream = unsafe { &*stream };
+    // SAFETY: `data` is a valid HewVec per caller contract.
+    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+
+    let Ok(mut send) = stream.send.lock() else {
+        update_stream(stream, |state| {
+            state.last_error = String::from("stream send lock poisoned");
+        });
+        let _ = stream.events.push(EVENT_ERROR);
+        return -1;
+    };
+
+    let send_outcome = if deadline_ms <= 0 {
+        stream
+            .rt
+            .block_on(async { send.write_all(&bytes).await })
+            .map_err(|e| (false, e.to_string()))
+    } else {
+        #[expect(clippy::cast_sign_loss, reason = "deadline_ms > 0 checked above")]
+        let dur = std::time::Duration::from_millis(deadline_ms as u64);
+        // tokio::time::timeout cancels the inner future at the next .await
+        // when the deadline elapses. quinn's SendStream::write_all holds no
+        // std::sync mutex across awaits — drop is clean. Cleanup-all-exits:
+        // the SendStream guard returns to the lock when this scope ends.
+        match stream
+            .rt
+            .block_on(async { tokio::time::timeout(dur, send.write_all(&bytes)).await })
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err((false, e.to_string())),
+            Err(_elapsed) => Err((
+                true,
+                format!("send deadline expired after {deadline_ms} ms"),
+            )),
+        }
+    };
+
+    match send_outcome {
+        Ok(()) => {
+            update_stream(stream, |state| {
+                state.bytes_sent = state.bytes_sent.saturating_add(to_i64_count(bytes.len()));
+                state.last_error.clear();
+            });
+            0
+        }
+        Err((timed_out, msg)) => {
+            update_stream(stream, |state| state.last_error = msg);
+            if !timed_out {
+                let _ = stream.events.push(EVENT_ERROR);
+            }
+            if timed_out {
+                -2
+            } else {
+                -1
+            }
+        }
+    }
+}
+
+#[no_mangle]
+/// Receive bytes on a QUIC stream with a per-call deadline.
+///
+/// `deadline_ms <= 0` disables the deadline (matches `hew_quic_stream_recv`).
+///
+/// On success the heap-allocated `HewVec` is written through `out` and the
+/// caller takes ownership. The empty-vec (zero-length) case represents EOF
+/// and is reported via status code 0 with an empty vec — the caller
+/// distinguishes EOF from data by inspecting the vec length.
+///
+/// Returns:
+/// - 0 on success (bytes read, *out points to a fresh `HewVec`; empty = EOF)
+/// - -1 on receive error
+/// - -2 on deadline expiry; *out is unchanged
+///
+/// # Safety
+///
+/// `stream` must be null or a live stream pointer returned by this module.
+/// `out` must be a valid pointer to a `*mut HewVec` slot the caller owns;
+/// on success the call writes a heap-allocated `HewVec` pointer there.
+pub unsafe extern "C" fn hew_quic_stream_recv_timeout(
+    stream: *mut HewQuicStream,
+    deadline_ms: i32,
+    out: *mut *mut HewVec,
+) -> c_int {
+    if stream.is_null() || out.is_null() {
+        return -1;
+    }
+    // SAFETY: `stream` is non-null and must come from this module per caller
+    // contract.
+    let stream = unsafe { &*stream };
+
+    let mut buf = vec![0u8; RECV_BUFFER_SIZE];
+    let Ok(mut recv) = stream.recv.lock() else {
+        update_stream(stream, |state| {
+            state.last_error = String::from("stream recv lock poisoned");
+        });
+        let _ = stream.events.push(EVENT_ERROR);
+        return -1;
+    };
+
+    let recv_outcome = if deadline_ms <= 0 {
+        match stream.rt.block_on(async { recv.read(&mut buf).await }) {
+            Ok(opt) => Ok(opt),
+            Err(err) => Err((false, err.to_string())),
+        }
+    } else {
+        #[expect(clippy::cast_sign_loss, reason = "deadline_ms > 0 checked above")]
+        let dur = std::time::Duration::from_millis(deadline_ms as u64);
+        // tokio::time::timeout cancels the inner future at the next .await
+        // when the deadline elapses. quinn's RecvStream::read holds no
+        // std::sync mutex across awaits — drop is clean. Cleanup-all-exits:
+        // the RecvStream guard returns to the lock when this scope ends.
+        match stream
+            .rt
+            .block_on(async { tokio::time::timeout(dur, recv.read(&mut buf)).await })
+        {
+            Ok(Ok(opt)) => Ok(opt),
+            Ok(Err(err)) => Err((false, err.to_string())),
+            Err(_elapsed) => Err((
+                true,
+                format!("recv deadline expired after {deadline_ms} ms"),
+            )),
+        }
+    };
+
+    match recv_outcome {
+        Ok(Some(n)) => {
+            update_stream(stream, |state| {
+                state.bytes_received = state.bytes_received.saturating_add(to_i64_count(n));
+                state.last_error.clear();
+            });
+            // SAFETY: `buf[..n]` is a valid slice of bytes.
+            let vec = unsafe { hew_cabi::vec::u8_to_hwvec(&buf[..n]) };
+            // SAFETY: `out` is a valid writable pointer slot per caller
+            // contract.
+            unsafe { *out = vec };
+            0
+        }
+        Ok(None) => {
+            update_stream(stream, |state| {
+                state.recv_closed = true;
+                state.last_error.clear();
+            });
+            stream.notify_closed();
+            // SAFETY: `out` is a valid writable pointer slot per caller
+            // contract. Empty HewVec signals EOF on the success path.
+            unsafe { *out = empty_hwvec() };
+            0
+        }
+        Err((timed_out, msg)) => {
+            update_stream(stream, |state| state.last_error = msg);
+            if !timed_out {
+                let _ = stream.events.push(EVENT_ERROR);
+            }
+            if timed_out {
+                -2
+            } else {
+                -1
+            }
+        }
+    }
+}
+
+// Status sentinel for the Hew-friendly recv_timeout binding.
+//
+// Communicated via a thread-local because Hew's FFI binds one return value
+// per function. Cleared at the start of every `_hew` call so stale state
+// from another stream cannot leak across calls.
+std::thread_local! {
+    static LAST_RECV_TIMED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn set_last_recv_timed_out(v: bool) {
+    LAST_RECV_TIMED_OUT.with(|c| c.set(v));
+}
+
+#[no_mangle]
+/// Hew-friendly `recv_timeout`: returns `*mut HewVec` (empty on timeout or
+/// error). Hew callers query [`hew_quic_stream_last_recv_timed_out`] to
+/// distinguish timeout from EOF/error after a non-success outcome.
+///
+/// # Safety
+///
+/// `stream` must be null or a live stream pointer returned by this module.
+pub unsafe extern "C" fn hew_quic_stream_recv_timeout_hew(
+    stream: *mut HewQuicStream,
+    deadline_ms: i32,
+) -> *mut HewVec {
+    set_last_recv_timed_out(false);
+    let mut out: *mut HewVec = std::ptr::null_mut();
+    // SAFETY: forwarded contract. `&raw mut out` is a valid writable slot.
+    let status = unsafe { hew_quic_stream_recv_timeout(stream, deadline_ms, &raw mut out) };
+    match status {
+        0 => {
+            if out.is_null() {
+                empty_hwvec()
+            } else {
+                out
+            }
+        }
+        -2 => {
+            set_last_recv_timed_out(true);
+            empty_hwvec()
+        }
+        _ => empty_hwvec(),
+    }
+}
+
+#[no_mangle]
+/// Returns 1 if the most recent `hew_quic_stream_recv_timeout_hew` or
+/// `hew_quic_stream_send_timeout_hew` call on this thread observed a
+/// deadline expiry. The value is reset at the start of every `_hew` call.
+pub extern "C" fn hew_quic_stream_last_recv_timed_out() -> i32 {
+    LAST_RECV_TIMED_OUT.with(|c| i32::from(c.get()))
+}
+
+#[no_mangle]
+/// Hew-friendly `send_timeout`: returns 0 on success, -1 on error, -2 on
+/// timeout (same status convention as the cross-language ABI; the value is
+/// stable for Hew callers via INTERNAL-ABI).
+///
+/// # Safety
+///
+/// `stream` must be null or a live stream pointer returned by this module.
+/// `data` must be null or a valid Hew byte vector pointer.
+pub unsafe extern "C" fn hew_quic_stream_send_timeout_hew(
+    stream: *mut HewQuicStream,
+    data: *mut HewVec,
+    deadline_ms: i32,
+) -> c_int {
+    // SAFETY: forwarded contract.
+    unsafe { hew_quic_stream_send_timeout(stream, data, deadline_ms) }
+}
+
+#[no_mangle]
 /// Gracefully finish the send side of a QUIC stream.
 ///
 /// # Safety
@@ -2149,6 +2410,262 @@ mod tests {
         let server_ep_ptr = unsafe { hew_quic_new_server(addr.as_ptr()) };
         let client_ep_ptr = hew_quic_new_client();
         run_loopback(server_ep_ptr, client_ep_ptr);
+    }
+
+    /// `recv_timeout` returns -2 when the server accepts but never sends.
+    ///
+    /// Client opens a stream, sends a probe so the server-side stream is
+    /// observable via `accept_stream`, then calls `recv_timeout` with a
+    /// 200 ms deadline. The server holds the stream but never replies.
+    /// The call must return -2 well within 2 s.
+    #[test]
+    fn quic_stream_recv_timeout_fires() {
+        let addr = c":0";
+        // SAFETY: addr is a valid C string literal.
+        let server_ep_ptr = unsafe { hew_quic_new_server(addr.as_ptr()) };
+        let client_ep_ptr = hew_quic_new_client();
+        assert!(!server_ep_ptr.is_null() && !client_ep_ptr.is_null());
+
+        // SAFETY: server_ep_ptr is valid.
+        let server_port = unsafe { &*server_ep_ptr }
+            .endpoint
+            .local_addr()
+            .expect("server addr")
+            .port();
+
+        let server_ep_addr = server_ep_ptr as usize;
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let barrier_server = Arc::clone(&barrier);
+
+        let server_thread = thread::spawn(move || {
+            let server_ep_ptr = server_ep_addr as *mut HewQuicEndpoint;
+            // SAFETY: server_ep_ptr is valid; this thread owns it.
+            let conn_ptr = unsafe { hew_quic_endpoint_accept(server_ep_ptr) };
+            // SAFETY: conn_ptr is valid.
+            let stream_ptr = unsafe { hew_quic_conn_accept_stream(conn_ptr) };
+            // Drain the probe byte the client sent.
+            // SAFETY: stream_ptr is valid.
+            let _ = unsafe { hew_quic_stream_recv(stream_ptr) };
+
+            // Hold the stream open: do not send. Wait for the test to release.
+            barrier_server.wait();
+
+            // SAFETY: stream_ptr, conn_ptr, server_ep_ptr are valid for
+            // the duration of this thread.
+            unsafe {
+                hew_quic_stream_close(stream_ptr);
+                hew_quic_conn_disconnect(conn_ptr);
+                hew_quic_endpoint_close(server_ep_ptr);
+            }
+        });
+
+        let addr = CString::new(format!("127.0.0.1:{server_port}")).expect("addr cstring");
+        let sn = c"localhost";
+        // SAFETY: addr, sn, and client_ep_ptr are valid.
+        let conn_ptr =
+            unsafe { hew_quic_endpoint_connect(client_ep_ptr, addr.as_ptr(), sn.as_ptr()) };
+        assert!(!conn_ptr.is_null(), "client must connect");
+        // SAFETY: conn_ptr is valid.
+        let stream_ptr = unsafe { hew_quic_conn_open_stream(conn_ptr) };
+        assert!(!stream_ptr.is_null(), "client must open stream");
+
+        // Send a probe so the server can observe the stream via accept_stream.
+        // SAFETY: u8_to_hwvec is given a valid byte slice; the resulting
+        // HewVec is owned and freed below. hew_quic_stream_send takes a
+        // borrow per its contract.
+        let probe = unsafe { u8_to_hwvec(b"x") };
+        // SAFETY: stream_ptr and probe are both valid; ownership not transferred.
+        assert_eq!(unsafe { hew_quic_stream_send(stream_ptr, probe) }, 0);
+        // SAFETY: probe was allocated by u8_to_hwvec above.
+        unsafe { hew_vec_free(probe) };
+
+        let mut out: *mut HewVec = std::ptr::null_mut();
+        let start = std::time::Instant::now();
+        // SAFETY: stream_ptr is valid; `&raw mut out` is a valid writable slot.
+        let status = unsafe { hew_quic_stream_recv_timeout(stream_ptr, 200, &raw mut out) };
+        let elapsed = start.elapsed();
+        assert_eq!(status, -2, "expected timeout (-2), got {status}");
+        assert!(out.is_null(), "out pointer must be unchanged on timeout");
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "200 ms deadline must fire well before 2 s; got {elapsed:?}"
+        );
+
+        // Cleanup-all-exits: confirm the lock was released by issuing a
+        // follow-up recv_timeout(0) with a longer deadline against a
+        // closed-by-server stream below. First, release the server.
+        barrier.wait();
+
+        // SAFETY: stream_ptr, conn_ptr, client_ep_ptr are all valid.
+        unsafe {
+            hew_quic_stream_close(stream_ptr);
+            hew_quic_conn_disconnect(conn_ptr);
+            hew_quic_endpoint_close(client_ep_ptr);
+        }
+
+        server_thread.join().expect("server thread");
+    }
+
+    /// `recv_timeout` with `deadline_ms=0` behaves like `recv` (no deadline).
+    ///
+    /// Verifies the zero-deadline path of the new entrypoint by exchanging
+    /// a single payload through it. The server echoes one byte; the client
+    /// reads it via `recv_timeout(stream, 0, &out)` and must observe
+    /// `status=0` with a non-empty out vec.
+    #[test]
+    fn quic_stream_recv_timeout_zero_means_no_deadline() {
+        let addr = c":0";
+        // SAFETY: addr is a valid C string literal.
+        let server_ep_ptr = unsafe { hew_quic_new_server(addr.as_ptr()) };
+        let client_ep_ptr = hew_quic_new_client();
+        assert!(!server_ep_ptr.is_null() && !client_ep_ptr.is_null());
+
+        // SAFETY: server_ep_ptr is valid.
+        let server_port = unsafe { &*server_ep_ptr }
+            .endpoint
+            .local_addr()
+            .expect("server addr")
+            .port();
+        let server_ep_addr = server_ep_ptr as usize;
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let barrier_server = Arc::clone(&barrier);
+
+        let server_thread = thread::spawn(move || {
+            let server_ep_ptr = server_ep_addr as *mut HewQuicEndpoint;
+            // SAFETY: server_ep_ptr is valid for this thread; conn_ptr,
+            // stream_ptr returned by accept calls; reply allocated by
+            // u8_to_hwvec; all freed below before thread exit.
+            unsafe {
+                let conn_ptr = hew_quic_endpoint_accept(server_ep_ptr);
+                let stream_ptr = hew_quic_conn_accept_stream(conn_ptr);
+                let _ = hew_quic_stream_recv(stream_ptr);
+                let reply = u8_to_hwvec(b"y");
+                hew_quic_stream_send(stream_ptr, reply);
+                hew_vec_free(reply);
+                hew_quic_stream_finish(stream_ptr);
+                // Wait for the client to drain before tearing down —
+                // without this barrier the connection close races recv
+                // delivery and the client may observe "connection lost"
+                // instead of the echoed byte.
+                barrier_server.wait();
+                hew_quic_stream_close(stream_ptr);
+                hew_quic_conn_disconnect(conn_ptr);
+                hew_quic_endpoint_close(server_ep_ptr);
+            }
+        });
+
+        let addr = CString::new(format!("127.0.0.1:{server_port}")).expect("addr cstring");
+        let sn = c"localhost";
+        // SAFETY: client-side FFI with valid pointers; ownership documented
+        // at each free.
+        let (status, out, stream_ptr, conn_ptr) = unsafe {
+            let conn_ptr = hew_quic_endpoint_connect(client_ep_ptr, addr.as_ptr(), sn.as_ptr());
+            let stream_ptr = hew_quic_conn_open_stream(conn_ptr);
+            let probe = u8_to_hwvec(b"x");
+            hew_quic_stream_send(stream_ptr, probe);
+            hew_vec_free(probe);
+            let mut out: *mut HewVec = std::ptr::null_mut();
+            let status = hew_quic_stream_recv_timeout(stream_ptr, 0, &raw mut out);
+            (status, out, stream_ptr, conn_ptr)
+        };
+        assert_eq!(status, 0, "deadline_ms=0 must succeed (got {status})");
+        assert!(!out.is_null());
+        // SAFETY: out is a valid HewVec pointer per the success contract,
+        // and is freed before this scope ends.
+        let len = unsafe { hew_cabi::vec::hew_vec_len(out) };
+        assert_eq!(len, 1, "expected one echoed byte");
+        // SAFETY: out is owned by the caller per the recv_timeout contract.
+        unsafe { hew_vec_free(out) };
+
+        // Release the server now that the client has read the reply.
+        barrier.wait();
+
+        // SAFETY: stream_ptr, conn_ptr, client_ep_ptr are valid.
+        unsafe {
+            hew_quic_stream_close(stream_ptr);
+            hew_quic_conn_disconnect(conn_ptr);
+            hew_quic_endpoint_close(client_ep_ptr);
+        }
+        server_thread.join().expect("server thread");
+    }
+
+    /// `send_timeout` returns -2 when the peer's flow-control window stays
+    /// closed long enough to exhaust the deadline.
+    ///
+    /// Quinn's default initial stream flow-control window is small relative
+    /// to the payload below; the server connects but never reads from its
+    /// recv stream, so the client's `write_all` cannot drain the buffer
+    /// past the initial window. The client's `send_timeout` must return
+    /// -2 well within 2 s.
+    #[test]
+    fn quic_stream_send_timeout_fires() {
+        let addr = c":0";
+        // SAFETY: addr is a valid C string literal.
+        let server_ep_ptr = unsafe { hew_quic_new_server(addr.as_ptr()) };
+        let client_ep_ptr = hew_quic_new_client();
+        assert!(!server_ep_ptr.is_null() && !client_ep_ptr.is_null());
+
+        // SAFETY: server_ep_ptr is valid.
+        let server_port = unsafe { &*server_ep_ptr }
+            .endpoint
+            .local_addr()
+            .expect("server addr")
+            .port();
+        let server_ep_addr = server_ep_ptr as usize;
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let barrier_server = Arc::clone(&barrier);
+
+        let server_thread = thread::spawn(move || {
+            let server_ep_ptr = server_ep_addr as *mut HewQuicEndpoint;
+            // SAFETY: all pointers are valid for this thread; do NOT recv
+            // — the recv side never drains, so the client's window stays
+            // closed past the deadline.
+            unsafe {
+                let conn_ptr = hew_quic_endpoint_accept(server_ep_ptr);
+                let stream_ptr = hew_quic_conn_accept_stream(conn_ptr);
+                barrier_server.wait();
+                hew_quic_stream_close(stream_ptr);
+                hew_quic_conn_disconnect(conn_ptr);
+                hew_quic_endpoint_close(server_ep_ptr);
+            }
+        });
+
+        let addr = CString::new(format!("127.0.0.1:{server_port}")).expect("addr cstring");
+        let sn = c"localhost";
+        // 8 MiB payload — comfortably exceeds the default flow-control
+        // window so write_all blocks waiting for the peer to advance it.
+        let big_payload = vec![0xAB_u8; 8 * 1024 * 1024];
+
+        // SAFETY: client-side FFI with valid pointers; ownership tracked
+        // and freed within this scope.
+        let (status, elapsed, stream_ptr, conn_ptr) = unsafe {
+            let conn_ptr = hew_quic_endpoint_connect(client_ep_ptr, addr.as_ptr(), sn.as_ptr());
+            let stream_ptr = hew_quic_conn_open_stream(conn_ptr);
+            let probe = u8_to_hwvec(b"x");
+            hew_quic_stream_send(stream_ptr, probe);
+            hew_vec_free(probe);
+            let big = u8_to_hwvec(&big_payload);
+            let start = std::time::Instant::now();
+            let status = hew_quic_stream_send_timeout(stream_ptr, big, 200);
+            let elapsed = start.elapsed();
+            hew_vec_free(big);
+            (status, elapsed, stream_ptr, conn_ptr)
+        };
+
+        assert_eq!(status, -2, "expected send timeout (-2), got {status}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "200 ms send deadline must fire well before 2 s; got {elapsed:?}"
+        );
+
+        barrier.wait();
+        // SAFETY: stream_ptr, conn_ptr, client_ep_ptr are valid.
+        unsafe {
+            hew_quic_stream_close(stream_ptr);
+            hew_quic_conn_disconnect(conn_ptr);
+            hew_quic_endpoint_close(client_ep_ptr);
+        }
+        server_thread.join().expect("server thread");
     }
 
     #[test]

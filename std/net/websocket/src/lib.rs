@@ -16,6 +16,8 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use parking_lot::Mutex as PlMutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -48,7 +50,7 @@ struct HewWsConnInner {
     /// The primary WebSocket handle.  In attached mode this is used for reading
     /// only; user sends go through `write_ws` when available.  In non-attached
     /// (recv) mode the single mutex covers both directions as before.
-    ws: Mutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>,
+    ws: PlMutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>,
     /// Separate write-only WebSocket for plain-TCP connections.
     ///
     /// WHY: tungstenite's `WebSocket` is single-owner with a blocking `read()`
@@ -60,7 +62,14 @@ struct HewWsConnInner {
     ///       across two independently-created contexts).
     /// WHAT: A proper TLS split would require a mutex-protected TLS write half
     ///       that the two WebSocket frames share — out of scope for this lane.
-    write_ws: Option<Mutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>>,
+    ///
+    /// Both `ws` and `write_ws` use `parking_lot::Mutex` because
+    /// `hew_ws_recv_timeout` needs `try_lock_for(Duration)` to bound the wait
+    /// for the reader thread (which may hold the lock for up to
+    /// `READER_READ_TIMEOUT` (250 ms) per cycle). `parking_lot::Mutex` does
+    /// not poison, so the previous `lock_or_recover` recovery is unnecessary
+    /// for these locks and is replaced with `pl_lock`.
+    write_ws: Option<PlMutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>>,
     shutdown_stream: Option<TcpStream>,
     reader: Mutex<Option<ReaderControl>>,
     closed: AtomicBool,
@@ -206,10 +215,10 @@ impl HewWsConn {
     fn new(ws: WebSocket<MaybeTlsStream<TcpStream>>, role: Role) -> Self {
         let shutdown_stream = clone_shutdown_stream(&ws);
         let config = *ws.get_config();
-        let write_ws = try_split_write_ws(&ws, role, config).map(|w| Mutex::new(Some(w)));
+        let write_ws = try_split_write_ws(&ws, role, config).map(|w| PlMutex::new(Some(w)));
         Self {
             inner: Arc::new(HewWsConnInner {
-                ws: Mutex::new(Some(ws)),
+                ws: PlMutex::new(Some(ws)),
                 write_ws,
                 shutdown_stream,
                 reader: Mutex::new(None),
@@ -359,6 +368,13 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// `parking_lot::Mutex` does not poison; the lock cannot fail. This wrapper
+/// matches the call shape of `lock_or_recover` for readability across the
+/// two lock kinds in this crate.
+fn pl_lock<T>(mutex: &PlMutex<T>) -> parking_lot::MutexGuard<'_, T> {
+    mutex.lock()
+}
+
 fn signal_reader_cancel(inner: &Arc<HewWsConnInner>) {
     if let Some(reader) = lock_or_recover(&inner.reader).as_ref() {
         reader.cancel.store(true, Ordering::Release);
@@ -412,9 +428,9 @@ fn join_reader(inner: &Arc<HewWsConnInner>) {
 fn drop_ws(inner: &Arc<HewWsConnInner>) {
     // Drop the write-side WebSocket first; it holds only a clone of the TCP fd.
     if let Some(write_ws_mutex) = inner.write_ws.as_ref() {
-        drop(lock_or_recover(write_ws_mutex).take());
+        drop(pl_lock(write_ws_mutex).take());
     }
-    let mut ws = lock_or_recover(&inner.ws);
+    let mut ws = pl_lock(&inner.ws);
     let Some(mut ws) = ws.take() else {
         return;
     };
@@ -511,7 +527,7 @@ fn spawn_attach_reader(
         }
     }
     {
-        let mut guard = lock_or_recover(&conn.inner.ws);
+        let mut guard = pl_lock(&conn.inner.ws);
         let Some(ws) = guard.as_mut() else {
             eprintln!("[attach] connection already closed for ws={ws_ptr:p}");
             return;
@@ -539,7 +555,7 @@ fn spawn_attach_reader(
             }
 
             let read_result = {
-                let mut guard = lock_or_recover(&inner.ws);
+                let mut guard = pl_lock(&inner.ws);
                 let Some(ws) = guard.as_mut() else {
                     break;
                 };
@@ -577,7 +593,7 @@ fn spawn_attach_reader(
                     }
                 }
                 Ok(tungstenite::Message::Ping(_)) => {
-                    let mut guard = lock_or_recover(&inner.ws);
+                    let mut guard = pl_lock(&inner.ws);
                     if let Some(ws) = guard.as_mut() {
                         let _ = ws.send(tungstenite::Message::Pong(vec![].into()));
                     }
@@ -642,7 +658,7 @@ fn recv_message(inner: &Arc<HewWsConnInner>) -> (HewWsRecvResult, *mut HewWsMess
         }
 
         let read_result = {
-            let mut guard = lock_or_recover(&inner.ws);
+            let mut guard = pl_lock(&inner.ws);
             let Some(ws) = guard.as_mut() else {
                 let kind = if inner.closed.load(Ordering::Acquire) {
                     HewWsRecvResult::Cancelled
@@ -714,13 +730,13 @@ fn send_ws_message(
     message: Message,
 ) -> Result<(), tungstenite::Error> {
     if let Some(write_ws_mutex) = inner.write_ws.as_ref() {
-        let mut guard = lock_or_recover(write_ws_mutex);
+        let mut guard = pl_lock(write_ws_mutex);
         let Some(ws) = guard.as_mut() else {
             return Err(tungstenite::Error::AlreadyClosed);
         };
         return ws.send(message);
     }
-    let mut guard = lock_or_recover(&inner.ws);
+    let mut guard = pl_lock(&inner.ws);
     let Some(ws) = guard.as_mut() else {
         return Err(tungstenite::Error::AlreadyClosed);
     };
@@ -819,6 +835,144 @@ pub unsafe extern "C" fn hew_ws_recv(ws: *mut HewWsConn) -> *mut HewWsMessage {
         (HewWsRecvResult::Message, msg) => msg,
         (HewWsRecvResult::Cancelled | HewWsRecvResult::Error, _) => std::ptr::null_mut(),
     }
+}
+
+// Status sentinel for hew_ws_recv_timeout: communicated via a thread-local
+// because the FFI returns a single pointer. Cleared at every call.
+std::thread_local! {
+    static LAST_WS_RECV_TIMED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn set_last_ws_recv_timed_out(v: bool) {
+    LAST_WS_RECV_TIMED_OUT.with(|c| c.set(v));
+}
+
+/// Receive the next message from a WebSocket connection with a per-call
+/// deadline. Returns a heap-allocated [`HewWsMessage`] on success, or null
+/// on deadline expiry, error, cancellation, or null input.
+///
+/// Callers query [`hew_ws_recv_last_timed_out`] to distinguish timeout
+/// from other null returns. The sentinel is cleared at the start of every
+/// call to this function.
+///
+/// `deadline_ms <= 0` disables the deadline (matches `hew_ws_recv`).
+///
+/// # Concurrency
+///
+/// The reader thread (when attached) holds `inner.ws` for up to
+/// `READER_READ_TIMEOUT` (250 ms) per cycle. This call uses
+/// `parking_lot::Mutex::try_lock_for` so the worst-case wait for the
+/// lock is bounded by the user's deadline. After acquiring the lock, the
+/// residual deadline is applied to the underlying TCP read via
+/// `set_read_timeout` so the inner `ws.read()` call cannot exceed the
+/// deadline either.
+///
+/// Cleanup-all-exits: the `parking_lot::MutexGuard` is dropped via RAII
+/// before every return path; explicit `drop(guard)` annotations make
+/// release order visible.
+///
+/// # Safety
+///
+/// `ws` must be a valid pointer returned by [`hew_ws_connect`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_ws_recv_timeout(
+    ws: *mut HewWsConn,
+    deadline_ms: i32,
+) -> *mut HewWsMessage {
+    set_last_ws_recv_timed_out(false);
+    if ws.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: `ws` is a valid HewWsConn pointer per caller contract.
+    let inner = Arc::clone(&unsafe { &*ws }.inner);
+    if inner.closed.load(Ordering::Acquire) {
+        return std::ptr::null_mut();
+    }
+
+    let _recv_guard = ActiveCallGuard::new(&inner.active_recvs);
+
+    if deadline_ms <= 0 {
+        // No deadline — match the existing recv path exactly.
+        return match recv_message(&inner) {
+            (HewWsRecvResult::Message, msg) => msg,
+            (HewWsRecvResult::Cancelled | HewWsRecvResult::Error, _) => std::ptr::null_mut(),
+        };
+    }
+
+    #[expect(clippy::cast_sign_loss, reason = "deadline_ms > 0 checked above")]
+    let total = Duration::from_millis(deadline_ms as u64);
+    let start = Instant::now();
+
+    // Acquire `inner.ws` with a timed try_lock. If the reader thread is
+    // mid-cycle the wait is bounded by `total`.
+    let Some(mut guard) = inner.ws.try_lock_for(total) else {
+        set_last_ws_recv_timed_out(true);
+        return std::ptr::null_mut();
+    };
+
+    let Some(ws_ref) = guard.as_mut() else {
+        // Connection closed under us. Cleanup-all-exits: guard drops on return.
+        return std::ptr::null_mut();
+    };
+
+    let remaining = total.saturating_sub(start.elapsed());
+    if remaining.is_zero() {
+        // Lock acquire consumed the entire budget. Cleanup-all-exits:
+        // explicit drop before return makes the release order visible.
+        drop(guard);
+        set_last_ws_recv_timed_out(true);
+        return std::ptr::null_mut();
+    }
+
+    if let Err(err) = set_read_timeout(ws_ref, Some(remaining)) {
+        eprintln!("[recv_timeout] failed to set read timeout: {err}");
+        drop(guard);
+        return std::ptr::null_mut();
+    }
+
+    let read_result = ws_ref.read();
+    // Restore the timeout to the reader's pacing value so subsequent
+    // attached-reader cycles continue with their normal cadence.
+    let _ = set_read_timeout(ws_ref, Some(READER_READ_TIMEOUT));
+
+    match read_result {
+        Ok(msg) => {
+            // Cleanup-all-exits: guard drops at end of scope.
+            drop(guard);
+            build_recv_message(msg)
+        }
+        Err(err) if is_timeout_error(&err) => {
+            drop(guard);
+            set_last_ws_recv_timed_out(true);
+            std::ptr::null_mut()
+        }
+        Err(_) => {
+            drop(guard);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+/// Returns 1 if the most recent `hew_ws_recv_timeout` on this thread
+/// observed a deadline expiry; 0 otherwise. Cleared at the start of
+/// every `hew_ws_recv_timeout` call.
+pub extern "C" fn hew_ws_recv_last_timed_out() -> i32 {
+    LAST_WS_RECV_TIMED_OUT.with(|c| i32::from(c.get()))
+}
+
+#[no_mangle]
+/// Returns true if `msg` is a non-null pointer (a successful recv result).
+/// Used by Hew callers to distinguish a valid message from a null return
+/// (timeout or error) without raw-pointer arithmetic.
+///
+/// # Safety
+///
+/// `msg` must be null or a valid pointer returned by [`hew_ws_recv`] /
+/// [`hew_ws_recv_timeout`]. Pointer reads are not performed; only the
+/// null check.
+pub unsafe extern "C" fn hew_ws_message_is_valid(msg: *const HewWsMessage) -> bool {
+    !msg.is_null()
 }
 
 /// Close a WebSocket connection and free its resources.
@@ -1564,6 +1718,51 @@ mod tests {
         unsafe { hew_ws_close(std::ptr::null_mut()) };
     }
 
+    /// `hew_ws_recv_timeout` returns null and sets the timeout sentinel
+    /// when the peer accepts the WebSocket but never sends anything.
+    ///
+    /// The 200 ms deadline must fire well within 2 s. The previous reader
+    /// architecture used `std::sync::Mutex` which has no timed acquire,
+    /// so a stalled peer pinned the calling thread until the read returned.
+    #[test]
+    fn ws_recv_timeout_fires_on_silent_peer() {
+        let (server, conn, _client) = attach_test_conn();
+        // Note: `_client` is the peer-side WebSocket. We deliberately do
+        // not send anything from it — the server-side recv must time out.
+
+        let start = Instant::now();
+        // SAFETY: conn is a valid HewWsConn pointer.
+        let msg = unsafe { hew_ws_recv_timeout(conn, 200) };
+        let elapsed = start.elapsed();
+        let timed_out = hew_ws_recv_last_timed_out();
+
+        assert!(msg.is_null(), "deadline expiry must return null message");
+        assert_eq!(timed_out, 1, "timeout sentinel must be set");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "200 ms deadline must fire well before 2 s; got {elapsed:?}"
+        );
+
+        // Cleanup-all-exits regression: a follow-up call with deadline
+        // must still succeed quickly (lock was released), proving we
+        // didn't leak the parking_lot guard on the timeout exit path.
+        let start2 = Instant::now();
+        // SAFETY: conn is a valid HewWsConn pointer.
+        let msg2 = unsafe { hew_ws_recv_timeout(conn, 100) };
+        let elapsed2 = start2.elapsed();
+        let timed_out2 = hew_ws_recv_last_timed_out();
+        assert!(msg2.is_null());
+        assert_eq!(timed_out2, 1);
+        assert!(
+            elapsed2 < Duration::from_secs(1),
+            "second recv_timeout must also be deadline-bounded; got {elapsed2:?}"
+        );
+
+        // SAFETY: conn and server are valid; close is idempotent.
+        unsafe { hew_ws_close(conn) };
+        unsafe { hew_ws_server_close(server) };
+    }
+
     /// `build_message` with empty payload creates a valid message with a non-null
     /// sentinel data pointer (canonical `malloc_bytes` empty behaviour).
     #[test]
@@ -1724,7 +1923,7 @@ mod tests {
                 let read_result = {
                     // SAFETY: conn is valid until hew_ws_close below.
                     let conn_ref = unsafe { &*conn };
-                    let mut guard = conn_ref.inner.ws.lock().expect("websocket mutex poisoned");
+                    let mut guard = conn_ref.inner.ws.lock();
                     let ws = guard
                         .as_mut()
                         .expect("accepted websocket should be present");
@@ -1789,7 +1988,7 @@ mod tests {
                 let msg = {
                     // SAFETY: conn is valid until hew_ws_close below.
                     let conn_ref = unsafe { &*conn };
-                    let mut guard = conn_ref.inner.ws.lock().expect("websocket mutex poisoned");
+                    let mut guard = conn_ref.inner.ws.lock();
                     let ws = guard
                         .as_mut()
                         .expect("accepted websocket should be present");
@@ -1866,7 +2065,7 @@ mod tests {
                 let read_result = {
                     // SAFETY: conn is valid until hew_ws_close below.
                     let conn_ref = unsafe { &*conn };
-                    let mut guard = conn_ref.inner.ws.lock().expect("websocket mutex poisoned");
+                    let mut guard = conn_ref.inner.ws.lock();
                     let ws = guard
                         .as_mut()
                         .expect("accepted websocket should be present");

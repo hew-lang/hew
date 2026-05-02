@@ -276,6 +276,18 @@ trait QUICStreamMethods {
     /// Returns an empty buffer on stream close or error.
     fn recv(strm: QUICStream) -> bytes;
 
+    /// Receive bytes with a per-call deadline.
+    ///
+    /// `deadline_ms <= 0` disables the deadline. On deadline expiry returns
+    /// `Err(IoError::TimedOut(0))`. On stream EOF returns `Ok(empty)`.
+    fn recv_timeout(strm: QUICStream, deadline_ms: int) -> Result<bytes, fs.IoError>;
+
+    /// Send bytes with a per-call deadline.
+    ///
+    /// `deadline_ms <= 0` disables the deadline. On deadline expiry returns
+    /// `Err(IoError::TimedOut(0))`.
+    fn send_timeout(strm: QUICStream, data: bytes, deadline_ms: int) -> Result<(), fs.IoError>;
+
     /// Signal that no more data will be sent on this stream.
     ///
     /// The receive side of the remote peer will see EOF after all buffered
@@ -320,6 +332,12 @@ impl QUICStreamMethods for QUICStream {
         unsafe {
             hew_quic_stream_recv(strm)
         }
+    }
+    fn recv_timeout(strm: QUICStream, deadline_ms: int) -> Result<bytes, fs.IoError> {
+        stream_recv_timeout(strm, deadline_ms)
+    }
+    fn send_timeout(strm: QUICStream, data: bytes, deadline_ms: int) -> Result<(), fs.IoError> {
+        stream_send_timeout(strm, data, deadline_ms)
     }
     fn finish(strm: QUICStream) -> Result<(), fs.IoError> {
         stream_finish(strm)
@@ -543,6 +561,41 @@ pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError> {
     }
 }
 
+/// Send bytes on a QUIC stream with a per-call deadline.
+///
+/// `deadline_ms <= 0` disables the deadline. Returns `Err(IoError::TimedOut(0))`
+/// on deadline expiry, `Err(IoError::Other(0))` on transport error.
+pub fn stream_send_timeout(strm: QUICStream, data: bytes, deadline_ms: int) -> Result<(), fs.IoError> {
+    let status: i32 = unsafe { // INTERNAL-ABI: 0=ok, -1=error, -2=timeout
+        hew_quic_stream_send_timeout_hew(strm, data, deadline_ms as i32)
+    };
+    if status == -2 {
+        Err(fs.io_error_timed_out())
+    } else if status < 0 {
+        Err(fs.io_error_from_errno(0))
+    } else {
+        Ok(())
+    }
+}
+
+/// Receive bytes from a QUIC stream with a per-call deadline.
+///
+/// `deadline_ms <= 0` disables the deadline. Returns `Err(IoError::TimedOut(0))`
+/// on deadline expiry. On success returns the bytes (may be empty for EOF).
+pub fn stream_recv_timeout(strm: QUICStream, deadline_ms: int) -> Result<bytes, fs.IoError> {
+    let payload: bytes = unsafe {
+        hew_quic_stream_recv_timeout_hew(strm, deadline_ms as i32)
+    };
+    let timed_out: i32 = unsafe { // INTERNAL-ABI: 1=timeout, 0=ok-or-error; thread-local sentinel
+        hew_quic_stream_last_recv_timed_out()
+    };
+    if timed_out == 1 {
+        Err(fs.io_error_timed_out())
+    } else {
+        Ok(payload)
+    }
+}
+
 /// Signal the end of the send side of a QUIC stream.
 ///
 /// Sends a FIN to the peer, indicating no more data will be written.
@@ -641,6 +694,9 @@ extern "C" {
     // Stream methods
     fn hew_quic_stream_send(stream: QUICStream, data: bytes) -> i32;
     fn hew_quic_stream_recv(stream: QUICStream) -> bytes;
+    fn hew_quic_stream_send_timeout_hew(stream: QUICStream, data: bytes, deadline_ms: i32) -> i32; // INTERNAL-ABI: 0=ok, -1=error, -2=timeout
+    fn hew_quic_stream_recv_timeout_hew(stream: QUICStream, deadline_ms: i32) -> bytes;
+    fn hew_quic_stream_last_recv_timed_out() -> i32; // INTERNAL-ABI: thread-local timeout sentinel; 1=timeout, 0=ok-or-error
     fn hew_quic_stream_finish(stream: QUICStream) -> i32;
     fn hew_quic_stream_stop(stream: QUICStream, error_code: i64) -> i32;
     fn hew_quic_stream_close(stream: QUICStream) -> i32;

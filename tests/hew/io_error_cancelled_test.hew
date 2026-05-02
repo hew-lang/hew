@@ -1,0 +1,30 @@
+//! Tests for the IoError::Cancelled variant added for cancellation-aware I/O.
+
+import std::fs;
+
+import std::testing;
+
+#[test]
+fn test_io_error_from_errno_cancelled_linux() {
+    // ECANCELED: Linux=125
+    match fs.io_error_from_errno(125) {
+        IoError::Cancelled(code) => testing.assert_eq(code, 125),
+        _ => panic("expected IoError::Cancelled for errno 125"),
+    }
+}
+
+#[test]
+fn test_io_error_from_errno_cancelled_macos() {
+    // ECANCELED: macOS=89
+    match fs.io_error_from_errno(89) {
+        IoError::Cancelled(code) => testing.assert_eq(code, 89),
+        _ => panic("expected IoError::Cancelled for errno 89"),
+    }
+}
+
+#[test]
+fn test_io_error_message_cancelled() {
+    testing.assert_eq_str(fs.io_error_message(IoError::Cancelled(125)), "Cancelled(125)");
+    testing.assert_eq_str(fs.io_error_message(IoError::Cancelled(89)), "Cancelled(89)");
+    testing.assert_eq_str(fs.io_error_message(IoError::Cancelled(0)), "Cancelled(0)");
+}

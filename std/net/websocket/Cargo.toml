@@ -14,6 +14,11 @@ crate-type = ["staticlib", "lib"]
 
 [dependencies]
 tungstenite = "0.29"
+# parking_lot supplies try_lock_for(Duration) which std::sync::Mutex lacks.
+# Required by hew_ws_recv_timeout to bound the wait for the reader thread
+# (which may hold the WebSocket lock for up to READER_READ_TIMEOUT = 250 ms
+# per cycle). Direct dep — workspace does not expose parking_lot.
+parking_lot = "0.12"
 libc.workspace = true
 hew-cabi = { path = "../../../hew-cabi" }
 hew-runtime = { path = "../../../hew-runtime" }

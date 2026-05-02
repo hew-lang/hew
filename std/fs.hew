@@ -57,6 +57,12 @@ pub enum IoError {
     AddressInUse(int);
     /// The connection attempt or I/O operation timed out (ETIMEDOUT).
     TimedOut(int);
+    /// Operation was cancelled (e.g., a deadline expired before the I/O could complete).
+    ///
+    /// Distinct from `TimedOut`: `TimedOut` means the deadline expired; `Cancelled`
+    /// means the operation was abandoned for another reason (e.g. the blocking
+    /// pool was shut down mid-call).
+    Cancelled(int);
     /// The address or hostname could not be resolved (EADDRNOTAVAIL).
     AddressNotAvailable(int);
     /// Any other OS-level I/O failure.
@@ -91,6 +97,9 @@ pub fn io_error_from_errno(errno: int) -> IoError {
     // ETIMEDOUT: Linux=110, macOS=60
     } else if errno == 110 || errno == 60 {
         IoError::TimedOut(errno)
+    // ECANCELED: Linux=125, macOS=89
+    } else if errno == 125 || errno == 89 {
+        IoError::Cancelled(errno)
     // EADDRNOTAVAIL: Linux=99, macOS=49
     } else if errno == 99 || errno == 49 {
         IoError::AddressNotAvailable(errno)
@@ -118,9 +127,25 @@ pub fn io_error_message(e: IoError) -> String {
         IoError::ConnectionRefused(code) => f"ConnectionRefused({code})",
         IoError::AddressInUse(code) => f"AddressInUse({code})",
         IoError::TimedOut(code) => f"TimedOut({code})",
+        IoError::Cancelled(code) => f"Cancelled({code})",
         IoError::AddressNotAvailable(code) => f"AddressNotAvailable({code})",
         IoError::Other(code) => f"Other({code})",
     }
+}
+
+/// Construct an `IoError::TimedOut(0)` value without a platform-specific
+/// errno. Useful for in-process deadline expiry where there is no OS error
+/// to map (e.g. `fs.io_error_from_errno` would need a platform-aware errno
+/// constant that the caller does not have).
+pub fn io_error_timed_out() -> IoError {
+    IoError::TimedOut(0)
+}
+
+/// Construct an `IoError::Cancelled(0)` value without a platform-specific
+/// errno. Useful for in-process cancellation (e.g. blocking pool stopped)
+/// where there is no OS error to map.
+pub fn io_error_cancelled() -> IoError {
+    IoError::Cancelled(0)
 }
 
 fn missing_parent(target: String) -> bool {

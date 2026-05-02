@@ -17,6 +17,7 @@ use std::sync::{
     LazyLock, OnceLock,
 };
 
+use crate::blocking_pool::{shared_blocking_pool, spawn_blocking_result, BlockingPoolError};
 use crate::lifetime::poison_safe::{PoisonSafe, PoisonSafeRw};
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
@@ -884,6 +885,42 @@ pub extern "C" fn hew_tcp_accept(listener: c_int) -> c_int {
     })
 }
 
+/// Resolve `addr` through the shared blocking pool with an optional deadline.
+///
+/// `deadline_ms <= 0` resolves with no deadline. The shared pool keeps the
+/// scheduler thread free while `getaddrinfo` runs.
+///
+/// On `IoError::TimedOut` the caller should set errno=ETIMEDOUT (110 on
+/// Linux, 60 on macOS) — caller's responsibility because errno values are
+/// platform-specific. The pool returns `BlockingPoolError::PoolStopped` for
+/// any non-timeout failure including a `getaddrinfo` error.
+fn resolve_addr_via_pool(
+    target: String,
+    deadline_ms: i64,
+) -> Result<Vec<SocketAddr>, BlockingPoolError> {
+    let deadline = if deadline_ms <= 0 {
+        None
+    } else {
+        #[expect(clippy::cast_sign_loss, reason = "checked > 0 above")]
+        Some(std::time::Duration::from_millis(deadline_ms as u64))
+    };
+    // SAFETY: shared_blocking_pool returns a process-lifetime, never-stopped
+    // pool whose pointer stays valid for this call.
+    unsafe {
+        spawn_blocking_result(
+            shared_blocking_pool(),
+            move || {
+                target
+                    .to_socket_addrs()
+                    .map(Iterator::collect::<Vec<_>>)
+                    .ok()
+            },
+            deadline,
+        )
+    }
+    .and_then(|opt| opt.ok_or(BlockingPoolError::PoolStopped))
+}
+
 /// Connect to a TCP endpoint at `addr` (`host:port`).
 ///
 /// Returns a positive connection handle, or -1 on error.
@@ -893,6 +930,25 @@ pub extern "C" fn hew_tcp_accept(listener: c_int) -> c_int {
 /// `addr` must be a valid, NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
+    // SAFETY: forwarded contract; deadline_ms=0 disables the deadline.
+    unsafe { hew_tcp_connect_timed(addr, 0) }
+}
+
+/// Connect to a TCP endpoint at `addr` (`host:port`) with a single-budget
+/// deadline that covers BOTH the DNS resolution and the TCP handshake.
+///
+/// `deadline_ms <= 0` disables the deadline (no time limit). Otherwise the
+/// caller has at most `deadline_ms` milliseconds across:
+///   1. `getaddrinfo` running on the shared blocking pool, and
+///   2. `TcpStream::connect_timeout` for the residual budget.
+///
+/// On deadline expiry returns -1 with errno=ETIMEDOUT (110 Linux, 60 macOS).
+///
+/// # Safety
+///
+/// `addr` must be a valid, NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_connect_timed(addr: *const c_char, deadline_ms: i64) -> c_int {
     cabi_guard!(addr.is_null(), -1);
     // SAFETY: caller guarantees `addr` is a valid C string.
     let Ok(addr_str) = unsafe { CStr::from_ptr(addr) }.to_str() else {
@@ -900,21 +956,77 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
     };
     // Allow ":port" shorthand — connect to localhost.
     let owned;
-    let connect_addr = if addr_str.starts_with(':') {
+    let connect_addr: &str = if addr_str.starts_with(':') {
         owned = format!("127.0.0.1{addr_str}");
         owned.as_str()
     } else {
         addr_str
     };
-    let stream = match TcpStream::connect(connect_addr) {
-        Ok(s) => s,
-        Err(e) => {
-            record_tcp_error_kind(e.kind());
+
+    let start = std::time::Instant::now();
+    let addrs = match resolve_addr_via_pool(connect_addr.to_owned(), deadline_ms) {
+        Ok(a) => a,
+        Err(BlockingPoolError::TimedOut) => {
+            tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
+            // Cleanup-all-exits: no partial socket allocated; only thread-local
+            // state needs an update so callers can read structured errors.
             hew_cabi::sink::set_last_error_with_errno(
-                format!("hew_tcp_connect: {e}"),
-                e.raw_os_error().unwrap_or(0),
+                format!("hew_tcp_connect: DNS deadline expired after {deadline_ms} ms"),
+                etimedout_errno(),
             );
             return -1;
+        }
+        Err(BlockingPoolError::PoolStopped) => {
+            // getaddrinfo returned an error.
+            hew_cabi::sink::set_last_error_with_errno(
+                String::from("hew_tcp_connect: DNS resolution failed"),
+                0,
+            );
+            return -1;
+        }
+    };
+    let Some(sock_addr) = addrs.into_iter().next() else {
+        hew_cabi::sink::set_last_error_with_errno(
+            String::from("hew_tcp_connect: no addresses resolved"),
+            0,
+        );
+        return -1;
+    };
+
+    let stream = if deadline_ms <= 0 {
+        match TcpStream::connect(sock_addr) {
+            Ok(s) => s,
+            Err(e) => {
+                record_tcp_error_kind(e.kind());
+                hew_cabi::sink::set_last_error_with_errno(
+                    format!("hew_tcp_connect: {e}"),
+                    e.raw_os_error().unwrap_or(0),
+                );
+                return -1;
+            }
+        }
+    } else {
+        // Single budget: residual = total - DNS time spent.
+        #[expect(clippy::cast_sign_loss, reason = "deadline_ms > 0 checked above")]
+        let total = std::time::Duration::from_millis(deadline_ms as u64);
+        let Some(remaining) = total.checked_sub(start.elapsed()) else {
+            tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
+            hew_cabi::sink::set_last_error_with_errno(
+                format!("hew_tcp_connect: deadline exhausted in DNS phase ({deadline_ms} ms)"),
+                etimedout_errno(),
+            );
+            return -1;
+        };
+        match TcpStream::connect_timeout(&sock_addr, remaining) {
+            Ok(s) => s,
+            Err(e) => {
+                record_tcp_error_kind(e.kind());
+                hew_cabi::sink::set_last_error_with_errno(
+                    format!("hew_tcp_connect: {e}"),
+                    e.raw_os_error().unwrap_or(0),
+                );
+                return -1;
+            }
         }
     };
     let _ = stream.set_nodelay(true);
@@ -924,6 +1036,23 @@ pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
         state.streams.insert(handle, stream);
         handle
     })
+}
+
+/// Platform-specific ETIMEDOUT errno value.
+const fn etimedout_errno() -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        110
+    }
+    #[cfg(target_os = "macos")]
+    {
+        60
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        // POSIX-defined ETIMEDOUT on most BSDs is 60. Fall back to 110.
+        60
+    }
 }
 
 /// Set read timeout on a TCP connection handle.
@@ -996,9 +1125,12 @@ pub extern "C" fn hew_tcp_set_write_timeout(fd: c_int, timeout_ms: c_int) -> c_i
     0
 }
 
-/// Connect to a TCP endpoint with an explicit timeout.
+/// Connect to a TCP endpoint with an explicit timeout that covers BOTH
+/// DNS resolution and the TCP handshake (single-budget deadline).
 ///
-/// Returns a positive connection handle, or -1 on error.
+/// Returns a positive connection handle, or -1 on error. DNS now runs on the
+/// shared blocking pool so the calling scheduler thread is not parked while
+/// `getaddrinfo` runs.
 ///
 /// # Safety
 ///
@@ -1015,22 +1147,46 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
     let Ok(port) = u16::try_from(port) else {
         return -1;
     };
-    let Ok(timeout_ms) = u64::try_from(timeout_ms) else {
+    let Ok(timeout_ms_u64) = u64::try_from(timeout_ms) else {
         return -1;
     };
     // SAFETY: caller guarantees `host` is a valid C string.
     let Ok(host_str) = unsafe { CStr::from_ptr(host) }.to_str() else {
         return -1;
     };
-    let Ok(mut addrs) = (host_str, port).to_socket_addrs() else {
+
+    let target = format!("{host_str}:{port}");
+    let start = std::time::Instant::now();
+    let total = std::time::Duration::from_millis(timeout_ms_u64);
+    let addrs = match resolve_addr_via_pool(target, i64::from(timeout_ms)) {
+        Ok(a) => a,
+        Err(BlockingPoolError::TimedOut) => {
+            tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
+            hew_cabi::sink::set_last_error_with_errno(
+                format!("hew_tcp_connect_timeout: DNS deadline expired after {timeout_ms} ms"),
+                etimedout_errno(),
+            );
+            return -1;
+        }
+        Err(BlockingPoolError::PoolStopped) => {
+            return -1;
+        }
+    };
+    let Some(sock_addr) = addrs.into_iter().next() else {
         return -1;
     };
-    let Some(sock_addr) = addrs.next() else {
+    // Cleanup-all-exits: residual budget is enforced even if DNS used most
+    // of the deadline; on exhaustion we set ETIMEDOUT and bail without
+    // opening a socket.
+    let Some(remaining) = total.checked_sub(start.elapsed()) else {
+        tcp_counters().error_count.fetch_add(1, Ordering::Relaxed);
+        hew_cabi::sink::set_last_error_with_errno(
+            format!("hew_tcp_connect_timeout: deadline exhausted in DNS phase ({timeout_ms} ms)"),
+            etimedout_errno(),
+        );
         return -1;
     };
-    let Ok(stream) =
-        TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_millis(timeout_ms))
-    else {
+    let Ok(stream) = TcpStream::connect_timeout(&sock_addr, remaining) else {
         return -1;
     };
     let _ = stream.set_nodelay(true);
@@ -1318,6 +1474,49 @@ mod tests {
         unsafe { crate::vec::hew_vec_free(bytes) };
         remove_stream(handle);
         after.alloc_count - before.alloc_count
+    }
+
+    /// `hew_tcp_connect_timed` with `deadline_ms=0` connects to a
+    /// listening loopback peer (no deadline path).
+    #[test]
+    fn tcp_connect_timed_zero_deadline_connects() {
+        let _guard = crate::runtime_test_guard();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let addr = listener
+            .local_addr()
+            .expect("read listener addr")
+            .to_string();
+        let addr_c = std::ffi::CString::new(addr).expect("addr cstring");
+        // SAFETY: addr_c is a valid C string.
+        let handle = unsafe { hew_tcp_connect_timed(addr_c.as_ptr(), 0) };
+        assert!(handle >= 0, "expected a positive handle, got {handle}");
+        // Drain the accept side so the listener doesn't block.
+        let (_server, _) = listener.accept().expect("accept loopback");
+        remove_stream(handle);
+    }
+
+    /// `hew_tcp_connect_timed` honours the deadline against a non-routable
+    /// address. RFC 5737 192.0.2.0/24 ("TEST-NET-1") is reserved for
+    /// documentation and is guaranteed not to be routed; the connect
+    /// attempt cannot succeed and must return -1 inside the deadline.
+    ///
+    /// This is the regression check for #1415: the scheduler thread must
+    /// not be parked beyond the requested deadline.
+    #[test]
+    fn tcp_connect_deadline() {
+        let _guard = crate::runtime_test_guard();
+        let addr_c = std::ffi::CString::new("192.0.2.1:65000").expect("addr cstring");
+        let start = std::time::Instant::now();
+        // SAFETY: addr_c is a valid C string.
+        let handle = unsafe { hew_tcp_connect_timed(addr_c.as_ptr(), 200) };
+        let elapsed = start.elapsed();
+        assert_eq!(handle, -1, "expected connect to fail");
+        // Allow generous slack for CI noise but still prove the deadline
+        // is enforced (without it the kernel default ~75 s would apply).
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "connect with 200 ms deadline should return well before 2 s; got {elapsed:?}"
+        );
     }
 
     #[test]

@@ -525,6 +525,7 @@ stable = [
   "hew_tcp_broadcast_except",
   "hew_tcp_close",
   "hew_tcp_connect",
+  "hew_tcp_connect_timed",
   "hew_tcp_connect_timeout",
   "hew_tcp_listen",
   "hew_tcp_listener_close",

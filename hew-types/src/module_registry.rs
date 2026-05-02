@@ -290,9 +290,13 @@ impl ModuleRegistry {
         method: &str,
     ) -> Option<(String, Vec<crate::ty::Ty>, crate::ty::Ty)> {
         for info in self.modules.values() {
-            for ((ty, m), c_sym, params, ret) in &info.handle_methods {
-                if ty == handle_type && m == method {
-                    return Some((c_sym.clone(), params.clone(), ret.clone()));
+            for hm in &info.handle_methods {
+                if hm.type_name == handle_type && hm.method_name == method {
+                    return Some((
+                        hm.c_symbol.clone(),
+                        hm.params.clone(),
+                        hm.return_type.clone(),
+                    ));
                 }
             }
         }
@@ -535,8 +539,8 @@ mod tests {
         // json.Value should have handle methods from its impl block.
         let info = reg.get("std::encoding::json").unwrap();
         if !info.handle_methods.is_empty() {
-            let ((ty, method), _, _, _) = &info.handle_methods[0];
-            let c_sym = reg.resolve_handle_method(ty, method);
+            let hm = &info.handle_methods[0];
+            let c_sym = reg.resolve_handle_method(&hm.type_name, &hm.method_name);
             assert!(c_sym.is_some(), "should resolve handle method");
         }
     }
@@ -546,15 +550,16 @@ mod tests {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
         let info = reg.get("std::encoding::json").unwrap();
-        if let Some(((qualified, method), expected, _, _)) = info.handle_methods.first() {
-            let short = qualified
+        if let Some(hm) = info.handle_methods.first() {
+            let short = hm
+                .type_name
                 .rsplit('.')
                 .next()
                 .expect("qualified handle type should have short name");
-            let c_sym = reg.resolve_handle_method(short, method);
+            let c_sym = reg.resolve_handle_method(short, &hm.method_name);
             assert_eq!(
                 c_sym.as_deref(),
-                Some(expected.as_str()),
+                Some(hm.c_symbol.as_str()),
                 "short handle name should resolve to the same C symbol"
             );
         }

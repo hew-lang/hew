@@ -2307,30 +2307,30 @@ impl Checker {
                         .to_string();
 
                     // Register extern C function signatures
-                    for (name, params, ret) in functions {
+                    for func in functions {
                         let accepts_kwargs = module_path == "std::misc::log"
-                            && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
+                            && Self::LOG_KWARGS_FUNCTIONS.contains(&func.name.as_str());
                         let sig = FnSig {
-                            params,
-                            return_type: ret,
+                            params: func.params,
+                            return_type: func.return_type,
                             accepts_kwargs,
                             ..FnSig::default()
                         };
-                        self.unsafe_functions.insert(name.clone());
-                        self.fn_sigs.insert(name, sig);
+                        self.unsafe_functions.insert(func.name.clone());
+                        self.fn_sigs.insert(func.name, sig);
                     }
 
                     // Register wrapper pub fn signatures
-                    for (name, params, ret) in wrapper_fns {
+                    for wfn in wrapper_fns {
                         let accepts_kwargs = module_path == "std::misc::log"
-                            && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
+                            && Self::LOG_KWARGS_FUNCTIONS.contains(&wfn.name.as_str());
                         let sig = FnSig {
-                            params,
-                            return_type: ret,
+                            params: wfn.params,
+                            return_type: wfn.return_type,
                             accepts_kwargs,
                             ..FnSig::default()
                         };
-                        self.fn_sigs.insert(name, sig);
+                        self.fn_sigs.insert(wfn.name, sig);
                     }
 
                     // Register module and clean names

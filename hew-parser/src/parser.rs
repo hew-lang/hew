@@ -237,7 +237,7 @@ fn parse_string_parts(
                     span: (inner_offset + expr_start_byte)..(inner_offset + expr_end_byte),
                     hint: None,
                     severity: Severity::Error,
-                    kind: ParseDiagnosticKind::UnclosedDelimiter,
+                    kind: ParseDiagnosticKind::InvalidLiteral,
                 });
             } else if !expr_text.is_empty() {
                 let mut sub_parser = Parser::new(expr_text);
@@ -379,8 +379,6 @@ pub enum ParseDiagnosticKind {
         /// The token (or `"end of file"`) that was encountered.
         got: String,
     },
-    /// A delimiter (e.g. string interpolation `{`) was opened but never closed.
-    UnclosedDelimiter,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -395,7 +393,6 @@ impl ParseDiagnosticKind {
             Self::InvalidLiteral => "InvalidLiteral",
             Self::MissingExpression { .. } => "MissingExpression",
             Self::InvalidPattern { .. } => "InvalidPattern",
-            Self::UnclosedDelimiter => "UnclosedDelimiter",
             Self::Other => "Other",
         }
     }
@@ -6776,14 +6773,6 @@ wire type Msg {
         assert_eq!(json["kind"], "InvalidPattern");
         assert_eq!(json["got"], "42");
         assert_eq!(kind.as_kind_str(), "InvalidPattern");
-    }
-
-    #[test]
-    fn parse_diagnostic_kind_unclosed_delimiter_serialises() {
-        let kind = ParseDiagnosticKind::UnclosedDelimiter;
-        let json = serde_json::to_value(&kind).unwrap();
-        assert_eq!(json["kind"], "UnclosedDelimiter");
-        assert_eq!(kind.as_kind_str(), "UnclosedDelimiter");
     }
 
     #[test]

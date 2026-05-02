@@ -45,21 +45,21 @@ import std::path;
 /// callers can handle connection errors uniformly across `fs`, `net`, `quic`,
 /// `http`, `tls`, `dns`, and `websocket` modules.
 pub enum IoError {
-    // The target path does not exist.
+    /// The target path does not exist.
     NotFound(int);
-    // The process lacks permission for the operation.
+    /// The process lacks permission for the operation.
     PermissionDenied(int);
-    // A file or directory already exists at the target path.
+    /// A file or directory already exists at the target path.
     AlreadyExists(int);
-    // The remote host actively refused the connection (ECONNREFUSED).
+    /// The remote host actively refused the connection (ECONNREFUSED).
     ConnectionRefused(int);
-    // The local address is already in use (EADDRINUSE).
+    /// The local address is already in use (EADDRINUSE).
     AddressInUse(int);
-    // The connection attempt or I/O operation timed out (ETIMEDOUT).
+    /// The connection attempt or I/O operation timed out (ETIMEDOUT).
     TimedOut(int);
-    // The address or hostname could not be resolved (EADDRNOTAVAIL).
+    /// The address or hostname could not be resolved (EADDRNOTAVAIL).
     AddressNotAvailable(int);
-    // Any other OS-level I/O failure.
+    /// Any other OS-level I/O failure.
     Other(int);
 }
 

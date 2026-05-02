@@ -43,6 +43,9 @@ fn markdown_to_html(md: &str, heading_offset: u8) -> String {
     let mut in_code_block = false;
     let mut code_lang = String::new();
     let mut code_buf = String::new();
+    // Accumulate non-code-block events so push_html sees the full stream
+    // and its table state machine stays intact across Event boundaries.
+    let mut pending: Vec<Event<'_>> = Vec::new();
 
     for event in parser {
         let event = match event {
@@ -71,6 +74,8 @@ fn markdown_to_html(md: &str, heading_offset: u8) -> String {
 
         match event {
             Event::Start(Tag::CodeBlock(kind)) => {
+                // Flush pending non-code events before the code block.
+                pulldown_cmark::html::push_html(&mut html, pending.drain(..));
                 in_code_block = true;
                 code_buf.clear();
                 code_lang = match kind {
@@ -91,14 +96,16 @@ fn markdown_to_html(md: &str, heading_offset: u8) -> String {
             Event::Text(text) if in_code_block => {
                 code_buf.push_str(&text);
             }
-            _ => {
+            event => {
                 if !in_code_block {
-                    let single = std::iter::once(event);
-                    pulldown_cmark::html::push_html(&mut html, single);
+                    pending.push(event);
                 }
             }
         }
     }
+
+    // Flush any remaining non-code events.
+    pulldown_cmark::html::push_html(&mut html, pending.drain(..));
 
     html
 }
@@ -752,6 +759,29 @@ pub type UserId = i64;
         let md = "Some text.\n\n```\nlet x = 1;\n```\n";
         let html = markdown_to_html(md, 0);
         assert!(html.contains("<code>"));
+    }
+
+    #[test]
+    fn markdown_renders_table_body_cells_as_td() {
+        // pulldown-cmark maintains a table state machine across the event stream.
+        // When push_html is called once per event the state resets and tbody cells
+        // are emitted as <th> instead of <td>. Batching fixes this.
+        let md = "| A | B |\n|---|---|\n| a1 | b1 |\n| a2 | b2 |\n";
+        let html = markdown_to_html(md, 0);
+        assert!(html.contains("<tbody>"), "table body must be present");
+        // Count <td> occurrences — expect 4 for a 2-row, 2-col body
+        let td_count = html.matches("<td>").count();
+        assert!(
+            td_count >= 4,
+            "expected ≥4 <td> elements in tbody, got {td_count}"
+        );
+        // No <th> must appear inside <tbody>
+        let tbody_start = html.find("<tbody>").expect("<tbody> must be present");
+        let tbody_region = &html[tbody_start..];
+        assert!(
+            !tbody_region.contains("<th>"),
+            "table body cells must be <td>, not <th>"
+        );
     }
 
     // ── Feature 1: Markdown header demotion ──────────────────────────────────

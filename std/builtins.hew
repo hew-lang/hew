@@ -7,7 +7,6 @@
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
-
 /// Print a value followed by a newline.
 ///
 /// Accepts any type that implements `Display`.
@@ -19,7 +18,8 @@
 /// println("hello");
 /// println(true);
 /// ```
-fn println(value: dyn Display) {}
+pub fn println(value: dyn Display) {
+}
 
 /// Print a value without a trailing newline.
 ///
@@ -28,12 +28,12 @@ fn println(value: dyn Display) {}
 /// ```
 /// print("Enter name: ");
 /// ```
-fn print(value: dyn Display) {}
+pub fn print(value: dyn Display) {
+}
 
 // ---------------------------------------------------------------------------
 // Assertions
 // ---------------------------------------------------------------------------
-
 /// Assert that a condition is true. Panics if `condition` is false.
 ///
 /// # Examples
@@ -41,7 +41,8 @@ fn print(value: dyn Display) {}
 /// ```
 /// assert(x > 0);
 /// ```
-fn assert(condition: bool) {}
+pub fn assert(condition: bool) {
+}
 
 /// Assert that two values are equal. Panics with a diff if they differ.
 ///
@@ -52,7 +53,8 @@ fn assert(condition: bool) {}
 /// ```
 /// assert_eq(add(1, 2), 3);
 /// ```
-fn assert_eq(left: dyn Display, right: dyn Display) {}
+pub fn assert_eq(left: dyn Display, right: dyn Display) {
+}
 
 /// Assert that two values are not equal. Panics if they are the same.
 ///
@@ -63,12 +65,12 @@ fn assert_eq(left: dyn Display, right: dyn Display) {}
 /// ```
 /// assert_ne(a, b);
 /// ```
-fn assert_ne(left: dyn Display, right: dyn Display) {}
+pub fn assert_ne(left: dyn Display, right: dyn Display) {
+}
 
 // ---------------------------------------------------------------------------
 // Math
 // ---------------------------------------------------------------------------
-
 /// Returns the absolute value of an integer.
 ///
 /// # Examples
@@ -76,7 +78,9 @@ fn assert_ne(left: dyn Display, right: dyn Display) {}
 /// ```
 /// let x = abs(-5);  // 5
 /// ```
-fn abs(x: i32) -> i32 { 0 as i32 }
+pub fn abs(x: i32) -> i32 {
+    0 as i32
+}
 
 /// Returns the square root of a floating-point number.
 ///
@@ -85,13 +89,19 @@ fn abs(x: i32) -> i32 { 0 as i32 }
 /// ```
 /// let r = sqrt(9.0);  // 3.0
 /// ```
-fn sqrt(x: f64) -> f64 { 0.0 }
+pub fn sqrt(x: f64) -> f64 {
+    0.0
+}
 
 /// Returns the smaller of two integers.
-fn min(a: i32, b: i32) -> i32 { 0 as i32 }
+pub fn min(a: i32, b: i32) -> i32 {
+    0 as i32
+}
 
 /// Returns the larger of two integers.
-fn max(a: i32, b: i32) -> i32 { 0 as i32 }
+pub fn max(a: i32, b: i32) -> i32 {
+    0 as i32
+}
 
 /// Convert an integer to a floating-point number.
 ///
@@ -100,12 +110,13 @@ fn max(a: i32, b: i32) -> i32 { 0 as i32 }
 /// ```
 /// let f = to_float(42);  // 42.0
 /// ```
-fn to_float(x: i32) -> f64 { 0.0 }
+pub fn to_float(x: i32) -> f64 {
+    0.0
+}
 
 // ---------------------------------------------------------------------------
 // String operations
 // ---------------------------------------------------------------------------
-
 /// Concatenate two strings, returning a new string.
 ///
 /// # Examples
@@ -113,10 +124,14 @@ fn to_float(x: i32) -> f64 { 0.0 }
 /// ```
 /// let full = string_concat("hello ", "world");
 /// ```
-fn string_concat(a: String, b: String) -> String { "" }
+pub fn string_concat(a: String, b: String) -> String {
+    ""
+}
 
 /// Returns the byte length of a string.
-fn string_length(s: String) -> i32 { 0 as i32 }
+pub fn string_length(s: String) -> i32 {
+    0 as i32
+}
 
 /// Convert any value to its string representation.
 ///
@@ -125,16 +140,24 @@ fn string_length(s: String) -> i32 { 0 as i32 }
 /// ```
 /// let s = to_string(42);  // "42"
 /// ```
-fn to_string(value: dyn Display) -> String { "" }
+pub fn to_string(value: dyn Display) -> String {
+    ""
+}
 
 /// Returns the length of a collection or string.
-fn len(value: dyn Display) -> i32 { 0 as i32 }
+pub fn len(value: dyn Display) -> i32 {
+    0 as i32
+}
 
 /// Returns the character (as a `char`) at the given byte index.
-fn string_char_at(s: String, index: i32) -> char { 'a' }
+pub fn string_char_at(s: String, index: i32) -> char {
+    'a'
+}
 
 /// Test whether two strings are equal.
-fn string_equals(a: String, b: String) -> bool { false }
+pub fn string_equals(a: String, b: String) -> bool {
+    false
+}
 
 /// Convert an integer to a string.
 ///
@@ -143,13 +166,19 @@ fn string_equals(a: String, b: String) -> bool { false }
 /// ```
 /// let s = string_from_int(42);  // "42"
 /// ```
-fn string_from_int(n: int) -> String { "" }
+pub fn string_from_int(n: int) -> String {
+    ""
+}
 
 /// Test whether `haystack` contains `needle`.
-fn string_contains(haystack: String, needle: String) -> bool { false }
+pub fn string_contains(haystack: String, needle: String) -> bool {
+    false
+}
 
 /// Test whether a string starts with the given prefix.
-fn string_starts_with(s: String, prefix: String) -> bool { false }
+pub fn string_starts_with(s: String, prefix: String) -> bool {
+    false
+}
 
 /// Extract a substring by byte indices `[start, end)`.
 ///
@@ -158,46 +187,59 @@ fn string_starts_with(s: String, prefix: String) -> bool { false }
 /// ```
 /// let s = substring("hello", 0, 3);  // "hel"
 /// ```
-fn substring(s: String, start: i32, end: i32) -> String { "" }
+pub fn substring(s: String, start: i32, end: i32) -> String {
+    ""
+}
 
 /// Strip leading and trailing whitespace.
-fn string_trim(s: String) -> String { "" }
+pub fn string_trim(s: String) -> String {
+    ""
+}
 
 /// Parse a string as an integer. Returns 0 on failure.
-fn string_to_int(s: String) -> int { 0 }
+pub fn string_to_int(s: String) -> int {
+    0
+}
 
 /// Find the first occurrence of `needle` in `haystack`.
 ///
 /// Returns the byte offset, or -1 if not found.
-fn string_find(haystack: String, needle: String) -> i32 { 0 as i32 }
+pub fn string_find(haystack: String, needle: String) -> i32 {
+    0 as i32
+}
 
 // ---------------------------------------------------------------------------
 // File I/O  (convenience wrappers — see also `import std::fs;`)
 // ---------------------------------------------------------------------------
-
 /// Read the entire contents of a file as a string.
-fn read_file(path: String) -> String { "" }
+pub fn read_file(path: String) -> String {
+    ""
+}
 
 /// Write a string to a file, creating or overwriting it.
-fn write_file(path: String, content: String) {}
+pub fn write_file(path: String, content: String) {
+}
 
 // ---------------------------------------------------------------------------
 // Program control
 // ---------------------------------------------------------------------------
-
 /// Pause execution for the given number of milliseconds.
-fn sleep_ms(ms: i32) {}
+pub fn sleep_ms(ms: i32) {
+}
 
 /// Pause execution for the given number of seconds.
-fn sleep(seconds: i32) {}
+pub fn sleep(seconds: i32) {
+}
 
 /// Stop an actor gracefully.
-fn stop(target: dyn Display) {}
+pub fn stop(target: dyn Display) {
+}
 
 /// Terminate the program with the given exit code.
 ///
 /// This function never returns.
-fn exit(code: i32) {}
+pub fn exit(code: i32) {
+}
 
 /// Terminate the program with an error message.
 ///
@@ -208,4 +250,5 @@ fn exit(code: i32) {}
 /// ```
 /// panic("something went wrong");
 /// ```
-fn panic(message: String) {}
+pub fn panic(message: String) {
+}

@@ -123,16 +123,16 @@ impl CanonicalValueMethods for Value {
             hew_json_stringify(val)
         }
     }
-    fn type_of(val: Value) -> i32 {
+    fn type_of(val: Value) -> i32 { // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
         unsafe {
             hew_json_type(val)
         }
-    } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
-    fn get_bool(val: Value) -> i32 {
+    }
+    fn get_bool(val: Value) -> i32 { // INTERNAL-ABI: C ABI returns bool as i32
         unsafe {
             hew_json_get_bool(val)
         }
-    } // INTERNAL-ABI: C ABI returns bool as i32
+    }
     fn get_int(val: Value) -> int {
         unsafe {
             hew_json_get_int(val)

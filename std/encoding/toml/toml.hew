@@ -109,11 +109,11 @@ trait ValueMethods: CanonicalValueMethods {
 }
 
 impl CanonicalValueMethods for Value {
-    fn type_of(val: Value) -> i32 {
+    fn type_of(val: Value) -> i32 { // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
         unsafe {
             hew_toml_type(val)
         }
-    } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
+    }
     fn get_string(val: Value) -> String {
         unsafe {
             hew_toml_get_string(val)
@@ -129,11 +129,11 @@ impl CanonicalValueMethods for Value {
             hew_toml_get_float(val)
         }
     }
-    fn get_bool(val: Value) -> i32 {
+    fn get_bool(val: Value) -> i32 { // INTERNAL-ABI: C ABI returns bool as i32
         unsafe {
             hew_toml_get_bool(val)
         }
-    } // INTERNAL-ABI: C ABI returns bool as i32
+    }
     fn get_field(val: Value, key: String) -> Value {
         unsafe {
             hew_toml_get_field(val, key)

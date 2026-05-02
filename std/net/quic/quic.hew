@@ -435,6 +435,13 @@ pub fn last_error() -> String {
 
 // Keep observation assembly in module-level wrappers so imported
 // `handle.observe()` calls rewrite during AST enrichment.
+/// Return a non-destructive snapshot of endpoint state.
+///
+/// Reads the local address, cumulative accepted-connection count, and last
+/// error string from the endpoint without closing or mutating it. The
+/// returned `QUICEndpointObservation` is a plain value struct and does not
+/// need to be freed. Call this at any time to poll endpoint health or
+/// inspect which address the runtime bound.
 pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
     QUICEndpointObservation { local_addr: unsafe {
         hew_quic_endpoint_local_addr(ep)
@@ -445,6 +452,14 @@ pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
     } }
 }
 
+/// Return a non-destructive snapshot of connection state.
+///
+/// Reads both endpoint addresses, stream counts, round-trip time,
+/// byte counters, closed flag, and last error string in a single call.
+/// The returned `QUICConnectionObservation` is a plain value struct.
+/// `rtt_ms` is the smoothed RTT in milliseconds as reported by the
+/// QUIC stack; it is 0 until the handshake completes. `last_error` is
+/// empty when the connection is healthy.
 pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
     QUICConnectionObservation { local_addr: unsafe {
         hew_quic_conn_local_addr(conn)
@@ -467,6 +482,14 @@ pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
     } }
 }
 
+/// Initiate a graceful QUIC connection shutdown.
+///
+/// Sends a `CONNECTION_CLOSE` frame to the peer and releases the
+/// connection handle. Returns `Ok(())` on success. On failure, returns
+/// `Err(IoError::Other(0))`; inspect `conn.observe().last_error` for the
+/// QUIC-level error string because QUIC errors carry no OS errno.
+/// After calling `connection_disconnect`, the connection handle must
+/// not be used again.
 pub fn connection_disconnect(conn: QUICConnection) -> Result<(), fs.IoError> {
     // QUIC errors carry no OS errno; error string available via conn.observe().last_error
     unsafe {
@@ -479,6 +502,13 @@ pub fn connection_disconnect(conn: QUICConnection) -> Result<(), fs.IoError> {
     }
 }
 
+/// Return a non-destructive snapshot of stream state.
+///
+/// Reads cumulative byte counts, send/receive close flags, and the
+/// last error string. The returned `QUICStreamObservation` is a plain
+/// value struct. `send_closed` is true after `stream_finish` or
+/// `stream_stop` completes; `recv_closed` is true when the peer has
+/// finished sending. `last_error` is empty while the stream is healthy.
 pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
     QUICStreamObservation { bytes_sent: unsafe {
         hew_quic_stream_bytes_sent(stream)
@@ -493,6 +523,14 @@ pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
     } }
 }
 
+/// Write a byte slice to a QUIC stream.
+///
+/// Sends `data` as a single STREAM frame sequence. Blocks until the
+/// data is accepted by the QUIC stack (not until it is acknowledged
+/// by the peer). Returns `Ok(())` on success. On failure, returns
+/// `Err(IoError::Other(0))`; inspect `strm.observe().last_error` for
+/// the QUIC-level error string. Does not close the send side — call
+/// `stream_finish` when all data has been written.
 pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError> {
     // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
@@ -505,6 +543,13 @@ pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), fs.IoError> {
     }
 }
 
+/// Signal the end of the send side of a QUIC stream.
+///
+/// Sends a FIN to the peer, indicating no more data will be written.
+/// The stream remains open for receiving until the peer also closes
+/// their send side (or until `stream_stop` is called). Returns
+/// `Ok(())` on success. On failure, returns `Err(IoError::Other(0))`;
+/// inspect `strm.observe().last_error` for the QUIC-level error string.
 pub fn stream_finish(strm: QUICStream) -> Result<(), fs.IoError> {
     // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
@@ -517,6 +562,15 @@ pub fn stream_finish(strm: QUICStream) -> Result<(), fs.IoError> {
     }
 }
 
+/// Abruptly cancel a QUIC stream with an application error code.
+///
+/// Sends a `RESET_STREAM` frame to the peer, discarding any unsent
+/// data. `error_code` is a QUIC application-layer error code (0–2^62-1;
+/// the QUIC protocol mandates 62-bit codes and `int` is a 64-bit i64
+/// so no narrowing occurs). Use this when the stream must be abandoned
+/// rather than gracefully finished. Returns `Ok(())` on success. On
+/// failure, returns `Err(IoError::Other(0))`; inspect
+/// `strm.observe().last_error` for the QUIC-level error string.
 pub fn stream_stop(strm: QUICStream, error_code: int) -> Result<(), fs.IoError> { // INTERNAL-ABI: QUIC protocol mandates 62-bit error codes; int is 64-bit i64 so no narrowing needed
     // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {

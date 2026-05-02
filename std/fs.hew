@@ -133,6 +133,21 @@ pub fn io_error_message(e: IoError) -> String {
     }
 }
 
+/// Construct an `IoError::TimedOut(0)` value without a platform-specific
+/// errno. Useful for in-process deadline expiry where there is no OS error
+/// to map (e.g. `fs.io_error_from_errno` would need a platform-aware errno
+/// constant that the caller does not have).
+pub fn io_error_timed_out() -> IoError {
+    IoError::TimedOut(0)
+}
+
+/// Construct an `IoError::Cancelled(0)` value without a platform-specific
+/// errno. Useful for in-process cancellation (e.g. blocking pool stopped)
+/// where there is no OS error to map.
+pub fn io_error_cancelled() -> IoError {
+    IoError::Cancelled(0)
+}
+
 fn missing_parent(target: String) -> bool {
     let parent = path.dirname(target);
     parent != "" && !exists(parent)

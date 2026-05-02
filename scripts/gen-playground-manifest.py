@@ -50,6 +50,7 @@ EXAMPLE_ORDER = {
         "collections",
         "pattern_matching",
         "wire_types",
+        "structural_bounds",
     ),
 }
 

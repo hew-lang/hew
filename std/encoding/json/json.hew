@@ -26,7 +26,7 @@ import std::encoding::wire::value_trait;
 /// value so you can use the existing unqualified
 /// `ParseError::Invalid(message)` constructor/pattern style.
 pub enum ParseError {
-    // The input was not valid JSON. Carries the native parser message.
+    /// The input was not valid JSON. Carries the native parser message.
     Invalid(String);
 }
 
@@ -36,7 +36,8 @@ pub enum ParseError {
 /// or object. Created by `json.parse(s)` or by navigating into a
 /// parsed value. Call `free()` before the value goes out of scope;
 /// dropping without `free()` is a resource leak.
-type Value {}
+type Value {
+}
 
 /// Methods available on a JSON `Value`.
 ///
@@ -46,24 +47,32 @@ type Value {}
 trait ValueMethods: CanonicalValueMethods {
     /// Serialize the value back to a JSON string.
     fn stringify(val: Value) -> String;
+
     /// Return the type tag (0=null, 1=bool, 2=int, 3=float, 4=string, 5=array, 6=object).
     fn type_of(val: Value) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
     /// Extract the boolean value (0 or 1).
     fn get_bool(val: Value) -> i32; // INTERNAL-ABI: C ABI returns bool as i32
     /// Extract the integer value.
     fn get_int(val: Value) -> int;
+
     /// Extract the floating-point value.
     fn get_float(val: Value) -> f64;
+
     /// Extract the string value.
     fn get_string(val: Value) -> String;
+
     /// Look up a field by key in a JSON object.
     fn get_field(val: Value, key: String) -> Value;
+
     /// Return the number of elements in a JSON array.
     fn array_len(val: Value) -> int;
+
     /// Return the element at the given index in a JSON array.
     fn array_get(val: Value, index: int) -> Value;
+
     /// Return a JSON array of the object's keys.
     fn keys(val: Value) -> Value;
+
     /// Canonical release path for `Value`.
     ///
     /// Callers MUST invoke `free()` before the value goes out of scope;
@@ -73,89 +82,179 @@ trait ValueMethods: CanonicalValueMethods {
     // ── Fluent builders (return self for chaining) ──────────────
     /// Set a string field on an object. Returns the object for chaining.
     fn with_string(obj: Value, key: String, val: String) -> Value;
+
     /// Set an integer field. Returns the object for chaining.
     fn with_int(obj: Value, key: String, val: int) -> Value;
+
     /// Set a float field. Returns the object for chaining.
     fn with_float(obj: Value, key: String, val: f64) -> Value;
+
     /// Set a boolean field. Returns the object for chaining.
     fn with_bool(obj: Value, key: String, val: bool) -> Value;
+
     /// Set a null field. Returns the object for chaining.
     fn with_null(obj: Value, key: String) -> Value;
+
     /// Set a Value child on an object. The child is consumed. Returns the object.
     fn with(obj: Value, key: String, child: Value) -> Value;
+
     /// Push a Value onto an array. The child is consumed. Returns the array.
     fn push(arr: Value, child: Value) -> Value;
+
     /// Push an integer onto an array. Returns the array.
     fn push_int(arr: Value, val: int) -> Value;
+
     /// Push a string onto an array. Returns the array.
     fn push_string(arr: Value, val: String) -> Value;
+
     /// Push a float onto an array. Returns the array.
     fn push_float(arr: Value, val: f64) -> Value;
+
     /// Push a boolean onto an array. Returns the array.
     fn push_bool(arr: Value, val: bool) -> Value;
+
     /// Push null onto an array. Returns the array.
     fn push_null(arr: Value) -> Value;
 }
 
 impl CanonicalValueMethods for Value {
-    fn stringify(val: Value) -> String { unsafe { hew_json_stringify(val) } }
-    fn type_of(val: Value) -> i32 { unsafe { hew_json_type(val) } } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
-    fn get_bool(val: Value) -> i32 { unsafe { hew_json_get_bool(val) } } // INTERNAL-ABI: C ABI returns bool as i32
-    fn get_int(val: Value) -> int { unsafe { hew_json_get_int(val) } }
-    fn get_float(val: Value) -> f64 { unsafe { hew_json_get_float(val) } }
-    fn get_string(val: Value) -> String { unsafe { hew_json_get_string(val) } }
-    fn get_field(val: Value, key: String) -> Value { unsafe { hew_json_get_field(val, key) } }
-    fn array_len(val: Value) -> int { unsafe { hew_json_array_len(val) } }
-    fn array_get(val: Value, index: int) -> Value { unsafe { hew_json_array_get(val, index as i32) } } // INTERNAL-ABI: C ABI index is i32
-    fn free(val: Value) { unsafe { hew_json_free(val) }; }
-
+    fn stringify(val: Value) -> String {
+        unsafe {
+            hew_json_stringify(val)
+        }
+    }
+    fn type_of(val: Value) -> i32 {
+        unsafe {
+            hew_json_type(val)
+        }
+    } // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
+    fn get_bool(val: Value) -> i32 {
+        unsafe {
+            hew_json_get_bool(val)
+        }
+    } // INTERNAL-ABI: C ABI returns bool as i32
+    fn get_int(val: Value) -> int {
+        unsafe {
+            hew_json_get_int(val)
+        }
+    }
+    fn get_float(val: Value) -> f64 {
+        unsafe {
+            hew_json_get_float(val)
+        }
+    }
+    fn get_string(val: Value) -> String {
+        unsafe {
+            hew_json_get_string(val)
+        }
+    }
+    fn get_field(val: Value, key: String) -> Value {
+        unsafe {
+            hew_json_get_field(val, key)
+        }
+    }
+    fn array_len(val: Value) -> int {
+        unsafe {
+            hew_json_array_len(val)
+        }
+    }
+    fn array_get(val: Value, index: int) -> Value {
+        unsafe {
+            hew_json_array_get(val, index as i32)
+        }
+    } // INTERNAL-ABI: C ABI index is i32
+    fn free(val: Value) {
+        unsafe {
+            hew_json_free(val)
+        };
+    }
     fn with_string(obj: Value, key: String, val: String) -> Value {
-        unsafe { hew_json_object_set_string(obj, key, val) }; obj
+        unsafe {
+            hew_json_object_set_string(obj, key, val)
+        };
+        obj
     }
     fn with_int(obj: Value, key: String, val: int) -> Value {
-        unsafe { hew_json_object_set_int(obj, key, val as i64) }; obj // INTERNAL-ABI: C ABI takes i64
+        unsafe {
+            hew_json_object_set_int(obj, key, val as i64)
+        };
+        obj // INTERNAL-ABI: C ABI takes i64
     }
     fn with_float(obj: Value, key: String, val: f64) -> Value {
-        unsafe { hew_json_object_set_float(obj, key, val) }; obj
+        unsafe {
+            hew_json_object_set_float(obj, key, val)
+        };
+        obj
     }
     fn with_bool(obj: Value, key: String, val: bool) -> Value {
-        unsafe { hew_json_object_set_bool(obj, key, val as i32) }; obj
+        unsafe {
+            hew_json_object_set_bool(obj, key, val as i32)
+        };
+        obj
     }
     fn with(obj: Value, key: String, child: Value) -> Value {
-        unsafe { hew_json_object_set(obj, key, child) }; obj
+        unsafe {
+            hew_json_object_set(obj, key, child)
+        };
+        obj
     }
     fn push(arr: Value, child: Value) -> Value {
-        unsafe { hew_json_array_push(arr, child) }; arr
+        unsafe {
+            hew_json_array_push(arr, child)
+        };
+        arr
     }
     fn push_int(arr: Value, val: int) -> Value {
-        unsafe { hew_json_array_push_int(arr, val as i64) }; arr // INTERNAL-ABI: C ABI takes i64
+        unsafe {
+            hew_json_array_push_int(arr, val as i64)
+        };
+        arr // INTERNAL-ABI: C ABI takes i64
     }
     fn push_string(arr: Value, val: String) -> Value {
-        unsafe { hew_json_array_push_string(arr, val) }; arr
+        unsafe {
+            hew_json_array_push_string(arr, val)
+        };
+        arr
     }
     fn push_float(arr: Value, val: f64) -> Value {
-        unsafe { hew_json_array_push_float(arr, val) }; arr
+        unsafe {
+            hew_json_array_push_float(arr, val)
+        };
+        arr
     }
     fn push_bool(arr: Value, val: bool) -> Value {
-        unsafe { hew_json_array_push_bool(arr, val as i32) }; arr
+        unsafe {
+            hew_json_array_push_bool(arr, val as i32)
+        };
+        arr
     }
 }
 
 impl ValueMethods for Value {
-    fn keys(val: Value) -> Value { unsafe { hew_json_object_keys(val) } }
-
+    fn keys(val: Value) -> Value {
+        unsafe {
+            hew_json_object_keys(val)
+        }
+    }
     fn with_null(obj: Value, key: String) -> Value {
-        unsafe { hew_json_object_set_null(obj, key) }; obj
+        unsafe {
+            hew_json_object_set_null(obj, key)
+        };
+        obj
     }
     fn push_null(arr: Value) -> Value {
-        unsafe { hew_json_array_push_null(arr) }; arr
+        unsafe {
+            hew_json_array_push_null(arr)
+        };
+        arr
     }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 fn parse_error_message() -> String {
-    unsafe { hew_json_last_error() }
+    unsafe {
+        hew_json_last_error()
+    }
 }
 
 /// Parse a JSON string into a `Value`.
@@ -163,7 +262,9 @@ fn parse_error_message() -> String {
 /// Preserves the legacy behavior: invalid JSON returns an invalid handle
 /// (`type_of() == -1`). Use `try_parse` for a structured error result.
 pub fn parse(s: String) -> Value {
-    unsafe { hew_json_parse(s) }
+    unsafe {
+        hew_json_parse(s)
+    }
 }
 
 /// Parse a JSON string into a `Value`.
@@ -182,31 +283,53 @@ pub fn try_parse(s: String) -> Result<Value, ParseError> {
 
 /// Create a new empty JSON object.
 pub fn object() -> Value {
-    unsafe { hew_json_object_new() }
+    unsafe {
+        hew_json_object_new()
+    }
 }
 
 /// Create a new empty JSON array.
 pub fn array() -> Value {
-    unsafe { hew_json_array_new() }
+    unsafe {
+        hew_json_array_new()
+    }
 }
 
 /// Create a JSON Value from an integer.
-pub fn from_int(val: int) -> Value { unsafe { hew_json_from_int(val as i64) } } // INTERNAL-ABI: C ABI takes i64
-
+pub fn from_int(val: int) -> Value {
+    unsafe {
+        hew_json_from_int(val as i64)
+    }
+} // INTERNAL-ABI: C ABI takes i64
 /// Create a JSON Value from a float.
-pub fn from_float(val: f64) -> Value { unsafe { hew_json_from_float(val) } }
+pub fn from_float(val: f64) -> Value {
+    unsafe {
+        hew_json_from_float(val)
+    }
+}
 
 /// Create a JSON Value from a string.
-pub fn from_string(val: String) -> Value { unsafe { hew_json_from_string(val) } }
+pub fn from_string(val: String) -> Value {
+    unsafe {
+        hew_json_from_string(val)
+    }
+}
 
 /// Create a JSON Value from a boolean.
-pub fn from_bool(val: bool) -> Value { unsafe { hew_json_from_bool(val as i32) } }
+pub fn from_bool(val: bool) -> Value {
+    unsafe {
+        hew_json_from_bool(val as i32)
+    }
+}
 
 /// Create a JSON null Value.
-pub fn null() -> Value { unsafe { hew_json_from_null() } }
+pub fn null() -> Value {
+    unsafe {
+        hew_json_from_null()
+    }
+}
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
-
 extern "C" {
     fn hew_json_parse(json_str: String) -> Value;
     fn hew_json_last_error() -> String;

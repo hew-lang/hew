@@ -25,7 +25,7 @@ fn main() {
     for start in 0 .. n1 {
         if colour1.get(start) == 0 {
             let stack: Vec<i32> = Vec::new();
-            stack.push(start * 2);
+            stack.push(start as i32 * 2);
             while stack.len() > 0 {
                 let entry = stack.pop();
                 let node = entry / 2;
@@ -81,7 +81,7 @@ fn main() {
     for start in 0 .. n2 {
         if colour2.get(start) == 0 {
             let stack: Vec<i32> = Vec::new();
-            stack.push(start * 2);
+            stack.push(start as i32 * 2);
             while stack.len() > 0 {
                 let entry = stack.pop();
                 let node = entry / 2;

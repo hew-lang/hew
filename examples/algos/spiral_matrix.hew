@@ -10,7 +10,7 @@ fn main() {
     var bottom = n - 1;
     var left = 0;
     var right = n - 1;
-    var num = 1;
+    var num: i32 = 1;
     while num <= total {
         // Fill top row left to right
         var col = left;

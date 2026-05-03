@@ -1,6 +1,6 @@
 // Caesar cipher: shift ASCII letters by N positions using lookup
 fn find_in(alphabet: String, ch: String) -> i32 {
-    var pos = 0;
+    var pos: i32 = 0;
     while pos < alphabet.len() {
         if alphabet.char_at(pos) == ch.char_at(0) {
             return pos;

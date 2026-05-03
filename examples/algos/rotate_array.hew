@@ -22,9 +22,9 @@ fn main() {
     let n = arr.len();
     let k = 2 % n;
     // Reverse entire array, then reverse first k, then reverse rest
-    reverse_range(arr, 0, n);
-    reverse_range(arr, 0, k);
-    reverse_range(arr, k, n);
+    reverse_range(arr, 0, n as i32);
+    reverse_range(arr, 0, k as i32);
+    reverse_range(arr, k as i32, n as i32);
 
     // Expected: [4,5,1,2,3]
     let expected: Vec<i32> = Vec::new();

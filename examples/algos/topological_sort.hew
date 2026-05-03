@@ -47,7 +47,7 @@ fn main() {
     let queue: Vec<i32> = Vec::new();
     for i in 0 .. num_nodes {
         if in_degree.get(i) == 0 {
-            queue.push(i);
+            queue.push(i as i32);
         }
     }
     let result: Vec<i32> = Vec::new();
@@ -83,7 +83,7 @@ fn main() {
         pos.push(0);
     }
     for i in 0 .. result.len() {
-        pos.set(result.get(i), i);
+        pos.set(result.get(i), i as i32);
     }
     // Check all edges go forward
     for i in 0 .. num_nodes {

@@ -1,19 +1,19 @@
-// Singly Linked List using Vec<i32> with index-based pointers
+// Singly Linked List using Vec<int> with index-based pointers
 // Node layout: nodes[i*2] = value, nodes[i*2+1] = next
 // NIL sentinel = -1
-fn node_val(nodes: Vec<i32>, idx: i32) -> i32 {
+fn node_val(nodes: Vec<int>, idx: int) -> int {
     nodes.get(idx * 2)
 }
 
-fn node_next(nodes: Vec<i32>, idx: i32) -> i32 {
+fn node_next(nodes: Vec<int>, idx: int) -> int {
     nodes.get(idx * 2 + 1)
 }
 
-fn set_next(nodes: Vec<i32>, idx: i32, nxt: i32) {
+fn set_next(nodes: Vec<int>, idx: int, nxt: int) {
     nodes.set(idx * 2 + 1, nxt);
 }
 
-fn alloc_node(nodes: Vec<i32>, val: i32) -> i32 {
+fn alloc_node(nodes: Vec<int>, val: int) -> int {
     let idx = nodes.len() / 2;
     nodes.push(val);
     nodes.push(-1);
@@ -21,14 +21,14 @@ fn alloc_node(nodes: Vec<i32>, val: i32) -> i32 {
 }
 
 // Prepend: returns new head
-fn prepend(nodes: Vec<i32>, head: i32, val: i32) -> i32 {
+fn prepend(nodes: Vec<int>, head: int, val: int) -> int {
     let n = alloc_node(nodes, val);
     set_next(nodes, n, head);
     n
 }
 
 // Append: returns head (may change if list was empty)
-fn append(nodes: Vec<i32>, head: i32, val: i32) -> i32 {
+fn append(nodes: Vec<int>, head: int, val: int) -> int {
     let n = alloc_node(nodes, val);
     if head == -1 {
         return n;
@@ -42,7 +42,7 @@ fn append(nodes: Vec<i32>, head: i32, val: i32) -> i32 {
 }
 
 // Delete first occurrence of val, returns new head
-fn delete_val(nodes: Vec<i32>, head: i32, val: i32) -> i32 {
+fn delete_val(nodes: Vec<int>, head: int, val: int) -> int {
     if head == -1 {
         return -1;
     }
@@ -63,7 +63,7 @@ fn delete_val(nodes: Vec<i32>, head: i32, val: i32) -> i32 {
 }
 
 // Find: returns index of first node with val, or -1
-fn find(nodes: Vec<i32>, head: i32, val: i32) -> i32 {
+fn find(nodes: Vec<int>, head: int, val: int) -> int {
     var curr = head;
     while curr != -1 {
         if node_val(nodes, curr) == val {
@@ -75,7 +75,7 @@ fn find(nodes: Vec<i32>, head: i32, val: i32) -> i32 {
 }
 
 // Length of list
-fn list_len(nodes: Vec<i32>, head: i32) -> i32 {
+fn list_len(nodes: Vec<int>, head: int) -> int {
     var curr = head;
     var count = 0;
     while curr != -1 {
@@ -86,7 +86,7 @@ fn list_len(nodes: Vec<i32>, head: i32) -> i32 {
 }
 
 // Collect values into result vec for verification
-fn traverse(nodes: Vec<i32>, head: i32, result: Vec<i32>) {
+fn traverse(nodes: Vec<int>, head: int, result: Vec<int>) {
     var curr = head;
     while curr != -1 {
         result.push(node_val(nodes, curr));
@@ -94,7 +94,7 @@ fn traverse(nodes: Vec<i32>, head: i32, result: Vec<i32>) {
     }
 }
 
-fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+fn vecs_equal(a: Vec<int>, b: Vec<int>) -> int {
     if a.len() != b.len() {
         return 0;
     }
@@ -107,15 +107,15 @@ fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
 }
 
 // --- Tests ---
-fn test_prepend() -> i32 {
-    let nodes: Vec<i32> = Vec::new();
+fn test_prepend() -> int {
+    let nodes: Vec<int> = Vec::new();
     var head = -1;
     head = prepend(nodes, head, 30);
     head = prepend(nodes, head, 20);
     head = prepend(nodes, head, 10);
-    let result: Vec<i32> = Vec::new();
+    let result: Vec<int> = Vec::new();
     traverse(nodes, head, result);
-    let expected: Vec<i32> = Vec::new();
+    let expected: Vec<int> = Vec::new();
     expected.push(10);
     expected.push(20);
     expected.push(30);
@@ -127,15 +127,15 @@ fn test_prepend() -> i32 {
     0
 }
 
-fn test_append() -> i32 {
-    let nodes: Vec<i32> = Vec::new();
+fn test_append() -> int {
+    let nodes: Vec<int> = Vec::new();
     var head = -1;
     head = append(nodes, head, 10);
     head = append(nodes, head, 20);
     head = append(nodes, head, 30);
-    let result: Vec<i32> = Vec::new();
+    let result: Vec<int> = Vec::new();
     traverse(nodes, head, result);
-    let expected: Vec<i32> = Vec::new();
+    let expected: Vec<int> = Vec::new();
     expected.push(10);
     expected.push(20);
     expected.push(30);
@@ -147,16 +147,16 @@ fn test_append() -> i32 {
     0
 }
 
-fn test_delete_middle() -> i32 {
-    let nodes: Vec<i32> = Vec::new();
+fn test_delete_middle() -> int {
+    let nodes: Vec<int> = Vec::new();
     var head = -1;
     head = append(nodes, head, 10);
     head = append(nodes, head, 20);
     head = append(nodes, head, 30);
     head = delete_val(nodes, head, 20);
-    let result: Vec<i32> = Vec::new();
+    let result: Vec<int> = Vec::new();
     traverse(nodes, head, result);
-    let expected: Vec<i32> = Vec::new();
+    let expected: Vec<int> = Vec::new();
     expected.push(10);
     expected.push(30);
     if vecs_equal(result, expected) == 1 {
@@ -167,13 +167,13 @@ fn test_delete_middle() -> i32 {
     0
 }
 
-fn test_delete_head() -> i32 {
-    let nodes: Vec<i32> = Vec::new();
+fn test_delete_head() -> int {
+    let nodes: Vec<int> = Vec::new();
     var head = -1;
     head = append(nodes, head, 10);
     head = append(nodes, head, 20);
     head = delete_val(nodes, head, 10);
-    let result: Vec<i32> = Vec::new();
+    let result: Vec<int> = Vec::new();
     traverse(nodes, head, result);
     if result.len() == 1 {
         if result.get(0) == 20 {
@@ -185,8 +185,8 @@ fn test_delete_head() -> i32 {
     0
 }
 
-fn test_find() -> i32 {
-    let nodes: Vec<i32> = Vec::new();
+fn test_find() -> int {
+    let nodes: Vec<int> = Vec::new();
     var head = -1;
     head = append(nodes, head, 10);
     head = append(nodes, head, 20);
@@ -205,8 +205,8 @@ fn test_find() -> i32 {
     0
 }
 
-fn test_length() -> i32 {
-    let nodes: Vec<i32> = Vec::new();
+fn test_length() -> int {
+    let nodes: Vec<int> = Vec::new();
     var head = -1;
     if list_len(nodes, head) != 0 {
         println("FAIL: length");

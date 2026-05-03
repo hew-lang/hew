@@ -25,10 +25,10 @@ fn main() {
     }
     // Base cases
     for i in 0 .. rows {
-        dp.set(i * cols, i);
+        dp.set(i * cols, i as i32);
     }
     for j in 0 .. cols {
-        dp.set(j, j);
+        dp.set(j, j as i32);
     }
     for i in 1 .. rows {
         for j in 1 .. cols {

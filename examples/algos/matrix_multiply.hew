@@ -8,7 +8,7 @@ fn mat_mul(a: Vec<i32>, b: Vec<i32>, n: i32) -> Vec<i32> {
             for k in 0 .. n {
                 sum = sum + a.get(i * n + k) * b.get(k * n + j);
             }
-            c.push(sum);
+            c.push(sum as i32);
         }
     }
     c

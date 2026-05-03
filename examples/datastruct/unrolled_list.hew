@@ -1,32 +1,32 @@
-// Unrolled Linked List using Vec<i32> with index-based pointers
+// Unrolled Linked List using Vec<int> with index-based pointers
 // Each block holds up to BLOCK_CAP (4) elements.
 // Block layout: [count, e0, e1, e2, e3, next] = 6 slots per block
 // Block i starts at index i*6
-fn block_count(n: Vec<i32>, b: i32) -> i32 {
+fn block_count(n: Vec<int>, b: int) -> int {
     n.get(b * 6)
 }
 
-fn block_elem(n: Vec<i32>, b: i32, idx: i32) -> i32 {
+fn block_elem(n: Vec<int>, b: int, idx: int) -> int {
     n.get(b * 6 + 1 + idx)
 }
 
-fn block_next(n: Vec<i32>, b: i32) -> i32 {
+fn block_next(n: Vec<int>, b: int) -> int {
     n.get(b * 6 + 5)
 }
 
-fn set_count(n: Vec<i32>, b: i32, c: i32) {
+fn set_count(n: Vec<int>, b: int, c: int) {
     n.set(b * 6, c);
 }
 
-fn set_elem(n: Vec<i32>, b: i32, idx: i32, val: i32) {
+fn set_elem(n: Vec<int>, b: int, idx: int, val: int) {
     n.set(b * 6 + 1 + idx, val);
 }
 
-fn set_block_next(n: Vec<i32>, b: i32, nx: i32) {
+fn set_block_next(n: Vec<int>, b: int, nx: int) {
     n.set(b * 6 + 5, nx);
 }
 
-fn alloc_block(n: Vec<i32>) -> i32 {
+fn alloc_block(n: Vec<int>) -> int {
     let b = n.len() / 6;
     n.push(0);
     n.push(0);
@@ -38,7 +38,7 @@ fn alloc_block(n: Vec<i32>) -> i32 {
 }
 
 // Insert at end of unrolled list. Returns head.
-fn unrolled_insert(n: Vec<i32>, head: i32, val: i32) -> i32 {
+fn unrolled_insert(n: Vec<int>, head: int, val: int) -> int {
     if head == -1 {
         let b = alloc_block(n);
         set_elem(n, b, 0, val);
@@ -64,7 +64,7 @@ fn unrolled_insert(n: Vec<i32>, head: i32, val: i32) -> i32 {
 }
 
 // Iterate all elements in order into result vec
-fn unrolled_iterate(n: Vec<i32>, head: i32, result: Vec<i32>) {
+fn unrolled_iterate(n: Vec<int>, head: int, result: Vec<int>) {
     var b = head;
     while b != -1 {
         let cnt = block_count(n, b);
@@ -76,7 +76,7 @@ fn unrolled_iterate(n: Vec<i32>, head: i32, result: Vec<i32>) {
 }
 
 // Total element count
-fn unrolled_len(n: Vec<i32>, head: i32) -> i32 {
+fn unrolled_len(n: Vec<int>, head: int) -> int {
     var total = 0;
     var b = head;
     while b != -1 {
@@ -87,7 +87,7 @@ fn unrolled_len(n: Vec<i32>, head: i32) -> i32 {
 }
 
 // Count blocks
-fn block_count_total(n: Vec<i32>, head: i32) -> i32 {
+fn block_count_total(n: Vec<int>, head: int) -> int {
     var c = 0;
     var b = head;
     while b != -1 {
@@ -98,7 +98,7 @@ fn block_count_total(n: Vec<i32>, head: i32) -> i32 {
 }
 
 // Get element by logical index
-fn unrolled_get(n: Vec<i32>, head: i32, idx: i32) -> i32 {
+fn unrolled_get(n: Vec<int>, head: int, idx: int) -> int {
     var b = head;
     var remaining = idx;
     while b != -1 {
@@ -112,7 +112,7 @@ fn unrolled_get(n: Vec<i32>, head: i32, idx: i32) -> i32 {
     -1
 }
 
-fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+fn vecs_equal(a: Vec<int>, b: Vec<int>) -> int {
     if a.len() != b.len() {
         return 0;
     }
@@ -125,15 +125,15 @@ fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
 }
 
 // --- Tests ---
-fn test_insert_and_iterate() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_insert_and_iterate() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = unrolled_insert(n, head, 10);
     head = unrolled_insert(n, head, 20);
     head = unrolled_insert(n, head, 30);
-    let r: Vec<i32> = Vec::new();
+    let r: Vec<int> = Vec::new();
     unrolled_iterate(n, head, r);
-    let e: Vec<i32> = Vec::new();
+    let e: Vec<int> = Vec::new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -145,8 +145,8 @@ fn test_insert_and_iterate() -> i32 {
     0
 }
 
-fn test_block_split() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_block_split() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     // Insert 5 elements - should create 2 blocks (4+1)
     head = unrolled_insert(n, head, 1);
@@ -164,14 +164,14 @@ fn test_block_split() -> i32 {
     0
 }
 
-fn test_cross_block_iteration() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_cross_block_iteration() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     // Insert 10 elements across 3 blocks (4+4+2)
     for i in 0 .. 10 {
         head = unrolled_insert(n, head, (i + 1) * 10);
     }
-    let r: Vec<i32> = Vec::new();
+    let r: Vec<int> = Vec::new();
     unrolled_iterate(n, head, r);
     var ok = 1;
     for i in 0 .. 10 {
@@ -189,8 +189,8 @@ fn test_cross_block_iteration() -> i32 {
     0
 }
 
-fn test_random_access() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_random_access() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     for i in 0 .. 8 {
         head = unrolled_insert(n, head, i * 100);
@@ -213,8 +213,8 @@ fn test_random_access() -> i32 {
     0
 }
 
-fn test_single_block() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_single_block() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = unrolled_insert(n, head, 42);
     if block_count_total(n, head) == 1 {
@@ -227,8 +227,8 @@ fn test_single_block() -> i32 {
     0
 }
 
-fn test_many_blocks() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_many_blocks() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     // 20 elements = 5 blocks of 4
     for i in 0 .. 20 {
@@ -237,7 +237,7 @@ fn test_many_blocks() -> i32 {
     if block_count_total(n, head) == 5 {
         if unrolled_len(n, head) == 20 {
             // Verify order
-            let r: Vec<i32> = Vec::new();
+            let r: Vec<int> = Vec::new();
             unrolled_iterate(n, head, r);
             var ok = 1;
             for i in 0 .. 20 {

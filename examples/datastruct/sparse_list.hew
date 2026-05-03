@@ -1,27 +1,27 @@
 // Sparse Array using sorted linked list of (index, value) pairs
 // Node layout: [idx, value, next] = 3 slots per node
 // Sorted by idx for efficient traversal
-fn node_idx(n: Vec<i32>, i: i32) -> i32 {
+fn node_idx(n: Vec<int>, i: int) -> int {
     n.get(i * 3)
 }
 
-fn node_val(n: Vec<i32>, i: i32) -> i32 {
+fn node_val(n: Vec<int>, i: int) -> int {
     n.get(i * 3 + 1)
 }
 
-fn node_next(n: Vec<i32>, i: i32) -> i32 {
+fn node_next(n: Vec<int>, i: int) -> int {
     n.get(i * 3 + 2)
 }
 
-fn set_val(n: Vec<i32>, i: i32, v: i32) {
+fn set_val(n: Vec<int>, i: int, v: int) {
     n.set(i * 3 + 1, v);
 }
 
-fn set_next(n: Vec<i32>, i: i32, nx: i32) {
+fn set_next(n: Vec<int>, i: int, nx: int) {
     n.set(i * 3 + 2, nx);
 }
 
-fn alloc_node(n: Vec<i32>, idx: i32, val: i32) -> i32 {
+fn alloc_node(n: Vec<int>, idx: int, val: int) -> int {
     let node = n.len() / 3;
     n.push(idx);
     n.push(val);
@@ -30,7 +30,7 @@ fn alloc_node(n: Vec<i32>, idx: i32, val: i32) -> i32 {
 }
 
 // Set value at sparse index. Insert or update. Returns new head.
-fn sparse_set(n: Vec<i32>, head: i32, idx: i32, val: i32) -> i32 {
+fn sparse_set(n: Vec<int>, head: int, idx: int, val: int) -> int {
     if head == -1 {
         return alloc_node(n, idx, val);
     }
@@ -78,7 +78,7 @@ fn sparse_set(n: Vec<i32>, head: i32, idx: i32, val: i32) -> i32 {
 }
 
 // Get value at sparse index. Returns default_val if not present.
-fn sparse_get(n: Vec<i32>, head: i32, idx: i32, default_val: i32) -> i32 {
+fn sparse_get(n: Vec<int>, head: int, idx: int, default_val: int) -> int {
     var curr = head;
     while curr != -1 {
         if node_idx(n, curr) == idx {
@@ -93,7 +93,7 @@ fn sparse_get(n: Vec<i32>, head: i32, idx: i32, default_val: i32) -> i32 {
 }
 
 // Collect (idx, val) pairs into result vec as [idx0, val0, idx1, val1, ...]
-fn iterate(n: Vec<i32>, head: i32, result: Vec<i32>) {
+fn iterate(n: Vec<int>, head: int, result: Vec<int>) {
     var curr = head;
     while curr != -1 {
         result.push(node_idx(n, curr));
@@ -103,7 +103,7 @@ fn iterate(n: Vec<i32>, head: i32, result: Vec<i32>) {
 }
 
 // Count stored elements
-fn sparse_len(n: Vec<i32>, head: i32) -> i32 {
+fn sparse_len(n: Vec<int>, head: int) -> int {
     var c = 0;
     var curr = head;
     while curr != -1 {
@@ -113,7 +113,7 @@ fn sparse_len(n: Vec<i32>, head: i32) -> i32 {
     c
 }
 
-fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+fn vecs_equal(a: Vec<int>, b: Vec<int>) -> int {
     if a.len() != b.len() {
         return 0;
     }
@@ -126,8 +126,8 @@ fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
 }
 
 // --- Tests ---
-fn test_set_and_get() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_set_and_get() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = sparse_set(n, head, 100, 10);
     head = sparse_set(n, head, 500, 50);
@@ -147,8 +147,8 @@ fn test_set_and_get() -> i32 {
     0
 }
 
-fn test_get_missing() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_get_missing() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = sparse_set(n, head, 10, 100);
     let v = sparse_get(n, head, 5, -999);
@@ -160,8 +160,8 @@ fn test_get_missing() -> i32 {
     0
 }
 
-fn test_update() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_update() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = sparse_set(n, head, 42, 100);
     head = sparse_set(n, head, 42, 200);
@@ -176,16 +176,16 @@ fn test_update() -> i32 {
     0
 }
 
-fn test_sorted_order() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_sorted_order() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = sparse_set(n, head, 1000, 1);
     head = sparse_set(n, head, 10, 2);
     head = sparse_set(n, head, 500, 3);
     head = sparse_set(n, head, 50, 4);
-    let r: Vec<i32> = Vec::new();
+    let r: Vec<int> = Vec::new();
     iterate(n, head, r);
-    let e: Vec<i32> = Vec::new();
+    let e: Vec<int> = Vec::new();
     e.push(10);
     e.push(2);
     e.push(50);
@@ -202,8 +202,8 @@ fn test_sorted_order() -> i32 {
     0
 }
 
-fn test_sparse_pattern() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_sparse_pattern() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     // Only store at indices 0, 100, 10000
     head = sparse_set(n, head, 0, 1);
@@ -227,13 +227,13 @@ fn test_sparse_pattern() -> i32 {
     0
 }
 
-fn test_iterate() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_iterate() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = sparse_set(n, head, 5, 50);
     head = sparse_set(n, head, 2, 20);
     head = sparse_set(n, head, 8, 80);
-    let r: Vec<i32> = Vec::new();
+    let r: Vec<int> = Vec::new();
     iterate(n, head, r);
     // Should be sorted by index: (2,20), (5,50), (8,80)
     if r.len() == 6 {

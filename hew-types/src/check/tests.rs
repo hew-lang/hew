@@ -3770,6 +3770,51 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
 }
 
 #[test]
+fn primitive_impl_dispatch_resolves_ufcs_form_for_int_receiver() {
+    // Stage A3: `Display::fmt(x)` on a primitive receiver must resolve
+    // identically to `x.fmt()`.  Today the trait method registers in
+    // `fn_sigs` with the receiver param stripped, so the existing
+    // `fn_sigs` lookup mis-arities the call (0 expected vs 1 supplied).
+    // The UFCS dispatcher intercepts before that lookup.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for int {
+                fn fmt(n: int) -> String { "" }
+            }
+            fn main() {
+                let x: int = 42;
+                let _ = Display::fmt(x);
+            }
+        "#,
+        "i64",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_ufcs_form_with_extra_args() {
+    // UFCS receiver-and-trailing-args case: `Trait::method(receiver,
+    // arg1, arg2)`.  The receiver-stripped sig has params=[String], so
+    // the call takes 2 args total (receiver + arg1) and the sig is
+    // applied to the trailing args after the receiver is consumed.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Show { fn show(val: Self, suffix: String) -> String; }
+            impl Show for int {
+                fn show(n: int, suffix: String) -> String { suffix }
+            }
+            fn main() {
+                let x: int = 42;
+                let _: String = Show::show(x, "!");
+            }
+        "#,
+        "i64",
+        "Show",
+    );
+}
+
+#[test]
 fn primitive_impl_dispatch_unknown_method_still_emits_error() {
     // When no impl matches and no builtin method exists, the existing
     // "no method `<name>` on <kind>" diagnostic must still fire — the

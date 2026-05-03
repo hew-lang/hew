@@ -1548,6 +1548,82 @@ impl Checker {
         Some(applied_sig.return_type)
     }
 
+    /// Stage A3: UFCS form of [`Self::try_dispatch_primitive_trait_method`].
+    ///
+    /// `Display::fmt(x)` registers `Display::fmt` in `fn_sigs` with the
+    /// receiver param stripped (the `Trait::method` key triggers the
+    /// is-method branch in `register_fn_sig_with_name`), so the call site
+    /// would mis-arity (sig.params=[] vs args=[x]).  This helper detects
+    /// the trait-qualified form, synthesizes the first arg as the
+    /// receiver, and consults the same side table that powers
+    /// receiver-form dispatch.  The first arg is type-checked against the
+    /// canonical receiver kind itself; remaining args are type-checked
+    /// against the registered sig's params (already receiver-stripped at
+    /// registration time).
+    ///
+    /// Returns `None` when the receiver is not a primitive or builtin
+    /// generic, or when no impl exists for the (kind, trait, method)
+    /// triple.  The caller falls through to the existing trait-qualified
+    /// dispatch in `calls.rs`, which keeps emitting today's diagnostics.
+    pub(super) fn try_dispatch_ufcs_primitive_trait_method(
+        &mut self,
+        trait_name: &str,
+        method_name: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let first_arg = args.first()?;
+        let (first_expr, first_sp) = first_arg.expr();
+        // Synthesize the receiver arg's type so we can route to the
+        // canonical primitive/builtin-generic key.
+        let receiver_ty = self.synthesize(first_expr, first_sp);
+        let resolved_receiver = self.subst.resolve(&receiver_ty);
+        let canonical = Checker::canonical_primitive_or_builtin_key(&resolved_receiver)?;
+        // Lookup keyed on the canonical receiver kind + trait name +
+        // method.  We call into the table directly (not the
+        // walk-every-trait helper) because the trait name is known at
+        // this call site and there is no ambiguity to resolve.
+        let sig = self
+            .primitive_trait_impls
+            .get(&(canonical.clone(), trait_name.to_string()))
+            .and_then(|methods| methods.get(method_name))
+            .cloned()?;
+        // Arity check: 1 (receiver) + sig.params.len() (already
+        // receiver-stripped at registration).
+        let expected_arity = sig.params.len() + 1;
+        self.check_arity(
+            args,
+            expected_arity,
+            &format!("`{trait_name}::{method_name}`"),
+            span,
+        );
+        // Type-check the first arg against the resolved receiver kind.
+        // Using `expect_type` would round-trip the synthesized type; we
+        // already synthesized it, so the result has been bound to the
+        // receiver kind.  No further check needed.
+        // Type-check remaining args against the (receiver-stripped)
+        // params using the same machinery as method-form dispatch.
+        let trailing_args = &args[1.min(args.len())..];
+        let applied = self.apply_instantiated_call_signature(
+            &sig,
+            None,
+            trailing_args,
+            span,
+            SignatureArgApplication::PositionalOnly {
+                arity_context: format!("`{trait_name}::{method_name}`"),
+            },
+            true,
+        );
+        self.record_method_call_receiver_kind(
+            span,
+            MethodCallReceiverKind::PrimitiveTraitImpl {
+                trait_name: trait_name.to_string(),
+                canonical_receiver: canonical,
+            },
+        );
+        Some(applied.return_type)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "pattern matching type checker with many variants"

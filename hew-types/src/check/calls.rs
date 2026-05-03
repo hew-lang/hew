@@ -575,6 +575,29 @@ impl Checker {
             _ => {}
         }
 
+        // UFCS-style trait-qualified call against a primitive or builtin
+        // generic receiver: `Display::fmt(x)` where `x: int`.  The trait
+        // method sig in `fn_sigs` has the receiver param stripped (because
+        // it was registered through `register_fn_sig_with_name` with a
+        // `Trait::method` key), so the existing path at the `fn_sigs`
+        // lookup below would mis-arity the call (0 expected vs 1 supplied).
+        // Intercept here and route through the side table populated for
+        // primitive / builtin-generic receivers; this preserves the
+        // receiver param on the resolved sig so arity matches and the
+        // first arg is type-checked against the canonical receiver.
+        if let Some((trait_name, method_name)) = func_name.split_once("::") {
+            if self.trait_defs.contains_key(trait_name) {
+                if let Some(ret_ty) = self.try_dispatch_ufcs_primitive_trait_method(
+                    trait_name,
+                    method_name,
+                    args,
+                    span,
+                ) {
+                    return ret_ty;
+                }
+            }
+        }
+
         // Look up function signature first, preferring the current module's
         // private helper/extern over another module's same-named item.
         let resolved_fn_name = scoped_module_item_name(self.current_module.as_deref(), &func_name)

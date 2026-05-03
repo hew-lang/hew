@@ -43,10 +43,25 @@ pub struct ExprTypeEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MethodCallReceiverKindData {
-    NamedTypeInstance { type_name: String },
-    HandleInstance { type_name: String },
-    TraitObject { trait_name: String },
-    StreamInstance { element_kind: String },
+    NamedTypeInstance {
+        type_name: String,
+    },
+    HandleInstance {
+        type_name: String,
+    },
+    TraitObject {
+        trait_name: String,
+    },
+    StreamInstance {
+        element_kind: String,
+    },
+    /// Receiver is a primitive or compiler-builtin generic that resolved to
+    /// a user trait impl via the Stage A1 side table.  See
+    /// [`hew_types::check::MethodCallReceiverKind::PrimitiveTraitImpl`].
+    PrimitiveTraitImpl {
+        trait_name: String,
+        canonical_receiver: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -927,6 +942,10 @@ pub fn deserialize_from_msgpack(
 }
 
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single visitor trait impl with parallel match arms per receiver-kind variant"
+)]
 pub fn build_method_call_receiver_kind_entries(
     program: &hew_parser::ast::Program,
     tco: &TypeCheckOutput,
@@ -975,6 +994,13 @@ pub fn build_method_call_receiver_kind_entries(
                             element_kind: element_kind.clone(),
                         }
                     }
+                    CheckedMethodCallReceiverKind::PrimitiveTraitImpl {
+                        trait_name,
+                        canonical_receiver,
+                    } => MethodCallReceiverKindData::PrimitiveTraitImpl {
+                        trait_name: trait_name.clone(),
+                        canonical_receiver: canonical_receiver.clone(),
+                    },
                 },
             });
         }
@@ -1015,6 +1041,13 @@ pub fn build_method_call_receiver_kind_entries(
                             element_kind: element_kind.clone(),
                         }
                     }
+                    CheckedMethodCallReceiverKind::PrimitiveTraitImpl {
+                        trait_name,
+                        canonical_receiver,
+                    } => MethodCallReceiverKindData::PrimitiveTraitImpl {
+                        trait_name: trait_name.clone(),
+                        canonical_receiver: canonical_receiver.clone(),
+                    },
                 },
             });
         }

@@ -130,10 +130,29 @@ impl From<&Span> for SpanKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodCallReceiverKind {
-    NamedTypeInstance { type_name: String },
-    HandleInstance { type_name: String },
-    TraitObject { trait_name: String },
-    StreamInstance { element_kind: String },
+    NamedTypeInstance {
+        type_name: String,
+    },
+    HandleInstance {
+        type_name: String,
+    },
+    TraitObject {
+        trait_name: String,
+    },
+    StreamInstance {
+        element_kind: String,
+    },
+    /// Receiver is a primitive (`int`, `bool`, `char`, ...) or compiler-builtin
+    /// generic (`Vec`, `HashMap`, `HashSet`, `Bytes`) that resolved to a
+    /// user-defined `impl Trait for <kind>` body via the
+    /// `primitive_trait_impls` side table.  The `canonical_receiver` field is
+    /// the key used to look up the impl (see
+    /// `Checker::canonical_primitive_or_builtin_key`); the `trait_name` is the
+    /// trait whose method body the call dispatched to.
+    PrimitiveTraitImpl {
+        trait_name: String,
+        canonical_receiver: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

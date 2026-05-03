@@ -488,7 +488,50 @@ impl Checker {
                 MethodCallReceiverKind::StreamInstance { element_kind } => {
                     matches!(element_kind.as_str(), "" | "string" | "bytes")
                 }
+                MethodCallReceiverKind::PrimitiveTraitImpl {
+                    trait_name,
+                    canonical_receiver,
+                } => {
+                    // Retain only when the trait still exists and the canonical
+                    // receiver key still matches one we'd produce today (i.e.
+                    // the registration helper would still accept it).  This
+                    // mirrors the producer discipline added in Stage A1 and
+                    // prevents stale entries from leaking past the checker
+                    // output boundary.
+                    let trait_known = known_trait_names.contains(trait_name);
+                    let receiver_known =
+                        Self::is_known_primitive_or_builtin_canonical_key(canonical_receiver);
+                    trait_known && receiver_known
+                }
             });
+    }
+
+    /// Whether `key` is a canonical receiver key the registration helper
+    /// (`canonical_primitive_or_builtin_key_from_name`) would emit today.
+    /// Mirrors the closed-set producer logic so the validator can fail
+    /// closed on unknown keys rather than allowing arbitrary strings to
+    /// survive the output boundary.
+    fn is_known_primitive_or_builtin_canonical_key(key: &str) -> bool {
+        matches!(
+            key,
+            "i8" | "i16"
+                | "i32"
+                | "i64"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "f32"
+                | "f64"
+                | "bool"
+                | "char"
+                | "string"
+                | "bytes"
+                | "duration"
+                | "Vec"
+                | "HashMap"
+                | "HashSet"
+        )
     }
 
     fn validate_assign_target_output_contract(&mut self) {

@@ -3573,6 +3573,235 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
     );
 }
 
+/// Stage A2: receiver-kind dispatch matrix.
+///
+/// Each row exercises one canonical receiver kind (primitive or
+/// compiler-builtin generic) plus a user `impl Display for <kind>` and
+/// asserts that `x.fmt()` typechecks cleanly and records a
+/// `MethodCallReceiverKind::PrimitiveTraitImpl` metadata entry.  The
+/// metadata is the checker→codegen output-boundary contract; if a
+/// receiver kind dispatches via the new path but the metadata is not
+/// recorded, downstream codegen has no way to find the resolved impl
+/// (per the `checker-output-boundary` P0 lesson).
+fn assert_primitive_trait_dispatch_records_metadata(
+    source: &str,
+    expected_canonical: &str,
+    expected_trait: &str,
+) {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors for source `{source}`: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "expected clean type check for source:\n{source}\n\nbut got: {:?}",
+        output.errors
+    );
+    let any = output
+        .method_call_receiver_kinds
+        .values()
+        .any(|kind| match kind {
+            MethodCallReceiverKind::PrimitiveTraitImpl {
+                trait_name,
+                canonical_receiver,
+            } => trait_name == expected_trait && canonical_receiver == expected_canonical,
+            _ => false,
+        });
+    assert!(
+        any,
+        "expected PrimitiveTraitImpl{{trait_name={expected_trait}, canonical_receiver={expected_canonical}}} \
+         in method_call_receiver_kinds, found: {:?}",
+        output.method_call_receiver_kinds.values().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_int_receiver() {
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for int {
+                fn fmt(n: int) -> String { "" }
+            }
+            fn main() {
+                let x: int = 42;
+                let _ = x.fmt();
+            }
+        "#,
+        "i64",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_bool_receiver() {
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for bool {
+                fn fmt(b: bool) -> String { "" }
+            }
+            fn main() {
+                let b: bool = true;
+                let _ = b.fmt();
+            }
+        "#,
+        "bool",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_char_receiver() {
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for char {
+                fn fmt(c: char) -> String { "" }
+            }
+            fn main() {
+                let c: char = 'a';
+                let _ = c.fmt();
+            }
+        "#,
+        "char",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_i32_receiver() {
+    // Width-aliased integer kinds dispatch through the same canonical key
+    // as their `Ty::I32` variant — `i32` here, not `i64`.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for i32 {
+                fn fmt(n: i32) -> String { "" }
+            }
+            fn main() {
+                let n: i32 = 7;
+                let _ = n.fmt();
+            }
+        "#,
+        "i32",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_string_receiver_via_method_using_trait_method() {
+    // String routes through `check_string_method`'s not-found arm, not the
+    // wildcard.  This sentinel guarantees that path consults the side table
+    // for a method name that does NOT collide with a builtin String method
+    // (so the not-found branch is the one that runs).  We use a Display
+    // method named `to_display_string` to avoid the impl-on-String body
+    // type-check issue tracked separately (see issue #1565 follow-ups).
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait MyShow { fn show(val: Self) -> i64; }
+            impl MyShow for String {
+                fn show(s: String) -> i64 { 0 }
+            }
+            fn main() {
+                let s: String = "hi";
+                let _: i64 = s.show();
+            }
+        "#,
+        "string",
+        "MyShow",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_vec_receiver() {
+    // Vec routes through `check_vec_method`'s not-found arm.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for Vec<i32> {
+                fn fmt(v: Vec<i32>) -> String { "" }
+            }
+            fn main() {
+                let v: Vec<i32> = Vec::new();
+                let _ = v.fmt();
+            }
+        "#,
+        "Vec",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
+    // R5 mitigation: the side table is consulted only when the compiler
+    // builtin returns "no match".  Numeric width-conversion methods like
+    // `.to_i32()` flow through their own dispatch arm (methods.rs around
+    // the `is_numeric() && starts_with("to_")` guard).  With a user
+    // `Display for int` in scope, calling the builtin must still resolve
+    // to `Ty::I32`, not be hijacked into the user trait's `fmt` method.
+    let source = r#"
+        pub trait Display { fn fmt(val: Self) -> String; }
+        impl Display for int {
+            fn fmt(n: int) -> String { "" }
+        }
+        fn main() {
+            let n: int = 7;
+            let _: i32 = n.to_i32();
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "builtin int.to_i32 regressed under Stage A2 dispatch: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_unknown_method_still_emits_error() {
+    // When no impl matches and no builtin method exists, the existing
+    // "no method `<name>` on <kind>" diagnostic must still fire — the
+    // helper returns None so the existing reporter runs.
+    let source = r#"
+        pub trait Display { fn fmt(val: Self) -> String; }
+        impl Display for int {
+            fn fmt(n: int) -> String { "" }
+        }
+        fn main() {
+            let x: int = 42;
+            let _ = x.no_such_method();
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("no method `no_such_method`")),
+        "expected `no method` diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
 #[test]
 fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items() {
     let mut root = hew_parser::parse(

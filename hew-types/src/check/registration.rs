@@ -2228,10 +2228,6 @@ impl Checker {
     /// provided it, so callers can record dispatch metadata keyed on the
     /// resolved trait rather than re-deriving it from a name string.
     #[must_use]
-    #[expect(
-        dead_code,
-        reason = "wired into method resolution by Stage A2 in the next commit"
-    )]
     pub(super) fn lookup_primitive_trait_method(
         &self,
         receiver_ty: &Ty,

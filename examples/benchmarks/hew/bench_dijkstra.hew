@@ -1,12 +1,11 @@
 fn build_weighted_graph(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
-    for i in 0..(n + 1) {
+    for i in 0 .. n + 1 {
         adj_offsets.push(0);
     }
-
-    for src in 0..n {
+    for src in 0 .. n {
         let start = adj_offsets.get(src);
         var count = 0;
-        for dst in 1..6 {
+        for dst in 1 .. 6 {
             let neighbour = (src + dst) % n;
             let weight = (src + dst) % 10 + 1;
             adj_nodes.push(neighbour);
@@ -27,17 +26,16 @@ fn dijkstra(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n
     let INF = 999999;
     let dist: Vec<int> = Vec::new();
     let used: Vec<int> = Vec::new();
-    for i in 0..n {
+    for i in 0 .. n {
         dist.push(INF);
         used.push(0);
     }
     dist.set(start_node, 0);
-
     var iter = 0;
     while iter < n {
         var u = 0 - 1;
         var best_dist = INF;
-        for v in 0..n {
+        for v in 0 .. n {
             if used.get(v) == 0 {
                 if dist.get(v) < best_dist {
                     best_dist = dist.get(v);
@@ -45,13 +43,11 @@ fn dijkstra(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n
                 }
             }
         }
-
         if u < 0 {
             iter = n;
         } else {
             used.set(u, 1);
-
-            for e in adj_offsets.get(u)..adj_offsets.get(u + 1) {
+            for e in adj_offsets.get(u) .. adj_offsets.get(u + 1) {
                 let neighbour = adj_nodes.get(e);
                 let w = adj_weights.get(e);
                 let new_dist = dist.get(u) + w;
@@ -62,9 +58,8 @@ fn dijkstra(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n
             iter = iter + 1;
         }
     }
-
     var total = 0;
-    for i in 0..n {
+    for i in 0 .. n {
         total = total + dist.get(i);
     }
     return total;
@@ -78,9 +73,8 @@ fn main() {
     let adj_weights: Vec<int> = Vec::new();
     let adj_offsets: Vec<int> = Vec::new();
     let _ = build_weighted_graph(adj_nodes, adj_weights, adj_offsets, n);
-
     var checksum = 0;
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         checksum = checksum + dijkstra(adj_nodes, adj_weights, adj_offsets, n, 0);
     }
     println("bench_dijkstra");

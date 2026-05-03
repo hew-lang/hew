@@ -23,7 +23,6 @@
 //! ```
 
 // ── Constants ─────────────────────────────────────────────────────────
-
 /// The ratio of a circle's circumference to its diameter.
 pub fn pi() -> f64 {
     3.141592653589793
@@ -35,20 +34,31 @@ pub fn e() -> f64 {
 }
 
 // ── Integer operations ────────────────────────────────────────────────
-
 /// Return the absolute value of an integer.
 pub fn abs(x: int) -> int {
-    if x < 0 { -x } else { x }
+    if x < 0 {
+        -x
+    } else {
+        x
+    }
 }
 
 /// Return the smaller of two integers.
 pub fn min(a: int, b: int) -> int {
-    if a < b { a } else { b }
+    if a < b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Return the larger of two integers.
 pub fn max(a: int, b: int) -> int {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Clamp `x` to the range [`lo`, `hi`].
@@ -76,20 +86,31 @@ pub fn sign(x: int) -> int {
 // ── Floating-point operations ─────────────────────────────────────────
 // Codegen emits MLIR math-dialect intrinsics for these. The bodies
 // below are compile-time stubs that satisfy the type-checker.
-
 /// Return the absolute value of a float.
 pub fn abs_f(x: f64) -> f64 {
-    if x < 0.0 { -x } else { x }
+    if x < 0.0 {
+        -x
+    } else {
+        x
+    }
 }
 
 /// Return the smaller of two floats.
 pub fn min_f(a: f64, b: f64) -> f64 {
-    if a < b { a } else { b }
+    if a < b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Return the larger of two floats.
 pub fn max_f(a: f64, b: f64) -> f64 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Clamp `x` to the range [`lo`, `hi`].

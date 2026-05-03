@@ -57,14 +57,21 @@ trait VersionMethods {
 
 impl VersionMethods for Version {
     /// Return the major version number.
-    fn major(ver: Version) -> int { ver.maj }
+    fn major(ver: Version) -> int {
+        ver.maj
+    }
     /// Return the minor version number.
-    fn minor(ver: Version) -> int { ver.min }
+    fn minor(ver: Version) -> int {
+        ver.min
+    }
     /// Return the patch version number.
-    fn patch(ver: Version) -> int { ver.pat }
+    fn patch(ver: Version) -> int {
+        ver.pat
+    }
     /// Return the pre-release label, or an empty string if none.
-    fn pre(ver: Version) -> String { ver.pre_release }
-
+    fn pre(ver: Version) -> String {
+        ver.pre_release
+    }
     /// Compare this version to another. Return -1, 0, or 1.
     fn compare(ver: Version, other: Version) -> int {
         // Bind to local to prevent extract_call_target from finding a direct
@@ -72,19 +79,16 @@ impl VersionMethods for Version {
         let result = compare_versions(ver, other);
         result
     }
-
     /// Test whether this version satisfies a version requirement string.
     fn matches(ver: Version, req: String) -> bool {
         let result = matches_req(ver, req);
         result
     }
-
     /// Return the version as a string.
     fn to_string(ver: Version) -> String {
         let result = version_to_string(ver);
         result
     }
-
     /// No-op for compatibility (struct versions don't need manual freeing).
     fn free(ver: Version) {
         // No-op: struct versions are value types, no manual freeing needed.
@@ -92,7 +96,6 @@ impl VersionMethods for Version {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Parse a semantic version string.
 ///
 /// Panics if the string is not a valid semantic version.
@@ -105,7 +108,6 @@ pub fn parse(s: String) -> Version {
         main_part = s.slice(0, plus_idx);
         build = s.slice(plus_idx + 1, s.len());
     }
-
     // Split off pre-release (-...)
     var version_part = main_part;
     var pre = "";
@@ -114,7 +116,6 @@ pub fn parse(s: String) -> Version {
         version_part = main_part.slice(0, dash_idx);
         pre = main_part.slice(dash_idx + 1, main_part.len());
     }
-
     // Split major.minor.patch
     let first_dot = version_part.find(".");
     if first_dot < 0 {
@@ -128,18 +129,10 @@ pub fn parse(s: String) -> Version {
     }
     let minor_str = rest.slice(0, second_dot);
     let patch_str = rest.slice(second_dot + 1, rest.len());
-
     let major = string.to_int(major_str) as i32;
     let minor = string.to_int(minor_str) as i32;
     let patch = string.to_int(patch_str) as i32;
-
-    Version {
-        pre_release: pre,
-        build_meta: build,
-        maj: major,
-        min: minor,
-        pat: patch,
-    }
+    Version { pre_release: pre, build_meta: build, maj: major, min: minor, pat: patch }
 }
 
 /// Format a `Version` as its canonical string representation.
@@ -160,23 +153,40 @@ fn version_to_string(v: Version) -> String {
 }
 
 // ── Comparison ────────────────────────────────────────────────────────
-
 /// Compare two versions according to SemVer 2.0 precedence rules.
 fn compare_versions(a: Version, b: Version) -> int {
-    if a.maj < b.maj { return -1; }
-    if a.maj > b.maj { return 1; }
-    if a.min < b.min { return -1; }
-    if a.min > b.min { return 1; }
-    if a.pat < b.pat { return -1; }
-    if a.pat > b.pat { return 1; }
+    if a.maj < b.maj {
+        return -1;
+    }
+    if a.maj > b.maj {
+        return 1;
+    }
+    if a.min < b.min {
+        return -1;
+    }
+    if a.min > b.min {
+        return 1;
+    }
+    if a.pat < b.pat {
+        return -1;
+    }
+    if a.pat > b.pat {
+        return 1;
+    }
     // Pre-release comparison per SemVer 2.0:
     // - Version without pre-release has higher precedence than one with
     // - If both have pre-release, compare dot-separated identifiers
     let a_has_pre = a.pre_release.len() > 0;
     let b_has_pre = b.pre_release.len() > 0;
-    if !a_has_pre && !b_has_pre { return 0; }
-    if !a_has_pre && b_has_pre { return 1; }
-    if a_has_pre && !b_has_pre { return -1; }
+    if !a_has_pre && !b_has_pre {
+        return 0;
+    }
+    if !a_has_pre && b_has_pre {
+        return 1;
+    }
+    if a_has_pre && !b_has_pre {
+        return -1;
+    }
     compare_pre(a.pre_release, b.pre_release)
 }
 
@@ -187,7 +197,6 @@ fn compare_pre(a: String, b: String) -> int {
     var b_pos = 0;
     let a_len = a.len();
     let b_len = b.len();
-
     while a_pos < a_len && b_pos < b_len {
         // Extract next identifier from a
         let a_dot = a.slice(a_pos, a_len).find(".");
@@ -196,7 +205,6 @@ fn compare_pre(a: String, b: String) -> int {
             a_end = a_pos + a_dot;
         }
         let a_id = a.slice(a_pos, a_end);
-
         // Extract next identifier from b
         let b_dot = b.slice(b_pos, b_len).find(".");
         var b_end = b_len;
@@ -204,17 +212,20 @@ fn compare_pre(a: String, b: String) -> int {
             b_end = b_pos + b_dot;
         }
         let b_id = b.slice(b_pos, b_end);
-
         let cmp = compare_pre_id(a_id, b_id);
-        if cmp != 0 { return cmp; }
-
+        if cmp != 0 {
+            return cmp;
+        }
         a_pos = a_end + 1;
         b_pos = b_end + 1;
     }
-
     // If one side is exhausted, shorter pre-release has lower precedence
-    if a_pos < a_len && b_pos >= b_len { return 1; }
-    if a_pos >= a_len && b_pos < b_len { return -1; }
+    if a_pos < a_len && b_pos >= b_len {
+        return 1;
+    }
+    if a_pos >= a_len && b_pos < b_len {
+        return -1;
+    }
     0
 }
 
@@ -225,27 +236,37 @@ fn compare_pre_id(a: String, b: String) -> int {
     if a_num && b_num {
         let an = string.to_int(a);
         let bn = string.to_int(b);
-        if an < bn { return -1; }
-        if an > bn { return 1; }
+        if an < bn {
+            return -1;
+        }
+        if an > bn {
+            return 1;
+        }
         return 0;
     }
     // Numeric identifiers have lower precedence than alphanumeric
-    if a_num && !b_num { return -1; }
-    if !a_num && b_num { return 1; }
+    if a_num && !b_num {
+        return -1;
+    }
+    if !a_num && b_num {
+        return 1;
+    }
     // Lexicographic comparison for non-numeric
-    if a < b { return -1; }
-    if a > b { return 1; }
+    if a < b {
+        return -1;
+    }
+    if a > b {
+        return 1;
+    }
     0
 }
 
 // ── Requirement matching ──────────────────────────────────────────────
-
 /// Test whether a version satisfies a comma-separated requirement string.
 fn matches_req(v: Version, req: String) -> bool {
     // Process comma-separated constraints
     var pos = 0;
     let rlen = req.len();
-
     while pos <= rlen {
         // Find next comma
         let rest = req.slice(pos, rlen);
@@ -272,12 +293,12 @@ fn matches_req(v: Version, req: String) -> bool {
 fn matches_single(v: Version, constraint: String) -> bool {
     let c = constraint.trim();
     let clen = c.len();
-    if clen == 0 { return true; }
-
+    if clen == 0 {
+        return true;
+    }
     // Detect operator
     var op = "=";
     var ver_str = c;
-
     if c.starts_with(">=") {
         op = ">=";
         ver_str = c.slice(2, clen).trim();
@@ -303,21 +324,33 @@ fn matches_single(v: Version, constraint: String) -> bool {
         op = "=";
         ver_str = c.slice(1, clen).trim();
     }
-
     let req_ver = parse(ver_str);
     let cmp = compare_versions(v, req_ver);
-
-    if op == ">=" { return cmp >= 0; }
-    if op == "<=" { return cmp <= 0; }
-    if op == ">" { return cmp > 0; }
-    if op == "<" { return cmp < 0; }
-    if op == "!=" { return cmp != 0; }
+    if op == ">=" {
+        return cmp >= 0;
+    }
+    if op == "<=" {
+        return cmp <= 0;
+    }
+    if op == ">" {
+        return cmp > 0;
+    }
+    if op == "<" {
+        return cmp < 0;
+    }
+    if op == "!=" {
+        return cmp != 0;
+    }
     if op == "^" {
-        if cmp < 0 { return false; }
+        if cmp < 0 {
+            return false;
+        }
         return v.maj == req_ver.maj;
     }
     if op == "~" {
-        if cmp < 0 { return false; }
+        if cmp < 0 {
+            return false;
+        }
         return v.maj == req_ver.maj && v.min == req_ver.min;
     }
     cmp == 0

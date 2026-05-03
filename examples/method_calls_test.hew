@@ -5,7 +5,9 @@ type Point {
 
 trait PointMethods {
     fn distance(pt: Point) -> f64;
+
     fn translate(pt: Point, dx: f64, dy: f64) -> Point;
+
     fn magnitude(pt: Point) -> f64;
 }
 

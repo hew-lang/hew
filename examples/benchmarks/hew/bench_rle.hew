@@ -28,7 +28,7 @@ const ITERS: int = 500000;
 fn main() {
     let s = "aaabbccccdddddeee";
     var checksum = 0;
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         checksum = checksum + rle_count(s);
     }
     println("bench_rle");

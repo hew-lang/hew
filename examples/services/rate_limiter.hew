@@ -12,12 +12,10 @@
 //
 // Pattern: Ask/Reply — the caller blocks until the limiter replies with
 // a boolean (allowed or rejected). This is back-pressure by design.
-
 actor RateLimiter {
     let tokens: int;
     let max_tokens: int;
     let refill_amount: int;
-
     init() {
         println(f"[limiter] ready: {tokens}/{max_tokens} tokens, refill={refill_amount}");
     }
@@ -41,7 +39,6 @@ actor RateLimiter {
         }
         println(f"[limiter] refill: {prev} → {tokens}");
     }
-
     receive fn available() -> int {
         tokens
     }
@@ -53,7 +50,6 @@ actor ApiWorker {
     let limiter: ActorRef<RateLimiter>;
     let accepted: int;
     let rejected: int;
-
     receive fn handle_request(request_id: int) {
         let allowed = await limiter.acquire();
         if allowed == 1 {
@@ -64,7 +60,6 @@ actor ApiWorker {
             println(f"  [worker {id}] request {request_id} → REJECTED ({rejected} dropped)");
         }
     }
-
     receive fn stats() -> int {
         println(f"  [worker {id}] accepted={accepted} rejected={rejected}");
         accepted
@@ -76,9 +71,8 @@ actor RefillTimer {
     let limiter: ActorRef<RateLimiter>;
     let interval_ms: int;
     let cycles: int;
-
     receive fn start() {
-        for i in 0..cycles {
+        for i in 0 .. cycles {
             sleep_ms(interval_ms);
             limiter.refill();
         }
@@ -91,16 +85,10 @@ fn main() {
     println("");
 
     // Create a limiter with 5 tokens, max 5, refilling 3 at a time
-    let limiter = spawn RateLimiter(
-        tokens: 5,
-        max_tokens: 5,
-        refill_amount: 3,
-    );
-
+    let limiter = spawn RateLimiter(tokens: 5, max_tokens: 5, refill_amount: 3);
     // Two API workers sharing the same limiter
     let w1 = spawn ApiWorker(id: 1, limiter: limiter, accepted: 0, rejected: 0);
     let w2 = spawn ApiWorker(id: 2, limiter: limiter, accepted: 0, rejected: 0);
-
     // Start a refill timer: refill every 200ms, 3 cycles
     let timer = spawn RefillTimer(limiter: limiter, interval_ms: 200, cycles: 3);
     timer.start();
@@ -125,10 +113,8 @@ fn main() {
     println("");
     println("--- After refill ---");
     sleep_ms(250);
-
     let after_refill = await limiter.available();
     println(f"Tokens after refill: {after_refill}");
-
     w1.handle_request(100);
     w2.handle_request(101);
     w1.handle_request(102);
@@ -139,7 +125,6 @@ fn main() {
     println("--- Worker stats ---");
     await w1.stats();
     await w2.stats();
-
     println("");
     println("Rate limiting complete. No mutexes, no channels — just actors.");
 }

@@ -11,7 +11,6 @@
 //   fn show<T: Describe>(item: T) { println(item.describe()); }
 
 // ── 1. Structs ────────────────────────────────────────────────────────────────
-
 type Point {
     x: int;
     y: int;
@@ -25,7 +24,6 @@ fn point_sum(p: Point) -> int {
 //
 // A trait declares a named contract.
 // impl blocks provide the concrete implementation for each type.
-
 trait Describe {
     fn describe(val: Self) -> String;
 }
@@ -35,7 +33,7 @@ type Circle {
 }
 
 type Rectangle {
-    width:  int;
+    width: int;
     height: int;
 }
 
@@ -55,13 +53,11 @@ impl Describe for Rectangle {
 //
 // `dyn Describe` accepts any value whose type implements Describe.
 // The concrete type is erased; dispatch goes through a vtable at runtime.
-
 fn print_shape(shape: dyn Describe) {
     println(shape.describe());
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
-
 fn main() {
     println("=== Types and Traits ===");
 
@@ -70,13 +66,11 @@ fn main() {
     if point_sum(p) == 7 {
         println("PASS: struct field access");
     }
-
     // traits + impls via dynamic dispatch
     println("--- traits and dynamic dispatch ---");
-    let c = Circle    { radius: 5 };
+    let c = Circle { radius: 5 };
     let r = Rectangle { width: 3, height: 4 };
     print_shape(c);
     print_shape(r);
-
     println("=== Done ===");
 }

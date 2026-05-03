@@ -49,7 +49,7 @@
 /// ```
 pub fn map_int(v: Vec<int>, f: fn(int) -> int) -> Vec<int> {
     let out: Vec<int> = Vec::new();
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         out.push(f(v.get(i)));
     }
     out
@@ -69,7 +69,7 @@ pub fn map_int(v: Vec<int>, f: fn(int) -> int) -> Vec<int> {
 /// ```
 pub fn filter_int(v: Vec<int>, f: fn(int) -> bool) -> Vec<int> {
     let out: Vec<int> = Vec::new();
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         let val = v.get(i);
         if f(val) {
             out.push(val);
@@ -92,7 +92,7 @@ pub fn filter_int(v: Vec<int>, f: fn(int) -> bool) -> Vec<int> {
 /// ```
 pub fn fold_int(v: Vec<int>, init: int, f: fn(int, int) -> int) -> int {
     var acc = init;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         acc = f(acc, v.get(i));
     }
     acc
@@ -111,7 +111,7 @@ pub fn fold_int(v: Vec<int>, init: int, f: fn(int, int) -> int) -> int {
 /// println(iter.any(v, (x: int) => x > 9));  // false
 /// ```
 pub fn any(v: Vec<int>, f: fn(int) -> bool) -> bool {
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         if f(v.get(i)) {
             return true;
         }
@@ -132,7 +132,7 @@ pub fn any(v: Vec<int>, f: fn(int) -> bool) -> bool {
 /// println(iter.all(v, (x: int) => x > 2));  // false
 /// ```
 pub fn all(v: Vec<int>, f: fn(int) -> bool) -> bool {
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         if f(v.get(i)) == false {
             return false;
         }
@@ -153,14 +153,13 @@ pub fn all(v: Vec<int>, f: fn(int) -> bool) -> bool {
 /// ```
 pub fn sum(v: Vec<int>) -> int {
     var total: int = 0;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         total = total + v.get(i);
     }
     total
 }
 
 // ── String helpers ────────────────────────────────────────────────────────
-
 /// Apply `f` to every element and return a new vector of results.
 ///
 /// # Examples
@@ -174,7 +173,7 @@ pub fn sum(v: Vec<int>) -> int {
 /// ```
 pub fn map_str(v: Vec<String>, f: fn(String) -> String) -> Vec<String> {
     let out: Vec<String> = Vec::new();
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         out.push(f(v.get(i)));
     }
     out
@@ -194,7 +193,7 @@ pub fn map_str(v: Vec<String>, f: fn(String) -> String) -> Vec<String> {
 /// ```
 pub fn filter_str(v: Vec<String>, f: fn(String) -> bool) -> Vec<String> {
     let out: Vec<String> = Vec::new();
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         let val = v.get(i);
         if f(val) {
             out.push(val);
@@ -217,7 +216,7 @@ pub fn filter_str(v: Vec<String>, f: fn(String) -> bool) -> Vec<String> {
 /// ```
 pub fn fold_str(v: Vec<String>, init: String, f: fn(String, String) -> String) -> String {
     var acc = init;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         acc = f(acc, v.get(i));
     }
     acc
@@ -235,7 +234,7 @@ pub fn fold_str(v: Vec<String>, init: String, f: fn(String, String) -> String) -
 /// println(iter.any_str(v, (s: String) => s == "baz"));  // false
 /// ```
 pub fn any_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         if f(v.get(i)) {
             return true;
         }
@@ -255,7 +254,7 @@ pub fn any_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
 /// println(iter.all_str(v, (s: String) => s == "foo"));    // false
 /// ```
 pub fn all_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         if f(v.get(i)) == false {
             return false;
         }
@@ -264,7 +263,6 @@ pub fn all_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
 }
 
 // ── f64 helpers ───────────────────────────────────────────────────────────
-
 /// Apply `f` to every element and return a new vector of results.
 ///
 /// # Examples
@@ -278,7 +276,7 @@ pub fn all_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
 /// ```
 pub fn map_f64(v: Vec<f64>, f: fn(f64) -> f64) -> Vec<f64> {
     let out: Vec<f64> = Vec::new();
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         out.push(f(v.get(i)));
     }
     out
@@ -298,7 +296,7 @@ pub fn map_f64(v: Vec<f64>, f: fn(f64) -> f64) -> Vec<f64> {
 /// ```
 pub fn filter_f64(v: Vec<f64>, f: fn(f64) -> bool) -> Vec<f64> {
     let out: Vec<f64> = Vec::new();
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         let val = v.get(i);
         if f(val) {
             out.push(val);
@@ -321,7 +319,7 @@ pub fn filter_f64(v: Vec<f64>, f: fn(f64) -> bool) -> Vec<f64> {
 /// ```
 pub fn fold_f64(v: Vec<f64>, init: f64, f: fn(f64, f64) -> f64) -> f64 {
     var acc = init;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         acc = f(acc, v.get(i));
     }
     acc
@@ -340,7 +338,7 @@ pub fn fold_f64(v: Vec<f64>, init: f64, f: fn(f64, f64) -> f64) -> f64 {
 /// println(iter.any_f64(v, (x: f64) => x > 9.0));  // false
 /// ```
 pub fn any_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         if f(v.get(i)) {
             return true;
         }
@@ -361,7 +359,7 @@ pub fn any_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
 /// println(iter.all_f64(v, (x: f64) => x > 2.0));  // false
 /// ```
 pub fn all_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         if f(v.get(i)) == false {
             return false;
         }
@@ -382,14 +380,13 @@ pub fn all_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
 /// ```
 pub fn sum_f64(v: Vec<f64>) -> f64 {
     var total: f64 = 0.0;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         total = total + v.get(i);
     }
     total
 }
 
 // ── take / skip (int, String, f64) ────────────────────────────────────────
-
 /// Return the first `n` elements of `v`. If `n` exceeds the length, the
 /// whole vector is returned.
 ///
@@ -410,7 +407,7 @@ pub fn take_int(v: Vec<int>, n: int) -> Vec<int> {
     if v.len() < limit {
         limit = v.len();
     }
-    for i in 0..limit {
+    for i in 0 .. limit {
         out.push(v.get(i));
     }
     out
@@ -436,7 +433,7 @@ pub fn skip_int(v: Vec<int>, n: int) -> Vec<int> {
     if n > v.len() {
         start = v.len();
     }
-    for i in start..v.len() {
+    for i in start .. v.len() {
         out.push(v.get(i));
     }
     out
@@ -453,7 +450,7 @@ pub fn skip_int(v: Vec<int>, n: int) -> Vec<int> {
 /// ```
 pub fn count_int(v: Vec<int>, f: fn(int) -> bool) -> int {
     var n: int = 0;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         if f(v.get(i)) {
             n = n + 1;
         }
@@ -481,7 +478,7 @@ pub fn take_str(v: Vec<String>, n: int) -> Vec<String> {
     if v.len() < limit {
         limit = v.len();
     }
-    for i in 0..limit {
+    for i in 0 .. limit {
         out.push(v.get(i));
     }
     out
@@ -507,7 +504,7 @@ pub fn skip_str(v: Vec<String>, n: int) -> Vec<String> {
     if n > v.len() {
         start = v.len();
     }
-    for i in start..v.len() {
+    for i in start .. v.len() {
         out.push(v.get(i));
     }
     out
@@ -524,7 +521,7 @@ pub fn skip_str(v: Vec<String>, n: int) -> Vec<String> {
 /// ```
 pub fn count_str(v: Vec<String>, f: fn(String) -> bool) -> int {
     var n: int = 0;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         if f(v.get(i)) {
             n = n + 1;
         }
@@ -552,7 +549,7 @@ pub fn take_f64(v: Vec<f64>, n: int) -> Vec<f64> {
     if v.len() < limit {
         limit = v.len();
     }
-    for i in 0..limit {
+    for i in 0 .. limit {
         out.push(v.get(i));
     }
     out
@@ -578,7 +575,7 @@ pub fn skip_f64(v: Vec<f64>, n: int) -> Vec<f64> {
     if n > v.len() {
         start = v.len();
     }
-    for i in start..v.len() {
+    for i in start .. v.len() {
         out.push(v.get(i));
     }
     out
@@ -595,7 +592,7 @@ pub fn skip_f64(v: Vec<f64>, n: int) -> Vec<f64> {
 /// ```
 pub fn count_f64(v: Vec<f64>, f: fn(f64) -> bool) -> int {
     var n: int = 0;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         if f(v.get(i)) {
             n = n + 1;
         }
@@ -604,7 +601,6 @@ pub fn count_f64(v: Vec<f64>, f: fn(f64) -> bool) -> int {
 }
 
 // ── product (int, f64) ────────────────────────────────────────────────────
-
 /// Return the product of all elements. Returns `1` for an empty vector
 /// (the multiplicative identity).
 ///
@@ -617,7 +613,7 @@ pub fn count_f64(v: Vec<f64>, f: fn(f64) -> bool) -> int {
 /// ```
 pub fn product(v: Vec<int>) -> int {
     var acc: int = 1;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         acc = acc * v.get(i);
     }
     acc
@@ -635,7 +631,7 @@ pub fn product(v: Vec<int>) -> int {
 /// ```
 pub fn product_f64(v: Vec<f64>) -> f64 {
     var acc: f64 = 1.0;
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         acc = acc * v.get(i);
     }
     acc

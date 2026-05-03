@@ -2,15 +2,40 @@
 // Each node: [low, high, max_high, left, right] = 5 slots per node
 // BST ordered by low endpoint, max_high tracks max high in subtree
 // NIL = -1 means no child
+fn node_low(nodes: Vec<i32>, i: i32) -> i32 {
+    nodes.get(i * 5)
+}
 
-fn node_low(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5) }
-fn node_high(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5 + 1) }
-fn node_max(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5 + 2) }
-fn node_left(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5 + 3) }
-fn node_right(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5 + 4) }
-fn set_max(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 5 + 2, v); 0 }
-fn set_left(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 5 + 3, v); 0 }
-fn set_right(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 5 + 4, v); 0 }
+fn node_high(nodes: Vec<i32>, i: i32) -> i32 {
+    nodes.get(i * 5 + 1)
+}
+
+fn node_max(nodes: Vec<i32>, i: i32) -> i32 {
+    nodes.get(i * 5 + 2)
+}
+
+fn node_left(nodes: Vec<i32>, i: i32) -> i32 {
+    nodes.get(i * 5 + 3)
+}
+
+fn node_right(nodes: Vec<i32>, i: i32) -> i32 {
+    nodes.get(i * 5 + 4)
+}
+
+fn set_max(nodes: Vec<i32>, i: i32, v: i32) -> i32 {
+    nodes.set(i * 5 + 2, v);
+    0
+}
+
+fn set_left(nodes: Vec<i32>, i: i32, v: i32) -> i32 {
+    nodes.set(i * 5 + 3, v);
+    0
+}
+
+fn set_right(nodes: Vec<i32>, i: i32, v: i32) -> i32 {
+    nodes.set(i * 5 + 4, v);
+    0
+}
 
 fn add_node(nodes: Vec<i32>, low: i32, high: i32, NIL: i32) -> i32 {
     let idx = nodes.len() / 5;
@@ -23,7 +48,11 @@ fn add_node(nodes: Vec<i32>, low: i32, high: i32, NIL: i32) -> i32 {
 }
 
 fn max_val(a: i32, b: i32) -> i32 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 fn update_max(nodes: Vec<i32>, i: i32, NIL: i32) -> i32 {

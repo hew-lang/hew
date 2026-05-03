@@ -30,18 +30,18 @@
 //!     resp.free();
 //! }
 //! ```
+
 //
 // WASM-TODO(#1451): outbound std::net::http client wrappers remain native-only until
 // a browser/WASM networking bridge exists.
-
 /// An opaque HTTP response handle.
 ///
 /// Obtained from `http_client.request(...)`, `http_client.get(...)`, or
 /// `http_client.post(...)`. Must be freed with `free()` when no longer needed.
-type Response {}
+type Response {
+}
 
 // ── Response methods ──────────────────────────────────────────────────
-
 /// Methods available on an HTTP `Response`.
 trait ResponseMethods {
     /// Return the HTTP status code (e.g. 200, 404). Returns -1 on error.
@@ -73,21 +73,44 @@ trait ResponseMethods {
 
 impl ResponseMethods for Response {
     /// Return the HTTP status code (e.g. 200, 404).
-    fn status(resp: Response) -> int { unsafe { hew_http_response_status(resp) } }
+    fn status(resp: Response) -> int {
+        unsafe {
+            hew_http_response_status(resp)
+        }
+    }
     /// Return a copy of the response body as a string.
-    fn body(resp: Response) -> String { unsafe { hew_http_response_body(resp) } }
+    fn body(resp: Response) -> String {
+        unsafe {
+            hew_http_response_body(resp)
+        }
+    }
     /// Look up a response header by name (case-insensitive).
-    fn header(resp: Response, name: String) -> String { unsafe { hew_http_response_header(resp, name) } }
+    fn header(resp: Response, name: String) -> String {
+        unsafe {
+            hew_http_response_header(resp, name)
+        }
+    }
     /// Return the `Content-Type` response header.
-    fn content_type(resp: Response) -> String { unsafe { hew_http_response_content_type(resp) } }
+    fn content_type(resp: Response) -> String {
+        unsafe {
+            hew_http_response_content_type(resp)
+        }
+    }
     /// Return all response headers as a list of `(name, value)` pairs.
-    fn headers(resp: Response) -> Vec<(String, String)> { unsafe { hew_http_response_headers(resp) } }
+    fn headers(resp: Response) -> Vec<(String, String)> {
+        unsafe {
+            hew_http_response_headers(resp)
+        }
+    }
     /// Release the response resources.
-    fn free(resp: Response) { unsafe { hew_http_response_free(resp) }; }
+    fn free(resp: Response) {
+        unsafe {
+            hew_http_response_free(resp)
+        };
+    }
 }
 
 // ── Module-level helpers ──────────────────────────────────────────────
-
 fn empty_headers() -> Vec<(String, String)> {
     let headers: Vec<(String, String)> = Vec::new();
     headers
@@ -100,7 +123,6 @@ fn content_type_headers(content_type: String) -> Vec<(String, String)> {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Perform an HTTP request and return a `Response` handle.
 ///
 /// Each header entry is a `(name, value)` pair, e.g. `("Accept", "application/json")`.
@@ -115,7 +137,9 @@ fn content_type_headers(content_type: String) -> Vec<(String, String)> {
 /// resp.free();
 /// ```
 pub fn request(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Response {
-    unsafe { hew_http_request_hew(method, url, body, headers) }
+    unsafe {
+        hew_http_request_hew(method, url, body, headers)
+    }
 }
 
 /// Perform an HTTP request and return the response body as a string.
@@ -135,14 +159,24 @@ pub fn request(method: String, url: String, body: String, headers: Vec<(String, 
 /// }
 /// ```
 pub fn request_string(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Option<String> {
-    let resp = unsafe { hew_http_request_hew(method, url, body, headers) };
-    let status = unsafe { hew_http_response_status(resp) };
+    let resp = unsafe {
+        hew_http_request_hew(method, url, body, headers)
+    };
+    let status = unsafe {
+        hew_http_response_status(resp)
+    };
     if status < 0 {
-        unsafe { hew_http_response_free(resp) };
+        unsafe {
+            hew_http_response_free(resp)
+        };
         return None;
     }
-    let result = unsafe { hew_http_response_body(resp) };
-    unsafe { hew_http_response_free(resp) };
+    let result = unsafe {
+        hew_http_response_body(resp)
+    };
+    unsafe {
+        hew_http_response_free(resp)
+    };
     Some(result)
 }
 
@@ -150,7 +184,9 @@ pub fn request_string(method: String, url: String, body: String, headers: Vec<(S
 ///
 /// Pass `0` to disable the timeout.
 pub fn set_timeout(timeout_ms: int) {
-    unsafe { hew_http_set_timeout(timeout_ms as i32) }; // INTERNAL-ABI: C ABI takes i32 timeout
+    unsafe {
+        hew_http_set_timeout(timeout_ms as i32)
+    }; // INTERNAL-ABI: C ABI takes i32 timeout
 }
 
 /// Return the last HTTP client error observed on this thread.
@@ -158,7 +194,9 @@ pub fn set_timeout(timeout_ms: int) {
 /// Accessors that return null on allocation failure update this string.
 /// Successful accessor calls clear it.
 pub fn last_error() -> String {
-    unsafe { hew_http_last_error() }
+    unsafe {
+        hew_http_last_error()
+    }
 }
 
 /// Perform an HTTP GET request and return a `Response` handle.
@@ -230,7 +268,6 @@ pub fn post_string(url: String, content_type: String, body: String) -> Option<St
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
-
 extern "C" {
     fn hew_http_request_hew(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Response;
     fn hew_http_set_timeout(timeout_ms: i32);

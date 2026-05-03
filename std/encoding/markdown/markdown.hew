@@ -15,7 +15,6 @@
 //! ```
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Convert a Markdown string to HTML.
 ///
 /// # Examples
@@ -24,7 +23,9 @@
 /// let html = markdown.to_html("**bold** text");
 /// ```
 pub fn to_html(md: String) -> String {
-    unsafe { hew_markdown_to_html(md) }
+    unsafe {
+        hew_markdown_to_html(md)
+    }
 }
 
 /// Convert a Markdown string to sanitized HTML.
@@ -38,11 +39,12 @@ pub fn to_html(md: String) -> String {
 /// let safe = markdown.to_html_safe("Click <script>alert(1)</script>");
 /// ```
 pub fn to_html_safe(md: String) -> String {
-    unsafe { hew_markdown_to_html_safe(md) }
+    unsafe {
+        hew_markdown_to_html_safe(md)
+    }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
-
 extern "C" {
     fn hew_markdown_to_html(md: String) -> String;
     fn hew_markdown_to_html_safe(md: String) -> String;

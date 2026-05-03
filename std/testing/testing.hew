@@ -16,7 +16,6 @@
 //! ```
 
 // ── Equality ──────────────────────────────────────────────────────────
-
 /// Assert that two integers are equal.  Panics with a message showing
 /// the expected and actual values when they differ.
 pub fn assert_eq(actual: int, expected: int) {
@@ -34,7 +33,6 @@ pub fn assert_eq_str(actual: String, expected: String) {
 }
 
 // ── Inequality ────────────────────────────────────────────────────────
-
 /// Assert that two integers are not equal.  Panics when `a == b`.
 pub fn assert_ne(a: int, b: int) {
     if a == b {
@@ -43,7 +41,6 @@ pub fn assert_ne(a: int, b: int) {
 }
 
 // ── Boolean ───────────────────────────────────────────────────────────
-
 /// Assert that a condition is true.  Panics when `condition` is false.
 pub fn assert_true(condition: bool) {
     if !condition {
@@ -59,7 +56,6 @@ pub fn assert_false(condition: bool) {
 }
 
 // ── Ordering ──────────────────────────────────────────────────────────
-
 /// Assert that `a` is strictly greater than `b`.
 pub fn assert_gt(a: int, b: int) {
     if a <= b {

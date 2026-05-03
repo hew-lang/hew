@@ -45,69 +45,127 @@ pub fn from_path(path: String) -> String {
 /// ```
 pub fn from_ext(ext: String) -> String {
     // Text
-    if ext == "html" { "text/html" }
-    else if ext == "htm" { "text/html" }
-    else if ext == "css" { "text/css" }
-    else if ext == "js" { "text/javascript" }
-    else if ext == "mjs" { "text/javascript" }
-    else if ext == "json" { "application/json" }
-    else if ext == "xml" { "application/xml" }
-    else if ext == "svg" { "image/svg+xml" }
-    else if ext == "txt" { "text/plain" }
-    else if ext == "csv" { "text/csv" }
-    else if ext == "md" { "text/markdown" }
-    // Images
-    else if ext == "png" { "image/png" }
-    else if ext == "jpg" { "image/jpeg" }
-    else if ext == "jpeg" { "image/jpeg" }
-    else if ext == "gif" { "image/gif" }
-    else if ext == "webp" { "image/webp" }
-    else if ext == "ico" { "image/x-icon" }
-    else if ext == "bmp" { "image/bmp" }
-    else if ext == "tiff" { "image/tiff" }
-    else if ext == "avif" { "image/avif" }
-    // Audio
-    else if ext == "mp3" { "audio/mpeg" }
-    else if ext == "ogg" { "audio/ogg" }
-    else if ext == "wav" { "audio/wav" }
-    else if ext == "flac" { "audio/flac" }
-    else if ext == "aac" { "audio/aac" }
-    else if ext == "m4a" { "audio/mp4" }
-    // Video
-    else if ext == "mp4" { "video/mp4" }
-    else if ext == "webm" { "video/webm" }
-    else if ext == "avi" { "video/x-msvideo" }
-    else if ext == "mov" { "video/quicktime" }
-    else if ext == "mkv" { "video/x-matroska" }
-    // Archives / binary
-    else if ext == "pdf" { "application/pdf" }
-    else if ext == "zip" { "application/zip" }
-    else if ext == "gz" { "application/gzip" }
-    else if ext == "tar" { "application/x-tar" }
-    else if ext == "bz2" { "application/x-bzip2" }
-    else if ext == "xz" { "application/x-xz" }
-    else if ext == "7z" { "application/x-7z-compressed" }
-    else if ext == "rar" { "application/vnd.rar" }
-    // Fonts
-    else if ext == "woff" { "font/woff" }
-    else if ext == "woff2" { "font/woff2" }
-    else if ext == "ttf" { "font/ttf" }
-    else if ext == "otf" { "font/otf" }
-    else if ext == "eot" { "application/vnd.ms-fontobject" }
-    // Code / config
-    else if ext == "wasm" { "application/wasm" }
-    else if ext == "map" { "application/json" }
-    else if ext == "yaml" { "text/yaml" }
-    else if ext == "yml" { "text/yaml" }
-    else if ext == "toml" { "application/toml" }
-    else if ext == "ini" { "text/plain" }
-    else if ext == "sh" { "application/x-sh" }
-    else if ext == "py" { "text/x-python" }
-    else if ext == "rs" { "text/x-rust" }
-    else if ext == "ts" { "text/typescript" }
-    else if ext == "tsx" { "text/tsx" }
-    else if ext == "jsx" { "text/jsx" }
-    else { "application/octet-stream" }
+    if ext == "html" {
+        "text/html"
+    } else if ext == "htm" {
+        "text/html"
+    } else if ext == "css" {
+        "text/css"
+    } else if ext == "js" {
+        "text/javascript"
+    } else if ext == "mjs" {
+        "text/javascript"
+    } else if ext == "json" {
+        "application/json"
+    } else if ext == "xml" {
+        "application/xml"
+    } else if ext == "svg" {
+        "image/svg+xml"
+    } else if ext == "txt" {
+        "text/plain"
+    } else if ext == "csv" {
+        "text/csv"
+    } else if ext == "md" {
+        "text/markdown"
+    } else if ext == "png" {
+        // Images
+        "image/png"
+    } else if ext == "jpg" {
+        "image/jpeg"
+    } else if ext == "jpeg" {
+        "image/jpeg"
+    } else if ext == "gif" {
+        "image/gif"
+    } else if ext == "webp" {
+        "image/webp"
+    } else if ext == "ico" {
+        "image/x-icon"
+    } else if ext == "bmp" {
+        "image/bmp"
+    } else if ext == "tiff" {
+        "image/tiff"
+    } else if ext == "avif" {
+        "image/avif"
+    } else if ext == "mp3" {
+        // Audio
+        "audio/mpeg"
+    } else if ext == "ogg" {
+        "audio/ogg"
+    } else if ext == "wav" {
+        "audio/wav"
+    } else if ext == "flac" {
+        "audio/flac"
+    } else if ext == "aac" {
+        "audio/aac"
+    } else if ext == "m4a" {
+        "audio/mp4"
+    } else if ext == "mp4" {
+        // Video
+        "video/mp4"
+    } else if ext == "webm" {
+        "video/webm"
+    } else if ext == "avi" {
+        "video/x-msvideo"
+    } else if ext == "mov" {
+        "video/quicktime"
+    } else if ext == "mkv" {
+        "video/x-matroska"
+    } else if ext == "pdf" {
+        // Archives / binary
+        "application/pdf"
+    } else if ext == "zip" {
+        "application/zip"
+    } else if ext == "gz" {
+        "application/gzip"
+    } else if ext == "tar" {
+        "application/x-tar"
+    } else if ext == "bz2" {
+        "application/x-bzip2"
+    } else if ext == "xz" {
+        "application/x-xz"
+    } else if ext == "7z" {
+        "application/x-7z-compressed"
+    } else if ext == "rar" {
+        "application/vnd.rar"
+    } else if ext == "woff" {
+        // Fonts
+        "font/woff"
+    } else if ext == "woff2" {
+        "font/woff2"
+    } else if ext == "ttf" {
+        "font/ttf"
+    } else if ext == "otf" {
+        "font/otf"
+    } else if ext == "eot" {
+        "application/vnd.ms-fontobject"
+    } else if ext == "wasm" {
+        // Code / config
+        "application/wasm"
+    } else if ext == "map" {
+        "application/json"
+    } else if ext == "yaml" {
+        "text/yaml"
+    } else if ext == "yml" {
+        "text/yaml"
+    } else if ext == "toml" {
+        "application/toml"
+    } else if ext == "ini" {
+        "text/plain"
+    } else if ext == "sh" {
+        "application/x-sh"
+    } else if ext == "py" {
+        "text/x-python"
+    } else if ext == "rs" {
+        "text/x-rust"
+    } else if ext == "ts" {
+        "text/typescript"
+    } else if ext == "tsx" {
+        "text/tsx"
+    } else if ext == "jsx" {
+        "text/jsx"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 /// Test whether a MIME type is a text type (e.g. `text/*`).

@@ -1,7 +1,7 @@
 fn bubble_sort(v: Vec<int>) -> Vec<int> {
     let n = v.len();
-    for i in 0..n {
-        for j in 0..(n - 1 - i) {
+    for i in 0 .. n {
+        for j in 0 .. n - 1 - i {
             let a = v.get(j);
             let b = v.get(j + 1);
             if a > b {
@@ -26,7 +26,7 @@ fn make_test_array() -> Vec<int> {
 const ITERS: int = 50000;
 
 fn main() {
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         let v = make_test_array();
         let _ = bubble_sort(v);
     }

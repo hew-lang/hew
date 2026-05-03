@@ -1,5 +1,4 @@
 // Selection Sort - find minimum element and place it at beginning
-
 fn swap(v: Vec<int>, i: int, j: int) {
     let tmp = v.get(i);
     v.set(i, v.get(j));
@@ -8,7 +7,7 @@ fn swap(v: Vec<int>, i: int, j: int) {
 
 fn selection_sort(v: Vec<int>) {
     let n = v.len();
-    for i in 0..n {
+    for i in 0 .. n {
         var min_idx = i;
         var j = i + 1;
         while j < n {
@@ -61,28 +60,22 @@ fn run_test(name: String, input: Vec<int>, expected: Vec<int>) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-
     total = total + 1;
     passed = passed + run_test("reverse", make_vec_5(5, 4, 3, 2, 1), make_vec_5(1, 2, 3, 4, 5));
-
     total = total + 1;
     passed = passed + run_test("sorted", make_vec_5(1, 2, 3, 4, 5), make_vec_5(1, 2, 3, 4, 5));
-
     total = total + 1;
     passed = passed + run_test("duplicates", make_vec_5(3, 1, 3, 1, 2), make_vec_5(1, 1, 2, 3, 3));
-
     total = total + 1;
     let single: Vec<int> = Vec::new();
     single.push(42);
     let exp_single: Vec<int> = Vec::new();
     exp_single.push(42);
     passed = passed + run_test("single", single, exp_single);
-
     total = total + 1;
     let empty: Vec<int> = Vec::new();
     let exp_empty: Vec<int> = Vec::new();
     passed = passed + run_test("empty", empty, exp_empty);
-
     println(f"{passed}/{total} tests passed");
     if passed == total {
         println("ALL PASS");

@@ -1,5 +1,4 @@
 // Palindrome check using char_at comparison from both ends
-
 fn is_palindrome(s: String) -> bool {
     let n = s.len();
     if n < 2 {
@@ -19,14 +18,30 @@ fn is_palindrome(s: String) -> bool {
 
 fn main() {
     var pass = true;
-
-    if !is_palindrome("racecar") { pass = false; println("FAIL racecar"); }
-    if is_palindrome("hello") { pass = false; println("FAIL hello"); }
-    if !is_palindrome("a") { pass = false; println("FAIL a"); }
-    if !is_palindrome("") { pass = false; println("FAIL empty"); }
-    if !is_palindrome("abba") { pass = false; println("FAIL abba"); }
-    if is_palindrome("abc") { pass = false; println("FAIL abc"); }
-
+    if !is_palindrome("racecar") {
+        pass = false;
+        println("FAIL racecar");
+    }
+    if is_palindrome("hello") {
+        pass = false;
+        println("FAIL hello");
+    }
+    if !is_palindrome("a") {
+        pass = false;
+        println("FAIL a");
+    }
+    if !is_palindrome("") {
+        pass = false;
+        println("FAIL empty");
+    }
+    if !is_palindrome("abba") {
+        pass = false;
+        println("FAIL abba");
+    }
+    if is_palindrome("abc") {
+        pass = false;
+        println("FAIL abc");
+    }
     if pass {
         println("PASS");
     } else {

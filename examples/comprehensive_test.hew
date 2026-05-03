@@ -21,9 +21,10 @@ enum Colour {
 }
 
 // === Wire Types ===
-wire type Message {
-    data: i32 @1;
-    text: String @2;
+#[wire]
+struct Message {
+    data: i32 @1,
+    text: String @2,
 }
 
 // === Helper Functions ===

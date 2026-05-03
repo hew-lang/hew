@@ -1,5 +1,4 @@
 // Bubble Sort - repeatedly swap adjacent elements if out of order
-
 fn swap(v: Vec<int>, i: int, j: int) {
     let tmp = v.get(i);
     v.set(i, v.get(j));
@@ -8,8 +7,8 @@ fn swap(v: Vec<int>, i: int, j: int) {
 
 fn bubble_sort(v: Vec<int>) {
     let n = v.len();
-    for i in 0..n {
-        for j in 0..(n - 1 - i) {
+    for i in 0 .. n {
+        for j in 0 .. n - 1 - i {
             if v.get(j) > v.get(j + 1) {
                 swap(v, j, j + 1);
             }
@@ -55,7 +54,6 @@ fn run_test(name: String, input: Vec<int>, expected: Vec<int>) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-
     // Test 1: reverse sorted
     total = total + 1;
     passed = passed + run_test("reverse", make_vec_5(5, 4, 3, 2, 1), make_vec_5(1, 2, 3, 4, 5));
@@ -81,7 +79,6 @@ fn main() {
     let empty: Vec<int> = Vec::new();
     let exp_empty: Vec<int> = Vec::new();
     passed = passed + run_test("empty", empty, exp_empty);
-
     println(f"{passed}/{total} tests passed");
     if passed == total {
         println("ALL PASS");

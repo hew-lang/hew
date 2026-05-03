@@ -17,8 +17,7 @@
 // Returns request_id * 10 on success, -1 on failure.
 // Failure is triggered by setting the actor to "degraded" mode.
 actor Backend {
-    let healthy: int;  // 1 = healthy, 0 = degraded
-
+    let healthy: int; // 1 = healthy, 0 = degraded
     receive fn call(request_id: int) -> int {
         if healthy == 0 {
             -1
@@ -26,7 +25,6 @@ actor Backend {
             request_id * 10
         }
     }
-
     receive fn set_healthy(val: int) {
         healthy = val;
         if val == 1 {
@@ -45,10 +43,9 @@ actor Backend {
 //   2 = HalfOpen (allowing one probe)
 actor CircuitBreaker {
     let backend: ActorRef<Backend>;
-    let state: int;           // 0=Closed, 1=Open, 2=HalfOpen
+    let state: int; // 0=Closed, 1=Open, 2=HalfOpen
     let failure_count: int;
-    let max_failures: int;    // trip threshold
-
+    let max_failures: int; // trip threshold
     init() {
         println(f"[breaker] init: max_failures={max_failures}");
     }
@@ -95,7 +92,6 @@ actor CircuitBreaker {
             println("[breaker] Open → HalfOpen (allowing probe)");
         }
     }
-
     receive fn get_state() -> int {
         state
     }
@@ -104,15 +100,8 @@ actor CircuitBreaker {
 fn main() {
     println("=== Circuit Breaker Pattern ===");
     println("");
-
     let backend = spawn Backend(healthy: 1);
-    let breaker = spawn CircuitBreaker(
-        backend: backend,
-        state: 0,
-        failure_count: 0,
-        max_failures: 3,
-    );
-
+    let breaker = spawn CircuitBreaker(backend: backend, state: 0, failure_count: 0, max_failures: 3);
     // ── Normal operation: requests succeed ──
     println("--- Normal operation ---");
     await breaker.request(1);
@@ -157,7 +146,6 @@ fn main() {
     await breaker.request(11);
     let final_state = await breaker.get_state();
     println(f"Final breaker state: {final_state} (0=Closed)");
-
     println("");
     println("Circuit breaker complete.");
     println("The actor IS the state machine — no mutexes, no shared state.");

@@ -14,7 +14,6 @@
 //   [4]     version 0x01
 //   [5]     flags   (bit 0 = compressed)
 //   [6..9]  payload_len (little-endian u32)
-
 /// Encode a wire format header for a message.
 ///
 /// `payload_len` is the byte length of the serialized payload.
@@ -24,19 +23,19 @@
 pub fn encode_header(payload_len: int, flags: int) -> bytes {
     let out: bytes = bytes::new();
     // Magic: "HEW1"
-    out.push(72);   // 'H'
-    out.push(69);   // 'E'
-    out.push(87);   // 'W'
-    out.push(49);   // '1'
+    out.push(72); // 'H'
+    out.push(69); // 'E'
+    out.push(87); // 'W'
+    out.push(49); // '1'
     // Version
     out.push(1);
     // Flags (only bit 0 is valid)
     out.push(flags & 1);
     // Payload length (little-endian 4 bytes)
     out.push(payload_len & 255);
-    out.push((payload_len >> 8) & 255);
-    out.push((payload_len >> 16) & 255);
-    out.push((payload_len >> 24) & 255);
+    out.push(payload_len >> 8 & 255);
+    out.push(payload_len >> 16 & 255);
+    out.push(payload_len >> 24 & 255);
     out
 }
 
@@ -63,13 +62,25 @@ pub fn validate_header(buffer: bytes) -> bool {
         return false;
     }
     // Check magic "HEW1"
-    if buffer.get(0) != 72 { return false; }
-    if buffer.get(1) != 69 { return false; }
-    if buffer.get(2) != 87 { return false; }
-    if buffer.get(3) != 49 { return false; }
+    if buffer.get(0) != 72 {
+        return false;
+    }
+    if buffer.get(1) != 69 {
+        return false;
+    }
+    if buffer.get(2) != 87 {
+        return false;
+    }
+    if buffer.get(3) != 49 {
+        return false;
+    }
     // Check version
-    if buffer.get(4) != 1 { return false; }
+    if buffer.get(4) != 1 {
+        return false;
+    }
     // Check flags (only bit 0 allowed)
-    if buffer.get(5) & 254 != 0 { return false; }
+    if (buffer.get(5) & 254) != 0 {
+        return false;
+    }
     true
 }

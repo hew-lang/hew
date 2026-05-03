@@ -26,7 +26,6 @@
 //! ```
 
 // ── Format constants ─────────────────────────────────────────────────
-
 /// Coloured text output format (default).
 pub const TEXT: int = 0;
 
@@ -34,10 +33,11 @@ pub const TEXT: int = 0;
 pub const JSON: int = 1;
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Initialize logging at the default INFO level.
 pub fn setup() {
-    unsafe { hew_log_set_level(2) };
+    unsafe {
+        hew_log_set_level(2)
+    };
 }
 
 /// Set the log level filter.
@@ -50,12 +50,16 @@ pub fn setup() {
 /// log.set_level(3); // enable debug and above
 /// ```
 pub fn set_level(level: int) {
-    unsafe { hew_log_set_level(level as i32) };
+    unsafe {
+        hew_log_set_level(level as i32)
+    };
 }
 
 /// Get the current log level filter.
 pub fn get_level() -> int {
-    unsafe { hew_log_get_level() }
+    unsafe {
+        hew_log_get_level()
+    }
 }
 
 /// Set the log output format.
@@ -69,41 +73,54 @@ pub fn get_level() -> int {
 /// log.info("structured", service: "api");
 /// ```
 pub fn set_format(format: int) {
-    unsafe { hew_log_set_format(format as i32) };
+    unsafe {
+        hew_log_set_format(format as i32)
+    };
 }
 
 /// Get the current log output format.
 pub fn get_format() -> int {
-    unsafe { hew_log_get_format() }
+    unsafe {
+        hew_log_get_format()
+    }
 }
 
 /// Log a message at error level (named args handled by compiler).
 pub fn error(msg: String) {
-    unsafe { hew_log_emit(0, msg) };
+    unsafe {
+        hew_log_emit(0, msg)
+    };
 }
 
 /// Log a message at warn level.
 pub fn warn(msg: String) {
-    unsafe { hew_log_emit(1, msg) };
+    unsafe {
+        hew_log_emit(1, msg)
+    };
 }
 
 /// Log a message at info level.
 pub fn info(msg: String) {
-    unsafe { hew_log_emit(2, msg) };
+    unsafe {
+        hew_log_emit(2, msg)
+    };
 }
 
 /// Log a message at debug level.
 pub fn debug(msg: String) {
-    unsafe { hew_log_emit(3, msg) };
+    unsafe {
+        hew_log_emit(3, msg)
+    };
 }
 
 /// Log a message at trace level.
 pub fn trace(msg: String) {
-    unsafe { hew_log_emit(4, msg) };
+    unsafe {
+        hew_log_emit(4, msg)
+    };
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
-
 extern "C" {
     fn hew_log_emit(level: i32, msg: String);
     fn hew_log_get_level() -> i32;

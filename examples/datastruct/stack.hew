@@ -1,5 +1,4 @@
 // Stack - LIFO data structure using Vec<int>
-
 fn stack_new() -> Vec<int> {
     let s: Vec<int> = Vec::new();
     s
@@ -22,7 +21,11 @@ fn stack_size(s: Vec<int>) -> int {
 }
 
 fn stack_is_empty(s: Vec<int>) -> int {
-    if s.len() == 0 { 1 } else { 0 }
+    if s.len() == 0 {
+        1
+    } else {
+        0
+    }
 }
 
 fn run_test(name: String, passed: int) -> int {
@@ -37,11 +40,14 @@ fn run_test(name: String, passed: int) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-
     // Test 1: new stack is empty
     total = total + 1;
     let s = stack_new();
-    let r1 = if stack_is_empty(s) == 1 { 1 } else { 0 };
+    let r1 = if stack_is_empty(s) == 1 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("new stack is empty", r1);
 
     // Test 2: push and size
@@ -49,12 +55,20 @@ fn main() {
     stack_push(s, 10);
     stack_push(s, 20);
     stack_push(s, 30);
-    let r2 = if stack_size(s) == 3 { 1 } else { 0 };
+    let r2 = if stack_size(s) == 3 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("push and size", r2);
 
     // Test 3: peek returns top
     total = total + 1;
-    let r3 = if stack_peek(s) == 30 { 1 } else { 0 };
+    let r3 = if stack_peek(s) == 30 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("peek returns top", r3);
 
     // Test 4: pop returns LIFO order
@@ -74,7 +88,11 @@ fn main() {
 
     // Test 5: stack empty after popping all
     total = total + 1;
-    let r5 = if stack_is_empty(s) == 1 { 1 } else { 0 };
+    let r5 = if stack_is_empty(s) == 1 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("empty after pop all", r5);
 
     // Test 6: push after empty
@@ -91,7 +109,7 @@ fn main() {
     // Test 7: many elements
     total = total + 1;
     let s2 = stack_new();
-    for i in 0..100 {
+    for i in 0 .. 100 {
         stack_push(s2, i);
     }
     var r7 = 0;

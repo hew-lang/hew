@@ -9,7 +9,7 @@ fn binomial(n: int, k: int) -> int {
         kk = n - kk;
     }
     var result = 1;
-    for i in 0..kk {
+    for i in 0 .. kk {
         result = result * (n - i);
         result = result / (i + 1);
     }
@@ -33,7 +33,6 @@ fn check(name: String, got: int, expected: int) -> int {
 fn main() {
     var passed = 0;
     var total = 0;
-
     // C(n,0) = 1
     total = total + 1;
     passed = passed + check("C(0,0)=1", binomial(0, 0), 1);
@@ -63,7 +62,6 @@ fn main() {
         k = k + 1;
     }
     println("");
-
     println("---");
     print("Passed: ");
     print(passed);

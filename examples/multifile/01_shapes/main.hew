@@ -8,13 +8,11 @@
 //
 // Run:   hew run   examples/multifile/01_shapes/main.hew
 // Check: hew check examples/multifile/01_shapes/main.hew
-
 import shapes;
 
 fn main() {
     let c = shapes.make_circle(5);
     let r = shapes.make_rectangle(4, 3);
-
     // Qualified access to the render helper defined in shapes.hew.
     println(shapes.render(c));
     println(shapes.render(r));

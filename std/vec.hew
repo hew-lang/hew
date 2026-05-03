@@ -74,7 +74,6 @@ pub fn contains_str(v: Vec<String>, val: String) -> bool {
 }
 
 // ── index_of ──────────────────────────────────────────────────────────────
-
 /// Return the index of `val` in a `Vec<i32>`, or `-1` if not found.
 pub fn index_of_i32(v: Vec<i32>, val: i32) -> int { // INTERNAL-ABI: typed for 32-bit integer vector storage
     var i = 0;
@@ -149,7 +148,6 @@ pub fn index_of_str(v: Vec<String>, val: String) -> int {
 }
 
 // ── first / last ──────────────────────────────────────────────────────────
-
 /// Return `Some` of the first element of a `Vec<i64>`, or `None` if empty.
 pub fn first_i64(v: Vec<i64>) -> Option<int> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
     if v.len() == 0 {
@@ -214,7 +212,6 @@ pub fn last_str(v: Vec<String>) -> Option<String> {
 }
 
 // ── min / max ─────────────────────────────────────────────────────────────
-
 /// Return the smallest element in a `Vec<i32>`. Panics if empty.
 pub fn min_i32(v: Vec<i32>) -> i32 { // INTERNAL-ABI: typed for 32-bit integer vector storage
     if v.len() == 0 {

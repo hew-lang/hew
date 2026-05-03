@@ -1,6 +1,5 @@
 // Sorted Array - maintains sorted order on insert using binary search
 // All elements in Vec<int> are kept in ascending order
-
 fn sa_find_insert_pos(arr: Vec<int>, val: int) -> int {
     // Binary search for insertion point
     var lo = 0;
@@ -68,7 +67,7 @@ fn sa_is_sorted(arr: Vec<int>) -> int {
     if arr.len() < 2 {
         return 1;
     }
-    for i in 0..(arr.len() - 1) {
+    for i in 0 .. arr.len() - 1 {
         if arr.get(i) > arr.get(i + 1) {
             return 0;
         }
@@ -88,9 +87,7 @@ fn run_test(name: String, passed: int) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-
     let arr: Vec<int> = Vec::new();
-
     // Test 1: insert maintains sorted order
     total = total + 1;
     sa_insert(arr, 30);
@@ -98,7 +95,11 @@ fn main() {
     sa_insert(arr, 50);
     sa_insert(arr, 20);
     sa_insert(arr, 40);
-    let r1 = if sa_is_sorted(arr) == 1 { 1 } else { 0 };
+    let r1 = if sa_is_sorted(arr) == 1 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("insert maintains sorted", r1);
 
     // Test 2: correct values [10, 20, 30, 40, 50]
@@ -120,13 +121,21 @@ fn main() {
     // Test 3: search finds existing
     total = total + 1;
     let idx = sa_search(arr, 30);
-    let r3 = if idx == 2 { 1 } else { 0 };
+    let r3 = if idx == 2 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("search finds 30 at idx 2", r3);
 
     // Test 4: search returns -1 for missing
     total = total + 1;
     let idx2 = sa_search(arr, 99);
-    let r4 = if idx2 < 0 { 1 } else { 0 };
+    let r4 = if idx2 < 0 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("search missing returns -1", r4);
 
     // Test 5: remove element
@@ -145,7 +154,11 @@ fn main() {
     // Test 6: remove missing returns 0
     total = total + 1;
     let removed2 = sa_remove(arr, 99);
-    let r6 = if removed2 == 0 { 1 } else { 0 };
+    let r6 = if removed2 == 0 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("remove missing returns 0", r6);
 
     // Test 7: insert duplicates

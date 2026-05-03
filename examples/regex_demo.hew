@@ -9,7 +9,6 @@
 // Usage: hew build regex_demo.hew -o regex_demo && ./regex_demo
 fn main() {
     println("=== Regex Demo ===");
-
     let email_re = re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$";
     let url_re = re"^https?://";
     let comment_re = re"^//";
@@ -19,7 +18,6 @@ fn main() {
     let request_line_re = re"^(GET|POST|PUT|DELETE) ";
     let read_only_re = re"^(GET|HEAD) ";
     let mutating_re = re"^(POST|PUT|PATCH|DELETE) ";
-
     // Basic match with =~
     let email = "user@example.com";
     if email =~ email_re {
@@ -53,14 +51,12 @@ fn main() {
     if input =~ request_line_re {
         println(f"'{input}' is an HTTP request line");
     }
-
     let route = "POST /api/users";
     match route {
         line if line =~ read_only_re => println(f"'{line}' is read-only"),
         line if line =~ mutating_re => println(f"'{line}' mutates state"),
         _ => println(f"'{route}' is another command"),
     }
-
     email_re.free();
     url_re.free();
     comment_re.free();
@@ -70,6 +66,5 @@ fn main() {
     request_line_re.free();
     read_only_re.free();
     mutating_re.free();
-
     println("All regex demos passed!");
 }

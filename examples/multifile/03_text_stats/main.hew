@@ -18,13 +18,12 @@
 //
 // Run:   hew run   examples/multifile/03_text_stats/main.hew
 // Check: hew check examples/multifile/03_text_stats/main.hew
-
 import text_stats;
+
 import text_stats::words;
 
 fn main() {
     let sample = "the quick brown fox";
-
     // top-level module helpers
     println(f"characters : {text_stats.char_count(sample)}");
     println(f"is_empty   : {text_stats.is_empty(sample)}");

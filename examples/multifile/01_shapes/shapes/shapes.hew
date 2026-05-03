@@ -6,7 +6,6 @@
 //
 // Traits and the common rendering helper live here; concrete types live in
 // the peer files so each shape is self-contained.
-
 pub trait Drawable {
     fn draw(val: Self) -> String;
 }

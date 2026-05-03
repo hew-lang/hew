@@ -1,5 +1,4 @@
 // Linear Search - scan each element sequentially, return index or -1
-
 fn linear_search(arr: Vec<int>, target: int) -> int {
     var i = 0;
     while i < arr.len() {
@@ -14,7 +13,6 @@ fn linear_search(arr: Vec<int>, target: int) -> int {
 fn main() {
     var passed = 0;
     var failed = 0;
-
     // Test 1: find element in middle
     let v1: Vec<int> = Vec::new();
     v1.push(10);
@@ -32,7 +30,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 2: find first element
     let v2: Vec<int> = Vec::new();
     v2.push(10);
@@ -48,7 +45,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 3: find last element
     let v3: Vec<int> = Vec::new();
     v3.push(10);
@@ -64,7 +60,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 4: element not found
     let v4: Vec<int> = Vec::new();
     v4.push(10);
@@ -80,7 +75,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 5: empty array
     let v5: Vec<int> = Vec::new();
     let r5 = linear_search(v5, 5);
@@ -93,7 +87,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 6: single element found
     let v6: Vec<int> = Vec::new();
     v6.push(42);
@@ -107,7 +100,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 7: single element not found
     let v7: Vec<int> = Vec::new();
     v7.push(42);
@@ -121,7 +113,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Summary
     println("");
     print(passed);

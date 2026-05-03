@@ -1,7 +1,6 @@
 // Deque - Double-ended queue using Vec<int>
 // Uses a Vec where index 0 = head pointer, rest is data
 // push_front shifts elements, push_back appends
-
 fn deque_new() -> Vec<int> {
     let d: Vec<int> = Vec::new();
     d.push(0); // head pointer
@@ -14,7 +13,11 @@ fn deque_size(d: Vec<int>) -> int {
 }
 
 fn deque_is_empty(d: Vec<int>) -> int {
-    if deque_size(d) == 0 { 1 } else { 0 }
+    if deque_size(d) == 0 {
+        1
+    } else {
+        0
+    }
 }
 
 fn deque_push_back(d: Vec<int>, val: int) {
@@ -74,11 +77,14 @@ fn run_test(name: String, passed: int) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-
     // Test 1: new deque is empty
     total = total + 1;
     let d = deque_new();
-    let r1 = if deque_is_empty(d) == 1 { 1 } else { 0 };
+    let r1 = if deque_is_empty(d) == 1 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("new deque is empty", r1);
 
     // Test 2: push_back and size
@@ -86,7 +92,11 @@ fn main() {
     deque_push_back(d, 10);
     deque_push_back(d, 20);
     deque_push_back(d, 30);
-    let r2 = if deque_size(d) == 3 { 1 } else { 0 };
+    let r2 = if deque_size(d) == 3 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("push_back and size", r2);
 
     // Test 3: peek front and back
@@ -102,13 +112,21 @@ fn main() {
     // Test 4: pop_front FIFO
     total = total + 1;
     let f1 = deque_pop_front(d);
-    let r4 = if f1 == 10 { 1 } else { 0 };
+    let r4 = if f1 == 10 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("pop_front returns front", r4);
 
     // Test 5: pop_back LIFO
     total = total + 1;
     let b1 = deque_pop_back(d);
-    let r5 = if b1 == 30 { 1 } else { 0 };
+    let r5 = if b1 == 30 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("pop_back returns back", r5);
 
     // Test 6: remaining element

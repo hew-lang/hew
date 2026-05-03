@@ -4,21 +4,21 @@ fn counting_sort(v: Vec<int>) -> Vec<int> {
         return v;
     }
     var max_val = v.get(0);
-    for i in 1..n {
+    for i in 1 .. n {
         if v.get(i) > max_val {
             max_val = v.get(i);
         }
     }
     let count: Vec<int> = Vec::new();
-    for i in 0..(max_val + 1) {
+    for i in 0 .. max_val + 1 {
         count.push(0);
     }
-    for i in 0..n {
+    for i in 0 .. n {
         let val = v.get(i);
         count.set(val, count.get(val) + 1);
     }
     var pos = 0;
-    for i in 0..(max_val + 1) {
+    for i in 0 .. max_val + 1 {
         var c = count.get(i);
         while c > 0 {
             v.set(pos, i);
@@ -42,7 +42,7 @@ fn make_test_array() -> Vec<int> {
 const ITERS: int = 200000;
 
 fn main() {
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         let v = make_test_array();
         let _ = counting_sort(v);
     }

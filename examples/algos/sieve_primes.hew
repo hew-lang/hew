@@ -11,7 +11,6 @@ fn sieve(n: int) -> Vec<int> {
         }
         i = i + 1;
     }
-
     // Sieve
     var p = 2;
     while p * p <= n {
@@ -24,13 +23,12 @@ fn sieve(n: int) -> Vec<int> {
         }
         p = p + 1;
     }
-
     is_prime
 }
 
 fn count_primes(flags: Vec<int>) -> int {
     var count = 0;
-    for i in 0..flags.len() {
+    for i in 0 .. flags.len() {
         if flags.get(i) == 1 {
             count = count + 1;
         }
@@ -55,9 +53,7 @@ fn check(name: String, got: int, expected: int) -> int {
 fn main() {
     var passed = 0;
     var total = 0;
-
     let flags = sieve(100);
-
     // There are 25 primes up to 100
     total = total + 1;
     passed = passed + check("count primes<=100 = 25", count_primes(flags), 25);
@@ -79,7 +75,6 @@ fn main() {
     passed = passed + check("9 is not prime", flags.get(9), 0);
     total = total + 1;
     passed = passed + check("100 is not prime", flags.get(100), 0);
-
     println("---");
     print("Passed: ");
     print(passed);

@@ -1,15 +1,14 @@
 // Ring Buffer with fixed capacity
 // Layout: Vec<int> = [capacity, head, tail, count, data...]
 // head = read position, tail = write position
-
 fn rb_create(capacity: int) -> Vec<int> {
     let v: Vec<int> = Vec::new();
-    v.push(capacity);  // index 0: capacity
-    v.push(0);         // index 1: head (read pos)
-    v.push(0);         // index 2: tail (write pos)
-    v.push(0);         // index 3: count
-    for i in 0..capacity {
-        v.push(0);     // data starts at index 4
+    v.push(capacity); // index 0: capacity
+    v.push(0); // index 1: head (read pos)
+    v.push(0); // index 2: tail (write pos)
+    v.push(0); // index 3: count
+    for i in 0 .. capacity {
+        v.push(0); // data starts at index 4
     }
     v
 }
@@ -65,9 +64,7 @@ fn rb_read(rb: Vec<int>) -> int {
 fn main() {
     var passed = 0;
     var failed = 0;
-
     let rb = rb_create(4);
-
     // Test 1: Initially empty
     if rb_is_empty(rb) {
         if !rb_is_full(rb) {
@@ -81,7 +78,6 @@ fn main() {
         println("FAIL: initially empty");
         failed = failed + 1;
     }
-
     // Test 2: Available space
     if rb_available(rb) == 4 {
         println("PASS: available = capacity");
@@ -90,7 +86,6 @@ fn main() {
         println("FAIL: available = capacity");
         failed = failed + 1;
     }
-
     // Test 3: Write and read single element
     rb_write(rb, 10);
     let v1 = rb_read(rb);
@@ -101,7 +96,6 @@ fn main() {
         println("FAIL: write/read single");
         failed = failed + 1;
     }
-
     // Test 4: Write multiple, read in order (FIFO)
     rb_write(rb, 20);
     rb_write(rb, 30);
@@ -126,7 +120,6 @@ fn main() {
         println("FAIL: FIFO order");
         failed = failed + 1;
     }
-
     // Test 5: Fill to capacity
     rb_write(rb, 1);
     rb_write(rb, 2);
@@ -144,7 +137,6 @@ fn main() {
         println("FAIL: full buffer");
         failed = failed + 1;
     }
-
     // Test 6: Write to full buffer fails
     let w = rb_write(rb, 99);
     if !w {
@@ -154,7 +146,6 @@ fn main() {
         println("FAIL: write full fails");
         failed = failed + 1;
     }
-
     // Test 7: Read from full, verify values
     let f1 = rb_read(rb);
     let f2 = rb_read(rb);
@@ -182,7 +173,6 @@ fn main() {
         println("FAIL: read all from full");
         failed = failed + 1;
     }
-
     // Test 8: Wraparound behaviour
     // head and tail have wrapped around; write more to verify correctness
     rb_write(rb, 100);
@@ -201,7 +191,6 @@ fn main() {
         println("FAIL: wraparound");
         failed = failed + 1;
     }
-
     // Test 9: Read from empty returns sentinel
     let empty_val = rb_read(rb);
     if empty_val == 0 - 1 {
@@ -211,7 +200,6 @@ fn main() {
         println("FAIL: read empty sentinel");
         failed = failed + 1;
     }
-
     // Test 10: Interleaved read/write across wraparound
     let rb2 = rb_create(3);
     rb_write(rb2, 10);
@@ -234,7 +222,6 @@ fn main() {
         println("FAIL: interleaved wraparound");
         failed = failed + 1;
     }
-
     // Summary
     println("---");
     print("Passed: ");

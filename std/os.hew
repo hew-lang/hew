@@ -18,7 +18,9 @@
 
 /// Returns the number of command-line arguments.
 pub fn args_count() -> int {
-    unsafe { hew_args_count() as int }
+    unsafe {
+        hew_args_count() as int
+    }
 }
 
 /// Returns the command-line argument at the given index.
@@ -32,7 +34,9 @@ pub fn args_count() -> int {
 /// let first_arg = os.args(1);
 /// ```
 pub fn args(index: int) -> String {
-    unsafe { hew_args_get(index as i32) }
+    unsafe {
+        hew_args_get(index as i32)
+    }
 }
 
 /// Get the value of an environment variable.
@@ -45,42 +49,58 @@ pub fn args(index: int) -> String {
 /// let path = os.env("PATH");
 /// ```
 pub fn env(name: String) -> String {
-    unsafe { hew_env_get(name) }
+    unsafe {
+        hew_env_get(name)
+    }
 }
 
 /// Set an environment variable for the current process.
 pub fn set_env(name: String, value: String) {
-    unsafe { hew_env_set(name, value) };
+    unsafe {
+        hew_env_set(name, value)
+    };
 }
 
 /// Remove an environment variable.
 pub fn remove_env(name: String) {
-    unsafe { hew_env_remove(name) };
+    unsafe {
+        hew_env_remove(name)
+    };
 }
 
 /// Check whether an environment variable is set.
 pub fn has_env(name: String) -> bool {
-    unsafe { hew_env_has(name) }
+    unsafe {
+        hew_env_has(name)
+    }
 }
 
 /// Returns the current working directory.
 pub fn cwd() -> String {
-    unsafe { hew_cwd() }
+    unsafe {
+        hew_cwd()
+    }
 }
 
 /// Returns the user's home directory.
 pub fn home_dir() -> String {
-    unsafe { hew_home_dir() }
+    unsafe {
+        hew_home_dir()
+    }
 }
 
 /// Returns the system hostname.
 pub fn hostname() -> String {
-    unsafe { hew_hostname() }
+    unsafe {
+        hew_hostname()
+    }
 }
 
 /// Returns the current process ID.
 pub fn pid() -> int {
-    unsafe { hew_pid() as int }
+    unsafe {
+        hew_pid() as int
+    }
 }
 
 /// Returns the system temporary directory path.
@@ -95,11 +115,12 @@ pub fn pid() -> int {
 /// let path = tmp + "/myfile.txt";
 /// ```
 pub fn temp_dir() -> String {
-    unsafe { hew_temp_dir() }
+    unsafe {
+        hew_temp_dir()
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_args_count() -> i32;
     fn hew_args_get(index: i32) -> String;

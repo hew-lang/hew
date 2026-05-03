@@ -5,7 +5,6 @@
 // word-level utilities.  Importing `text_stats` does NOT
 // automatically import `text_stats::words`; callers must request
 // both explicitly when they want both.
-
 pub fn char_count(text: String) -> int {
     text.len()
 }

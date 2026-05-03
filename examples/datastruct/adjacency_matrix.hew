@@ -1,6 +1,5 @@
 // Adjacency Matrix - Flat n*n Vec<int> representation
 // matrix[i*n + j] = 1 if edge (i,j) exists, 0 otherwise
-
 fn mat_get(matrix: Vec<int>, n: int, i: int, j: int) -> int {
     matrix.get(i * n + j)
 }
@@ -25,7 +24,7 @@ fn has_edge(matrix: Vec<int>, n: int, u: int, v: int) -> bool {
 
 fn degree(matrix: Vec<int>, n: int, node: int) -> int {
     var d = 0;
-    for j in 0..n {
+    for j in 0 .. n {
         if mat_get(matrix, n, node, j) == 1 {
             d = d + 1;
         }
@@ -34,8 +33,8 @@ fn degree(matrix: Vec<int>, n: int, node: int) -> int {
 }
 
 fn is_symmetric(matrix: Vec<int>, n: int) -> bool {
-    for i in 0..n {
-        for j in 0..n {
+    for i in 0 .. n {
+        for j in 0 .. n {
             if mat_get(matrix, n, i, j) != mat_get(matrix, n, j, i) {
                 return false;
             }
@@ -48,13 +47,11 @@ fn main() {
     var passed = 0;
     var failed = 0;
     let n = 6;
-
     // Initialize n*n matrix to 0
     let matrix: Vec<int> = Vec::new();
-    for i in 0..(n * n) {
+    for i in 0 .. n * n {
         matrix.push(0);
     }
-
     // Build graph: (0,1),(0,2),(1,2),(1,3),(2,4),(3,4),(3,5),(4,5)
     add_edge(matrix, n, 0, 1);
     add_edge(matrix, n, 0, 2);
@@ -78,7 +75,6 @@ fn main() {
         println("FAIL: edges exist");
         failed = failed + 1;
     }
-
     // Test 2: Non-edge
     if has_edge(matrix, n, 0, 5) {
         println("FAIL: non-edge (0,5)");
@@ -87,7 +83,6 @@ fn main() {
         println("PASS: non-edge (0,5)");
         passed = passed + 1;
     }
-
     // Test 3: Symmetry
     if is_symmetric(matrix, n) {
         println("PASS: matrix is symmetric");
@@ -96,7 +91,6 @@ fn main() {
         println("FAIL: matrix symmetry");
         failed = failed + 1;
     }
-
     // Test 4: Degree of node 1 = 3
     if degree(matrix, n, 1) == 3 {
         println("PASS: degree(1) = 3");
@@ -105,7 +99,6 @@ fn main() {
         println("FAIL: degree(1)");
         failed = failed + 1;
     }
-
     // Test 5: Degree of node 0 = 2
     if degree(matrix, n, 0) == 2 {
         println("PASS: degree(0) = 2");
@@ -114,7 +107,6 @@ fn main() {
         println("FAIL: degree(0)");
         failed = failed + 1;
     }
-
     // Test 6: Remove edge (1,2), verify gone
     remove_edge(matrix, n, 1, 2);
     if has_edge(matrix, n, 1, 2) {
@@ -129,7 +121,6 @@ fn main() {
             passed = passed + 1;
         }
     }
-
     // Test 7: Degree after removal
     if degree(matrix, n, 1) == 2 {
         println("PASS: degree(1) = 2 after removal");
@@ -138,7 +129,6 @@ fn main() {
         println("FAIL: degree(1) after removal");
         failed = failed + 1;
     }
-
     // Test 8: Still symmetric after removal
     if is_symmetric(matrix, n) {
         println("PASS: still symmetric after removal");
@@ -147,7 +137,6 @@ fn main() {
         println("FAIL: symmetry after removal");
         failed = failed + 1;
     }
-
     println("---");
     print("Passed: ");
     print(passed);

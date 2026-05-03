@@ -36,7 +36,6 @@ fn check(name: String, got: int, expected: int) -> int {
 fn main() {
     var passed = 0;
     var total = 0;
-
     // Primes
     total = total + 1;
     passed = passed + check("2 is prime", is_prime(2), 1);
@@ -60,7 +59,6 @@ fn main() {
     passed = passed + check("15 is not prime", is_prime(15), 0);
     total = total + 1;
     passed = passed + check("100 is not prime", is_prime(100), 0);
-
     println("---");
     print("Passed: ");
     print(passed);

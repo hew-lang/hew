@@ -45,10 +45,13 @@ trait TableMethods {
 
 impl TableMethods for Table {
     /// Return the number of data rows (excluding the header row).
-    fn rows(tbl: Table) -> int { tbl.data.len() }
+    fn rows(tbl: Table) -> int {
+        tbl.data.len()
+    }
     /// Return the number of columns.
-    fn cols(tbl: Table) -> int { tbl.hdrs.len() }
-
+    fn cols(tbl: Table) -> int {
+        tbl.hdrs.len()
+    }
     /// Return the header name for the given column index.
     fn header(tbl: Table, col: int) -> String {
         if col < 0 || col >= tbl.hdrs.len() {
@@ -56,7 +59,6 @@ impl TableMethods for Table {
         }
         tbl.hdrs.get(col)
     }
-
     /// Return the cell value at the given row and column index.
     fn get(tbl: Table, row: int, col: int) -> String {
         if row < 0 || row >= tbl.data.len() {
@@ -68,7 +70,6 @@ impl TableMethods for Table {
         }
         r.get(col)
     }
-
     /// Return the cell value at the given row for the named column.
     fn get_by_name(tbl: Table, row: int, col_name: String) -> String {
         let col = find_header(tbl.hdrs, col_name);
@@ -77,7 +78,6 @@ impl TableMethods for Table {
         }
         tbl.get(row, col)
     }
-
     /// No-op for compatibility (struct tables don't need manual freeing).
     fn free(tbl: Table) {
         // No-op: struct tables are value types, no manual freeing needed.
@@ -85,7 +85,6 @@ impl TableMethods for Table {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Parse CSV data from a string (first row is treated as headers).
 pub fn parse(data: String) -> Table {
     parse_impl(data, true)
@@ -105,7 +104,6 @@ pub fn parse_file(path: String) -> Table {
 }
 
 // ── Internal parsing ──────────────────────────────────────────────────
-
 /// Parse CSV data with optional header row handling.
 fn parse_impl(data: String, has_headers: bool) -> Table {
     // Normalize \r\n to \n
@@ -115,10 +113,8 @@ fn parse_impl(data: String, has_headers: bool) -> Table {
     if input.len() > 0 && input.ends_with("\n") {
         input = input.slice(0, input.len() - 1);
     }
-
     var headers: Vec<String> = Vec::new();
     let rows: Vec<Vec<String>> = Vec::new();
-
     if input.len() > 0 {
         // Split into lines manually
         let lines: Vec<String> = Vec::new();
@@ -134,31 +130,26 @@ fn parse_impl(data: String, has_headers: bool) -> Table {
             lines.push(input.slice(pos, pos + nl));
             pos = pos + nl + 1;
         }
-
         let nlines = lines.len();
         var start_row = 0;
-
         if has_headers {
             headers = parse_csv_line(lines.get(0));
             start_row = 1;
         }
-
-        for i in start_row..nlines {
+        for i in start_row .. nlines {
             let line = lines.get(i);
             if line.len() > 0 {
                 rows.push(parse_csv_line(line));
             }
         }
-
         // Generate synthetic headers if no header row
         if !has_headers && rows.len() > 0 {
             let ncols = rows.get(0).len();
-            for i in 0..ncols {
+            for i in 0 .. ncols {
                 headers.push(f"col{i}");
             }
         }
     }
-
     Table { hdrs: headers, data: rows }
 }
 
@@ -167,14 +158,12 @@ fn parse_csv_line(line: String) -> Vec<String> {
     let fields: Vec<String> = Vec::new();
     let len = line.len();
     var pos = 0;
-
     while pos <= len {
         if pos == len {
             // Trailing comma → empty field
             fields.push("");
             break;
         }
-
         let ch = line.slice(pos, pos + 1);
         if ch == "\"" {
             // Quoted field: scan for closing quote
@@ -215,13 +204,12 @@ fn parse_csv_line(line: String) -> Vec<String> {
             }
         }
     }
-
     fields
 }
 
 /// Find the column index for a header name. Returns -1 if not found.
 fn find_header(headers: Vec<String>, name: String) -> i32 { // INTERNAL-ABI: sentinel -1 for not-found; used only by get_by_name impl
-    for i in 0..headers.len() {
+    for i in 0 .. headers.len() {
         if headers.get(i) == name {
             return i as i32;
         }

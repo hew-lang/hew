@@ -2,13 +2,29 @@
 // Each block holds up to BLOCK_CAP (4) elements.
 // Block layout: [count, e0, e1, e2, e3, next] = 6 slots per block
 // Block i starts at index i*6
+fn block_count(n: Vec<i32>, b: i32) -> i32 {
+    n.get(b * 6)
+}
 
-fn block_count(n: Vec<i32>, b: i32) -> i32 { n.get(b * 6) }
-fn block_elem(n: Vec<i32>, b: i32, idx: i32) -> i32 { n.get(b * 6 + 1 + idx) }
-fn block_next(n: Vec<i32>, b: i32) -> i32 { n.get(b * 6 + 5) }
-fn set_count(n: Vec<i32>, b: i32, c: i32) { n.set(b * 6, c); }
-fn set_elem(n: Vec<i32>, b: i32, idx: i32, val: i32) { n.set(b * 6 + 1 + idx, val); }
-fn set_block_next(n: Vec<i32>, b: i32, nx: i32) { n.set(b * 6 + 5, nx); }
+fn block_elem(n: Vec<i32>, b: i32, idx: i32) -> i32 {
+    n.get(b * 6 + 1 + idx)
+}
+
+fn block_next(n: Vec<i32>, b: i32) -> i32 {
+    n.get(b * 6 + 5)
+}
+
+fn set_count(n: Vec<i32>, b: i32, c: i32) {
+    n.set(b * 6, c);
+}
+
+fn set_elem(n: Vec<i32>, b: i32, idx: i32, val: i32) {
+    n.set(b * 6 + 1 + idx, val);
+}
+
+fn set_block_next(n: Vec<i32>, b: i32, nx: i32) {
+    n.set(b * 6 + 5, nx);
+}
 
 fn alloc_block(n: Vec<i32>) -> i32 {
     let b = n.len() / 6;
@@ -52,7 +68,7 @@ fn unrolled_iterate(n: Vec<i32>, head: i32, result: Vec<i32>) {
     var b = head;
     while b != -1 {
         let cnt = block_count(n, b);
-        for i in 0..cnt {
+        for i in 0 .. cnt {
             result.push(block_elem(n, b, i));
         }
         b = block_next(n, b);
@@ -74,7 +90,10 @@ fn unrolled_len(n: Vec<i32>, head: i32) -> i32 {
 fn block_count_total(n: Vec<i32>, head: i32) -> i32 {
     var c = 0;
     var b = head;
-    while b != -1 { c = c + 1; b = block_next(n, b); }
+    while b != -1 {
+        c = c + 1;
+        b = block_next(n, b);
+    }
     c
 }
 
@@ -94,15 +113,18 @@ fn unrolled_get(n: Vec<i32>, head: i32, idx: i32) -> i32 {
 }
 
 fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
-    if a.len() != b.len() { return 0; }
-    for i in 0..a.len() {
-        if a.get(i) != b.get(i) { return 0; }
+    if a.len() != b.len() {
+        return 0;
+    }
+    for i in 0 .. a.len() {
+        if a.get(i) != b.get(i) {
+            return 0;
+        }
     }
     1
 }
 
 // --- Tests ---
-
 fn test_insert_and_iterate() -> i32 {
     let n: Vec<i32> = Vec::new();
     var head = -1;
@@ -112,7 +134,9 @@ fn test_insert_and_iterate() -> i32 {
     let r: Vec<i32> = Vec::new();
     unrolled_iterate(n, head, r);
     let e: Vec<i32> = Vec::new();
-    e.push(10); e.push(20); e.push(30);
+    e.push(10);
+    e.push(20);
+    e.push(30);
     if vecs_equal(r, e) == 1 {
         println("PASS: insert and iterate");
         return 1;
@@ -144,14 +168,16 @@ fn test_cross_block_iteration() -> i32 {
     let n: Vec<i32> = Vec::new();
     var head = -1;
     // Insert 10 elements across 3 blocks (4+4+2)
-    for i in 0..10 {
+    for i in 0 .. 10 {
         head = unrolled_insert(n, head, (i + 1) * 10);
     }
     let r: Vec<i32> = Vec::new();
     unrolled_iterate(n, head, r);
     var ok = 1;
-    for i in 0..10 {
-        if r.get(i) != (i + 1) * 10 { ok = 0; }
+    for i in 0 .. 10 {
+        if r.get(i) != (i + 1) * 10 {
+            ok = 0;
+        }
     }
     if ok == 1 {
         if r.len() == 10 {
@@ -166,7 +192,7 @@ fn test_cross_block_iteration() -> i32 {
 fn test_random_access() -> i32 {
     let n: Vec<i32> = Vec::new();
     var head = -1;
-    for i in 0..8 {
+    for i in 0 .. 8 {
         head = unrolled_insert(n, head, i * 100);
     }
     let v0 = unrolled_get(n, head, 0);
@@ -205,7 +231,7 @@ fn test_many_blocks() -> i32 {
     let n: Vec<i32> = Vec::new();
     var head = -1;
     // 20 elements = 5 blocks of 4
-    for i in 0..20 {
+    for i in 0 .. 20 {
         head = unrolled_insert(n, head, i);
     }
     if block_count_total(n, head) == 5 {
@@ -214,8 +240,10 @@ fn test_many_blocks() -> i32 {
             let r: Vec<i32> = Vec::new();
             unrolled_iterate(n, head, r);
             var ok = 1;
-            for i in 0..20 {
-                if r.get(i) != i { ok = 0; }
+            for i in 0 .. 20 {
+                if r.get(i) != i {
+                    ok = 0;
+                }
             }
             if ok == 1 {
                 println("PASS: many blocks");
@@ -241,5 +269,9 @@ fn main() {
     print("Passed: ");
     print(passed);
     println(f"/{total}");
-    if passed == total { println("OVERALL: PASS"); } else { println("OVERALL: FAIL"); }
+    if passed == total {
+        println("OVERALL: PASS");
+    } else {
+        println("OVERALL: FAIL");
+    }
 }

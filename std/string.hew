@@ -37,7 +37,11 @@ pub fn from_float(f: f64) -> String {
 
 /// Convert a bool to `"true"` or `"false"`.
 pub fn from_bool(b: bool) -> String {
-    if b { "true" } else { "false" }
+    if b {
+        "true"
+    } else {
+        "false"
+    }
 }
 
 /// Convert a character code to a single-character string.
@@ -48,7 +52,9 @@ pub fn from_bool(b: bool) -> String {
 /// let newline = string.from_char(10);
 /// ```
 pub fn from_char(code: int) -> String {
-    unsafe { hew_char_to_string(code as i32) }
+    unsafe {
+        hew_char_to_string(code as i32)
+    }
 }
 
 /// Parse a string as an integer. Returns 0 if parsing fails.
@@ -93,19 +99,27 @@ pub fn try_to_int(s: String) -> Result<int, String> {
         return Err("string.try_to_int: invalid integer literal");
     }
     let cutoff = -922337203685477580;
-    let max_last_digit = if negative { 8 } else { 7 };
+    let max_last_digit = if negative {
+        8
+    } else {
+        7
+    };
     var result = 0;
-    for i in start..slen {
+    for i in start .. slen {
         let d = digit_value(s.slice(i, i + 1));
         if d < 0 {
             return Err("string.try_to_int: invalid integer literal");
         }
-        if result < cutoff || (result == cutoff && d > max_last_digit) {
+        if result < cutoff || result == cutoff && d > max_last_digit {
             return Err("string.try_to_int: integer out of range");
         }
         result = result * 10 - d;
     }
-    if negative { Ok(result) } else { Ok(0 - result) }
+    if negative {
+        Ok(result)
+    } else {
+        Ok(0 - result)
+    }
 }
 
 /// Parse a string as a float. Returns `0.0` if parsing fails.
@@ -145,26 +159,25 @@ fn is_valid_float_literal(s: String) -> bool {
     if slen == 0 {
         return false;
     }
-
     let start = float_parse_start(s, slen);
     if start < 0 {
         return false;
     }
-
     let exponent_index = find_exponent_index(s, start, slen);
     if exponent_index < -1 {
         return false;
     }
-
-    let significand_end = if exponent_index < 0 { slen } else { exponent_index };
+    let significand_end = if exponent_index < 0 {
+        slen
+    } else {
+        exponent_index
+    };
     if !is_valid_float_significand(s, start, significand_end) {
         return false;
     }
-
     if exponent_index >= 0 {
         return is_valid_float_exponent(s, exponent_index + 1, slen);
     }
-
     true
 }
 
@@ -184,7 +197,11 @@ fn parse_valid_float_literal(s: String) -> f64 {
     let start = float_parse_start(s, slen);
     let negative = s.slice(0, 1) == "-";
     let exponent_index = find_exponent_index(s, start, slen);
-    let significand_end = if exponent_index < 0 { slen } else { exponent_index };
+    let significand_end = if exponent_index < 0 {
+        slen
+    } else {
+        exponent_index
+    };
     var value = parse_float_significand(s, start, significand_end);
     if exponent_index >= 0 {
         let exponent = parse_float_exponent(s, exponent_index + 1, slen);
@@ -200,15 +217,23 @@ fn parse_valid_float_literal(s: String) -> f64 {
 /// Return the numeric value of a single-character digit string, or `-1` if not a digit.
 fn digit_value(ch: String) -> int {
     match ch {
-        "0" => 0, "1" => 1, "2" => 2, "3" => 3, "4" => 4,
-        "5" => 5, "6" => 6, "7" => 7, "8" => 8, "9" => 9,
+        "0" => 0,
+        "1" => 1,
+        "2" => 2,
+        "3" => 3,
+        "4" => 4,
+        "5" => 5,
+        "6" => 6,
+        "7" => 7,
+        "8" => 8,
+        "9" => 9,
         _ => -1,
     }
 }
 
 fn find_exponent_index(s: String, start: int, end: int) -> int {
     var exponent_index = -1;
-    for i in start..end {
+    for i in start .. end {
         let ch = s.slice(i, i + 1);
         if ch == "e" || ch == "E" {
             if exponent_index >= 0 {
@@ -224,10 +249,9 @@ fn is_valid_float_significand(s: String, start: int, end: int) -> bool {
     if start >= end {
         return false;
     }
-
     var saw_digit = false;
     var saw_decimal = false;
-    for i in start..end {
+    for i in start .. end {
         let ch = s.slice(i, i + 1);
         if ch == "." {
             if saw_decimal {
@@ -248,7 +272,6 @@ fn is_valid_float_exponent(s: String, start: int, end: int) -> bool {
     if start >= end {
         return false;
     }
-
     var index = start;
     let first = s.slice(start, start + 1);
     if first == "-" || first == "+" {
@@ -257,7 +280,7 @@ fn is_valid_float_exponent(s: String, start: int, end: int) -> bool {
     if index >= end {
         return false;
     }
-    for i in index..end {
+    for i in index .. end {
         if digit_value(s.slice(i, i + 1)) < 0 {
             return false;
         }
@@ -270,14 +293,12 @@ fn parse_float_significand(s: String, start: int, end: int) -> f64 {
     var fraction = 0.0;
     var fraction_scale = 1.0;
     var saw_decimal = false;
-
-    for i in start..end {
+    for i in start .. end {
         let ch = s.slice(i, i + 1);
         if ch == "." {
             saw_decimal = true;
             continue;
         }
-
         let digit = digit_to_float(digit_value(ch));
         if saw_decimal {
             fraction = fraction * 10.0 + digit;
@@ -286,7 +307,6 @@ fn parse_float_significand(s: String, start: int, end: int) -> f64 {
             whole = whole * 10.0 + digit;
         }
     }
-
     whole + fraction / fraction_scale
 }
 
@@ -299,35 +319,52 @@ fn parse_float_exponent(s: String, start: int, end: int) -> int {
     } else if s.slice(start, start + 1) == "+" {
         index = start + 1;
     }
-
     var exponent = 0;
-    for i in index..end {
+    for i in index .. end {
         exponent = exponent * 10 + digit_value(s.slice(i, i + 1));
     }
-
-    if negative { 0 - exponent } else { exponent }
+    if negative {
+        0 - exponent
+    } else {
+        exponent
+    }
 }
 
 fn apply_float_exponent(value: f64, exponent: int) -> f64 {
     var scale = 1.0;
-    var remaining = if exponent < 0 { 0 - exponent } else { exponent };
+    var remaining = if exponent < 0 {
+        0 - exponent
+    } else {
+        exponent
+    };
     while remaining > 0 {
         scale = scale * 10.0;
         remaining = remaining - 1;
     }
-    if exponent < 0 { value / scale } else { value * scale }
+    if exponent < 0 {
+        value / scale
+    } else {
+        value * scale
+    }
 }
 
 fn digit_to_float(digit: int) -> f64 {
     match digit {
-        0 => 0.0, 1 => 1.0, 2 => 2.0, 3 => 3.0, 4 => 4.0,
-        5 => 5.0, 6 => 6.0, 7 => 7.0, 8 => 8.0, 9 => 9.0,
+        0 => 0.0,
+        1 => 1.0,
+        2 => 2.0,
+        3 => 3.0,
+        4 => 4.0,
+        5 => 5.0,
+        6 => 6.0,
+        7 => 7.0,
+        8 => 8.0,
+        9 => 9.0,
         _ => 0.0,
     }
 }
 
 // ── Pure Hew string utilities ────────────────────────────────────────
-
 /// Check if a string is empty.
 ///
 /// # Examples
@@ -402,7 +439,7 @@ pub fn is_numeric(s: String) -> bool {
     if slen == 0 {
         return false;
     }
-    for i in 0..slen {
+    for i in 0 .. slen {
         let d = digit_value(s.slice(i, i + 1));
         if d < 0 {
             return false;
@@ -612,14 +649,13 @@ pub fn join(parts: Vec<String>, sep: String) -> String {
         return "";
     }
     var result = parts.get(0);
-    for i in 1..n {
+    for i in 1 .. n {
         result = result + sep + parts.get(i);
     }
     result
 }
 
 // ── Trait: ToString ──────────────────────────────────────────────────
-
 /// Trait for types that can be converted to a string representation.
 ///
 /// Provides a standard interface for string conversion across modules.
@@ -640,7 +676,6 @@ pub trait ToString {
 }
 
 // ── FFI binding (char-code-to-string has no builtin equivalent) ─────
-
 extern "C" {
     fn hew_char_to_string(code: i32) -> String;
 }

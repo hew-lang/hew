@@ -1,5 +1,4 @@
 import std::net::http;
-
 // Expert HTTP server — synchronous match-dispatch pattern.
 //
 // This intentionally uses synchronous request handling in the main loop
@@ -24,19 +23,23 @@ import std::net::http;
 //   }
 //   let router = spawn Router;
 //   loop { router.route(server.accept()); }
-
 fn main() {
     let addr = "0.0.0.0:18080";
     let server = http.listen(addr);
     println("Listening on " + addr);
-
     loop {
         let req = server.accept();
         let path = req.path();
         match path {
-            "/" => { req.respond_text(200, "Hello from Hew!"); },
-            "/health" => { req.respond_text(200, "OK"); },
-            _ => { req.respond_text(404, "Not Found"); },
-        };
+            "/" => {
+                req.respond_text(200, "Hello from Hew!");
+            },
+            "/health" => {
+                req.respond_text(200, "OK");
+            },
+            _ => {
+                req.respond_text(404, "Not Found");
+            },
+        }
     }
 }

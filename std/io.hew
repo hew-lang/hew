@@ -20,28 +20,35 @@
 ///
 /// Strips the trailing newline. Returns an empty string on EOF or error.
 pub fn read_line() -> String {
-    unsafe { hew_io_read_line() }
+    unsafe {
+        hew_io_read_line()
+    }
 }
 
 /// Write a string to standard output without a trailing newline.
 pub fn write(s: String) {
-    unsafe { hew_io_write(s) };
+    unsafe {
+        hew_io_write(s)
+    };
 }
 
 /// Write a string to standard error without a trailing newline.
 pub fn write_err(s: String) {
-    unsafe { hew_io_write_err(s) };
+    unsafe {
+        hew_io_write_err(s)
+    };
 }
 
 /// Read all available data from standard input.
 ///
 /// Returns an empty string on error.
 pub fn read_all() -> String {
-    unsafe { hew_io_read_all() }
+    unsafe {
+        hew_io_read_all()
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_io_read_line() -> String;
     fn hew_io_write(s: String);

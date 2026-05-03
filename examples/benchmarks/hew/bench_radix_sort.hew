@@ -27,7 +27,7 @@ fn count_sort_by_exp(v: Vec<int>, exp: int) {
     }
     i = 0;
     while i < n {
-        let idx = (v.get(i) / exp) % 10;
+        let idx = v.get(i) / exp % 10;
         count.set(idx, count.get(idx) + 1);
         i = i + 1;
     }
@@ -38,7 +38,7 @@ fn count_sort_by_exp(v: Vec<int>, exp: int) {
     }
     i = n - 1;
     while i >= 0 {
-        let idx = (v.get(i) / exp) % 10;
+        let idx = v.get(i) / exp % 10;
         let pos = count.get(idx) - 1;
         output.set(pos, v.get(i));
         count.set(idx, count.get(idx) - 1);
@@ -78,7 +78,7 @@ fn make_test_array() -> Vec<int> {
 const ITERS: int = 100000;
 
 fn main() {
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         let v = make_test_array();
         let _ = radix_sort(v);
     }

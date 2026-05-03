@@ -105,14 +105,21 @@ fn main() {
     let connect_timeout_usec: i32 = 0;
     let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
     match conn.set_read_timeout(-1) {
-        Ok(_) => {},
+        Ok(_) => {
+        },
         Err(_) => {
             let err = f"  Error: failed to set read timeout on connection to {addr}";
             panic(err);
         },
     }
     // Build and send HTTP request
-    let request = f"GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: hew-curl/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+    let request = f"GET {path} HTTP/1.0
+Host: {host}
+User-Agent: hew-curl/1.0
+Accept: */*
+Connection: close
+
+";
     conn.write_string(request);
     println("  Request sent");
     println("");
@@ -132,7 +139,9 @@ fn main() {
             reading = false;
         } else {
             total_bytes = total_bytes + chunk_len;
-            let chunk = unsafe { hew_bytes_to_string(chunk_bytes) };
+            let chunk = unsafe {
+                hew_bytes_to_string(chunk_bytes)
+            };
             full_response = full_response + chunk;
             reporter.send(total_bytes);
         }

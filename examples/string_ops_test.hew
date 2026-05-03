@@ -44,5 +44,5 @@ fn main() {
     let code = "ABC".char_at(0);
     println(code); // 65 (ASCII 'A')
     let is_a = code == 65;
-    println(is_a); // true
-}
+    println(is_a);
+} // true

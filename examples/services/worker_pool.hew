@@ -15,7 +15,6 @@
 //   - Crashed workers restart automatically — no recovery code needed
 //
 // This is the "scatter/gather" pattern that every backend service uses.
-
 fn fib(n: int) -> int {
     if n <= 1 {
         n
@@ -27,14 +26,12 @@ fn fib(n: int) -> int {
 actor Worker {
     let id: int;
     let jobs_done: int;
-
     receive fn compute(n: int) -> int {
         jobs_done = jobs_done + 1;
         let result = fib(n);
         println(f"  [worker {id}] fib({n}) = {result}  (job #{jobs_done})");
         result
     }
-
     receive fn crash_test() {
         println(f"  [worker {id}] crashing!");
         panic("simulated worker failure");
@@ -57,15 +54,12 @@ supervisor Pool {
 fn main() {
     println("=== Supervised Worker Pool ===");
     println("");
-
     let pool = spawn Pool;
     sleep_ms(30);
-
     let w0 = supervisor_child(pool, 0);
     let w1 = supervisor_child(pool, 1);
     let w2 = supervisor_child(pool, 2);
     let w3 = supervisor_child(pool, 3);
-
     // ── Fan-out: distribute work, collect all results ──
     println("--- Fan-out: 4 jobs across 4 workers ---");
     let (r0, r1, r2, r3) = join {
@@ -104,7 +98,6 @@ fn main() {
         w3.compute(5),
     };
     println(f"Results: {p}, {q}, {r}, {s}  (all workers operational)");
-
     println("");
     println("Pool survived the crash. Supervision + join = scatter/gather");
     println("with automatic recovery. No WaitGroups. No panic handlers.");

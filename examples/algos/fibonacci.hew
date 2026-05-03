@@ -45,7 +45,6 @@ fn check(name: String, got: int, expected: int) -> int {
 fn main() {
     var passed = 0;
     var total = 0;
-
     // Test recursive fibonacci
     total = total + 1;
     passed = passed + check("fib_recursive(0)=0", fib_recursive(0), 0);
@@ -65,7 +64,6 @@ fn main() {
     passed = passed + check("fib_iterative(10)=55", fib_iterative(10), 55);
     total = total + 1;
     passed = passed + check("fib_iterative(20)=6765", fib_iterative(20), 6765);
-
     println("---");
     print("Passed: ");
     print(passed);

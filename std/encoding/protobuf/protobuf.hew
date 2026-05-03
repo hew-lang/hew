@@ -26,7 +26,8 @@
 ///
 /// Created by `protobuf.new()`. Fields are accessed by their field
 /// number. Must be freed with `free()` when no longer needed.
-type Message {}
+type Message {
+}
 
 /// Methods available on a protobuf `Message`.
 trait MessageMethods {
@@ -56,30 +57,43 @@ trait MessageMethods {
 impl MessageMethods for Message {
     /// Set a string field by field number.
     fn set_string(msg: Message, field_number: int, value: String) {
-        unsafe { hew_proto_msg_set_string(msg, field_number as i32, value) }; // INTERNAL-ABI: C ABI field_number is i32
+        unsafe {
+            hew_proto_msg_set_string(msg, field_number as i32, value)
+        }; // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Get a string field by field number.
     fn get_string(msg: Message, field_number: int) -> String {
-        unsafe { hew_proto_msg_get_string(msg, field_number as i32) } // INTERNAL-ABI: C ABI field_number is i32
+        unsafe {
+            hew_proto_msg_get_string(msg, field_number as i32)
+        } // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Set a varint (integer) field by field number.
     fn set_varint(msg: Message, field_number: int, value: int) {
-        unsafe { hew_proto_msg_set_varint(msg, field_number as i32, value as i64) }; // INTERNAL-ABI: C ABI uses i32/i64
+        unsafe {
+            hew_proto_msg_set_varint(msg, field_number as i32, value as i64)
+        }; // INTERNAL-ABI: C ABI uses i32/i64
     }
     /// Get a varint (integer) field by field number.
     fn get_varint(msg: Message, field_number: int, fallback: int) -> int {
-        unsafe { hew_proto_msg_get_varint(msg, field_number as i32, fallback as i64) } // INTERNAL-ABI: C ABI uses i32/i64
+        unsafe {
+            hew_proto_msg_get_varint(msg, field_number as i32, fallback as i64)
+        } // INTERNAL-ABI: C ABI uses i32/i64
     }
     /// Test whether a field is present in the message.
     fn has_field(msg: Message, field_number: int) -> bool {
-        unsafe { hew_proto_msg_has_field(msg, field_number as i32) } // INTERNAL-ABI: C ABI field_number is i32
+        unsafe {
+            hew_proto_msg_has_field(msg, field_number as i32)
+        } // INTERNAL-ABI: C ABI field_number is i32
     }
     /// Release the message resources.
-    fn free(msg: Message) { unsafe { hew_proto_msg_free(msg) }; }
+    fn free(msg: Message) {
+        unsafe {
+            hew_proto_msg_free(msg)
+        };
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Create a new empty Protocol Buffers message.
 ///
 /// # Examples
@@ -90,11 +104,12 @@ impl MessageMethods for Message {
 /// msg.free();
 /// ```
 pub fn new() -> Message {
-    unsafe { hew_proto_msg_new() }
+    unsafe {
+        hew_proto_msg_new()
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_proto_msg_new() -> Message;
     fn hew_proto_msg_set_string(msg: Message, field_number: i32, s: String);

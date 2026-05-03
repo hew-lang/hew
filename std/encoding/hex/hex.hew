@@ -60,7 +60,7 @@ pub fn decode(s: String) -> bytes {
 /// Encode binary data to a hex string, optionally uppercase.
 fn encode_impl(data: bytes, upper: bool) -> String {
     let out: bytes = bytes::new();
-    for i in 0..data.len() {
+    for i in 0 .. data.len() {
         let b = data.get(i);
         let hi = b / 16;
         let lo = b % 16;
@@ -85,27 +85,51 @@ fn nibble_to_char(n: i32, upper: bool) -> i32 { // INTERNAL-ABI: byte-level nibb
 
 /// Convert a single hex character to its 4-bit nibble value, or -1 if invalid.
 fn hex_char_to_nibble(ch: String) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; byte-level helper
-    if ch == "0" { 0 as i32 }
-    else if ch == "1" { 1 as i32 }
-    else if ch == "2" { 2 as i32 }
-    else if ch == "3" { 3 as i32 }
-    else if ch == "4" { 4 as i32 }
-    else if ch == "5" { 5 as i32 }
-    else if ch == "6" { 6 as i32 }
-    else if ch == "7" { 7 as i32 }
-    else if ch == "8" { 8 as i32 }
-    else if ch == "9" { 9 as i32 }
-    else if ch == "a" { 10 as i32 }
-    else if ch == "b" { 11 as i32 }
-    else if ch == "c" { 12 as i32 }
-    else if ch == "d" { 13 as i32 }
-    else if ch == "e" { 14 as i32 }
-    else if ch == "f" { 15 as i32 }
-    else if ch == "A" { 10 as i32 }
-    else if ch == "B" { 11 as i32 }
-    else if ch == "C" { 12 as i32 }
-    else if ch == "D" { 13 as i32 }
-    else if ch == "E" { 14 as i32 }
-    else if ch == "F" { 15 as i32 }
-    else { -1 as i32 }
+    if ch == "0" {
+        0 as i32
+    } else if ch == "1" {
+        1 as i32
+    } else if ch == "2" {
+        2 as i32
+    } else if ch == "3" {
+        3 as i32
+    } else if ch == "4" {
+        4 as i32
+    } else if ch == "5" {
+        5 as i32
+    } else if ch == "6" {
+        6 as i32
+    } else if ch == "7" {
+        7 as i32
+    } else if ch == "8" {
+        8 as i32
+    } else if ch == "9" {
+        9 as i32
+    } else if ch == "a" {
+        10 as i32
+    } else if ch == "b" {
+        11 as i32
+    } else if ch == "c" {
+        12 as i32
+    } else if ch == "d" {
+        13 as i32
+    } else if ch == "e" {
+        14 as i32
+    } else if ch == "f" {
+        15 as i32
+    } else if ch == "A" {
+        10 as i32
+    } else if ch == "B" {
+        11 as i32
+    } else if ch == "C" {
+        12 as i32
+    } else if ch == "D" {
+        13 as i32
+    } else if ch == "E" {
+        14 as i32
+    } else if ch == "F" {
+        15 as i32
+    } else {
+        -1 as i32
+    }
 }

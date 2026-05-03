@@ -49,7 +49,7 @@ fn make_test_array() -> Vec<int> {
 const ITERS: int = 50000;
 
 fn main() {
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         let v = make_test_array();
         let _ = cocktail_sort(v);
     }

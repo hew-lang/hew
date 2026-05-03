@@ -36,7 +36,7 @@ fn test_lambda() {
 // 4. Loops with var
 fn test_loops() {
     var total = 0;
-    for i in 0..5 {
+    for i in 0 .. 5 {
         total = total + i;
     }
     if total == 10 {

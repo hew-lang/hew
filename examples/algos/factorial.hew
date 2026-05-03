@@ -26,7 +26,6 @@ fn check(name: String, got: int, expected: int) -> int {
 fn main() {
     var passed = 0;
     var total = 0;
-
     total = total + 1;
     passed = passed + check("0!=1", factorial(0), 1);
     total = total + 1;
@@ -35,7 +34,6 @@ fn main() {
     passed = passed + check("5!=120", factorial(5), 120);
     total = total + 1;
     passed = passed + check("10!=3628800", factorial(10), 3628800);
-
     println("---");
     print("Passed: ");
     print(passed);

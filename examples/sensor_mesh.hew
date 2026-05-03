@@ -8,10 +8,8 @@
 // In a distributed deployment each would run on its own node.
 // Node::start/shutdown/register/lookup typecheck today; other Node APIs
 // (for example Node::connect/load_keys/allow_peer) are runtime-only for now.
-
 actor Logger {
     let count: i32;
-
     receive fn log_event(source: String, msg: String) {
         count = count + 1;
         println(f"[log #{count}] {source}: {msg}");
@@ -22,17 +20,14 @@ actor Monitor {
     let readings: Vec<i32>;
     let logger: ActorRef<Logger>;
     let threshold: i32;
-
     receive fn reading(sensor_id: String, temp: i32) {
         readings.push(temp);
-
         if temp > threshold {
             logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {threshold}");
         }
-
         if readings.len() % 3 == 0 {
             var sum = 0;
-            for i in 0..readings.len() {
+            for i in 0 .. readings.len() {
                 sum = sum + readings.get(i);
             }
             let avg = sum / readings.len();
@@ -45,8 +40,8 @@ actor Sensor {
     let sensor_id: String;
     let monitor: ActorRef<Monitor>;
     let base_temp: i32;
-
     receive fn tick(cycle: i32) {
+
         // Simulate temperature with variation
         let temp = base_temp + cycle % 5 - 2;
         monitor.reading(sensor_id, temp);
@@ -71,14 +66,12 @@ fn main() {
     // let monitor = Node::lookup("monitor");
     let s1 = spawn Sensor(sensor_id: "sensor-A", monitor: monitor, base_temp: 25);
     let s2 = spawn Sensor(sensor_id: "sensor-B", monitor: monitor, base_temp: 31);
-
     // Simulate 6 ticks
-    for cycle in 0..6 {
+    for cycle in 0 .. 6 {
         s1.tick(cycle);
         s2.tick(cycle);
         sleep_ms(30);
     }
-
     sleep_ms(200);
     println("=== Done ===");
 }

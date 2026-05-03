@@ -51,5 +51,5 @@ fn main() {
     println(vec_result); // 60
     println("=== HashMap Test ===");
     let map_result = test_hashmap();
-    println(map_result); // 3
-}
+    println(map_result);
+} // 3

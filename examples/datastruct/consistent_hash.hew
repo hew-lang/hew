@@ -1,9 +1,8 @@
 // Consistent Hash Ring
 // Maps keys to nodes. Adding/removing nodes moves minimal keys.
 // Ring positions stored in sorted Vec<int>, node IDs in parallel Vec<int>.
-
 fn hash_pos(key: int, ring_size: int) -> int {
-    let h = (key * 2654435761) % ring_size;
+    let h = key * 2654435761 % ring_size;
     if h < 0 {
         h + ring_size
     } else {
@@ -21,7 +20,7 @@ fn sorted_insert(positions: Vec<int>, nodes: Vec<int>, pos: int, node_id: int) {
     let len = positions.len();
     // Find insertion point
     var insert_at = len;
-    for i in 0..len {
+    for i in 0 .. len {
         if positions.get(i) > pos {
             insert_at = i;
             // break out by setting i to len (no break in for)
@@ -52,7 +51,7 @@ fn sorted_insert_at(positions: Vec<int>, nodes: Vec<int>, pos: int, node_id: int
 }
 
 fn add_node(positions: Vec<int>, nodes: Vec<int>, node_id: int, ring_size: int, replicas: int) {
-    for r in 0..replicas {
+    for r in 0 .. replicas {
         let pos = node_hash(node_id, r, ring_size);
         sorted_insert(positions, nodes, pos, node_id);
     }
@@ -62,7 +61,7 @@ fn remove_node(positions: Vec<int>, nodes: Vec<int>, node_id: int) {
     // Remove all entries for this node (compact in place)
     let len = positions.len();
     var write = 0;
-    for read in 0..len {
+    for read in 0 .. len {
         if nodes.get(read) != node_id {
             positions.set(write, positions.get(read));
             nodes.set(write, nodes.get(read));
@@ -85,7 +84,7 @@ fn lookup(positions: Vec<int>, nodes: Vec<int>, key: int, ring_size: int) -> int
     }
     let pos = hash_pos(key, ring_size);
     // Find first position >= pos (binary-like scan)
-    for i in 0..len {
+    for i in 0 .. len {
         if positions.get(i) >= pos {
             return nodes.get(i);
         }
@@ -101,7 +100,6 @@ fn main() {
     let replicas = 3;
     let positions: Vec<int> = Vec::new();
     let nodes: Vec<int> = Vec::new();
-
     // Test 1: Add nodes and verify lookup returns valid node
     add_node(positions, nodes, 1, ring_size, replicas);
     add_node(positions, nodes, 2, ring_size, replicas);
@@ -110,12 +108,24 @@ fn main() {
     let n2 = lookup(positions, nodes, 200, ring_size);
     let n3 = lookup(positions, nodes, 300, ring_size);
     var valid = true;
-    if n1 < 1 { valid = false; }
-    if n1 > 3 { valid = false; }
-    if n2 < 1 { valid = false; }
-    if n2 > 3 { valid = false; }
-    if n3 < 1 { valid = false; }
-    if n3 > 3 { valid = false; }
+    if n1 < 1 {
+        valid = false;
+    }
+    if n1 > 3 {
+        valid = false;
+    }
+    if n2 < 1 {
+        valid = false;
+    }
+    if n2 > 3 {
+        valid = false;
+    }
+    if n3 < 1 {
+        valid = false;
+    }
+    if n3 > 3 {
+        valid = false;
+    }
     if valid {
         println("PASS: lookup returns valid node");
         passed = passed + 1;
@@ -123,7 +133,6 @@ fn main() {
         println("FAIL: lookup returns valid node");
         failed = failed + 1;
     }
-
     // Test 2: Same key always maps to same node
     let na = lookup(positions, nodes, 42, ring_size);
     let nb = lookup(positions, nodes, 42, ring_size);
@@ -134,11 +143,10 @@ fn main() {
         println("FAIL: consistent mapping");
         failed = failed + 1;
     }
-
     // Test 3: Different keys can map to different nodes
     var seen_different = false;
     let first_node = lookup(positions, nodes, 0, ring_size);
-    for k in 1..50 {
+    for k in 1 .. 50 {
         let node = lookup(positions, nodes, k, ring_size);
         if node != first_node {
             seen_different = true;
@@ -151,22 +159,20 @@ fn main() {
         println("FAIL: keys map to different nodes");
         failed = failed + 1;
     }
-
     // Record mappings before adding a node
     let before: Vec<int> = Vec::new();
     var num_keys = 100;
-    for k in 0..num_keys {
+    for k in 0 .. num_keys {
         let key = k * 37;
         let node = lookup(positions, nodes, key, ring_size);
         before.push(node);
     }
-
     // Add a 4th node
     add_node(positions, nodes, 4, ring_size, replicas);
 
     // Test 4: After adding node, most keys stay on same node
     var same_count = 0;
-    for k in 0..num_keys {
+    for k in 0 .. num_keys {
         let key = k * 37;
         let new_node = lookup(positions, nodes, key, ring_size);
         let old_node = before.get(k);
@@ -186,10 +192,9 @@ fn main() {
         println(" of 100 unchanged)");
         failed = failed + 1;
     }
-
     // Test 5: New node gets some keys
     var node4_count = 0;
-    for k in 0..num_keys {
+    for k in 0 .. num_keys {
         let key = k * 37;
         let node = lookup(positions, nodes, key, ring_size);
         if node == 4 {
@@ -205,11 +210,10 @@ fn main() {
         println("FAIL: new node gets keys");
         failed = failed + 1;
     }
-
     // Test 6: Remove a node, keys redistribute
     remove_node(positions, nodes, 2);
     var node2_count = 0;
-    for k in 0..num_keys {
+    for k in 0 .. num_keys {
         let key = k * 37;
         let node = lookup(positions, nodes, key, ring_size);
         if node == 2 {
@@ -223,17 +227,22 @@ fn main() {
         println("FAIL: removed node gets no keys");
         failed = failed + 1;
     }
-
     // Test 7: Distribution across remaining nodes
     var c1 = 0;
     var c3 = 0;
     var c4 = 0;
-    for k in 0..num_keys {
+    for k in 0 .. num_keys {
         let key = k * 37;
         let node = lookup(positions, nodes, key, ring_size);
-        if node == 1 { c1 = c1 + 1; }
-        if node == 3 { c3 = c3 + 1; }
-        if node == 4 { c4 = c4 + 1; }
+        if node == 1 {
+            c1 = c1 + 1;
+        }
+        if node == 3 {
+            c3 = c3 + 1;
+        }
+        if node == 4 {
+            c4 = c4 + 1;
+        }
     }
     // All three remaining nodes should have at least some keys
     if c1 > 0 {
@@ -253,7 +262,6 @@ fn main() {
         println("FAIL: distribution across nodes");
         failed = failed + 1;
     }
-
     // Test 8: Empty ring returns -1
     let ep: Vec<int> = Vec::new();
     let en: Vec<int> = Vec::new();
@@ -265,7 +273,6 @@ fn main() {
         println("FAIL: empty ring lookup");
         failed = failed + 1;
     }
-
     // Summary
     println("---");
     print("Passed: ");

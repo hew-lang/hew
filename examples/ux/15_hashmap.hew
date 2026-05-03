@@ -1,10 +1,8 @@
 // HashMap test
-
 fn main() {
     let map: HashMap<String, int> = HashMap::new();
     map.insert("a", 100);
     map.insert("b", 200);
-
     match map.get("a") {
         Some(v) => println(v),
         None => println("missing"),

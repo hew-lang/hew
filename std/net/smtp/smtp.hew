@@ -21,16 +21,16 @@
 //!     );
 //! }
 //! ```
-// WASM-TODO(#1451): std::net::smtp remains native-only until Hew has a wasm SMTP transport.
 
+// WASM-TODO(#1451): std::net::smtp remains native-only until Hew has a wasm SMTP transport.
 /// An open SMTP connection handle.
 ///
 /// Created by calling `smtp.connect(...)` or `smtp.connect_tls(...)`.
 /// Use `send()` or `send_html()` to deliver messages.
-type Conn {}
+type Conn {
+}
 
 // ── Conn methods ──────────────────────────────────────────────────────
-
 /// Methods available on an SMTP `Conn`.
 trait ConnMethods {
     /// Send a plain-text email. Return 0 on success.
@@ -52,28 +52,47 @@ trait ConnMethods {
 impl ConnMethods for Conn {
     /// Send a plain-text email. Return 0 on success.
     fn send(conn: Conn, from: String, to: String, subject: String, body: String) -> int {
-        unsafe { hew_smtp_send(conn, from, to, subject, body) } as int // INTERNAL-ABI: FFI returns i32
+        unsafe {
+            hew_smtp_send(conn, from, to, subject, body)
+        } as int // INTERNAL-ABI: FFI returns i32
     }
     /// Send a plain-text email.
     fn try_send(conn: Conn, from: String, to: String, subject: String, body: String) -> Result<(), String> {
-        let n: i32 = unsafe { hew_smtp_send(conn, from, to, subject, body) };
-        if n < 0 { Err("smtp send failed") } else { Ok(()) }
+        let n: i32 = unsafe {
+            hew_smtp_send(conn, from, to, subject, body)
+        };
+        if n < 0 {
+            Err("smtp send failed")
+        } else {
+            Ok(())
+        }
     }
     /// Send an HTML email. Return 0 on success.
     fn send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> int {
-        unsafe { hew_smtp_send_html(conn, from, to, subject, html) } as int // INTERNAL-ABI: FFI returns i32
+        unsafe {
+            hew_smtp_send_html(conn, from, to, subject, html)
+        } as int // INTERNAL-ABI: FFI returns i32
     }
     /// Send an HTML email.
     fn try_send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> Result<(), String> {
-        let n: i32 = unsafe { hew_smtp_send_html(conn, from, to, subject, html) };
-        if n < 0 { Err("smtp send_html failed") } else { Ok(()) }
+        let n: i32 = unsafe {
+            hew_smtp_send_html(conn, from, to, subject, html)
+        };
+        if n < 0 {
+            Err("smtp send_html failed")
+        } else {
+            Ok(())
+        }
     }
     /// Close the SMTP connection.
-    fn close(conn: Conn) { unsafe { hew_smtp_close(conn) }; }
+    fn close(conn: Conn) {
+        unsafe {
+            hew_smtp_close(conn)
+        };
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Connect to an SMTP server using STARTTLS.
 ///
 /// # Examples
@@ -82,7 +101,9 @@ impl ConnMethods for Conn {
 /// let conn = smtp.connect("smtp.example.com", 587, "user", "pass");
 /// ```
 pub fn connect(host: String, port: int, username: String, password: String) -> Conn {
-    unsafe { hew_smtp_connect(host, port as i32, username, password) }
+    unsafe {
+        hew_smtp_connect(host, port as i32, username, password)
+    }
 }
 
 /// Connect to an SMTP server using implicit TLS.
@@ -93,7 +114,9 @@ pub fn connect(host: String, port: int, username: String, password: String) -> C
 /// let conn = smtp.connect_tls("smtp.example.com", 465, "user", "pass");
 /// ```
 pub fn connect_tls(host: String, port: int, username: String, password: String) -> Conn {
-    unsafe { hew_smtp_connect_tls(host, port as i32, username, password) }
+    unsafe {
+        hew_smtp_connect_tls(host, port as i32, username, password)
+    }
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one plain-text
@@ -101,33 +124,23 @@ pub fn connect_tls(host: String, port: int, username: String, password: String) 
 ///
 /// Use `connect_tls(...)` + `Conn.send(...)` when you need implicit TLS or want
 /// to reuse a connection for multiple messages.
-pub fn send(
-    host: String,
-    port: int,
-    username: String,
-    password: String,
-    from: String,
-    to: String,
-    subject: String,
-    body: String,
-) -> int {
-    unsafe { hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body) } as int // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
+pub fn send(host: String, port: int, username: String, password: String, from: String, to: String, subject: String, body: String) -> int {
+    unsafe {
+        hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body)
+    } as int // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one plain-text
 /// email, and close the connection.
-pub fn try_send(
-    host: String,
-    port: int,
-    username: String,
-    password: String,
-    from: String,
-    to: String,
-    subject: String,
-    body: String,
-) -> Result<(), String> {
-    let n: i32 = unsafe { hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body) };
-    if n < 0 { Err("smtp send failed") } else { Ok(()) }
+pub fn try_send(host: String, port: int, username: String, password: String, from: String, to: String, subject: String, body: String) -> Result<(), String> {
+    let n: i32 = unsafe {
+        hew_smtp_send_once(host, port as i32, username, password, from, to, subject, body)
+    };
+    if n < 0 {
+        Err("smtp send failed")
+    } else {
+        Ok(())
+    }
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one HTML email,
@@ -135,61 +148,32 @@ pub fn try_send(
 ///
 /// Use `connect_tls(...)` + `Conn.send_html(...)` when you need implicit TLS or
 /// want to reuse a connection for multiple messages.
-pub fn send_html(
-    host: String,
-    port: int,
-    username: String,
-    password: String,
-    from: String,
-    to: String,
-    subject: String,
-    html: String,
-) -> int {
-    unsafe { hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html) } as int // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
+pub fn send_html(host: String, port: int, username: String, password: String, from: String, to: String, subject: String, html: String) -> int {
+    unsafe {
+        hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html)
+    } as int // INTERNAL-ABI: FFI returns i32; C ABI takes i32 port
 }
 
 /// Connect with the same STARTTLS path as `connect(...)`, send one HTML email,
 /// and close the connection.
-pub fn try_send_html(
-    host: String,
-    port: int,
-    username: String,
-    password: String,
-    from: String,
-    to: String,
-    subject: String,
-    html: String,
-) -> Result<(), String> {
-    let n: i32 = unsafe { hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html) };
-    if n < 0 { Err("smtp send_html failed") } else { Ok(()) }
+pub fn try_send_html(host: String, port: int, username: String, password: String, from: String, to: String, subject: String, html: String) -> Result<(), String> {
+    let n: i32 = unsafe {
+        hew_smtp_send_html_once(host, port as i32, username, password, from, to, subject, html)
+    };
+    if n < 0 {
+        Err("smtp send_html failed")
+    } else {
+        Ok(())
+    }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
-
 extern "C" {
     fn hew_smtp_connect(host: String, port: i32, username: String, password: String) -> Conn;
     fn hew_smtp_connect_tls(host: String, port: i32, username: String, password: String) -> Conn;
     fn hew_smtp_send(conn: Conn, from: String, to: String, subject: String, body: String) -> i32;
     fn hew_smtp_send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> i32;
-    fn hew_smtp_send_once(
-        host: String,
-        port: i32,
-        username: String,
-        password: String,
-        from: String,
-        to: String,
-        subject: String,
-        body: String,
-    ) -> i32;
-    fn hew_smtp_send_html_once(
-        host: String,
-        port: i32,
-        username: String,
-        password: String,
-        from: String,
-        to: String,
-        subject: String,
-        html: String,
-    ) -> i32;
+    fn hew_smtp_send_once(host: String, port: i32, username: String, password: String, from: String, to: String, subject: String, body: String) -> i32;
+    fn hew_smtp_send_html_once(host: String, port: i32, username: String, password: String, from: String, to: String, subject: String, html: String) -> i32;
     fn hew_smtp_close(conn: Conn);
 }

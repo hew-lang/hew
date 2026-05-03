@@ -1,6 +1,5 @@
 // Hash Map with Open Addressing
 // Two parallel Vecs: keys and values. EMPTY key = -1.
-
 fn hash(key: int, capacity: int) -> int {
     let h = key % capacity;
     if h < 0 {
@@ -13,7 +12,7 @@ fn hash(key: int, capacity: int) -> int {
 fn make_keys(capacity: int) -> Vec<int> {
     let v: Vec<int> = Vec::new();
     let EMPTY = 0 - 1;
-    for i in 0..capacity {
+    for i in 0 .. capacity {
         v.push(EMPTY);
     }
     v
@@ -21,7 +20,7 @@ fn make_keys(capacity: int) -> Vec<int> {
 
 fn make_vals(capacity: int) -> Vec<int> {
     let v: Vec<int> = Vec::new();
-    for i in 0..capacity {
+    for i in 0 .. capacity {
         v.push(0);
     }
     v
@@ -115,7 +114,7 @@ fn map_size(keys: Vec<int>) -> int {
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;
     var count = 0;
-    for i in 0..capacity {
+    for i in 0 .. capacity {
         let k = keys.get(i);
         if k != EMPTY {
             if k != DELETED {
@@ -133,7 +132,6 @@ fn main() {
     let keys = make_keys(cap);
     let vals = make_vals(cap);
     let NOT_FOUND = 0 - 999;
-
     // Test 1: Insert and get
     let _ = map_insert(keys, vals, 1, 100);
     let _ = map_insert(keys, vals, 2, 200);
@@ -158,7 +156,6 @@ fn main() {
         println("FAIL: insert and get");
         failed = failed + 1;
     }
-
     // Test 2: Get missing key
     let vm = map_get(keys, vals, 99);
     if vm == NOT_FOUND {
@@ -168,7 +165,6 @@ fn main() {
         println("FAIL: get missing key");
         failed = failed + 1;
     }
-
     // Test 3: Contains key
     if map_contains_key(keys, 1) {
         if map_contains_key(keys, 99) {
@@ -182,7 +178,6 @@ fn main() {
         println("FAIL: contains_key");
         failed = failed + 1;
     }
-
     // Test 4: Update existing key
     let _ = map_insert(keys, vals, 2, 250);
     let v2b = map_get(keys, vals, 2);
@@ -199,7 +194,6 @@ fn main() {
         println("FAIL: update existing");
         failed = failed + 1;
     }
-
     // Test 5: Remove
     let _ = map_remove(keys, vals, 2);
     if map_contains_key(keys, 2) {
@@ -215,7 +209,6 @@ fn main() {
             failed = failed + 1;
         }
     }
-
     // Test 6: Get after remove returns NOT_FOUND
     let vr = map_get(keys, vals, 2);
     if vr == NOT_FOUND {
@@ -225,7 +218,6 @@ fn main() {
         println("FAIL: get after remove");
         failed = failed + 1;
     }
-
     // Test 7: Collision handling (keys that hash to same slot)
     let _ = map_insert(keys, vals, 0, 10);
     let _ = map_insert(keys, vals, 16, 20);
@@ -250,7 +242,6 @@ fn main() {
         println("FAIL: collision handling");
         failed = failed + 1;
     }
-
     // Test 8: Size after all operations
     let sz3 = map_size(keys);
     if sz3 == 5 {
@@ -261,7 +252,6 @@ fn main() {
         println(sz3);
         failed = failed + 1;
     }
-
     // Summary
     println("---");
     print("Passed: ");

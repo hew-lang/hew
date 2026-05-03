@@ -1,6 +1,5 @@
 // Max-Heap using implicit array representation
 // Parent of i = (i-1)/2, left child = 2*i+1, right child = 2*i+2
-
 fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
     heap.push(val);
     var i = heap.len() - 1;
@@ -58,7 +57,7 @@ fn heap_pop(heap: Vec<i32>) -> i32 {
 
 // Build heap from array (heapify)
 fn build_heap(arr: Vec<i32>, heap: Vec<i32>) -> i32 {
-    for i in 0..arr.len() {
+    for i in 0 .. arr.len() {
         heap.push(arr.get(i));
     }
     // Heapify from last non-leaf node
@@ -96,7 +95,7 @@ fn build_heap(arr: Vec<i32>, heap: Vec<i32>) -> i32 {
 
 fn check_max_heap_property(heap: Vec<i32>) -> bool {
     var ok = true;
-    for i in 0..heap.len() {
+    for i in 0 .. heap.len() {
         let left = 2 * i + 1;
         let right = 2 * i + 2;
         if left < heap.len() {
@@ -148,20 +147,44 @@ fn test_extract_max_order() -> i32 {
     let e6 = heap_pop(heap);
     let e7 = heap_pop(heap);
     var ok = true;
-    if e1 != 7 { ok = false; }
-    if e2 != 6 { ok = false; }
-    if e3 != 5 { ok = false; }
-    if e4 != 4 { ok = false; }
-    if e5 != 3 { ok = false; }
-    if e6 != 2 { ok = false; }
-    if e7 != 1 { ok = false; }
+    if e1 != 7 {
+        ok = false;
+    }
+    if e2 != 6 {
+        ok = false;
+    }
+    if e3 != 5 {
+        ok = false;
+    }
+    if e4 != 4 {
+        ok = false;
+    }
+    if e5 != 3 {
+        ok = false;
+    }
+    if e6 != 2 {
+        ok = false;
+    }
+    if e7 != 1 {
+        ok = false;
+    }
     if ok {
         println("PASS: extract_max returns descending order");
         1
     } else {
         print("FAIL: extract order: ");
-        print(e1); print(" "); print(e2); print(" "); print(e3); print(" ");
-        print(e4); print(" "); print(e5); print(" "); print(e6); print(" ");
+        print(e1);
+        print(" ");
+        print(e2);
+        print(" ");
+        print(e3);
+        print(" ");
+        print(e4);
+        print(" ");
+        print(e5);
+        print(" ");
+        print(e6);
+        print(" ");
         println(e7);
         0
     }
@@ -169,8 +192,12 @@ fn test_extract_max_order() -> i32 {
 
 fn test_build_heap() -> i32 {
     let arr: Vec<i32> = Vec::new();
-    arr.push(3); arr.push(1); arr.push(6); arr.push(5);
-    arr.push(2); arr.push(4);
+    arr.push(3);
+    arr.push(1);
+    arr.push(6);
+    arr.push(5);
+    arr.push(2);
+    arr.push(4);
     let heap: Vec<i32> = Vec::new();
     let _ = build_heap(arr, heap);
     let ok = check_max_heap_property(heap);

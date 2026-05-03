@@ -21,7 +21,6 @@
 //! ```
 
 // ── Predicates ──────────────────────────────────────────────────────
-
 /// Returns `true` if the result contains an `Ok` value.
 pub fn is_ok_int(r: Result<int, int>) -> bool {
     match r {
@@ -39,7 +38,6 @@ pub fn is_err_int(r: Result<int, int>) -> bool {
 }
 
 // ── Unwrap ──────────────────────────────────────────────────────────
-
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
 pub fn unwrap_int(r: Result<int, int>) -> int {
     match r {
@@ -71,7 +69,6 @@ pub fn unwrap_or_int(r: Result<int, int>, fallback: int) -> int {
 }
 
 // ── Map ─────────────────────────────────────────────────────────────
-
 /// Apply `f` to the contained `Ok` value, or return `Err` unchanged.
 pub fn map_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
     match r {
@@ -89,7 +86,6 @@ pub fn map_err_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
 }
 
 // ── Contains ────────────────────────────────────────────────────────
-
 /// Returns `true` if the result is `Ok` and contains `needle`.
 pub fn contains_int(r: Result<int, int>, needle: int) -> bool {
     match r {
@@ -99,7 +95,6 @@ pub fn contains_int(r: Result<int, int>, needle: int) -> bool {
 }
 
 // ── String variants ────────────────────────────────────────────────
-
 /// Returns `true` if the result contains an `Ok` value.
 pub fn is_ok_str(r: Result<String, String>) -> bool {
     match r {
@@ -155,7 +150,6 @@ pub fn contains_str(r: Result<String, String>, needle: String) -> bool {
 }
 
 // ── Float variants ─────────────────────────────────────────────────
-
 /// Returns `true` if the result contains an `Ok` value.
 pub fn is_ok_f64(r: Result<f64, String>) -> bool {
     match r {
@@ -190,4 +184,3 @@ pub fn unwrap_or_f64(r: Result<f64, String>, fallback: f64) -> f64 {
         Err(_) => fallback,
     }
 }
-

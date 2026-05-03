@@ -1,13 +1,31 @@
 // Treap: BST by key, heap by priority
 // Each node: [key, priority, left, right] = 4 slots
 // NIL = -1 means no child
+fn node_key(nodes: Vec<i32>, i: i32) -> i32 {
+    nodes.get(i * 4)
+}
 
-fn node_key(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4) }
-fn node_pri(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4 + 1) }
-fn node_left(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4 + 2) }
-fn node_right(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4 + 3) }
-fn set_left(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 4 + 2, v); 0 }
-fn set_right(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 4 + 3, v); 0 }
+fn node_pri(nodes: Vec<i32>, i: i32) -> i32 {
+    nodes.get(i * 4 + 1)
+}
+
+fn node_left(nodes: Vec<i32>, i: i32) -> i32 {
+    nodes.get(i * 4 + 2)
+}
+
+fn node_right(nodes: Vec<i32>, i: i32) -> i32 {
+    nodes.get(i * 4 + 3)
+}
+
+fn set_left(nodes: Vec<i32>, i: i32, v: i32) -> i32 {
+    nodes.set(i * 4 + 2, v);
+    0
+}
+
+fn set_right(nodes: Vec<i32>, i: i32, v: i32) -> i32 {
+    nodes.set(i * 4 + 3, v);
+    0
+}
 
 fn add_node(nodes: Vec<i32>, key: i32, pri: i32, NIL: i32) -> i32 {
     let idx = nodes.len() / 4;
@@ -201,8 +219,10 @@ fn test_basic_treap() -> i32 {
             return 1;
         }
     }
-    print("FAIL: treap bst="); print(bst_ok);
-    print(" heap="); println(heap_ok);
+    print("FAIL: treap bst=");
+    print(bst_ok);
+    print(" heap=");
+    println(heap_ok);
     0
 }
 
@@ -220,15 +240,31 @@ fn test_inorder_sorted() -> i32 {
     let result: Vec<i32> = Vec::new();
     let _ = inorder(nodes, root, result, NIL);
     var ok = true;
-    if result.len() != 7 { ok = false; }
+    if result.len() != 7 {
+        ok = false;
+    }
     if ok {
-        if result.get(0) != 3 { ok = false; }
-        if result.get(1) != 5 { ok = false; }
-        if result.get(2) != 7 { ok = false; }
-        if result.get(3) != 10 { ok = false; }
-        if result.get(4) != 12 { ok = false; }
-        if result.get(5) != 15 { ok = false; }
-        if result.get(6) != 20 { ok = false; }
+        if result.get(0) != 3 {
+            ok = false;
+        }
+        if result.get(1) != 5 {
+            ok = false;
+        }
+        if result.get(2) != 7 {
+            ok = false;
+        }
+        if result.get(3) != 10 {
+            ok = false;
+        }
+        if result.get(4) != 12 {
+            ok = false;
+        }
+        if result.get(5) != 15 {
+            ok = false;
+        }
+        if result.get(6) != 20 {
+            ok = false;
+        }
     }
     if ok {
         println("PASS: treap inorder is sorted");
@@ -266,7 +302,7 @@ fn test_sequential_inserts() -> i32 {
     var pri = 17;
     var i = 1;
     while i <= 15 {
-        pri = (pri * 31 + 7) - ((pri * 31 + 7) / 100) * 100;
+        pri = pri * 31 + 7 - (pri * 31 + 7) / 100 * 100;
         root = treap_insert(nodes, root, i, pri, NIL);
         i = i + 1;
     }

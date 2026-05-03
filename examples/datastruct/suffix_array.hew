@@ -32,7 +32,7 @@ fn compare_suffixes(text: Vec<int>, a: int, b: int) -> int {
 fn build_suffix_array(text: Vec<int>) -> Vec<int> {
     let n = text.len();
     let sa: Vec<int> = Vec::new();
-    for i in 0..n {
+    for i in 0 .. n {
         sa.push(i);
     }
     // Insertion sort on suffix indices
@@ -135,7 +135,6 @@ fn compare_prefix(text: Vec<int>, pos: int, pattern: Vec<int>) -> int {
 fn main() {
     var passed = 0;
     var failed = 0;
-
     // Text: [3, 1, 4, 1, 5, 9, 2, 6]
     let text: Vec<int> = Vec::new();
     text.push(3);
@@ -146,9 +145,7 @@ fn main() {
     text.push(9);
     text.push(2);
     text.push(6);
-
     let sa = build_suffix_array(text);
-
     // Test 1: Suffix array has correct length
     if sa.len() == 8 {
         println("PASS: SA length");
@@ -157,7 +154,6 @@ fn main() {
         println("FAIL: SA length");
         failed = failed + 1;
     }
-
     // Test 2: Suffix array is sorted
     var sorted = 1;
     var i = 1;
@@ -175,10 +171,9 @@ fn main() {
         println("FAIL: SA is sorted");
         failed = failed + 1;
     }
-
     // Test 3: All indices present (sum = 0+1+2+...+7 = 28)
     var sum = 0;
-    for j in 0..8 {
+    for j in 0 .. 8 {
         sum = sum + sa.get(j);
     }
     if sum == 28 {
@@ -188,7 +183,6 @@ fn main() {
         println("FAIL: SA all indices present");
         failed = failed + 1;
     }
-
     // Test 4: Search for pattern [1, 4] -> should find at index 1
     let pat1: Vec<int> = Vec::new();
     pat1.push(1);
@@ -202,7 +196,6 @@ fn main() {
         println(pos1);
         failed = failed + 1;
     }
-
     // Test 5: Search for pattern [9, 2, 6] -> should find at index 5
     let pat2: Vec<int> = Vec::new();
     pat2.push(9);
@@ -217,7 +210,6 @@ fn main() {
         println(pos2);
         failed = failed + 1;
     }
-
     // Test 6: Search for pattern not in text -> -1
     let pat3: Vec<int> = Vec::new();
     pat3.push(7);
@@ -230,7 +222,6 @@ fn main() {
         println("FAIL: search not found");
         failed = failed + 1;
     }
-
     // Test 7: LCP array
     let lcp = build_lcp_array(text, sa);
     if lcp.len() == 8 {
@@ -245,7 +236,6 @@ fn main() {
         println("FAIL: LCP array basics");
         failed = failed + 1;
     }
-
     // Test 8: LCP detects shared prefixes
     // Text with repeated prefix: [1, 2, 3, 1, 2, 4]
     let text2: Vec<int> = Vec::new();
@@ -259,7 +249,7 @@ fn main() {
     let lcp2 = build_lcp_array(text2, sa2);
     // Suffixes starting with [1,2,...] should have LCP >= 2
     var found_lcp2 = false;
-    for k in 1..lcp2.len() {
+    for k in 1 .. lcp2.len() {
         if lcp2.get(k) >= 2 {
             found_lcp2 = true;
         }
@@ -271,7 +261,6 @@ fn main() {
         println("FAIL: LCP shared prefix");
         failed = failed + 1;
     }
-
     // Test 9: Search single element
     let pat4: Vec<int> = Vec::new();
     pat4.push(5);
@@ -284,7 +273,6 @@ fn main() {
         println(pos4);
         failed = failed + 1;
     }
-
     // Test 10: Search full text
     let pos5 = sa_search(text, sa, text);
     if pos5 == 0 {
@@ -294,7 +282,6 @@ fn main() {
         println("FAIL: search full text");
         failed = failed + 1;
     }
-
     // Summary
     println("---");
     print("Passed: ");

@@ -3,7 +3,6 @@
 // Defines the core Point type.  Peer files (distance.hew, area.hew) build
 // on Point without re-importing it — they share the same module namespace
 // automatically because they live in the same directory.
-
 pub type Point {
     x: int;
     y: int;

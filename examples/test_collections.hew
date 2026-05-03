@@ -53,7 +53,7 @@ fn test_vec_pop() -> i32 {
 fn test_vec_many_elements() -> i32 {
     println("--- test_vec_many_elements ---");
     let v: Vec<i32> = Vec::new();
-    for i in 0..100 {
+    for i in 0 .. 100 {
         v.push(i);
     }
     let len = v.len();

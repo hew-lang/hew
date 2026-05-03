@@ -22,12 +22,10 @@ fn main() {
     println("=== Actor-based Fibonacci ===");
     let w1 = spawn FibWorker;
     let w2 = spawn FibWorker;
-
     let (r1, r2) = join {
         w1.compute(10),
         w2.compute(15),
     };
-
     print_result(1, 10, r1);
     print_result(2, 15, r2);
     println("=== Done ===");

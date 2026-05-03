@@ -14,11 +14,12 @@ actor Worker {
 }
 
 supervisor WorkerPool {
-    strategy: one_for_one,
-    max_restarts: 5,
-    window: 10,
-    child w1: Worker(1),
-    child w2: Worker(2)
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 10;
+
+    child w1: Worker(1);
+    child w2: Worker(2);
 }
 
 fn main() {

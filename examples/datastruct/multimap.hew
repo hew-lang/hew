@@ -1,6 +1,5 @@
 // Hash Multimap - One key maps to multiple values
 // Uses hash map for key->head_index, linked list nodes in parallel Vecs
-
 fn hash(key: int, capacity: int) -> int {
     let h = key % capacity;
     if h < 0 {
@@ -14,7 +13,7 @@ fn hash(key: int, capacity: int) -> int {
 fn make_ht_keys(capacity: int) -> Vec<int> {
     let v: Vec<int> = Vec::new();
     let EMPTY = 0 - 1;
-    for i in 0..capacity {
+    for i in 0 .. capacity {
         v.push(EMPTY);
     }
     v
@@ -23,7 +22,7 @@ fn make_ht_keys(capacity: int) -> Vec<int> {
 fn make_ht_vals(capacity: int) -> Vec<int> {
     let v: Vec<int> = Vec::new();
     let NONE = 0 - 1;
-    for i in 0..capacity {
+    for i in 0 .. capacity {
         v.push(NONE);
     }
     v
@@ -62,7 +61,6 @@ fn mm_insert(ht_keys: Vec<int>, ht_heads: Vec<int>, node_vals: Vec<int>, node_ne
     let new_node = node_vals.len();
     node_vals.push(value);
     node_next.push(NONE);
-
     let k = ht_keys.get(slot);
     if k == EMPTY {
         // New key
@@ -157,7 +155,7 @@ fn mm_count(ht_keys: Vec<int>, ht_heads: Vec<int>, node_next: Vec<int>, key: int
 
 fn vec_contains(v: Vec<int>, val: int) -> bool {
     let len = v.len();
-    for i in 0..len {
+    for i in 0 .. len {
         if v.get(i) == val {
             return true;
         }
@@ -173,7 +171,6 @@ fn main() {
     let ht_heads = make_ht_vals(cap);
     let node_vals: Vec<int> = Vec::new();
     let node_next: Vec<int> = Vec::new();
-
     // Test 1: Insert multiple values for same key
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 1, 10);
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 1, 20);
@@ -186,7 +183,6 @@ fn main() {
         println("FAIL: insert multiple values");
         failed = failed + 1;
     }
-
     // Test 2: Get all values for a key
     let r1: Vec<int> = Vec::new();
     let gc1 = mm_get_all(ht_keys, ht_heads, node_vals, node_next, 1, r1);
@@ -212,7 +208,6 @@ fn main() {
         println("FAIL: get all values");
         failed = failed + 1;
     }
-
     // Test 3: Different keys have separate value lists
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 2, 100);
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 2, 200);
@@ -230,7 +225,6 @@ fn main() {
         println("FAIL: separate key lists");
         failed = failed + 1;
     }
-
     // Test 4: Remove one value
     let removed = mm_remove_one(ht_keys, ht_heads, node_vals, node_next, 1, 20);
     if removed {
@@ -247,7 +241,6 @@ fn main() {
         println("FAIL: remove one value");
         failed = failed + 1;
     }
-
     // Test 5: Removed value no longer in list
     let r2: Vec<int> = Vec::new();
     let _ = mm_get_all(ht_keys, ht_heads, node_vals, node_next, 1, r2);
@@ -268,7 +261,6 @@ fn main() {
             failed = failed + 1;
         }
     }
-
     // Test 6: Remove non-existent value returns false
     let rem2 = mm_remove_one(ht_keys, ht_heads, node_vals, node_next, 1, 999);
     if rem2 {
@@ -278,7 +270,6 @@ fn main() {
         println("PASS: remove non-existent");
         passed = passed + 1;
     }
-
     // Test 7: Count for non-existent key
     let cn = mm_count(ht_keys, ht_heads, node_next, 999);
     if cn == 0 {
@@ -288,7 +279,6 @@ fn main() {
         println("FAIL: count non-existent key");
         failed = failed + 1;
     }
-
     // Test 8: Duplicate values allowed
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 3, 50);
     mm_insert(ht_keys, ht_heads, node_vals, node_next, 3, 50);
@@ -301,7 +291,6 @@ fn main() {
         println("FAIL: duplicate values allowed");
         failed = failed + 1;
     }
-
     // Summary
     println("---");
     print("Passed: ");

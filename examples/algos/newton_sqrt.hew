@@ -29,7 +29,6 @@ fn check(name: String, got: int, expected: int) -> int {
 fn main() {
     var passed = 0;
     var total = 0;
-
     total = total + 1;
     passed = passed + check("sqrt(0)=0", isqrt(0), 0);
     total = total + 1;
@@ -44,7 +43,6 @@ fn main() {
     passed = passed + check("sqrt(10000)=100", isqrt(10000), 100);
     total = total + 1;
     passed = passed + check("sqrt(2)=1 (floor)", isqrt(2), 1);
-
     println("---");
     print("Passed: ");
     print(passed);

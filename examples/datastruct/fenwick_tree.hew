@@ -1,6 +1,5 @@
 // Fenwick Tree (Binary Indexed Tree)
 // 1-indexed array for prefix sum queries and point updates
-
 fn fw_update(tree: Vec<i32>, n: i32, idx: i32, delta: i32) -> i32 {
     var i = idx;
     while i <= n {
@@ -14,7 +13,7 @@ fn fw_update(tree: Vec<i32>, n: i32, idx: i32, delta: i32) -> i32 {
         var tmp = i;
         var found = false;
         while !found {
-            if tmp - (tmp / 2) * 2 == 1 {
+            if tmp - tmp / 2 * 2 == 1 {
                 found = true;
             } else {
                 lsb = lsb * 2;
@@ -36,7 +35,7 @@ fn fw_query(tree: Vec<i32>, idx: i32) -> i32 {
         var tmp = i;
         var found = false;
         while !found {
-            if tmp - (tmp / 2) * 2 == 1 {
+            if tmp - tmp / 2 * 2 == 1 {
                 found = true;
             } else {
                 lsb = lsb * 2;
@@ -96,8 +95,10 @@ fn test_basic_prefix_sum() -> i32 {
             return 1;
         }
     }
-    print("FAIL: prefix sums s1="); print(s1);
-    print(" s2="); println(s2);
+    print("FAIL: prefix sums s1=");
+    print(s1);
+    print(" s2=");
+    println(s2);
     0
 }
 
@@ -118,16 +119,25 @@ fn test_range_query() -> i32 {
     // Range [1,1] = 1
     let r3 = fw_range_query(tree, 1, 1);
     var ok = true;
-    if r1 != 15 { ok = false; }
-    if r2 != 32 { ok = false; }
-    if r3 != 1 { ok = false; }
+    if r1 != 15 {
+        ok = false;
+    }
+    if r2 != 32 {
+        ok = false;
+    }
+    if r3 != 1 {
+        ok = false;
+    }
     if ok {
         println("PASS: range queries");
         1
     } else {
-        print("FAIL: ranges r1="); print(r1);
-        print(" r2="); print(r2);
-        print(" r3="); println(r3);
+        print("FAIL: ranges r1=");
+        print(r1);
+        print(" r2=");
+        print(r2);
+        print(" r3=");
+        println(r3);
         0
     }
 }
@@ -151,8 +161,10 @@ fn test_point_update() -> i32 {
             return 1;
         }
     }
-    print("FAIL: update before="); print(before);
-    print(" after="); println(after);
+    print("FAIL: update before=");
+    print(before);
+    print(" after=");
+    println(after);
     0
 }
 

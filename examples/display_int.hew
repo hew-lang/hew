@@ -1,0 +1,25 @@
+// Sample exercising user `impl Display for int` end-to-end through the
+// typechecker.  `hew check` resolves `x.fmt()` against the user impl;
+// `print(x)` continues to flow through the magic dyn-Display path
+// alongside the new dispatch.
+//
+// Codegen lowering of `x.fmt()` itself on a primitive receiver is
+// follow-up work and not exercised here — this sample exists so
+// `hew check` catches a typecheck regression if the dispatch path
+// breaks.
+impl Display for int {
+    fn fmt(val: int) -> String {
+
+        // Literal-only body so MLIR-gen has no symbol resolution work
+        // to do for the (unused) user impl beyond returning a String.
+        "user-impl"
+    }
+}
+
+fn main() {
+    let x: int = 42;
+    // `print` flows through the magic dyn-Display path and continues
+    // to render the integer; the user impl above coexists with that
+    // magic path.
+    print(x);
+}

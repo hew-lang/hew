@@ -3460,6 +3460,557 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
 }
 
 #[test]
+fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
+    // Stage A1: `impl Display for int` registers under the canonical `i64`
+    // key (the lowering name for `Ty::I64`) so receiver-keyed dispatch can
+    // find it later.  The literal AST string `int` must round-trip through
+    // `Ty::from_name` → `canonical_lowering_name` to agree with the
+    // dispatch site, which only ever sees a resolved `Ty`.
+    let source = r#"
+        pub trait Display {
+            fn fmt(val: Self) -> String;
+        }
+
+        impl Display for int {
+            fn fmt(n: int) -> String {
+                ""
+            }
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(test_registry());
+    let _output = checker.check_program(&parsed.program);
+
+    let methods = checker
+        .primitive_trait_impls
+        .get(&("i64".to_string(), "Display".to_string()))
+        .expect("primitive trait impl table should have entry for (i64, Display)");
+    let fmt_sig = methods
+        .get("fmt")
+        .expect("fmt method should be recorded for impl Display for int");
+    assert!(
+        fmt_sig.params.is_empty(),
+        "receiver should be filtered: {:?}",
+        fmt_sig.params
+    );
+    assert_eq!(fmt_sig.return_type, Ty::String);
+}
+
+#[test]
+fn impl_for_builtin_vec_populates_primitive_trait_impl_table() {
+    // Vec is a compiler-builtin generic with no `type_defs` entry; user
+    // impls on Vec must reach the side table the same way primitives do.
+    let source = r#"
+        pub trait Display {
+            fn fmt(val: Self) -> String;
+        }
+
+        impl Display for Vec<i32> {
+            fn fmt(v: Vec<i32>) -> String {
+                ""
+            }
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(test_registry());
+    let _output = checker.check_program(&parsed.program);
+
+    assert!(
+        checker
+            .primitive_trait_impls
+            .contains_key(&("Vec".to_string(), "Display".to_string())),
+        "primitive trait impl table should record impls keyed on the bare \
+         builtin generic name (Vec) regardless of element type"
+    );
+}
+
+#[test]
+fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
+    // The side table must stay empty for user-defined struct receivers —
+    // those flow through `type_defs` and would create duplicate dispatch
+    // paths if the helper accepted them.
+    let source = r#"
+        pub trait Display {
+            fn fmt(val: Self) -> String;
+        }
+
+        pub type MyType {
+            value: int;
+        }
+
+        impl Display for MyType {
+            fn fmt(m: MyType) -> String {
+                ""
+            }
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(test_registry());
+    let _output = checker.check_program(&parsed.program);
+
+    assert!(
+        checker.primitive_trait_impls.is_empty(),
+        "user struct impls must not leak into the primitive trait table: {:?}",
+        checker.primitive_trait_impls.keys().collect::<Vec<_>>()
+    );
+}
+
+/// Stage A2: receiver-kind dispatch matrix.
+///
+/// Each row exercises one canonical receiver kind (primitive or
+/// compiler-builtin generic) plus a user `impl Display for <kind>` and
+/// asserts that `x.fmt()` typechecks cleanly and records a
+/// `MethodCallReceiverKind::PrimitiveTraitImpl` metadata entry.  The
+/// metadata is the checker→codegen output-boundary contract; if a
+/// receiver kind dispatches via the new path but the metadata is not
+/// recorded, downstream codegen has no way to find the resolved impl
+/// (per the `checker-output-boundary` P0 lesson).
+fn assert_primitive_trait_dispatch_records_metadata(
+    source: &str,
+    expected_canonical: &str,
+    expected_trait: &str,
+) {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors for source `{source}`: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "expected clean type check for source:\n{source}\n\nbut got: {:?}",
+        output.errors
+    );
+    let any = output
+        .method_call_receiver_kinds
+        .values()
+        .any(|kind| match kind {
+            MethodCallReceiverKind::PrimitiveTraitImpl {
+                trait_name,
+                canonical_receiver,
+            } => trait_name == expected_trait && canonical_receiver == expected_canonical,
+            _ => false,
+        });
+    assert!(
+        any,
+        "expected PrimitiveTraitImpl{{trait_name={expected_trait}, canonical_receiver={expected_canonical}}} \
+         in method_call_receiver_kinds, found: {:?}",
+        output.method_call_receiver_kinds.values().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_int_receiver() {
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for int {
+                fn fmt(n: int) -> String { "" }
+            }
+            fn main() {
+                let x: int = 42;
+                let _ = x.fmt();
+            }
+        "#,
+        "i64",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_bool_receiver() {
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for bool {
+                fn fmt(b: bool) -> String { "" }
+            }
+            fn main() {
+                let b: bool = true;
+                let _ = b.fmt();
+            }
+        "#,
+        "bool",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_char_receiver() {
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for char {
+                fn fmt(c: char) -> String { "" }
+            }
+            fn main() {
+                let c: char = 'a';
+                let _ = c.fmt();
+            }
+        "#,
+        "char",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_i32_receiver() {
+    // Width-aliased integer kinds dispatch through the same canonical key
+    // as their `Ty::I32` variant — `i32` here, not `i64`.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for i32 {
+                fn fmt(n: i32) -> String { "" }
+            }
+            fn main() {
+                let n: i32 = 7;
+                let _ = n.fmt();
+            }
+        "#,
+        "i32",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_string_receiver_via_method_using_trait_method() {
+    // String routes through `check_string_method`'s not-found arm, not the
+    // wildcard.  This sentinel guarantees that path consults the side table
+    // for a method name that does NOT collide with a builtin String method
+    // (so the not-found branch is the one that runs).  We use a Display
+    // method named `to_display_string` to avoid the impl-on-String body
+    // type-check issue tracked separately (see issue #1565 follow-ups).
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait MyShow { fn show(val: Self) -> i64; }
+            impl MyShow for String {
+                fn show(s: String) -> i64 { 0 }
+            }
+            fn main() {
+                let s: String = "hi";
+                let _: i64 = s.show();
+            }
+        "#,
+        "string",
+        "MyShow",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_vec_receiver() {
+    // Vec routes through `check_vec_method`'s not-found arm.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for Vec<i32> {
+                fn fmt(v: Vec<i32>) -> String { "" }
+            }
+            fn main() {
+                let v: Vec<i32> = Vec::new();
+                let _ = v.fmt();
+            }
+        "#,
+        "Vec",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
+    // R5 mitigation: the side table is consulted only when the compiler
+    // builtin returns "no match".  Numeric width-conversion methods like
+    // `.to_i32()` flow through their own dispatch arm (methods.rs around
+    // the `is_numeric() && starts_with("to_")` guard).  With a user
+    // `Display for int` in scope, calling the builtin must still resolve
+    // to `Ty::I32`, not be hijacked into the user trait's `fmt` method.
+    let source = r#"
+        pub trait Display { fn fmt(val: Self) -> String; }
+        impl Display for int {
+            fn fmt(n: int) -> String { "" }
+        }
+        fn main() {
+            let n: int = 7;
+            let _: i32 = n.to_i32();
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "builtin int.to_i32 regressed under Stage A2 dispatch: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_ufcs_form_for_int_receiver() {
+    // Stage A3: `Display::fmt(x)` on a primitive receiver must resolve
+    // identically to `x.fmt()`.  Today the trait method registers in
+    // `fn_sigs` with the receiver param stripped, so the existing
+    // `fn_sigs` lookup mis-arities the call (0 expected vs 1 supplied).
+    // The UFCS dispatcher intercepts before that lookup.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for int {
+                fn fmt(n: int) -> String { "" }
+            }
+            fn main() {
+                let x: int = 42;
+                let _ = Display::fmt(x);
+            }
+        "#,
+        "i64",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_resolves_ufcs_form_with_extra_args() {
+    // UFCS receiver-and-trailing-args case: `Trait::method(receiver,
+    // arg1, arg2)`.  The receiver-stripped sig has params=[String], so
+    // the call takes 2 args total (receiver + arg1) and the sig is
+    // applied to the trailing args after the receiver is consumed.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Show { fn show(val: Self, suffix: String) -> String; }
+            impl Show for int {
+                fn show(n: int, suffix: String) -> String { suffix }
+            }
+            fn main() {
+                let x: int = 42;
+                let _: String = Show::show(x, "!");
+            }
+        "#,
+        "i64",
+        "Show",
+    );
+}
+
+#[test]
+fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
+    // Stage A4 regression sentinel: `pub type Foo` with `impl Display for
+    // Foo` must continue to dispatch through the existing `type_defs`
+    // method registry — it must NOT be hijacked into the primitive
+    // side table (the primitive table only houses receivers that
+    // `type_defs` cannot reach).  The receiver-kind metadata for the
+    // call must be `NamedTypeInstance`, not `PrimitiveTraitImpl`.
+    let source = r#"
+        pub trait Display { fn fmt(val: Self) -> String; }
+        pub type Foo {
+            value: int;
+        }
+        impl Display for Foo {
+            fn fmt(f: Foo) -> String { "" }
+        }
+        fn main() {
+            let f: Foo = Foo { value: 1 };
+            let _: String = f.fmt();
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "user `pub type` + impl Display dispatch regressed: {:?}",
+        output.errors
+    );
+    let dispatched_via_named = output.method_call_receiver_kinds.values().any(|kind| {
+        matches!(
+            kind,
+            MethodCallReceiverKind::NamedTypeInstance { type_name } if type_name == "Foo"
+        )
+    });
+    let leaked_into_primitive_table = output
+        .method_call_receiver_kinds
+        .values()
+        .any(|kind| matches!(kind, MethodCallReceiverKind::PrimitiveTraitImpl { .. }));
+    assert!(
+        dispatched_via_named,
+        "expected NamedTypeInstance{{type_name=Foo}} metadata for f.fmt(); got: {:?}",
+        output
+            .method_call_receiver_kinds
+            .values()
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !leaked_into_primitive_table,
+        "user struct dispatch leaked into primitive trait table: {:?}",
+        output
+            .method_call_receiver_kinds
+            .values()
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn ufcs_on_pub_type_receiver_does_not_record_primitive_trait_impl_metadata() {
+    // Regression for the synthesize-before-short-circuit ordering bug.
+    //
+    // When `Display::fmt(f)` is called and `f` is a `pub type` (non-primitive)
+    // receiver, the UFCS helper must return `None` without recording
+    // `PrimitiveTraitImpl` metadata.  Before the fix, the helper could
+    // still synthesise the first arg and — on a route that should belong
+    // entirely to the existing type-def path — leave stale side-effects.
+    //
+    // The short-circuit added by this fix ensures that when `Display` has
+    // no primitive impls registered (the trait is purely user-defined here),
+    // the helper exits before synthesising `first_arg`, preventing any
+    // double-processing of the receiver expression.
+    //
+    // `UserDisplay` is declared without any primitive blanket impls, so
+    // the helper returns `None` immediately.  The test asserts no
+    // `PrimitiveTraitImpl` metadata is recorded — the call is handled
+    // entirely by the receiver-form dispatch path.
+    let source = r#"
+        pub trait UserDisplay { fn show(val: Self) -> String; }
+        pub type Widget { value: int; }
+        impl UserDisplay for Widget {
+            fn show(w: Widget) -> String { "" }
+        }
+        fn main() {
+            let w: Widget = Widget { value: 1 };
+            let _: String = w.show();
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors for UserDisplay on pub type: {:?}",
+        output.errors
+    );
+    let leaked_primitive_meta = output
+        .method_call_receiver_kinds
+        .values()
+        .any(|kind| matches!(kind, MethodCallReceiverKind::PrimitiveTraitImpl { .. }));
+    assert!(
+        !leaked_primitive_meta,
+        "UserDisplay (no primitive impls) must not produce PrimitiveTraitImpl metadata: {:?}",
+        output
+            .method_call_receiver_kinds
+            .values()
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn ufcs_over_applied_call_emits_exactly_one_arity_diagnostic() {
+    // Regression for the double-arity-diagnostic bug.
+    //
+    // `Display::fmt(x, extra)` should produce exactly one arity error.
+    // The old code ran both an explicit outer `check_arity(args, params+1)`
+    // and then `apply_instantiated_call_signature` which internally calls
+    // `check_arity(trailing_args, params)` via PositionalOnly — two
+    // different checks for the same call, two different messages.
+    //
+    // The fix removes the redundant outer check_arity, leaving only the
+    // inner one, matching the receiver-form path's behaviour.
+    let source = r#"
+        pub trait Display { fn fmt(val: Self) -> String; }
+        impl Display for int {
+            fn fmt(n: int) -> String { "" }
+        }
+        fn main() {
+            let x: int = 42;
+            let _ = Display::fmt(x, "extra");
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    let arity_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("argument"))
+        .collect();
+    assert_eq!(
+        arity_errors.len(),
+        1,
+        "expected exactly 1 arity diagnostic for Display::fmt(x, extra), got {}: {:?}",
+        arity_errors.len(),
+        arity_errors
+    );
+}
+
+#[test]
+fn primitive_impl_dispatch_unknown_method_still_emits_error() {
+    // When no impl matches and no builtin method exists, the existing
+    // "no method `<name>` on <kind>" diagnostic must still fire — the
+    // helper returns None so the existing reporter runs.
+    let source = r#"
+        pub trait Display { fn fmt(val: Self) -> String; }
+        impl Display for int {
+            fn fmt(n: int) -> String { "" }
+        }
+        fn main() {
+            let x: int = 42;
+            let _ = x.no_such_method();
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("no method `no_such_method`")),
+        "expected `no method` diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items() {
     let mut root = hew_parser::parse(
         r"

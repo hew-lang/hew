@@ -1004,6 +1004,11 @@ impl Checker {
                 self.make_vec_type(Ty::Char, span)
             }
             _ => {
+                if let Some(ret_ty) =
+                    self.try_dispatch_primitive_trait_method(&Ty::String, method, args, span)
+                {
+                    return ret_ty;
+                }
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
@@ -1136,6 +1141,17 @@ impl Checker {
                 Ty::Bool
             }
             _ => {
+                // Receiver kind for impl table lookup: bare `HashMap` (the
+                // canonical_primitive_or_builtin_key strips type args).
+                let receiver = Ty::Named {
+                    name: "HashMap".to_string(),
+                    args: vec![],
+                };
+                if let Some(ret_ty) =
+                    self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
+                {
+                    return ret_ty;
+                }
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
@@ -1221,6 +1237,15 @@ impl Checker {
                 Ty::Unit
             }
             _ => {
+                let receiver = Ty::Named {
+                    name: "HashSet".to_string(),
+                    args: vec![],
+                };
+                if let Some(ret_ty) =
+                    self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
+                {
+                    return ret_ty;
+                }
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
@@ -1442,6 +1467,15 @@ impl Checker {
                 self.subst.resolve(&acc_ty)
             }
             _ => {
+                let receiver = Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![],
+                };
+                if let Some(ret_ty) =
+                    self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
+                {
+                    return ret_ty;
+                }
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
@@ -1463,6 +1497,138 @@ impl Checker {
             return Ty::Error;
         }
         result
+    }
+
+    /// Stage A2: dispatch a method call on a primitive or compiler-builtin
+    /// generic receiver to a user `impl Trait for <kind>` body via the
+    /// `primitive_trait_impls` side table populated in Stage A1.
+    ///
+    /// Receiver-keyed (NOT trait-name-keyed): the lookup goes through
+    /// `lookup_primitive_trait_method`, which keys on the canonical receiver
+    /// kind first, so the surviving five magic `dyn Display` callers
+    /// (`assert_eq` / `assert_ne` / `to_string` / `len` / `stop`) cannot be
+    /// hijacked by trait-name string matching.
+    ///
+    /// Returns `Some(return_ty)` after applying argument checks and recording
+    /// the dispatch metadata for codegen, or `None` when no impl matches and
+    /// the caller should emit its own "no method on X" diagnostic so existing
+    /// "no method on Vec" / "no method on string" wording survives.
+    ///
+    /// Limitation: if two distinct traits each define a method of the same
+    /// name on the same receiver kind, this returns the first match the
+    /// table iteration encounters.  Acceptable today (only `Display` is in
+    /// scope per Phase 1 of #1565), but Phase 2 (`Debug`) must add a
+    /// disambiguation rule before introducing same-name conflicts.
+    fn try_dispatch_primitive_trait_method(
+        &mut self,
+        resolved_receiver: &Ty,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let canonical = Checker::canonical_primitive_or_builtin_key(resolved_receiver)?;
+        let (trait_name, sig) = self.lookup_primitive_trait_method(resolved_receiver, method)?;
+        let applied_sig = self.apply_instantiated_call_signature(
+            &sig,
+            None,
+            args,
+            span,
+            SignatureArgApplication::PositionalOnly {
+                arity_context: format!("method '{method}'"),
+            },
+            true,
+        );
+        self.record_method_call_receiver_kind(
+            span,
+            MethodCallReceiverKind::PrimitiveTraitImpl {
+                trait_name,
+                canonical_receiver: canonical,
+            },
+        );
+        Some(applied_sig.return_type)
+    }
+
+    /// Stage A3: UFCS form of [`Self::try_dispatch_primitive_trait_method`].
+    ///
+    /// `Display::fmt(x)` registers `Display::fmt` in `fn_sigs` with the
+    /// receiver param stripped (the `Trait::method` key triggers the
+    /// is-method branch in `register_fn_sig_with_name`), so the call site
+    /// would mis-arity (sig.params=[] vs args=[x]).  This helper detects
+    /// the trait-qualified form, synthesizes the first arg as the
+    /// receiver, and consults the same side table that powers
+    /// receiver-form dispatch.  The first arg is type-checked against the
+    /// canonical receiver kind itself; remaining args are type-checked
+    /// against the registered sig's params (already receiver-stripped at
+    /// registration time).
+    ///
+    /// Returns `None` when the receiver is not a primitive or builtin
+    /// generic, or when no impl exists for the (kind, trait, method)
+    /// triple.  The caller falls through to the existing trait-qualified
+    /// dispatch in `calls.rs`, which keeps emitting today's diagnostics.
+    pub(super) fn try_dispatch_ufcs_primitive_trait_method(
+        &mut self,
+        trait_name: &str,
+        method_name: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let first_arg = args.first()?;
+        // Short-circuit before synthesising first_arg: if trait_name has no
+        // primitive impls registered at all, return immediately.  This
+        // prevents the fallback trait-qualified path from synthesising
+        // first_arg a second time when the helper was never going to handle
+        // the dispatch.  Synthesis of first_arg is deferred to after this
+        // guard so it only happens when there is a real chance we will own
+        // the call.
+        let has_primitive_impl = self
+            .primitive_trait_impls
+            .keys()
+            .any(|(_, tn)| tn == trait_name);
+        if !has_primitive_impl {
+            return None;
+        }
+        let (first_expr, first_sp) = first_arg.expr();
+        // Synthesize the receiver arg's type so we can route to the
+        // canonical primitive/builtin-generic key.
+        let receiver_ty = self.synthesize(first_expr, first_sp);
+        let resolved_receiver = self.subst.resolve(&receiver_ty);
+        let canonical = Checker::canonical_primitive_or_builtin_key(&resolved_receiver)?;
+        // Lookup keyed on the canonical receiver kind + trait name +
+        // method.  We call into the table directly (not the
+        // walk-every-trait helper) because the trait name is known at
+        // this call site and there is no ambiguity to resolve.
+        let sig = self
+            .primitive_trait_impls
+            .get(&(canonical.clone(), trait_name.to_string()))
+            .and_then(|methods| methods.get(method_name))
+            .cloned()?;
+        // Do not add an outer check_arity here.  apply_instantiated_call_signature
+        // already calls check_arity on trailing_args via PositionalOnly, matching
+        // the receiver-form path at try_dispatch_primitive_trait_method.  An
+        // outer check on all args (receiver + trailing) would fire a second
+        // arity diagnostic for the same call — e.g. Display::fmt(x, extra)
+        // would emit both "expected 1 arg" and "expected 0 trailing args".
+        // Type-check remaining args against the (receiver-stripped)
+        // params using the same machinery as method-form dispatch.
+        let trailing_args = &args[1.min(args.len())..];
+        let applied = self.apply_instantiated_call_signature(
+            &sig,
+            None,
+            trailing_args,
+            span,
+            SignatureArgApplication::PositionalOnly {
+                arity_context: format!("method '{trait_name}::{method_name}'"),
+            },
+            true,
+        );
+        self.record_method_call_receiver_kind(
+            span,
+            MethodCallReceiverKind::PrimitiveTraitImpl {
+                trait_name: trait_name.to_string(),
+                canonical_receiver: canonical,
+            },
+        );
+        Some(applied.return_type)
     }
 
     #[expect(
@@ -1689,6 +1855,11 @@ impl Checker {
                     Ty::Unit
                 }
                 _ => {
+                    if let Some(ret_ty) =
+                        self.try_dispatch_primitive_trait_method(&Ty::Bytes, method, args, span)
+                    {
+                        return ret_ty;
+                    }
                     for arg in args {
                         let (expr, sp) = arg.expr();
                         self.synthesize(expr, sp);
@@ -2354,6 +2525,20 @@ impl Checker {
                 Ty::Error
             }
             _ => {
+                // Stage A2: before reporting "no method on X", consult the
+                // user-impl side table for primitive / compiler-builtin
+                // generic receivers.  This catches `Ty::I64`, `Ty::Bool`,
+                // `Ty::Char`, the integer/float width aliases, and bare
+                // `Vec`/`HashMap`/`HashSet` references that fall through
+                // every earlier arm.  Per-receiver-kind sites that route
+                // through `check_*_method` (Vec, HashMap, HashSet, String,
+                // Bytes) consult the same table at their own not-found
+                // branches so dispatch is exhaustive.
+                if let Some(ret_ty) =
+                    self.try_dispatch_primitive_trait_method(&resolved, method, args, span)
+                {
+                    return ret_ty;
+                }
                 for arg in args {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);

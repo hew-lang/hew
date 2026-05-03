@@ -12,7 +12,7 @@ import std::string;
 // ── Bytes helpers ─────────────────────────────────────────────────────────────
 fn bytes_slice(data: bytes, start: i32, end: i32) -> _ {
     let result = bytes::new();
-    for i in start..end {
+    for i in start .. end {
         result.push(data.get(i));
     }
     result
@@ -73,7 +73,7 @@ fn read_varint_len(data: bytes, offset: i32) -> i32 {
 // Push length-prefixed MQTT string.
 fn push_mqtt_str(buf: bytes, s: String) {
     push_u16(buf, string_length(s) as i32);
-    for i in 0..string_length(s) {
+    for i in 0 .. string_length(s) {
         buf.push(s.char_at(i) as i32);
     }
 }
@@ -83,7 +83,7 @@ fn read_mqtt_str(data: bytes, offset: i32) -> String {
     let len = read_u16(data, offset);
     let s = bytes::new();
     let start = offset + 2;
-    for i in start..start + len {
+    for i in start .. start + len {
         s.push(data.get(i));
     }
     s.to_string()
@@ -238,7 +238,8 @@ actor ClientHandler {
                         connected = false;
                         println(f"[mqtt] DISCONNECT {client_id}");
                     },
-                    _ => {},
+                    _ => {
+                    },
                 }
                 if connected {
                     buf = bytes_slice(buf, total, buf_len as i32);
@@ -284,11 +285,11 @@ actor Router {
         // Fan out to all matching subscribers. Inline build_publish so the
         // expressions passed to deliver() are Expr::Call (not Identifier),
         // which avoids the move-at-actor-boundary rule.
-        for i in 0..sub_topics.len() {
+        for i in 0 .. sub_topics.len() {
             if sub_topics.get(i) == topic {
                 let sub_conn = sub_conns.get(i);
                 let sub_q = sub_qos.get(i);
-                for j in 0..client_conns.len() {
+                for j in 0 .. client_conns.len() {
                     if client_conns.get(j) == sub_conn {
                         let target = client_actors.get(j);
                         target.deliver(build_publish(topic, payload, sub_q, packet_id));
@@ -303,7 +304,7 @@ actor Router {
         var new_topics: Vec<String> = Vec::new();
         var new_conns: Vec<Connection> = Vec::new();
         var new_qos: Vec<i32> = Vec::new();
-        for i in 0..sub_topics.len() {
+        for i in 0 .. sub_topics.len() {
             if sub_conns.get(i) == conn {
                 if sub_topics.get(i) == topic {
                     continue;
@@ -322,7 +323,7 @@ actor Router {
         // Remove from client registry
         var new_conns: Vec<Connection> = Vec::new();
         var new_actors: Vec<ActorRef<ClientHandler>> = Vec::new();
-        for i in 0..client_conns.len() {
+        for i in 0 .. client_conns.len() {
             if client_conns.get(i) != conn {
                 new_conns.push(client_conns.get(i));
                 new_actors.push(client_actors.get(i));
@@ -334,7 +335,7 @@ actor Router {
         var new_sub_topics: Vec<String> = Vec::new();
         var new_sub_conns: Vec<Connection> = Vec::new();
         var new_sub_qos: Vec<i32> = Vec::new();
-        for j in 0..sub_conns.len() {
+        for j in 0 .. sub_conns.len() {
             if sub_conns.get(j) != conn {
                 new_sub_topics.push(sub_topics.get(j));
                 new_sub_conns.push(sub_conns.get(j));

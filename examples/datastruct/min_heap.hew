@@ -1,6 +1,5 @@
 // Min-Heap using implicit array representation
 // Parent of i = (i-1)/2, left child = 2*i+1, right child = 2*i+2
-
 fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
     heap.push(val);
     // Sift up
@@ -94,20 +93,44 @@ fn test_extract_min_order() -> i32 {
     let e6 = heap_pop(heap);
     let e7 = heap_pop(heap);
     var ok = true;
-    if e1 != 1 { ok = false; }
-    if e2 != 2 { ok = false; }
-    if e3 != 3 { ok = false; }
-    if e4 != 4 { ok = false; }
-    if e5 != 5 { ok = false; }
-    if e6 != 6 { ok = false; }
-    if e7 != 7 { ok = false; }
+    if e1 != 1 {
+        ok = false;
+    }
+    if e2 != 2 {
+        ok = false;
+    }
+    if e3 != 3 {
+        ok = false;
+    }
+    if e4 != 4 {
+        ok = false;
+    }
+    if e5 != 5 {
+        ok = false;
+    }
+    if e6 != 6 {
+        ok = false;
+    }
+    if e7 != 7 {
+        ok = false;
+    }
     if ok {
         println("PASS: extract_min returns sorted order");
         1
     } else {
         print("FAIL: extract order: ");
-        print(e1); print(" "); print(e2); print(" "); print(e3); print(" ");
-        print(e4); print(" "); print(e5); print(" "); print(e6); print(" ");
+        print(e1);
+        print(" ");
+        print(e2);
+        print(" ");
+        print(e3);
+        print(" ");
+        print(e4);
+        print(" ");
+        print(e5);
+        print(" ");
+        print(e6);
+        print(" ");
         println(e7);
         0
     }
@@ -123,7 +146,7 @@ fn test_heap_property() -> i32 {
     let _ = heap_push(heap, 8);
     // Verify heap property: parent <= children
     var ok = true;
-    for i in 0..heap.len() {
+    for i in 0 .. heap.len() {
         let left = 2 * i + 1;
         let right = 2 * i + 2;
         if left < heap.len() {
@@ -176,11 +199,21 @@ fn test_duplicates() -> i32 {
     let e4 = heap_pop(heap);
     let e5 = heap_pop(heap);
     var ok = true;
-    if e1 != 1 { ok = false; }
-    if e2 != 1 { ok = false; }
-    if e3 != 2 { ok = false; }
-    if e4 != 3 { ok = false; }
-    if e5 != 3 { ok = false; }
+    if e1 != 1 {
+        ok = false;
+    }
+    if e2 != 1 {
+        ok = false;
+    }
+    if e3 != 2 {
+        ok = false;
+    }
+    if e4 != 3 {
+        ok = false;
+    }
+    if e5 != 3 {
+        ok = false;
+    }
     if ok {
         println("PASS: duplicates handled");
         1

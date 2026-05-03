@@ -4,7 +4,6 @@
 // factory function.  Because this file is a peer of shapes.hew it
 // contributes directly to the `shapes` module: callers never write
 // `shapes.circle.Circle`, they just use `Circle` after `import shapes;`.
-
 pub type Circle {
     radius: int;
 }

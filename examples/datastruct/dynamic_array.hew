@@ -1,13 +1,12 @@
 // Dynamic Array - array with capacity tracking and growth pattern
 // Layout: Vec<int> where index 0 = logical size, index 1 = capacity, rest is data
 // Data starts at index 2
-
 fn da_new(initial_cap: int) -> Vec<int> {
     let arr: Vec<int> = Vec::new();
-    arr.push(0);            // index 0: logical size
-    arr.push(initial_cap);  // index 1: capacity
+    arr.push(0); // index 0: logical size
+    arr.push(initial_cap); // index 1: capacity
     // Pre-allocate slots
-    for i in 0..initial_cap {
+    for i in 0 .. initial_cap {
         arr.push(0);
     }
     arr
@@ -25,7 +24,7 @@ fn da_grow(arr: Vec<int>) {
     let old_cap = arr.get(1);
     let new_cap = old_cap * 2;
     // Add more slots
-    for i in 0..old_cap {
+    for i in 0 .. old_cap {
         arr.push(0);
     }
     arr.set(1, new_cap);
@@ -69,7 +68,6 @@ fn run_test(name: String, passed: int) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-
     // Test 1: new array, size=0, cap=4
     total = total + 1;
     let arr = da_new(4);
@@ -131,7 +129,11 @@ fn main() {
     // Test 6: set modifies value
     total = total + 1;
     da_set(arr, 2, 99);
-    let r6 = if da_get(arr, 2) == 99 { 1 } else { 0 };
+    let r6 = if da_get(arr, 2) == 99 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("set modifies value", r6);
 
     // Test 7: pop
@@ -148,7 +150,7 @@ fn main() {
     // Test 8: multiple growth steps
     total = total + 1;
     let arr2 = da_new(2);
-    for i in 0..20 {
+    for i in 0 .. 20 {
         da_push(arr2, i);
     }
     var r8 = 0;

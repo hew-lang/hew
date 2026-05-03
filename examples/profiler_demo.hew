@@ -24,7 +24,7 @@ fn main() {
     println("");
     let counter = spawn Counter;
     // Send 3000 messages.
-    for i in 0..3000 {
+    for i in 0 .. 3000 {
         counter.tick();
     }
     // Give actors time to process.

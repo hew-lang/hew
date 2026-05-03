@@ -23,9 +23,9 @@ const ITERS: int = 100000;
 
 fn main() {
     var checksum = 0;
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         let arr: Vec<int> = Vec::new();
-        for k in 0..1000 {
+        for k in 0 .. 1000 {
             arr.push(k);
         }
         checksum = checksum + rotate_array(arr, 337);

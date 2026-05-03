@@ -1,7 +1,6 @@
 // Segment Tree for range sum queries
 // Uses array-based representation: node i has children 2*i+1 and 2*i+2
 // Tree stored in a flat array of size 4*n
-
 fn seg_build(tree: Vec<i32>, arr: Vec<i32>, node: i32, start: i32, end: i32) -> i32 {
     if start == end {
         tree.set(node, arr.get(start));
@@ -49,7 +48,7 @@ fn seg_update(tree: Vec<i32>, node: i32, start: i32, end: i32, idx: i32, val: i3
 
 fn init_tree(size: i32) -> Vec<i32> {
     let tree: Vec<i32> = Vec::new();
-    for i in 0..4 * size {
+    for i in 0 .. 4 * size {
         tree.push(0);
     }
     tree
@@ -57,7 +56,12 @@ fn init_tree(size: i32) -> Vec<i32> {
 
 fn test_basic_query() -> i32 {
     let arr: Vec<i32> = Vec::new();
-    arr.push(1); arr.push(3); arr.push(5); arr.push(7); arr.push(9); arr.push(11);
+    arr.push(1);
+    arr.push(3);
+    arr.push(5);
+    arr.push(7);
+    arr.push(9);
+    arr.push(11);
     let n = arr.len();
     let tree = init_tree(n);
     let _ = seg_build(tree, arr, 0, 0, n - 1);
@@ -76,7 +80,12 @@ fn test_basic_query() -> i32 {
 
 fn test_partial_query() -> i32 {
     let arr: Vec<i32> = Vec::new();
-    arr.push(1); arr.push(3); arr.push(5); arr.push(7); arr.push(9); arr.push(11);
+    arr.push(1);
+    arr.push(3);
+    arr.push(5);
+    arr.push(7);
+    arr.push(9);
+    arr.push(11);
     let n = arr.len();
     let tree = init_tree(n);
     let _ = seg_build(tree, arr, 0, 0, n - 1);
@@ -87,23 +96,37 @@ fn test_partial_query() -> i32 {
     // Query [2,4] => 5+7+9 = 21
     let s3 = seg_query(tree, 0, 0, n - 1, 2, 4);
     var ok = true;
-    if s1 != 15 { ok = false; }
-    if s2 != 1 { ok = false; }
-    if s3 != 21 { ok = false; }
+    if s1 != 15 {
+        ok = false;
+    }
+    if s2 != 1 {
+        ok = false;
+    }
+    if s3 != 21 {
+        ok = false;
+    }
     if ok {
         println("PASS: segment tree partial queries");
         1
     } else {
-        print("FAIL: partial queries s1="); print(s1);
-        print(" s2="); print(s2);
-        print(" s3="); println(s3);
+        print("FAIL: partial queries s1=");
+        print(s1);
+        print(" s2=");
+        print(s2);
+        print(" s3=");
+        println(s3);
         0
     }
 }
 
 fn test_point_update() -> i32 {
     let arr: Vec<i32> = Vec::new();
-    arr.push(1); arr.push(3); arr.push(5); arr.push(7); arr.push(9); arr.push(11);
+    arr.push(1);
+    arr.push(3);
+    arr.push(5);
+    arr.push(7);
+    arr.push(9);
+    arr.push(11);
     let n = arr.len();
     let tree = init_tree(n);
     let _ = seg_build(tree, arr, 0, 0, n - 1);
@@ -119,8 +142,10 @@ fn test_point_update() -> i32 {
             return 1;
         }
     }
-    print("FAIL: update total="); print(total);
-    print(" partial="); println(partial);
+    print("FAIL: update total=");
+    print(total);
+    print(" partial=");
+    println(partial);
     0
 }
 
@@ -141,7 +166,10 @@ fn test_single_element() -> i32 {
 
 fn test_multiple_updates() -> i32 {
     let arr: Vec<i32> = Vec::new();
-    arr.push(2); arr.push(4); arr.push(6); arr.push(8);
+    arr.push(2);
+    arr.push(4);
+    arr.push(6);
+    arr.push(8);
     let n = arr.len();
     let tree = init_tree(n);
     let _ = seg_build(tree, arr, 0, 0, n - 1);
@@ -158,8 +186,10 @@ fn test_multiple_updates() -> i32 {
             return 1;
         }
     }
-    print("FAIL: multiple updates total="); print(total);
-    print(" partial="); println(partial);
+    print("FAIL: multiple updates total=");
+    print(total);
+    print(" partial=");
+    println(partial);
     0
 }
 

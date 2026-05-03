@@ -21,7 +21,8 @@
 ///
 /// Created by `regex.new(pattern)`. Call `free()` before the value goes out of
 /// scope; dropping without `free()` is a resource leak.
-type Pattern {}
+type Pattern {
+}
 
 /// Methods available on a compiled `Pattern`.
 trait PatternMethods {
@@ -67,24 +68,41 @@ trait PatternMethods {
 
 impl PatternMethods for Pattern {
     /// Test whether the pattern matches anywhere in the input string.
-    fn is_match(pat: Pattern, input: String) -> bool { unsafe { hew_regex_is_match(pat, input) } }
+    fn is_match(pat: Pattern, input: String) -> bool {
+        unsafe {
+            hew_regex_is_match(pat, input)
+        }
+    }
     /// Find the first match of the pattern in the input string.
-    fn find(pat: Pattern, input: String) -> String { unsafe { hew_regex_find(pat, input) } }
+    fn find(pat: Pattern, input: String) -> String {
+        unsafe {
+            hew_regex_find(pat, input)
+        }
+    }
     /// Replace all occurrences of the pattern with the replacement string.
     fn replace(pat: Pattern, input: String, replacement: String) -> String {
-        unsafe { hew_regex_replace(pat, input, replacement) }
+        unsafe {
+            hew_regex_replace(pat, input, replacement)
+        }
     }
     /// Clone the compiled pattern, producing an independent copy.
-    fn clone(pat: Pattern) -> Pattern { unsafe { hew_regex_clone(pat) } }
+    fn clone(pat: Pattern) -> Pattern {
+        unsafe {
+            hew_regex_clone(pat)
+        }
+    }
     /// Canonical release path for `Pattern`.
     ///
     /// Callers MUST invoke `free()` before the value goes out of scope;
     /// dropping without `free()` is a resource leak.
-    fn free(pat: Pattern) { unsafe { hew_regex_free(pat) }; }
+    fn free(pat: Pattern) {
+        unsafe {
+            hew_regex_free(pat)
+        };
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Compile a regular expression pattern.
 ///
 /// Panics if the pattern syntax is invalid.
@@ -96,11 +114,12 @@ impl PatternMethods for Pattern {
 /// email_re.free();
 /// ```
 pub fn new(pattern: String) -> Pattern {
-    unsafe { hew_regex_new(pattern) }
+    unsafe {
+        hew_regex_new(pattern)
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_regex_new(pattern: String) -> Pattern;
     fn hew_regex_is_match(re: Pattern, input: String) -> bool;

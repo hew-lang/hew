@@ -1,10 +1,17 @@
 // Singly Linked List using Vec<i32> with index-based pointers
 // Node layout: nodes[i*2] = value, nodes[i*2+1] = next
 // NIL sentinel = -1
+fn node_val(nodes: Vec<i32>, idx: i32) -> i32 {
+    nodes.get(idx * 2)
+}
 
-fn node_val(nodes: Vec<i32>, idx: i32) -> i32 { nodes.get(idx * 2) }
-fn node_next(nodes: Vec<i32>, idx: i32) -> i32 { nodes.get(idx * 2 + 1) }
-fn set_next(nodes: Vec<i32>, idx: i32, nxt: i32) { nodes.set(idx * 2 + 1, nxt); }
+fn node_next(nodes: Vec<i32>, idx: i32) -> i32 {
+    nodes.get(idx * 2 + 1)
+}
+
+fn set_next(nodes: Vec<i32>, idx: i32, nxt: i32) {
+    nodes.set(idx * 2 + 1, nxt);
+}
 
 fn alloc_node(nodes: Vec<i32>, val: i32) -> i32 {
     let idx = nodes.len() / 2;
@@ -36,7 +43,9 @@ fn append(nodes: Vec<i32>, head: i32, val: i32) -> i32 {
 
 // Delete first occurrence of val, returns new head
 fn delete_val(nodes: Vec<i32>, head: i32, val: i32) -> i32 {
-    if head == -1 { return -1; }
+    if head == -1 {
+        return -1;
+    }
     if node_val(nodes, head) == val {
         return node_next(nodes, head);
     }
@@ -86,15 +95,18 @@ fn traverse(nodes: Vec<i32>, head: i32, result: Vec<i32>) {
 }
 
 fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
-    if a.len() != b.len() { return 0; }
-    for i in 0..a.len() {
-        if a.get(i) != b.get(i) { return 0; }
+    if a.len() != b.len() {
+        return 0;
+    }
+    for i in 0 .. a.len() {
+        if a.get(i) != b.get(i) {
+            return 0;
+        }
     }
     1
 }
 
 // --- Tests ---
-
 fn test_prepend() -> i32 {
     let nodes: Vec<i32> = Vec::new();
     var head = -1;
@@ -104,7 +116,9 @@ fn test_prepend() -> i32 {
     let result: Vec<i32> = Vec::new();
     traverse(nodes, head, result);
     let expected: Vec<i32> = Vec::new();
-    expected.push(10); expected.push(20); expected.push(30);
+    expected.push(10);
+    expected.push(20);
+    expected.push(30);
     if vecs_equal(result, expected) == 1 {
         println("PASS: prepend");
         return 1;
@@ -122,7 +136,9 @@ fn test_append() -> i32 {
     let result: Vec<i32> = Vec::new();
     traverse(nodes, head, result);
     let expected: Vec<i32> = Vec::new();
-    expected.push(10); expected.push(20); expected.push(30);
+    expected.push(10);
+    expected.push(20);
+    expected.push(30);
     if vecs_equal(result, expected) == 1 {
         println("PASS: append");
         return 1;
@@ -141,7 +157,8 @@ fn test_delete_middle() -> i32 {
     let result: Vec<i32> = Vec::new();
     traverse(nodes, head, result);
     let expected: Vec<i32> = Vec::new();
-    expected.push(10); expected.push(30);
+    expected.push(10);
+    expected.push(30);
     if vecs_equal(result, expected) == 1 {
         println("PASS: delete middle");
         return 1;

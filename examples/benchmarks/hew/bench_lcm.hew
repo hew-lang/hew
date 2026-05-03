@@ -17,7 +17,7 @@ const ITERS: int = 5000000;
 
 fn main() {
     var sum = 0;
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         sum = sum + lcm(1071, 462);
     }
     println(ITERS);

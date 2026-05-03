@@ -44,7 +44,6 @@ fn main() {
         w9.compute(13),
         w10.compute(14),
     };
-
     print_result(1, 5, r1);
     print_result(2, 8, r2);
     print_result(3, 10, r3);
@@ -61,7 +60,7 @@ fn main() {
     println("--- Round 2: burst ---");
     var completed = 10;
     var checksum_total = r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10;
-    for i in 0..5 {
+    for i in 0 .. 5 {
         let round: int = i;
         let (b1, b2, b3, b4, b5, b6, b7, b8, b9, b10) = join {
             w1.compute(round + 3),

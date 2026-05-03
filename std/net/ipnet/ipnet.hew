@@ -21,27 +21,37 @@
 
 /// Test whether a string is a valid IP address (v4 or v6).
 pub fn is_valid(addr: String) -> bool {
-    unsafe { hew_ip_parse(addr) }
+    unsafe {
+        hew_ip_parse(addr)
+    }
 }
 
 /// Test whether an IP address is IPv4.
 pub fn is_v4(addr: String) -> bool {
-    unsafe { hew_ip_is_v4(addr) }
+    unsafe {
+        hew_ip_is_v4(addr)
+    }
 }
 
 /// Test whether an IP address is IPv6.
 pub fn is_v6(addr: String) -> bool {
-    unsafe { hew_ip_is_v6(addr) }
+    unsafe {
+        hew_ip_is_v6(addr)
+    }
 }
 
 /// Test whether an IP address is a loopback address (e.g. `127.0.0.1`, `::1`).
 pub fn is_loopback(addr: String) -> bool {
-    unsafe { hew_ip_is_loopback(addr) }
+    unsafe {
+        hew_ip_is_loopback(addr)
+    }
 }
 
 /// Test whether an IP address is in a private range (e.g. `10.x`, `192.168.x`).
 pub fn is_private(addr: String) -> bool {
-    unsafe { hew_ip_is_private(addr) }
+    unsafe {
+        hew_ip_is_private(addr)
+    }
 }
 
 /// Test whether a CIDR network contains a given IP address.
@@ -53,7 +63,9 @@ pub fn is_private(addr: String) -> bool {
 /// ipnet.cidr_contains("10.0.0.0/8", "172.16.0.1") // false
 /// ```
 pub fn cidr_contains(cidr: String, ip: String) -> bool {
-    unsafe { hew_cidr_contains(cidr, ip) } == 1
+    unsafe {
+        hew_cidr_contains(cidr, ip)
+    } == 1
 }
 
 /// Return the network address of a CIDR block.
@@ -64,7 +76,9 @@ pub fn cidr_contains(cidr: String, ip: String) -> bool {
 /// ipnet.cidr_network("192.168.1.0/24")  // "192.168.1.0"
 /// ```
 pub fn cidr_network(cidr: String) -> String {
-    unsafe { hew_cidr_network(cidr) }
+    unsafe {
+        hew_cidr_network(cidr)
+    }
 }
 
 /// Return the broadcast address of a CIDR block.
@@ -75,7 +89,9 @@ pub fn cidr_network(cidr: String) -> String {
 /// ipnet.cidr_broadcast("192.168.1.0/24")  // "192.168.1.255"
 /// ```
 pub fn cidr_broadcast(cidr: String) -> String {
-    unsafe { hew_cidr_broadcast(cidr) }
+    unsafe {
+        hew_cidr_broadcast(cidr)
+    }
 }
 
 /// Return the number of usable host addresses in a CIDR block.
@@ -86,11 +102,12 @@ pub fn cidr_broadcast(cidr: String) -> String {
 /// ipnet.cidr_hosts("192.168.1.0/24")  // 254
 /// ```
 pub fn cidr_hosts(cidr: String) -> int {
-    unsafe { hew_cidr_hosts(cidr) }
+    unsafe {
+        hew_cidr_hosts(cidr)
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_ip_parse(addr: String) -> bool;
     fn hew_ip_is_v4(addr: String) -> bool;

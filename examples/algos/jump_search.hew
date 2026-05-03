@@ -1,5 +1,4 @@
 // Jump Search - jump by sqrt(n) blocks then linear scan
-
 fn jump_search(arr: Vec<int>, target: int) -> int {
     let n = arr.len();
     if n == 0 {
@@ -14,7 +13,6 @@ fn jump_search(arr: Vec<int>, target: int) -> int {
     if step < 1 {
         step = 1;
     }
-
     // Jump forward
     var prev = 0;
     var curr = step;
@@ -25,7 +23,6 @@ fn jump_search(arr: Vec<int>, target: int) -> int {
         prev = curr;
         curr = curr + step;
     }
-
     // Linear scan in block [prev, min(curr, n-1)]
     var i = prev;
     var end = curr;
@@ -44,7 +41,6 @@ fn jump_search(arr: Vec<int>, target: int) -> int {
 fn main() {
     var passed = 0;
     var failed = 0;
-
     // Test 1: find element in sorted array
     let v1: Vec<int> = Vec::new();
     v1.push(1);
@@ -66,7 +62,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 2: find first element
     let v2: Vec<int> = Vec::new();
     v2.push(1);
@@ -84,7 +79,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 3: find last element
     let v3: Vec<int> = Vec::new();
     v3.push(1);
@@ -102,7 +96,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 4: not found
     let v4: Vec<int> = Vec::new();
     v4.push(1);
@@ -120,7 +113,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 5: empty array
     let v5: Vec<int> = Vec::new();
     let r5 = jump_search(v5, 5);
@@ -133,7 +125,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 6: single element found
     let v6: Vec<int> = Vec::new();
     v6.push(42);
@@ -147,7 +138,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 7: single element not found
     let v7: Vec<int> = Vec::new();
     v7.push(42);
@@ -161,7 +151,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Summary
     println("");
     print(passed);

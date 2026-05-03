@@ -16,7 +16,7 @@ fn main() {
     println("=== Backpressure Test ===");
     let worker = spawn SlowWorker;
     // Send multiple messages - bounded mailbox (capacity 4) will apply backpressure
-    for i in 0..8 {
+    for i in 0 .. 8 {
         worker.process(i);
     }
     sleep_ms(500);

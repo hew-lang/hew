@@ -1,12 +1,25 @@
 // Sparse Array using sorted linked list of (index, value) pairs
 // Node layout: [idx, value, next] = 3 slots per node
 // Sorted by idx for efficient traversal
+fn node_idx(n: Vec<i32>, i: i32) -> i32 {
+    n.get(i * 3)
+}
 
-fn node_idx(n: Vec<i32>, i: i32) -> i32 { n.get(i * 3) }
-fn node_val(n: Vec<i32>, i: i32) -> i32 { n.get(i * 3 + 1) }
-fn node_next(n: Vec<i32>, i: i32) -> i32 { n.get(i * 3 + 2) }
-fn set_val(n: Vec<i32>, i: i32, v: i32) { n.set(i * 3 + 1, v); }
-fn set_next(n: Vec<i32>, i: i32, nx: i32) { n.set(i * 3 + 2, nx); }
+fn node_val(n: Vec<i32>, i: i32) -> i32 {
+    n.get(i * 3 + 1)
+}
+
+fn node_next(n: Vec<i32>, i: i32) -> i32 {
+    n.get(i * 3 + 2)
+}
+
+fn set_val(n: Vec<i32>, i: i32, v: i32) {
+    n.set(i * 3 + 1, v);
+}
+
+fn set_next(n: Vec<i32>, i: i32, nx: i32) {
+    n.set(i * 3 + 2, nx);
+}
 
 fn alloc_node(n: Vec<i32>, idx: i32, val: i32) -> i32 {
     let node = n.len() / 3;
@@ -68,8 +81,12 @@ fn sparse_set(n: Vec<i32>, head: i32, idx: i32, val: i32) -> i32 {
 fn sparse_get(n: Vec<i32>, head: i32, idx: i32, default_val: i32) -> i32 {
     var curr = head;
     while curr != -1 {
-        if node_idx(n, curr) == idx { return node_val(n, curr); }
-        if node_idx(n, curr) > idx { return default_val; }
+        if node_idx(n, curr) == idx {
+            return node_val(n, curr);
+        }
+        if node_idx(n, curr) > idx {
+            return default_val;
+        }
         curr = node_next(n, curr);
     }
     default_val
@@ -89,20 +106,26 @@ fn iterate(n: Vec<i32>, head: i32, result: Vec<i32>) {
 fn sparse_len(n: Vec<i32>, head: i32) -> i32 {
     var c = 0;
     var curr = head;
-    while curr != -1 { c = c + 1; curr = node_next(n, curr); }
+    while curr != -1 {
+        c = c + 1;
+        curr = node_next(n, curr);
+    }
     c
 }
 
 fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
-    if a.len() != b.len() { return 0; }
-    for i in 0..a.len() {
-        if a.get(i) != b.get(i) { return 0; }
+    if a.len() != b.len() {
+        return 0;
+    }
+    for i in 0 .. a.len() {
+        if a.get(i) != b.get(i) {
+            return 0;
+        }
     }
     1
 }
 
 // --- Tests ---
-
 fn test_set_and_get() -> i32 {
     let n: Vec<i32> = Vec::new();
     var head = -1;
@@ -163,10 +186,14 @@ fn test_sorted_order() -> i32 {
     let r: Vec<i32> = Vec::new();
     iterate(n, head, r);
     let e: Vec<i32> = Vec::new();
-    e.push(10); e.push(2);
-    e.push(50); e.push(4);
-    e.push(500); e.push(3);
-    e.push(1000); e.push(1);
+    e.push(10);
+    e.push(2);
+    e.push(50);
+    e.push(4);
+    e.push(500);
+    e.push(3);
+    e.push(1000);
+    e.push(1);
     if vecs_equal(r, e) == 1 {
         println("PASS: sorted order");
         return 1;
@@ -237,5 +264,9 @@ fn main() {
     print("Passed: ");
     print(passed);
     println(f"/{total}");
-    if passed == total { println("OVERALL: PASS"); } else { println("OVERALL: FAIL"); }
+    if passed == total {
+        println("OVERALL: PASS");
+    } else {
+        println("OVERALL: FAIL");
+    }
 }

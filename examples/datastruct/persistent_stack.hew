@@ -5,7 +5,6 @@
 
 // Node storage: pairs of [value, next] in a Vec<int>
 // Node i is at positions i*2 and i*2+1
-
 fn ps_new() -> int {
     // Empty stack is represented by -1 (no head node)
     0 - 1
@@ -65,12 +64,9 @@ fn ps_collect(store: Vec<int>, head: int) -> Vec<int> {
 fn main() {
     var passed = 0;
     var failed = 0;
-
     let store: Vec<int> = Vec::new();
-
     // v0 = empty stack
     let v0 = ps_new();
-
     // Test 1: Empty stack
     if ps_is_empty(v0) {
         if ps_size(store, v0) == 0 {
@@ -84,10 +80,8 @@ fn main() {
         println("FAIL: empty stack");
         failed = failed + 1;
     }
-
     // v1 = push 10 onto v0
     let v1 = ps_push(store, v0, 10);
-
     // Test 2: Push creates new version
     if ps_peek(store, v1) == 10 {
         if ps_size(store, v1) == 1 {
@@ -101,10 +95,8 @@ fn main() {
         println("FAIL: push first element");
         failed = failed + 1;
     }
-
     // v2 = push 20 onto v1
     let v2 = ps_push(store, v1, 20);
-
     // Test 3: Second push
     if ps_peek(store, v2) == 20 {
         if ps_size(store, v2) == 2 {
@@ -118,10 +110,8 @@ fn main() {
         println("FAIL: push second element");
         failed = failed + 1;
     }
-
     // v3 = push 30 onto v2
     let v3 = ps_push(store, v2, 30);
-
     // Test 4: Old version v1 is still accessible
     if ps_peek(store, v1) == 10 {
         if ps_size(store, v1) == 1 {
@@ -135,7 +125,6 @@ fn main() {
         println("FAIL: old version v1 intact");
         failed = failed + 1;
     }
-
     // Test 5: Old version v2 is still accessible
     if ps_peek(store, v2) == 20 {
         if ps_size(store, v2) == 2 {
@@ -149,7 +138,6 @@ fn main() {
         println("FAIL: old version v2 intact");
         failed = failed + 1;
     }
-
     // Test 6: Pop from v3 gives v2's head
     let v3_popped = ps_pop(store, v3);
     if ps_peek(store, v3_popped) == 20 {
@@ -164,7 +152,6 @@ fn main() {
         println("FAIL: pop from v3");
         failed = failed + 1;
     }
-
     // Test 7: v3 still unchanged after pop (persistence)
     if ps_peek(store, v3) == 30 {
         if ps_size(store, v3) == 3 {
@@ -178,7 +165,6 @@ fn main() {
         println("FAIL: v3 unchanged after pop");
         failed = failed + 1;
     }
-
     // Test 8: Branch from v1 (create divergent history)
     // v4 = push 99 onto v1
     let v4 = ps_push(store, v1, 99);
@@ -195,15 +181,22 @@ fn main() {
         println("FAIL: branching history");
         failed = failed + 1;
     }
-
     // Test 9: Collect v3 elements (top to bottom: 30, 20, 10)
     let items = ps_collect(store, v3);
     var col_ok = 1;
-    if items.len() != 3 { col_ok = 0; }
+    if items.len() != 3 {
+        col_ok = 0;
+    }
     if col_ok == 1 {
-        if items.get(0) != 30 { col_ok = 0; }
-        if items.get(1) != 20 { col_ok = 0; }
-        if items.get(2) != 10 { col_ok = 0; }
+        if items.get(0) != 30 {
+            col_ok = 0;
+        }
+        if items.get(1) != 20 {
+            col_ok = 0;
+        }
+        if items.get(2) != 10 {
+            col_ok = 0;
+        }
     }
     if col_ok == 1 {
         println("PASS: collect v3");
@@ -212,14 +205,19 @@ fn main() {
         println("FAIL: collect v3");
         failed = failed + 1;
     }
-
     // Test 10: Collect v4 elements (top to bottom: 99, 10)
     let items4 = ps_collect(store, v4);
     var col4_ok = 1;
-    if items4.len() != 2 { col4_ok = 0; }
+    if items4.len() != 2 {
+        col4_ok = 0;
+    }
     if col4_ok == 1 {
-        if items4.get(0) != 99 { col4_ok = 0; }
-        if items4.get(1) != 10 { col4_ok = 0; }
+        if items4.get(0) != 99 {
+            col4_ok = 0;
+        }
+        if items4.get(1) != 10 {
+            col4_ok = 0;
+        }
     }
     if col4_ok == 1 {
         println("PASS: collect v4 (branch)");
@@ -228,7 +226,6 @@ fn main() {
         println("FAIL: collect v4 (branch)");
         failed = failed + 1;
     }
-
     // Summary
     println("---");
     print("Passed: ");

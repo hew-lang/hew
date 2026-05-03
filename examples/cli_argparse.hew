@@ -21,7 +21,7 @@ fn print_help() {
 
 fn print_flags(flags: Vec<String>) {
     println("Flags:");
-    for i in 0..flags.len() {
+    for i in 0 .. flags.len() {
         print("  ");
         println(flags.get(i));
     }
@@ -29,7 +29,7 @@ fn print_flags(flags: Vec<String>) {
 
 fn print_options(opt_keys: Vec<String>, opt_vals: Vec<String>) {
     println("Options:");
-    for i in 0..opt_keys.len() {
+    for i in 0 .. opt_keys.len() {
         print("  ");
         print(opt_keys.get(i));
         print(" = ");
@@ -39,7 +39,7 @@ fn print_options(opt_keys: Vec<String>, opt_vals: Vec<String>) {
 
 fn print_positional(positional: Vec<String>) {
     println("Positional:");
-    for i in 0..positional.len() {
+    for i in 0 .. positional.len() {
         print("  ");
         println(positional.get(i));
     }
@@ -59,7 +59,7 @@ fn main() {
     let positional: Vec<String> = Vec::new();
     var show_help = 0;
     // Parse arguments (skip argv[0] which is the program name)
-    for i in 1..argc {
+    for i in 1 .. argc {
         let arg = os.args(i);
         if arg.starts_with("--") {
             // Long option: check for "=" to distinguish flag from key=value

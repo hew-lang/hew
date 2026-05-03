@@ -24,7 +24,7 @@ actor ChatRoom {
     receive fn unregister(name: String) {
         var new_handlers: Vec<ActorRef<ClientHandler>> = Vec::new();
         var new_names: Vec<String> = Vec::new();
-        for i in 0..names.len() {
+        for i in 0 .. names.len() {
             if names.get(i) != name {
                 new_handlers.push(handlers.get(i));
                 new_names.push(names.get(i));
@@ -35,7 +35,7 @@ actor ChatRoom {
         println(f"{name} left the chat");
     }
     receive fn broadcast(sender_name: String, msg: String) {
-        for i in 0..names.len() {
+        for i in 0 .. names.len() {
             if names.get(i) != sender_name {
                 handlers.get(i).deliver(msg);
             }

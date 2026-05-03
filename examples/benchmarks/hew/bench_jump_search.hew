@@ -1,6 +1,5 @@
 // Benchmark: Jump Search
 // Jumps ahead by sqrt(n) steps, then does linear search in the block.
-
 fn isqrt(n: int) -> int {
     if n <= 0 {
         return 0;
@@ -64,11 +63,11 @@ const ITERS: int = 1000000;
 
 fn main() {
     let v: Vec<int> = Vec::new();
-    for i in 0..10000 {
+    for i in 0 .. 10000 {
         v.push(i);
     }
     var sum = 0;
-    for iter in 0..ITERS {
+    for iter in 0 .. ITERS {
         sum = sum + jump_search(v, 7777);
     }
     println(ITERS);

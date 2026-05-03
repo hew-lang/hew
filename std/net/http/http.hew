@@ -26,7 +26,8 @@ import std::fs;
 /// Created by calling `http.listen(addr)`. Use `accept()` to wait for
 /// incoming requests in a loop, then call `close()` before the value goes
 /// out of scope.
-type Server {}
+type Server {
+}
 
 /// An incoming HTTP request.
 ///
@@ -34,10 +35,10 @@ type Server {}
 /// method, path, headers, and body. Must be responded to with one of
 /// the `respond` methods. Call `free()` before the value goes out of
 /// scope; dropping without `free()` is a resource leak.
-type Request {}
+type Request {
+}
 
 // ── Server methods ────────────────────────────────────────────────────
-
 /// Methods available on an HTTP `Server`.
 trait ServerMethods {
     /// Block until a client connects and return the next `Request`.
@@ -56,23 +57,28 @@ trait ServerMethods {
 impl ServerMethods for Server {
     /// Accept the next incoming HTTP request.
     fn accept(srv: Server) -> Request {
-        unsafe { hew_http_server_recv(srv) }
+        unsafe {
+            hew_http_server_recv(srv)
+        }
     }
     /// Set the per-request body read deadline in milliseconds.
     fn set_request_timeout_ms(srv: Server, timeout_ms: int) -> int {
-        unsafe { hew_http_server_set_request_timeout_ms(srv, timeout_ms as i64) } // INTERNAL-ABI: C ABI timeout is i64
+        unsafe {
+            hew_http_server_set_request_timeout_ms(srv, timeout_ms as i64)
+        } // INTERNAL-ABI: C ABI timeout is i64
     }
     /// Canonical release path for `Server`.
     ///
     /// Callers MUST invoke `close()` before the value goes out of scope;
     /// dropping without `close()` is a resource leak.
     fn close(srv: Server) {
-        unsafe { hew_http_server_close(srv) };
+        unsafe {
+            hew_http_server_close(srv)
+        };
     }
 }
 
 // ── Request methods ───────────────────────────────────────────────────
-
 /// Methods available on an HTTP `Request`.
 trait RequestMethods {
     /// Return the HTTP method (e.g. `"GET"`, `"POST"`).
@@ -140,42 +146,71 @@ trait RequestMethods {
 
     /// Begin a streaming response, returning `Err(fs.IoError)` on failure.
     fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError>;
-
 }
 
 impl RequestMethods for Request {
     /// Return the HTTP method (e.g. `"GET"`, `"POST"`).
-    fn method(req: Request) -> String { unsafe { hew_http_request_method(req) } }
+    fn method(req: Request) -> String {
+        unsafe {
+            hew_http_request_method(req)
+        }
+    }
     /// Return the request path (e.g. `"/api/users"`).
-    fn path(req: Request) -> String { unsafe { hew_http_request_path(req) } }
+    fn path(req: Request) -> String {
+        unsafe {
+            hew_http_request_path(req)
+        }
+    }
     /// Return the value of the named header, or an empty string.
-    fn header(req: Request, name: String) -> String { unsafe { hew_http_request_header(req, name) } }
+    fn header(req: Request, name: String) -> String {
+        unsafe {
+            hew_http_request_header(req, name)
+        }
+    }
     /// Return all request headers as a list of `(name, value)` pairs.
-    fn headers(req: Request) -> Vec<(String, String)> { unsafe { hew_http_request_headers(req) } }
+    fn headers(req: Request) -> Vec<(String, String)> {
+        unsafe {
+            hew_http_request_headers(req)
+        }
+    }
     /// Return the request body decoded according to `encoding`.
-    fn body(req: Request, encoding: String) -> String { unsafe { hew_http_request_body_string(req, encoding) } }
+    fn body(req: Request, encoding: String) -> String {
+        unsafe {
+            hew_http_request_body_string(req, encoding)
+        }
+    }
     /// Send a full HTTP response with status, content-type, and body.
     fn respond(req: Request, status: int, content_type: String, body: String) -> int {
-        unsafe { hew_http_respond_bridge(req, status as i32, content_type, body) } // INTERNAL-ABI: C ABI status is i32
+        unsafe {
+            hew_http_respond_bridge(req, status as i32, content_type, body)
+        } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a plain-text HTTP response.
     fn respond_text(req: Request, status: int, body: String) -> int {
-        unsafe { hew_http_respond_text(req, status as i32, body) } // INTERNAL-ABI: C ABI status is i32
+        unsafe {
+            hew_http_respond_text(req, status as i32, body)
+        } // INTERNAL-ABI: C ABI status is i32
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
     fn respond_json(req: Request, status: int, json: String) -> int {
-        unsafe { hew_http_respond_json(req, status as i32, json) } // INTERNAL-ABI: C ABI status is i32
+        unsafe {
+            hew_http_respond_json(req, status as i32, json)
+        } // INTERNAL-ABI: C ABI status is i32
     }
     /// Begin a streaming response and return a `Sink` for chunked output.
     fn respond_stream(req: Request, status: int, content_type: String) -> Sink<String> {
-        unsafe { hew_http_respond_stream(req, status as i32, content_type) } // INTERNAL-ABI: C ABI status is i32
+        unsafe {
+            hew_http_respond_stream(req, status as i32, content_type)
+        } // INTERNAL-ABI: C ABI status is i32
     }
     /// Canonical release path for `Request`.
     ///
     /// Callers MUST invoke `free()` before the value goes out of scope;
     /// dropping without `free()` is a resource leak.
     fn free(req: Request) {
-        unsafe { hew_http_request_free(req) };
+        unsafe {
+            hew_http_request_free(req)
+        };
     }
     /// Send a full HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond(req: Request, status: int, content_type: String, body: String) -> Result<int, fs.IoError> {
@@ -183,8 +218,14 @@ impl RequestMethods for Request {
         //   directly to preserve the arith.trunci that MLIR verification requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond(status, content_type, body);
-        let n = unsafe { hew_http_respond_bridge(req, status as i32, content_type, body) } as int;
-        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
+        let n = unsafe {
+            hew_http_respond_bridge(req, status as i32, content_type, body)
+        } as int;
+        if n < 0 {
+            Err(fs.io_error_from_errno(0))
+        } else {
+            Ok(n)
+        } // HTTP has no OS errno channel
     }
     /// Send a plain-text HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_text(req: Request, status: int, body: String) -> Result<int, fs.IoError> {
@@ -192,8 +233,14 @@ impl RequestMethods for Request {
         //   directly to preserve the arith.trunci that MLIR verification requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond_text(status, body);
-        let n = unsafe { hew_http_respond_text(req, status as i32, body) } as int;
-        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
+        let n = unsafe {
+            hew_http_respond_text(req, status as i32, body)
+        } as int;
+        if n < 0 {
+            Err(fs.io_error_from_errno(0))
+        } else {
+            Ok(n)
+        } // HTTP has no OS errno channel
     }
     /// Send a JSON HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_json(req: Request, status: int, json: String) -> Result<int, fs.IoError> {
@@ -201,26 +248,37 @@ impl RequestMethods for Request {
         //   directly to preserve the arith.trunci that MLIR verification requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond_json(status, json);
-        let n = unsafe { hew_http_respond_json(req, status as i32, json) } as int;
-        if n < 0 { Err(fs.io_error_from_errno(0)) } else { Ok(n) } // HTTP has no OS errno channel
+        let n = unsafe {
+            hew_http_respond_json(req, status as i32, json)
+        } as int;
+        if n < 0 {
+            Err(fs.io_error_from_errno(0))
+        } else {
+            Ok(n)
+        } // HTTP has no OS errno channel
     }
     /// Begin a streaming response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_stream(req: Request, status: int, content_type: String) -> Result<Sink<String>, fs.IoError> {
-        let sink = unsafe { hew_http_respond_stream(req, status as i32, content_type) };
+        let sink = unsafe {
+            hew_http_respond_stream(req, status as i32, content_type)
+        };
         // HTTP has no errno channel; the runtime sets a message via set_last_error
         // on the two failure paths (null req, already-responded).  The errno side-
         // channel is always 0 here, so Other(0) is the correct classification.
-        if unsafe { hew_sink_is_valid(sink) } {
+        if unsafe {
+            hew_sink_is_valid(sink)
+        } {
             Ok(sink)
         } else {
-            let _ = unsafe { hew_stream_last_error() }; // consume the error message
+            let _ = unsafe {
+                hew_stream_last_error()
+            }; // consume the error message
             Err(fs.io_error_from_errno(0))
         }
     }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Create a new HTTP server listening on the given address.
 ///
 /// The address format is `"host:port"` or `":port"` to listen on all
@@ -235,7 +293,9 @@ impl RequestMethods for Request {
 /// server.close();
 /// ```
 pub fn listen(addr: String) -> Server {
-    unsafe { hew_http_server_new(addr) }
+    unsafe {
+        hew_http_server_new(addr)
+    }
 }
 
 /// Send a full HTTP response, returning `Err(fs.IoError)` on failure.
@@ -259,7 +319,6 @@ pub fn try_respond_stream(req: Request, status: int, content_type: String) -> Re
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
-
 extern "C" {
     fn hew_http_server_new(addr: String) -> Server;
     fn hew_http_server_recv(server: Server) -> Request;

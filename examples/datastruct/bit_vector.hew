@@ -1,10 +1,9 @@
 // Bit Vector using Vec<int> where each int stores 32 bits
 // Operations: set_bit, clear_bit, get_bit, count_ones
-
 fn bv_create(num_bits: int) -> Vec<int> {
     let v: Vec<int> = Vec::new();
     let num_words = (num_bits + 31) / 32;
-    for i in 0..num_words {
+    for i in 0 .. num_words {
         v.push(0);
     }
     v
@@ -46,7 +45,7 @@ fn bv_get_bit(bv: Vec<int>, bit: int) -> int {
 // Shift left by repeated doubling
 fn bv_shl(val: int, shift: int) -> int {
     var result = val;
-    for i in 0..shift {
+    for i in 0 .. shift {
         result = result * 2;
     }
     result
@@ -55,7 +54,7 @@ fn bv_shl(val: int, shift: int) -> int {
 // Bitwise AND via bit-by-bit extraction
 fn bv_and(a: int, b: int) -> int {
     var result = 0;
-    for i in 0..32 {
+    for i in 0 .. 32 {
         let bit_a = bv_get_ith_bit(a, i);
         let bit_b = bv_get_ith_bit(b, i);
         if bit_a == 1 {
@@ -70,7 +69,7 @@ fn bv_and(a: int, b: int) -> int {
 // Bitwise OR via bit-by-bit
 fn bv_or(a: int, b: int) -> int {
     var result = 0;
-    for i in 0..32 {
+    for i in 0 .. 32 {
         let bit_a = bv_get_ith_bit(a, i);
         let bit_b = bv_get_ith_bit(b, i);
         if bit_a == 1 {
@@ -85,7 +84,7 @@ fn bv_or(a: int, b: int) -> int {
 // Bitwise XOR via bit-by-bit
 fn bv_xor(a: int, b: int) -> int {
     var result = 0;
-    for i in 0..32 {
+    for i in 0 .. 32 {
         let bit_a = bv_get_ith_bit(a, i);
         let bit_b = bv_get_ith_bit(b, i);
         if bit_a != bit_b {
@@ -105,9 +104,9 @@ fn bv_get_ith_bit(val: int, i: int) -> int {
 fn bv_count_ones(bv: Vec<int>) -> int {
     var count = 0;
     let num_words = bv.len();
-    for w in 0..num_words {
+    for w in 0 .. num_words {
         let word = bv.get(w);
-        for b in 0..32 {
+        for b in 0 .. 32 {
             if bv_get_ith_bit(word, b) == 1 {
                 count = count + 1;
             }
@@ -119,10 +118,8 @@ fn bv_count_ones(bv: Vec<int>) -> int {
 fn main() {
     var passed = 0;
     var failed = 0;
-
     // Create bit vector with 64 bits (2 words)
     let bv = bv_create(64);
-
     // Test 1: Initial state - all bits zero
     let c0 = bv_count_ones(bv);
     if c0 == 0 {
@@ -132,7 +129,6 @@ fn main() {
         println("FAIL: initial all zeros");
         failed = failed + 1;
     }
-
     // Test 2: Set bit 0
     bv_set_bit(bv, 0);
     if bv_get_bit(bv, 0) == 1 {
@@ -142,7 +138,6 @@ fn main() {
         println("FAIL: set bit 0");
         failed = failed + 1;
     }
-
     // Test 3: Set bit 31 (last bit of first word)
     bv_set_bit(bv, 31);
     if bv_get_bit(bv, 31) == 1 {
@@ -152,7 +147,6 @@ fn main() {
         println("FAIL: set bit 31");
         failed = failed + 1;
     }
-
     // Test 4: Set bit 32 (first bit of second word)
     bv_set_bit(bv, 32);
     if bv_get_bit(bv, 32) == 1 {
@@ -162,7 +156,6 @@ fn main() {
         println("FAIL: set bit 32");
         failed = failed + 1;
     }
-
     // Test 5: Unset bit should be 0
     if bv_get_bit(bv, 5) == 0 {
         println("PASS: unset bit is 0");
@@ -171,7 +164,6 @@ fn main() {
         println("FAIL: unset bit is 0");
         failed = failed + 1;
     }
-
     // Test 6: Count ones (bits 0, 31, 32 are set)
     let c1 = bv_count_ones(bv);
     if c1 == 3 {
@@ -182,7 +174,6 @@ fn main() {
         println(c1);
         failed = failed + 1;
     }
-
     // Test 7: Clear bit 31
     bv_clear_bit(bv, 31);
     if bv_get_bit(bv, 31) == 0 {
@@ -192,7 +183,6 @@ fn main() {
         println("FAIL: clear bit 31");
         failed = failed + 1;
     }
-
     // Test 8: Count after clear (bits 0, 32 remain)
     let c2 = bv_count_ones(bv);
     if c2 == 2 {
@@ -203,7 +193,6 @@ fn main() {
         println(c2);
         failed = failed + 1;
     }
-
     // Test 9: Set multiple bits and count
     bv_set_bit(bv, 10);
     bv_set_bit(bv, 20);
@@ -218,7 +207,6 @@ fn main() {
         println(c3);
         failed = failed + 1;
     }
-
     // Test 10: Set already-set bit is idempotent
     bv_set_bit(bv, 10);
     let c4 = bv_count_ones(bv);
@@ -230,7 +218,6 @@ fn main() {
         println(c4);
         failed = failed + 1;
     }
-
     // Summary
     println("---");
     print("Passed: ");

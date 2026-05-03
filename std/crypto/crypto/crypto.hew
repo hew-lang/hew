@@ -20,29 +20,39 @@
 
 /// Compute the SHA-256 hash of `data`, returning a 32-byte digest.
 pub fn sha256(data: bytes) -> bytes {
-    unsafe { hew_sha256_hew(data) }
+    unsafe {
+        hew_sha256_hew(data)
+    }
 }
 
 /// Compute the SHA-384 hash of `data`, returning a 48-byte digest.
 pub fn sha384(data: bytes) -> bytes {
-    unsafe { hew_sha384_hew(data) }
+    unsafe {
+        hew_sha384_hew(data)
+    }
 }
 
 /// Compute the SHA-512 hash of `data`, returning a 64-byte digest.
 pub fn sha512(data: bytes) -> bytes {
-    unsafe { hew_sha512_hew(data) }
+    unsafe {
+        hew_sha512_hew(data)
+    }
 }
 
 /// Compute HMAC-SHA-256 with the given `key` and `data`.
 ///
 /// Returns a 32-byte tag.
 pub fn hmac_sha256(key: bytes, data: bytes) -> bytes {
-    unsafe { hew_hmac_sha256_hew(key, data) }
+    unsafe {
+        hew_hmac_sha256_hew(key, data)
+    }
 }
 
 /// Generate `len` cryptographically random bytes.
 pub fn random_bytes(len: int) -> bytes {
-    unsafe { hew_random_bytes_hew(len) }
+    unsafe {
+        hew_random_bytes_hew(len)
+    }
 }
 
 /// Compare two `bytes` values in constant time.
@@ -50,11 +60,12 @@ pub fn random_bytes(len: int) -> bytes {
 /// Returns `true` if they are equal (same length and same content).
 /// Always runs in time proportional to the length to avoid timing leaks.
 pub fn constant_time_eq(a: bytes, b: bytes) -> bool {
-    unsafe { hew_constant_time_eq_hew(a, b) } == 1
+    unsafe {
+        hew_constant_time_eq_hew(a, b)
+    } == 1
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_sha256_hew(data: bytes) -> bytes;
     fn hew_sha384_hew(data: bytes) -> bytes;

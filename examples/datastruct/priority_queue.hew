@@ -1,7 +1,6 @@
 // Priority Queue - using sorted insertion into Vec<int>
 // Smallest element is at the end (easy to pop)
 // Insert maintains descending order so extract_min is O(1) pop
-
 fn pq_insert(pq: Vec<int>, val: int) {
     // Insert val maintaining descending order (largest first, smallest last)
     pq.push(val);
@@ -39,7 +38,11 @@ fn pq_size(pq: Vec<int>) -> int {
 }
 
 fn pq_is_empty(pq: Vec<int>) -> int {
-    if pq.len() == 0 { 1 } else { 0 }
+    if pq.len() == 0 {
+        1
+    } else {
+        0
+    }
 }
 
 fn run_test(name: String, passed: int) -> int {
@@ -54,12 +57,14 @@ fn run_test(name: String, passed: int) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-
     let pq: Vec<int> = Vec::new();
-
     // Test 1: empty
     total = total + 1;
-    let r1 = if pq_is_empty(pq) == 1 { 1 } else { 0 };
+    let r1 = if pq_is_empty(pq) == 1 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("new pq is empty", r1);
 
     // Test 2: insert and peek min
@@ -67,25 +72,41 @@ fn main() {
     pq_insert(pq, 30);
     pq_insert(pq, 10);
     pq_insert(pq, 20);
-    let r2 = if pq_peek_min(pq) == 10 { 1 } else { 0 };
+    let r2 = if pq_peek_min(pq) == 10 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("peek min after insert", r2);
 
     // Test 3: extract min returns smallest
     total = total + 1;
     let m1 = pq_extract_min(pq);
-    let r3 = if m1 == 10 { 1 } else { 0 };
+    let r3 = if m1 == 10 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("extract_min returns 10", r3);
 
     // Test 4: next min is 20
     total = total + 1;
     let m2 = pq_extract_min(pq);
-    let r4 = if m2 == 20 { 1 } else { 0 };
+    let r4 = if m2 == 20 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("next extract_min is 20", r4);
 
     // Test 5: last is 30
     total = total + 1;
     let m3 = pq_extract_min(pq);
-    let r5 = if m3 == 30 { 1 } else { 0 };
+    let r5 = if m3 == 30 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("last extract_min is 30", r5);
 
     // Test 6: insert duplicates
@@ -116,7 +137,7 @@ fn main() {
     pq_insert(pq2, 5);
     var r7 = 1;
     var prev_val = 0;
-    for i in 0..5 {
+    for i in 0 .. 5 {
         let v = pq_extract_min(pq2);
         if v < prev_val {
             r7 = 0;

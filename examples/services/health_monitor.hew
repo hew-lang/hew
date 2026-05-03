@@ -16,9 +16,8 @@
 // Service actor — responds to health checks. Can be made unhealthy.
 actor Service {
     let name: String;
-    let healthy: int;   // 1 = healthy, 0 = unhealthy
+    let healthy: int; // 1 = healthy, 0 = unhealthy
     let requests: int;
-
     receive fn health_check() -> int {
         if healthy == 0 {
             panic("service unhealthy");
@@ -26,13 +25,11 @@ actor Service {
         requests = requests + 1;
         1
     }
-
     receive fn handle(id: int) -> int {
         requests = requests + 1;
         println(f"  [{name}] handled request {id} (total: {requests})");
         requests
     }
-
     receive fn set_unhealthy() {
         healthy = 0;
         println(f"  [{name}] marked UNHEALTHY");
@@ -43,9 +40,8 @@ actor Service {
 actor HealthMonitor {
     let svc_names: Vec<String>;
     let svc_refs: Vec<ActorRef<Service>>;
-    let svc_status: Vec<int>;     // 1=healthy, 0=unhealthy per service
+    let svc_status: Vec<int>; // 1=healthy, 0=unhealthy per service
     let check_count: int;
-
     receive fn register(name: String, svc: ActorRef<Service>) {
         svc_names.push(name);
         svc_refs.push(svc);
@@ -57,7 +53,7 @@ actor HealthMonitor {
     receive fn check_all() {
         check_count = check_count + 1;
         println(f"[monitor] --- health check #{check_count} ---");
-        for i in 0..svc_refs.len() {
+        for i in 0 .. svc_refs.len() {
             let svc = svc_refs.get(i);
             // Use select with timeout — if the service doesn't respond
             // within 500ms, mark it unhealthy.
@@ -80,7 +76,7 @@ actor HealthMonitor {
     receive fn report() -> int {
         var healthy_count = 0;
         let total = svc_names.len();
-        for i in 0..total {
+        for i in 0 .. total {
             let name = svc_names.get(i);
             let status = svc_status.get(i);
             if status == 1 {
@@ -103,18 +99,11 @@ fn main() {
     let auth = spawn Service(name: "auth", healthy: 1, requests: 0);
     let api = spawn Service(name: "api", healthy: 1, requests: 0);
     let cache = spawn Service(name: "cache", healthy: 1, requests: 0);
-
     // Create monitor
     let empty_names: Vec<String> = Vec::new();
     let empty_refs: Vec<ActorRef<Service>> = Vec::new();
     let empty_status: Vec<int> = Vec::new();
-    let monitor = spawn HealthMonitor(
-        svc_names: empty_names,
-        svc_refs: empty_refs,
-        svc_status: empty_status,
-        check_count: 0,
-    );
-
+    let monitor = spawn HealthMonitor(svc_names: empty_names, svc_refs: empty_refs, svc_status: empty_status, check_count: 0);
     // Register services
     monitor.register("auth", auth);
     monitor.register("api", api);
@@ -148,7 +137,6 @@ fn main() {
     println("--- Healthy services still operational ---");
     await auth.handle(4);
     await api.handle(5);
-
     println("");
     println("Health monitoring complete. The select timeout detects");
     println("unresponsive services without blocking the monitor.");

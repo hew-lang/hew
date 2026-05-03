@@ -21,7 +21,6 @@
 //! ```
 
 // ── Predicates ──────────────────────────────────────────────────────
-
 /// Returns `true` if the option contains a value.
 pub fn is_some_int(opt: Option<int>) -> bool {
     match opt {
@@ -39,7 +38,6 @@ pub fn is_none_int(opt: Option<int>) -> bool {
 }
 
 // ── Unwrap ──────────────────────────────────────────────────────────
-
 /// Unwrap the `int` value.  Panics if the option is `None`.
 pub fn unwrap_int(opt: Option<int>) -> int {
     match opt {
@@ -60,7 +58,6 @@ pub fn unwrap_or_int(opt: Option<int>, fallback: int) -> int {
 }
 
 // ── Map ─────────────────────────────────────────────────────────────
-
 /// Apply `f` to the contained `int` value, or return `None` if empty.
 pub fn map_int(opt: Option<int>, f: fn(int) -> int) -> Option<int> {
     match opt {
@@ -70,7 +67,6 @@ pub fn map_int(opt: Option<int>, f: fn(int) -> int) -> Option<int> {
 }
 
 // ── Contains ────────────────────────────────────────────────────────
-
 /// Returns `true` if the option contains `needle`.
 pub fn contains_int(opt: Option<int>, needle: int) -> bool {
     match opt {
@@ -80,7 +76,6 @@ pub fn contains_int(opt: Option<int>, needle: int) -> bool {
 }
 
 // ── String variants ────────────────────────────────────────────────
-
 /// Returns `true` if the option contains a value.
 pub fn is_some_str(opt: Option<String>) -> bool {
     match opt {
@@ -133,7 +128,6 @@ pub fn contains_str(opt: Option<String>, needle: String) -> bool {
 }
 
 // ── Float variants ─────────────────────────────────────────────────
-
 /// Returns `true` if the option contains a value.
 pub fn is_some_f64(opt: Option<f64>) -> bool {
     match opt {

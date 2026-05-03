@@ -30,7 +30,7 @@ fn test_arithmetic() -> i32 {
 
 fn test_control_flow() -> i32 {
     var result = 0;
-    for i in 0..10 {
+    for i in 0 .. 10 {
         result = result + i;
     }
     if result == 45 {

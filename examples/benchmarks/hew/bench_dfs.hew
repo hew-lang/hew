@@ -1,12 +1,11 @@
 fn build_graph(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
-    for i in 0..(n + 1) {
+    for i in 0 .. n + 1 {
         adj_offsets.push(0);
     }
-
-    for src in 0..n {
+    for src in 0 .. n {
         let start = adj_offsets.get(src);
         var count = 0;
-        for dst in 1..6 {
+        for dst in 1 .. 6 {
             let neighbour = (src + dst) % n;
             adj_nodes.push(neighbour);
             count = count + 1;
@@ -22,13 +21,11 @@ fn build_graph(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
 fn dfs(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int, start_node: int) -> int {
     let visited: Vec<int> = Vec::new();
     let stack: Vec<int> = Vec::new();
-    for i in 0..n {
+    for i in 0 .. n {
         visited.push(0);
     }
-
     stack.push(start_node);
     var count = 0;
-
     while stack.len() > 0 {
         let node = stack.pop();
         if visited.get(node) == 1 {
@@ -36,8 +33,7 @@ fn dfs(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int, start_node: int) -> i
         } else {
             visited.set(node, 1);
             count = count + 1;
-
-            for e in adj_offsets.get(node)..adj_offsets.get(node + 1) {
+            for e in adj_offsets.get(node) .. adj_offsets.get(node + 1) {
                 let neighbour = adj_nodes.get(e);
                 if visited.get(neighbour) == 0 {
                     stack.push(neighbour);
@@ -55,9 +51,8 @@ fn main() {
     let adj_nodes: Vec<int> = Vec::new();
     let adj_offsets: Vec<int> = Vec::new();
     let _ = build_graph(adj_nodes, adj_offsets, n);
-
     var checksum = 0;
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         checksum = checksum + dfs(adj_nodes, adj_offsets, n, 0);
     }
     println("bench_dfs");

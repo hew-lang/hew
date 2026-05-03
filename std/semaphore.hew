@@ -21,7 +21,8 @@
 ///
 /// Created by `semaphore.new(count)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
-type Semaphore {}
+type Semaphore {
+}
 
 /// Methods available on a `Semaphore`.
 trait SemaphoreMethods {
@@ -50,23 +51,44 @@ trait SemaphoreMethods {
 
 impl SemaphoreMethods for Semaphore {
     /// Block until a permit is available, then acquire it.
-    fn acquire(sem: Semaphore) { unsafe { hew_semaphore_acquire(sem) }; }
+    fn acquire(sem: Semaphore) {
+        unsafe {
+            hew_semaphore_acquire(sem)
+        };
+    }
     /// Try to acquire a permit without blocking.
-    fn try_acquire(sem: Semaphore) -> bool { unsafe { hew_semaphore_try_acquire(sem) } }
+    fn try_acquire(sem: Semaphore) -> bool {
+        unsafe {
+            hew_semaphore_try_acquire(sem)
+        }
+    }
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
     fn acquire_timeout(sem: Semaphore, timeout_ms: int) -> bool {
-        unsafe { hew_semaphore_acquire_timeout(sem, timeout_ms as i64) } // INTERNAL-ABI: C ABI takes i64 timeout
+        unsafe {
+            hew_semaphore_acquire_timeout(sem, timeout_ms as i64)
+        } // INTERNAL-ABI: C ABI takes i64 timeout
     }
     /// Release a previously acquired permit.
-    fn release(sem: Semaphore) { unsafe { hew_semaphore_release(sem) }; }
+    fn release(sem: Semaphore) {
+        unsafe {
+            hew_semaphore_release(sem)
+        };
+    }
     /// Return the current number of available permits.
-    fn count(sem: Semaphore) -> int { unsafe { hew_semaphore_count(sem) } }
+    fn count(sem: Semaphore) -> int {
+        unsafe {
+            hew_semaphore_count(sem)
+        }
+    }
     /// Release the semaphore resources.
-    fn free(sem: Semaphore) { unsafe { hew_semaphore_free(sem) }; }
+    fn free(sem: Semaphore) {
+        unsafe {
+            hew_semaphore_free(sem)
+        };
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Create a new counting semaphore with the given number of permits.
 ///
 /// # Examples
@@ -75,11 +97,12 @@ impl SemaphoreMethods for Semaphore {
 /// let sem = semaphore.new(5);
 /// ```
 pub fn new(count: int) -> Semaphore {
-    unsafe { hew_semaphore_new(count as i32) } // INTERNAL-ABI: C ABI takes i32 initial count
+    unsafe {
+        hew_semaphore_new(count as i32)
+    } // INTERNAL-ABI: C ABI takes i32 initial count
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_semaphore_new(initial_count: i32) -> Semaphore;
     fn hew_semaphore_acquire(sem: Semaphore);

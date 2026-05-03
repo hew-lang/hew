@@ -23,14 +23,12 @@
 //
 // Run:   hew run   examples/multifile/02_geometry/main.hew
 // Check: hew check examples/multifile/02_geometry/main.hew
-
 import geo::{Point, origin, manhattan, chebyshev, bounding_area};
 
 fn main() {
     let o = origin();
     let p = Point { x: 3, y: 4 };
     let q = Point { x: 6, y: 8 };
-
     println(f"origin  = ({o.x}, {o.y})");
     println(f"p       = ({p.x}, {p.y})");
     println(f"q       = ({q.x}, {q.y})");

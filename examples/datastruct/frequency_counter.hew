@@ -1,6 +1,5 @@
 // Frequency Counter - Count element frequencies and find top-k elements
 // Uses custom hash map implementation
-
 fn hash(key: int, capacity: int) -> int {
     let h = key % capacity;
     if h < 0 {
@@ -13,7 +12,7 @@ fn hash(key: int, capacity: int) -> int {
 fn make_keys(capacity: int) -> Vec<int> {
     let v: Vec<int> = Vec::new();
     let EMPTY = 0 - 1;
-    for i in 0..capacity {
+    for i in 0 .. capacity {
         v.push(EMPTY);
     }
     v
@@ -21,7 +20,7 @@ fn make_keys(capacity: int) -> Vec<int> {
 
 fn make_vals(capacity: int) -> Vec<int> {
     let v: Vec<int> = Vec::new();
-    for i in 0..capacity {
+    for i in 0 .. capacity {
         v.push(0);
     }
     v
@@ -75,7 +74,7 @@ fn get_freq(keys: Vec<int>, vals: Vec<int>, key: int) -> int {
 // Count frequencies of all elements in data array
 fn count_all(data: Vec<int>, keys: Vec<int>, vals: Vec<int>) {
     let len = data.len();
-    for i in 0..len {
+    for i in 0 .. len {
         count_element(keys, vals, data.get(i));
     }
 }
@@ -86,7 +85,7 @@ fn find_top1(keys: Vec<int>, vals: Vec<int>) -> int {
     let EMPTY = 0 - 1;
     var best_key = EMPTY;
     var best_val = 0;
-    for i in 0..capacity {
+    for i in 0 .. capacity {
         let k = keys.get(i);
         if k != EMPTY {
             let v = vals.get(i);
@@ -105,14 +104,14 @@ fn find_topk(keys: Vec<int>, vals: Vec<int>, k: int, result: Vec<int>) {
     let EMPTY = 0 - 1;
     // Make a copy of vals to mark used entries
     let used: Vec<int> = Vec::new();
-    for i in 0..capacity {
+    for i in 0 .. capacity {
         used.push(0);
     }
     var found = 0;
     while found < k {
         var best_idx = 0 - 1;
         var best_val = 0;
-        for i in 0..capacity {
+        for i in 0 .. capacity {
             let ki = keys.get(i);
             if ki != EMPTY {
                 if used.get(i) == 0 {
@@ -137,7 +136,6 @@ fn find_topk(keys: Vec<int>, vals: Vec<int>, k: int, result: Vec<int>) {
 fn main() {
     var passed = 0;
     var failed = 0;
-
     // Test data: [1, 2, 3, 1, 2, 1, 4, 2, 1, 3]
     // Frequencies: 1->4, 2->3, 3->2, 4->1
     let data: Vec<int> = Vec::new();
@@ -151,7 +149,6 @@ fn main() {
     data.push(2);
     data.push(1);
     data.push(3);
-
     let cap = 32;
     let keys = make_keys(cap);
     let vals = make_vals(cap);
@@ -167,7 +164,6 @@ fn main() {
         println(f1);
         failed = failed + 1;
     }
-
     // Test 2: Frequency of element 2
     let f2 = get_freq(keys, vals, 2);
     if f2 == 3 {
@@ -178,7 +174,6 @@ fn main() {
         println(f2);
         failed = failed + 1;
     }
-
     // Test 3: Frequency of element 3
     let f3 = get_freq(keys, vals, 3);
     if f3 == 2 {
@@ -188,7 +183,6 @@ fn main() {
         println("FAIL: frequency of 3");
         failed = failed + 1;
     }
-
     // Test 4: Frequency of element 4
     let f4 = get_freq(keys, vals, 4);
     if f4 == 1 {
@@ -198,7 +192,6 @@ fn main() {
         println("FAIL: frequency of 4");
         failed = failed + 1;
     }
-
     // Test 5: Frequency of non-existent element
     let f5 = get_freq(keys, vals, 99);
     if f5 == 0 {
@@ -208,7 +201,6 @@ fn main() {
         println("FAIL: frequency of non-existent");
         failed = failed + 1;
     }
-
     // Test 6: Top-1 most frequent
     let top1 = find_top1(keys, vals);
     if top1 == 1 {
@@ -218,7 +210,6 @@ fn main() {
         println("FAIL: top-1 frequent");
         failed = failed + 1;
     }
-
     // Test 7: Top-3 frequent elements
     let result: Vec<int> = Vec::new();
     find_topk(keys, vals, 3, result);
@@ -248,14 +239,13 @@ fn main() {
         println("FAIL: top-3 frequent (wrong count)");
         failed = failed + 1;
     }
-
     // Test 8: Larger dataset
     let data2: Vec<int> = Vec::new();
     // 5 appears 10 times, 6 appears 5 times, 7 appears 1 time
-    for i in 0..10 {
+    for i in 0 .. 10 {
         data2.push(5);
     }
-    for i in 0..5 {
+    for i in 0 .. 5 {
         data2.push(6);
     }
     data2.push(7);
@@ -282,7 +272,6 @@ fn main() {
         println("FAIL: larger dataset");
         failed = failed + 1;
     }
-
     // Summary
     println("---");
     print("Passed: ");

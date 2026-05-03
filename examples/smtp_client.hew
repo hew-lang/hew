@@ -10,11 +10,9 @@
 //   hew run   examples/smtp_client.hew          # actually sends — needs creds
 //
 // Replace the string literals in main() with real values before running.
-
 import std::net::smtp;
 
-fn send_plain(host: String, port: int, username: String, password: String,
-              from: String, to: String) -> Result<int, String> {
+fn send_plain(host: String, port: int, username: String, password: String, from: String, to: String) -> Result<int, String> {
     let conn = smtp.connect(host, port, username, password);
     let result = conn.try_send(from, to, "Hello from Hew", "This is a plain-text test email.");
     conn.close();
@@ -24,8 +22,7 @@ fn send_plain(host: String, port: int, username: String, password: String,
     }
 }
 
-fn send_html(host: String, port: int, username: String, password: String,
-              from: String, to: String) -> Result<int, String> {
+fn send_html(host: String, port: int, username: String, password: String, from: String, to: String) -> Result<int, String> {
     let conn = smtp.connect_tls(host, port, username, password);
     let body = "<h1>Hello</h1><p>This is an <b>HTML</b> test email sent from Hew.</p>";
     let result = conn.try_send_html(from, to, "HTML email from Hew", body);
@@ -37,19 +34,17 @@ fn send_html(host: String, port: int, username: String, password: String,
 }
 
 fn main() {
-    let host     = "smtp.example.com";
+    let host = "smtp.example.com";
     let username = "user@example.com";
     let password = "secret";
-    let from     = "sender@example.com";
-    let to       = "recipient@example.com";
-
+    let from = "sender@example.com";
+    let to = "recipient@example.com";
     match send_plain(host, 587, username, password, from, to) {
-        Ok(_)    => println("Plain-text email sent."),
+        Ok(_) => println("Plain-text email sent."),
         Err(msg) => println("Error: " + msg),
     }
-
     match send_html(host, 465, username, password, from, to) {
-        Ok(_)    => println("HTML email sent."),
+        Ok(_) => println("HTML email sent."),
         Err(msg) => println("Error: " + msg),
     }
 }

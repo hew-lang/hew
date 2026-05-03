@@ -7,26 +7,21 @@
 // The actor code is identical whether local or distributed.
 // Node::start/shutdown/register/lookup typecheck today. Node::connect is
 // runtime-only for now (not a typechecker builtin yet).
-
 actor ChatRoom {
     let users: Vec<String>;
     let messages: Vec<String>;
-
     receive fn enter(username: String) {
         users.push(username);
         println(f"[room] {username} entered ({users.len()} online)");
     }
-
     receive fn say(username: String, text: String) {
         let msg = f"{username}: {text}";
         messages.push(msg);
         println(f"[room] {msg}");
     }
-
     receive fn exit_room(username: String) {
         println(f"[room] {username} left");
     }
-
     receive fn history() -> int {
         let total = messages.len();
         println(f"[room] {total} messages total");
@@ -42,11 +37,9 @@ actor ChatRoom {
 fn main() {
     // ── Server side ──────────────────────────────────────────
     // Node::start("0.0.0.0:9000");
-
     let empty_users: Vec<String> = Vec::new();
     let empty_msgs: Vec<String> = Vec::new();
     let room = spawn ChatRoom(users: empty_users, messages: empty_msgs);
-
     // Node::register("room", room);
 
     // ── Client side (same process for now) ───────────────────
@@ -63,7 +56,6 @@ fn main() {
     room.say("bob", "hey alice!");
     room.say("alice", "how is the weather?");
     room.exit_room("bob");
-
     await room.history();
 
     // Node::shutdown();

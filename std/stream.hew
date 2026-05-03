@@ -42,10 +42,12 @@
 import std::fs;
 
 /// A readable stream handle, parameterised by element type.
-type Stream<T> {}
+type Stream<T> {
+}
 
 /// A writable sink handle, parameterised by element type.
-type Sink<T> {}
+type Sink<T> {
+}
 
 // ── Stream<T> methods ─────────────────────────────────────────────────
 //
@@ -60,7 +62,6 @@ type Sink<T> {}
 // are element-type-independent.
 
 // ── Constructors ──────────────────────────────────────────────────────
-
 /// Create a bounded in-memory string pipe with the given capacity.
 ///
 /// This is the convenience text ABI lane over the same bounded, blocking,
@@ -194,13 +195,15 @@ pub fn try_to_file(path: String) -> Result<Sink<String>, fs.IoError> {
 /// stream.forward(file, body);  // streams file directly to HTTP response
 /// ```
 pub fn forward(source: Stream<String>, dest: Sink<String>) {
-    unsafe { hew_stream_pipe(source, dest) };
+    unsafe {
+        hew_stream_pipe(source, dest)
+    };
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 /// Internal paired channel handle.
-type StreamPair {}
+type StreamPair {
+}
 
 extern "C" {
     fn hew_stream_channel(capacity: i64) -> StreamPair;

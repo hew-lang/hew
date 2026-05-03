@@ -1,7 +1,6 @@
 // Binary Tree using Vec<i32> with index-based pointers
 // Each node: [value, left, right] = 3 slots
 // NIL = -1 means no child
-
 fn add_node(nodes: Vec<i32>, val: i32, NIL: i32) -> i32 {
     let idx = nodes.len() / 3;
     nodes.push(val);
@@ -129,7 +128,7 @@ fn height(nodes: Vec<i32>, NIL: i32) -> i32 {
     }
     // Compute height for each node bottom-up
     let heights: Vec<i32> = Vec::new();
-    for i in 0..count {
+    for i in 0 .. count {
         heights.push(0);
     }
     // Process nodes in reverse order (leaves first)
@@ -170,7 +169,7 @@ fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> bool {
 }
 
 fn print_vec(v: Vec<i32>) -> i32 {
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         print(v.get(i));
         print(" ");
     }
@@ -186,14 +185,19 @@ fn test_inorder() -> i32 {
     //      2   3
     //     / \ / \
     //    4  5 6  7
-    for i in 1..8 {
+    for i in 1 .. 8 {
         let _ = insert_level_order(nodes, i, NIL);
     }
     let result: Vec<i32> = Vec::new();
     let _ = inorder(nodes, result, NIL);
     let expected: Vec<i32> = Vec::new();
-    expected.push(4); expected.push(2); expected.push(5);
-    expected.push(1); expected.push(6); expected.push(3); expected.push(7);
+    expected.push(4);
+    expected.push(2);
+    expected.push(5);
+    expected.push(1);
+    expected.push(6);
+    expected.push(3);
+    expected.push(7);
     if vecs_equal(result, expected) {
         println("PASS: inorder traversal");
         1
@@ -207,14 +211,19 @@ fn test_inorder() -> i32 {
 fn test_preorder() -> i32 {
     let NIL = 0 - 1;
     let nodes: Vec<i32> = Vec::new();
-    for i in 1..8 {
+    for i in 1 .. 8 {
         let _ = insert_level_order(nodes, i, NIL);
     }
     let result: Vec<i32> = Vec::new();
     let _ = preorder(nodes, result, NIL);
     let expected: Vec<i32> = Vec::new();
-    expected.push(1); expected.push(2); expected.push(4);
-    expected.push(5); expected.push(3); expected.push(6); expected.push(7);
+    expected.push(1);
+    expected.push(2);
+    expected.push(4);
+    expected.push(5);
+    expected.push(3);
+    expected.push(6);
+    expected.push(7);
     if vecs_equal(result, expected) {
         println("PASS: preorder traversal");
         1
@@ -228,14 +237,19 @@ fn test_preorder() -> i32 {
 fn test_postorder() -> i32 {
     let NIL = 0 - 1;
     let nodes: Vec<i32> = Vec::new();
-    for i in 1..8 {
+    for i in 1 .. 8 {
         let _ = insert_level_order(nodes, i, NIL);
     }
     let result: Vec<i32> = Vec::new();
     let _ = postorder(nodes, result, NIL);
     let expected: Vec<i32> = Vec::new();
-    expected.push(4); expected.push(5); expected.push(2);
-    expected.push(6); expected.push(7); expected.push(3); expected.push(1);
+    expected.push(4);
+    expected.push(5);
+    expected.push(2);
+    expected.push(6);
+    expected.push(7);
+    expected.push(3);
+    expected.push(1);
     if vecs_equal(result, expected) {
         println("PASS: postorder traversal");
         1
@@ -249,7 +263,7 @@ fn test_postorder() -> i32 {
 fn test_height() -> i32 {
     let NIL = 0 - 1;
     let nodes: Vec<i32> = Vec::new();
-    for i in 1..8 {
+    for i in 1 .. 8 {
         let _ = insert_level_order(nodes, i, NIL);
     }
     let h = height(nodes, NIL);

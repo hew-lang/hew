@@ -32,6 +32,5 @@ fn main() {
     // Security:
     //   Node::load_keys("node.key");      // runtime API, not a typechecker builtin yet
     //   Node::allow_peer(peer_public_key); // runtime API, not a typechecker builtin yet
-
     println("Counter node demo complete");
 }

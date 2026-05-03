@@ -24,12 +24,10 @@
 actor Counter {
     let name: i32;
     let value: i32;
-
     receive fn increment(amount: i32) -> i32 {
         value = value + amount;
         value
     }
-
     receive fn get() -> i32 {
         value
     }
@@ -40,12 +38,10 @@ actor Counter {
 actor SlowProcessor {
     let id: i32;
     let processed: i32;
-
     receive fn process(item: i32) {
         processed = processed + 1;
         sleep_ms(100);
     }
-
     receive fn stats() -> i32 {
         processed
     }
@@ -55,7 +51,6 @@ actor SlowProcessor {
 // the high-throughput counters when sorting the Actors tab.
 actor Logger {
     let entries: i32;
-
     receive fn log(level: i32) {
         entries = entries + 1;
     }
@@ -65,18 +60,15 @@ actor Logger {
 // visible in the message rate sparkline.
 actor Accumulator {
     let total: i32;
-
     receive fn add(value: i32) {
         total = total + value;
     }
-
     receive fn reset() {
         total = 0;
     }
 }
 
 // ── Main ────────────────────────────────────────────────────────────
-
 fn main() {
     println("=== hew-observe showcase ===");
     println("Run hew-observe in another terminal to inspect this program.");
@@ -98,7 +90,6 @@ fn main() {
 
     // Register a named actor in the cluster registry.
     Node::register("main_counter", c1);
-
     println("7 actors spawned. Running workload for 60 seconds...");
     println("Watch hew-observe tabs: Overview, Actors, Messages, Timeline");
     println("");
@@ -116,7 +107,6 @@ fn main() {
             c3.increment(3);
             i = i + 1;
         }
-
         // ── Slow processor traffic ──
         // Each process() call sleeps 100ms, so these actors stay busy
         // and accumulate mailbox depth visible in the Actors tab.
@@ -136,7 +126,6 @@ fn main() {
         if round % 10 == 9 {
             acc.reset();
         }
-
         // ── Sparse logger traffic ──
         // One message per second — barely visible in the message rate.
         logger.log(1);
@@ -146,12 +135,10 @@ fn main() {
         sleep_ms(1000);
         round = round + 1;
     }
-
     // Print final stats.
     let total = await c1.get() + await c2.get() + await c3.get();
     println("");
     println(f"Counter total: {total}");
-
     Node::shutdown();
     println("Showcase complete.");
 }

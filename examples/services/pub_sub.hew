@@ -19,12 +19,10 @@
 actor Subscriber {
     let name: String;
     let received: int;
-
     receive fn on_message(topic: String, payload: String) {
         received = received + 1;
         println(f"  [{name}] #{received} topic={topic}: {payload}");
     }
-
     receive fn count() -> int {
         println(f"  [{name}] total received: {received}");
         received
@@ -51,7 +49,7 @@ actor Broker {
     receive fn publish(topic: String, payload: String) {
         published = published + 1;
         var delivered = 0;
-        for i in 0..sub_topics.len() {
+        for i in 0 .. sub_topics.len() {
             if sub_topics.get(i) == topic {
                 let target = sub_actors.get(i);
                 target.on_message(sub_topics.get(i), payload);
@@ -60,7 +58,6 @@ actor Broker {
         }
         println(f"[broker] published #{published} → {delivered} subscribers");
     }
-
     receive fn stats() -> int {
         println(f"[broker] total published: {published}, subscriptions: {sub_topics.len()}");
         published
@@ -74,17 +71,11 @@ fn main() {
     // Create broker
     let empty_topics: Vec<String> = Vec::new();
     let empty_actors: Vec<ActorRef<Subscriber>> = Vec::new();
-    let broker = spawn Broker(
-        sub_topics: empty_topics,
-        sub_actors: empty_actors,
-        published: 0,
-    );
-
+    let broker = spawn Broker(sub_topics: empty_topics, sub_actors: empty_actors, published: 0);
     // Create subscribers
     let alice = spawn Subscriber(name: "alice", received: 0);
     let bob = spawn Subscriber(name: "bob", received: 0);
     let carol = spawn Subscriber(name: "carol", received: 0);
-
     // ── Register subscriptions ──
     println("--- Registering subscriptions ---");
     broker.subscribe("orders", alice);
@@ -124,7 +115,6 @@ fn main() {
     await alice.count();
     await bob.count();
     await carol.count();
-
     println("");
     println("Pub/sub complete. No channels, no mutexes, no select loops.");
     println("The broker actor serialises all routing — data-race free.");

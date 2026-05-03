@@ -1,5 +1,4 @@
 // Ternary Search - divide sorted array into thirds
-
 fn ternary_search(arr: Vec<int>, target: int) -> int {
     var low = 0;
     var high = arr.len() - 1;
@@ -30,7 +29,6 @@ fn ternary_search(arr: Vec<int>, target: int) -> int {
 fn main() {
     var passed = 0;
     var failed = 0;
-
     // Test 1: find element in sorted array
     let v1: Vec<int> = Vec::new();
     v1.push(1);
@@ -52,7 +50,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 2: find first element
     let v2: Vec<int> = Vec::new();
     v2.push(1);
@@ -70,7 +67,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 3: find last element
     let v3: Vec<int> = Vec::new();
     v3.push(1);
@@ -88,7 +84,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 4: not found
     let v4: Vec<int> = Vec::new();
     v4.push(1);
@@ -106,7 +101,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 5: empty array
     let v5: Vec<int> = Vec::new();
     let r5 = ternary_search(v5, 5);
@@ -119,7 +113,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 6: single element found
     let v6: Vec<int> = Vec::new();
     v6.push(42);
@@ -133,7 +126,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 7: two elements, find second
     let v7: Vec<int> = Vec::new();
     v7.push(5);
@@ -148,7 +140,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Summary
     println("");
     print(passed);

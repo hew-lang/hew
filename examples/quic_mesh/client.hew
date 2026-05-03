@@ -7,7 +7,6 @@
 //
 // Run after server.hew is already listening:
 //   hew run examples/quic_mesh/client.hew
-
 actor Counter {
     let count: int;
     receive fn increment(n: int) {
@@ -20,7 +19,6 @@ actor Counter {
 
 fn main() {
     println("[client] starting QUIC mesh node...");
-
     Node::set_transport("quic");
     Node::start("127.0.0.1:9001");
     println("[client] listening on 127.0.0.1:9001 (QUIC/TLS 1.3)");
@@ -42,7 +40,6 @@ fn main() {
 
     // Allow messages to be delivered.
     sleep_ms(500);
-
     Node::shutdown();
     println("[client] shut down");
 }

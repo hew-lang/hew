@@ -76,5 +76,5 @@ fn main() {
     let try_ok = test_try_operator();
     println(try_ok); // 10
     let try_err = test_try_operator_error();
-    println(try_err); // -999
-}
+    println(try_err);
+} // -999

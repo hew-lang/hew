@@ -18,7 +18,6 @@
 import std::time::datetime;
 
 // ── Types ─────────────────────────────────────────────────────────────
-
 /// A single benchmark result containing timing statistics.
 pub type BenchResult {
     name: String;
@@ -36,7 +35,6 @@ pub type Suite {
 }
 
 // ── Constructor ───────────────────────────────────────────────────────
-
 /// Create a new benchmark suite.
 pub fn suite(name: String) -> Suite {
     let results: Vec<BenchResult> = Vec::new();
@@ -44,7 +42,6 @@ pub fn suite(name: String) -> Suite {
 }
 
 // ── Suite methods ─────────────────────────────────────────────────────
-
 /// Methods available on a benchmark `Suite`.
 trait SuiteMethods {
     /// Run a benchmark and record the result.
@@ -64,6 +61,7 @@ trait SuiteMethods {
 impl SuiteMethods for Suite {
     /// Run a benchmark and record the result.
     fn add(suite: Suite, name: String, iterations: int, f: fn()) {
+
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;
         if warmup < 1 {
@@ -74,7 +72,6 @@ impl SuiteMethods for Suite {
             f();
             wi = wi + 1;
         }
-
         // Measure
         var min_ns: int = 9223372036854775807;
         var max_ns: int = 0;
@@ -94,19 +91,10 @@ impl SuiteMethods for Suite {
             }
             i = i + 1;
         }
-
         let avg_ns = total_ns / iterations;
-        let result = BenchResult {
-            name: name,
-            iterations: iterations,
-            avg_ns: avg_ns,
-            min_ns: min_ns,
-            max_ns: max_ns,
-            total_ns: total_ns,
-        };
+        let result = BenchResult { name: name, iterations: iterations, avg_ns: avg_ns, min_ns: min_ns, max_ns: max_ns, total_ns: total_ns };
         suite.results.push(result);
     }
-
     /// Print results as a human-readable table.
     fn report(suite: Suite) {
         println(f"=== {suite.name} ===");
@@ -121,7 +109,6 @@ impl SuiteMethods for Suite {
             i = i + 1;
         }
     }
-
     /// Print results as a JSON array.
     fn report_json(suite: Suite) {
         var json = f"\{\"suite\":\"{suite.name}\",\"benchmarks\":[";
@@ -131,7 +118,7 @@ impl SuiteMethods for Suite {
             if i > 0 {
                 json = json + ",";
             }
-            json = json + f"\{\"name\":\"{r.name}\",\"iterations\":{r.iterations},\"avg_ns\":{r.avg_ns},\"min_ns\":{r.min_ns},\"max_ns\":{r.max_ns},\"total_ns\":{r.total_ns}\}";
+            json = json + f"\{\"name\":\"{r.name}\",\"iterations\":{r.iterations},\"avg_ns\":{r.avg_ns},\"min_ns\":{r.min_ns},\"max_ns\":{r.max_ns},\"total_ns\":{r.total_ns}\\}";
             i = i + 1;
         }
         json = json + "]}";
@@ -140,24 +127,23 @@ impl SuiteMethods for Suite {
 }
 
 // ── Time formatting helpers ───────────────────────────────────────────
-
 /// Format a nanosecond duration as a human-readable string with appropriate units.
 fn format_time(ns: int) -> String {
     if ns < 1000 {
         f"{ns} ns"
     } else if ns < 1000000 {
         let whole = ns / 1000;
-        let frac = (ns % 1000) / 10;
+        let frac = ns % 1000 / 10;
         let frac_str = pad_two(frac);
         f"{whole}.{frac_str} us"
     } else if ns < 1000000000 {
         let whole = ns / 1000000;
-        let frac = (ns % 1000000) / 10000;
+        let frac = ns % 1000000 / 10000;
         let frac_str = pad_two(frac);
         f"{whole}.{frac_str} ms"
     } else {
         let whole = ns / 1000000000;
-        let frac = (ns % 1000000000) / 10000000;
+        let frac = ns % 1000000000 / 10000000;
         let frac_str = pad_two(frac);
         f"{whole}.{frac_str} s"
     }
@@ -170,13 +156,13 @@ fn format_ops(avg_ns: int) -> String {
     } else if avg_ns < 1000 {
         let mops = 1000000000 / avg_ns;
         let mops_m = mops / 1000000;
-        let mops_frac = (mops % 1000000) / 10000;
+        let mops_frac = mops % 1000000 / 10000;
         let frac_str = pad_two(mops_frac);
         f"{mops_m}.{frac_str}M ops/sec"
     } else if avg_ns < 1000000 {
         let ops = 1000000000 / avg_ns;
         let kops = ops / 1000;
-        let kops_frac = (ops % 1000) / 10;
+        let kops_frac = ops % 1000 / 10;
         let frac_str = pad_two(kops_frac);
         f"{kops}.{frac_str}K ops/sec"
     } else {

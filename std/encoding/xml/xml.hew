@@ -22,22 +22,29 @@
 /// Represents either an element (with tag, attributes, and children) or a
 /// text node. Created by `xml.parse(s)` or by navigating into a parsed
 /// tree. Must be freed with `free()` when no longer needed.
-type Node {}
+type Node {
+}
 
 /// Methods available on an XML `Node`.
 trait NodeMethods {
     /// Serialize the node tree back to an XML string.
     fn to_string(node: Node) -> String;
+
     /// Get the tag name of an element node. Returns empty for text nodes.
     fn get_tag(node: Node) -> String;
+
     /// Get an attribute value by name. Returns empty string if not found.
     fn get_attribute(node: Node, name: String) -> String;
+
     /// Get the number of child nodes.
     fn children_count(node: Node) -> int;
+
     /// Get a child node by index. Returns a new Node that must be freed.
     fn get_child(node: Node, index: int) -> Node;
+
     /// Get the concatenated text content of this node and its descendants.
     fn get_text(node: Node) -> String;
+
     /// Return 1 if this is an element node, 0 if text, -1 if null.
     fn is_element(node: Node) -> i32; // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
     /// Release the node resources.
@@ -45,42 +52,78 @@ trait NodeMethods {
 }
 
 impl NodeMethods for Node {
-    fn to_string(node: Node) -> String { unsafe { hew_xml_to_string(node) } }
-    fn get_tag(node: Node) -> String { unsafe { hew_xml_get_tag(node) } }
-    fn get_attribute(node: Node, name: String) -> String {
-        unsafe { hew_xml_get_attribute(node, name) }
+    fn to_string(node: Node) -> String {
+        unsafe {
+            hew_xml_to_string(node)
+        }
     }
-    fn children_count(node: Node) -> int { unsafe { hew_xml_children_count(node) } }
-    fn get_child(node: Node, index: int) -> Node { unsafe { hew_xml_get_child(node, index as i32) } } // INTERNAL-ABI: C ABI index is i32
-    fn get_text(node: Node) -> String { unsafe { hew_xml_get_text(node) } }
-    fn is_element(node: Node) -> i32 { unsafe { hew_xml_is_element(node) } } // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
-    fn free(node: Node) { unsafe { hew_xml_free(node) }; }
+    fn get_tag(node: Node) -> String {
+        unsafe {
+            hew_xml_get_tag(node)
+        }
+    }
+    fn get_attribute(node: Node, name: String) -> String {
+        unsafe {
+            hew_xml_get_attribute(node, name)
+        }
+    }
+    fn children_count(node: Node) -> int {
+        unsafe {
+            hew_xml_children_count(node)
+        }
+    }
+    fn get_child(node: Node, index: int) -> Node {
+        unsafe {
+            hew_xml_get_child(node, index as i32)
+        }
+    } // INTERNAL-ABI: C ABI index is i32
+    fn get_text(node: Node) -> String {
+        unsafe {
+            hew_xml_get_text(node)
+        }
+    }
+    fn is_element(node: Node) -> i32 { // INTERNAL-ABI: tri-state kind (1=element, 0=text, -1=null); planned enum migration
+        unsafe {
+            hew_xml_is_element(node)
+        }
+    }
+    fn free(node: Node) {
+        unsafe {
+            hew_xml_free(node)
+        };
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Parse an XML string into a `Node` tree.
 pub fn parse(s: String) -> Node {
-    unsafe { hew_xml_parse(s) }
+    unsafe {
+        hew_xml_parse(s)
+    }
 }
 
 /// Serialize a `Node` tree back to an XML string.
 pub fn to_string(node: Node) -> String {
-    unsafe { hew_xml_to_string(node) }
+    unsafe {
+        hew_xml_to_string(node)
+    }
 }
 
 /// Get an attribute value from a node. Returns empty string if not found.
 pub fn get_attribute(node: Node, name: String) -> String {
-    unsafe { hew_xml_get_attribute(node, name) }
+    unsafe {
+        hew_xml_get_attribute(node, name)
+    }
 }
 
 /// Get the concatenated text content of a node and its descendants.
 pub fn get_text(node: Node) -> String {
-    unsafe { hew_xml_get_text(node) }
+    unsafe {
+        hew_xml_get_text(node)
+    }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
-
 extern "C" {
     fn hew_xml_parse(xml_str: String) -> Node;
     fn hew_xml_to_string(node: Node) -> String;

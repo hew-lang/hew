@@ -1,10 +1,17 @@
 // Circular Singly Linked List using Vec<i32> with index-based pointers
 // Node layout: nodes[i*2] = value, nodes[i*2+1] = next
 // Last node's next points back to head
+fn node_val(n: Vec<i32>, i: i32) -> i32 {
+    n.get(i * 2)
+}
 
-fn node_val(n: Vec<i32>, i: i32) -> i32 { n.get(i * 2) }
-fn node_next(n: Vec<i32>, i: i32) -> i32 { n.get(i * 2 + 1) }
-fn set_next(n: Vec<i32>, i: i32, nx: i32) { n.set(i * 2 + 1, nx); }
+fn node_next(n: Vec<i32>, i: i32) -> i32 {
+    n.get(i * 2 + 1)
+}
+
+fn set_next(n: Vec<i32>, i: i32, nx: i32) {
+    n.set(i * 2 + 1, nx);
+}
 
 fn alloc_node(n: Vec<i32>, val: i32) -> i32 {
     let idx = n.len() / 2;
@@ -48,7 +55,9 @@ fn insert_tail(n: Vec<i32>, head: i32, val: i32) -> i32 {
 
 // Delete first occurrence, returns new head
 fn delete_val(n: Vec<i32>, head: i32, val: i32) -> i32 {
-    if head == -1 { return -1; }
+    if head == -1 {
+        return -1;
+    }
     // Single element
     if node_next(n, head) == head {
         if node_val(n, head) == val {
@@ -84,7 +93,9 @@ fn delete_val(n: Vec<i32>, head: i32, val: i32) -> i32 {
 
 // Traverse circular list, collect values (one full loop)
 fn traverse(n: Vec<i32>, head: i32, result: Vec<i32>) {
-    if head == -1 { return; }
+    if head == -1 {
+        return;
+    }
     result.push(node_val(n, head));
     var curr = node_next(n, head);
     while curr != head {
@@ -95,7 +106,9 @@ fn traverse(n: Vec<i32>, head: i32, result: Vec<i32>) {
 
 // Count elements
 fn list_len(n: Vec<i32>, head: i32) -> i32 {
-    if head == -1 { return 0; }
+    if head == -1 {
+        return 0;
+    }
     var count = 1;
     var curr = node_next(n, head);
     while curr != head {
@@ -106,15 +119,18 @@ fn list_len(n: Vec<i32>, head: i32) -> i32 {
 }
 
 fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
-    if a.len() != b.len() { return 0; }
-    for i in 0..a.len() {
-        if a.get(i) != b.get(i) { return 0; }
+    if a.len() != b.len() {
+        return 0;
+    }
+    for i in 0 .. a.len() {
+        if a.get(i) != b.get(i) {
+            return 0;
+        }
     }
     1
 }
 
 // --- Tests ---
-
 fn test_insert_and_traverse() -> i32 {
     let n: Vec<i32> = Vec::new();
     var head = -1;
@@ -124,7 +140,9 @@ fn test_insert_and_traverse() -> i32 {
     let r: Vec<i32> = Vec::new();
     traverse(n, head, r);
     let e: Vec<i32> = Vec::new();
-    e.push(10); e.push(20); e.push(30);
+    e.push(10);
+    e.push(20);
+    e.push(30);
     if vecs_equal(r, e) == 1 {
         println("PASS: insert and traverse");
         return 1;
@@ -142,7 +160,7 @@ fn test_circular_property() -> i32 {
     // Walk 2 full cycles and check we see values repeated
     var curr = head;
     var sum = 0;
-    for count in 0..6 {
+    for count in 0 .. 6 {
         sum = sum + node_val(n, curr);
         curr = node_next(n, curr);
     }
@@ -167,7 +185,8 @@ fn test_delete_middle() -> i32 {
     let r: Vec<i32> = Vec::new();
     traverse(n, head, r);
     let e: Vec<i32> = Vec::new();
-    e.push(10); e.push(30);
+    e.push(10);
+    e.push(30);
     if vecs_equal(r, e) == 1 {
         println("PASS: delete middle");
         return 1;
@@ -186,7 +205,8 @@ fn test_delete_head() -> i32 {
     let r: Vec<i32> = Vec::new();
     traverse(n, head, r);
     let e: Vec<i32> = Vec::new();
-    e.push(20); e.push(30);
+    e.push(20);
+    e.push(30);
     if vecs_equal(r, e) == 1 {
         // Verify still circular
         if node_next(n, node_next(n, head)) == head {
@@ -248,5 +268,9 @@ fn main() {
     print("Passed: ");
     print(passed);
     println(f"/{total}");
-    if passed == total { println("OVERALL: PASS"); } else { println("OVERALL: FAIL"); }
+    if passed == total {
+        println("OVERALL: PASS");
+    } else {
+        println("OVERALL: FAIL");
+    }
 }

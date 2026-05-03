@@ -2,7 +2,7 @@ fn max_subarray(arr: Vec<int>) -> int {
     let n = arr.len();
     var max_ending = arr.get(0);
     var max_so_far = arr.get(0);
-    for i in 1..n {
+    for i in 1 .. n {
         let val = arr.get(i);
         if val > max_ending + val {
             max_ending = val;
@@ -20,7 +20,7 @@ const ITERS: int = 500000;
 
 fn main() {
     let arr: Vec<int> = Vec::new();
-    for k in 0..1000 {
+    for k in 0 .. 1000 {
         let rem = k % 3;
         if rem == 0 {
             arr.push(k % 7 + 1);
@@ -32,9 +32,8 @@ fn main() {
             }
         }
     }
-
     var checksum = 0;
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         checksum = checksum + max_subarray(arr);
     }
     println("bench_max_subarray");

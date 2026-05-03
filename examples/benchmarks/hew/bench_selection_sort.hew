@@ -1,6 +1,6 @@
 fn selection_sort(v: Vec<int>) -> Vec<int> {
     let n = v.len();
-    for i in 0..n {
+    for i in 0 .. n {
         var min_idx = i;
         var j = i + 1;
         while j < n {
@@ -29,7 +29,7 @@ fn make_test_array() -> Vec<int> {
 const ITERS: int = 50000;
 
 fn main() {
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         let v = make_test_array();
         let _ = selection_sort(v);
     }

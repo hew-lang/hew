@@ -1,9 +1,10 @@
 //! @name Wire Types
 //! @description Wire structs and enums for serialization
 
-wire type UserMessage {
-    name: String @1;
-    age: i32 @2;
+#[wire]
+struct UserMessage {
+    name: String @1,
+    age: i32 @2,
 }
 
 wire enum Command {

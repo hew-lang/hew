@@ -1,6 +1,5 @@
 // Max Stack - Stack that tracks maximum in O(1)
 // Uses two Vecs: main stack and max-tracking stack
-
 fn run_test(name: String, passed: int) -> int {
     if passed == 1 {
         println(f"PASS: {name}");
@@ -44,32 +43,46 @@ fn ms_size(data: Vec<int>) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-
     let data: Vec<int> = Vec::new();
     let maxs: Vec<int> = Vec::new();
-
     // Test 1: push single, max is that element
     total = total + 1;
     ms_push(data, maxs, 5);
-    let r1 = if ms_max(maxs) == 5 { 1 } else { 0 };
+    let r1 = if ms_max(maxs) == 5 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("single element max", r1);
 
     // Test 2: push larger, max updates
     total = total + 1;
     ms_push(data, maxs, 8);
-    let r2 = if ms_max(maxs) == 8 { 1 } else { 0 };
+    let r2 = if ms_max(maxs) == 8 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("push larger updates max", r2);
 
     // Test 3: push smaller, max stays
     total = total + 1;
     ms_push(data, maxs, 3);
-    let r3 = if ms_max(maxs) == 8 { 1 } else { 0 };
+    let r3 = if ms_max(maxs) == 8 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("push smaller keeps max", r3);
 
     // Test 4: push even larger
     total = total + 1;
     ms_push(data, maxs, 12);
-    let r4 = if ms_max(maxs) == 12 { 1 } else { 0 };
+    let r4 = if ms_max(maxs) == 12 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("push even larger", r4);
 
     // Stack: [5, 8, 3, 12], maxs: [5, 8, 8, 12]
@@ -77,19 +90,31 @@ fn main() {
     // Test 5: pop removes largest, max reverts
     total = total + 1;
     ms_pop(data, maxs);
-    let r5 = if ms_max(maxs) == 8 { 1 } else { 0 };
+    let r5 = if ms_max(maxs) == 8 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("pop reverts max to 8", r5);
 
     // Test 6: pop again, max stays 8
     total = total + 1;
     ms_pop(data, maxs);
-    let r6 = if ms_max(maxs) == 8 { 1 } else { 0 };
+    let r6 = if ms_max(maxs) == 8 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("pop again max still 8", r6);
 
     // Test 7: pop the 8, max becomes 5
     total = total + 1;
     ms_pop(data, maxs);
-    let r7 = if ms_max(maxs) == 5 { 1 } else { 0 };
+    let r7 = if ms_max(maxs) == 5 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("pop 8 max becomes 5", r7);
 
     // Test 8: many elements
@@ -103,14 +128,22 @@ fn main() {
     ms_push(d2, m2, 40);
     ms_push(d2, m2, 90);
     ms_push(d2, m2, 60);
-    let r8 = if ms_max(m2) == 90 { 1 } else { 0 };
+    let r8 = if ms_max(m2) == 90 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("many elements max=90", r8);
 
     // Test 9: pop back, max reverts correctly
     total = total + 1;
     ms_pop(d2, m2); // remove 60, max=90
     ms_pop(d2, m2); // remove 90, max=50
-    let r9 = if ms_max(m2) == 50 { 1 } else { 0 };
+    let r9 = if ms_max(m2) == 50 {
+        1
+    } else {
+        0
+    };
     passed = passed + run_test("pop 2 max becomes 50", r9);
 
     // Summary

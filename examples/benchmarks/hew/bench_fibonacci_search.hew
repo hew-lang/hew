@@ -1,6 +1,5 @@
 // Benchmark: Fibonacci Search
 // Uses Fibonacci numbers to divide the search space.
-
 fn fibonacci_search(v: Vec<int>, target: int) -> int {
     let n = v.len();
     if n == 0 {
@@ -50,11 +49,11 @@ const ITERS: int = 1000000;
 
 fn main() {
     let v: Vec<int> = Vec::new();
-    for i in 0..10000 {
+    for i in 0 .. 10000 {
         v.push(i);
     }
     var sum = 0;
-    for iter in 0..ITERS {
+    for iter in 0 .. ITERS {
         sum = sum + fibonacci_search(v, 7777);
     }
     println(ITERS);

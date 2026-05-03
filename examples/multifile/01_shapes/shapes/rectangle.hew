@@ -2,9 +2,8 @@
 //
 // Same pattern as circle.hew: type + impl + factory, all merged into the
 // single `shapes` namespace at import time.
-
 pub type Rectangle {
-    width:  int;
+    width: int;
     height: int;
 }
 

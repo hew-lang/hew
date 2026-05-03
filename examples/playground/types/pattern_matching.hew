@@ -19,7 +19,6 @@ fn main() {
     let c = Circle(5);
     let r = Rectangle(4, 6);
     let t = Triangle(3, 8);
-
     print("Circle area: ");
     println(area(c));
     print("Rectangle area: ");

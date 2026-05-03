@@ -23,7 +23,8 @@
 ///
 /// Created by `path.glob(pattern)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
-type GlobResult {}
+type GlobResult {
+}
 
 /// Methods available on a `GlobResult`.
 trait GlobResultMethods {
@@ -39,15 +40,26 @@ trait GlobResultMethods {
 
 impl GlobResultMethods for GlobResult {
     /// Return the number of matched paths.
-    fn count(res: GlobResult) -> int { unsafe { hew_glob_count(res) } }
+    fn count(res: GlobResult) -> int {
+        unsafe {
+            hew_glob_count(res)
+        }
+    }
     /// Return the matched path at the given index.
-    fn get(res: GlobResult, index: int) -> String { unsafe { hew_glob_get(res, index as i32) } } // INTERNAL-ABI: C ABI takes i32 index
+    fn get(res: GlobResult, index: int) -> String {
+        unsafe {
+            hew_glob_get(res, index as i32)
+        }
+    } // INTERNAL-ABI: C ABI takes i32 index
     /// Release the glob result resources.
-    fn free(res: GlobResult) { unsafe { hew_glob_free(res) }; }
+    fn free(res: GlobResult) {
+        unsafe {
+            hew_glob_free(res)
+        };
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Expand a glob pattern and return all matching paths.
 ///
 /// # Examples
@@ -56,7 +68,9 @@ impl GlobResultMethods for GlobResult {
 /// let files = path.glob("src/**/*.hew");
 /// ```
 pub fn glob(pattern: String) -> GlobResult {
-    unsafe { hew_glob(pattern) }
+    unsafe {
+        hew_glob(pattern)
+    }
 }
 
 /// Combine two path segments with the platform path separator.
@@ -135,26 +149,33 @@ pub fn extension(p: String) -> String {
 
 /// Test whether a path exists on the filesystem.
 pub fn exists(p: String) -> bool {
-    unsafe { hew_path_exists(p) }
+    unsafe {
+        hew_path_exists(p)
+    }
 }
 
 /// Test whether a path refers to a regular file.
 pub fn is_file(p: String) -> bool {
-    unsafe { hew_path_is_file(p) }
+    unsafe {
+        hew_path_is_file(p)
+    }
 }
 
 /// Test whether a path refers to a directory.
 pub fn is_dir(p: String) -> bool {
-    unsafe { hew_path_is_dir(p) }
+    unsafe {
+        hew_path_is_dir(p)
+    }
 }
 
 /// Return the absolute form of a path.
 pub fn absolute(p: String) -> String {
-    unsafe { hew_path_absolute(p) }
+    unsafe {
+        hew_path_absolute(p)
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
-
 /// Strip a single trailing slash from a path, preserving the root `/`.
 fn strip_trailing_slash(p: String) -> String {
     if p == "/" {
@@ -207,7 +228,6 @@ fn last_dot_pos(s: String) -> int {
 }
 
 // ── FFI bindings (filesystem operations only) ────────────────────────
-
 extern "C" {
     fn hew_glob(pattern: String) -> GlobResult;
     fn hew_glob_count(result: GlobResult) -> i32;

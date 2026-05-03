@@ -7,14 +7,12 @@ fn main() {
     } else {
         println(0);
     }
-
     let missing: Option<int> = None;
     if let Some(value) = missing {
         println(value);
     } else {
         println("no value");
     }
-
     var current: Option<int> = Some(3);
     while let Some(value) = current {
         println(value);

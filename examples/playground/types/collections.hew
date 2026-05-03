@@ -7,12 +7,10 @@ fn main() {
     v.push(10);
     v.push(20);
     v.push(30);
-
     print("Vec length: ");
     println(v.len());
     print("First: ");
     println(v.get(0));
-
     let popped = v.pop();
     print("Popped: ");
     println(popped);
@@ -22,7 +20,6 @@ fn main() {
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);
-
     print("Map length: ");
     println(m.len());
     print("get(one): ");
@@ -32,7 +29,6 @@ fn main() {
     }
     print("has three: ");
     println(m.contains_key("three"));
-
     let _ = m.remove("two");
     print("After remove, length: ");
     println(m.len());

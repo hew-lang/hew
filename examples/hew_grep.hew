@@ -51,7 +51,7 @@ fn main() -> i32 {
     let nl = string.from_char(10);
     let pattern = os.args(1);
     var total_matches = 0;
-    for fi in 2..argc {
+    for fi in 2 .. argc {
         let filename = os.args(fi);
         let count = search_file(filename, pattern, nl);
         total_matches = total_matches + count;

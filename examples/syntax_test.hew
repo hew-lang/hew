@@ -1,7 +1,6 @@
 // Hew Syntax Highlighting Test File
 // Tests all syntax constructs for the VS Code extension
 
-/// This is a doc comment
 /* This is a block comment */
 
 // === Imports ===
@@ -12,6 +11,7 @@
 // import std::net::*;
 
 // === Constants ===
+/// This is a doc comment
 pub const MAX_RETRIES: i32 = 5;
 
 const TIMEOUT: i32 = 1000;
@@ -32,6 +32,7 @@ enum Colour {
 // === Trait ===
 trait Drawable {
     fn draw(d: i32) -> bool;
+
     type Canvas;
 }
 
@@ -42,10 +43,11 @@ impl Drawable for Point {
 }
 
 // === Wire Types ===
-wire type UserMessage {
-    name: String @1;
-    age: u32 @2 optional;
-    email: String @3 deprecated;
+#[wire]
+struct UserMessage {
+    name: String @1,
+    age: u32 @2 optional,
+    email: String @3 deprecated,
 }
 
 wire enum Command {

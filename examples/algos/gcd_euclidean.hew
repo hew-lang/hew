@@ -27,7 +27,6 @@ fn check(name: String, got: int, expected: int) -> int {
 fn main() {
     var passed = 0;
     var total = 0;
-
     total = total + 1;
     passed = passed + check("gcd(12,8)=4", gcd(12, 8), 4);
     total = total + 1;
@@ -38,7 +37,6 @@ fn main() {
     passed = passed + check("gcd(48,18)=6", gcd(48, 18), 6);
     total = total + 1;
     passed = passed + check("gcd(0,5)=5", gcd(0, 5), 5);
-
     println("---");
     print("Passed: ");
     print(passed);

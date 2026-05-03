@@ -16,9 +16,7 @@
 //! }
 //! ```
 
-
 // ── Number-to-string conversions ─────────────────────────────────────
-
 /// Convert an integer to its lowercase hexadecimal string representation.
 ///
 /// Negative numbers are prefixed with `-`.
@@ -106,16 +104,27 @@ pub fn to_octal(n: int) -> String {
 /// Map a digit value (0–15) to its lowercase hex character.
 fn hex_digit(d: int) -> String {
     match d {
-        0 => "0", 1 => "1", 2 => "2", 3 => "3",
-        4 => "4", 5 => "5", 6 => "6", 7 => "7",
-        8 => "8", 9 => "9", 10 => "a", 11 => "b",
-        12 => "c", 13 => "d", 14 => "e", 15 => "f",
+        0 => "0",
+        1 => "1",
+        2 => "2",
+        3 => "3",
+        4 => "4",
+        5 => "5",
+        6 => "6",
+        7 => "7",
+        8 => "8",
+        9 => "9",
+        10 => "a",
+        11 => "b",
+        12 => "c",
+        13 => "d",
+        14 => "e",
+        15 => "f",
         _ => "?",
     }
 }
 
 // ── String padding and repetition ────────────────────────────────────
-
 /// Pad a string on the left to reach the given width.
 ///
 /// If `s` is already at least `width` characters, returns `s` unchanged.

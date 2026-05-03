@@ -1,5 +1,4 @@
 // Sentinel Search - place target at end to eliminate bounds check in loop
-
 fn sentinel_search(arr: Vec<int>, target: int) -> int {
     let n = arr.len();
     if n == 0 {
@@ -8,15 +7,12 @@ fn sentinel_search(arr: Vec<int>, target: int) -> int {
     // Save last element and replace with target (sentinel)
     let last = arr.get(n - 1);
     arr.set(n - 1, target);
-
     var i = 0;
     while arr.get(i) != target {
         i = i + 1;
     }
-
     // Restore original last element
     arr.set(n - 1, last);
-
     if i < n - 1 {
         return i;
     }
@@ -29,7 +25,6 @@ fn sentinel_search(arr: Vec<int>, target: int) -> int {
 fn main() {
     var passed = 0;
     var failed = 0;
-
     // Test 1: find element in middle
     let v1: Vec<int> = Vec::new();
     v1.push(10);
@@ -47,7 +42,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 2: find first element
     let v2: Vec<int> = Vec::new();
     v2.push(10);
@@ -63,7 +57,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 3: find last element
     let v3: Vec<int> = Vec::new();
     v3.push(10);
@@ -79,7 +72,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 4: not found
     let v4: Vec<int> = Vec::new();
     v4.push(10);
@@ -95,7 +87,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 5: empty array
     let v5: Vec<int> = Vec::new();
     let r5 = sentinel_search(v5, 5);
@@ -108,7 +99,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 6: single element found
     let v6: Vec<int> = Vec::new();
     v6.push(42);
@@ -122,7 +112,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Test 7: single element not found
     let v7: Vec<int> = Vec::new();
     v7.push(42);
@@ -136,7 +125,6 @@ fn main() {
         println(")");
         failed = failed + 1;
     }
-
     // Summary
     println("");
     print(passed);

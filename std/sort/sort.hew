@@ -19,10 +19,9 @@
 //! ```
 
 // ── Helpers ───────────────────────────────────────────────────────────
-
 fn copy_ints(v: Vec<int>) -> Vec<int> {
     let out: Vec<int> = Vec::new();
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         out.push(v.get(i));
     }
     out
@@ -30,7 +29,7 @@ fn copy_ints(v: Vec<int>) -> Vec<int> {
 
 fn copy_strings(v: Vec<String>) -> Vec<String> {
     let out: Vec<String> = Vec::new();
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         out.push(v.get(i));
     }
     out
@@ -38,7 +37,7 @@ fn copy_strings(v: Vec<String>) -> Vec<String> {
 
 fn copy_floats(v: Vec<f64>) -> Vec<f64> {
     let out: Vec<f64> = Vec::new();
-    for i in 0..v.len() {
+    for i in 0 .. v.len() {
         out.push(v.get(i));
     }
     out
@@ -64,7 +63,7 @@ fn swap_floats(v: Vec<f64>, i: int, j: int) {
 
 fn sort_ints_in_place(v: Vec<int>) {
     let n = v.len();
-    for i in 0..n {
+    for i in 0 .. n {
         var min_idx = i;
         var j = i + 1;
         while j < n {
@@ -81,7 +80,7 @@ fn sort_ints_in_place(v: Vec<int>) {
 
 fn sort_strings_in_place(v: Vec<String>) {
     let n = v.len();
-    for i in 0..n {
+    for i in 0 .. n {
         var min_idx = i;
         var j = i + 1;
         while j < n {
@@ -101,7 +100,6 @@ fn reverse_ints_in_place(v: Vec<int>) {
     if n < 2 {
         return;
     }
-
     var left = 0;
     var right = n - 1;
     while left < right {
@@ -116,7 +114,6 @@ fn reverse_strings_in_place(v: Vec<String>) {
     if n < 2 {
         return;
     }
-
     var left = 0;
     var right = n - 1;
     while left < right {
@@ -131,7 +128,6 @@ fn reverse_floats_in_place(v: Vec<f64>) {
     if n < 2 {
         return;
     }
-
     var left = 0;
     var right = n - 1;
     while left < right {
@@ -142,7 +138,6 @@ fn reverse_floats_in_place(v: Vec<f64>) {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Sort a vector of integers in ascending order.
 ///
 /// Returns a new sorted vector; the original is unchanged.
@@ -166,7 +161,9 @@ pub fn sort_strings(v: Vec<String>) -> Vec<String> {
 /// Returns a new sorted vector; the original is unchanged.
 pub fn sort_floats(v: Vec<f64>) -> Vec<f64> {
     // Keep float sorting on the Rust shim until Hew exposes a `total_cmp`-equivalent order.
-    unsafe { hew_sort_floats(v) }
+    unsafe {
+        hew_sort_floats(v)
+    }
 }
 
 /// Reverse a vector of integers.
@@ -197,7 +194,6 @@ pub fn reverse_floats(v: Vec<f64>) -> Vec<f64> {
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_sort_floats(v: Vec<f64>) -> Vec<f64>;
 }

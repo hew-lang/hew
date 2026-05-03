@@ -2,13 +2,11 @@
 // Colours: 0=white (unvisited), 1=gray (in progress), 2=black (done)
 // Test 1: graph WITH cycle (0->1->2->0) -> has cycle
 // Test 2: DAG without cycle (0->1->2, 0->2) -> no cycle
-
 fn main() {
     // --- Test 1: graph with cycle ---
     // 3 nodes: 0->1, 1->2, 2->0
     let adj1_nodes: Vec<i32> = Vec::new();
     let adj1_offsets: Vec<i32> = Vec::new();
-
     adj1_offsets.push(0);
     adj1_nodes.push(1);
     adj1_offsets.push(1);
@@ -16,17 +14,15 @@ fn main() {
     adj1_offsets.push(2);
     adj1_nodes.push(0);
     adj1_offsets.push(3);
-
     let n1 = 3;
     let colour1: Vec<i32> = Vec::new();
-    for i in 0..n1 {
+    for i in 0 .. n1 {
         colour1.push(0);
     }
-
     // Iterative DFS with explicit stack for cycle detection
     // Stack entries: node * 2 + phase (0 = enter, 1 = exit)
     var has_cycle1 = 0;
-    for start in 0..n1 {
+    for start in 0 .. n1 {
         if colour1.get(start) == 0 {
             let stack: Vec<i32> = Vec::new();
             stack.push(start * 2);
@@ -65,12 +61,10 @@ fn main() {
             }
         }
     }
-
     // --- Test 2: DAG without cycle ---
     // 3 nodes: 0->1, 0->2, 1->2
     let adj2_nodes: Vec<i32> = Vec::new();
     let adj2_offsets: Vec<i32> = Vec::new();
-
     adj2_offsets.push(0);
     adj2_nodes.push(1);
     adj2_nodes.push(2);
@@ -78,15 +72,13 @@ fn main() {
     adj2_nodes.push(2);
     adj2_offsets.push(3);
     adj2_offsets.push(3);
-
     let n2 = 3;
     let colour2: Vec<i32> = Vec::new();
-    for i in 0..n2 {
+    for i in 0 .. n2 {
         colour2.push(0);
     }
-
     var has_cycle2 = 0;
-    for start in 0..n2 {
+    for start in 0 .. n2 {
         if colour2.get(start) == 0 {
             let stack: Vec<i32> = Vec::new();
             stack.push(start * 2);
@@ -125,7 +117,6 @@ fn main() {
             }
         }
     }
-
     var ok = 1;
     if has_cycle1 != 1 {
         ok = 0;
@@ -133,7 +124,6 @@ fn main() {
     if has_cycle2 != 0 {
         ok = 0;
     }
-
     println(has_cycle1);
     println(has_cycle2);
     if ok == 1 {

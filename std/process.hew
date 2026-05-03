@@ -30,7 +30,8 @@
 import std::string;
 
 /// A handle to a completed command invocation inside the runtime.
-type ProcessResultHandle {}
+type ProcessResultHandle {
+}
 
 /// A handle to a running child process.
 ///
@@ -38,7 +39,8 @@ type ProcessResultHandle {}
 /// the process exits, or `kill()` to terminate it. Dropping the
 /// handle reaps it automatically; a still-running child is killed
 /// and waited on at scope exit.
-type Child {}
+type Child {
+}
 
 /// Captured output from a completed command.
 pub type CommandOutput {
@@ -68,9 +70,17 @@ trait ChildMethods {
 
 impl ChildMethods for Child {
     /// Block until the child process exits and return its exit code.
-    fn wait(child: Child) -> int { unsafe { hew_process_wait(child) as int } }
+    fn wait(child: Child) -> int {
+        unsafe {
+            hew_process_wait(child) as int
+        }
+    }
     /// Terminate the child process.
-    fn kill(child: Child) -> int { unsafe { hew_process_kill(child) as int } }
+    fn kill(child: Child) -> int {
+        unsafe {
+            hew_process_kill(child) as int
+        }
+    }
 }
 
 impl Drop for Child {
@@ -80,16 +90,14 @@ impl Drop for Child {
     /// running, drop kills it and waits for it to exit so leaked `Child`
     /// values do not leave OS processes or zombie handles behind.
     fn drop(child: Child) {
-        unsafe { hew_process_drop(child) };
+        unsafe {
+            hew_process_drop(child)
+        };
     }
 }
 
 fn empty_output() -> CommandOutput {
-    CommandOutput {
-        exit_code: -1,
-        stdout: "",
-        stderr: "",
-    }
+    CommandOutput { exit_code: -1, stdout: "", stderr: "" }
 }
 
 fn process_error_message(err: ProcessError) -> String {
@@ -100,12 +108,7 @@ fn process_error_message(err: ProcessError) -> String {
 }
 
 fn process_error_from_message(message: String) -> ProcessError {
-    if message.contains("arg_count")
-        || message.contains("argc")
-        || message.contains("args[")
-        || message.contains("args must be Vec<String>")
-        || message.contains("args is null")
-    {
+    if message.contains("arg_count") || message.contains("argc") || message.contains("args[") || message.contains("args must be Vec<String>") || message.contains("args is null") {
         ProcessError::InvalidArguments(message)
     } else {
         ProcessError::LaunchFailed(message)
@@ -126,11 +129,7 @@ fn last_process_error(default_message: String) -> ProcessError {
 
 fn take_command_output(result: ProcessResultHandle) -> CommandOutput {
     unsafe {
-        let output = CommandOutput {
-            exit_code: hew_process_result_exit_code(result) as int,
-            stdout: hew_process_result_stdout(result),
-            stderr: hew_process_result_stderr(result),
-        };
+        let output = CommandOutput { exit_code: hew_process_result_exit_code(result) as int, stdout: hew_process_result_stdout(result), stderr: hew_process_result_stderr(result) };
         hew_process_result_free(result);
         output
     }
@@ -143,7 +142,7 @@ fn legacy_packed_args_note() -> String {
 fn split_legacy_packed_args(args: String) -> Vec<String> {
     let raw_parts = string.split(args, " ");
     let filtered: Vec<String> = Vec::new();
-    for i in 0..raw_parts.len() {
+    for i in 0 .. raw_parts.len() {
         let part = raw_parts.get(i);
         if part != "" {
             filtered.push(part);
@@ -153,7 +152,6 @@ fn split_legacy_packed_args(args: String) -> Vec<String> {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-
 /// Run a shell command synchronously and capture its exit code and output.
 pub fn try_run(command: String) -> Result<CommandOutput, ProcessError> {
     unsafe {
@@ -213,24 +211,14 @@ pub fn run_argv(command: String, args: Vec<String>) -> CommandOutput {
 /// This packed-string surface cannot represent empty arguments, quoted
 /// segments, or arguments containing spaces. Prefer
 /// `try_run_argv(command, Vec<String>)`.
-pub fn try_run_args(
-    command: String,
-    args: String,
-    arg_count: int,
-) -> Result<CommandOutput, ProcessError> {
+pub fn try_run_args(command: String, args: String, arg_count: int) -> Result<CommandOutput, ProcessError> {
     if arg_count < 0 {
-        return Err(ProcessError::InvalidArguments(
-            f"process.try_run_args: arg_count must be non-negative ({legacy_packed_args_note()})",
-        ));
+        return Err(ProcessError::InvalidArguments(f"process.try_run_args: arg_count must be non-negative ({legacy_packed_args_note()})"));
     }
-
     let argv = split_legacy_packed_args(args);
     if argv.len() != arg_count {
-        return Err(ProcessError::InvalidArguments(
-            f"process.try_run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})",
-        ));
+        return Err(ProcessError::InvalidArguments(f"process.try_run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})"));
     }
-
     try_run_argv(command, argv)
 }
 
@@ -254,11 +242,12 @@ pub fn run_args(command: String, args: String, arg_count: int) -> String {
 /// Note: This function is called `start` rather than `spawn` because
 /// `spawn` is a reserved keyword in Hew (used for spawning actors).
 pub fn start(command: String) -> Child {
-    unsafe { hew_process_spawn(command) }
+    unsafe {
+        hew_process_spawn(command)
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-
 extern "C" {
     fn hew_process_run(command: String) -> ProcessResultHandle;
     fn hew_process_run_argv(command: String, args: Vec<String>) -> ProcessResultHandle;

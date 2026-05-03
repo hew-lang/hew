@@ -1,19 +1,15 @@
 // Regression: compound assignment on field
 actor Counter {
     let value: int;
-
     receive fn set(v: int) {
         value = v;
     }
-
     receive fn double() {
         value *= 2;
     }
-
     receive fn scale(n: int) {
         value *= n;
     }
-
     receive fn print_value() -> int {
         println(value);
         value

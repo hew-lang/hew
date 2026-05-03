@@ -1,5 +1,4 @@
 // Simple struct
-
 type Point {
     x: int;
     y: int;

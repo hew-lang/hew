@@ -1,5 +1,4 @@
 // Lambda functions
-
 fn apply(f: fn(int) -> int, x: int) -> int {
     f(x)
 }

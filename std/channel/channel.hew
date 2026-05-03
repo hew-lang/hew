@@ -35,7 +35,8 @@
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.
-type Sender {}
+type Sender {
+}
 
 /// An opaque receiver handle.
 ///
@@ -44,10 +45,10 @@ type Sender {}
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.
-type Receiver {}
+type Receiver {
+}
 
 // ── Sender methods ───────────────────────────────────────────────────
-
 /// Methods available on a `Sender<T>`.
 trait SenderMethods {
     /// Send a message through the channel.
@@ -66,15 +67,26 @@ trait SenderMethods {
 
 impl SenderMethods for Sender {
     /// Send a string message through the channel.
-    fn send(tx: Sender, data: String) { unsafe { hew_channel_send(tx, data) }; }
+    fn send(tx: Sender, data: String) {
+        unsafe {
+            hew_channel_send(tx, data)
+        };
+    }
     /// Clone this sender for multi-producer use.
-    fn clone(tx: Sender) -> Sender { unsafe { hew_channel_sender_clone(tx) } }
+    fn clone(tx: Sender) -> Sender {
+        unsafe {
+            hew_channel_sender_clone(tx)
+        }
+    }
     /// Close this sender and release resources.
-    fn close(tx: Sender) { unsafe { hew_channel_sender_close(tx) }; }
+    fn close(tx: Sender) {
+        unsafe {
+            hew_channel_sender_close(tx)
+        };
+    }
 }
 
 // ── Receiver methods ─────────────────────────────────────────────────
-
 /// Methods available on a `Receiver<T>`.
 trait ReceiverMethods {
     /// Block until a message is available and return it.
@@ -95,15 +107,26 @@ trait ReceiverMethods {
 
 impl ReceiverMethods for Receiver {
     /// Block until a string message is available and return it.
-    fn recv(rx: Receiver) -> Option<String> { unsafe { hew_channel_recv(rx) } }
+    fn recv(rx: Receiver) -> Option<String> {
+        unsafe {
+            hew_channel_recv(rx)
+        }
+    }
     /// Try to receive a string without blocking.
-    fn try_recv(rx: Receiver) -> Option<String> { unsafe { hew_channel_try_recv(rx) } }
+    fn try_recv(rx: Receiver) -> Option<String> {
+        unsafe {
+            hew_channel_try_recv(rx)
+        }
+    }
     /// Close this receiver and release resources.
-    fn close(rx: Receiver) { unsafe { hew_channel_receiver_close(rx) }; }
+    fn close(rx: Receiver) {
+        unsafe {
+            hew_channel_receiver_close(rx)
+        };
+    }
 }
 
 // ── Module-level functions ───────────────────────────────────────────
-
 /// Create a bounded MPSC channel with the given capacity.
 ///
 /// Returns a `(Sender<T>, Receiver<T>)` pair. The sender can be cloned
@@ -127,9 +150,9 @@ pub fn new(capacity: int) -> (Sender, Receiver) {
 }
 
 // ── FFI bindings ─────────────────────────────────────────────────────
-
 /// Internal paired channel handle.
-type ChannelPair {}
+type ChannelPair {
+}
 
 extern "C" {
     fn hew_channel_new(capacity: i64) -> ChannelPair;

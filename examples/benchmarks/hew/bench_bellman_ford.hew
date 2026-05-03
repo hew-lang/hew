@@ -1,13 +1,12 @@
 fn bellman_ford(edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<int>, num_edges: int, n: int, start_node: int) -> int {
     let INF = 999999;
     let dist: Vec<int> = Vec::new();
-    for i in 0..n {
+    for i in 0 .. n {
         dist.push(INF);
     }
     dist.set(start_node, 0);
-
-    for iter in 0..(n - 1) {
-        for e in 0..num_edges {
+    for iter in 0 .. n - 1 {
+        for e in 0 .. num_edges {
             let u = edge_src.get(e);
             let v = edge_dst.get(e);
             let w = edge_wt.get(e);
@@ -19,9 +18,8 @@ fn bellman_ford(edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<int>, num_e
             }
         }
     }
-
     var total = 0;
-    for i in 0..n {
+    for i in 0 .. n {
         total = total + dist.get(i);
     }
     return total;
@@ -34,9 +32,8 @@ fn main() {
     let edge_src: Vec<int> = Vec::new();
     let edge_dst: Vec<int> = Vec::new();
     let edge_wt: Vec<int> = Vec::new();
-
-    for src in 0..n {
-        for dst in 1..4 {
+    for src in 0 .. n {
+        for dst in 1 .. 4 {
             let neighbour = (src + dst) % n;
             let weight = (src + dst) % 10 + 1;
             edge_src.push(src);
@@ -45,9 +42,8 @@ fn main() {
         }
     }
     let num_edges = edge_src.len();
-
     var checksum = 0;
-    for i in 0..ITERS {
+    for i in 0 .. ITERS {
         checksum = checksum + bellman_ford(edge_src, edge_dst, edge_wt, num_edges, n, 0);
     }
     println("bench_bellman_ford");

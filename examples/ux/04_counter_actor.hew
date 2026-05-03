@@ -1,12 +1,9 @@
 // Simple counter actor
-
 actor Counter {
     let count: int;
-
     receive fn increment(n: int) {
         count = count + n;
     }
-
     receive fn get_count() -> int {
         count
     }

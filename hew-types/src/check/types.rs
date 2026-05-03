@@ -612,6 +612,15 @@ pub struct Checker {
     pub(super) trait_super: HashMap<String, Vec<String>>,
     /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
     pub(super) trait_impls_set: HashSet<(String, String)>,
+    /// Trait impls keyed by canonical receiver kind for primitives and
+    /// compiler-builtin generics (e.g. `int`, `bool`, `String`, `Vec`,
+    /// `HashMap`, `HashSet`, `Bytes`).  Method dispatch on these receivers
+    /// has no `type_defs` entry to hang user-impl methods off, so the side
+    /// table is the only place those signatures live.
+    ///
+    /// Outer key: (`canonical_primitive_or_builtin_name`, `trait_name`).
+    /// Inner: method name → resolved `FnSig` (receiver already filtered).
+    pub(super) primitive_trait_impls: HashMap<(String, String), HashMap<String, FnSig>>,
     /// Maps supervisor name to `(child_name, actor_type)` pairs for `supervisor_child`
     pub(super) supervisor_children: HashMap<String, Vec<(String, String)>>,
     /// When set, records the scope depth at which a lambda was entered.
@@ -759,6 +768,7 @@ impl Checker {
             trait_defs: HashMap::new(),
             trait_super: HashMap::new(),
             trait_impls_set: HashSet::new(),
+            primitive_trait_impls: HashMap::new(),
             supervisor_children: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),

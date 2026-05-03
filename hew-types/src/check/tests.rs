@@ -3460,6 +3460,120 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
 }
 
 #[test]
+fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
+    // Stage A1: `impl Display for int` registers under the canonical `i64`
+    // key (the lowering name for `Ty::I64`) so receiver-keyed dispatch can
+    // find it later.  The literal AST string `int` must round-trip through
+    // `Ty::from_name` → `canonical_lowering_name` to agree with the
+    // dispatch site, which only ever sees a resolved `Ty`.
+    let source = r#"
+        pub trait Display {
+            fn fmt(val: Self) -> String;
+        }
+
+        impl Display for int {
+            fn fmt(n: int) -> String {
+                ""
+            }
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(test_registry());
+    let _output = checker.check_program(&parsed.program);
+
+    let methods = checker
+        .primitive_trait_impls
+        .get(&("i64".to_string(), "Display".to_string()))
+        .expect("primitive trait impl table should have entry for (i64, Display)");
+    let fmt_sig = methods
+        .get("fmt")
+        .expect("fmt method should be recorded for impl Display for int");
+    assert!(
+        fmt_sig.params.is_empty(),
+        "receiver should be filtered: {:?}",
+        fmt_sig.params
+    );
+    assert_eq!(fmt_sig.return_type, Ty::String);
+}
+
+#[test]
+fn impl_for_builtin_vec_populates_primitive_trait_impl_table() {
+    // Vec is a compiler-builtin generic with no `type_defs` entry; user
+    // impls on Vec must reach the side table the same way primitives do.
+    let source = r#"
+        pub trait Display {
+            fn fmt(val: Self) -> String;
+        }
+
+        impl Display for Vec<i32> {
+            fn fmt(v: Vec<i32>) -> String {
+                ""
+            }
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(test_registry());
+    let _output = checker.check_program(&parsed.program);
+
+    assert!(
+        checker
+            .primitive_trait_impls
+            .contains_key(&("Vec".to_string(), "Display".to_string())),
+        "primitive trait impl table should record impls keyed on the bare \
+         builtin generic name (Vec) regardless of element type"
+    );
+}
+
+#[test]
+fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
+    // The side table must stay empty for user-defined struct receivers —
+    // those flow through `type_defs` and would create duplicate dispatch
+    // paths if the helper accepted them.
+    let source = r#"
+        pub trait Display {
+            fn fmt(val: Self) -> String;
+        }
+
+        pub type MyType {
+            value: int;
+        }
+
+        impl Display for MyType {
+            fn fmt(m: MyType) -> String {
+                ""
+            }
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let mut checker = Checker::new(test_registry());
+    let _output = checker.check_program(&parsed.program);
+
+    assert!(
+        checker.primitive_trait_impls.is_empty(),
+        "user struct impls must not leak into the primitive trait table: {:?}",
+        checker.primitive_trait_impls.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items() {
     let mut root = hew_parser::parse(
         r"

@@ -1711,8 +1711,28 @@ impl Checker {
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
+                    let primitive_key = id.trait_bound.as_ref().and_then(|_| {
+                        Self::canonical_primitive_or_builtin_key_from_name(type_name)
+                    });
+
                     for method in &id.methods {
-                        self.register_impl_method(type_name, method, id.type_params.as_ref());
+                        let sig =
+                            self.register_impl_method(type_name, method, id.type_params.as_ref());
+                        // Stage A1: when the receiver is a primitive or compiler-builtin
+                        // generic, `lookup_type_def_mut(type_name)` returns `None` so the
+                        // sig has nowhere to live for later dispatch.  Mirror it onto the
+                        // side table keyed by the canonical receiver kind + trait name so
+                        // method-resolution can find it.
+                        if let (Some(canonical), Some(tb)) =
+                            (primitive_key.clone(), id.trait_bound.as_ref())
+                        {
+                            self.record_primitive_trait_impl_method(
+                                canonical,
+                                tb.name.clone(),
+                                method.name.clone(),
+                                sig,
+                            );
+                        }
                     }
 
                     // Register default trait methods not overridden in this impl
@@ -2140,6 +2160,93 @@ impl Checker {
     pub(super) fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {
         self.trait_impls_set
             .insert((type_name.to_string(), trait_name.to_string()));
+    }
+
+    /// Canonical receiver key used by the primitive-and-builtin trait impl
+    /// table.  Returns `Some(canonical)` for any receiver kind whose user
+    /// trait impls cannot be hung off `type_defs`:
+    ///
+    /// * Primitives — keyed by `Ty::canonical_lowering_name()`.  This collapses
+    ///   the user-facing alias set (`int`/`Int`/`isize` → `i64`) so registration
+    ///   and dispatch agree on a single key.
+    /// * Compiler-builtin generics `Vec`, `HashMap`, `HashSet` — keyed by their
+    ///   bare name; these already lack a `type_defs` entry that user impls can
+    ///   attach methods to.
+    ///
+    /// Returns `None` for receivers that already flow through `type_defs`
+    /// (user structs, actors, opaque handle types).
+    #[must_use]
+    pub(super) fn canonical_primitive_or_builtin_key(ty: &Ty) -> Option<String> {
+        if let Some(canonical) = ty.canonical_lowering_name() {
+            return Some(canonical.to_string());
+        }
+        if let Ty::Named { name, .. } = ty {
+            if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+                return Some(name.clone());
+            }
+        }
+        None
+    }
+
+    /// Same as [`Self::canonical_primitive_or_builtin_key`] but accepts the
+    /// raw type-name string seen at impl-block registration (e.g. `"int"`,
+    /// `"String"`, `"Vec"`).  Returns `None` for names that aren't primitive
+    /// aliases or compiler-builtin generics.
+    #[must_use]
+    pub(super) fn canonical_primitive_or_builtin_key_from_name(name: &str) -> Option<String> {
+        if let Some(prim) = Ty::from_name(name) {
+            return Self::canonical_primitive_or_builtin_key(&prim);
+        }
+        if matches!(name, "Vec" | "HashMap" | "HashSet") {
+            return Some(name.to_string());
+        }
+        None
+    }
+
+    /// Record an `impl <Trait> for <PrimitiveOrBuiltinGeneric>` method in the
+    /// side table.  `canonical_key` must come from
+    /// [`Self::canonical_primitive_or_builtin_key_from_name`] so registration
+    /// and dispatch agree.
+    pub(super) fn record_primitive_trait_impl_method(
+        &mut self,
+        canonical_key: String,
+        trait_name: String,
+        method_name: String,
+        sig: FnSig,
+    ) {
+        self.primitive_trait_impls
+            .entry((canonical_key, trait_name))
+            .or_default()
+            .insert(method_name, sig);
+    }
+
+    /// Look up a method on the primitive/builtin-generic impl table.
+    ///
+    /// Walks every trait registered for the receiver's canonical kind and
+    /// returns the first method whose name matches.  Returns the resolved
+    /// `FnSig` (receiver already filtered) plus the trait name that
+    /// provided it, so callers can record dispatch metadata keyed on the
+    /// resolved trait rather than re-deriving it from a name string.
+    #[must_use]
+    #[expect(
+        dead_code,
+        reason = "wired into method resolution by Stage A2 in the next commit"
+    )]
+    pub(super) fn lookup_primitive_trait_method(
+        &self,
+        receiver_ty: &Ty,
+        method: &str,
+    ) -> Option<(String, FnSig)> {
+        let canonical = Self::canonical_primitive_or_builtin_key(receiver_ty)?;
+        for ((rx_key, trait_name), methods) in &self.primitive_trait_impls {
+            if rx_key != &canonical {
+                continue;
+            }
+            if let Some(sig) = methods.get(method) {
+                return Some((trait_name.clone(), sig.clone()));
+            }
+        }
+        None
     }
 
     pub(super) fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
@@ -2577,13 +2684,26 @@ impl Checker {
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
+                    let primitive_key = id.trait_bound.as_ref().and_then(|_| {
+                        Self::canonical_primitive_or_builtin_key_from_name(type_name)
+                    });
                     for method in &id.methods {
                         let sig =
                             self.register_impl_method(type_name, method, id.type_params.as_ref());
                         // Also register on qualified type name
                         let qualified_type = format!("{module_short}.{type_name}");
                         if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
-                            td.methods.insert(method.name.clone(), sig);
+                            td.methods.insert(method.name.clone(), sig.clone());
+                        }
+                        if let (Some(canonical), Some(tb)) =
+                            (primitive_key.clone(), id.trait_bound.as_ref())
+                        {
+                            self.record_primitive_trait_impl_method(
+                                canonical,
+                                tb.name.clone(),
+                                method.name.clone(),
+                                sig,
+                            );
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
@@ -2617,6 +2737,10 @@ impl Checker {
     }
 
     /// Register items from a file-based import as top-level names (no module namespace).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single-pass walk over every Item variant with parallel registration paths"
+    )]
     pub(super) fn register_file_import_items(&mut self, items: &[Spanned<Item>]) {
         let mut current_import_pub_spans = HashMap::new();
         let mut skipped_type_names = HashSet::new();
@@ -2701,11 +2825,28 @@ impl Checker {
                         if skipped_type_names.contains(type_name) {
                             continue;
                         }
+                        let primitive_key = id.trait_bound.as_ref().and_then(|_| {
+                            Self::canonical_primitive_or_builtin_key_from_name(type_name)
+                        });
                         for method in &id.methods {
                             if !method.visibility.is_pub() {
                                 continue;
                             }
-                            self.register_impl_method(type_name, method, id.type_params.as_ref());
+                            let sig = self.register_impl_method(
+                                type_name,
+                                method,
+                                id.type_params.as_ref(),
+                            );
+                            if let (Some(canonical), Some(tb)) =
+                                (primitive_key.clone(), id.trait_bound.as_ref())
+                            {
+                                self.record_primitive_trait_impl_method(
+                                    canonical,
+                                    tb.name.clone(),
+                                    method.name.clone(),
+                                    sig,
+                                );
+                            }
                         }
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
@@ -2916,11 +3057,28 @@ impl Checker {
                         let scope_pushed =
                             self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
+                        let primitive_key = id.trait_bound.as_ref().and_then(|_| {
+                            Self::canonical_primitive_or_builtin_key_from_name(type_name)
+                        });
                         for method in &id.methods {
                             if !method.visibility.is_pub() {
                                 continue;
                             }
-                            self.register_impl_method(type_name, method, id.type_params.as_ref());
+                            let sig = self.register_impl_method(
+                                type_name,
+                                method,
+                                id.type_params.as_ref(),
+                            );
+                            if let (Some(canonical), Some(tb)) =
+                                (primitive_key.clone(), id.trait_bound.as_ref())
+                            {
+                                self.record_primitive_trait_impl_method(
+                                    canonical,
+                                    tb.name.clone(),
+                                    method.name.clone(),
+                                    sig,
+                                );
+                            }
                         }
                         if let Some(tb) = &id.trait_bound {
                             self.record_trait_impl(type_name, &tb.name);

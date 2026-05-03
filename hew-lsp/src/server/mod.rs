@@ -2967,6 +2967,64 @@ machine Traffic {
     }
 
     #[test]
+    fn code_action_response_returns_actions_from_document_store() {
+        // Exercises the full path: build_diagnostics → document store → code_action_response.
+        // Existing `code_actions_for_undefined_variable` calls `build_code_actions` directly,
+        // bypassing the document-store routing used by real LSP clients. This test fills that gap
+        // (acceptance criterion for #1579).
+        let source = "fn main() -> i32 { let counter = 42; counte }";
+        let uri = Url::parse("file:///test.hew").unwrap();
+        let lo = compute_line_offsets(source);
+        let parse_result = hew_parser::parse(source);
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        let diags = build_diagnostics(&uri, source, &lo, &parse_result, Some(&type_output));
+
+        let diag = diags
+            .into_iter()
+            .find(|d| {
+                d.data
+                    .as_ref()
+                    .and_then(|data| data.get("suggestions"))
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|arr| !arr.is_empty())
+            })
+            .expect("expected at least one diagnostic with non-empty suggestions for 'counte'");
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(uri.clone(), make_doc(source));
+
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range: diag.range,
+            context: CodeActionContext {
+                diagnostics: vec![diag],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        let actions = code_action_response(&documents, &params);
+
+        let has_workspace_edit = actions.iter().any(|action| {
+            matches!(
+                action,
+                CodeActionOrCommand::CodeAction(a) if a.edit.is_some()
+            )
+        });
+        assert!(
+            !actions.is_empty(),
+            "code_action_response should return at least one action for undefined variable"
+        );
+        assert!(
+            has_workspace_edit,
+            "expected at least one CodeAction with a WorkspaceEdit payload"
+        );
+    }
+
+    #[test]
     fn code_action_returns_empty_response_and_warns_for_unknown_document() {
         let uri = Url::parse("file:///missing.hew").unwrap();
         let params = CodeActionParams {

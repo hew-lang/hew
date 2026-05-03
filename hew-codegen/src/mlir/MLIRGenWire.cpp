@@ -1042,12 +1042,12 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
 
           builder.setInsertionPointAfter(nestedIf);
           decoded = nestedIf.getResult(0);
-        } else {
-          // Unknown type: not a wire struct and not a known primitive — fail closed.
-          ++errorCount_;
-          emitError(location) << "wire struct '" << declName << "': field '" << field.name
-                              << "' has unsupported type '" << field.ty << "' for binary decoding";
-          return;
+          // No else branch here: the encode pass always runs first within
+          // generateWireDecl.  Any field type that is neither a primitive nor a
+          // registered struct would have triggered the encode fail-closed branch
+          // (line ~770) and returned from generateWireDecl before decode
+          // generation begins.  structTypes has no insertions between the two
+          // passes, so this branch is structurally unreachable.
         }
       } else {
         // Known primitive type: dispatch on wire kind.

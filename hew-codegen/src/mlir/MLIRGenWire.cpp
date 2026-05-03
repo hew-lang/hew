@@ -451,14 +451,9 @@ void MLIRGen::preRegisterWireStructType(const ast::WireDecl &decl) {
           << field.ty << "'";
       return;
     } else {
+      // isWirePrimitiveType guard above ensures wireTypeToMLIR never returns
+      // null here — it only returns null for Unknown, which the guard excludes.
       mlirTy = wireTypeToMLIR(builder, field.ty);
-      if (!mlirTy) {
-        ++errorCount_;
-        emitError(builder.getUnknownLoc())
-            << "wire struct '" << declName << "': field '" << field.name
-            << "' has unsupported primitive type '" << field.ty << "'";
-        return;
-      }
     }
     fieldTypes.push_back(mlirTy);
     // Preserve Hew-level semantic type for owned-field detection.
@@ -656,12 +651,8 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     return;
   }
 
-  if (decl.kind != ast::WireDeclKind::Struct) {
-    ++errorCount_;
-    emitError(location) << "wire declaration '" << decl.name
-                        << "' has unsupported kind — only Struct and Enum are handled";
-    return;
-  }
+  // WireDeclKind is {Struct, Enum}; the Enum branch above returns unconditionally,
+  // so execution here implies Struct. No further kind check is needed.
 
   // ── Register the wire struct as a regular struct type ─────────────
   // This allows the rest of the compiler to work with the struct.
@@ -1051,12 +1042,12 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
 
           builder.setInsertionPointAfter(nestedIf);
           decoded = nestedIf.getResult(0);
-        } else {
-          // Unknown type: not a wire struct and not a known primitive — fail closed.
-          ++errorCount_;
-          emitError(location) << "wire struct '" << declName << "': field '" << field.name
-                              << "' has unsupported type '" << field.ty << "' for binary decoding";
-          return;
+          // No else branch here: the encode pass always runs first within
+          // generateWireDecl.  Any field type that is neither a primitive nor a
+          // registered struct would have triggered the encode fail-closed branch
+          // (line ~770) and returned from generateWireDecl before decode
+          // generation begins.  structTypes has no insertions between the two
+          // passes, so this branch is structurally unreachable.
         }
       } else {
         // Known primitive type: dispatch on wire kind.

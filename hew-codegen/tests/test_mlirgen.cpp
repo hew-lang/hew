@@ -8615,6 +8615,86 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: wire binary encode rejects field with unknown type (not primitive, not
+// a registered wire struct).  The field type is in allWireStructNames_ (so it
+// passes the pre-generation guard), but the struct was never registered in
+// structTypes because its own preRegister failed — which forces the encode
+// path's fail-closed branch to fire.
+// ============================================================================
+static void test_wire_binary_encode_unsupported_type_fails_closed() {
+  TEST(wire_binary_encode_unsupported_type_fails_closed);
+
+  using namespace hew::ast;
+
+  // "Inner" has a field of type "CustomBadType" — not a primitive and not a
+  // known wire struct.  preRegisterWireStructType will reject it and will NOT
+  // add "Inner" to structTypes.
+  WireDecl innerDecl;
+  innerDecl.kind = WireDeclKind::Struct;
+  innerDecl.name = "Inner";
+  innerDecl.fields.push_back(WireFieldDecl{"bad_field", "CustomBadType", 1, false, false, false,
+                                           false, std::nullopt, std::nullopt, std::nullopt});
+
+  // "Outer" references "Inner".  "Inner" is in allWireStructNames_ (pre-pass
+  // scans all WireDecl items), so the per-field guard in generateWireDecl
+  // passes.  But at encode-time, structTypes.count("Inner") == 0 because
+  // Inner's registration failed, which triggers the fail-closed branch.
+  WireDecl outerDecl;
+  outerDecl.kind = WireDeclKind::Struct;
+  outerDecl.name = "Outer";
+  outerDecl.fields.push_back(WireFieldDecl{"inner", "Inner", 1, false, false, false, false,
+                                           std::nullopt, std::nullopt, std::nullopt});
+
+  // Minimal main() so the program is otherwise valid.
+  const Span span{980000000000ULL, 980000000001ULL};
+  FnDecl mainFn;
+  mainFn.name = "main";
+  TypeExpr retType;
+  retType.kind = TypeNamed{"int", std::nullopt};
+  mainFn.return_type = {std::move(retType), span};
+  Expr zeroExpr;
+  zeroExpr.kind = ExprLiteral{LitInteger{0}};
+  zeroExpr.span = span;
+  mainFn.body.trailing_expr =
+      std::make_unique<Spanned<Expr>>(Spanned<Expr>{std::move(zeroExpr), span});
+
+  Program program;
+  Item innerItem;
+  innerItem.kind = std::move(innerDecl);
+  program.items.push_back({std::move(innerItem), span});
+  Item outerItem;
+  outerItem.kind = std::move(outerDecl);
+  program.items.push_back({std::move(outerItem), span});
+  Item mainItem;
+  mainItem.kind = std::move(mainFn);
+  program.items.push_back({std::move(mainItem), span});
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation failure for wire struct with unregistered nested type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  // The fail-closed branch emits the diagnostic and exits generateWireDecl early,
+  // leaving a partially-built function body.  The module verifier fires before
+  // the errorCount_ check and also reports a failure.  What matters is that the
+  // encode-path diagnostic was emitted (proving the gate fired) and no module
+  // was returned.
+  if (stderrText.find("for binary encoding") == std::string::npos) {
+    FAIL("expected 'for binary encoding' diagnostic in binary encode unsupported-type path");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: generic struct constructor in non-generic function body (main)
 // Regression: "unknown struct type 'Wrapper'" when typeParamSubstitutions empty
 // ============================================================================
@@ -13959,6 +14039,7 @@ int main() {
   test_wire_struct_typedecl_missing_field_metadata_rejects();
   test_wire_enum_mixed_payload_match_positions();
   test_wire_enum_unit_serial_helpers_and_dispatch();
+  test_wire_binary_encode_unsupported_type_fails_closed();
   test_unresolved_generic_substitution_type_fails();
   test_unsupported_return_coercion_stops_before_verifier();
   test_select_emits_send_failure_cleanup();

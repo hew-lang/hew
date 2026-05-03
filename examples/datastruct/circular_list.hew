@@ -1,19 +1,19 @@
-// Circular Singly Linked List using Vec<i32> with index-based pointers
+// Circular Singly Linked List using Vec<int> with index-based pointers
 // Node layout: nodes[i*2] = value, nodes[i*2+1] = next
 // Last node's next points back to head
-fn node_val(n: Vec<i32>, i: i32) -> i32 {
+fn node_val(n: Vec<int>, i: int) -> int {
     n.get(i * 2)
 }
 
-fn node_next(n: Vec<i32>, i: i32) -> i32 {
+fn node_next(n: Vec<int>, i: int) -> int {
     n.get(i * 2 + 1)
 }
 
-fn set_next(n: Vec<i32>, i: i32, nx: i32) {
+fn set_next(n: Vec<int>, i: int, nx: int) {
     n.set(i * 2 + 1, nx);
 }
 
-fn alloc_node(n: Vec<i32>, val: i32) -> i32 {
+fn alloc_node(n: Vec<int>, val: int) -> int {
     let idx = n.len() / 2;
     n.push(val);
     n.push(idx);
@@ -21,7 +21,7 @@ fn alloc_node(n: Vec<i32>, val: i32) -> i32 {
 }
 
 // Insert into circular list, returns head
-fn _insert(n: Vec<i32>, head: i32, val: i32) -> i32 {
+fn _insert(n: Vec<int>, head: int, val: int) -> int {
     let nd = alloc_node(n, val);
     if head == -1 {
         set_next(n, nd, nd);
@@ -38,7 +38,7 @@ fn _insert(n: Vec<i32>, head: i32, val: i32) -> i32 {
 }
 
 // Insert at tail (value appears at end of traversal)
-fn insert_tail(n: Vec<i32>, head: i32, val: i32) -> i32 {
+fn insert_tail(n: Vec<int>, head: int, val: int) -> int {
     let nd = alloc_node(n, val);
     if head == -1 {
         set_next(n, nd, nd);
@@ -54,7 +54,7 @@ fn insert_tail(n: Vec<i32>, head: i32, val: i32) -> i32 {
 }
 
 // Delete first occurrence, returns new head
-fn delete_val(n: Vec<i32>, head: i32, val: i32) -> i32 {
+fn delete_val(n: Vec<int>, head: int, val: int) -> int {
     if head == -1 {
         return -1;
     }
@@ -92,7 +92,7 @@ fn delete_val(n: Vec<i32>, head: i32, val: i32) -> i32 {
 }
 
 // Traverse circular list, collect values (one full loop)
-fn traverse(n: Vec<i32>, head: i32, result: Vec<i32>) {
+fn traverse(n: Vec<int>, head: int, result: Vec<int>) {
     if head == -1 {
         return;
     }
@@ -105,7 +105,7 @@ fn traverse(n: Vec<i32>, head: i32, result: Vec<i32>) {
 }
 
 // Count elements
-fn list_len(n: Vec<i32>, head: i32) -> i32 {
+fn list_len(n: Vec<int>, head: int) -> int {
     if head == -1 {
         return 0;
     }
@@ -118,7 +118,7 @@ fn list_len(n: Vec<i32>, head: i32) -> i32 {
     count
 }
 
-fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+fn vecs_equal(a: Vec<int>, b: Vec<int>) -> int {
     if a.len() != b.len() {
         return 0;
     }
@@ -131,15 +131,15 @@ fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
 }
 
 // --- Tests ---
-fn test_insert_and_traverse() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_insert_and_traverse() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = insert_tail(n, head, 10);
     head = insert_tail(n, head, 20);
     head = insert_tail(n, head, 30);
-    let r: Vec<i32> = Vec::new();
+    let r: Vec<int> = Vec::new();
     traverse(n, head, r);
-    let e: Vec<i32> = Vec::new();
+    let e: Vec<int> = Vec::new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -151,8 +151,8 @@ fn test_insert_and_traverse() -> i32 {
     0
 }
 
-fn test_circular_property() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_circular_property() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = insert_tail(n, head, 1);
     head = insert_tail(n, head, 2);
@@ -175,16 +175,16 @@ fn test_circular_property() -> i32 {
     0
 }
 
-fn test_delete_middle() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_delete_middle() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = insert_tail(n, head, 10);
     head = insert_tail(n, head, 20);
     head = insert_tail(n, head, 30);
     head = delete_val(n, head, 20);
-    let r: Vec<i32> = Vec::new();
+    let r: Vec<int> = Vec::new();
     traverse(n, head, r);
-    let e: Vec<i32> = Vec::new();
+    let e: Vec<int> = Vec::new();
     e.push(10);
     e.push(30);
     if vecs_equal(r, e) == 1 {
@@ -195,16 +195,16 @@ fn test_delete_middle() -> i32 {
     0
 }
 
-fn test_delete_head() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_delete_head() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = insert_tail(n, head, 10);
     head = insert_tail(n, head, 20);
     head = insert_tail(n, head, 30);
     head = delete_val(n, head, 10);
-    let r: Vec<i32> = Vec::new();
+    let r: Vec<int> = Vec::new();
     traverse(n, head, r);
-    let e: Vec<i32> = Vec::new();
+    let e: Vec<int> = Vec::new();
     e.push(20);
     e.push(30);
     if vecs_equal(r, e) == 1 {
@@ -218,8 +218,8 @@ fn test_delete_head() -> i32 {
     0
 }
 
-fn test_single_element() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_single_element() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     head = insert_tail(n, head, 42);
     if list_len(n, head) == 1 {
@@ -235,8 +235,8 @@ fn test_single_element() -> i32 {
     0
 }
 
-fn test_length() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_length() -> int {
+    let n: Vec<int> = Vec::new();
     var head = -1;
     if list_len(n, head) != 0 {
         println("FAIL: length");

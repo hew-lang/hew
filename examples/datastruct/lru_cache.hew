@@ -1,35 +1,35 @@
 // LRU Cache using doubly-linked list + linear scan for key lookup
 // Node layout: [key, value, prev, next] = 4 slots per node
 // Most recently used at front (head), least recently used at back (tail)
-fn node_key(n: Vec<i32>, i: i32) -> i32 {
+fn node_key(n: Vec<int>, i: int) -> int {
     n.get(i * 4)
 }
 
-fn node_val(n: Vec<i32>, i: i32) -> i32 {
+fn node_val(n: Vec<int>, i: int) -> int {
     n.get(i * 4 + 1)
 }
 
-fn node_prev(n: Vec<i32>, i: i32) -> i32 {
+fn node_prev(n: Vec<int>, i: int) -> int {
     n.get(i * 4 + 2)
 }
 
-fn node_next(n: Vec<i32>, i: i32) -> i32 {
+fn node_next(n: Vec<int>, i: int) -> int {
     n.get(i * 4 + 3)
 }
 
-fn set_val(n: Vec<i32>, i: i32, v: i32) {
+fn set_val(n: Vec<int>, i: int, v: int) {
     n.set(i * 4 + 1, v);
 }
 
-fn set_prev(n: Vec<i32>, i: i32, p: i32) {
+fn set_prev(n: Vec<int>, i: int, p: int) {
     n.set(i * 4 + 2, p);
 }
 
-fn set_next(n: Vec<i32>, i: i32, nx: i32) {
+fn set_next(n: Vec<int>, i: int, nx: int) {
     n.set(i * 4 + 3, nx);
 }
 
-fn alloc_node(n: Vec<i32>, key: i32, val: i32) -> i32 {
+fn alloc_node(n: Vec<int>, key: int, val: int) -> int {
     let idx = n.len() / 4;
     n.push(key);
     n.push(val);
@@ -39,36 +39,36 @@ fn alloc_node(n: Vec<i32>, key: i32, val: i32) -> i32 {
 }
 
 // meta[0] = head, meta[1] = tail, meta[2] = size, meta[3] = capacity
-fn cache_head(m: Vec<i32>) -> i32 {
+fn cache_head(m: Vec<int>) -> int {
     m.get(0)
 }
 
-fn cache_tail(m: Vec<i32>) -> i32 {
+fn cache_tail(m: Vec<int>) -> int {
     m.get(1)
 }
 
-fn cache_size(m: Vec<i32>) -> i32 {
+fn cache_size(m: Vec<int>) -> int {
     m.get(2)
 }
 
-fn cache_cap(m: Vec<i32>) -> i32 {
+fn cache_cap(m: Vec<int>) -> int {
     m.get(3)
 }
 
-fn set_head(m: Vec<i32>, h: i32) {
+fn set_head(m: Vec<int>, h: int) {
     m.set(0, h);
 }
 
-fn set_tail(m: Vec<i32>, t: i32) {
+fn set_tail(m: Vec<int>, t: int) {
     m.set(1, t);
 }
 
-fn set_size(m: Vec<i32>, s: i32) {
+fn set_size(m: Vec<int>, s: int) {
     m.set(2, s);
 }
 
-fn new_cache(capacity: i32) -> Vec<i32> {
-    let m: Vec<i32> = Vec::new();
+fn new_cache(capacity: int) -> Vec<int> {
+    let m: Vec<int> = Vec::new();
     m.push(-1);
     m.push(-1);
     m.push(0);
@@ -77,7 +77,7 @@ fn new_cache(capacity: i32) -> Vec<i32> {
 }
 
 // Remove node from its current position in the list
-fn detach(n: Vec<i32>, m: Vec<i32>, idx: i32) {
+fn detach(n: Vec<int>, m: Vec<int>, idx: int) {
     let p = node_prev(n, idx);
     let nx = node_next(n, idx);
     if p != -1 {
@@ -95,7 +95,7 @@ fn detach(n: Vec<i32>, m: Vec<i32>, idx: i32) {
 }
 
 // Push node to front (most recently used)
-fn push_front(n: Vec<i32>, m: Vec<i32>, idx: i32) {
+fn push_front(n: Vec<int>, m: Vec<int>, idx: int) {
     let h = cache_head(m);
     set_next(n, idx, h);
     set_prev(n, idx, -1);
@@ -108,7 +108,7 @@ fn push_front(n: Vec<i32>, m: Vec<i32>, idx: i32) {
 }
 
 // Find node by key (linear scan), returns node index or -1
-fn find_key(n: Vec<i32>, m: Vec<i32>, key: i32) -> i32 {
+fn find_key(n: Vec<int>, m: Vec<int>, key: int) -> int {
     var curr = cache_head(m);
     while curr != -1 {
         if node_key(n, curr) == key {
@@ -120,7 +120,7 @@ fn find_key(n: Vec<i32>, m: Vec<i32>, key: i32) -> i32 {
 }
 
 // Get value for key, moves to front. Returns -1 if not found.
-fn cache_get(n: Vec<i32>, m: Vec<i32>, key: i32) -> i32 {
+fn cache_get(n: Vec<int>, m: Vec<int>, key: int) -> int {
     let idx = find_key(n, m, key);
     if idx == -1 {
         return -1;
@@ -131,7 +131,7 @@ fn cache_get(n: Vec<i32>, m: Vec<i32>, key: i32) -> i32 {
 }
 
 // Put key-value pair. Evicts LRU if at capacity.
-fn cache_put(n: Vec<i32>, m: Vec<i32>, key: i32, val: i32) {
+fn cache_put(n: Vec<int>, m: Vec<int>, key: int, val: int) {
     let idx = find_key(n, m, key);
     if idx != -1 {
         set_val(n, idx, val);
@@ -151,7 +151,7 @@ fn cache_put(n: Vec<i32>, m: Vec<i32>, key: i32, val: i32) {
 }
 
 // Collect keys in order from head to tail
-fn collect_keys(n: Vec<i32>, m: Vec<i32>, result: Vec<i32>) {
+fn collect_keys(n: Vec<int>, m: Vec<int>, result: Vec<int>) {
     var curr = cache_head(m);
     while curr != -1 {
         result.push(node_key(n, curr));
@@ -159,7 +159,7 @@ fn collect_keys(n: Vec<i32>, m: Vec<i32>, result: Vec<i32>) {
     }
 }
 
-fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+fn vecs_equal(a: Vec<int>, b: Vec<int>) -> int {
     if a.len() != b.len() {
         return 0;
     }
@@ -172,8 +172,8 @@ fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
 }
 
 // --- Tests ---
-fn test_put_and_get() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_put_and_get() -> int {
+    let n: Vec<int> = Vec::new();
     let m = new_cache(3);
     cache_put(n, m, 1, 100);
     cache_put(n, m, 2, 200);
@@ -193,8 +193,8 @@ fn test_put_and_get() -> i32 {
     0
 }
 
-fn test_eviction() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_eviction() -> int {
+    let n: Vec<int> = Vec::new();
     let m = new_cache(2);
     cache_put(n, m, 1, 100);
     cache_put(n, m, 2, 200);
@@ -215,8 +215,8 @@ fn test_eviction() -> i32 {
     0
 }
 
-fn test_access_updates_order() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_access_updates_order() -> int {
+    let n: Vec<int> = Vec::new();
     let m = new_cache(3);
     cache_put(n, m, 1, 100);
     cache_put(n, m, 2, 200);
@@ -237,8 +237,8 @@ fn test_access_updates_order() -> i32 {
     0
 }
 
-fn test_update_value() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_update_value() -> int {
+    let n: Vec<int> = Vec::new();
     let m = new_cache(3);
     cache_put(n, m, 1, 100);
     cache_put(n, m, 1, 999);
@@ -253,8 +253,8 @@ fn test_update_value() -> i32 {
     0
 }
 
-fn test_order_after_operations() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_order_after_operations() -> int {
+    let n: Vec<int> = Vec::new();
     let m = new_cache(3);
     cache_put(n, m, 1, 10);
     cache_put(n, m, 2, 20);
@@ -262,9 +262,9 @@ fn test_order_after_operations() -> i32 {
     // Order: 3(front) -> 2 -> 1(back)
     let _v = cache_get(n, m, 1);
     // Order: 1(front) -> 3 -> 2(back)
-    let r: Vec<i32> = Vec::new();
+    let r: Vec<int> = Vec::new();
     collect_keys(n, m, r);
-    let e: Vec<i32> = Vec::new();
+    let e: Vec<int> = Vec::new();
     e.push(1);
     e.push(3);
     e.push(2);
@@ -276,8 +276,8 @@ fn test_order_after_operations() -> i32 {
     0
 }
 
-fn test_miss() -> i32 {
-    let n: Vec<i32> = Vec::new();
+fn test_miss() -> int {
+    let n: Vec<int> = Vec::new();
     let m = new_cache(2);
     cache_put(n, m, 1, 100);
     let v = cache_get(n, m, 99);

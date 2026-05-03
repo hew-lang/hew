@@ -1,7 +1,7 @@
 // Segment Tree for range sum queries
 // Uses array-based representation: node i has children 2*i+1 and 2*i+2
 // Tree stored in a flat array of size 4*n
-fn seg_build(tree: Vec<i32>, arr: Vec<i32>, node: i32, start: i32, end: i32) -> i32 {
+fn seg_build(tree: Vec<int>, arr: Vec<int>, node: int, start: int, end: int) -> int {
     if start == end {
         tree.set(node, arr.get(start));
         return 0;
@@ -13,7 +13,7 @@ fn seg_build(tree: Vec<i32>, arr: Vec<i32>, node: i32, start: i32, end: i32) -> 
     0
 }
 
-fn seg_query(tree: Vec<i32>, node: i32, start: i32, end: i32, l: i32, r: i32) -> i32 {
+fn seg_query(tree: Vec<int>, node: int, start: int, end: int, l: int, r: int) -> int {
     if r < start {
         return 0;
     }
@@ -31,7 +31,7 @@ fn seg_query(tree: Vec<i32>, node: i32, start: i32, end: i32, l: i32, r: i32) ->
     left_sum + right_sum
 }
 
-fn seg_update(tree: Vec<i32>, node: i32, start: i32, end: i32, idx: i32, val: i32) -> i32 {
+fn seg_update(tree: Vec<int>, node: int, start: int, end: int, idx: int, val: int) -> int {
     if start == end {
         tree.set(node, val);
         return 0;
@@ -46,16 +46,16 @@ fn seg_update(tree: Vec<i32>, node: i32, start: i32, end: i32, idx: i32, val: i3
     0
 }
 
-fn init_tree(size: i32) -> Vec<i32> {
-    let tree: Vec<i32> = Vec::new();
+fn init_tree(size: int) -> Vec<int> {
+    let tree: Vec<int> = Vec::new();
     for i in 0 .. 4 * size {
         tree.push(0);
     }
     tree
 }
 
-fn test_basic_query() -> i32 {
-    let arr: Vec<i32> = Vec::new();
+fn test_basic_query() -> int {
+    let arr: Vec<int> = Vec::new();
     arr.push(1);
     arr.push(3);
     arr.push(5);
@@ -78,8 +78,8 @@ fn test_basic_query() -> i32 {
     }
 }
 
-fn test_partial_query() -> i32 {
-    let arr: Vec<i32> = Vec::new();
+fn test_partial_query() -> int {
+    let arr: Vec<int> = Vec::new();
     arr.push(1);
     arr.push(3);
     arr.push(5);
@@ -119,8 +119,8 @@ fn test_partial_query() -> i32 {
     }
 }
 
-fn test_point_update() -> i32 {
-    let arr: Vec<i32> = Vec::new();
+fn test_point_update() -> int {
+    let arr: Vec<int> = Vec::new();
     arr.push(1);
     arr.push(3);
     arr.push(5);
@@ -149,8 +149,8 @@ fn test_point_update() -> i32 {
     0
 }
 
-fn test_single_element() -> i32 {
-    let arr: Vec<i32> = Vec::new();
+fn test_single_element() -> int {
+    let arr: Vec<int> = Vec::new();
     arr.push(42);
     let tree = init_tree(1);
     let _ = seg_build(tree, arr, 0, 0, 0);
@@ -164,8 +164,8 @@ fn test_single_element() -> i32 {
     }
 }
 
-fn test_multiple_updates() -> i32 {
-    let arr: Vec<i32> = Vec::new();
+fn test_multiple_updates() -> int {
+    let arr: Vec<int> = Vec::new();
     arr.push(2);
     arr.push(4);
     arr.push(6);

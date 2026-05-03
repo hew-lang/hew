@@ -49,7 +49,7 @@ fn test_option_match() {
 }
 
 fn test_result_match() {
-    let ok_val = Ok(99);
+    let ok_val: Result<int, String> = Ok(99);
     match ok_val {
         Ok(val) => {
             println("PASS: Ok pattern");
@@ -59,7 +59,7 @@ fn test_result_match() {
             println("FAIL: expected Ok")
         },
     }
-    let err_val = Err("something went wrong");
+    let err_val: Result<int, String> = Err("something went wrong");
     match err_val {
         Ok(val) => {
             println("FAIL: expected Err")

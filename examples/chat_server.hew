@@ -1,5 +1,14 @@
 // TCP Chat Server — idiomatic Hew actor-based design.
 //
+// NOTE: This example currently fails hew check.
+// Cause: Vec<ActorRef<ClientHandler>> in ChatRoom creates a recursive reference
+// cycle (ChatRoom -> ActorRef<ClientHandler> -> ClientHandler -> ActorRef<ChatRoom>)
+// that the RcFree checker cannot verify as cycle-free.  This is a language
+// limitation, not an example error — the architecture is correct.
+// Tracked: hew-lang/hew#1599
+// The example will compile once WeakActorRef<T> or a registry-based handle is
+// available, or once the runtime's actor-heap is exempted from the RcFree proof.
+//
 // Architecture:
 //   main          — accepts TCP connections, spawns a ClientHandler per client
 //   ChatRoom      — holds Vec<ActorRef<ClientHandler>>, broadcasts via actor dispatch

@@ -1,6 +1,14 @@
 // MQTT 3.1.1 broker — pure Hew actor implementation
 // Listens on port 1883. Uses bytes type for all TCP I/O.
 //
+// NOTE: This example currently fails hew check.
+// Cause: Vec<ActorRef<ClientHandler>> in the Broker/Router actor creates a
+// recursive reference cycle that the RcFree checker cannot verify as cycle-free.
+// This is a language limitation, not an example error — the architecture is correct.
+// Tracked: hew-lang/hew#1599
+// The example will compile once WeakActorRef<T> or a registry-based handle is
+// available, or once the runtime's actor-heap is exempted from the RcFree proof.
+//
 // Architecture:
 //   Listener     — accept loop; spawns ClientHandler per connection
 //   ClientHandler — reads MQTT frames, calls router methods

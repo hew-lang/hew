@@ -449,7 +449,7 @@ fn parse_error_to_wasm(err: hew_parser::ParseError) -> WasmDiagnostic {
         message: err.message,
         start_offset: err.span.start,
         end_offset: err.span.end,
-        kind: "parse_error".to_string(),
+        kind: err.kind.as_kind_str().to_string(),
         notes: Vec::new(),
         suggestions: Vec::new(),
     }
@@ -903,6 +903,44 @@ mod tests {
                     "note missing non-empty string `message`: {note}"
                 );
             }
+        }
+    }
+
+    /// `parse_error_to_wasm` must emit the structured `ParseDiagnosticKind` variant
+    /// string in the `kind` field — not the old hardcoded `"parse_error"` sentinel.
+    ///
+    /// This population test uses `"fn {"`, which triggers a parse error and ensures
+    /// the serialized `kind` value is one of the known variant strings from
+    /// `ParseDiagnosticKind::as_kind_str()`.  Writing `kind != "parse_error"` also
+    /// directly proves the bug (hardcoded sentinel) is fixed.
+    #[test]
+    fn parse_error_to_wasm_emits_structured_kind() {
+        let known_kinds = [
+            "UnexpectedToken",
+            "UnexpectedEof",
+            "InvalidLiteral",
+            "MissingExpression",
+            "InvalidPattern",
+            "Other",
+        ];
+        let json = ok(analyze("fn {"));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let diags = v["diagnostics"].as_array().unwrap();
+        assert!(!diags.is_empty(), "expected at least one parse diagnostic");
+        for d in diags {
+            let kind = d
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| panic!("diagnostic missing `kind` field: {d}"));
+            assert_ne!(
+                kind, "parse_error",
+                "parse_error_to_wasm emitted the hardcoded sentinel 'parse_error' \
+                 instead of a structured ParseDiagnosticKind variant: {d}"
+            );
+            assert!(
+                known_kinds.contains(&kind),
+                "kind '{kind}' is not a known ParseDiagnosticKind variant string: {d}"
+            );
         }
     }
 

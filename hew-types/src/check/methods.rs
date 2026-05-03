@@ -2472,4 +2472,178 @@ mod tests {
             checker.errors
         );
     }
+
+    // ── HashMap admission finalization ───────────────────────────────────────
+
+    /// A deferred `HashMap` admission whose key type is `Ty::Error` must be
+    /// dropped silently — no new diagnostic, no cascade.
+    #[test]
+    fn finalize_hashmap_admission_silently_drops_error_key() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 10..20;
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::from(&span),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::Error,
+                val_ty: Ty::I64,
+                source_module: None,
+            },
+        );
+
+        checker.finalize_hashmap_admission();
+
+        assert!(
+            checker.errors.is_empty(),
+            "finalize_hashmap_admission must not emit an error when key_ty is Ty::Error; \
+             the upstream diagnostic already covers it. Got: {:?}",
+            checker.errors
+        );
+    }
+
+    /// A deferred `HashMap` admission whose value type is still an unresolved
+    /// inference variable after inference must emit `InferenceFailed`.
+    #[test]
+    fn finalize_hashmap_admission_emits_inference_failed_for_var_value() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 30..40;
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::from(&span),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::String,
+                val_ty: Ty::Var(TypeVar::fresh()),
+                source_module: None,
+            },
+        );
+
+        checker.finalize_hashmap_admission();
+
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+            "finalize_hashmap_admission must emit InferenceFailed when val_ty is an unresolved \
+             Ty::Var; got: {:?}",
+            checker.errors
+        );
+    }
+
+    // ── HashSet admission finalization ───────────────────────────────────────
+
+    /// A deferred `HashSet` admission whose element type is `Ty::Error` must be
+    /// dropped silently — mirrors the lowering-facts sentinel for the admission path.
+    #[test]
+    fn finalize_hashset_admission_silently_drops_error_element() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 50..60;
+        checker.deferred_hashset_admission.insert(
+            SpanKey::from(&span),
+            DeferredHashSetAdmission {
+                span: span.clone(),
+                elem_ty: Ty::Error,
+                source_module: None,
+            },
+        );
+
+        checker.finalize_hashset_admission();
+
+        assert!(
+            checker.errors.is_empty(),
+            "finalize_hashset_admission must not emit an error when elem_ty is Ty::Error; \
+             the upstream diagnostic already covers it. Got: {:?}",
+            checker.errors
+        );
+    }
+
+    /// A deferred `HashSet` admission whose element type is still an unresolved
+    /// inference variable after inference must emit `InferenceFailed` with an
+    /// "add annotation" hint.
+    #[test]
+    fn finalize_hashset_admission_emits_inference_failed_for_var_element() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 70..80;
+        checker.deferred_hashset_admission.insert(
+            SpanKey::from(&span),
+            DeferredHashSetAdmission {
+                span: span.clone(),
+                elem_ty: Ty::Var(TypeVar::fresh()),
+                source_module: None,
+            },
+        );
+
+        checker.finalize_hashset_admission();
+
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+            "finalize_hashset_admission must emit InferenceFailed for an unresolved \
+             Ty::Var element; got: {:?}",
+            checker.errors
+        );
+    }
+
+    // ── Vec admission finalization ───────────────────────────────────────────
+
+    /// A deferred `Vec` admission whose element type contains `Ty::Error` (via
+    /// `contains_error()`) must be dropped silently — no cascade.
+    #[test]
+    fn finalize_vec_admission_silently_drops_error_element() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 90..100;
+        // Nest Ty::Error inside a Vec element to exercise the contains_error() path,
+        // not just a bare Ty::Error match.
+        let elem_ty = Ty::Named {
+            name: "Result".into(),
+            args: vec![Ty::Error, Ty::I64],
+        };
+        checker.deferred_vec_admission.insert(
+            SpanKey::from(&span),
+            DeferredVecAdmission {
+                span: span.clone(),
+                elem_ty,
+                source_module: None,
+            },
+        );
+
+        checker.finalize_vec_admission();
+
+        assert!(
+            checker.errors.is_empty(),
+            "finalize_vec_admission must not emit an error when the element type \
+             contains Ty::Error; the upstream diagnostic already covers it. Got: {:?}",
+            checker.errors
+        );
+    }
+
+    /// A deferred `Vec` admission whose element type contains an unresolved
+    /// inference variable after inference must emit `InferenceFailed`.
+    #[test]
+    fn finalize_vec_admission_emits_inference_failed_for_unresolved_var() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 110..120;
+        checker.deferred_vec_admission.insert(
+            SpanKey::from(&span),
+            DeferredVecAdmission {
+                span: span.clone(),
+                elem_ty: Ty::Var(TypeVar::fresh()),
+                source_module: None,
+            },
+        );
+
+        checker.finalize_vec_admission();
+
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+            "finalize_vec_admission must emit InferenceFailed for an unresolved \
+             Ty::Var element; got: {:?}",
+            checker.errors
+        );
+    }
 }

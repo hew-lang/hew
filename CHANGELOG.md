@@ -4,6 +4,8 @@
 
 ## [0.4.0] - 2026-04-15
 
+See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
+
 ### Changed
 
 - **`hew-wasm` empty-result encoding (BREAKING for browser consumers):** WASM

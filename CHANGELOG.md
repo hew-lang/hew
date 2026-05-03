@@ -2,10 +2,6 @@
 
 ## [Unreleased]
 
-### Added
-
-- Added migration guide for v0.4.0 breaking changes (`docs/migrations/v0.4.0.md`).
-
 ## [0.4.0] - 2026-04-15
 
 See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-15
+
 ### Changed
 
 - **`hew-wasm` empty-result encoding (BREAKING for browser consumers):** WASM
@@ -10,18 +12,40 @@
   `find_references`, `prepare_rename`, `signature_help`) or `"[]"` (collection
   exports — `rename`, `inlay_hints`). Browser/editor integrations that special-
   cased `result === ""` must update to handle the canonical JSON literals
-  (#1358).
+  (#1506).
 - **Explicit HTTP/regex handle teardown:** `http.Server` and `regex.Pattern`
   no longer auto-release on scope exit. Callers must invoke `close()` /
   `free()` explicitly before those values go out of scope to avoid leaks
-  (#1281).
+  (#1314).
 - **Explicit HTTP request and JSON value teardown:** `http.Request` and
   `json.Value` no longer auto-release on scope exit. Callers must invoke
   `free()` explicitly before those values go out of scope. This mirrors
   the `Server`/`Pattern` migration and decouples handle release from the
-  codegen drop-slot null-after-move path (#1310).
-
-## [0.4.0] - 2026-04-15
+  codegen drop-slot null-after-move path (#1500).
+- **`std/encoding/compress` decompression functions require `max_output_len`:**
+  `gzip_decompress`, `deflate_decompress`, and `zlib_decompress` each gained a
+  required second argument `max_output_len: int`. Old shape:
+  `gzip_decompress(data: bytes) -> bytes`. New shape:
+  `gzip_decompress(data: bytes, max_output_len: int) -> bytes`. Migration: add
+  a `max_output_len` argument at every call site; callers without a tighter
+  bound should pass `64 * 1024 * 1024` (64 MiB). The function fails closed when
+  the decompressed output would exceed the limit (#1471).
+- **`http_client` string helpers return `Option<String>`:** `request_string`,
+  `get_string`, and `post_string` changed return type from `String` to
+  `Option<String>`. Old shape: `get_string(url: String) -> String`. New shape:
+  `get_string(url: String) -> Option<String>`. Migration: pattern-match on the
+  result — `None` is returned on transport failure (mirrors how other fallible
+  HTTP operations return) (#1030).
+- **stdlib public API uses `int` uniformly (i32/i64 removed from public
+  surfaces):** All public function signatures across `std/**/*.hew` now use
+  `int` instead of `i32` or `i64`. Affected modules include `channel`,
+  `encoding/json`, `encoding/toml`, `encoding/yaml`, `encoding/csv`,
+  `encoding/xml`, `encoding/protobuf`, `encoding/msgpack`, `encoding/wire`,
+  `fs`, `net/http`, `net/http_client`, `net/smtp`, `net/tls`, `net/websocket`,
+  `net/ipnet`, `net/quic`, `net/net`, `path`, `semaphore`, `text/semver`, and
+  `time/cron`. Migration: update bindings and variable declarations that
+  previously used `i32` or `i64` to use `int`. The full invariant and
+  exemption rules are documented in `docs/stdlib-style-contract.md` (#1218).
 
 ### Added
 

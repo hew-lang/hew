@@ -71,14 +71,14 @@ cargo check --workspace
 # Commit the version bump
 # Note: all crates use version.workspace = true, so only root Cargo.toml needs editing.
 git add Cargo.toml Cargo.lock CHANGELOG.md
-git commit -m "chore: bump version to v0.3.0"
+git commit -m "chore: bump version to v0.4.0"
 ```
 
 ## Phase 3 — Push release branch (triggers release-gate CI)
 
 ```bash
-git checkout -b release/v0.3
-git push origin release/v0.3
+git checkout -b release/v0.4
+git push origin release/v0.4
 ```
 
 This triggers `.github/workflows/release-gate.yml`, which runs:
@@ -142,8 +142,8 @@ release blocker.
 ## Phase 5 — Tag and release
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 This triggers `.github/workflows/release.yml`, which:

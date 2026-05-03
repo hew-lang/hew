@@ -1,5 +1,11 @@
 # Hew Language Specification (audited for v0.3.0)
 
+<!-- TODO: re-audit spec body against v0.4.0 surface before bumping this version.
+     v0.4.0 breaking changes not yet reflected: stdlib int-surface migration,
+     explicit handle teardown model (Request/Value/Server/Pattern.free/close),
+     decompress max_output_len parameter, Option<String> HTTP string helpers.
+     Track this as a follow-up audit before the v0.4.0 release is cut. -->
+
 Hew is a **high-performance, network-native, machine-code compiled** language for building long-lived services. Its design is anchored in four proven pillars:
 
 - **Actor isolation + compile-time data-race freedom** (Pony-style capability discipline) ([tutorial.ponylang.io][1])

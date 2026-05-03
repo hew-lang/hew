@@ -2621,6 +2621,68 @@ mod tests {
         );
     }
 
+    /// Certify that `MethodCallReceiverKindData::PrimitiveTraitImpl` reaches
+    /// the wire with `kind = "primitive_trait_impl"` and the correct
+    /// `trait_name` and `canonical_receiver` fields.
+    #[test]
+    fn primitive_trait_impl_receiver_kind_serializes_to_wire_field() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![MethodCallReceiverKindEntry {
+                start: 5,
+                end: 15,
+                kind: MethodCallReceiverKindData::PrimitiveTraitImpl {
+                    trait_name: "Display".to_string(),
+                    canonical_receiver: "i64".to_string(),
+                },
+            }],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+        let kinds = value
+            .get("method_call_receiver_kinds")
+            .and_then(serde_json::Value::as_array)
+            .expect("method_call_receiver_kinds should be present");
+        assert_eq!(kinds.len(), 1);
+        assert_eq!(kinds[0]["start"], 5u64);
+        assert_eq!(kinds[0]["end"], 15u64);
+        assert_eq!(
+            kinds[0].get("kind").and_then(serde_json::Value::as_str),
+            Some("primitive_trait_impl"),
+            "kind should be 'primitive_trait_impl'"
+        );
+        assert_eq!(
+            kinds[0]
+                .get("trait_name")
+                .and_then(serde_json::Value::as_str),
+            Some("Display"),
+            "trait_name should be 'Display'"
+        );
+        assert_eq!(
+            kinds[0]
+                .get("canonical_receiver")
+                .and_then(serde_json::Value::as_str),
+            Some("i64"),
+            "canonical_receiver should be 'i64'"
+        );
+    }
+
     /// Certify that `AssignTargetKindData` variants `ActorField`, `FieldAccess`,
     /// and `Index` each reach the wire with the correct `kind` string.
     ///

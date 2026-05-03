@@ -1573,6 +1573,20 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let first_arg = args.first()?;
+        // Short-circuit before synthesising first_arg: if trait_name has no
+        // primitive impls registered at all, return immediately.  This
+        // prevents the fallback trait-qualified path from synthesising
+        // first_arg a second time when the helper was never going to handle
+        // the dispatch.  Synthesis of first_arg is deferred to after this
+        // guard so it only happens when there is a real chance we will own
+        // the call.
+        let has_primitive_impl = self
+            .primitive_trait_impls
+            .keys()
+            .any(|(_, tn)| tn == trait_name);
+        if !has_primitive_impl {
+            return None;
+        }
         let (first_expr, first_sp) = first_arg.expr();
         // Synthesize the receiver arg's type so we can route to the
         // canonical primitive/builtin-generic key.
@@ -1588,19 +1602,12 @@ impl Checker {
             .get(&(canonical.clone(), trait_name.to_string()))
             .and_then(|methods| methods.get(method_name))
             .cloned()?;
-        // Arity check: 1 (receiver) + sig.params.len() (already
-        // receiver-stripped at registration).
-        let expected_arity = sig.params.len() + 1;
-        self.check_arity(
-            args,
-            expected_arity,
-            &format!("`{trait_name}::{method_name}`"),
-            span,
-        );
-        // Type-check the first arg against the resolved receiver kind.
-        // Using `expect_type` would round-trip the synthesized type; we
-        // already synthesized it, so the result has been bound to the
-        // receiver kind.  No further check needed.
+        // Do not add an outer check_arity here.  apply_instantiated_call_signature
+        // already calls check_arity on trailing_args via PositionalOnly, matching
+        // the receiver-form path at try_dispatch_primitive_trait_method.  An
+        // outer check on all args (receiver + trailing) would fire a second
+        // arity diagnostic for the same call — e.g. Display::fmt(x, extra)
+        // would emit both "expected 1 arg" and "expected 0 trailing args".
         // Type-check remaining args against the (receiver-stripped)
         // params using the same machinery as method-form dispatch.
         let trailing_args = &args[1.min(args.len())..];
@@ -1610,7 +1617,7 @@ impl Checker {
             trailing_args,
             span,
             SignatureArgApplication::PositionalOnly {
-                arity_context: format!("`{trait_name}::{method_name}`"),
+                arity_context: format!("method '{trait_name}::{method_name}'"),
             },
             true,
         );

@@ -3877,6 +3877,107 @@ fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
 }
 
 #[test]
+fn ufcs_on_pub_type_receiver_does_not_record_primitive_trait_impl_metadata() {
+    // Regression for the synthesize-before-short-circuit ordering bug.
+    //
+    // When `Display::fmt(f)` is called and `f` is a `pub type` (non-primitive)
+    // receiver, the UFCS helper must return `None` without recording
+    // `PrimitiveTraitImpl` metadata.  Before the fix, the helper could
+    // still synthesise the first arg and — on a route that should belong
+    // entirely to the existing type-def path — leave stale side-effects.
+    //
+    // The short-circuit added by this fix ensures that when `Display` has
+    // no primitive impls registered (the trait is purely user-defined here),
+    // the helper exits before synthesising `first_arg`, preventing any
+    // double-processing of the receiver expression.
+    //
+    // `UserDisplay` is declared without any primitive blanket impls, so
+    // the helper returns `None` immediately.  The test asserts no
+    // `PrimitiveTraitImpl` metadata is recorded — the call is handled
+    // entirely by the receiver-form dispatch path.
+    let source = r#"
+        pub trait UserDisplay { fn show(val: Self) -> String; }
+        pub type Widget { value: int; }
+        impl UserDisplay for Widget {
+            fn show(w: Widget) -> String { "" }
+        }
+        fn main() {
+            let w: Widget = Widget { value: 1 };
+            let _: String = w.show();
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors for UserDisplay on pub type: {:?}",
+        output.errors
+    );
+    let leaked_primitive_meta = output
+        .method_call_receiver_kinds
+        .values()
+        .any(|kind| matches!(kind, MethodCallReceiverKind::PrimitiveTraitImpl { .. }));
+    assert!(
+        !leaked_primitive_meta,
+        "UserDisplay (no primitive impls) must not produce PrimitiveTraitImpl metadata: {:?}",
+        output
+            .method_call_receiver_kinds
+            .values()
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn ufcs_over_applied_call_emits_exactly_one_arity_diagnostic() {
+    // Regression for the double-arity-diagnostic bug.
+    //
+    // `Display::fmt(x, extra)` should produce exactly one arity error.
+    // The old code ran both an explicit outer `check_arity(args, params+1)`
+    // and then `apply_instantiated_call_signature` which internally calls
+    // `check_arity(trailing_args, params)` via PositionalOnly — two
+    // different checks for the same call, two different messages.
+    //
+    // The fix removes the redundant outer check_arity, leaving only the
+    // inner one, matching the receiver-form path's behaviour.
+    let source = r#"
+        pub trait Display { fn fmt(val: Self) -> String; }
+        impl Display for int {
+            fn fmt(n: int) -> String { "" }
+        }
+        fn main() {
+            let x: int = 42;
+            let _ = Display::fmt(x, "extra");
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    let arity_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("argument"))
+        .collect();
+    assert_eq!(
+        arity_errors.len(),
+        1,
+        "expected exactly 1 arity diagnostic for Display::fmt(x, extra), got {}: {:?}",
+        arity_errors.len(),
+        arity_errors
+    );
+}
+
+#[test]
 fn primitive_impl_dispatch_unknown_method_still_emits_error() {
     // When no impl matches and no builtin method exists, the existing
     // "no method `<name>` on <kind>" diagnostic must still fire — the

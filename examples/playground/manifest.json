@@ -130,5 +130,17 @@
       "browser": "analysis-only",
       "wasi": "runnable"
     }
+  },
+  {
+    "id": "types/structural_bounds",
+    "category": "types",
+    "name": "Structural Bounds",
+    "description": "Generic functions satisfied by structural type matching",
+    "source_path": "types/structural_bounds.hew",
+    "expected_path": "types/structural_bounds.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "wasi": "runnable"
+    }
   }
 ]

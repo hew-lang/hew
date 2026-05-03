@@ -1,0 +1,44 @@
+//! @name Structural Bounds
+//! @description Generic functions satisfied by structural type matching
+
+// A trait that requires a single method.
+trait Named {
+    fn name(val: Self) -> String;
+}
+
+// Two unrelated types — no explicit "impl Named for ..." needed.
+type User {
+    name: String;
+    age: int;
+}
+
+type Product {
+    name: String;
+    price: int;
+}
+
+// Bare impl blocks provide the method, satisfying Named structurally.
+impl User {
+    fn name(u: User) -> String {
+        u.name
+    }
+}
+
+impl Product {
+    fn name(p: Product) -> String {
+        p.name
+    }
+}
+
+// Generic function — accepts any type whose structure satisfies Named.
+fn announce<T: Named>(item: T) {
+    print("Hello, ");
+    println(item.name());
+}
+
+fn main() {
+    let user = User { name: "Alice", age: 30 };
+    let product = Product { name: "Widget", price: 10 };
+    announce(user);
+    announce(product);
+}

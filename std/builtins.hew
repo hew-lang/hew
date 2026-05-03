@@ -5,6 +5,23 @@
 //! program control flow.
 
 // ---------------------------------------------------------------------------
+// Display trait
+// ---------------------------------------------------------------------------
+/// Convert a value of type `Self` into a human-readable `String`.
+///
+/// Implementing `Display` for a type lets it flow through `print`,
+/// `println`, `assert_eq`, `assert_ne`, `to_string`, `len`, and `stop`.
+/// The trait method must return a `String` derived from the receiver
+/// without invoking `print` itself (otherwise the output path becomes
+/// recursive).
+///
+/// Blanket impls below cover the primitive numeric kinds, `bool`,
+/// `char`, and `String`; user types add their own impls per receiver.
+pub trait Display {
+    fn fmt(val: Self) -> String;
+}
+
+// ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------
 /// Print a value followed by a newline.

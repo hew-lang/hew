@@ -3815,6 +3815,68 @@ fn primitive_impl_dispatch_resolves_ufcs_form_with_extra_args() {
 }
 
 #[test]
+fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
+    // Stage A4 regression sentinel: `pub type Foo` with `impl Display for
+    // Foo` must continue to dispatch through the existing `type_defs`
+    // method registry — it must NOT be hijacked into the primitive
+    // side table (the primitive table only houses receivers that
+    // `type_defs` cannot reach).  The receiver-kind metadata for the
+    // call must be `NamedTypeInstance`, not `PrimitiveTraitImpl`.
+    let source = r#"
+        pub trait Display { fn fmt(val: Self) -> String; }
+        pub type Foo {
+            value: int;
+        }
+        impl Display for Foo {
+            fn fmt(f: Foo) -> String { "" }
+        }
+        fn main() {
+            let f: Foo = Foo { value: 1 };
+            let _: String = f.fmt();
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "user `pub type` + impl Display dispatch regressed: {:?}",
+        output.errors
+    );
+    let dispatched_via_named = output.method_call_receiver_kinds.values().any(|kind| {
+        matches!(
+            kind,
+            MethodCallReceiverKind::NamedTypeInstance { type_name } if type_name == "Foo"
+        )
+    });
+    let leaked_into_primitive_table = output
+        .method_call_receiver_kinds
+        .values()
+        .any(|kind| matches!(kind, MethodCallReceiverKind::PrimitiveTraitImpl { .. }));
+    assert!(
+        dispatched_via_named,
+        "expected NamedTypeInstance{{type_name=Foo}} metadata for f.fmt(); got: {:?}",
+        output
+            .method_call_receiver_kinds
+            .values()
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !leaked_into_primitive_table,
+        "user struct dispatch leaked into primitive trait table: {:?}",
+        output
+            .method_call_receiver_kinds
+            .values()
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn primitive_impl_dispatch_unknown_method_still_emits_error() {
     // When no impl matches and no builtin method exists, the existing
     // "no method `<name>` on <kind>" diagnostic must still fire — the

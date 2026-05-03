@@ -1,6 +1,6 @@
-fn reverse_string(s: String) -> i32 {
+fn reverse_string(s: String) -> int {
     let n = s.len();
-    let result: Vec<i32> = Vec::new();
+    let result: Vec<int> = Vec::new();
     for i in 0 .. n {
         let j = n - 1 - i;
         result.push(j);

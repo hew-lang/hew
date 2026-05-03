@@ -1,10 +1,4 @@
-# Hew Language Specification (audited for v0.3.0)
-
-<!-- TODO: re-audit spec body against v0.4.0 surface before bumping this version.
-     v0.4.0 breaking changes not yet reflected: stdlib int-surface migration,
-     explicit handle teardown model (Request/Value/Server/Pattern.free/close),
-     decompress max_output_len parameter, Option<String> HTTP string helpers.
-     Track this as a follow-up audit before the v0.4.0 release is cut. -->
+# Hew Language Specification (audited for v0.4.0)
 
 Hew is a **high-performance, network-native, machine-code compiled** language for building long-lived services. Its design is anchored in four proven pillars:
 
@@ -32,6 +26,32 @@ Key corrections in this audit:
 - stdlib references now use the shipped module layout and current APIs
 - speculative shared error types such as `IoError` have been removed in favour
   of the actual `Result<T, E>` model and current stdlib conventions
+
+**Release alignment note (v0.4.0):**
+
+This document has been re-audited against the v0.4.0 surface. Key corrections:
+
+- **`bytes`, `Vec<T>`, `HashMap<K,V>` method signatures** — public signatures
+  now use `int` throughout; `i32`/`i64` are restricted to `extern "C"` ABI
+  blocks and explicitly annotated internal seams (PR #1218, `stdlib-style-contract.md`)
+- **Explicit handle teardown** — `http.Server`, `http.Request`,
+  `regex.Pattern`, and `json.Value` no longer release on scope exit; explicit
+  `close()` / `free()` is now the **only** release path (PRs #1314, #1500)
+- **`std::encoding::compress` decompression functions** — `gzip_decompress`,
+  `deflate_decompress`, and `zlib_decompress` now require a caller-supplied
+  `max_output_len: int` parameter; callers that omit it receive a compile error
+  (PR #1471). The spec body does not yet have a compress module section; this
+  is a known gap for a future audit pass.
+- **HTTP client string helpers** — `http_client.get_string`,
+  `post_string`, and `request_string` return `Option<String>` instead of
+  `String`; `None` indicates transport failure (PR #1030). The spec body does
+  not yet have a dedicated `http_client` section; this is a known gap for a
+  future audit pass.
+- **`hew-wasm` empty-result encoding** — WASM exports that previously returned
+  `""` to indicate no result now return `"null"` (optional scalars) or `"[]"`
+  (collections); browser consumers that special-cased `result === ""` must
+  update. Normative detail lives in `hew-wasm/src/lib.rs` and
+  `docs/wasm-capability-matrix.md` (PR #1506).
 
 ---
 
@@ -406,12 +426,12 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 
 ```hew
 let buf: bytes = bytes::new();
-buf.push(0x48);    // push a byte value (i32)
+buf.push(0x48);    // push a byte value (int)
 buf.push(72);      // same as 'H' in ASCII
-let n = buf.len(); // i64
-let b = buf.get(0); // i32 — first byte
+let n = buf.len(); // int
+let b = buf.get(0); // int — first byte
 buf.set(1, 0xFF);   // overwrite byte at index 1
-let last = buf.pop(); // i32 — removes and returns last byte
+let last = buf.pop(); // int — removes and returns last byte
 println(buf.is_empty()); // bool
 println(buf.contains(72)); // bool — linear scan
 ```
@@ -421,13 +441,13 @@ println(buf.contains(72)); // bool — linear scan
 | Method         | Signature          | Description                     |
 | -------------- | ------------------ | ------------------------------- |
 | `bytes::new()` | `() -> bytes`      | Create an empty byte buffer     |
-| `.push(b)`     | `(i32) -> ()`      | Append a byte                   |
-| `.pop()`       | `() -> i32`        | Remove and return the last byte |
-| `.get(i)`      | `(i64) -> i32`     | Get the byte at index `i`       |
-| `.set(i, b)`   | `(i64, i32) -> ()` | Overwrite the byte at index `i` |
-| `.len()`       | `() -> i64`        | Number of bytes                 |
+| `.push(b)`     | `(int) -> ()`      | Append a byte                   |
+| `.pop()`       | `() -> int`        | Remove and return the last byte |
+| `.get(i)`      | `(int) -> int`     | Get the byte at index `i`       |
+| `.set(i, b)`   | `(int, int) -> ()` | Overwrite the byte at index `i` |
+| `.len()`       | `() -> int`        | Number of bytes                 |
 | `.is_empty()`  | `() -> bool`       | True if len is 0                |
-| `.contains(b)` | `(i32) -> bool`    | True if the buffer contains `b` |
+| `.contains(b)` | `(int) -> bool`    | True if the buffer contains `b` |
 
 `bytes` is an owned heap type and follows the same ownership rules as `Vec<T>` — it is automatically freed when it goes out of scope. It satisfies `Send` (deep-copied across actor boundaries).
 
@@ -1854,7 +1874,7 @@ The current release does **not** expose a user-visible `core`/`alloc`/`std`
 tier split in Hew source. Instead, the shipped library is organised by module
 path.
 
-Commonly used modules in v0.2.0 include:
+Commonly used modules include:
 
 - Core types and builtins: `Option<T>`, `Result<T, E>`, `Vec<T>`, `String`,
   `HashMap<K, V>`, `print`, `println`, `panic`
@@ -1873,8 +1893,8 @@ Commonly used modules in v0.2.0 include:
 #### 3.10.2 Core Traits
 
 The language supports user-defined traits, associated types, and named
-receivers. The current stdlib in v0.2.0 does **not** ship a full generic
-iterator-trait hierarchy yet; modules such as `std::iter` expose concrete helper
+receivers. The current stdlib does **not** ship a full generic
+iterator-trait hierarchy; modules such as `std::iter` expose concrete helper
 functions instead.
 
 The following traits are representative of the current trait style:
@@ -1931,8 +1951,8 @@ impl<T> Vec<T> {
     fn new() -> Vec<T>;
     fn push(v: Vec<T>, item: T);
     fn pop(v: Vec<T>) -> Option<T>;
-    fn len(v: Vec<T>) -> i64;
-    fn get(v: Vec<T>, index: i64) -> T;
+    fn len(v: Vec<T>) -> int;
+    fn get(v: Vec<T>, index: int) -> T;
 }
 ```
 
@@ -1945,8 +1965,7 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 `.contains()`, `.trim()`, `.replace()`, `.split()`, `.lines()`,
 `.is_digit()`, `.is_alpha()`, and `.is_alphanumeric()`.
 
-`HashMap<K, V>` is also built in. In v0.2.0, `HashMap.get()` returns
-`Option<V>`.
+`HashMap<K, V>` is also built in. `HashMap.get()` returns `Option<V>`.
 
 **Current implementation boundary** — although the surface spelling is generic,
 the shipped runtime/codegen ABI currently supports only `HashMap<String, V>`
@@ -1961,7 +1980,7 @@ brace-colon syntax.  The parser disambiguates `{` as a map literal when the
 first token after `{` is a `StringLit` followed by `:`:
 
 ```hew
-// Inferred: HashMap<String, i32>
+// Inferred: HashMap<String, int>
 let scores = {"alice": 10, "bob": 20};
 
 // Explicit type annotation drives checking; each value must match V
@@ -1974,7 +1993,7 @@ let env: HashMap<String, String> = {
 let flags = {"debug": true, "verbose": false,};
 
 // Empty block {} coerces to HashMap<K,V> when the expected type is known
-let empty: HashMap<String, i32> = {};
+let empty: HashMap<String, int> = {};
 ```
 
 Rules:
@@ -1988,7 +2007,7 @@ Rules:
 - Map literals compile to a `HashMap::new()` followed by one `insert` call per
   entry; no heap-coalescing is performed at compile time.
 
-Available `HashMap` methods in v0.2.0:
+Available `HashMap` methods:
 
 | Method                    | Returns         | Description                      |
 | ------------------------- | --------------- | -------------------------------- |
@@ -1997,7 +2016,7 @@ Available `HashMap` methods in v0.2.0:
 | `m.insert(key, value)`    | `()`            | Insert or overwrite              |
 | `m.remove(key)`           | `bool`          | Remove a key; true if present    |
 | `m.contains_key(key)`     | `bool`          | Test membership                  |
-| `m.len()`                 | `i64`           | Number of entries                |
+| `m.len()`                 | `int`           | Number of entries                |
 | `m.is_empty()`            | `bool`          | True if no entries               |
 
 #### 3.10.4 Shipped Collections, I/O, and Utility Modules
@@ -2108,7 +2127,11 @@ These provide type-safe method access:
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and returned from functions.
-`http.Server`, `http.Request`, `regex.Pattern`, and `json.Value` must be released explicitly with `close()` / `free()` before they go out of scope.
+
+**Explicit teardown (v0.4.0):** `http.Server`, `http.Request`, `regex.Pattern`, and `json.Value`
+do **not** auto-release on scope exit. Explicit `close()` / `free()` is the **only** release
+path for these handles. Failing to call it before the variable goes out of scope causes a
+resource leak. (PRs #1314, #1500)
 
 #### 3.10.8 Regular Expressions
 
@@ -2377,7 +2400,7 @@ value.
 - Machines satisfy `Send` if all their state fields satisfy `Send`
   (same rule as structs).
 - Machines can be used as type parameters wherever the bound permits.
-- Generics over machines are not yet supported in v0.2.0 (non-goal).
+- Generics over machines are not currently supported (non-goal for now).
 
 ---
 
@@ -5096,6 +5119,27 @@ If you want this to be directly executable as an engineering project, the next m
 ---
 
 ## Changelog
+
+### v0.4.0 (spec-v040-reaudit)
+
+- **Header bumped** to `(audited for v0.4.0)`.
+- **`bytes` method table (§3.3.2)** — signatures updated from `i32`/`i64` to
+  `int` throughout (`push`, `pop`, `get`, `set`, `len`, `contains`).
+- **`Vec<T>` impl sketch (§3.10.3)** — `len` and `get` updated from `i64` to
+  `int`.
+- **`HashMap` method table (§3.10.3)** — `m.len()` return updated from `i64`
+  to `int`.
+- **Typed handle teardown (§3.10.7)** — tightened to normative: explicit
+  `close()` / `free()` is the **only** release path for `http.Server`,
+  `http.Request`, `regex.Pattern`, and `json.Value`; scope-exit auto-release
+  no longer occurs (PRs #1314, #1500).
+- **Release alignment note** — v0.4.0 paragraph added documenting all five
+  surface deltas; known gaps (no compress section, no http_client section,
+  WASM export encoding delegated to capability matrix) noted inline.
+- **Known gaps:** `std::encoding::compress` module section not yet written;
+  `std::net::http::http_client` string-helper section not yet written; WASM
+  export encoding (`"null"` / `"[]"`) not yet in spec body (normative detail
+  in `hew-wasm/src/lib.rs` and `docs/wasm-capability-matrix.md`).
 
 ### v0.2.2 (user-facing-docs-update)
 

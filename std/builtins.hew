@@ -21,6 +21,71 @@ pub trait Display {
     fn fmt(val: Self) -> String;
 }
 
+// Blanket impls for primitive types.  Each body delegates to the magic
+// `to_string` helper which still routes through `MarkerTrait::Display`
+// for primitives; once the surviving five magic dyn-Display callers
+// migrate to user trait dispatch, these bodies become the single
+// source of truth.
+impl Display for i8 {
+    fn fmt(val: i8) -> String {
+        to_string(val)
+    }
+}
+
+impl Display for i16 {
+    fn fmt(val: i16) -> String {
+        to_string(val)
+    }
+}
+
+impl Display for i32 {
+    fn fmt(val: i32) -> String {
+        to_string(val)
+    }
+}
+
+impl Display for i64 {
+    fn fmt(val: i64) -> String {
+        to_string(val)
+    }
+}
+
+impl Display for u8 {
+    fn fmt(val: u8) -> String {
+        to_string(val)
+    }
+}
+
+impl Display for u16 {
+    fn fmt(val: u16) -> String {
+        to_string(val)
+    }
+}
+
+impl Display for u32 {
+    fn fmt(val: u32) -> String {
+        to_string(val)
+    }
+}
+
+impl Display for u64 {
+    fn fmt(val: u64) -> String {
+        to_string(val)
+    }
+}
+
+impl Display for bool {
+    fn fmt(val: bool) -> String {
+        to_string(val)
+    }
+}
+
+impl Display for char {
+    fn fmt(val: char) -> String {
+        to_string(val)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Output
 // ---------------------------------------------------------------------------

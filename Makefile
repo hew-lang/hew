@@ -47,12 +47,13 @@
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make lsan         — run the nightly codegen sanitizer tests with CI leak env
 #   make tsan         — run the nightly rust-runtime TSan test command locally
-#   make lint         — cargo clippy (workspace + tests, warnings are errors)
+#   make lint         — cargo clippy (workspace + tests, warnings are errors) + hew fmt gate
+#   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
 #   make clean        — remove build/, target/, hew-codegen/build{,-cov,-lsan}/
 # ============================================================================
 
 .PHONY: all bootstrap install-hooks hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
-.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate lint-wasm-todo grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -629,8 +630,17 @@ tsan:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint lint-wasm-todo verify-ffi
+lint: runtime-poison-safe-lint lint-wasm-todo verify-ffi hew-fmt-check
 	cargo clippy --workspace --tests -- -D warnings
+
+# Check that std/ and examples/ .hew sources are formatted.
+# Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
+hew-fmt-check: hew
+	@echo "==> hew-fmt-check: checking std/ and examples/ .hew sources"
+	@find std examples -name "*.hew" -print0 \
+	    | xargs -0 $(DEBUG_DIR)/hew fmt --check \
+	    && echo "hew-fmt-check passed: all .hew sources are formatted." \
+	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
 codegen-lint:
 	@set -eu; \

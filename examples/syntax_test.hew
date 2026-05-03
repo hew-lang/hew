@@ -1,5 +1,10 @@
 // Hew Syntax Highlighting Test File
 // Tests all syntax constructs for the VS Code extension
+//
+// NOTE: This file is intentionally incomplete — impl Drawable for Point omits
+// the required associated type Canvas.  It exercises parser and lexer behaviour
+// for the editor extension, not the type-checker.  It is not a runnable program.
+// If a type-checked version is needed, complete the impl or move to tests/.
 
 /* This is a block comment */
 

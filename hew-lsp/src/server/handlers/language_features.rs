@@ -4,10 +4,10 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    CompletionParams, CompletionResponse, Diagnostic, DocumentLink, DocumentLinkParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeKind,
-    FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
-    InlayHintLabel, InlayHintParams, InlayHintTooltip, MarkupContent, MarkupKind,
+    CompletionParams, CompletionResponse, Diagnostic, DocumentFormattingParams, DocumentLink,
+    DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange,
+    FoldingRangeKind, FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint,
+    InlayHintKind, InlayHintLabel, InlayHintParams, InlayHintTooltip, MarkupContent, MarkupKind,
     ParameterInformation, ParameterLabel, Position, SemanticTokens, SemanticTokensParams,
     SemanticTokensResult, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit, Url,
     WorkspaceEdit,
@@ -367,4 +367,12 @@ pub(crate) fn folding_range(
         })
         .collect();
     non_empty(lsp_ranges)
+}
+
+pub(crate) fn formatting(
+    _server: &HewLanguageServer,
+    _params: &DocumentFormattingParams,
+) -> Option<Vec<TextEdit>> {
+    // stub; implementation added in next commit
+    None
 }

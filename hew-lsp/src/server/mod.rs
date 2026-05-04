@@ -82,15 +82,15 @@ use tower_lsp::lsp_types::{
 use tower_lsp::lsp_types::{
     CodeActionKind, CodeActionParams, CodeActionResponse, CompletionOptions, CompletionParams,
     CompletionResponse, Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, ExecuteCommandOptions,
-    ExecuteCommandParams, FoldingRange, FoldingRangeParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, Location, MessageType, OneOf, Position,
-    PrepareRenameResponse, Range, ReferenceParams, RenameParams, SemanticTokenModifier,
-    SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
-    WorkDoneProgressOptions, WorkspaceEdit,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, FoldingRange,
+    FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MessageType, OneOf, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
 };
 use tower_lsp::lsp_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
 use tower_lsp::lsp_types::{
@@ -237,6 +237,7 @@ fn build_server_capabilities() -> ServerCapabilities {
         folding_range_provider: Some(
             tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true),
         ),
+        document_formatting_provider: Some(OneOf::Left(true)),
         ..Default::default()
     }
 }
@@ -582,6 +583,10 @@ impl LanguageServer for HewLanguageServer {
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         Ok(handlers::language_features::folding_range(self, &params))
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        Ok(handlers::language_features::formatting(self, &params))
     }
 }
 

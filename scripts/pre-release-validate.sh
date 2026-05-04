@@ -6,16 +6,19 @@
 # tagging.  Run this after `make release` succeeds locally.
 #
 # Usage:
-#   scripts/pre-release-validate.sh              # all platforms
-#   scripts/pre-release-validate.sh linux         # linux only
-#   scripts/pre-release-validate.sh macos freebsd # subset
+#   scripts/pre-release-validate.sh                    # all platforms
+#   scripts/pre-release-validate.sh linux               # linux only
+#   scripts/pre-release-validate.sh linux linux-aarch64 # local + arm64 remote
+#   scripts/pre-release-validate.sh macos freebsd       # subset
 #
-# Platforms: linux, macos, freebsd, windows
+# Platforms: linux, linux-aarch64, macos, freebsd, windows
 #
 # Prerequisites:
 #   - SSH access to platform hosts (see PLATFORM_HOSTS below)
 #   - rsync available locally and on remote hosts
 #   - Each host must have Rust, LLVM 22, cmake, ninja installed
+#   - Linux aarch64 remote validation requires Ubuntu 24.04 arm64 + sudo so the
+#     script can provision LLVM/MLIR 22 from apt.llvm.org/noble
 #   - timeout (Linux) or gtimeout (macOS/coreutils) for bounded execution
 #
 # Timeout overrides (seconds):
@@ -29,6 +32,8 @@ set -euo pipefail
 # Create .env.pre-release in the repo root with your local host config:
 #
 #   MACOS_HOST=my-mac.local
+#   LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
+#   LINUX_AARCH64_PROJECT_DIR=/path/to/hew
 #   FREEBSD_HOST=user@freebsd-host
 #   FREEBSD_PROJECT_DIR=/path/to/hew
 #   WINDOWS_HOST=user@windows-host
@@ -49,9 +54,11 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 MACOS_HOST="${HEW_MACOS_HOST:-${MACOS_HOST:-}}"
+LINUX_AARCH64_HOST="${HEW_LINUX_AARCH64_HOST:-${LINUX_AARCH64_HOST:-}}"
 FREEBSD_HOST="${HEW_FREEBSD_HOST:-${FREEBSD_HOST:-}}"
 WINDOWS_HOST="${HEW_WINDOWS_HOST:-${WINDOWS_HOST:-}}"
 
+LINUX_AARCH64_PROJECT_DIR="${HEW_LINUX_AARCH64_DIR:-${LINUX_AARCH64_PROJECT_DIR:-}}"
 FREEBSD_PROJECT_DIR="${HEW_FREEBSD_DIR:-${FREEBSD_PROJECT_DIR:-}}"
 WINDOWS_PROJECT_DIR="${HEW_WINDOWS_DIR:-${WINDOWS_PROJECT_DIR:-}}"
 WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
@@ -250,6 +257,89 @@ validate_macos() {
     fi
 }
 
+validate_linux_aarch64() {
+    banner "Linux aarch64 (via SSH to ${LINUX_AARCH64_HOST})"
+
+    local log="${LOG_DIR}/linux-aarch64.log"
+
+    if [[ -z "$LINUX_AARCH64_HOST" ]]; then
+        skip "linux-aarch64" "LINUX_AARCH64_HOST not configured"
+        return 0
+    fi
+    if [[ -z "$LINUX_AARCH64_PROJECT_DIR" ]]; then
+        skip "linux-aarch64" "LINUX_AARCH64_PROJECT_DIR not configured"
+        return 0
+    fi
+    if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${LINUX_AARCH64_HOST}" true 2>/dev/null; then
+        skip "linux-aarch64" "${LINUX_AARCH64_HOST} unreachable"
+        return 0
+    fi
+
+    if (
+        set -e
+        echo "==> Syncing source to Linux aarch64 host"
+        if run_with_timeout "${SYNC_TIMEOUT}" rsync -az --delete \
+            --exclude target --exclude .git --exclude build \
+            --exclude '*.o' --exclude '*.a' --exclude '*.d' \
+            . "${LINUX_AARCH64_HOST}:${LINUX_AARCH64_PROJECT_DIR}/"; then
+            echo "==> Synced via rsync"
+        else
+            echo "==> rsync failed, falling back to git pull on remote"
+            run_with_timeout "${SYNC_TIMEOUT}" ssh "${LINUX_AARCH64_HOST}" bash -lc "'cd ${LINUX_AARCH64_PROJECT_DIR} && git pull --rebase origin main'" || {
+                echo "FATAL: Could not sync source to Linux aarch64 host (rsync and git pull both failed)"
+                exit 1
+            }
+        fi
+
+        echo "==> Provisioning LLVM/MLIR 22 from apt.llvm.org/noble"
+        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${LINUX_AARCH64_HOST}" bash -lc "'
+            set -eux
+            cd ${LINUX_AARCH64_PROJECT_DIR}
+
+            sudo mkdir -p /etc/apt/keyrings
+            wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+                | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+            echo \"deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main\" \
+                | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq \
+                cmake ninja-build \
+                llvm-22-dev \
+                libmlir-22-dev \
+                mlir-22-tools \
+                clang-22 \
+                lld-22 \
+                libssl-dev pkg-config \
+                zlib1g-dev libzstd-dev
+
+            export LLVM_PREFIX=/usr/lib/llvm-22
+            export CC=clang-22
+            export CXX=clang++-22
+
+            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-lib --release
+            rustup target add wasm32-wasip1
+            cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+
+            target/release/hew --version
+            target/release/adze --version
+            target/release/hew-lsp --version
+            test -f target/release/libhew.a
+
+            printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
+            target/release/hew _smoke.hew -o _smoke_bin
+            chmod +x _smoke_bin
+            ./_smoke_bin | grep -q \"Hello from Hew release test\"
+            rm -f _smoke.hew _smoke_bin
+        '"
+    ) > "$log" 2>&1; then
+        pass "linux-aarch64"
+    else
+        fail "linux-aarch64" "see ${log}"
+        return 1
+    fi
+}
+
 validate_freebsd() {
     banner "FreeBSD (via SSH to ${FREEBSD_HOST})"
 
@@ -441,6 +531,11 @@ for platform in "${PLATFORMS[@]}"; do
     case "$platform" in
         linux)
             validate_linux || HAVE_FAILURE=1
+            ;;
+        linux-aarch64)
+            validate_linux_aarch64 &
+            PIDS+=($!)
+            PLATFORM_NAMES+=("$platform")
             ;;
         macos|freebsd|windows)
             # Run remote builds in background

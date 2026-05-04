@@ -86,10 +86,11 @@ This triggers `.github/workflows/release-gate.yml`, which runs:
 | Platform       | Build scope                              | Test scope                          |
 |----------------|------------------------------------------|-------------------------------------|
 | Linux x86_64   | hew-cli, adze-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
+| Linux aarch64  | hew-cli, adze-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
 | macOS arm64    | hew-cli, adze-cli, hew-lsp, hew-lib     | Rust workspace, codegen E2E (native) |
 | Windows x86_64 | adze-cli, hew-lsp (hew-cli: check only) | Rust workspace (no codegen)         |
 
-**Wait for all three gate jobs to go green.**
+**Wait for all four gate jobs to go green.**
 
 ## Phase 4 — Local cross-platform validation (optional but recommended)
 
@@ -99,14 +100,26 @@ For full cross-platform hardware validation beyond CI runners:
 # Linux only (fast, local)
 make pre-release PLATFORMS="linux"
 
+# Linux x86_64 + optional Linux aarch64 remote validation
+make pre-release PLATFORMS="linux linux-aarch64"
+
 # All platforms (requires .env.pre-release with SSH host config)
 make pre-release
 ```
+
+If your only local arm64 hardware is Debian bookworm (for example pirea51),
+do not treat LLVM 22 apt failures there as a repo regression:
+`apt.llvm.org/bookworm` arm64 does not publish `llvm-22-dev`,
+`libmlir-22-dev`, `mlir-22-tools`, `clang-22`, or `lld-22`. The
+authoritative local/CI-compatible path is Ubuntu 24.04 arm64
+(`ubuntu-24.04-arm` in CI, or an Ubuntu 24.04 arm VM/container locally).
 
 Requires `.env.pre-release` in the repo root (gitignored):
 
 ```bash
 MACOS_HOST=my-mac.local
+LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
+LINUX_AARCH64_PROJECT_DIR=/path/to/hew
 FREEBSD_HOST=user@freebsd-host
 FREEBSD_PROJECT_DIR=/path/to/hew
 WINDOWS_HOST=user@windows-host
@@ -130,6 +143,8 @@ What `make pre-release` does:
      - Verify binaries exist and run (`--version`)
      - Smoke test: compile and execute a .hew program
      - Linux: verify no dynamic LLVM/MLIR deps (`ldd` check)
+     - Linux aarch64 (optional): rsync + SSH build on Ubuntu 24.04 arm64, with
+       LLVM/MLIR 22 provisioned from `apt.llvm.org/noble`
      - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
      - Windows: require `C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake`, force
        `LLVM_PREFIX` + `HEW_EMBED_STATIC=1`, then compile+run a smoke program so
@@ -248,9 +263,11 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 - **Windows codegen**: hew-cli is `cargo check` only on Windows CI (no LLVM provisioned).
   The release.yml Windows job builds from source (~90 min). If the Windows build
   breaks at tag time, it uses `continue-on-error: true`.
-- **linux-aarch64**: No CI gate before tagging; first exercised by release.yml.
-  Mitigation: linux-aarch64 shares the same codegen as linux-x86_64.
 - **FreeBSD**: Nightly only. Check the last run before tagging.
+- **Local Debian bookworm arm64 hosts**: `apt.llvm.org/bookworm` arm64 does not
+  publish the LLVM/MLIR 22 packages the release build uses. Validate linux-aarch64
+  on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04
+  arm VM/container / remote host).
 - **TSan (Rust runtime)**: `continue-on-error: true` — upstream Rust/Cargo build-std +
   TSan link failures (duplicate lang items, panic-strategy mismatch) have no clean
   repo-side fix as of 2026-04.  Kept for signal; re-evaluate when upstream resolves.

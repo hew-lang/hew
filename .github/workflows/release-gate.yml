@@ -61,13 +61,16 @@ jobs:
             mlir-${{ env.LLVM_VERSION }}-tools \
             clang-${{ env.LLVM_VERSION }} \
             lld-${{ env.LLVM_VERSION }} \
-            libssl-dev pkg-config
+            libssl-dev pkg-config \
+            zlib1g-dev libzstd-dev
 
       - name: Configure toolchain
         run: |
-          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          {
+            echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}"
+            echo "CC=clang-${{ env.LLVM_VERSION }}"
+            echo "CXX=clang++-${{ env.LLVM_VERSION }}"
+          } >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@nextest
@@ -156,6 +159,9 @@ jobs:
 
       - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
         run: |
+          # Keep Linux arm64 on Noble / ubuntu-24.04-arm to match release.yml.
+          # apt.llvm.org/bookworm arm64 does not publish the LLVM/MLIR 22 packages
+          # this gate needs.
           sudo mkdir -p /etc/apt/keyrings
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
@@ -169,13 +175,16 @@ jobs:
             mlir-${{ env.LLVM_VERSION }}-tools \
             clang-${{ env.LLVM_VERSION }} \
             lld-${{ env.LLVM_VERSION }} \
-            libssl-dev pkg-config
+            libssl-dev pkg-config \
+            zlib1g-dev libzstd-dev
 
       - name: Configure toolchain
         run: |
-          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          {
+            echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}"
+            echo "CC=clang-${{ env.LLVM_VERSION }}"
+            echo "CXX=clang++-${{ env.LLVM_VERSION }}"
+          } >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@nextest
@@ -271,10 +280,12 @@ jobs:
         run: |
           brew install llvm@${{ env.LLVM_VERSION }} ninja
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
-          echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
-          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
-          echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+          {
+            echo "LLVM_PREFIX=${LLVM_PREFIX}"
+            echo "CC=${LLVM_PREFIX}/bin/clang"
+            echo "CXX=${LLVM_PREFIX}/bin/clang++"
+            echo "MACOSX_DEPLOYMENT_TARGET=13.0"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/cache@v4
         with:

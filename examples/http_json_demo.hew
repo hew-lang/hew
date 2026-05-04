@@ -1,0 +1,83 @@
+// HTTP + JSON pipeline demo.
+//
+// Demonstrates `std::net::http::http_client` and `std::encoding::json`
+// working together: fetch a JSON payload over HTTP, navigate a nested
+// object, extract typed fields, and count an array.
+//
+// How to run:
+//   hew run examples/http_json_demo.hew
+//
+// Expected output (online):
+//   Fetching https://httpbin.org/json...
+//   title:  Sample Slide Show
+//   author: Yours Truly
+//   date:   date of publication
+//   slides: 2
+//
+// Expected output (offline / server unreachable):
+//   Fetching https://httpbin.org/json...
+//   http request failed (no network or server unreachable)
+//
+// Note: requires internet access. Not included in the automated test
+// suite because output depends on network availability.
+//
+// Ownership: every `get_field` / `array_get` call returns a new
+// heap-allocated Value clone. Each such handle is freed before the
+// enclosing scope exits. `print_field` frees the child Value it
+// fetches; it never frees the parent passed by the caller.
+import std::net::http::http_client;
+
+import std::encoding::json;
+
+// Fetch a URL and return the body string, or None on transport failure.
+fn fetch(url: String) -> Option<String> {
+    http_client.get_string(url)
+}
+
+// Extract a string field from a JSON object, print it, and free the child handle.
+// Ownership: `obj` is borrowed — the caller owns and must free it.
+// The child Value returned by `get_field` is owned by this function and freed here.
+fn print_field(obj: Value, key: String) {
+    let child = obj.get_field(key); // owned heap clone — must free
+    let val = child.get_string();
+    println(f"{key}:  {val}");
+    child.free(); // release owned clone
+}
+
+fn main() {
+    let url = "https://httpbin.org/json";
+    println(f"Fetching {url}...");
+    match fetch(url) {
+        Some(body) => {
+            match json.try_parse(body) {
+                Ok(root) => {
+                    // httpbin /json returns a "slideshow" object at the root.
+                    // `get_field` returns a new owned clone — caller must free.
+                    let slideshow = root.get_field("slideshow"); // owned
+                    print_field(slideshow, "title");
+                    print_field(slideshow, "author");
+                    print_field(slideshow, "date");
+
+                    // Count the slides array.
+                    let slides = slideshow.get_field("slides"); // owned
+                    let n = slides.array_len();
+                    println(f"slides: {n}");
+
+                    // Free in reverse acquisition order.
+                    slides.free(); // free before slideshow
+                    slideshow.free(); // free before root
+                    root.free(); // outermost last
+                },
+                Err(_) => {
+                    // Err(ParseError::Invalid(msg)) is accepted by `hew check`
+                    // but fails at runtime with an MLIR undeclared-variable
+                    // error. Use `Err(_)` and a static message instead.
+                    println("json parse failed");
+                },
+            }
+        },
+        None => {
+            println("http request failed (no network or server unreachable)");
+        },
+    }
+}

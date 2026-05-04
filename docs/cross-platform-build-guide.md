@@ -244,7 +244,10 @@ endif()
 and the build uses the embedded-codegen environment (`LLVM_PREFIX` +
 `HEW_EMBED_STATIC=1`). The runtime's low-level memory paths now have Windows
 implementations (`VirtualAlloc` / `VirtualFree`), so the old
-`mmap`/`munmap`-only limitation no longer applies.
+`mmap`/`munmap`-only limitation no longer applies. However, Windows is still
+fail-soft / Tier 2 in `release.yml` today: the tag-release Windows job remains
+`continue-on-error: true` until this validation path has proven itself through a
+full release cycle.
 
 ### Prerequisites
 

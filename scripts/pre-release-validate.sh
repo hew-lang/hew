@@ -126,6 +126,19 @@ fn main() {
 HEWEOF
 }
 
+powershell_encode() {
+    python3 -c 'import base64, sys; print(base64.b64encode(sys.argv[1].encode("utf-16le")).decode("ascii"))' "$1"
+}
+
+run_windows_powershell() {
+    local timeout_seconds="$1"
+    local script="$2"
+    local encoded
+    encoded=$(powershell_encode "$script")
+    run_with_timeout "${timeout_seconds}" ssh "${WINDOWS_HOST}" \
+        "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}"
+}
+
 # ── Platform validators ──────────────────────────────────────────────────────
 
 validate_linux() {
@@ -331,19 +344,84 @@ validate_windows() {
         run_with_timeout "${SYNC_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && git fetch origin main && git reset --hard origin/main"
 
         echo "==> Verifying Windows LLVM/MLIR install"
-        run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh "${WINDOWS_HOST}" \
-            powershell -NoProfile -ExecutionPolicy Bypass -Command \
-            "\$ErrorActionPreference = 'Stop'; if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) { throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.' }; Write-Host 'Found ${WINDOWS_MLIR_CONFIG}'"
+        run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) {
+    throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.'
+}
+Write-Host 'Found ${WINDOWS_MLIR_CONFIG}'
+"
 
         echo "==> Building on Windows with embedded codegen"
-        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${WINDOWS_HOST}" \
-            powershell -NoProfile -ExecutionPolicy Bypass -Command \
-            "\$ErrorActionPreference = 'Stop'; Set-Location '${WINDOWS_PROJECT_DIR}'; if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) { throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.' }; \$env:LLVM_PREFIX = '${WINDOWS_LLVM_PREFIX}'; \$env:HEW_EMBED_STATIC = '1'; \$env:CC = '${WINDOWS_CC}'; \$env:CXX = '${WINDOWS_CXX}'; cargo build -p hew-cli -p adze-cli -p hew-lsp --release; cargo build -p hew-lib --release; & .\\target\\release\\hew.exe --version; & .\\target\\release\\adze.exe --version; & .\\target\\release\\hew-lsp.exe --version"
+        run_windows_powershell "${REMOTE_BUILD_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+function Assert-NativeSuccess([string]\$Label) {
+    if (\$LASTEXITCODE -ne 0) {
+        throw \"\${Label} failed with exit code \$LASTEXITCODE\"
+    }
+}
+
+Set-Location '${WINDOWS_PROJECT_DIR}'
+if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) {
+    throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.'
+}
+
+\$env:LLVM_PREFIX = '${WINDOWS_LLVM_PREFIX}'
+\$env:HEW_EMBED_STATIC = '1'
+\$env:CC = '${WINDOWS_CC}'
+\$env:CXX = '${WINDOWS_CXX}'
+
+cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+Assert-NativeSuccess 'cargo build release binaries'
+
+cargo build -p hew-lib --release
+Assert-NativeSuccess 'cargo build hew-lib'
+
+& .\\target\\release\\hew.exe --version
+Assert-NativeSuccess 'hew.exe --version'
+
+& .\\target\\release\\adze.exe --version
+Assert-NativeSuccess 'adze.exe --version'
+
+& .\\target\\release\\hew-lsp.exe --version
+Assert-NativeSuccess 'hew-lsp.exe --version'
+"
 
         echo "==> Smoke test on Windows"
-        run_with_timeout "${SMOKE_TIMEOUT}" ssh "${WINDOWS_HOST}" \
-            powershell -NoProfile -ExecutionPolicy Bypass -Command \
-            "\$ErrorActionPreference = 'Stop'; Set-Location '${WINDOWS_PROJECT_DIR}'; \$smokeProgram = 'fn main() { println(\"smoke-ok\") }'; Set-Content -Path .\\_smoke.hew -Value \$smokeProgram -Encoding UTF8; try { & .\\target\\release\\hew.exe .\\_smoke.hew -o .\\_smoke.exe; \$output = & .\\_smoke.exe; if (\$output -notmatch 'smoke-ok') { throw \"Smoke test failed: expected smoke-ok, got \$output\" }; Write-Host 'Smoke test passed' } finally { Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe }"
+        run_windows_powershell "${SMOKE_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+function Assert-NativeSuccess([string]\$Label) {
+    if (\$LASTEXITCODE -ne 0) {
+        throw \"\${Label} failed with exit code \$LASTEXITCODE\"
+    }
+}
+
+Set-Location '${WINDOWS_PROJECT_DIR}'
+\$smokeProgram = 'fn main() { println(\"smoke-ok\") }'
+Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
+
+try {
+    Set-Content -Path .\\_smoke.hew -Value \$smokeProgram -Encoding UTF8
+
+    & .\\target\\release\\hew.exe .\\_smoke.hew -o .\\_smoke.exe
+    Assert-NativeSuccess 'hew.exe smoke compile'
+
+    if (-not (Test-Path .\\_smoke.exe)) {
+        throw 'Smoke compile did not produce .\\_smoke.exe'
+    }
+
+    \$output = & .\\_smoke.exe
+    Assert-NativeSuccess '_smoke.exe run'
+
+    if (\$output -notmatch 'smoke-ok') {
+        throw \"Smoke test failed: expected smoke-ok, got \$output\"
+    }
+
+    Write-Host 'Smoke test passed'
+} finally {
+    Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
+}
+"
     ) > "$log" 2>&1; then
         pass "windows"
     else

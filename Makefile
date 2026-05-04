@@ -53,7 +53,7 @@
 # ============================================================================
 
 .PHONY: all bootstrap install-hooks hew adze astgen codegen runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release
-.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-codegen test-stdlib test-hew test-wasm test-cpp asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-runtime-net test-runtime-unit test-codegen test-stdlib test-hew test-wasm test-cpp test-release-binary asan lsan tsan lint runtime-poison-safe-lint codegen-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -662,6 +662,12 @@ codegen-lint:
 		echo "::notice::Found resource cleanup TODOs (track these):"; \
 		echo "$$todos"; \
 	fi
+
+# Smoke-test the release binary with `hew run` to catch process-exit aborts
+# (e.g. libc++ ABI mismatch at locale destructor — issue #1606).
+# Builds release binary then runs a trivial program and checks exit 0 + output.
+test-release-binary:
+	scripts/test-release-binary.sh
 
 stdlib-errno-gate:
 	@bash -euo pipefail -c '\

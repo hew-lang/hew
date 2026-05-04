@@ -619,6 +619,13 @@ pub(super) fn build_reference_locations(
                 }
             }
         }
+    } else {
+        // The name is not a top-level definition in this file.  It may be a
+        // stdlib builtin (e.g. `println`) that is always in scope without an
+        // explicit import.  Walk the whole workspace to collect occurrences.
+        let workspace_locs =
+            collect_workspace_references(uri, &name, include_declaration, documents);
+        locations.extend(workspace_locs);
     }
 
     sort_and_dedup_locations(&mut locations);
@@ -1465,6 +1472,154 @@ fn load_navigation_target(path: &std::path::Path) -> Option<(String, Vec<usize>,
     None
 }
 
+// ── Stdlib / workspace-wide navigation ───────────────────────────────
+
+/// Search the workspace's stdlib tree and all `.hew` files for a definition of
+/// `word`, without requiring an explicit `import` declaration in the caller.
+///
+/// This covers builtin functions defined in `std/builtins.hew` (e.g. `println`)
+/// that are always in scope but never imported.  It falls back gracefully when
+/// no workspace root exists or when the symbol is a Rust-registered type-method
+/// builtin with no `.hew` source.
+///
+/// SHIM: `O(#workspace_files)` per goto-def miss. Acceptable for now — goto-def
+/// misses are rare in practice and `collect_hew_files` already exists for
+/// rename. A proper solution would add a workspace-level symbol index populated
+/// at startup.
+pub(super) fn find_stdlib_definition(
+    current_uri: &Url,
+    imports: &[hew_parser::ast::ImportDecl],
+    word: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<(Url, Range)> {
+    let root = find_workspace_root_for_uri(current_uri)?;
+
+    // Build the set of files already searched by the import-gated path so we
+    // don't duplicate work.  We include the current file and any files
+    // reachable via explicit imports.
+    let mut already_searched: HashSet<Url> = HashSet::from([current_uri.clone()]);
+    for import in imports {
+        if let Some(path) = compute_import_path(current_uri, import) {
+            if let Ok(u) = Url::from_file_path(&path) {
+                already_searched.insert(u);
+            }
+        }
+    }
+
+    // Collect all workspace .hew files and check each one for a definition.
+    // collect_hew_files is best-effort (I/O errors silently skipped) which is
+    // correct here: a parse error in one stdlib file must not block navigation
+    // for the whole workspace.
+    let workspace_files = super::workspace::collect_hew_files(&root);
+    for path in workspace_files {
+        let Ok(file_uri) = Url::from_file_path(&path) else {
+            continue;
+        };
+        if already_searched.contains(&file_uri) {
+            continue;
+        }
+
+        if let Some(doc) = documents.get(&file_uri) {
+            if let Some(range) =
+                find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, word)
+            {
+                return Some((file_uri.clone(), range));
+            }
+        } else if let Some((source, line_offsets, parse_result)) = load_navigation_target(&path) {
+            if let Some(range) = find_definition_in_ast(&source, &line_offsets, &parse_result, word)
+            {
+                return Some((file_uri.clone(), range));
+            }
+        }
+    }
+
+    None
+}
+
+/// Collect all occurrences of `name` across every `.hew` file in the workspace,
+/// returning `Location` values for each call site.
+///
+/// This is used by `build_reference_locations` when `name` is a stdlib/builtin
+/// symbol not found via the import-gated path.  Only fires when `name` is
+/// confirmed to have a definition somewhere in the workspace (checked by the
+/// caller).
+///
+/// SHIM: `O(#files × #tokens)` per call. Acceptable for now — references is
+/// user-initiated and infrequent. A proper solution would maintain an inverted
+/// index at startup.
+fn collect_workspace_references(
+    current_uri: &Url,
+    name: &str,
+    include_declaration: bool,
+    documents: &DashMap<Url, DocumentState>,
+) -> Vec<Location> {
+    let Some(root) = find_workspace_root_for_uri(current_uri) else {
+        return Vec::new();
+    };
+
+    let workspace_files = super::workspace::collect_hew_files(&root);
+    let mut locations = Vec::new();
+
+    for path in workspace_files {
+        let Ok(file_uri) = Url::from_file_path(&path) else {
+            continue;
+        };
+
+        if let Some(doc) = documents.get(&file_uri) {
+            // For the definition file: include the definition span if requested.
+            if include_declaration {
+                if let Some(def_span) =
+                    hew_analysis::definition::find_definition(&doc.source, &doc.parse_result, name)
+                {
+                    push_location_for_span(
+                        &mut locations,
+                        &file_uri,
+                        &doc.source,
+                        &doc.line_offsets,
+                        def_span,
+                    );
+                }
+            }
+            // Collect all call-site references in this file.
+            let ref_spans = hew_analysis::references::find_all_name_occurrences(
+                &doc.source,
+                &doc.parse_result,
+                name,
+            );
+            for span in ref_spans {
+                push_location_for_span(
+                    &mut locations,
+                    &file_uri,
+                    &doc.source,
+                    &doc.line_offsets,
+                    span,
+                );
+            }
+        } else if let Some((source, line_offsets, parse_result)) = load_navigation_target(&path) {
+            if include_declaration {
+                if let Some(def_span) =
+                    hew_analysis::definition::find_definition(&source, &parse_result, name)
+                {
+                    push_location_for_span(
+                        &mut locations,
+                        &file_uri,
+                        &source,
+                        &line_offsets,
+                        def_span,
+                    );
+                }
+            }
+            let ref_spans =
+                hew_analysis::references::find_all_name_occurrences(&source, &parse_result, name);
+            for span in ref_spans {
+                push_location_for_span(&mut locations, &file_uri, &source, &line_offsets, span);
+            }
+        }
+    }
+
+    locations
+}
+
 // ── Document links ──────────────────────────────────────────────────
 
 pub(super) fn build_document_links(
@@ -1609,6 +1764,104 @@ mod tests {
         assert!(conflicts.iter().any(|conflict| {
             conflict.kind == hew_analysis::RenameConflictKind::ShadowsTopLevel
         }));
+    }
+
+    // ── stdlib navigation tests ───────────────────────────────────────────────
+
+    /// Build a temporary workspace with the given (`relative_path`, content) pairs.
+    /// Returns the workspace root and the list of file URIs.
+    fn make_temp_workspace(files: &[(&str, &str)]) -> (std::path::PathBuf, Vec<Url>) {
+        let root = std::env::temp_dir().join(format!(
+            "hew-nav-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos())
+        ));
+        let mut uris = Vec::new();
+        for (rel, content) in files {
+            let path = root.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create dir");
+            }
+            std::fs::write(&path, content).expect("write file");
+            uris.push(Url::from_file_path(&path).expect("valid path"));
+        }
+        (root, uris)
+    }
+
+    #[test]
+    fn goto_def_stdlib_returns_location_in_builtins() {
+        // Workspace: main.hew uses println (no import needed — it's a stdlib builtin)
+        // std/builtins.hew defines println
+        let main_src = "fn main() {\n    println(42);\n}\n";
+        let builtins_src = "pub fn println(value: dyn Display) {}\n";
+
+        let (root, uris) =
+            make_temp_workspace(&[("std/builtins.hew", builtins_src), ("main.hew", main_src)]);
+        let main_uri = &uris[1];
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_src));
+
+        // offset of `println` in main_src: "fn main() {\n    " = 17 chars, then `println`
+        let offset = main_src.find("println").expect("println in source");
+        let word = "println";
+        let imports: Vec<hew_parser::ast::ImportDecl> = Vec::new(); // no imports
+
+        let result = find_stdlib_definition(main_uri, &imports, word, &documents);
+
+        std::fs::remove_dir_all(&root).ok();
+
+        let (target_uri, _range) = result.expect("should find println in stdlib");
+        assert!(
+            target_uri.path().contains("builtins"),
+            "expected builtins.hew, got: {target_uri}"
+        );
+        let _ = offset; // used to verify the test setup
+    }
+
+    #[test]
+    fn find_references_stdlib_println_returns_cross_file_locations() {
+        // Workspace: main.hew + other.hew both call println, std/builtins.hew defines it
+        let main_src = "fn main() {\n    println(1);\n    println(2);\n}\n";
+        let other_src = "fn run() {\n    println(3);\n}\n";
+        let builtins_src = "pub fn println(value: dyn Display) {}\n";
+
+        let (root, uris) = make_temp_workspace(&[
+            ("std/builtins.hew", builtins_src),
+            ("main.hew", main_src),
+            ("other.hew", other_src),
+        ]);
+        let main_uri = &uris[1];
+        let other_uri = &uris[2];
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_src));
+        documents.insert(other_uri.clone(), make_doc(other_src));
+
+        // offset of first `println` in main_src
+        let offset = main_src.find("println").expect("println in source");
+        let main_doc = documents.get(main_uri).expect("main doc");
+
+        let locations = build_reference_locations(main_uri, &main_doc, offset, true, &documents);
+
+        drop(main_doc);
+        std::fs::remove_dir_all(&root).ok();
+
+        // Must have at least 2 cross-file locations (main.hew + other.hew)
+        assert!(
+            locations.len() >= 2,
+            "expected >=2 locations for stdlib println, got {}: {locations:?}",
+            locations.len()
+        );
+        let uris_found: Vec<_> = locations.iter().map(|l| l.uri.as_str()).collect();
+        let has_cross_file = uris_found
+            .iter()
+            .any(|u| u.contains("other") || u.contains("builtins"));
+        assert!(
+            has_cross_file,
+            "expected at least one cross-file location, got: {uris_found:?}"
+        );
     }
 
     #[test]

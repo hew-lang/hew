@@ -222,7 +222,7 @@ fn open_document_paths(documents: &DashMap<Url, DocumentState>) -> Vec<PathBuf> 
     paths
 }
 
-fn collect_hew_files(root: &Path) -> Vec<PathBuf> {
+pub(super) fn collect_hew_files(root: &Path) -> Vec<PathBuf> {
     // This is a best-effort walk: I/O errors on any single entry are silently
     // skipped so that one unreadable subtree does not truncate the result.
     // It intentionally does NOT delegate to for_each_hew_file, which aborts on

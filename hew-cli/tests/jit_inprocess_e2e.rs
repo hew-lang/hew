@@ -68,27 +68,21 @@ fn jit_auto_simple_expression_succeeds() {
 /// symbol-export fix itself is confirmed working — the debug binary prints
 /// `2` and the release binary now carries the same 716 exported symbols.
 ///
-/// This test is currently `#[ignore]` pending two follow-on fixes:
+/// This test was previously `#[ignore]`'d pending two follow-on fixes:
 ///
-/// 1. `hew-codegen/src/jit_session.cpp:207-223`: `HewJitSymbolMap symbolMap`
-///    is a block-local that is captured by reference (`[&symbolMap]`) into a
-///    `DynamicLibrarySearchGenerator` that is registered with the `JITDylib`
-///    and called from a background thread after the block exits.  In the
-///    release binary, the stack slot is reused before the generator fires,
-///    causing a use-after-free (observed: `EXC_BAD_ACCESS` at
-///    `hasStableSymbol`, address `0x607800000`).  Fix: capture by value or
-///    hoist `symbolMap` to function scope.  Security-trigger: UAF on the JIT
-///    host-function boundary.
+/// 1. UAF in `hew-codegen/src/jit_session.cpp:207-223`: `HewJitSymbolMap
+///    symbolMap` was a block-local captured by reference into a
+///    `DynamicLibrarySearchGenerator` that outlived its scope, causing
+///    `EXC_BAD_ACCESS` in the release binary.  Fixed in 3520dfbe by hoisting
+///    `symbolMap` to function scope.
 ///
-/// 2. Root `Cargo.toml` `[profile.release]` `strip = true` strips
-///    `__SYMTAB`, which `dlsym` reads on macOS for in-process symbol
-///    resolution.  `strip = "debuginfo"` preserves `__SYMTAB` while still
-///    removing DWARF.  Per-package profile strip overrides are not supported
-///    by Cargo, so this change must be workspace-wide.
-///
-/// Re-enable this test (remove `#[ignore]`) once both follow-ons land.
+/// 2. `strip = true` stripping `__SYMTAB` — this was a misdiagnosis.
+///    Runtime-symbol resolution uses `#[used]` anchors combined with
+///    `DynamicLibrarySearchGenerator::GetForCurrentProcess`, which resolves
+///    symbols via the dynamic linker rather than `__SYMTAB`.  A freshly-built
+///    release binary (strip active, zero exported `T _hew_` symbols) passes
+///    this test without any profile changes.
 #[test]
-#[ignore = "blocked on jit_session.cpp UAF (#C++ follow-on) and strip=true workspace profile (#Cargo follow-on)"]
 fn jit_inprocess_release_binary_does_not_abort() {
     require_codegen();
 

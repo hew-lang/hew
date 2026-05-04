@@ -50,11 +50,11 @@ fn main() {
 HEWEOF
 
 echo "==> Running: $HEW run $SMOKE_FILE"
-output=$("$HEW" run "$SMOKE_FILE" 2>/dev/null)
-status=$?
-
-if (( status != 0 )); then
-    echo "FAIL: hew run exited $status (expected 0)" >&2
+# Under set -euo pipefail, a non-zero exit inside $(...) propagates before
+# status=$? executes, making the FAIL diagnostic unreachable.  Using the
+# if-negation form keeps set -e active and lets us emit the operator message.
+if ! output=$("$HEW" run "$SMOKE_FILE" 2>/dev/null); then
+    echo "FAIL: hew run exited nonzero (expected 0)" >&2
     echo "This may be a process-exit SIGABRT — see issue #1606." >&2
     exit 1
 fi

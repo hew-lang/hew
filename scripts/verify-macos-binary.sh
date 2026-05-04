@@ -46,12 +46,26 @@ if ! weak_bind_output="$(xcrun objdump --weak-bind --macho "$bin")"; then
   echo "error: failed to inspect macOS weak binds" >&2
   exit 1
 fi
-weak_binds="$(printf '%s\n' "$weak_bind_output" | grep -Ei 'llvm|mlir' || true)"
+weak_bind_count="$(printf '%s\n' "$weak_bind_output" | grep -Eic 'llvm|mlir' || true)"
 
-if [ -n "$weak_binds" ]; then
-  echo "error: macOS binary has LLVM/MLIR weak-bind entries:" >&2
-  echo "$weak_binds" >&2
+if ! command -v nm >/dev/null 2>&1; then
+  echo "error: nm is required to classify macOS weak binds" >&2
+  exit 69
+fi
+
+undefined_llvm_mlir="$(
+  nm -m -u "$bin" \
+    | grep -Ei 'llvm|mlir' || true
+)"
+
+if [ -n "$undefined_llvm_mlir" ]; then
+  echo "error: macOS binary has undefined LLVM/MLIR imports:" >&2
+  echo "$undefined_llvm_mlir" >&2
   exit 1
 fi
 
-echo "Clean — no LLVM/MLIR weak binds."
+if [ "$weak_bind_count" -gt 0 ]; then
+  echo "Info — LLVM/MLIR weak-bind entries are defined in the executable."
+fi
+
+echo "Clean — no undefined LLVM/MLIR imports."

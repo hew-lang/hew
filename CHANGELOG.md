@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-04-15
+## [0.4.0] - 2026-05-03
 
 See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
 
@@ -51,6 +51,25 @@ See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
 
 ### Added
 
+- **LSP document formatting:** `textDocument/formatting` is now implemented in
+  the language server, delegating to `hew_parser::fmt`. Editors that send
+  formatting requests receive correctly formatted source without needing a
+  separate `hew fmt` invocation (#1614).
+- **LSP stdlib navigation:** goto-definition and find-references now resolve
+  symbols from the standard library across file boundaries, including cross-file
+  find-references and stdlib goto-definition (#1616).
+- **Trait method dispatch on primitives:** trait methods can now be called on
+  primitive and builtin-generic receivers (e.g., `int`, `String`, `Vec<T>`),
+  enabling user-defined extension traits over stdlib types (#1596).
+- **Per-call network deadlines:** DNS lookup, TCP connect, QUIC connections, and
+  WebSocket I/O now accept an optional deadline argument. Calls that exceed the
+  deadline fail closed rather than blocking indefinitely (#1557).
+- **Structured parse diagnostics:** `ParseDiagnosticKind` discriminant is now
+  available in WASM and LSP code-action routing, giving tooling consumers a
+  machine-readable parse error classification (#1583, #1592).
+- **HTTP + JSON demo example:** `examples/http_json_demo.hew` demonstrates a
+  complete HTTP server that parses JSON request bodies and responds with JSON,
+  using the v0.4.0 explicit teardown pattern (#1618).
 - **LSP transitive goto-definition:** `find_cross_file_definition` now follows
   one import hop with a cycle guard, so goto-definition works through re-export
   and glob chains (#1073).
@@ -67,10 +86,40 @@ See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
 
 ### Fixed
 
+- **JIT inprocess SIGSEGV:** the inprocess JIT mode (`--jit`) no longer
+  crashes on programs that use the search-generator pattern. Root causes were a
+  missing runtime-symbol export and a use-after-free in the search-generator
+  lambda capture (#1613).
+- **LSP stdlib navigation:** stdlib symbols now resolve correctly in
+  goto-definition and find-references responses — previously these returned
+  empty results for cross-file stdlib lookups (#1616, see also Added above).
+- **Cross-module enum variant construction:** enum variants defined in one
+  module can now be constructed with a payload from another module without a
+  parser error (#1605).
+- **Type checker `Ok(())` pattern:** the type checker now accepts `Ok(())` as a
+  valid unit-payload variant pattern in match arms (#1617).
+- **Formatter inline comments:** `hew fmt` preserves inline comments inside
+  enum bodies, struct field lists, match arm bodies, and around `else if`
+  branch headers instead of dropping them (#1535).
+- **REPL piped-mode flush:** the interactive REPL now flushes stdout after each
+  submission when running in piped mode, and `--jit` is forwarded correctly to
+  interactive mode (#1553).
+- **`hew doc` publish pipeline:** stdlib doc generation is cleaned up and a
+  `make publish-docs` target wires the output to Cloudflare Pages (#1555).
+- **Release binary libcxx linkage:** the release binary no longer has a dynamic
+  `libc++` dependency on Linux; the `std::regex` locale-init static was
+  converted to avoid triggering MLIR's static-init path (#1607).
 - **`fs.try_read_bytes` binary-safety:** `try_read_bytes` now calls
   `hew_file_read_bytes` directly with proper `hew_file_last_error` handling
   instead of routing through the UTF-8 string path, so non-UTF-8 and
   NUL-containing binary files round-trip correctly (#1076).
+
+### Documentation
+
+- HEW-SPEC.md re-audited for v0.4.0 surface deltas (#1588).
+- v0.4.0 migration guide added at `docs/migrations/v0.4.0.md` (#1590).
+- Compiler-stack audit and admission finalization tests committed (#1591).
+- linux-aarch64 pre-release gate added to CI (#1608).
 
 ## [0.3.0] - 2026-04-06
 

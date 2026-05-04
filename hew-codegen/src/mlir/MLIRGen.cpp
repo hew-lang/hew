@@ -3157,14 +3157,14 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
       buffer << sourceFile.rdbuf();
       const auto sourceText = buffer.str();
 
-      static const std::regex dynTraitPattern(R"(\bdyn\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
+      const std::regex dynTraitPattern(R"(\bdyn\s+([A-Za-z_][A-Za-z0-9_]*)\b)");
       for (auto it = std::sregex_iterator(sourceText.begin(), sourceText.end(), dynTraitPattern);
            it != std::sregex_iterator(); ++it) {
         explicitDynTraitUses.insert((*it)[1].str());
       }
 
-      static const std::regex compositeDynPattern(R"(\bdyn\s*\(([^)]*)\))");
-      static const std::regex traitNamePattern(R"([A-Za-z_][A-Za-z0-9_]*)");
+      const std::regex compositeDynPattern(R"(\bdyn\s*\(([^)]*)\))");
+      const std::regex traitNamePattern(R"([A-Za-z_][A-Za-z0-9_]*)");
       for (auto it =
                std::sregex_iterator(sourceText.begin(), sourceText.end(), compositeDynPattern);
            it != std::sregex_iterator(); ++it) {

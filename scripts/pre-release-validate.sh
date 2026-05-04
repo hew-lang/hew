@@ -216,6 +216,10 @@ validate_macos() {
             target/release/adze --version
             target/release/hew-lsp --version
 
+            echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
+            make stdlib
+            scripts/test-release-binary.sh --no-build
+
             echo \"macOS build succeeded\"
         '"
     ) > "$log" 2>&1; then

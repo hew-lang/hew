@@ -224,12 +224,14 @@ has_types=0
 has_cli=0
 has_runtime_net=0
 needs_codegen_lint=0
+needs_codegen_release_smoke=0
 needs_stdlib_lint=0
 
 for path in "${CHANGED_FILES[@]}"; do
     case "$path" in
         hew-codegen/*)
             needs_codegen_lint=1
+            needs_codegen_release_smoke=1
             ;;
         std/*)
             # .hew sources under std/net/* still need stdlib-lint (int-surface / errno-gate);
@@ -327,6 +329,14 @@ esac
 
 if (( needs_codegen_lint == 1 )); then
     add_command "make codegen-lint"
+fi
+
+if (( needs_codegen_release_smoke == 1 )); then
+    # Build the release binary and run a hew run smoke test.  This specifically
+    # guards against process-exit aborts (e.g. static std::regex locale init
+    # crossing libc++ ABI boundaries — issue #1606) that only surface in
+    # release builds and are invisible to unit tests and debug builds.
+    add_command "make test-release-binary"
 fi
 
 if (( needs_stdlib_lint == 1 )); then

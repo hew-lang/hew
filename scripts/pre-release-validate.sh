@@ -6,16 +6,19 @@
 # tagging.  Run this after `make release` succeeds locally.
 #
 # Usage:
-#   scripts/pre-release-validate.sh              # all platforms
-#   scripts/pre-release-validate.sh linux         # linux only
-#   scripts/pre-release-validate.sh macos freebsd # subset
+#   scripts/pre-release-validate.sh                    # all platforms
+#   scripts/pre-release-validate.sh linux               # linux only
+#   scripts/pre-release-validate.sh linux linux-aarch64 # local + arm64 remote
+#   scripts/pre-release-validate.sh macos freebsd       # subset
 #
-# Platforms: linux, macos, freebsd, windows
+# Platforms: linux, linux-aarch64, macos, freebsd, windows
 #
 # Prerequisites:
 #   - SSH access to platform hosts (see PLATFORM_HOSTS below)
 #   - rsync available locally and on remote hosts
 #   - Each host must have Rust, LLVM 22, cmake, ninja installed
+#   - Linux aarch64 remote validation requires Ubuntu 24.04 arm64 + sudo so the
+#     script can provision LLVM/MLIR 22 from apt.llvm.org/noble
 #   - timeout (Linux) or gtimeout (macOS/coreutils) for bounded execution
 #
 # Timeout overrides (seconds):
@@ -29,11 +32,16 @@ set -euo pipefail
 # Create .env.pre-release in the repo root with your local host config:
 #
 #   MACOS_HOST=my-mac.local
+#   LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
+#   LINUX_AARCH64_PROJECT_DIR=/path/to/hew
 #   FREEBSD_HOST=user@freebsd-host
 #   FREEBSD_PROJECT_DIR=/path/to/hew
 #   WINDOWS_HOST=user@windows-host
 #   WINDOWS_PROJECT_DIR=P:/path/to/hew
 #   MACOS_TART_VM=macos-build
+#   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-22'
+#   HEW_WINDOWS_CC=cl
+#   HEW_WINDOWS_CXX=cl
 #
 # Or export them as environment variables (HEW_MACOS_HOST, etc.).
 
@@ -46,11 +54,17 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 MACOS_HOST="${HEW_MACOS_HOST:-${MACOS_HOST:-}}"
+LINUX_AARCH64_HOST="${HEW_LINUX_AARCH64_HOST:-${LINUX_AARCH64_HOST:-}}"
 FREEBSD_HOST="${HEW_FREEBSD_HOST:-${FREEBSD_HOST:-}}"
 WINDOWS_HOST="${HEW_WINDOWS_HOST:-${WINDOWS_HOST:-}}"
 
+LINUX_AARCH64_PROJECT_DIR="${HEW_LINUX_AARCH64_DIR:-${LINUX_AARCH64_PROJECT_DIR:-}}"
 FREEBSD_PROJECT_DIR="${HEW_FREEBSD_DIR:-${FREEBSD_PROJECT_DIR:-}}"
 WINDOWS_PROJECT_DIR="${HEW_WINDOWS_DIR:-${WINDOWS_PROJECT_DIR:-}}"
+WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
+WINDOWS_MLIR_CONFIG="${HEW_WINDOWS_MLIR_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\mlir\\MLIRConfig.cmake}"
+WINDOWS_CC="${HEW_WINDOWS_CC:-cl}"
+WINDOWS_CXX="${HEW_WINDOWS_CXX:-cl}"
 
 # shellcheck disable=SC2034  # used by operators extending this script
 MACOS_TART_VM="${HEW_MACOS_TART_VM:-${MACOS_TART_VM:-macos-build}}"
@@ -112,11 +126,34 @@ echo "Logs: ${LOG_DIR}/"
 
 write_smoke_test() {
     local file="$1"
+    local message="${2:-Hello from Hew release test}"
     cat > "$file" <<'HEWEOF'
 fn main() {
-    println("Hello from Hew release test")
+    println("__HEW_SMOKE_MESSAGE__")
 }
 HEWEOF
+    python3 - "$file" "$message" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+path = Path(sys.argv[1])
+message = sys.argv[2]
+path.write_text(path.read_text().replace('"__HEW_SMOKE_MESSAGE__"', json.dumps(message)))
+PY
+}
+
+powershell_encode() {
+    python3 -c 'import base64, sys; print(base64.b64encode(sys.argv[1].encode("utf-16le")).decode("ascii"))' "$1"
+}
+
+run_windows_powershell() {
+    local timeout_seconds="$1"
+    local script="$2"
+    local encoded
+    encoded=$(powershell_encode "$script")
+    run_with_timeout "${timeout_seconds}" ssh "${WINDOWS_HOST}" \
+        "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}"
 }
 
 # ── Platform validators ──────────────────────────────────────────────────────
@@ -170,6 +207,39 @@ validate_linux() {
             exit 1
         fi
         echo "==> No dynamic LLVM/MLIR deps — binary is self-contained"
+
+        echo "==> Step 6: Smoke test packaged archive layout"
+        local archive_root
+        archive_root=$(mktemp -d)
+        trap 'rm -rf "${archive_root:-}"' EXIT
+
+        local archive_name="hew-v${VERSION}-linux-x86_64"
+        local package_root="${archive_root}/${archive_name}"
+        local package_tarball="${archive_root}/${archive_name}.tar.gz"
+        local package_stage="${archive_root}/staging"
+        mkdir -p "${package_root}/bin" "${package_root}/lib/x86_64-unknown-linux-gnu" \
+            "${package_root}/std" "${package_stage}"
+
+        cp target/release/hew target/release/adze target/release/hew-lsp "${package_root}/bin/"
+        chmod +x "${package_root}/bin/"*
+        cp target/release/libhew.a "${package_root}/lib/"
+        cp target/release/libhew.a "${package_root}/lib/x86_64-unknown-linux-gnu/"
+        cp -r std/. "${package_root}/std/"
+
+        tar czf "${package_tarball}" -C "${archive_root}" "${archive_name}"
+        tar -xf "${package_tarball}" -C "${package_stage}" --strip-components=1
+
+        local package_smoke_file="${archive_root}/pkg-smoke.hew"
+        write_smoke_test "${package_smoke_file}" "pkg-smoke-ok"
+        local package_output
+        package_output=$(run_with_timeout "${SMOKE_TIMEOUT}" env HEW_STD="${package_stage}/std" "${package_stage}/bin/hew" run "${package_smoke_file}")
+
+        if echo "$package_output" | grep -q "pkg-smoke-ok"; then
+            echo "==> Packaged archive smoke test passed"
+        else
+            echo "==> PACKAGED ARCHIVE SMOKE TEST FAILED — output: $package_output"
+            exit 1
+        fi
     ) > "$log" 2>&1; then
         pass "linux"
     else
@@ -226,6 +296,89 @@ validate_macos() {
         pass "macos"
     else
         fail "macos" "see ${log}"
+        return 1
+    fi
+}
+
+validate_linux_aarch64() {
+    banner "Linux aarch64 (via SSH to ${LINUX_AARCH64_HOST})"
+
+    local log="${LOG_DIR}/linux-aarch64.log"
+
+    if [[ -z "$LINUX_AARCH64_HOST" ]]; then
+        skip "linux-aarch64" "LINUX_AARCH64_HOST not configured"
+        return 0
+    fi
+    if [[ -z "$LINUX_AARCH64_PROJECT_DIR" ]]; then
+        skip "linux-aarch64" "LINUX_AARCH64_PROJECT_DIR not configured"
+        return 0
+    fi
+    if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${LINUX_AARCH64_HOST}" true 2>/dev/null; then
+        skip "linux-aarch64" "${LINUX_AARCH64_HOST} unreachable"
+        return 0
+    fi
+
+    if (
+        set -e
+        echo "==> Syncing source to Linux aarch64 host"
+        if run_with_timeout "${SYNC_TIMEOUT}" rsync -az --delete \
+            --exclude target --exclude .git --exclude build \
+            --exclude '*.o' --exclude '*.a' --exclude '*.d' \
+            . "${LINUX_AARCH64_HOST}:${LINUX_AARCH64_PROJECT_DIR}/"; then
+            echo "==> Synced via rsync"
+        else
+            echo "==> rsync failed, falling back to git pull on remote"
+            run_with_timeout "${SYNC_TIMEOUT}" ssh "${LINUX_AARCH64_HOST}" bash -lc "'cd ${LINUX_AARCH64_PROJECT_DIR} && git pull --rebase origin main'" || {
+                echo "FATAL: Could not sync source to Linux aarch64 host (rsync and git pull both failed)"
+                exit 1
+            }
+        fi
+
+        echo "==> Provisioning LLVM/MLIR 22 from apt.llvm.org/noble"
+        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${LINUX_AARCH64_HOST}" bash -lc "'
+            set -eux
+            cd ${LINUX_AARCH64_PROJECT_DIR}
+
+            sudo mkdir -p /etc/apt/keyrings
+            wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+                | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+            echo \"deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main\" \
+                | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq \
+                cmake ninja-build \
+                llvm-22-dev \
+                libmlir-22-dev \
+                mlir-22-tools \
+                clang-22 \
+                lld-22 \
+                libssl-dev pkg-config \
+                zlib1g-dev libzstd-dev
+
+            export LLVM_PREFIX=/usr/lib/llvm-22
+            export CC=clang-22
+            export CXX=clang++-22
+
+            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-lib --release
+            rustup target add wasm32-wasip1
+            cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+
+            target/release/hew --version
+            target/release/adze --version
+            target/release/hew-lsp --version
+            test -f target/release/libhew.a
+
+            printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
+            target/release/hew _smoke.hew -o _smoke_bin
+            chmod +x _smoke_bin
+            ./_smoke_bin | grep -q \"Hello from Hew release test\"
+            rm -f _smoke.hew _smoke_bin
+        '"
+    ) > "$log" 2>&1; then
+        pass "linux-aarch64"
+    else
+        fail "linux-aarch64" "see ${log}"
         return 1
     fi
 }
@@ -323,13 +476,85 @@ validate_windows() {
         # shellcheck disable=SC2029  # WINDOWS_PROJECT_DIR is intentionally expanded locally
         run_with_timeout "${SYNC_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && git fetch origin main && git reset --hard origin/main"
 
-        echo "==> Building on Windows"
-        # shellcheck disable=SC2029
-        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && cargo build -p hew-cli -p adze-cli -p hew-lsp --release"
+        echo "==> Verifying Windows LLVM/MLIR install"
+        run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) {
+    throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.'
+}
+Write-Host 'Found ${WINDOWS_MLIR_CONFIG}'
+"
+
+        echo "==> Building on Windows with embedded codegen"
+        run_windows_powershell "${REMOTE_BUILD_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+function Assert-NativeSuccess([string]\$Label) {
+    if (\$LASTEXITCODE -ne 0) {
+        throw \"\${Label} failed with exit code \$LASTEXITCODE\"
+    }
+}
+
+Set-Location '${WINDOWS_PROJECT_DIR}'
+if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) {
+    throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.'
+}
+
+\$env:LLVM_PREFIX = '${WINDOWS_LLVM_PREFIX}'
+\$env:HEW_EMBED_STATIC = '1'
+\$env:CC = '${WINDOWS_CC}'
+\$env:CXX = '${WINDOWS_CXX}'
+
+cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+Assert-NativeSuccess 'cargo build release binaries'
+
+cargo build -p hew-lib --release
+Assert-NativeSuccess 'cargo build hew-lib'
+
+& .\\target\\release\\hew.exe --version
+Assert-NativeSuccess 'hew.exe --version'
+
+& .\\target\\release\\adze.exe --version
+Assert-NativeSuccess 'adze.exe --version'
+
+& .\\target\\release\\hew-lsp.exe --version
+Assert-NativeSuccess 'hew-lsp.exe --version'
+"
 
         echo "==> Smoke test on Windows"
-        # shellcheck disable=SC2029
-        run_with_timeout "${SMOKE_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && target\\release\\hew.exe --version && target\\release\\adze.exe --version && target\\release\\hew-lsp.exe --version"
+        run_windows_powershell "${SMOKE_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+function Assert-NativeSuccess([string]\$Label) {
+    if (\$LASTEXITCODE -ne 0) {
+        throw \"\${Label} failed with exit code \$LASTEXITCODE\"
+    }
+}
+
+Set-Location '${WINDOWS_PROJECT_DIR}'
+\$smokeProgram = 'fn main() { println(\"smoke-ok\") }'
+Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
+
+try {
+    Set-Content -Path .\\_smoke.hew -Value \$smokeProgram -Encoding UTF8
+
+    & .\\target\\release\\hew.exe .\\_smoke.hew -o .\\_smoke.exe
+    Assert-NativeSuccess 'hew.exe smoke compile'
+
+    if (-not (Test-Path .\\_smoke.exe)) {
+        throw 'Smoke compile did not produce .\\_smoke.exe'
+    }
+
+    \$output = & .\\_smoke.exe
+    Assert-NativeSuccess '_smoke.exe run'
+
+    if (\$output -notmatch 'smoke-ok') {
+        throw \"Smoke test failed: expected smoke-ok, got \$output\"
+    }
+
+    Write-Host 'Smoke test passed'
+} finally {
+    Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
+}
+"
     ) > "$log" 2>&1; then
         pass "windows"
     else
@@ -349,6 +574,11 @@ for platform in "${PLATFORMS[@]}"; do
     case "$platform" in
         linux)
             validate_linux || HAVE_FAILURE=1
+            ;;
+        linux-aarch64)
+            validate_linux_aarch64 &
+            PIDS+=($!)
+            PLATFORM_NAMES+=("$platform")
             ;;
         macos|freebsd|windows)
             # Run remote builds in background

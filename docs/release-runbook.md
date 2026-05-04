@@ -86,10 +86,11 @@ This triggers `.github/workflows/release-gate.yml`, which runs:
 | Platform       | Build scope                              | Test scope                          |
 |----------------|------------------------------------------|-------------------------------------|
 | Linux x86_64   | hew-cli, adze-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
+| Linux aarch64  | hew-cli, adze-cli, hew-lsp, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM) |
 | macOS arm64    | hew-cli, adze-cli, hew-lsp, hew-lib     | Rust workspace, codegen E2E (native) |
 | Windows x86_64 | adze-cli, hew-lsp (hew-cli: check only) | Rust workspace (no codegen)         |
 
-**Wait for all three gate jobs to go green.**
+**Wait for all four gate jobs to go green.**
 
 ## Phase 4 — Local cross-platform validation (optional but recommended)
 
@@ -99,28 +100,55 @@ For full cross-platform hardware validation beyond CI runners:
 # Linux only (fast, local)
 make pre-release PLATFORMS="linux"
 
+# Linux x86_64 + optional Linux aarch64 remote validation
+make pre-release PLATFORMS="linux linux-aarch64"
+
 # All platforms (requires .env.pre-release with SSH host config)
 make pre-release
 ```
+
+If your only local arm64 hardware is Debian bookworm (for example pirea51),
+do not treat LLVM 22 apt failures there as a repo regression:
+`apt.llvm.org/bookworm` arm64 does not publish `llvm-22-dev`,
+`libmlir-22-dev`, `mlir-22-tools`, `clang-22`, or `lld-22`. The
+authoritative local/CI-compatible path is Ubuntu 24.04 arm64
+(`ubuntu-24.04-arm` in CI, or an Ubuntu 24.04 arm VM/container locally).
 
 Requires `.env.pre-release` in the repo root (gitignored):
 
 ```bash
 MACOS_HOST=my-mac.local
+LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
+LINUX_AARCH64_PROJECT_DIR=/path/to/hew
 FREEBSD_HOST=user@freebsd-host
 FREEBSD_PROJECT_DIR=/path/to/hew
 WINDOWS_HOST=user@windows-host
 WINDOWS_PROJECT_DIR=P:/path/to/hew
 ```
 
+Windows hosts also need a one-time LLVM/MLIR 22 bootstrap that matches the tag
+release workflow: install into `C:\llvm-22` and verify
+`C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake` exists before running
+`make pre-release`. See
+[`docs/cross-platform-build-guide.md`](cross-platform-build-guide.md#windows)
+for the exact bootstrap command sequence. The validator defaults to
+`LLVM_PREFIX=C:\llvm-22`, `HEW_EMBED_STATIC=1`, and `CC/CXX=cl`; override with
+`HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if that host
+uses a different compiler driver.
+
 What `make pre-release` does:
 1. `make release` — static-link release build of all binaries
 2. `scripts/pre-release-validate.sh` — per-platform:
-    - Build all release artifacts
-    - Verify binaries exist and run (`--version`)
-    - Smoke test: compile and execute a .hew program
-    - Linux: verify no dynamic LLVM/MLIR deps (`ldd` check)
-    - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
+     - Build all release artifacts
+     - Verify binaries exist and run (`--version`)
+     - Smoke test: compile and execute a .hew program
+     - Linux: verify no dynamic LLVM/MLIR deps (`ldd` check)
+     - Linux aarch64 (optional): rsync + SSH build on Ubuntu 24.04 arm64, with
+       LLVM/MLIR 22 provisioned from `apt.llvm.org/noble`
+     - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
+     - Windows: require `C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake`, force
+       `LLVM_PREFIX` + `HEW_EMBED_STATIC=1`, then compile+run a smoke program so
+       validation cannot silently pass a frontend-only `hew.exe`
 
 For a local macOS clean-room check of the Homebrew/release binary shape:
 
@@ -148,7 +176,11 @@ git push origin v0.4.0
 
 This triggers `.github/workflows/release.yml`, which:
 - Builds release tarballs for linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64, windows-x86_64
+- Extracts staged release archives and runs `hew run` from the packaged layout on Unix targets, with `HEW_STD` pointed at the extracted `std/`
 - Runs `scripts/verify-macos-binary.sh` on macOS artifacts before signing
+- Runs package-layout smoke inside the FreeBSD VM after the tarball is assembled
+- Runs Ubuntu clean-room tarball smoke for linux-x86_64 and linux-aarch64
+- Builds Linux distro packages and smoke-tests the installable `.deb` / `.rpm` / `.pkg.tar.zst` outputs in Docker (Arch remains x86_64-only)
 - Signs and notarizes macOS binaries on tag releases
 - Creates a GitHub Release with checksums
 - Updates the Homebrew tap (if HOMEBREW_TAP_TOKEN is configured)
@@ -222,6 +254,11 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Codegen E2E (native)         | ci.yml + release-gate.yml    | Yes       |
 | Codegen E2E (WASM)           | ci.yml + release-gate.yml    | Yes       |
 | Smoke test (compile+run)     | release-gate.yml             | Yes       |
+| Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix) | Yes    |
+| Packaged archive smoke (Windows zip) | release.yml (Windows job) | Best-effort |
+| FreeBSD packaged archive smoke | release.yml (FreeBSD VM)   | Advisory  |
+| Linux package install smoke  | release.yml (`linux-packages`) | Yes    |
+| Linux Docker clean-room tarball smoke | release.yml (`docker-clean-room-test`) | Yes |
 | macOS build + tests          | ci.yml + release-gate.yml    | Yes       |
 | Windows build + tests        | ci.yml + release-gate.yml    | Yes       |
 | FreeBSD build + tests        | freebsd.yml (nightly)        | Advisory  |
@@ -234,10 +271,16 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 
 - **Windows codegen**: hew-cli is `cargo check` only on Windows CI (no LLVM provisioned).
   The release.yml Windows job builds from source (~90 min). If the Windows build
-  breaks at tag time, it uses `continue-on-error: true`.
-- **linux-aarch64**: No CI gate before tagging; first exercised by release.yml.
-  Mitigation: linux-aarch64 shares the same codegen as linux-x86_64.
-- **FreeBSD**: Nightly only. Check the last run before tagging.
+  breaks at tag time, it uses `continue-on-error: true`. The packaged zip smoke
+  is best-effort for the same reason.
+- **linux-aarch64**: No pre-tag CI gate before tagging; the tag workflow now
+  runs both packaged-archive smoke and an Ubuntu clean-room smoke on arm64.
+- **FreeBSD**: Nightly plus tag-time packaged-archive smoke, but the tag job is
+  still `continue-on-error: true`. Check the last nightly before tagging.
+- **Local Debian bookworm arm64 hosts**: `apt.llvm.org/bookworm` arm64 does not
+  publish the LLVM/MLIR 22 packages the release build uses. Validate linux-aarch64
+  on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04
+  arm VM/container / remote host).
 - **TSan (Rust runtime)**: `continue-on-error: true` — upstream Rust/Cargo build-std +
   TSan link failures (duplicate lang items, panic-strategy mismatch) have no clean
   repo-side fix as of 2026-04.  Kept for signal; re-evaluate when upstream resolves.

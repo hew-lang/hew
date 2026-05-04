@@ -372,8 +372,10 @@ function(hew_emit_cxx_runtime)
       return()
     endif()
     if(APPLE)
-      # On macOS static builds, libc++.a is linked directly (see above).
-      # Do not add a dynamic link directive.
+      # Use macOS' system libc++ dylib.  Linking Homebrew's static libc++.a
+      # into the Rust driver makes C++ static destructors cross libc++ runtime
+      # boundaries at process exit, which can abort release-package smoke tests.
+      hew_embedded_append("cargo:rustc-link-lib=dylib=c++")
       return()
     endif()
   endif()
@@ -473,6 +475,64 @@ if(HEW_STATIC_LINK)
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--no-as-needed")
     hew_embedded_append("cargo:rustc-link-arg=-lc")
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--as-needed")
+  elseif(APPLE)
+    # Apple ld64 does not support GNU -Bstatic, and Cargo's
+    # cargo:rustc-link-lib=static=<name> can still resolve through a dylib
+    # when a matching Homebrew LLVM/MLIR shared library is in the search path.
+    # Use absolute archive paths so the embedded codegen binary has no dyld
+    # weak-bind references to LLVM/MLIR symbols at runtime.  Force-load the
+    # curated archives that hew-codegen actually uses; emit transitive archives
+    # as regular absolute paths so ld64 does not pull optional LLVM tools
+    # (Polly, libedit, libffi) into the release binary.
+    foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
+      get_filename_component(_name "${_archive}" NAME)
+      string(REGEX REPLACE "^lib" "" _name "${_name}")
+      string(REGEX REPLACE "\\.a$" "" _name "${_name}")
+      if(NOT "${_name}" MATCHES "^Polly")
+        set(_hew_archive_arg "${_archive}")
+        if("${_name}" STREQUAL "LLVMSupport")
+          # Homebrew LLVM builds LLVMSupport with Z3 support.  Force-loading the
+          # whole archive would pull the unused Z3Solver object and require a
+          # non-system libz3 dependency in release packages.  Use a build-local
+          # archive without that optional object for the Apple force-load path.
+          set(_hew_support_no_z3 "${PROJECT_BINARY_DIR}/lib/libLLVMSupportNoZ3.a")
+          execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_archive}" "${_hew_support_no_z3}"
+            COMMAND_ERROR_IS_FATAL ANY)
+          file(CHMOD "${_hew_support_no_z3}"
+            PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+          execute_process(
+            COMMAND "${CMAKE_AR}" t "${_hew_support_no_z3}"
+            OUTPUT_VARIABLE _hew_support_members
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+          if(_hew_support_members MATCHES "(^|[\r\n])Z3Solver\\.cpp\\.o($|[\r\n])")
+            execute_process(
+              COMMAND "${CMAKE_AR}" d "${_hew_support_no_z3}" Z3Solver.cpp.o
+              RESULT_VARIABLE _hew_ar_delete_z3_result
+              OUTPUT_QUIET
+              ERROR_QUIET)
+            if(_hew_ar_delete_z3_result EQUAL 0)
+              execute_process(
+                COMMAND "${CMAKE_RANLIB}" "${_hew_support_no_z3}"
+                COMMAND_ERROR_IS_FATAL ANY)
+              set(_hew_archive_arg "${_hew_support_no_z3}")
+            else()
+              message(STATUS
+                "HEW_STATIC_LINK: could not remove Z3Solver.cpp.o from LLVMSupport; using original archive")
+            endif()
+          else()
+            message(STATUS
+              "HEW_STATIC_LINK: LLVMSupport has no Z3Solver.cpp.o member; using original archive")
+          endif()
+        endif()
+        if("${_name}" IN_LIST HEW_MLIR_LIBS OR "${_name}" IN_LIST LLVM_STATIC_LIBS)
+          hew_embedded_append("cargo:rustc-link-arg=-Wl,-force_load,${_hew_archive_arg}")
+        else()
+          hew_embedded_append("cargo:rustc-link-arg=${_hew_archive_arg}")
+        endif()
+      endif()
+    endforeach()
   else()
     foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
       get_filename_component(_name "${_archive}" NAME)
@@ -553,21 +613,12 @@ if(HEW_STATIC_LINK)
     endif()
   endif()
 
-  # macOS: statically link libc++ from Homebrew LLVM so the release binary
-  # does not depend on /opt/homebrew/opt/llvm/lib/c++/libc++.1.dylib.
-  # Also link libc++abi (system dylib) for exception base classes
-  # (std::logic_error, std::runtime_error, etc.) that libc++.a requires.
+  # macOS: use the system libc++ dylib via hew_emit_cxx_runtime().  Do not link
+  # Homebrew's static libc++.a into the Rust driver: LLVM/MLIR and Hew codegen
+  # both contain C++ static objects, and tearing them down across mixed libc++
+  # runtime boundaries can abort at process exit.
   if(APPLE)
-    get_filename_component(_hew_llvm_libcxx_dir "${LLVM_LIBRARY_DIR}/c++" ABSOLUTE)
-    if(EXISTS "${_hew_llvm_libcxx_dir}/libc++.a")
-      hew_embedded_append("cargo:rustc-link-arg=${_hew_llvm_libcxx_dir}/libc++.a")
-      hew_embedded_append("cargo:rustc-link-lib=dylib=c++abi")
-    elseif(IS_DIRECTORY "${_hew_llvm_libcxx_dir}")
-      # Fallback: dynamic link with rpath (non-portable but functional).
-      hew_embedded_append("cargo:rustc-link-search=native=${_hew_llvm_libcxx_dir}")
-      hew_embedded_append("cargo:rustc-link-arg=-Wl,-rpath,${_hew_llvm_libcxx_dir}")
-      message(WARNING "HEW_STATIC_LINK: libc++.a not found — libc++ will be a dynamic dependency")
-    endif()
+    message(STATUS "HEW_STATIC_LINK: using system libc++ dylib on macOS")
   endif()
 else()
   hew_embedded_append("cargo:rustc-link-search=native=${LLVM_LIBRARY_DIR}")

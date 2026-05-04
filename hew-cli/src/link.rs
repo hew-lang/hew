@@ -215,13 +215,6 @@ pub fn link_executable(
     // ── Platform system libraries (target-driven via NativeLinkPlan) ──
     cmd.args(plan.platform_libs);
 
-    // FreeBSD: compiled natively on a FreeBSD host (TargetOs has no FreeBsd
-    // variant yet, so the plan above doesn't cover it).
-    // FOLLOW-UP (#254 Phase 3): add TargetOs::FreeBsd and integrate into
-    // NativeLinkPlan; dlopen/clock_gettime are in libc — no -ldl or -lrt.
-    #[cfg(target_os = "freebsd")]
-    cmd.args(["-lpthread", "-lm"]);
-
     for lib in extra_libs {
         cmd.arg(lib);
     }

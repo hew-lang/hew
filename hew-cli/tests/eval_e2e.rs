@@ -1,10 +1,10 @@
 mod support;
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 use support::{hew_binary, repo_root, require_codegen, strip_ansi};
 
@@ -28,6 +28,25 @@ fn run_eval_with_stdin_in_dir(args: &[&str], input: &str, cwd: &Path) -> Output 
 
 fn run_eval_with_stdin(args: &[&str], input: &str) -> Output {
     run_eval_with_stdin_in_dir(args, input, repo_root())
+}
+
+enum WaitOutcome {
+    Found,
+    Timeout,
+    ChildClosed,
+}
+
+fn wait_for_line(rx: &mpsc::Receiver<String>, needle: &str, budget: Duration) -> WaitOutcome {
+    let start = Instant::now();
+    while start.elapsed() < budget {
+        match rx.recv_timeout(budget.saturating_sub(start.elapsed())) {
+            Ok(line) if line.contains(needle) => return WaitOutcome::Found,
+            Ok(_) => {} // banner-adjacent line or blank line — keep waiting
+            Err(RecvTimeoutError::Timeout) => return WaitOutcome::Timeout,
+            Err(RecvTimeoutError::Disconnected) => return WaitOutcome::ChildClosed,
+        }
+    }
+    WaitOutcome::Timeout
 }
 
 #[test]
@@ -1713,13 +1732,15 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
 /// default.  Without an explicit `stdout().flush()` after each `print!`,
 /// output is held in the buffer until exit — the reported symptom.
 ///
-/// The test spawns `hew eval` with a piped stdin, sends one statement, reads
-/// from the child's stdout on a background thread with a 5-second deadline,
-/// and only sends `:quit` after the expected line arrives.  If the flush is
-/// absent, the background read blocks until the process exits (which never
-/// happens without `:quit`), causing the test to fail by timeout.
+/// The test waits for the REPL banner before it starts the per-submission
+/// flush clock, then sends one statement and requires the resulting output to
+/// become observable in the parent before any process-exit boundary.  The
+/// deadline is a bounded budget for that observation, not the invariant.
 #[test]
 fn eval_repl_piped_stdout_flushes_per_submission() {
+    const STARTUP_BUDGET: Duration = Duration::from_secs(30);
+    const FLUSH_BUDGET: Duration = Duration::from_secs(30);
+
     require_codegen();
 
     let mut child = Command::new(hew_binary())
@@ -1733,6 +1754,7 @@ fn eval_repl_piped_stdout_flushes_per_submission() {
 
     let mut stdin = child.stdin.take().expect("stdin piped");
     let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
 
     // Read lines from child stdout on a background thread, forwarding each
     // line to the channel so the main thread can time-bound the wait.
@@ -1750,28 +1772,25 @@ fn eval_repl_piped_stdout_flushes_per_submission() {
             }
         }
     });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        let mut reader = std::io::BufReader::new(stderr);
+        let _ = reader.read_to_string(&mut buf);
+        buf
+    });
 
-    // Send one statement that produces output.
-    stdin
-        .write_all(b"println(\"flush-check\");\n")
-        .expect("write to hew eval stdin");
-    // Ensure the line reaches the child's stdin buffer.
-    stdin.flush().expect("flush hew eval stdin");
+    let startup_outcome = wait_for_line(&rx, "Hew REPL v", STARTUP_BUDGET);
 
-    // Wait up to 5 seconds for the output line.  If the flush is missing the
-    // child will buffer the output and this recv_timeout will return Err.
-    let deadline = Duration::from_secs(5);
-    let mut found = false;
-    let start = std::time::Instant::now();
-    while start.elapsed() < deadline {
-        match rx.recv_timeout(deadline.saturating_sub(start.elapsed())) {
-            Ok(line) if line.contains("flush-check") => {
-                found = true;
-                break;
-            }
-            Ok(_) => {}      // banner or blank line — keep waiting
-            Err(_) => break, // timeout or channel closed
-        }
+    let mut wait_outcome = None;
+    if matches!(startup_outcome, WaitOutcome::Found) {
+        // Send one statement that produces output.
+        stdin
+            .write_all(b"println(\"flush-check\");\n")
+            .expect("write to hew eval stdin");
+        // Ensure the line reaches the child's stdin buffer.
+        stdin.flush().expect("flush hew eval stdin");
+
+        wait_outcome = Some(wait_for_line(&rx, "flush-check", FLUSH_BUDGET));
     }
 
     // Gracefully terminate the process regardless of outcome.
@@ -1779,13 +1798,41 @@ fn eval_repl_piped_stdout_flushes_per_submission() {
     let _ = stdin.flush();
     drop(stdin);
     let _ = reader_thread.join();
-    let _ = child.wait();
+    let child_status = child.wait().expect("wait on hew eval");
+    let stderr_output = stderr_thread
+        .join()
+        .unwrap_or_else(|_| String::from("<stderr reader panicked>"));
+    let stderr_suffix = if stderr_output.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\nstderr: {stderr_output}")
+    };
 
-    assert!(
-        found,
-        "output from println(\"flush-check\") did not arrive in the pipe \
-         within 5 seconds while the process was still alive — stdout flush missing"
-    );
+    match startup_outcome {
+        WaitOutcome::Found => {}
+        WaitOutcome::Timeout => panic!(
+            "REPL banner not observed within {STARTUP_BUDGET:?}; child did not reach readline \
+             before the startup budget expired\nstatus: {child_status}{stderr_suffix}"
+        ),
+        WaitOutcome::ChildClosed => panic!(
+            "child stdout closed before the REPL banner was observed; child likely exited or \
+             crashed before reaching readline\nstatus: {child_status}{stderr_suffix}"
+        ),
+    }
+
+    match wait_outcome.expect("wait outcome should be set after startup readiness") {
+        WaitOutcome::Found => {}
+        WaitOutcome::Timeout => panic!(
+            "'flush-check' did not arrive in the pipe within {FLUSH_BUDGET:?} after the REPL \
+             banner was observed, while the child process was still alive — per-submission \
+             stdout flush is missing or stalled\nstatus: {child_status}{stderr_suffix}"
+        ),
+        WaitOutcome::ChildClosed => panic!(
+            "child stdout closed before 'flush-check' was observed; child likely exited or \
+             crashed — this is not a flush invariant failure, investigate the child process\n\
+             status: {child_status}{stderr_suffix}"
+        ),
+    }
 }
 
 /// Clap-level smoke test: `--jit=worker` is a recognised flag and the

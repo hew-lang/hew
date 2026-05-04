@@ -53,6 +53,11 @@ if ! command -v nm >/dev/null 2>&1; then
   exit 69
 fi
 
+# Mach-O weak-bind output includes C++ weak/coalesced definitions that are
+# present in the executable as well as true undefined weak imports.  The
+# release-package failure this script guards against is the latter: an
+# LLVM/MLIR symbol dyld must resolve from a missing Homebrew dylib at runtime.
+# Classify with nm's undefined-symbol view before failing.
 undefined_llvm_mlir="$(
   nm -m -u "$bin" \
     | grep -Ei 'llvm|mlir' || true
@@ -65,7 +70,7 @@ if [ -n "$undefined_llvm_mlir" ]; then
 fi
 
 if [ "$weak_bind_count" -gt 0 ]; then
-  echo "Info — LLVM/MLIR weak-bind entries are defined in the executable."
+  echo "Info — LLVM/MLIR weak-bind entries are defined in the executable." >&2
 fi
 
 echo "Clean — no undefined LLVM/MLIR imports."

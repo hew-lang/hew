@@ -1077,64 +1077,64 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
 
   // Check for named builtins (O(1) lookup before calling generateBuiltinCall).
   {
-    static const llvm::StringSet<> builtinNames = {"println_str",
-                                                   "print_str",
-                                                   "println_int",
-                                                   "print_int",
-                                                   "println_f64",
-                                                   "print_f64",
-                                                   "println_bool",
-                                                   "print_bool",
-                                                   "sqrt",
-                                                   "abs",
-                                                   "min",
-                                                   "max",
-                                                   "string_concat",
-                                                   "string_length",
-                                                   "string_equals",
-                                                   "sleep_ms",
-                                                   "sleep",
-                                                   "string_char_at",
-                                                   "string_slice",
-                                                   "read_file",
-                                                   "string_find",
-                                                   "string_contains",
-                                                   "string_starts_with",
-                                                   "string_ends_with",
-                                                   "string_trim",
-                                                   "string_replace",
-                                                   "string_to_int",
-                                                   "string_from_int",
-                                                   "int_to_string",
-                                                   "char_to_string",
-                                                   "substring",
-                                                   "stop",
-                                                   "close",
-                                                   "link",
-                                                   "unlink",
-                                                   "monitor",
-                                                   "demonitor",
-                                                   "supervisor_child",
-                                                   "supervisor_stop",
-                                                   "panic",
-                                                   "assert",
-                                                   "assert_eq",
-                                                   "assert_ne",
-                                                   "Vec::new",
-                                                   "Vec::from",
-                                                   "HashMap::new",
-                                                   "HashSet::new",
-                                                   "Rc::new",
-                                                   "bytes::new",
-                                                   "bytes::from",
-                                                   "duration::from_nanos",
-                                                   "Node::start",
-                                                   "Node::shutdown",
-                                                   "Node::connect",
-                                                   "Node::set_transport",
-                                                   "Node::register",
-                                                   "Node::lookup",
-                                                   "to_float"};
+    const llvm::StringSet<> builtinNames = {"println_str",
+                                            "print_str",
+                                            "println_int",
+                                            "print_int",
+                                            "println_f64",
+                                            "print_f64",
+                                            "println_bool",
+                                            "print_bool",
+                                            "sqrt",
+                                            "abs",
+                                            "min",
+                                            "max",
+                                            "string_concat",
+                                            "string_length",
+                                            "string_equals",
+                                            "sleep_ms",
+                                            "sleep",
+                                            "string_char_at",
+                                            "string_slice",
+                                            "read_file",
+                                            "string_find",
+                                            "string_contains",
+                                            "string_starts_with",
+                                            "string_ends_with",
+                                            "string_trim",
+                                            "string_replace",
+                                            "string_to_int",
+                                            "string_from_int",
+                                            "int_to_string",
+                                            "char_to_string",
+                                            "substring",
+                                            "stop",
+                                            "close",
+                                            "link",
+                                            "unlink",
+                                            "monitor",
+                                            "demonitor",
+                                            "supervisor_child",
+                                            "supervisor_stop",
+                                            "panic",
+                                            "assert",
+                                            "assert_eq",
+                                            "assert_ne",
+                                            "Vec::new",
+                                            "Vec::from",
+                                            "HashMap::new",
+                                            "HashSet::new",
+                                            "Rc::new",
+                                            "bytes::new",
+                                            "bytes::from",
+                                            "duration::from_nanos",
+                                            "Node::start",
+                                            "Node::shutdown",
+                                            "Node::connect",
+                                            "Node::set_transport",
+                                            "Node::register",
+                                            "Node::lookup",
+                                            "to_float"};
     if (builtinNames.contains(calleeName)) {
       return generateBuiltinCall(calleeName, call.args, location, exprSpan,
                                  typeHint.value_or(mlir::Type{}));
@@ -1822,7 +1822,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
       // disable the caller's auto-close, causing a leak. A proper fix
       // requires move semantics in the type system. For now this is
       // the lesser evil vs double-frees from callee-consumed handles.
-      static const std::unordered_set<std::string> nonConsumingFns = {
+      const std::unordered_set<std::string> nonConsumingFns = {
           "hew_sink_write",        "hew_sink_write_string", "hew_sink_write_bytes",
           "hew_sink_flush",        "hew_stream_is_valid",   "hew_sink_is_valid",
           "hew_stream_is_closed",  "hew_stream_next",       "hew_stream_next_sized",
@@ -4129,15 +4129,14 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
     // the struct is eligible and the callee has not been emitted yet.
     if (!callee && encodeEligibleStructs_.count(ident.name)) {
       // clang-format off
-      static const std::unordered_map<std::string, std::pair<bool, std::string>>
-          kStructSerialMethods = {
-            {"to_json",   {true,  "json"}},
-            {"from_json", {false, "json"}},
-            {"to_yaml",   {true,  "yaml"}},
-            {"from_yaml", {false, "yaml"}},
-            {"to_toml",   {true,  "toml"}},
-            {"from_toml", {false, "toml"}},
-          };
+      const std::unordered_map<std::string, std::pair<bool, std::string>> kStructSerialMethods = {
+          {"to_json",   {true,  "json"}},
+          {"from_json", {false, "json"}},
+          {"to_yaml",   {true,  "yaml"}},
+          {"from_yaml", {false, "yaml"}},
+          {"to_toml",   {true,  "toml"}},
+          {"from_toml", {false, "toml"}},
+      };
       // clang-format on
       auto it = kStructSerialMethods.find(methodName);
       if (it != kStructSerialMethods.end()) {
@@ -4690,12 +4689,11 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
       callee = lookupImportedFunc(resolvedTypeName, methodName);
     if (!callee) {
       if (encodeEligibleStructs_.count(resolvedTypeName)) {
-        static const std::unordered_map<std::string, std::pair<bool, std::string>>
-            kStructSerialMethods = {
-                {"to_json", {true, "json"}}, {"from_json", {false, "json"}},
-                {"to_yaml", {true, "yaml"}}, {"from_yaml", {false, "yaml"}},
-                {"to_toml", {true, "toml"}}, {"from_toml", {false, "toml"}},
-            };
+        const std::unordered_map<std::string, std::pair<bool, std::string>> kStructSerialMethods = {
+            {"to_json", {true, "json"}}, {"from_json", {false, "json"}},
+            {"to_yaml", {true, "yaml"}}, {"from_yaml", {false, "yaml"}},
+            {"to_toml", {true, "toml"}}, {"from_toml", {false, "toml"}},
+        };
         auto it = kStructSerialMethods.find(methodName);
         if (it != kStructSerialMethods.end()) {
           const auto &[isTo, format] = it->second;

@@ -279,6 +279,10 @@ impl Checker {
                 }
             }
             Pattern::Tuple(pats) => match ty {
+                // `()` as a pattern (empty tuple) is the unit literal; accept
+                // it against unit-typed payloads, e.g. `Ok(())` on
+                // `Result<(), E>`.
+                Ty::Unit if pats.is_empty() => {}
                 Ty::Tuple(tys) => {
                     if pats.len() != tys.len() {
                         self.report_error(

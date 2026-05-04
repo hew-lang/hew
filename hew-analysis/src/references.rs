@@ -59,6 +59,33 @@ pub fn find_import_binding_references(parse_result: &ParseResult, name: &str) ->
         .collect()
 }
 
+/// Collect every span where `name` appears as an identifier anywhere in the
+/// parse result, without any scope filtering.
+///
+/// This is the cross-file reference-collection primitive used when searching
+/// workspace files for occurrences of a stdlib/builtin name that has no
+/// explicit import in each consumer file. Because builtin names are always in
+/// scope, scope-based filtering would be wrong here.
+///
+/// Call-site callers are responsible for deduplicating spans that overlap with
+/// the definition site if they handle declarations separately.
+#[must_use]
+pub fn find_all_name_occurrences(
+    source: &str,
+    parse_result: &ParseResult,
+    name: &str,
+) -> Vec<OffsetSpan> {
+    let mut spans = Vec::new();
+    collect_refs_in_parse_result(source, parse_result, name, &mut spans);
+    spans
+        .into_iter()
+        .map(|s| OffsetSpan {
+            start: s.start,
+            end: s.end,
+        })
+        .collect()
+}
+
 /// Check if a name matches a module-scope item definition.
 #[must_use]
 pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {

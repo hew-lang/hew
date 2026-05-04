@@ -30,7 +30,7 @@ use self::navigation::build_workspace_edit;
 use self::navigation::{
     build_document_links, build_prepare_rename_response, build_reference_locations,
     collect_import_items, find_cross_file_definition, find_definition_in_ast,
-    plan_workspace_rename,
+    find_stdlib_definition, plan_workspace_rename,
 };
 #[cfg(test)]
 use self::workspace::collect_workspace_symbols;

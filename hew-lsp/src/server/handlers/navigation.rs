@@ -1,13 +1,13 @@
 use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Location, PrepareRenameResponse, ReferenceParams,
-    RenameParams, WorkspaceEdit,
+    RenameParams, Url, WorkspaceEdit,
 };
 
 use super::super::{
-    collect_import_items, find_cross_file_definition, find_definition_in_ast, non_empty,
-    offset_range_to_lsp, plan_workspace_rename, position_to_offset, word_at_offset,
-    HewLanguageServer,
+    collect_import_items, find_cross_file_definition, find_definition_in_ast,
+    find_stdlib_definition, non_empty, offset_range_to_lsp, plan_workspace_rename,
+    position_to_offset, word_at_offset, HewLanguageServer,
 };
 
 pub(crate) fn rename_error_to_jsonrpc(
@@ -57,10 +57,13 @@ pub(crate) fn goto_definition(
         uri.as_str(),
         offset,
     ) {
-        if let Some((_res_uri, span)) = resolution.def_location() {
+        if let Some((res_uri, span)) = resolution.def_location() {
+            // Use the resolver's URI, not the caller's URI: the definition may
+            // live in a stdlib or imported file, not the document being queried.
+            let def_uri = Url::parse(res_uri).unwrap_or_else(|_| uri.clone());
             let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
             return Some(GotoDefinitionResponse::Scalar(Location {
-                uri: uri.clone(),
+                uri: def_uri,
                 range,
             }));
         }
@@ -110,6 +113,18 @@ pub(crate) fn goto_definition(
                 }));
             }
         }
+    }
+
+    // Fallback: search the whole workspace for a definition.  This catches
+    // stdlib builtins (e.g. `println`) that are always in scope but never
+    // explicitly imported, so the import-gated paths above will not find them.
+    if let Some((target_uri, range)) =
+        find_stdlib_definition(uri, &imports, &word, &server.documents)
+    {
+        return Some(GotoDefinitionResponse::Scalar(Location {
+            uri: target_uri,
+            range,
+        }));
     }
 
     None

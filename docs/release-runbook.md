@@ -176,7 +176,11 @@ git push origin v0.4.0
 
 This triggers `.github/workflows/release.yml`, which:
 - Builds release tarballs for linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64, windows-x86_64
+- Extracts staged release archives and runs `hew run` from the packaged layout on Unix targets, with `HEW_STD` pointed at the extracted `std/`
 - Runs `scripts/verify-macos-binary.sh` on macOS artifacts before signing
+- Runs package-layout smoke inside the FreeBSD VM after the tarball is assembled
+- Runs Ubuntu clean-room tarball smoke for linux-x86_64 and linux-aarch64
+- Builds Linux distro packages and smoke-tests the installable `.deb` / `.rpm` / `.pkg.tar.zst` outputs in Docker (Arch remains x86_64-only)
 - Signs and notarizes macOS binaries on tag releases
 - Creates a GitHub Release with checksums
 - Updates the Homebrew tap (if HOMEBREW_TAP_TOKEN is configured)
@@ -250,6 +254,10 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Codegen E2E (native)         | ci.yml + release-gate.yml    | Yes       |
 | Codegen E2E (WASM)           | ci.yml + release-gate.yml    | Yes       |
 | Smoke test (compile+run)     | release-gate.yml             | Yes       |
+| Packaged archive smoke       | release.yml (Unix matrix)    | Yes       |
+| FreeBSD packaged archive smoke | release.yml (FreeBSD VM)   | Advisory  |
+| Linux package install smoke  | release.yml (`linux-packages`) | Yes    |
+| Linux Docker clean-room tarball smoke | release.yml (`docker-clean-room-test`) | Yes |
 | macOS build + tests          | ci.yml + release-gate.yml    | Yes       |
 | Windows build + tests        | ci.yml + release-gate.yml    | Yes       |
 | FreeBSD build + tests        | freebsd.yml (nightly)        | Advisory  |
@@ -262,8 +270,12 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 
 - **Windows codegen**: hew-cli is `cargo check` only on Windows CI (no LLVM provisioned).
   The release.yml Windows job builds from source (~90 min). If the Windows build
-  breaks at tag time, it uses `continue-on-error: true`.
-- **FreeBSD**: Nightly only. Check the last run before tagging.
+  breaks at tag time, it uses `continue-on-error: true`. The packaged zip smoke
+  is best-effort for the same reason.
+- **linux-aarch64**: No pre-tag CI gate before tagging; the tag workflow now
+  runs both packaged-archive smoke and an Ubuntu clean-room smoke on arm64.
+- **FreeBSD**: Nightly plus tag-time packaged-archive smoke, but the tag job is
+  still `continue-on-error: true`. Check the last nightly before tagging.
 - **Local Debian bookworm arm64 hosts**: `apt.llvm.org/bookworm` arm64 does not
   publish the LLVM/MLIR 22 packages the release build uses. Validate linux-aarch64
   on Ubuntu 24.04 arm64 instead (CI `ubuntu-24.04-arm`, or an Ubuntu 24.04

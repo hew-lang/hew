@@ -442,9 +442,55 @@ jobs:
         if: "!startsWith(matrix.target, 'windows')"
         run: tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
 
+      - name: Smoke test packaged archive (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        run: |
+          smoke_root="$(mktemp -d)"
+          trap 'rm -rf "${smoke_root}"' EXIT
+
+          cat > "${smoke_root}/pkg-smoke.hew" <<'HEWEOF'
+          fn main() {
+              println("pkg-smoke-ok")
+          }
+          HEWEOF
+
+          staging="${smoke_root}/staging"
+          mkdir -p "${staging}"
+          tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${staging}" --strip-components=1
+
+          output=$(HEW_STD="${staging}/std" "${staging}/bin/hew" run "${smoke_root}/pkg-smoke.hew")
+          echo "${output}"
+          echo "${output}" | grep -q "pkg-smoke-ok"
+
       - name: Create zip (Windows)
         if: startsWith(matrix.target, 'windows')
         run: Compress-Archive -Path "${env:ARCHIVE_NAME}" -DestinationPath "${env:ARCHIVE_NAME}.zip"
+        shell: pwsh
+
+      - name: Smoke test packaged archive (Windows)
+        if: startsWith(matrix.target, 'windows')
+        run: |
+          $SmokeRoot = Join-Path $PWD "pkg-smoke"
+          Remove-Item -Recurse -Force $SmokeRoot -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $SmokeRoot | Out-Null
+
+          $SmokeFile = Join-Path $SmokeRoot "pkg-smoke.hew"
+          Set-Content -Path $SmokeFile -Encoding utf8NoBOM -Value @'
+          fn main() {
+              println("pkg-smoke-ok")
+          }
+          '@
+
+          Expand-Archive -Path "${env:ARCHIVE_NAME}.zip" -DestinationPath $SmokeRoot -Force
+          $Staging = Join-Path $SmokeRoot "${env:ARCHIVE_NAME}"
+          $env:HEW_STD = Join-Path $Staging "std"
+
+          $Output = & (Join-Path $Staging "bin/hew.exe") run $SmokeFile | Out-String
+          $Output = $Output.Trim()
+          Write-Host $Output
+          if ($Output -notmatch "pkg-smoke-ok") {
+            throw "Packaged archive smoke output did not contain pkg-smoke-ok"
+          }
         shell: pwsh
 
       # ── Upload artifact ─────────────────────────────────────────────────
@@ -605,6 +651,23 @@ jobs:
 
             tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
 
+            echo "==> Package-layout smoke test"
+            smoke_root=$(mktemp -d)
+            trap 'rm -rf "${smoke_root}"' EXIT
+
+            cat > "${smoke_root}/pkg-smoke.hew" <<'HEWEOF'
+            fn main() {
+                println("pkg-smoke-ok")
+            }
+            HEWEOF
+
+            mkdir -p "${smoke_root}/staging"
+            tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${smoke_root}/staging" --strip-components=1
+
+            output=$(HEW_STD="${smoke_root}/staging/std" "${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
+            echo "${output}"
+            echo "${output}" | grep -q "pkg-smoke-ok"
+
       - name: Save LLVM+MLIR cache (FreeBSD)
         if: steps.cache-llvm-freebsd.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -635,7 +698,7 @@ jobs:
             os: ubuntu-24.04-arm
             artifact_pattern: "hew-v*-linux-aarch64"
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
@@ -660,6 +723,21 @@ jobs:
             FORMATS="debian,rpm,arch"
           fi
           installers/build-packages.sh \
+            --version "${VERSION}" \
+            --arch "${{ matrix.arch }}" \
+            --skip-build \
+            --only "${FORMATS}"
+
+      - name: Smoke test Linux packages in Docker
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          # Arch Linux Docker image only supports x86_64
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            FORMATS="debian,rpm"
+          else
+            FORMATS="debian,rpm,arch"
+          fi
+          installers/docker/test-all-packages.sh \
             --version "${VERSION}" \
             --arch "${{ matrix.arch }}" \
             --skip-build \
@@ -811,15 +889,23 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Docker clean-room test — verifies the Linux release tarball installs and
-  # runs correctly inside a pristine Ubuntu 24.04 container.
-  # Reuses the already-built linux-x86_64 artifact so no LLVM rebuild is
-  # needed; typical runtime is 5–10 min.
+  # runs correctly inside a pristine Ubuntu 24.04 container for each native
+  # Linux release target. Reuses the already-built release artifacts so no LLVM
+  # rebuild is needed; typical runtime is 5–10 min per target.
   # Gates the release job so we never publish a broken installer.
   # ─────────────────────────────────────────────────────────────────────────
   docker-clean-room-test:
-    name: Docker clean-room test (Ubuntu 24.04)
     needs: build
-    runs-on: ubuntu-24.04
+    name: Docker clean-room test (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            os: ubuntu-24.04
+          - target: linux-aarch64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
     if: ${{ !cancelled() && needs.build.result != 'failure' }}
     timeout-minutes: 20
     steps:
@@ -827,17 +913,17 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Download linux-x86_64 release artifact
+      - name: Download Linux release artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: hew-v*-linux-x86_64
+          pattern: hew-v*-${{ matrix.target }}
           path: artifacts
           merge-multiple: true
 
       - name: Stage release tarball for Docker build
         run: |
           mkdir -p dist/test-tarball
-          TARBALL=$(find artifacts -name 'hew-v*-linux-x86_64.tar.gz' | head -1)
+          TARBALL=$(find artifacts -name "hew-v*-${{ matrix.target }}.tar.gz" | head -1)
           tar -xf "${TARBALL}" -C dist/test-tarball --strip-components=1
 
       - name: Build Ubuntu 24.04 test image
@@ -845,11 +931,11 @@ jobs:
           docker build \
             -f installers/docker/Dockerfile.ubuntu-test \
             --build-context tarball=dist/test-tarball \
-            -t hew-ubuntu-test \
+            -t hew-ubuntu-test-${{ matrix.target }} \
             .
 
       - name: Run stdlib smoke test in container
-        run: docker run --rm hew-ubuntu-test
+        run: docker run --rm hew-ubuntu-test-${{ matrix.target }}
 
   # ─────────────────────────────────────────────────────────────────────────
   # Release — download all artifacts, generate checksums, publish

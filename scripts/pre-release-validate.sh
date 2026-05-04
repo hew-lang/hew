@@ -126,9 +126,10 @@ echo "Logs: ${LOG_DIR}/"
 
 write_smoke_test() {
     local file="$1"
-    cat > "$file" <<'HEWEOF'
+    local message="${2:-Hello from Hew release test}"
+    cat > "$file" <<HEWEOF
 fn main() {
-    println("Hello from Hew release test")
+    println("${message}")
 }
 HEWEOF
 }
@@ -197,6 +198,37 @@ validate_linux() {
             exit 1
         fi
         echo "==> No dynamic LLVM/MLIR deps — binary is self-contained"
+
+        echo "==> Step 6: Smoke test packaged archive layout"
+        local archive_root
+        archive_root=$(mktemp -d)
+        trap 'rm -rf "${archive_root:-}"' EXIT
+
+        local archive_name="hew-v${VERSION}-linux-x86_64"
+        local package_root="${archive_root}/${archive_name}"
+        local package_tarball="${archive_root}/${archive_name}.tar.gz"
+        local package_stage="${archive_root}/staging"
+        mkdir -p "${package_root}/bin" "${package_root}/lib" "${package_root}/std" "${package_stage}"
+
+        cp target/release/hew target/release/adze target/release/hew-lsp "${package_root}/bin/"
+        chmod +x "${package_root}/bin/"*
+        cp target/release/libhew.a "${package_root}/lib/"
+        cp -r std/. "${package_root}/std/"
+
+        tar czf "${package_tarball}" -C "${archive_root}" "${archive_name}"
+        tar -xf "${package_tarball}" -C "${package_stage}" --strip-components=1
+
+        local package_smoke_file="${archive_root}/pkg-smoke.hew"
+        write_smoke_test "${package_smoke_file}" "pkg-smoke-ok"
+        local package_output
+        package_output=$(run_with_timeout "${SMOKE_TIMEOUT}" env HEW_STD="${package_stage}/std" "${package_stage}/bin/hew" run "${package_smoke_file}")
+
+        if echo "$package_output" | grep -q "pkg-smoke-ok"; then
+            echo "==> Packaged archive smoke test passed"
+        else
+            echo "==> PACKAGED ARCHIVE SMOKE TEST FAILED — output: $package_output"
+            exit 1
+        fi
     ) > "$log" 2>&1; then
         pass "linux"
     else

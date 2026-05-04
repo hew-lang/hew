@@ -4,10 +4,10 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    CompletionParams, CompletionResponse, Diagnostic, DocumentLink, DocumentLinkParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeKind,
-    FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
-    InlayHintLabel, InlayHintParams, InlayHintTooltip, MarkupContent, MarkupKind,
+    CompletionParams, CompletionResponse, Diagnostic, DocumentFormattingParams, DocumentLink,
+    DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange,
+    FoldingRangeKind, FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint,
+    InlayHintKind, InlayHintLabel, InlayHintParams, InlayHintTooltip, MarkupContent, MarkupKind,
     ParameterInformation, ParameterLabel, Position, SemanticTokens, SemanticTokensParams,
     SemanticTokensResult, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit, Url,
     WorkspaceEdit,
@@ -367,4 +367,24 @@ pub(crate) fn folding_range(
         })
         .collect();
     non_empty(lsp_ranges)
+}
+
+pub(crate) fn formatting(
+    server: &HewLanguageServer,
+    params: &DocumentFormattingParams,
+) -> Option<Vec<TextEdit>> {
+    let uri = &params.text_document.uri;
+    let doc = server.documents.get(uri)?;
+    let formatted = hew_parser::fmt::format_source(&doc.source, &doc.parse_result.program);
+    if formatted == doc.source {
+        // Already canonical: signal success with an empty edit list.
+        return Some(vec![]);
+    }
+    // Whole-document replacement. Use offset_range_to_lsp — not doc.source.len() as raw bytes —
+    // so that the LSP Position::character field is UTF-16 code units, as the spec requires.
+    let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, 0, doc.source.len());
+    Some(vec![TextEdit {
+        range,
+        new_text: formatted,
+    }])
 }

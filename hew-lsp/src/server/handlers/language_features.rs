@@ -370,9 +370,21 @@ pub(crate) fn folding_range(
 }
 
 pub(crate) fn formatting(
-    _server: &HewLanguageServer,
-    _params: &DocumentFormattingParams,
+    server: &HewLanguageServer,
+    params: &DocumentFormattingParams,
 ) -> Option<Vec<TextEdit>> {
-    // stub; implementation added in next commit
-    None
+    let uri = &params.text_document.uri;
+    let doc = server.documents.get(uri)?;
+    let formatted = hew_parser::fmt::format_source(&doc.source, &doc.parse_result.program);
+    if formatted == doc.source {
+        // Already canonical: signal success with an empty edit list.
+        return Some(vec![]);
+    }
+    // Whole-document replacement. Use offset_range_to_lsp — not doc.source.len() as raw bytes —
+    // so that the LSP Position::character field is UTF-16 code units, as the spec requires.
+    let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, 0, doc.source.len());
+    Some(vec![TextEdit {
+        range,
+        new_text: formatted,
+    }])
 }

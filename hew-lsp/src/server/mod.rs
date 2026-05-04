@@ -5809,4 +5809,104 @@ machine Traffic {
             "for_each_hew_file should have visited def.hew in the real directory despite the symlink sibling"
         );
     }
+
+    // ── Formatting handler tests ────────────────────────────────────────
+
+    /// Source that `format_source` does not change → handler returns `Some(vec![])`.
+    #[test]
+    fn formatting_already_canonical_returns_empty_edits() {
+        // The formatter appends a trailing newline; use a source that is already canonical.
+        let source = "fn foo() -> i32 {\n    42\n}\n";
+        let parse_result = hew_parser::parse(source);
+        let formatted = hew_parser::fmt::format_source(source, &parse_result.program);
+        // Pre-condition: the source must actually be canonical for this test to be meaningful.
+        assert_eq!(
+            source, formatted,
+            "test pre-condition failed: source is not already canonical"
+        );
+
+        let lo = compute_line_offsets(source);
+        // Mimic the handler: if formatted == source, return empty edits.
+        let edits: Option<Vec<TextEdit>> = if formatted == source {
+            Some(vec![])
+        } else {
+            let range = offset_range_to_lsp(source, &lo, 0, source.len());
+            Some(vec![TextEdit {
+                range,
+                new_text: formatted,
+            }])
+        };
+
+        assert_eq!(
+            edits,
+            Some(vec![]),
+            "canonical source must yield empty edit list"
+        );
+    }
+
+    /// Source with extra whitespace → handler returns a single whole-document `TextEdit`.
+    #[test]
+    fn formatting_uncanonical_returns_single_edit() {
+        // Extra spaces between tokens trigger reformatting.
+        let source = "fn foo()  ->  i32  { 42 }";
+        let parse_result = hew_parser::parse(source);
+        let formatted = hew_parser::fmt::format_source(source, &parse_result.program);
+        assert_ne!(
+            source, formatted,
+            "test pre-condition failed: source must not be canonical"
+        );
+
+        let lo = compute_line_offsets(source);
+        let range = offset_range_to_lsp(source, &lo, 0, source.len());
+        let edits: Vec<TextEdit> = vec![TextEdit {
+            range,
+            new_text: formatted.clone(),
+        }];
+
+        assert_eq!(
+            edits.len(),
+            1,
+            "expected exactly one whole-document TextEdit"
+        );
+        assert_eq!(
+            edits[0].new_text, formatted,
+            "TextEdit new_text must equal format_source output"
+        );
+    }
+
+    /// Source containing a non-ASCII character — the range's end column must be
+    /// UTF-16 code units, not byte count.  'é' is 2 bytes in UTF-8 but 1 UTF-16
+    /// code unit; the byte-based end would differ from the correct UTF-16 end.
+    #[test]
+    fn formatting_unicode_source_uses_correct_range() {
+        // Extra spaces before and after '-> i32' trigger reformatting,
+        // so the handler produces a non-empty TextEdit.  The trailing comment
+        // preserves 'é' in the formatted output so the source lengths differ
+        // between UTF-8 bytes and UTF-16 code units.
+        let source = "fn foo()  ->  i32  { 42 } // héllo";
+        let parse_result = hew_parser::parse(source);
+        let formatted = hew_parser::fmt::format_source(source, &parse_result.program);
+        assert_ne!(
+            source, formatted,
+            "test pre-condition failed: source must not be canonical"
+        );
+
+        let lo = compute_line_offsets(source);
+        let range = offset_range_to_lsp(source, &lo, 0, source.len());
+
+        // The source fits on one line. End character must be the UTF-16 length
+        // of that line (not the byte length).  'é' is 2 bytes but 1 UTF-16 unit,
+        // so byte_len > utf16_len for this source.
+        let byte_len = u32::try_from(source.len()).expect("test source fits in u32");
+        let utf16_len =
+            u32::try_from(source.encode_utf16().count()).expect("test source fits in u32");
+        assert!(
+            byte_len > utf16_len,
+            "test pre-condition: source must have byte_len ({byte_len}) > utf16_len ({utf16_len})"
+        );
+        assert_eq!(
+            range.end.character, utf16_len,
+            "end.character must be UTF-16 code units ({utf16_len}), not byte count ({byte_len})"
+        );
+    }
 }

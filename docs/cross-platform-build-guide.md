@@ -240,13 +240,96 @@ endif()
 
 ## Windows
 
-**Status:** Not yet supported for release builds. The runtime uses POSIX
-`mmap`/`munmap` in `arena.rs`, `coro.rs`, and `signal.rs`, which are not
-available on Windows. The release workflow has `continue-on-error: true` for
-Windows builds.
+**Status:** Supported for release builds when LLVM/MLIR 22 is installed locally
+and the build uses the embedded-codegen environment (`LLVM_PREFIX` +
+`HEW_EMBED_STATIC=1`). The runtime's low-level memory paths now have Windows
+implementations (`VirtualAlloc` / `VirtualFree`), so the old
+`mmap`/`munmap`-only limitation no longer applies.
 
-Fixing Windows support requires replacing mmap calls with `VirtualAlloc` /
-`VirtualFree` or gating the affected modules behind `#[cfg(unix)]`.
+### Prerequisites
+
+The release workflow provisions LLVM/MLIR 22 into `C:\llvm-22` and builds with
+MSVC's `cl`. The local Windows validator in `scripts/pre-release-validate.sh`
+expects the same layout by default.
+
+One-time bootstrap on the Windows host:
+
+```powershell
+choco install ninja cmake -y
+
+git clone --depth 1 --branch llvmorg-22.1.0 `
+  --filter=blob:none --sparse `
+  https://github.com/llvm/llvm-project.git C:\llvm-src
+Push-Location C:\llvm-src
+git sparse-checkout set llvm mlir cmake third-party
+Pop-Location
+
+cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
+  -DCMAKE_C_COMPILER=cl `
+  -DCMAKE_CXX_COMPILER=cl `
+  -DLLVM_ENABLE_PROJECTS="mlir" `
+  -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
+  -DLLVM_BUILD_TOOLS=ON `
+  -DLLVM_BUILD_UTILS=ON `
+  -DLLVM_INSTALL_UTILS=ON `
+  -DLLVM_INCLUDE_TESTS=OFF `
+  -DLLVM_INCLUDE_BENCHMARKS=OFF `
+  -DLLVM_INCLUDE_EXAMPLES=OFF `
+  -DLLVM_INCLUDE_DOCS=OFF `
+  -DLLVM_ENABLE_BINDINGS=OFF `
+  -DLLVM_ENABLE_ZLIB=OFF `
+  -DLLVM_ENABLE_ZSTD=OFF `
+  -DLLVM_ENABLE_DIA_SDK=OFF `
+  -DLLVM_ENABLE_ASSERTIONS=OFF `
+  -DLLVM_BUILD_LLVM_DYLIB=OFF `
+  -DLLVM_LINK_LLVM_DYLIB=OFF `
+  -DMLIR_BUILD_MLIR_C_DYLIB=OFF `
+  -DMLIR_ENABLE_BINDINGS_PYTHON=OFF `
+  -DBUILD_SHARED_LIBS=OFF
+
+cmake --build C:\llvm-build --config Release
+cmake --install C:\llvm-build --config Release
+
+Test-Path 'C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake'
+```
+
+If the host cannot use MSVC, override the validator/compiler environment with
+`HEW_WINDOWS_CC` / `HEW_WINDOWS_CXX` (for example `clang-cl`) and point
+`HEW_WINDOWS_LLVM_PREFIX` at the matching install root.
+
+### Build
+
+Use a Developer PowerShell (or equivalent environment where your chosen
+compiler is on `PATH`):
+
+```powershell
+$env:LLVM_PREFIX = 'C:\llvm-22'
+$env:HEW_EMBED_STATIC = '1'
+$env:CC = 'cl'
+$env:CXX = 'cl'
+
+cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+cargo build -p hew-lib --release
+```
+
+The important invariant is fail-closed embedded codegen: do not validate a
+Windows release build without `LLVM_PREFIX` and `HEW_EMBED_STATIC=1`, or
+`hew-cli/build.rs` may legitimately fall back to a frontend-only binary.
+
+### Smoke test
+
+```powershell
+Set-Content -Path .\_smoke.hew -Value 'fn main() { println("smoke-ok") }' -Encoding UTF8
+.\target\release\hew.exe .\_smoke.hew -o .\_smoke.exe
+.\_smoke.exe
+Remove-Item -Force .\_smoke.hew, .\_smoke.exe
+```
+
+Expect `smoke-ok` on stdout. This verifies that the built `hew.exe` can still
+compile and run a program with embedded codegen enabled, not just print
+`--version`.
 
 ## Duplicate Symbol Errors When Linking stdlib Packages
 
@@ -277,4 +360,4 @@ which handles all of these automatically.
 | Linux aarch64 | `clang-22`                   | n/a                        | n/a                                       | `libzstd-dev zlib1g-dev` |
 | macOS x86_64  | `${LLVM_PREFIX}/bin/clang++` | `$(xcrun --show-sdk-path)` | `-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,...` | n/a                      |
 | macOS aarch64 | `${LLVM_PREFIX}/bin/clang++` | `$(xcrun --show-sdk-path)` | `-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,...` | n/a                      |
-| Windows       | N/A                          | N/A                        | N/A                                       | (not yet supported)      |
+| Windows       | `cl` (or override to `clang-cl`) | n/a                    | n/a                                       | `cmake`, `ninja`; LLVM/MLIR 22 under `C:\llvm-22` |

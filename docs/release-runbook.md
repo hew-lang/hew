@@ -113,14 +113,27 @@ WINDOWS_HOST=user@windows-host
 WINDOWS_PROJECT_DIR=P:/path/to/hew
 ```
 
+Windows hosts also need a one-time LLVM/MLIR 22 bootstrap that matches the tag
+release workflow: install into `C:\llvm-22` and verify
+`C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake` exists before running
+`make pre-release`. See
+[`docs/cross-platform-build-guide.md`](cross-platform-build-guide.md#windows)
+for the exact bootstrap command sequence. The validator defaults to
+`LLVM_PREFIX=C:\llvm-22`, `HEW_EMBED_STATIC=1`, and `CC/CXX=cl`; override with
+`HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if that host
+uses a different compiler driver.
+
 What `make pre-release` does:
 1. `make release` — static-link release build of all binaries
 2. `scripts/pre-release-validate.sh` — per-platform:
-    - Build all release artifacts
-    - Verify binaries exist and run (`--version`)
-    - Smoke test: compile and execute a .hew program
-    - Linux: verify no dynamic LLVM/MLIR deps (`ldd` check)
-    - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
+     - Build all release artifacts
+     - Verify binaries exist and run (`--version`)
+     - Smoke test: compile and execute a .hew program
+     - Linux: verify no dynamic LLVM/MLIR deps (`ldd` check)
+     - Remote platforms (macOS/FreeBSD/Windows): rsync + SSH build
+     - Windows: require `C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake`, force
+       `LLVM_PREFIX` + `HEW_EMBED_STATIC=1`, then compile+run a smoke program so
+       validation cannot silently pass a frontend-only `hew.exe`
 
 For a local macOS clean-room check of the Homebrew/release binary shape:
 

@@ -34,6 +34,9 @@ set -euo pipefail
 #   WINDOWS_HOST=user@windows-host
 #   WINDOWS_PROJECT_DIR=P:/path/to/hew
 #   MACOS_TART_VM=macos-build
+#   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-22'
+#   HEW_WINDOWS_CC=cl
+#   HEW_WINDOWS_CXX=cl
 #
 # Or export them as environment variables (HEW_MACOS_HOST, etc.).
 
@@ -51,6 +54,10 @@ WINDOWS_HOST="${HEW_WINDOWS_HOST:-${WINDOWS_HOST:-}}"
 
 FREEBSD_PROJECT_DIR="${HEW_FREEBSD_DIR:-${FREEBSD_PROJECT_DIR:-}}"
 WINDOWS_PROJECT_DIR="${HEW_WINDOWS_DIR:-${WINDOWS_PROJECT_DIR:-}}"
+WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
+WINDOWS_MLIR_CONFIG="${HEW_WINDOWS_MLIR_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\mlir\\MLIRConfig.cmake}"
+WINDOWS_CC="${HEW_WINDOWS_CC:-cl}"
+WINDOWS_CXX="${HEW_WINDOWS_CXX:-cl}"
 
 # shellcheck disable=SC2034  # used by operators extending this script
 MACOS_TART_VM="${HEW_MACOS_TART_VM:-${MACOS_TART_VM:-macos-build}}"
@@ -323,13 +330,20 @@ validate_windows() {
         # shellcheck disable=SC2029  # WINDOWS_PROJECT_DIR is intentionally expanded locally
         run_with_timeout "${SYNC_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && git fetch origin main && git reset --hard origin/main"
 
-        echo "==> Building on Windows"
-        # shellcheck disable=SC2029
-        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && cargo build -p hew-cli -p adze-cli -p hew-lsp --release"
+        echo "==> Verifying Windows LLVM/MLIR install"
+        run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh "${WINDOWS_HOST}" \
+            powershell -NoProfile -ExecutionPolicy Bypass -Command \
+            "\$ErrorActionPreference = 'Stop'; if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) { throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.' }; Write-Host 'Found ${WINDOWS_MLIR_CONFIG}'"
+
+        echo "==> Building on Windows with embedded codegen"
+        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${WINDOWS_HOST}" \
+            powershell -NoProfile -ExecutionPolicy Bypass -Command \
+            "\$ErrorActionPreference = 'Stop'; Set-Location '${WINDOWS_PROJECT_DIR}'; if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) { throw 'Missing ${WINDOWS_MLIR_CONFIG}. Bootstrap LLVM+MLIR 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_MLIR_CONFIG before running pre-release validation.' }; \$env:LLVM_PREFIX = '${WINDOWS_LLVM_PREFIX}'; \$env:HEW_EMBED_STATIC = '1'; \$env:CC = '${WINDOWS_CC}'; \$env:CXX = '${WINDOWS_CXX}'; cargo build -p hew-cli -p adze-cli -p hew-lsp --release; cargo build -p hew-lib --release; & .\\target\\release\\hew.exe --version; & .\\target\\release\\adze.exe --version; & .\\target\\release\\hew-lsp.exe --version"
 
         echo "==> Smoke test on Windows"
-        # shellcheck disable=SC2029
-        run_with_timeout "${SMOKE_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && target\\release\\hew.exe --version && target\\release\\adze.exe --version && target\\release\\hew-lsp.exe --version"
+        run_with_timeout "${SMOKE_TIMEOUT}" ssh "${WINDOWS_HOST}" \
+            powershell -NoProfile -ExecutionPolicy Bypass -Command \
+            "\$ErrorActionPreference = 'Stop'; Set-Location '${WINDOWS_PROJECT_DIR}'; \$smokeProgram = 'fn main() { println(\"smoke-ok\") }'; Set-Content -Path .\\_smoke.hew -Value \$smokeProgram -Encoding UTF8; try { & .\\target\\release\\hew.exe .\\_smoke.hew -o .\\_smoke.exe; \$output = & .\\_smoke.exe; if (\$output -notmatch 'smoke-ok') { throw \"Smoke test failed: expected smoke-ok, got \$output\" }; Write-Host 'Smoke test passed' } finally { Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe }"
     ) > "$log" 2>&1; then
         pass "windows"
     else

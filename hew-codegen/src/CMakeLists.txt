@@ -473,6 +473,50 @@ if(HEW_STATIC_LINK)
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--no-as-needed")
     hew_embedded_append("cargo:rustc-link-arg=-lc")
     hew_embedded_append("cargo:rustc-link-arg=-Wl,--as-needed")
+  elseif(APPLE)
+    # Apple ld64 does not support GNU -Bstatic, and Cargo's
+    # cargo:rustc-link-lib=static=<name> can still resolve through a dylib
+    # when a matching Homebrew LLVM/MLIR shared library is in the search path.
+    # Use absolute archive paths so the embedded codegen binary has no dyld
+    # weak-bind references to LLVM/MLIR symbols at runtime.  Force-load the
+    # curated archives that hew-codegen actually uses; emit transitive archives
+    # as regular absolute paths so ld64 does not pull optional LLVM tools
+    # (Polly, libedit, libffi) into the release binary.
+    foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
+      get_filename_component(_name "${_archive}" NAME)
+      string(REGEX REPLACE "^lib" "" _name "${_name}")
+      string(REGEX REPLACE "\\.a$" "" _name "${_name}")
+      if(NOT "${_name}" MATCHES "^Polly")
+        set(_hew_archive_arg "${_archive}")
+        if("${_name}" STREQUAL "LLVMSupport")
+          # Homebrew LLVM builds LLVMSupport with Z3 support.  Force-loading the
+          # whole archive would pull the unused Z3Solver object and require a
+          # non-system libz3 dependency in release packages.  Use a build-local
+          # archive without that optional object for the Apple force-load path.
+          set(_hew_support_no_z3 "${PROJECT_BINARY_DIR}/lib/libLLVMSupportNoZ3.a")
+          execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_archive}" "${_hew_support_no_z3}"
+            COMMAND_ERROR_IS_FATAL ANY)
+          file(CHMOD "${_hew_support_no_z3}"
+            PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+          execute_process(
+            COMMAND "${CMAKE_AR}" d "${_hew_support_no_z3}" Z3Solver.cpp.o
+            RESULT_VARIABLE _hew_ar_delete_z3_result
+            ERROR_QUIET)
+          if(_hew_ar_delete_z3_result EQUAL 0)
+            execute_process(
+              COMMAND "${CMAKE_RANLIB}" "${_hew_support_no_z3}"
+              COMMAND_ERROR_IS_FATAL ANY)
+            set(_hew_archive_arg "${_hew_support_no_z3}")
+          endif()
+        endif()
+        if("${_name}" IN_LIST HEW_MLIR_LIBS OR "${_name}" IN_LIST LLVM_STATIC_LIBS)
+          hew_embedded_append("cargo:rustc-link-arg=-Wl,-force_load,${_hew_archive_arg}")
+        else()
+          hew_embedded_append("cargo:rustc-link-arg=${_hew_archive_arg}")
+        endif()
+      endif()
+    endforeach()
   else()
     foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
       get_filename_component(_name "${_archive}" NAME)

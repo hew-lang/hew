@@ -35,3 +35,23 @@ if [ -n "$unexpected_deps" ]; then
 fi
 
 echo "Clean — only system dylibs."
+
+if ! command -v xcrun >/dev/null 2>&1; then
+  echo "error: xcrun is required to inspect macOS weak binds" >&2
+  exit 69
+fi
+
+echo "=== xcrun objdump --weak-bind --macho $bin ==="
+if ! weak_bind_output="$(xcrun objdump --weak-bind --macho "$bin")"; then
+  echo "error: failed to inspect macOS weak binds" >&2
+  exit 1
+fi
+weak_binds="$(printf '%s\n' "$weak_bind_output" | grep -Ei 'llvm|mlir' || true)"
+
+if [ -n "$weak_binds" ]; then
+  echo "error: macOS binary has LLVM/MLIR weak-bind entries:" >&2
+  echo "$weak_binds" >&2
+  exit 1
+fi
+
+echo "Clean — no LLVM/MLIR weak binds."

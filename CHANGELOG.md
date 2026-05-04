@@ -106,9 +106,12 @@ See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
   interactive mode (#1553).
 - **`hew doc` publish pipeline:** stdlib doc generation is cleaned up and a
   `make publish-docs` target wires the output to Cloudflare Pages (#1555).
-- **Release binary libcxx linkage:** the release binary no longer has a dynamic
-  `libc++` dependency on Linux; the `std::regex` locale-init static was
-  converted to avoid triggering MLIR's static-init path (#1607).
+- **Release binary macOS SIGABRT fix:** three function-local
+  `static const std::regex` declarations in MLIR codegen triggered a libc++ ABI
+  mismatch at process exit (Homebrew-compiled locale freed by the system
+  allocator), aborting the release binary on every `hew run`. Removed `static`
+  from those declarations so each `std::regex` is destroyed within the call
+  frame (#1607).
 - **`fs.try_read_bytes` binary-safety:** `try_read_bytes` now calls
   `hew_file_read_bytes` directly with proper `hew_file_last_error` handling
   instead of routing through the UTF-8 string path, so non-UTF-8 and

@@ -35,7 +35,7 @@ The release binary on macOS and Linux is genuinely standalone, with
 static libc++ linkage and no Homebrew rpath dependency.
 
 **The JIT becomes preview-quality.** `hew eval --jit=inprocess` and
-`--jit=auto` are stable in this release. The inprocess mode no longer
+`--jit=auto` are stabilised for preview use in this release. The inprocess mode no longer
 crashes the host process on first emit — runtime symbols are exported
 correctly, and a use-after-free in the search-generator lambda capture
 is closed. The JIT is now appropriate for REPL and eval workflows, not
@@ -184,9 +184,13 @@ are in the
 
 ### Build and distribution
 
-- **Standalone Linux binary.** The release binary no longer depends on
-  a dynamic `libc++` on Linux. A static-init pattern in the regex
-  module was reworked to remove the MLIR-path dependency. (#1607)
+- **Release-binary stability on macOS.** Three function-local
+  `static const std::regex` declarations in MLIR codegen caused a
+  libc++ ABI mismatch at process exit — the Homebrew-compiled locale
+  object was freed by the system allocator, producing a SIGABRT on
+  every `hew run` invocation. Each `std::regex` now lives only for the
+  duration of the codegen call, destroyed before any mixed-ABI exit
+  boundary is reached. (#1607)
 - **linux-aarch64 pre-release gate.** ARM Linux builds are validated
   by a dedicated pre-release CI job before tagging. (#1608)
 

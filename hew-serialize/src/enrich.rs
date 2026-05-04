@@ -1869,6 +1869,15 @@ fn enrich_method_call(
             expr.0 = make_direct_call_expr(receiver.1.clone(), method.clone(), old_args);
             return;
         }
+        // Rewrite cross-module enum variant construction: e.g. fs.IoError::TimedOut(0)
+        // The parser emits MethodCall with method = "IoError::TimedOut". The type-checker
+        // already validated the variant exists. Drop the module receiver and emit a
+        // direct Call so variantLookup in C++ codegen can dispatch it.
+        if method.contains("::") {
+            let old_args = std::mem::take(args);
+            expr.0 = make_direct_call_expr(receiver.1.clone(), method.clone(), old_args);
+            return;
+        }
     }
 
     let key = SpanKey {

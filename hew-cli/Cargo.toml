@@ -20,6 +20,12 @@ hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 hew-serialize = { path = "../hew-serialize" }
+# Pulls the runtime rlib into the hew binary so dlsym can resolve C-ABI symbols
+# at JIT session startup. The anchor module (generated at build time from
+# kStableJitHostSymbols) keeps all 653 symbols alive through LTO. The staticlib
+# half of hew-runtime is consumed by hew-lib for AOT programs; this dep only
+# uses the rlib half.
+hew-runtime = { path = "../hew-runtime" }
 clap.workspace = true
 clap_complete.workspace = true
 pulldown-cmark = "0.13"

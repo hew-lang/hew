@@ -205,12 +205,15 @@ int HewJitSession::evalMsgpack(const uint8_t *data, size_t size, int64_t *outExi
   // loop.  WHEN to change: if the stable ABI surface needs narrower control,
   // replace with an absoluteSymbols map built from HewJitSymbolMap directly.
   {
-    hew::HewJitSymbolMap symbolMap;
     auto gen = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
         jit->getDataLayout().getGlobalPrefix(),
-        [&symbolMap](const llvm::orc::SymbolStringPtr &sym) -> bool {
+        [symbolMap = hew::HewJitSymbolMap{}](const llvm::orc::SymbolStringPtr &sym) -> bool {
           // Allow only symbols in the stable JIT host ABI.
           // (*sym dereferences to a StringRef in LLVM 22+.)
+          // symbolMap is captured by value so the lambda owns it for
+          // the lifetime of the DynamicLibrarySearchGenerator (which is
+          // owned by the JIT).  A reference capture would leave a
+          // dangling pointer after this brace-scope closes.
           return symbolMap.hasStableSymbol((*sym).str());
         });
     if (!gen) {

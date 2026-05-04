@@ -20,6 +20,25 @@
 //! hew version                      # Print version info
 //! ```
 
+// Force Cargo to include hew-runtime's rlib archive members in the final link
+// step.  Without this, Cargo excludes the rlib because hew-cli has no
+// direct Rust-level call sites into hew-runtime — `extern "C"` declarations
+// alone do not count as usage.  `extern crate X as _` is the standard Rust
+// idiom for pulling in a dep's rlib without binding its name.
+//
+// The anchor static below (from runtime_export.rs) then holds a reference to
+// every kStableJitHostSymbols address, preventing LTO/DCE from discarding the
+// archive members after lazy resolution.
+#[cfg(hew_embedded_codegen)]
+extern crate hew_runtime as _;
+
+// Include the build-time generated anchor module that keeps every
+// kStableJitHostSymbols entry alive through LTO so dlsym can resolve them at
+// JIT session startup.  Only emitted when the embedded LLVM/MLIR codegen
+// backend is present (hew_embedded_codegen cfg).
+#[cfg(hew_embedded_codegen)]
+include!(concat!(env!("OUT_DIR"), "/runtime_export.rs"));
+
 mod args;
 mod compile;
 mod diagnostic;

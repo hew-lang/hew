@@ -1503,6 +1503,7 @@ dependencies = [
  "hew-compile",
  "hew-lexer",
  "hew-parser",
+ "hew-runtime",
  "hew-serialize",
  "hew-types",
  "libc",

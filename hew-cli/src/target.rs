@@ -11,6 +11,7 @@ pub enum TargetArch {
 pub enum TargetOs {
     Darwin,
     Linux,
+    FreeBsd,
     Windows,
     Wasi,
 }
@@ -124,7 +125,7 @@ impl TargetSpec {
         match self.os {
             TargetOs::Windows => ".exe",
             TargetOs::Wasi => ".wasm",
-            TargetOs::Darwin | TargetOs::Linux => "",
+            TargetOs::Darwin | TargetOs::Linux | TargetOs::FreeBsd => "",
         }
     }
 
@@ -176,6 +177,16 @@ impl TargetSpec {
                 gc_flags: &["-Wl,--gc-sections"],
                 strip_flags: &["-Wl,--strip-all"],
                 platform_libs: &["-lpthread", "-lm", "-ldl", "-lrt"],
+                needs_darwin_sdk: false,
+                needs_windows_crt_fixup: false,
+                needs_dsymutil: false,
+            },
+            TargetOs::FreeBsd => NativeLinkPlan {
+                gc_flags: &["-Wl,--gc-sections"],
+                strip_flags: &["-Wl,--strip-all"],
+                // FreeBSD provides dlopen and clock_gettime from libc, so the
+                // Hew runtime only needs explicit threading and math libs here.
+                platform_libs: &["-lpthread", "-lm"],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 needs_dsymutil: false,
@@ -388,6 +399,15 @@ impl ParsedTarget {
             });
         }
 
+        if parts.contains(&"freebsd") {
+            return Ok(Self {
+                arch,
+                os: TargetOs::FreeBsd,
+                env: None,
+                object_format: ObjectFormat::Elf,
+            });
+        }
+
         if parts.contains(&"windows") {
             return Ok(Self {
                 arch,
@@ -443,6 +463,7 @@ fn host_triple() -> String {
             host_arch_name(platform.arch),
             platform.env.as_deref().unwrap_or("gnu")
         ),
+        TargetOs::FreeBsd => format!("{}-unknown-freebsd", host_arch_name(platform.arch)),
         TargetOs::Windows => format!(
             "{}-pc-windows-{}",
             host_arch_name(platform.arch),
@@ -485,6 +506,8 @@ fn host_os() -> TargetOs {
         TargetOs::Darwin
     } else if cfg!(target_os = "linux") {
         TargetOs::Linux
+    } else if cfg!(target_os = "freebsd") {
+        TargetOs::FreeBsd
     } else if cfg!(target_os = "windows") {
         TargetOs::Windows
     } else if cfg!(target_os = "wasi") {
@@ -550,7 +573,7 @@ impl ExecutionTarget {
 mod tests {
     use std::sync::Mutex;
 
-    use super::{ExecutionTarget, TargetSpec};
+    use super::{ExecutionTarget, ObjectFormat, TargetOs, TargetSpec};
 
     // Serialize env-var–mutating tests: `std::env::set_var` / `remove_var` are
     // not thread-safe when multiple tests share the same process.
@@ -576,6 +599,15 @@ mod tests {
         let spec = TargetSpec::from_requested(Some("wasm32-wasi")).expect("target");
         assert_eq!(spec.normalized_triple(), "wasm32-wasip1");
         assert_eq!(spec.executable_suffix(), ".wasm");
+    }
+
+    #[test]
+    fn freebsd_triple_parses_as_elf_with_empty_suffix() {
+        let spec = TargetSpec::from_requested(Some("x86_64-unknown-freebsd")).expect("target");
+        assert_eq!(spec.normalized_triple(), "x86_64-unknown-freebsd");
+        assert_eq!(spec.os(), TargetOs::FreeBsd);
+        assert_eq!(spec.object_format(), ObjectFormat::Elf);
+        assert_eq!(spec.executable_suffix(), "");
     }
 
     #[test]
@@ -631,6 +663,31 @@ mod tests {
     fn linux_linker_triple_passes_normalized_triple_unchanged() {
         let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
         assert_eq!(spec.linker_triple(), "x86_64-unknown-linux-gnu");
+    }
+
+    #[test]
+    fn freebsd_linker_triple_passes_normalized_triple_unchanged() {
+        let spec = TargetSpec::from_requested(Some("x86_64-unknown-freebsd")).expect("target");
+        assert_eq!(spec.linker_triple(), "x86_64-unknown-freebsd");
+    }
+
+    #[cfg(target_os = "freebsd")]
+    #[test]
+    fn freebsd_host_round_trip_smoke() {
+        let spec = TargetSpec::from_requested(None).expect("target");
+        let expected_arch = if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else if cfg!(target_arch = "x86_64") {
+            "x86_64"
+        } else {
+            panic!("unexpected freebsd host arch for target modeling smoke test");
+        };
+        assert_eq!(
+            spec.normalized_triple(),
+            format!("{expected_arch}-unknown-freebsd")
+        );
+        assert!(spec.can_run_on_host());
+        assert!(spec.can_link_with_host_tools());
     }
 
     #[cfg(target_os = "macos")]
@@ -796,6 +853,28 @@ mod tests {
     fn linux_link_plan_flags() {
         let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
         let plan = spec.native_link_plan();
+        assert!(!plan.needs_darwin_sdk);
+        assert!(!plan.needs_dsymutil);
+        assert!(!plan.needs_windows_crt_fixup);
+    }
+
+    #[test]
+    fn freebsd_link_plan_platform_libs() {
+        let spec = TargetSpec::from_requested(Some("x86_64-unknown-freebsd")).expect("target");
+        let plan = spec.native_link_plan();
+        let libs: Vec<_> = plan.platform_libs.to_vec();
+        assert!(libs.contains(&"-lpthread"));
+        assert!(libs.contains(&"-lm"));
+        assert!(!libs.contains(&"-ldl"));
+        assert!(!libs.contains(&"-lrt"));
+    }
+
+    #[test]
+    fn freebsd_link_plan_flags() {
+        let spec = TargetSpec::from_requested(Some("x86_64-unknown-freebsd")).expect("target");
+        let plan = spec.native_link_plan();
+        assert_eq!(plan.gc_flags, &["-Wl,--gc-sections"]);
+        assert_eq!(plan.strip_flags, &["-Wl,--strip-all"]);
         assert!(!plan.needs_darwin_sdk);
         assert!(!plan.needs_dsymutil);
         assert!(!plan.needs_windows_crt_fixup);

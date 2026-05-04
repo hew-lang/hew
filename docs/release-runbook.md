@@ -254,7 +254,8 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Codegen E2E (native)         | ci.yml + release-gate.yml    | Yes       |
 | Codegen E2E (WASM)           | ci.yml + release-gate.yml    | Yes       |
 | Smoke test (compile+run)     | release-gate.yml             | Yes       |
-| Packaged archive smoke       | release.yml (Unix matrix)    | Yes       |
+| Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix) | Yes    |
+| Packaged archive smoke (Windows zip) | release.yml (Windows job) | Best-effort |
 | FreeBSD packaged archive smoke | release.yml (FreeBSD VM)   | Advisory  |
 | Linux package install smoke  | release.yml (`linux-packages`) | Yes    |
 | Linux Docker clean-room tarball smoke | release.yml (`docker-clean-room-test`) | Yes |

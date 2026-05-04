@@ -127,11 +127,20 @@ echo "Logs: ${LOG_DIR}/"
 write_smoke_test() {
     local file="$1"
     local message="${2:-Hello from Hew release test}"
-    cat > "$file" <<HEWEOF
+    cat > "$file" <<'HEWEOF'
 fn main() {
-    println("${message}")
+    println("__HEW_SMOKE_MESSAGE__")
 }
 HEWEOF
+    python3 - "$file" "$message" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+path = Path(sys.argv[1])
+message = sys.argv[2]
+path.write_text(path.read_text().replace('"__HEW_SMOKE_MESSAGE__"', json.dumps(message)))
+PY
 }
 
 powershell_encode() {
@@ -208,11 +217,13 @@ validate_linux() {
         local package_root="${archive_root}/${archive_name}"
         local package_tarball="${archive_root}/${archive_name}.tar.gz"
         local package_stage="${archive_root}/staging"
-        mkdir -p "${package_root}/bin" "${package_root}/lib" "${package_root}/std" "${package_stage}"
+        mkdir -p "${package_root}/bin" "${package_root}/lib/x86_64-unknown-linux-gnu" \
+            "${package_root}/std" "${package_stage}"
 
         cp target/release/hew target/release/adze target/release/hew-lsp "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
         cp target/release/libhew.a "${package_root}/lib/"
+        cp target/release/libhew.a "${package_root}/lib/x86_64-unknown-linux-gnu/"
         cp -r std/. "${package_root}/std/"
 
         tar czf "${package_tarball}" -C "${archive_root}" "${archive_name}"

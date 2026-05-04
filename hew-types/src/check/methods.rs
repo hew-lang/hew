@@ -1658,6 +1658,40 @@ impl Checker {
                         .borrow_mut()
                         .insert(ImportKey::new(self.current_module.clone(), name.clone()));
                 }
+                // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
+                // method contains "::" → treat as a qualified variant constructor rather than a
+                // module function. Mirrors the lookup in check_call (calls.rs:407-465).
+                if method.contains("::") {
+                    let constructor_match = self.lookup_variant_constructor(method);
+                    if let Some((type_name, expected_params, type_params)) = constructor_match {
+                        let type_param_count = type_params.len();
+                        let mut inferred_args = Vec::new();
+                        while inferred_args.len() < type_param_count {
+                            inferred_args.push(Ty::Var(TypeVar::fresh()));
+                        }
+                        self.check_arity(args, expected_params.len(), "this function", span);
+                        for (i, arg) in args.iter().enumerate() {
+                            if let Some(param_ty) = expected_params.get(i) {
+                                let (expr, sp) = arg.expr();
+                                let mut expected_ty = param_ty.clone();
+                                if !type_params.is_empty() {
+                                    for (param, replacement) in
+                                        type_params.iter().zip(inferred_args.iter())
+                                    {
+                                        expected_ty =
+                                            expected_ty.substitute_named_param(param, replacement);
+                                    }
+                                }
+                                self.check_against(expr, sp, &expected_ty);
+                            }
+                        }
+                        let resolved_args: Vec<Ty> = inferred_args
+                            .iter()
+                            .map(|ty| self.subst.resolve(ty))
+                            .collect();
+                        return Ty::normalize_named(type_name, resolved_args);
+                    }
+                }
                 if !self.module_fn_exports.contains(&key) {
                     for arg in args {
                         let (expr, sp) = arg.expr();

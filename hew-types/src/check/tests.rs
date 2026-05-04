@@ -2294,6 +2294,78 @@ fn result_constructors_accept_unit_payloads() {
 }
 
 #[test]
+fn ok_unit_match_pattern_accepted() {
+    // `Ok(())` as a match arm pattern against `Result<(), E>` must not error.
+    let (errors, _) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let r: Result<(), String> = Ok(());\n",
+        "    let _ = match r {\n",
+        "        Ok(()) => 0,\n",
+        "        Err(_) => 1,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert!(
+        errors.is_empty(),
+        "Ok(()) pattern in match arm against Result<(), E> must type-check: {errors:?}"
+    );
+}
+
+#[test]
+fn err_unit_match_pattern_accepted() {
+    // `Err(())` as a match arm pattern against `Result<T, ()>` must not error.
+    let (errors, _) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let r: Result<int, ()> = Err(());\n",
+        "    let _ = match r {\n",
+        "        Ok(n) => n,\n",
+        "        Err(()) => 0,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert!(
+        errors.is_empty(),
+        "Err(()) pattern in match arm against Result<T, ()> must type-check: {errors:?}"
+    );
+}
+
+#[test]
+fn unit_match_pattern_accepted_on_unit_scrutinee() {
+    // `()` as a top-level match pattern on a unit scrutinee must not error.
+    let (errors, _) = parse_and_check(concat!(
+        "fn unit_val() -> () { () }\n",
+        "fn main() {\n",
+        "    let _ = match unit_val() {\n",
+        "        () => 0,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert!(
+        errors.is_empty(),
+        "() pattern against unit scrutinee must type-check: {errors:?}"
+    );
+}
+
+#[test]
+fn ok_unit_pattern_rejected_against_non_unit_ok_payload() {
+    // `Ok(())` against `Result<int, E>` must still be an error — the payload
+    // type is `int`, not unit, so the empty-tuple pattern is a mismatch.
+    let (errors, _) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let r: Result<int, String> = Ok(1);\n",
+        "    let _ = match r {\n",
+        "        Ok(()) => 0,\n",
+        "        Err(_) => 1,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert!(
+        !errors.is_empty(),
+        "Ok(()) against Result<int, E> must produce a type error"
+    );
+}
+
+#[test]
 fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
     let source = concat!(
         "fn main() -> int {\n",

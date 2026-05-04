@@ -1,0 +1,26 @@
+//! End-to-end regression for cross-module enum variant construction via dot-postfix.
+//!
+//! Exercises `module.Type::Variant(args)` — the form that previously caused cascading
+//! parse errors at the first `::` token.
+
+import std::fs;
+
+import std::testing;
+
+#[test]
+fn test_cross_module_enum_variant_construction() {
+    let err = fs.IoError::TimedOut(42);
+    match err {
+        IoError::TimedOut(code) => testing.assert_eq(code, 42),
+        _ => panic("expected IoError::TimedOut"),
+    }
+}
+
+#[test]
+fn test_cross_module_enum_variant_zero_code() {
+    let err = fs.IoError::NotFound(0);
+    match err {
+        IoError::NotFound(code) => testing.assert_eq(code, 0),
+        _ => panic("expected IoError::NotFound"),
+    }
+}

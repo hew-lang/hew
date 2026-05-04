@@ -4754,6 +4754,18 @@ impl<'src> Parser<'src> {
 
         let field = self.expect_ident()?;
 
+        // Accumulate optional `::Segment` pairs after the first identifier.
+        // This handles cross-module enum variant construction: `fs.IoError::TimedOut(0)`.
+        // Mirrors the DoubleColon accumulation loop in parse_primary's Identifier branch.
+        let mut method = field;
+        while self.eat(&Token::DoubleColon) {
+            if let Some(segment) = self.expect_ident() {
+                method = format!("{method}::{segment}");
+            } else {
+                break;
+            }
+        }
+
         // Check for method call
         if self.peek() == Some(&Token::LeftParen) {
             self.advance();
@@ -4765,18 +4777,19 @@ impl<'src> Parser<'src> {
             Some((
                 Expr::MethodCall {
                     receiver: Box::new(lhs),
-                    method: field,
+                    method,
                     args,
                 },
                 start..end,
             ))
         } else {
-            // Field access
+            // Field access (method == field when no :: was consumed; otherwise a
+            // unit-variant or bare type-path reference — preserved as FieldAccess).
             let end = self.peek_span().start;
             Some((
                 Expr::FieldAccess {
                     object: Box::new(lhs),
-                    field,
+                    field: method,
                 },
                 start..end,
             ))

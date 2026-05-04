@@ -21,7 +21,7 @@ pub(super) struct AppliedCallSignature {
 }
 
 impl Checker {
-    fn lookup_variant_constructor(
+    pub(super) fn lookup_variant_constructor(
         &self,
         func_name: &str,
     ) -> Option<(String, Vec<Ty>, Vec<String>)> {

@@ -284,15 +284,18 @@ jobs:
 
       - name: Install LLVM/MLIR
         run: |
-          brew install llvm@${{ env.LLVM_VERSION }} ninja
+          brew install llvm@${{ env.LLVM_VERSION }} lld@${{ env.LLVM_VERSION }} ninja
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
+          LLD_PREFIX="$(brew --prefix lld@${{ env.LLVM_VERSION }})"
           {
             echo "LLVM_PREFIX=${LLVM_PREFIX}"
+            echo "LLD_PREFIX=${LLD_PREFIX}"
             echo "CC=${LLVM_PREFIX}/bin/clang"
             echo "CXX=${LLVM_PREFIX}/bin/clang++"
             echo "MACOSX_DEPLOYMENT_TARGET=13.0"
           } >> "$GITHUB_ENV"
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
 
       - uses: actions/cache@v4
         with:
@@ -345,7 +348,8 @@ jobs:
           rustup target add wasm32-wasip1
           brew install wasmtime
           LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm@${{ env.LLVM_VERSION }})}"
-          export PATH="${LLVM_PREFIX}/bin:$PATH"
+          LLD_PREFIX="${LLD_PREFIX:-$(brew --prefix lld@${{ env.LLVM_VERSION }})}"
+          export PATH="${LLD_PREFIX}/bin:${LLVM_PREFIX}/bin:$PATH"
           command -v wasmtime
           wasmtime --version
           command -v wasm-ld

@@ -62,23 +62,76 @@ jobs:
       FORCE: "${{ inputs.force_rebuild }}"
 
     steps:
-      - name: Check if toolchain asset already exists
+      - name: Check toolchain publication state
         id: check
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Skip only when ALL required state is present and valid:
+          #   (a) main archive asset exists,
+          #   (b) .sha256 sidecar exists,
+          #   (c) SLSA provenance attestation exists in the GitHub Attestations API.
+          # A partial publication (some assets present, attestation missing, etc.)
+          # fails closed with a diagnostic — do not silently treat it as complete.
+          #
+          # force_rebuild has no effect here: Windows toolchain assets are
+          # immutable once published. Bump TOOLCHAIN_TAG to a new revision
+          # (v2, v3, …) to republish updated content.
+
+          if ($env:FORCE -eq 'true') {
+            Write-Host "::notice::force_rebuild is set but Windows toolchain assets are immutable once published. FORCE has no effect on this job. Bump TOOLCHAIN_TAG (e.g., v2) to republish updated content."
+          }
+
           $info = gh release view "$env:TOOLCHAIN_TAG" `
             --repo "$env:GITHUB_REPOSITORY" --json assets 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            $names = ($info | ConvertFrom-Json).assets.name
-            if (($names -contains $env:ASSET_NAME) -and ($env:FORCE -ne 'true')) {
-              Write-Host "Toolchain asset $env:ASSET_NAME already published — skipping"
-              "skip=true" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
-              exit 0
-            }
+          if ($LASTEXITCODE -ne 0) {
+            # Toolchain release does not exist yet — proceed with first publish.
+            "skip=false" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+            exit 0
           }
-          "skip=false" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+
+          $names       = ($info | ConvertFrom-Json).assets.name
+          $hasArchive  = $names -contains $env:ASSET_NAME
+          $hasSha256   = $names -contains "$env:ASSET_NAME.sha256"
+
+          # Detect partial publication: one asset present but not the other.
+          if ($hasArchive -xor $hasSha256) {
+            Write-Host "::error::Toolchain release $env:TOOLCHAIN_TAG is partially published (archive=$hasArchive sha256=$hasSha256). The previous publish run did not complete. Bump TOOLCHAIN_TAG to a new revision (e.g., v2) to republish."
+            exit 1
+          }
+
+          if (!$hasArchive -and !$hasSha256) {
+            # Release shell exists but no assets yet — proceed.
+            "skip=false" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          # Both assets are present. Verify SLSA attestation via the GitHub
+          # Attestations API. Download only the tiny .sha256 sidecar to obtain
+          # the expected digest; no need to re-download the full archive.
+          $sha256Dest = Join-Path $env:RUNNER_TEMP "$env:ASSET_NAME.sha256"
+          gh release download "$env:TOOLCHAIN_TAG" `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --pattern "$env:ASSET_NAME.sha256" `
+            --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Could not download $env:ASSET_NAME.sha256 from $env:TOOLCHAIN_TAG — treating as partial publication."
+            exit 1
+          }
+          $hash = ((Get-Content $sha256Dest) -split '\s+')[0].ToLower()
+          Remove-Item $sha256Dest
+
+          $attestCount = gh api `
+            "/repos/$env:GITHUB_REPOSITORY/attestations/sha256:$hash" `
+            --jq '.attestations | length' 2>$null
+          if ($LASTEXITCODE -ne 0 -or [int]$attestCount -eq 0) {
+            Write-Host "::error::Both toolchain assets exist in $env:TOOLCHAIN_TAG but SLSA provenance attestation is absent (digest: sha256:$hash). The previous publish did not complete attestation. Bump TOOLCHAIN_TAG to a new revision to republish."
+            exit 1
+          }
+
+          Write-Host "All toolchain assets and provenance verified — skipping publish (digest: sha256:$hash, attestations: $attestCount)"
+          "skip=true" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
 
       - name: Download and verify official LLVM+MLIR archive
         if: steps.check.outputs.skip != 'true'
@@ -180,11 +233,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Immutability guard: fail if assets already exist under this tag.
+          # The check step should have caught this, but a race between two
+          # concurrent publish runs could reach this point.
+          $existingInfo = gh release view "$env:TOOLCHAIN_TAG" `
+            --repo "$env:GITHUB_REPOSITORY" --json assets 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $existingNames = ($existingInfo | ConvertFrom-Json).assets.name
+            if ($existingNames -contains $env:ASSET_NAME) {
+              Write-Host "::error::Asset $env:ASSET_NAME already exists in $env:TOOLCHAIN_TAG. Toolchain assets are immutable once published. Bump TOOLCHAIN_TAG to a new revision (e.g., v2) to publish updated content."
+              exit 1
+            }
+          }
+
+          # --clobber is intentionally absent: assets are write-once.
           gh release upload "$env:TOOLCHAIN_TAG" `
             "$env:ASSET_NAME" `
             "$env:ASSET_NAME.sha256" `
-            --repo "$env:GITHUB_REPOSITORY" `
-            --clobber
+            --repo "$env:GITHUB_REPOSITORY"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Upload failed for $env:ASSET_NAME. If the asset already exists under $env:TOOLCHAIN_TAG, bump TOOLCHAIN_TAG to a new revision to republish."
+            exit 1
+          }
           Write-Host "Uploaded $env:ASSET_NAME to $env:TOOLCHAIN_TAG"
 
       - name: Attest toolchain archive provenance

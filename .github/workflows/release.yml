@@ -38,8 +38,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-  packages: write
+  contents: read    # default minimum; release and docker jobs override below
 
 env:
   LLVM_VERSION: "22"
@@ -986,6 +985,8 @@ jobs:
     # tier-2 optional artifact, and Alpine/musl assets are deferred until the
     # llvm-alpine:22 toolchain is repaired.
     if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-linux.result == 'success' && needs.linux-packages.result == 'success' && needs.docker-clean-room-test.result == 'success' }}
+    permissions:
+      contents: write   # create/update the GitHub Release and upload release assets
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -1033,6 +1034,9 @@ jobs:
     runs-on: ubuntu-24.04
     if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
     timeout-minutes: 60
+    permissions:
+      packages: write   # push multi-arch image to ghcr.io
+      contents: read    # checkout for Dockerfile
 
     steps:
       - name: Checkout code

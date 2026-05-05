@@ -1,22 +1,30 @@
-# Pre-build LLVM+MLIR for platforms that build from source (Windows, FreeBSD).
+# Publish and pre-build LLVM+MLIR toolchain artifacts.
 #
-# Populates the GitHub Actions cache with the same keys used by release.yml
-# and freebsd.yml. When the cache is warm, release builds restore in ~2 min
-# instead of building for 90-120 min.
+# Windows: downloads the official LLVM 22.1.0 Windows MSVC archive, verifies
+# upstream provenance, normalizes the layout to llvm-22/, repackages it as a
+# Hew-owned toolchain archive, generates a SHA-256 checksum, and publishes it
+# to a versioned toolchain release (toolchain/llvm-22.1.0-windows-msvc-v1).
+# release.yml downloads and verifies that asset instead of fetching the upstream
+# archive at release time. The publish step is idempotent — it skips if the
+# versioned asset already exists (unless force_rebuild is set).
 #
-# Runs weekly to keep caches warm (they expire after 7 days of inactivity),
-# and can be triggered manually when LLVM_VERSION changes.
+# FreeBSD: builds LLVM+MLIR from source and warms the GitHub Actions cache used
+# by the FreeBSD release path (tier-2, continue-on-error). This job is
+# independent of the Windows publish job.
+#
+# Runs weekly on Sunday 04:00 UTC and can be triggered manually.
+# Can also be triggered automatically when this workflow file changes.
 
 name: Pre-build LLVM+MLIR
 
 on:
   schedule:
-    # Sunday 04:00 UTC — keeps caches warm before they expire
+    # Sunday 04:00 UTC — keeps FreeBSD caches warm before they expire
     - cron: "0 4 * * 0"
   workflow_dispatch:
     inputs:
       force_rebuild:
-        description: "Force rebuild even if cache exists"
+        description: "Force rebuild/republish even if artifact already exists"
         required: false
         default: "false"
         type: boolean
@@ -25,121 +33,245 @@ on:
     paths:
       - ".github/workflows/prebuild-llvm.yml"
 
-permissions:
-  contents: read
-  actions: write    # needed for cache save
+# No top-level permissions — each job declares its own minimum required set.
 
 env:
-  # IMPORTANT: these must match release.yml and freebsd.yml exactly.
-  # When bumping LLVM, update the tag AND the cache keys in all three files.
+  # IMPORTANT: when bumping LLVM, update LLVM_TAG here and the corresponding
+  # toolchain asset name/tag (TOOLCHAIN_TAG, ASSET_NAME) consumed by release.yml.
   LLVM_TAG: "llvmorg-22.1.0"
-  LLVM_CACHE_KEY_WIN: "llvm-mlir-22.1.0-win64-msvc-v1"
   LLVM_CACHE_KEY_BSD: "llvm-mlir-22.1.0-freebsd15-amd64-v1"
+  # Versioned toolchain release tag and asset name for the Hew-owned Windows
+  # LLVM package. Bump the v-suffix (v2, v3, …) when the packaging or layout
+  # changes without a LLVM version bump. Must match release.yml exactly.
+  TOOLCHAIN_TAG: "toolchain/llvm-22.1.0-windows-msvc-v1"
+  ASSET_NAME: "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
-  # Windows: MSVC + Ninja
+  # Windows: ingest the official LLVM archive and publish as a Hew
+  # toolchain artifact consumed by release.yml.
   # ─────────────────────────────────────────────────────────────────────
-  prebuild-windows:
+  publish-windows-toolchain:
     runs-on: windows-2022
-    timeout-minutes: 180
+    timeout-minutes: 60
+    permissions:
+      contents: write       # create toolchain release and upload assets
+      id-token: write       # OIDC token for build-provenance attestation
+      attestations: write   # GitHub Attestations API
     env:
       FORCE: "${{ inputs.force_rebuild }}"
 
     steps:
-      - name: Check if cache already exists
+      - name: Check toolchain publication state
         id: check
-        uses: actions/cache/restore@v4
-        with:
-          path: C:\llvm-22
-          key: ${{ env.LLVM_CACHE_KEY_WIN }}
-          lookup-only: true
-
-      - name: Skip if cache is warm
-        if: steps.check.outputs.cache-hit == 'true' && env.FORCE != 'true'
-        run: echo "Cache hit — skipping LLVM build"
-
-      - name: Setup MSVC
-        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install build tools
-        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
-        run: choco install ninja cmake -y
-        shell: pwsh
-
-      - name: Clone LLVM (sparse)
-        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
         shell: pwsh
         env:
-          LLVM_BRANCH: ${{ env.LLVM_TAG }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git clone --depth 1 --branch "$env:LLVM_BRANCH" `
-            --filter=blob:none --sparse `
-            https://github.com/llvm/llvm-project.git C:\llvm-src
-          Push-Location C:\llvm-src
-          git sparse-checkout set llvm mlir cmake third-party
-          Pop-Location
+          # Skip only when ALL required state is present and valid:
+          #   (a) main archive asset exists,
+          #   (b) .sha256 sidecar exists,
+          #   (c) SLSA provenance attestation exists in the GitHub Attestations API.
+          # A partial publication (some assets present, attestation missing, etc.)
+          # fails closed with a diagnostic — do not silently treat it as complete.
+          #
+          # force_rebuild has no effect here: Windows toolchain assets are
+          # immutable once published. Bump TOOLCHAIN_TAG to a new revision
+          # (v2, v3, …) to republish updated content.
 
-      - name: Build LLVM+MLIR
-        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+          if ($env:FORCE -eq 'true') {
+            Write-Host "::notice::force_rebuild is set but Windows toolchain assets are immutable once published. FORCE has no effect on this job. Bump TOOLCHAIN_TAG (e.g., v2) to republish updated content."
+          }
+
+          $info = gh release view "$env:TOOLCHAIN_TAG" `
+            --repo "$env:GITHUB_REPOSITORY" --json assets 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            # Toolchain release does not exist yet — proceed with first publish.
+            "skip=false" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          $names       = ($info | ConvertFrom-Json).assets.name
+          $hasArchive  = $names -contains $env:ASSET_NAME
+          $hasSha256   = $names -contains "$env:ASSET_NAME.sha256"
+
+          # Detect partial publication: one asset present but not the other.
+          if ($hasArchive -xor $hasSha256) {
+            Write-Host "::error::Toolchain release $env:TOOLCHAIN_TAG is partially published (archive=$hasArchive sha256=$hasSha256). The previous publish run did not complete. Bump TOOLCHAIN_TAG to a new revision (e.g., v2) to republish."
+            exit 1
+          }
+
+          if (!$hasArchive -and !$hasSha256) {
+            # Release shell exists but no assets yet — proceed.
+            "skip=false" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          # Both assets are present. Verify SLSA attestation via the GitHub
+          # Attestations API. Download only the tiny .sha256 sidecar to obtain
+          # the expected digest; no need to re-download the full archive.
+          $sha256Dest = Join-Path $env:RUNNER_TEMP "$env:ASSET_NAME.sha256"
+          gh release download "$env:TOOLCHAIN_TAG" `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --pattern "$env:ASSET_NAME.sha256" `
+            --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Could not download $env:ASSET_NAME.sha256 from $env:TOOLCHAIN_TAG — treating as partial publication."
+            exit 1
+          }
+          $hash = ((Get-Content $sha256Dest) -split '\s+')[0].ToLower()
+          Remove-Item $sha256Dest
+
+          $attestCount = gh api `
+            "/repos/$env:GITHUB_REPOSITORY/attestations/sha256:$hash" `
+            --jq '.attestations | length' 2>$null
+          if ($LASTEXITCODE -ne 0 -or [int]$attestCount -eq 0) {
+            Write-Host "::error::Both toolchain assets exist in $env:TOOLCHAIN_TAG but SLSA provenance attestation is absent (digest: sha256:$hash). The previous publish did not complete attestation. Bump TOOLCHAIN_TAG to a new revision to republish."
+            exit 1
+          }
+
+          Write-Host "All toolchain assets and provenance verified — skipping publish (digest: sha256:$hash, attestations: $attestCount)"
+          "skip=true" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+
+      - name: Download and verify official LLVM+MLIR archive
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $archive = "clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz"
+          $bundle  = "${archive}.jsonl"
+          $base    = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0"
+
+          curl.exe -L --retry 5 --retry-delay 5 `
+            -o $archive "$base/clang%2Bllvm-22.1.0-x86_64-pc-windows-msvc.tar.xz"
+          curl.exe -L --retry 5 --retry-delay 5 `
+            -o $bundle  "$base/clang%2Bllvm-22.1.0-x86_64-pc-windows-msvc.tar.xz.jsonl"
+          gh attestation verify --repo llvm/llvm-project $archive --bundle $bundle
+
+      - name: Extract and normalize LLVM layout
+        if: steps.check.outputs.skip != 'true'
         shell: pwsh
         run: |
-          cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
-            -DCMAKE_C_COMPILER=cl `
-            -DCMAKE_CXX_COMPILER=cl `
-            -DLLVM_ENABLE_PROJECTS="mlir" `
-            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
-            -DLLVM_BUILD_TOOLS=ON `
-            -DLLVM_BUILD_UTILS=ON `
-            -DLLVM_INSTALL_UTILS=ON `
-            -DLLVM_INCLUDE_TESTS=OFF `
-            -DLLVM_INCLUDE_BENCHMARKS=OFF `
-            -DLLVM_INCLUDE_EXAMPLES=OFF `
-            -DLLVM_INCLUDE_DOCS=OFF `
-            -DLLVM_ENABLE_BINDINGS=OFF `
-            -DLLVM_ENABLE_ZLIB=OFF `
-            -DLLVM_ENABLE_ZSTD=OFF `
-            -DLLVM_ENABLE_DIA_SDK=OFF `
-            -DLLVM_ENABLE_ASSERTIONS=OFF `
-            -DLLVM_BUILD_LLVM_DYLIB=OFF `
-            -DLLVM_LINK_LLVM_DYLIB=OFF `
-            -DMLIR_BUILD_MLIR_C_DYLIB=OFF `
-            -DMLIR_ENABLE_BINDINGS_PYTHON=OFF `
-            -DBUILD_SHARED_LIBS=OFF
+          New-Item -ItemType Directory -Force C:\llvm-extract | Out-Null
+          tar -xf "clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz" -C C:\llvm-extract
+          $root = Get-ChildItem C:\llvm-extract -Directory | Select-Object -First 1
+          Move-Item $root.FullName C:\llvm-22
+          Remove-Item -Recurse -Force C:\llvm-extract
+          Remove-Item -Force `
+            "clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz", `
+            "clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz.jsonl"
 
-          cmake --build C:\llvm-build --config Release
-          cmake --install C:\llvm-build --config Release
-
-      - name: Report install size
-        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+      - name: Validate required LLVM layout
+        if: steps.check.outputs.skip != 'true'
         shell: pwsh
         run: |
-          $size = (Get-ChildItem -Recurse C:\llvm-22 | Measure-Object -Property Length -Sum).Sum / 1MB
-          Write-Output "LLVM install size: $([math]::Round($size, 1)) MB"
+          $required = @(
+            "C:\llvm-22\bin\clang.exe",
+            "C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake",
+            "C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake"
+          )
+          foreach ($path in $required) {
+            if (!(Test-Path $path)) {
+              Write-Host "::error::Required path not found in LLVM archive: $path"
+              exit 1
+            }
+          }
 
-      - name: Clean up build dirs
-        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
+          # At least one LLVM linker must be present for the Hew MSVC build.
+          $linkers = @(
+            "C:\llvm-22\bin\lld-link.exe",
+            "C:\llvm-22\bin\lld.exe",
+            "C:\llvm-22\bin\ld.lld.exe"
+          ) | Where-Object { Test-Path $_ }
+          if (!$linkers) {
+            Write-Host "::error::No LLVM linker (lld-link.exe / lld.exe / ld.lld.exe) found under C:\llvm-22\bin"
+            exit 1
+          }
+          Write-Host "Layout validated. Linkers present: $($linkers -join ', ')"
+
+          $sizeMB = (Get-ChildItem -Recurse C:\llvm-22 |
+            Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "LLVM install size: $([math]::Round($sizeMB, 1)) MB"
+
+      - name: Package Hew toolchain archive
+        if: steps.check.outputs.skip != 'true'
         shell: pwsh
         run: |
-          Remove-Item -Recurse -Force C:\llvm-src
-          Remove-Item -Recurse -Force C:\llvm-build
+          # tar is available on Windows 2022 runners; -czf produces .tar.gz.
+          # The archive root is llvm-22/ so extracting to C:\ gives C:\llvm-22.
+          tar -czf "$env:ASSET_NAME" -C C:\ llvm-22
+          $hash = (Get-FileHash "$env:ASSET_NAME" -Algorithm SHA256).Hash.ToLower()
+          # Single-line checksum: <hash>  <filename>
+          "$hash  $env:ASSET_NAME" | Out-File -Encoding ascii "$env:ASSET_NAME.sha256"
+          Write-Host "Packaged: $env:ASSET_NAME"
+          Write-Host "SHA-256:  $hash"
 
-      - name: Save cache
-        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
-        uses: actions/cache/save@v4
+      - name: Ensure toolchain release exists
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$env:TOOLCHAIN_TAG" `
+            --repo "$env:GITHUB_REPOSITORY" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:TOOLCHAIN_TAG" `
+              --repo "$env:GITHUB_REPOSITORY" `
+              --title "LLVM 22.1.0 Windows MSVC toolchain (v1)" `
+              --notes "Repackaged LLVM 22.1.0 Windows MSVC archive for Hew release builds. Layout normalized to llvm-22/. Not a Hew product release." `
+              --latest=false `
+              --prerelease
+            Write-Host "Created toolchain release: $env:TOOLCHAIN_TAG"
+          } else {
+            Write-Host "Toolchain release already exists: $env:TOOLCHAIN_TAG"
+          }
+
+      - name: Upload toolchain assets
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Immutability guard: fail if assets already exist under this tag.
+          # The check step should have caught this, but a race between two
+          # concurrent publish runs could reach this point.
+          $existingInfo = gh release view "$env:TOOLCHAIN_TAG" `
+            --repo "$env:GITHUB_REPOSITORY" --json assets 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $existingNames = ($existingInfo | ConvertFrom-Json).assets.name
+            if ($existingNames -contains $env:ASSET_NAME) {
+              Write-Host "::error::Asset $env:ASSET_NAME already exists in $env:TOOLCHAIN_TAG. Toolchain assets are immutable once published. Bump TOOLCHAIN_TAG to a new revision (e.g., v2) to publish updated content."
+              exit 1
+            }
+          }
+
+          # --clobber is intentionally absent: assets are write-once.
+          gh release upload "$env:TOOLCHAIN_TAG" `
+            "$env:ASSET_NAME" `
+            "$env:ASSET_NAME.sha256" `
+            --repo "$env:GITHUB_REPOSITORY"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Upload failed for $env:ASSET_NAME. If the asset already exists under $env:TOOLCHAIN_TAG, bump TOOLCHAIN_TAG to a new revision to republish."
+            exit 1
+          }
+          Write-Host "Uploaded $env:ASSET_NAME to $env:TOOLCHAIN_TAG"
+
+      - name: Attest toolchain archive provenance
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/attest-build-provenance@v2
         with:
-          path: C:\llvm-22
-          key: ${{ env.LLVM_CACHE_KEY_WIN }}
+          subject-path: ${{ env.ASSET_NAME }}
 
   # ─────────────────────────────────────────────────────────────────────
-  # FreeBSD: QEMU VM via vmactions
+  # FreeBSD: QEMU VM via vmactions — warms cache for release.yml
   # ─────────────────────────────────────────────────────────────────────
   prebuild-freebsd:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: write    # needed for cache save
     env:
       FORCE: "${{ inputs.force_rebuild }}"
 
@@ -159,8 +291,6 @@ jobs:
       - name: Build LLVM on FreeBSD
         if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
         uses: vmactions/freebsd-vm@v1
-        env:
-          LLVM_BRANCH: ${{ env.LLVM_TAG }}
         with:
           release: "15.0"
           mem: 8192
@@ -170,6 +300,9 @@ jobs:
           run: |
             set -eux
 
+            # Inline the LLVM tag so it is available inside the VM regardless
+            # of how the runner exposes step-level env vars to the guest shell.
+            LLVM_BRANCH="${{ env.LLVM_TAG }}"
             LLVM_PREFIX=/usr/local/llvm22-src
 
             echo "==> Building LLVM 22 from source"

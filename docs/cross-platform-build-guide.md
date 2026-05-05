@@ -264,7 +264,7 @@ git clone --depth 1 --branch llvmorg-22.1.0 `
   --filter=blob:none --sparse `
   https://github.com/llvm/llvm-project.git C:\llvm-src
 Push-Location C:\llvm-src
-git sparse-checkout set llvm mlir cmake third-party
+git sparse-checkout set clang llvm mlir cmake third-party
 Pop-Location
 
 cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
@@ -272,7 +272,7 @@ cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
   -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
   -DCMAKE_C_COMPILER=cl `
   -DCMAKE_CXX_COMPILER=cl `
-  -DLLVM_ENABLE_PROJECTS="mlir" `
+  -DLLVM_ENABLE_PROJECTS="clang;mlir" `
   -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
   -DLLVM_BUILD_TOOLS=ON `
   -DLLVM_BUILD_UTILS=ON `
@@ -296,6 +296,7 @@ cmake --build C:\llvm-build --config Release
 cmake --install C:\llvm-build --config Release
 
 Test-Path 'C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake'
+Test-Path 'C:\llvm-22\bin\clang.exe'
 ```
 
 If the host cannot use MSVC, override the validator/compiler environment with
@@ -309,6 +310,7 @@ compiler is on `PATH`):
 
 ```powershell
 $env:LLVM_PREFIX = 'C:\llvm-22'
+$env:Path = 'C:\llvm-22\bin;' + $env:Path
 $env:HEW_EMBED_STATIC = '1'
 $env:CC = 'cl'
 $env:CXX = 'cl'
@@ -324,7 +326,11 @@ Windows release build without `LLVM_PREFIX` and `HEW_EMBED_STATIC=1`, or
 ### Smoke test
 
 ```powershell
-Set-Content -Path .\_smoke.hew -Value 'fn main() { println("smoke-ok") }' -Encoding UTF8
+[System.IO.File]::WriteAllText(
+    (Join-Path (Get-Location) '_smoke.hew'),
+    'fn main() { println("smoke-ok") }',
+    [System.Text.UTF8Encoding]::new($false)
+)
 .\target\release\hew.exe .\_smoke.hew -o .\_smoke.exe
 .\_smoke.exe
 Remove-Item -Force .\_smoke.hew, .\_smoke.exe

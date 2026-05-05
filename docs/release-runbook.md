@@ -128,11 +128,12 @@ WINDOWS_PROJECT_DIR=P:/path/to/hew
 
 Windows hosts also need a one-time LLVM/MLIR 22 bootstrap that matches the tag
 release workflow: install into `C:\llvm-22` and verify
-`C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake` exists before running
+`C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake` and `C:\llvm-22\bin\clang.exe` exist before running
 `make pre-release`. See
 [`docs/cross-platform-build-guide.md`](cross-platform-build-guide.md#windows)
 for the exact bootstrap command sequence. The validator defaults to
-`LLVM_PREFIX=C:\llvm-22`, `HEW_EMBED_STATIC=1`, and `CC/CXX=cl`; override with
+`LLVM_PREFIX=C:\llvm-22`, prepends `C:\llvm-22\bin` to `PATH`, sets
+`HEW_EMBED_STATIC=1`, and uses `CC/CXX=cl`; override with
 `HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if that host
 uses a different compiler driver.
 

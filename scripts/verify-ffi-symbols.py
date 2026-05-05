@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CODEGEN_SRC = ROOT / "hew-codegen" / "src"
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
 JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
+SOURCE_ENCODING = "utf-8"
 
 # Function prefixes that live in separate stdlib packages, not hew-runtime.
 # These are linked by the compiler driver when the user imports the module.
@@ -109,7 +110,7 @@ def extract_runtime_exports() -> set[str]:
         re.DOTALL,
     )
     for rs_file in RUNTIME_SRC.rglob("*.rs"):
-        source = rs_file.read_text()
+        source = rs_file.read_text(encoding=SOURCE_ENCODING)
         for match in fn_pattern.finditer(source):
             exports.add(match.group(1))
     return exports
@@ -120,7 +121,7 @@ def extract_codegen_refs() -> set[str]:
     refs = set()
     pattern = re.compile(r'"(hew_[a-zA-Z0-9_]+)"')
     for src_file in CODEGEN_SRC.rglob("*.[ch]*"):
-        for match in pattern.finditer(src_file.read_text()):
+        for match in pattern.finditer(src_file.read_text(encoding=SOURCE_ENCODING)):
             refs.add(match.group(1))
     return refs
 
@@ -148,7 +149,7 @@ def classify(name: str, runtime_exports: set[str]) -> str:
 
 
 def load_jit_symbol_classification() -> dict[str, set[str]]:
-    text = JIT_SYMBOL_CLASSIFICATION.read_text()
+    text = JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
     classification: dict[str, set[str]] = {}
     for key in ("stable", "internal"):
         match = re.search(rf"(?ms)^{key}\s*=\s*\[(.*?)^\]", text)
@@ -206,7 +207,8 @@ def emit_cpp_header(path: Path, stable_symbols: list[str]) -> None:
         "namespace hew::jit_detail {\n\n"
         f"inline constexpr std::array<std::string_view, {len(stable_symbols)}> kStableJitHostSymbols = {{\n"
         + "".join(f'    "{name}",\n' for name in stable_symbols)
-        + "};\n\n} // namespace hew::jit_detail\n"
+        + "};\n\n} // namespace hew::jit_detail\n",
+        encoding=SOURCE_ENCODING,
     )
 
 

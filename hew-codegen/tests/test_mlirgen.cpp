@@ -2206,6 +2206,12 @@ fn main() -> int {
     return;
   }
 
+  if (countDropOpsByDropFn(module, "hew_string_drop", false) != 0) {
+    FAIL("string literals are borrowed globals and must not be registered as owned temporaries");
+    module.getOperation()->destroy();
+    return;
+  }
+
   hew::Codegen codegen(ctx);
   hew::CodegenOptions opts;
   llvm::LLVMContext llvmContext;
@@ -3467,7 +3473,7 @@ fn direct_vec_temp(flag: bool) -> int {
 
 fn nested_scope_string_temp(flag: bool) -> int {
     scope {
-        (if flag { "left" } else { "right" });
+        (if flag { f"{1}" } else { f"{2}" });
     };
     0
 }
@@ -3531,7 +3537,7 @@ fn scope_vec_temp(flag: bool) -> int {
 
 fn scope_string_temp(flag: bool) -> int {
     scope {
-        (if flag { "x" } else { "y" });
+        (if flag { f"{1}" } else { f"{2}" });
     };
     0
 }
@@ -3592,7 +3598,7 @@ fn if_stmt_vec_temp(flag: bool) -> int {
 }
 
 fn if_stmt_string_temp(flag: bool) -> int {
-    if flag { "left" } else { "right" };
+    if flag { f"{1}" } else { f"{2}" };
     0
 }
 

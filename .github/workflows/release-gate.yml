@@ -121,13 +121,16 @@ jobs:
           rm -f _smoke.hew _smoke_bin
           echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
 
-      - name: Run Rust workspace tests
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
-
-      - name: Install wasmtime
+      - name: Install WASI prerequisites
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.wasmtime/bin:$PATH"
+          command -v wasmtime
+          wasmtime --version
+
+      - name: Run Rust workspace tests
+        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
       - name: Run codegen unit tests
         run: >
@@ -235,13 +238,16 @@ jobs:
           rm -f _smoke.hew _smoke_bin
           echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
 
-      - name: Run Rust workspace tests
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
-
-      - name: Install wasmtime
+      - name: Install WASI prerequisites
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.wasmtime/bin:$PATH"
+          command -v wasmtime
+          wasmtime --version
+
+      - name: Run Rust workspace tests
+        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
       - name: Run codegen unit tests
         run: >
@@ -286,6 +292,7 @@ jobs:
             echo "CXX=${LLVM_PREFIX}/bin/clang++"
             echo "MACOSX_DEPLOYMENT_TARGET=13.0"
           } >> "$GITHUB_ENV"
+          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
 
       - uses: actions/cache@v4
         with:
@@ -332,6 +339,17 @@ jobs:
           OUTPUT=$(./_smoke_bin)
           rm -f _smoke.hew _smoke_bin
           echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
+
+      - name: Install WASI prerequisites
+        run: |
+          rustup target add wasm32-wasip1
+          brew install wasmtime
+          LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm@${{ env.LLVM_VERSION }})}"
+          export PATH="${LLVM_PREFIX}/bin:$PATH"
+          command -v wasmtime
+          wasmtime --version
+          command -v wasm-ld
+          wasm-ld --version
 
       - name: Run Rust workspace tests
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci

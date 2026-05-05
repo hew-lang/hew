@@ -59,7 +59,7 @@ jobs:
             os: macos-15
             rust_target: aarch64-apple-darwin
           - target: darwin-x86_64
-            os: macos-13
+            os: macos-15-intel
             rust_target: x86_64-apple-darwin
           - target: windows-x86_64
             os: windows-2022
@@ -110,58 +110,48 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: C:\llvm-22
-          key: llvm-clang-mlir-22.1.0-win64-msvc-v1
+          key: llvm-clang-mlir-22.1.0-win64-msvc-archive-v1
 
-      - name: Build LLVM+MLIR from source (Windows)
+      - name: Install LLVM+MLIR archive (Windows)
         if: startsWith(matrix.target, 'windows') && steps.cache-llvm-windows.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          # Sparse clone only needed directories
-          git clone --depth 1 --branch llvmorg-22.1.0 `
-            --filter=blob:none --sparse `
-            https://github.com/llvm/llvm-project.git C:\llvm-src
-          Push-Location C:\llvm-src
-          git sparse-checkout set clang llvm mlir cmake third-party
-          Pop-Location
+          $archive = "clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz"
+          $bundle = "${archive}.jsonl"
+          $base = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0"
 
-          cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
-            -DCMAKE_C_COMPILER=cl `
-            -DCMAKE_CXX_COMPILER=cl `
-            -DLLVM_ENABLE_PROJECTS="clang;mlir" `
-            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
-            -DLLVM_BUILD_TOOLS=ON `
-            -DLLVM_BUILD_UTILS=ON `
-            -DLLVM_INSTALL_UTILS=ON `
-            -DLLVM_INCLUDE_TESTS=OFF `
-            -DLLVM_INCLUDE_BENCHMARKS=OFF `
-            -DLLVM_INCLUDE_EXAMPLES=OFF `
-            -DLLVM_INCLUDE_DOCS=OFF `
-            -DLLVM_ENABLE_BINDINGS=OFF `
-            -DLLVM_ENABLE_ZLIB=OFF `
-            -DLLVM_ENABLE_ZSTD=OFF `
-            -DLLVM_ENABLE_DIA_SDK=OFF `
-            -DLLVM_ENABLE_ASSERTIONS=OFF `
-            -DLLVM_BUILD_LLVM_DYLIB=OFF `
-            -DLLVM_LINK_LLVM_DYLIB=OFF `
-            -DMLIR_BUILD_MLIR_C_DYLIB=OFF `
-            -DMLIR_ENABLE_BINDINGS_PYTHON=OFF `
-            -DBUILD_SHARED_LIBS=OFF
+          curl.exe -L --retry 5 --retry-delay 5 `
+            -o $archive `
+            "$base/clang%2Bllvm-22.1.0-x86_64-pc-windows-msvc.tar.xz"
+          curl.exe -L --retry 5 --retry-delay 5 `
+            -o $bundle `
+            "$base/clang%2Bllvm-22.1.0-x86_64-pc-windows-msvc.tar.xz.jsonl"
+          gh attestation verify --repo llvm/llvm-project $archive --bundle $bundle
 
-          cmake --build C:\llvm-build --config Release
-          cmake --install C:\llvm-build --config Release
+          New-Item -ItemType Directory -Force C:\llvm-extract | Out-Null
+          tar -xf $archive -C C:\llvm-extract
+          $root = Get-ChildItem C:\llvm-extract -Directory | Select-Object -First 1
+          Move-Item $root.FullName C:\llvm-22
 
-          # Clean up source and build dirs to save cache space
-          Remove-Item -Recurse -Force C:\llvm-src
-          Remove-Item -Recurse -Force C:\llvm-build
+          if (!(Test-Path C:\llvm-22\bin\clang.exe)) {
+            throw "LLVM archive did not provide clang.exe"
+          }
+          if (!(Test-Path C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake)) {
+            throw "LLVM archive did not provide LLVMConfig.cmake"
+          }
+          if (!(Test-Path C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake)) {
+            throw "LLVM archive did not provide MLIRConfig.cmake"
+          }
+
+          Remove-Item -Recurse -Force C:\llvm-extract
+          Remove-Item -Force $archive, $bundle
 
       - name: Save LLVM+MLIR cache (Windows)
         if: startsWith(matrix.target, 'windows') && steps.cache-llvm-windows.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: C:\llvm-22
-          key: llvm-clang-mlir-22.1.0-win64-msvc-v1
+          key: llvm-clang-mlir-22.1.0-win64-msvc-archive-v1
 
       - name: Configure embedded codegen toolchain (Windows)
         if: startsWith(matrix.target, 'windows')
@@ -189,9 +179,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: release-${{ matrix.target }}-cargo-macos13-${{ hashFiles('**/Cargo.lock') }}
+          key: release-${{ matrix.target }}-cargo-${{ matrix.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            release-${{ matrix.target }}-cargo-macos13-
+            release-${{ matrix.target }}-cargo-${{ matrix.os }}-
 
       - name: Cache Rust artifacts
         if: ${{ !startsWith(matrix.target, 'darwin') }}

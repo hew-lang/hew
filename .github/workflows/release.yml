@@ -1073,9 +1073,10 @@ jobs:
   release:
     needs: [build, build-linux, build-freebsd, linux-packages, alpine-package, docker-clean-room-test]
     runs-on: ubuntu-24.04
-    # Run as long as build didn't hard-fail — linux-packages and continue-on-error
-    # targets (Windows, macOS x86_64) are allowed to fail without blocking release
-    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
+    # Run as long as build and build-linux didn't hard-fail and the Docker
+    # clean-room tarball smoke test passed; the Windows continue-on-error leg
+    # in build and the separate FreeBSD continue-on-error job do not block release
+    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' && needs.docker-clean-room-test.result == 'success' }}
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -1114,6 +1115,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          body_path: .github/RELEASE_NOTES_v0.4.0.md
           generate_release_notes: true
           files: |
             artifacts/hew-v*-*.tar.gz

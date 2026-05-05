@@ -232,7 +232,7 @@ validate_linux() {
         local package_smoke_file="${archive_root}/pkg-smoke.hew"
         write_smoke_test "${package_smoke_file}" "pkg-smoke-ok"
         local package_output
-        package_output=$(run_with_timeout "${SMOKE_TIMEOUT}" env HEW_STD="${package_stage}/std" "${package_stage}/bin/hew" run "${package_smoke_file}")
+        package_output=$(run_with_timeout "${SMOKE_TIMEOUT}" env -i PATH=/usr/bin:/bin HOME="${HOME}" HEW_STD="${package_stage}/std" "${package_stage}/bin/hew" run "${package_smoke_file}")
 
         if echo "$package_output" | grep -q "pkg-smoke-ok"; then
             echo "==> Packaged archive smoke test passed"
@@ -500,6 +500,7 @@ if (-not (Test-Path '${WINDOWS_MLIR_CONFIG}')) {
 }
 
 \$env:LLVM_PREFIX = '${WINDOWS_LLVM_PREFIX}'
+\$env:Path = '${WINDOWS_LLVM_PREFIX}\\bin;' + \$env:Path
 \$env:HEW_EMBED_STATIC = '1'
 \$env:CC = '${WINDOWS_CC}'
 \$env:CXX = '${WINDOWS_CXX}'
@@ -530,11 +531,16 @@ function Assert-NativeSuccess([string]\$Label) {
 }
 
 Set-Location '${WINDOWS_PROJECT_DIR}'
+\$env:Path = '${WINDOWS_LLVM_PREFIX}\\bin;' + \$env:Path
 \$smokeProgram = 'fn main() { println(\"smoke-ok\") }'
 Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
 
 try {
-    Set-Content -Path .\\_smoke.hew -Value \$smokeProgram -Encoding UTF8
+    [System.IO.File]::WriteAllText(
+        (Join-Path (Get-Location) '_smoke.hew'),
+        \$smokeProgram,
+        [System.Text.UTF8Encoding]::new(\$false)
+    )
 
     & .\\target\\release\\hew.exe .\\_smoke.hew -o .\\_smoke.exe
     Assert-NativeSuccess 'hew.exe smoke compile'

@@ -543,7 +543,14 @@ if(HEW_STATIC_LINK)
         string(REGEX REPLACE "\\.a$" "" _name "${_name}")
       endif()
       if(NOT "${_name}" MATCHES "^Polly")
-        hew_embedded_append("cargo:rustc-link-lib=static=${_name}")
+        if(MSVC AND "${_name}" MATCHES "^LLVM(X86|AArch64)")
+          # MSVC's archive linker discards unreferenced target-registration
+          # objects. Force-load target backends so LLVM's TargetRegistry is
+          # populated in static embedded-codegen release binaries.
+          hew_embedded_append("cargo:rustc-link-arg=/WHOLEARCHIVE:${_archive}")
+        else()
+          hew_embedded_append("cargo:rustc-link-lib=static=${_name}")
+        endif()
       endif()
     endforeach()
   endif()

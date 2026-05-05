@@ -7161,11 +7161,12 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
   if (std::holds_alternative<ast::ExprYield>(astExpr.kind))
     return {};
 
-  // Non-string literals (int, float, bool, char) don't heap-allocate.
-  // String literals DO heap-allocate (strdup from cstr) and need drops.
-  if (auto *lit = std::get_if<ast::ExprLiteral>(&astExpr.kind)) {
-    if (!std::holds_alternative<ast::LitString>(lit->lit))
-      return {};
+  // Literals don't heap-allocate. String literals lower to pointers into
+  // immutable globals; treating them as owned temps would drop static storage
+  // and force invalid memref<!llvm.ptr> scratch slots on assertion-enabled MLIR
+  // builds.
+  if (std::holds_alternative<ast::ExprLiteral>(astExpr.kind)) {
+    return {};
   }
 
   // Index access: Vec<int>[i] borrows, but Vec<String>[i] returns a strdup'd
@@ -7190,12 +7191,9 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
     return {};
   if (val.getDefiningOp<mlir::memref::LoadOp>())
     return {};
-  // Non-string global constants are value types — not temporaries.
-  // String constants ARE heap-allocated (strdup in lowering) and need drops.
-  if (val.getDefiningOp<hew::ConstantOp>()) {
-    if (!mlir::isa<hew::StringRefType>(val.getType()))
-      return {};
-  }
+  // Global constants are borrowed values, not owned temporaries.
+  if (val.getDefiningOp<hew::ConstantOp>())
+    return {};
 
   // Closures are handled by existing RC drop mechanism (emitted post-call
   // for inline lambdas, and by let-stmt registration for bound closures).

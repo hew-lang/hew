@@ -4,6 +4,12 @@
 
 use crate::target::TargetSpec;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeCompiler {
+    program: &'static str,
+    accepts_target_flag: bool,
+}
+
 #[derive(Debug)]
 enum LinkerProbeError {
     CommandUnavailable {
@@ -140,17 +146,12 @@ pub fn link_executable(
 
     // ── Compiler selection (host-driven) ───────────────────────────────
     // We run the linker on the host, so tool availability is a host concern.
-    // Prefer clang (consistent with the LLVM/MLIR toolchain), fall back to cc.
-    #[cfg(not(target_os = "windows"))]
-    let compiler = if has_tool("clang") { "clang" } else { "cc" };
-    #[cfg(target_os = "windows")]
-    let compiler = if has_tool("clang") {
-        "clang"
-    } else {
-        return Err("Error: clang not found. Install LLVM to link Hew programs.".into());
-    };
+    // Prefer clang (consistent with the LLVM/MLIR toolchain).  Host-native Unix
+    // package installs may only provide GCC `cc`, which is fine as long as we
+    // do not pass clang-only flags such as `-target`.
+    let compiler = select_native_compiler(target)?;
 
-    let mut cmd = std::process::Command::new(compiler);
+    let mut cmd = std::process::Command::new(compiler.program);
 
     // ── lld selection (host-driven) ────────────────────────────────────
     // Use lld when available — ~20x faster than GNU ld for large static libs.
@@ -164,11 +165,12 @@ pub fn link_executable(
         cmd.arg("-fuse-ld=lld-link");
     }
 
-    // Wire the explicit target triple so clang uses the right ABI, calling
-    // convention, and SDK rather than inferring from the host environment.
-    // On Darwin this becomes e.g. `aarch64-apple-macosx13.0`; on Linux the
-    // normalized triple is passed unchanged.
-    cmd.arg("-target").arg(target.linker_triple());
+    // Wire the explicit target triple only when the selected driver accepts
+    // clang's `-target` flag.  GCC `cc` rejects it, but for host-native links
+    // the default target is already correct.
+    if compiler.accepts_target_flag {
+        cmd.arg("-target").arg(target.linker_triple());
+    }
 
     cmd.arg(object_path).arg(&hew_lib);
 
@@ -314,6 +316,46 @@ fn find_darwin_sdk() -> Option<String> {
     #[cfg(not(target_os = "macos"))]
     {
         None
+    }
+}
+
+fn select_native_compiler(target: &TargetSpec) -> Result<NativeCompiler, String> {
+    select_native_compiler_with(target, has_tool)
+}
+
+fn select_native_compiler_with<F>(
+    target: &TargetSpec,
+    has_tool: F,
+) -> Result<NativeCompiler, String>
+where
+    F: Fn(&str) -> bool,
+{
+    if has_tool("clang") {
+        return Ok(NativeCompiler {
+            program: "clang",
+            accepts_target_flag: true,
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = target;
+        return Err("Error: clang not found. Install LLVM to link Hew programs.".into());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if target.can_run_on_host() {
+            return Ok(NativeCompiler {
+                program: "cc",
+                accepts_target_flag: false,
+            });
+        }
+
+        Err(format!(
+            "Error: clang not found. Install LLVM/Clang to link target {} from this host.",
+            target.normalized_triple()
+        ))
     }
 }
 
@@ -960,6 +1002,55 @@ mod tests {
     #[test]
     fn has_tool_rejects_nonexistent_tool() {
         assert!(!has_tool("definitely_not_a_real_tool_abc123xyz"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn native_unix_without_clang_falls_back_to_cc_without_target_flag() {
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let compiler =
+            select_native_compiler_with(&target, |tool| tool != "clang").expect("cc fallback");
+
+        assert_eq!(
+            compiler,
+            NativeCompiler {
+                program: "cc",
+                accepts_target_flag: false
+            }
+        );
+    }
+
+    #[test]
+    fn native_compiler_prefers_clang_with_target_flag() {
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let compiler =
+            select_native_compiler_with(&target, |tool| tool == "clang").expect("clang selected");
+
+        assert_eq!(
+            compiler,
+            NativeCompiler {
+                program: "clang",
+                accepts_target_flag: true
+            }
+        );
+    }
+
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    ))]
+    #[test]
+    fn linux_cross_target_without_clang_errors() {
+        let target_triple = if cfg!(target_arch = "aarch64") {
+            "x86_64-unknown-linux-gnu"
+        } else {
+            "aarch64-unknown-linux-gnu"
+        };
+        let target = TargetSpec::from_requested(Some(target_triple)).expect("cross target");
+        let error = select_native_compiler_with(&target, |_| false).unwrap_err();
+
+        assert!(error.contains("clang not found"));
+        assert!(error.contains(target_triple));
     }
 
     #[test]

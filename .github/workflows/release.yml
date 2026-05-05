@@ -48,19 +48,13 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Build — one job per platform target
+  # Build — macOS and Windows release artifacts
   # ─────────────────────────────────────────────────────────────────────────
   build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: linux-x86_64
-            os: ubuntu-24.04
-            rust_target: x86_64-unknown-linux-gnu
-          - target: linux-aarch64
-            os: ubuntu-24.04-arm
-            rust_target: aarch64-unknown-linux-gnu
           - target: darwin-aarch64
             os: macos-15
             rust_target: aarch64-apple-darwin
@@ -85,24 +79,6 @@ jobs:
 
       # ── LLVM/MLIR installation ──────────────────────────────────────────
 
-      - name: Install LLVM/MLIR (Linux)
-        if: startsWith(matrix.target, 'linux')
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
-            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake ninja-build \
-            llvm-${{ env.LLVM_VERSION }}-dev \
-            libmlir-${{ env.LLVM_VERSION }}-dev \
-            mlir-${{ env.LLVM_VERSION }}-tools \
-            clang-${{ env.LLVM_VERSION }} \
-            libssl-dev pkg-config \
-            zlib1g-dev libzstd-dev
-
       - name: Install LLVM/MLIR (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
@@ -111,13 +87,6 @@ jobs:
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
-
-      - name: Configure embedded codegen toolchain (Linux)
-        if: startsWith(matrix.target, 'linux')
-        run: |
-          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
 
       - name: Configure embedded codegen toolchain (macOS)
         if: startsWith(matrix.target, 'darwin')
@@ -141,7 +110,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: C:\llvm-22
-          key: llvm-mlir-22.1.0-win64-msvc-v1
+          key: llvm-clang-mlir-22.1.0-win64-msvc-v1
 
       - name: Build LLVM+MLIR from source (Windows)
         if: startsWith(matrix.target, 'windows') && steps.cache-llvm-windows.outputs.cache-hit != 'true'
@@ -152,7 +121,7 @@ jobs:
             --filter=blob:none --sparse `
             https://github.com/llvm/llvm-project.git C:\llvm-src
           Push-Location C:\llvm-src
-          git sparse-checkout set llvm mlir cmake third-party
+          git sparse-checkout set clang llvm mlir cmake third-party
           Pop-Location
 
           cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
@@ -160,7 +129,7 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
-            -DLLVM_ENABLE_PROJECTS="mlir" `
+            -DLLVM_ENABLE_PROJECTS="clang;mlir" `
             -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
             -DLLVM_BUILD_TOOLS=ON `
             -DLLVM_BUILD_UTILS=ON `
@@ -192,12 +161,13 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: C:\llvm-22
-          key: llvm-mlir-22.1.0-win64-msvc-v1
+          key: llvm-clang-mlir-22.1.0-win64-msvc-v1
 
       - name: Configure embedded codegen toolchain (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
           echo "LLVM_PREFIX=C:\llvm-22" >> $env:GITHUB_ENV
+          echo "C:\llvm-22\bin" >> $env:GITHUB_PATH
           echo "CC=cl" >> $env:GITHUB_ENV
           echo "CXX=cl" >> $env:GITHUB_ENV
         shell: pwsh
@@ -524,6 +494,166 @@ jobs:
           path: target/${{ matrix.rust_target }}/release/hew-lsp.exe
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Linux build — glibc baseline artifacts built inside Ubuntu 22.04
+  # ─────────────────────────────────────────────────────────────────────────
+  build-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            os: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+          - target: linux-aarch64
+            os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+    container: ubuntu:22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Install baseline build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl git gnupg lsb-release \
+            ninja-build pkg-config wget xz-utils \
+            libssl-dev zlib1g-dev libzstd-dev
+
+          mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${{ env.LLVM_VERSION }} main" \
+            > /etc/apt/sources.list.d/llvm.list
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            libmlir-${{ env.LLVM_VERSION }}-dev \
+            mlir-${{ env.LLVM_VERSION }}-tools \
+            clang-${{ env.LLVM_VERSION }} \
+            lld-${{ env.LLVM_VERSION }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Configure embedded codegen toolchain
+        run: |
+          {
+            echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}"
+            echo "CC=clang-${{ env.LLVM_VERSION }}"
+            echo "CXX=clang++-${{ env.LLVM_VERSION }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: release-${{ matrix.target }}-jammy-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            release-${{ matrix.target }}-jammy-cargo-
+
+      - name: Build hew, adze, and hew-lsp
+        env:
+          HEW_EMBED_STATIC: "1"
+        run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
+
+      - name: Build libhew.a (runtime + stdlib)
+        run: cargo build -p hew-lib --release --target ${{ matrix.rust_target }}
+
+      - name: Verify Linux binaries
+        run: |
+          ldd --version 2>&1 | sed -n "1p"
+          "target/${{ matrix.rust_target }}/release/hew" --version
+          "target/${{ matrix.rust_target }}/release/adze" --version
+          "target/${{ matrix.rust_target }}/release/hew-lsp" --version
+          test -f "target/${{ matrix.rust_target }}/release/libhew.a"
+
+          if ldd "target/${{ matrix.rust_target }}/release/hew" | grep -Eqi 'llvm|mlir'; then
+            echo "::error::Linux release binary dynamically links LLVM/MLIR"
+            exit 1
+          fi
+
+      - name: Package archive
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
+          RELEASE_DIR="target/${{ matrix.rust_target }}/release"
+
+          mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
+                   "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
+
+          cp "${RELEASE_DIR}/hew" "${ARCHIVE_NAME}/bin/"
+          cp "${RELEASE_DIR}/adze" "${ARCHIVE_NAME}/bin/"
+          cp "${RELEASE_DIR}/hew-lsp" "${ARCHIVE_NAME}/bin/"
+          chmod +x "${ARCHIVE_NAME}/bin/"*
+
+          cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
+          mkdir -p "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}"
+          cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/${{ matrix.rust_target }}/"
+
+          cp -r std/. "${ARCHIVE_NAME}/std/"
+
+          for shell in bash zsh fish; do
+            "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
+            "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
+          done
+
+          cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
+
+          for b in hew adze hew-lsp; do
+            strip "${ARCHIVE_NAME}/bin/${b}"
+          done
+
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Create tar.gz
+        run: tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+
+      - name: Smoke test packaged archive
+        run: |
+          smoke_root="$(mktemp -d)"
+          trap 'rm -rf "${smoke_root}"' EXIT
+
+          cat > "${smoke_root}/pkg-smoke.hew" <<'HEWEOF'
+          fn main() {
+              println("pkg-smoke-ok")
+          }
+          HEWEOF
+
+          staging="${smoke_root}/staging"
+          mkdir -p "${staging}"
+          tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${staging}" --strip-components=1
+
+          output=$(env -i PATH=/usr/bin:/bin HOME="${HOME}" HEW_STD="${staging}/std" "${staging}/bin/hew" run "${smoke_root}/pkg-smoke.hew")
+          echo "${output}"
+          echo "${output}" | grep -q "pkg-smoke-ok"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_NAME }}.tar.gz
+
+      - name: Upload hew-lsp standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: hew-lsp-${{ matrix.target }}
+          path: target/${{ matrix.rust_target }}/release/hew-lsp
+
+  # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD build — x86_64 via QEMU VM (tier-2, continue-on-error)
   # ─────────────────────────────────────────────────────────────────────────
   build-freebsd:
@@ -685,8 +815,8 @@ jobs:
   # Linux packages — build .deb, .rpm, .pkg.tar.zst from glibc tarballs
   # ─────────────────────────────────────────────────────────────────────────
   linux-packages:
-    needs: build
-    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    needs: build-linux
+    if: ${{ !cancelled() && needs.build-linux.result != 'failure' }}
     strategy:
       fail-fast: false
       matrix:
@@ -895,7 +1025,7 @@ jobs:
   # Gates the release job so we never publish a broken installer.
   # ─────────────────────────────────────────────────────────────────────────
   docker-clean-room-test:
-    needs: build
+    needs: build-linux
     name: Docker clean-room test (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -906,7 +1036,7 @@ jobs:
           - target: linux-aarch64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
-    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    if: ${{ !cancelled() && needs.build-linux.result != 'failure' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -941,11 +1071,11 @@ jobs:
   # Release — download all artifacts, generate checksums, publish
   # ─────────────────────────────────────────────────────────────────────────
   release:
-    needs: [build, build-freebsd, linux-packages, alpine-package, docker-clean-room-test]
+    needs: [build, build-linux, build-freebsd, linux-packages, alpine-package, docker-clean-room-test]
     runs-on: ubuntu-24.04
     # Run as long as build didn't hard-fail — linux-packages and continue-on-error
     # targets (Windows, macOS x86_64) are allowed to fail without blocking release
-    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -998,9 +1128,9 @@ jobs:
   # Docker — multi-arch image pushed to ghcr.io/hew-lang/hew
   # ─────────────────────────────────────────────────────────────────────────
   docker:
-    needs: build
+    needs: [build, build-linux]
     runs-on: ubuntu-24.04
-    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
     timeout-minutes: 60
 
     steps:
@@ -1098,9 +1228,9 @@ jobs:
   # VS Code Extension — package + publish with bundled hew-lsp per platform
   # ─────────────────────────────────────────────────────────────────────────
   vscode-extension:
-    needs: build
+    needs: [build, build-linux]
     runs-on: ubuntu-latest
-    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
     timeout-minutes: 15
 
     # Map hew release targets to VS Code platform identifiers

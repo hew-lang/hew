@@ -87,6 +87,20 @@ using namespace hew;
 
 namespace {
 
+void initializeLLVMTargets() {
+  // InitializeNativeTarget* forces the host backend into statically linked
+  // Windows binaries; InitializeAll* keeps cross-target builds available where
+  // the LLVM install contains additional targets.
+  llvm::InitializeNativeTarget();
+  llvm::InitializeNativeTargetAsmPrinter();
+  llvm::InitializeNativeTargetAsmParser();
+  llvm::InitializeAllTargetInfos();
+  llvm::InitializeAllTargets();
+  llvm::InitializeAllTargetMCs();
+  llvm::InitializeAllAsmPrinters();
+  llvm::InitializeAllAsmParsers();
+}
+
 /// Return the MLIR integer type that matches the target's `size_t`/`usize`.
 /// On wasm32, this is i32; on x86_64/aarch64, it is i64.
 /// Reads the "hew.ptr_width" attribute on the module (set by Codegen::compile).
@@ -5584,12 +5598,7 @@ std::unique_ptr<llvm::Module> Codegen::lowerToLLVMIR(mlir::ModuleOp module,
 
 int Codegen::emitObjectFile(llvm::Module &module, const std::string &path,
                             const std::string &targetTripleStr) {
-  // Initialize ALL targets for cross-compilation support
-  llvm::InitializeAllTargets();
-  llvm::InitializeAllTargetInfos();
-  llvm::InitializeAllTargetMCs();
-  llvm::InitializeAllAsmPrinters();
-  llvm::InitializeAllAsmParsers();
+  initializeLLVMTargets();
 
   // Use specified target or default to host
   llvm::Triple targetTriple(targetTripleStr.empty() ? llvm::sys::getDefaultTargetTriple()
@@ -5672,9 +5681,7 @@ std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
   // target.  Without this, cross-compilation to wasm32 treats pointers as
   // 8 bytes instead of 4.
   {
-    llvm::InitializeAllTargets();
-    llvm::InitializeAllTargetInfos();
-    llvm::InitializeAllTargetMCs();
+    initializeLLVMTargets();
     llvm::Triple triple(opts.target_triple.empty() ? llvm::sys::getDefaultTargetTriple()
                                                    : opts.target_triple);
     std::string error;

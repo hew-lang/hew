@@ -31,9 +31,10 @@ COPY --from=llvm /opt/llvm-22 /opt/llvm-22
 # musl-dev: libc headers for static linking
 # cmake/samurai: build system for embedded C++ codegen
 # clang: C/C++ compiler for the codegen library
+# python3: required by CMake's FindPython3 during embedded codegen configure
 # zlib-static/zstd-static: compression libs for LLVM (static)
 RUN apk add --no-cache \
-    musl-dev cmake samurai clang \
+    musl-dev cmake samurai clang python3 \
     zlib-dev zlib-static zstd-dev zstd-static
 
 ENV LLVM_PREFIX=/opt/llvm-22

@@ -68,8 +68,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Windows release artifacts are part of the published v0.4.0 asset set.
     # Timeouts, cancellations, or build failures must block the release.
-    # 180 min to accommodate first-run LLVM build from source on Windows (~90-120 min)
-    timeout-minutes: 180
+    # Windows consumes a pre-built toolchain artifact; no source LLVM build here.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout code
@@ -104,54 +104,89 @@ jobs:
         if: startsWith(matrix.target, 'windows')
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Restore LLVM+MLIR cache (Windows)
+      - name: Download Hew LLVM toolchain (Windows)
         if: startsWith(matrix.target, 'windows')
-        id: cache-llvm-windows
-        uses: actions/cache/restore@v4
-        with:
-          path: C:\llvm-22
-          key: llvm-clang-mlir-22.1.0-win64-msvc-archive-v1
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v1"
+          $asset        = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
 
-      - name: Install LLVM+MLIR archive (Windows)
-        if: startsWith(matrix.target, 'windows') && steps.cache-llvm-windows.outputs.cache-hit != 'true'
+          # Fail fast if the toolchain release is not published yet.
+          # Run prebuild-llvm.yml to publish it before retrying the release.
+          $info = gh release view $toolchainTag `
+            --repo "$env:GITHUB_REPOSITORY" --json assets 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Toolchain release $toolchainTag not found in $env:GITHUB_REPOSITORY. Dispatch prebuild-llvm.yml to publish it first."
+            exit 1
+          }
+          $names = ($info | ConvertFrom-Json).assets.name
+          if ($names -notcontains $asset) {
+            Write-Host "::error::Asset $asset missing from toolchain release $toolchainTag. Dispatch prebuild-llvm.yml to publish it first."
+            exit 1
+          }
+
+          gh release download $toolchainTag `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --pattern $asset `
+            --pattern "$asset.sha256" `
+            --dir .
+
+          # Verify SHA-256 checksum before extraction.
+          $expected = ((Get-Content "$asset.sha256") -split '\s+')[0].ToLower()
+          $actual   = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) {
+            Write-Host "::error::SHA-256 mismatch for ${asset}: expected $expected, got $actual"
+            exit 1
+          }
+          Write-Host "Checksum verified: $actual"
+
+      - name: Verify toolchain provenance (Windows)
+        if: startsWith(matrix.target, 'windows')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $asset = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          gh attestation verify $asset --repo "$env:GITHUB_REPOSITORY"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Provenance attestation verification failed for $asset"
+            exit 1
+          }
+          Write-Host "Provenance verified for $asset"
+
+      - name: Extract and validate LLVM toolchain (Windows)
+        if: startsWith(matrix.target, 'windows')
         shell: pwsh
         run: |
-          $archive = "clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz"
-          $bundle = "${archive}.jsonl"
-          $base = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          # Archive root is llvm-22/; extracting to C:\ gives C:\llvm-22.
+          tar -xzf $asset -C C:\
+          Remove-Item -Force $asset, "$asset.sha256"
 
-          curl.exe -L --retry 5 --retry-delay 5 `
-            -o $archive `
-            "$base/clang%2Bllvm-22.1.0-x86_64-pc-windows-msvc.tar.xz"
-          curl.exe -L --retry 5 --retry-delay 5 `
-            -o $bundle `
-            "$base/clang%2Bllvm-22.1.0-x86_64-pc-windows-msvc.tar.xz.jsonl"
-          gh attestation verify --repo llvm/llvm-project $archive --bundle $bundle
-
-          New-Item -ItemType Directory -Force C:\llvm-extract | Out-Null
-          tar -xf $archive -C C:\llvm-extract
-          $root = Get-ChildItem C:\llvm-extract -Directory | Select-Object -First 1
-          Move-Item $root.FullName C:\llvm-22
-
-          if (!(Test-Path C:\llvm-22\bin\clang.exe)) {
-            throw "LLVM archive did not provide clang.exe"
-          }
-          if (!(Test-Path C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake)) {
-            throw "LLVM archive did not provide LLVMConfig.cmake"
-          }
-          if (!(Test-Path C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake)) {
-            throw "LLVM archive did not provide MLIRConfig.cmake"
+          $required = @(
+            "C:\llvm-22\bin\clang.exe",
+            "C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake",
+            "C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake"
+          )
+          foreach ($path in $required) {
+            if (!(Test-Path $path)) {
+              Write-Host "::error::Required LLVM path missing after extraction: $path"
+              exit 1
+            }
           }
 
-          Remove-Item -Recurse -Force C:\llvm-extract
-          Remove-Item -Force $archive, $bundle
-
-      - name: Save LLVM+MLIR cache (Windows)
-        if: startsWith(matrix.target, 'windows') && steps.cache-llvm-windows.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: C:\llvm-22
-          key: llvm-clang-mlir-22.1.0-win64-msvc-archive-v1
+          $linker = @(
+            "C:\llvm-22\bin\lld-link.exe",
+            "C:\llvm-22\bin\lld.exe",
+            "C:\llvm-22\bin\ld.lld.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (!$linker) {
+            Write-Host "::error::No LLVM linker tool (lld-link.exe / lld.exe / ld.lld.exe) found under C:\llvm-22\bin"
+            exit 1
+          }
+          Write-Host "LLVM toolchain ready at C:\llvm-22. Linker: $linker"
 
       - name: Configure embedded codegen toolchain (Windows)
         if: startsWith(matrix.target, 'windows')

@@ -254,15 +254,11 @@ jobs:
           # Licenses and docs
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
-          # Strip packaged binaries when present; missing artifacts are expected
-          # for targets that do not build every binary, but strip failures on
-          # existing files must still fail the job.
-          for b in hew adze hew-lsp; do
-            bin="${ARCHIVE_NAME}/bin/${b}"
-            if [[ -f "${bin}" ]]; then
-              strip "${bin}"
-            fi
-          done
+          # macOS release binaries embed static LLVM/MLIR codegen and rely on
+          # Mach-O weak/coalesced definitions that `strip` can break. Keep the
+          # packaged binaries unstripped so the published archive matches the
+          # already-validated release build.
+          echo "Skipping strip on macOS release binaries."
 
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
@@ -272,6 +268,22 @@ jobs:
           for bin in "${ARCHIVE_NAME}"/bin/*; do
             scripts/verify-macos-binary.sh "${bin}"
           done
+
+      - name: Smoke test packaged hew before macOS signing
+        if: startsWith(matrix.target, 'darwin')
+        run: |
+          smoke_root="$(mktemp -d)"
+          trap 'rm -rf "${smoke_root}"' EXIT
+
+          cat > "${smoke_root}/pkg-presign-smoke.hew" <<'HEWEOF'
+          fn main() {
+              println("pkg-presign-smoke-ok")
+          }
+          HEWEOF
+
+          output=$(HEW_STD="${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/bin/hew" run "${smoke_root}/pkg-presign-smoke.hew")
+          echo "${output}"
+          echo "${output}" | grep -q "pkg-presign-smoke-ok"
 
       - name: Package archive (Windows)
         if: startsWith(matrix.target, 'windows')

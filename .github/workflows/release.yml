@@ -66,8 +66,8 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
-    # Windows MLIR builds can be flaky — don't block the release
-    continue-on-error: ${{ startsWith(matrix.target, 'windows') }}
+    # Windows release artifacts are part of the published v0.4.0 asset set.
+    # Timeouts, cancellations, or build failures must block the release.
     # 180 min to accommodate first-run LLVM build from source on Windows (~90-120 min)
     timeout-minutes: 180
 
@@ -885,139 +885,10 @@ jobs:
             dist/*.pkg.tar.zst
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Alpine package — musl-native build (separate from glibc Linux packages)
-  # ─────────────────────────────────────────────────────────────────────────
-  alpine-package:
-    needs: build
-    if: ${{ !cancelled() && needs.build.result != 'failure' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            os: ubuntu-24.04
-            rust_musl_target: x86_64-unknown-linux-musl
-          - arch: aarch64
-            os: ubuntu-24.04-arm
-            rust_musl_target: aarch64-unknown-linux-musl
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-
-      - name: Install Rust with musl target
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_musl_target }}
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Use the pre-built LLVM+MLIR from the Alpine Docker image (musl-based).
-      # Ubuntu's glibc LLVM causes linker errors when targeting musl.
-      - name: Pull pre-built LLVM+MLIR for Alpine (musl)
-        run: |
-          docker pull ghcr.io/hew-lang/llvm-alpine:22
-          container_id=$(docker create ghcr.io/hew-lang/llvm-alpine:22)
-          sudo docker cp "${container_id}:/opt/llvm-22" /opt/llvm-22
-          docker rm "${container_id}"
-
-      - name: Install musl cross-compiler and build tools
-        run: |
-          sudo apt-get update && sudo apt-get install -y \
-            musl-tools cmake ninja-build clang
-
-      - name: Configure LLVM toolchain (musl)
-        run: |
-          echo "LLVM_PREFIX=/opt/llvm-22" >> "$GITHUB_ENV"
-          echo "CC=clang" >> "$GITHUB_ENV"
-          echo "CXX=clang++" >> "$GITHUB_ENV"
-
-      - name: Cache Rust artifacts (musl)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: alpine-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            alpine-${{ matrix.arch }}-cargo-
-
-      - name: Build musl Rust binaries
-        env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
-          HEW_EMBED_STATIC: "1"
-        run: |
-          cargo build --release --target ${{ matrix.rust_musl_target }} \
-            -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib
-
-      - name: Assemble Alpine tarball and build .apk
-        run: |
-          VERSION="${RELEASE_TAG#v}"
-
-          MUSL_REL="target/${{ matrix.rust_musl_target }}/release"
-
-          # Assemble the musl tarball from binaries built above.
-          PLATFORM="linux-musl-${{ matrix.arch }}"
-          ARCHIVE_NAME="hew-v${VERSION}-${PLATFORM}"
-          mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
-                   "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
-
-          for bin in hew adze hew-lsp; do
-            cp "${MUSL_REL}/${bin}" "${ARCHIVE_NAME}/bin/"
-            chmod +x "${ARCHIVE_NAME}/bin/${bin}"
-          done
-
-          cp "${MUSL_REL}/libhew.a" "${ARCHIVE_NAME}/lib/"
-          cp -r std/. "${ARCHIVE_NAME}/std/"
-
-          # Generate shell completions from built binaries
-          for shell in bash zsh fish; do
-            "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
-            "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
-          done
-
-          cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
-
-          # Strip packaged binaries when present; missing artifacts are expected
-          # for targets that do not build every binary, but strip failures on
-          # existing files must still fail the job.
-          for b in hew adze hew-lsp; do
-            bin="${ARCHIVE_NAME}/bin/${b}"
-            if [[ -f "${bin}" ]]; then
-              strip "${bin}"
-            fi
-          done
-
-          mkdir -p dist
-          tar czf "dist/${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
-
-          # Build .apk from the musl tarball
-          installers/build-packages.sh \
-            --version "${VERSION}" \
-            --arch "${{ matrix.arch }}" \
-            --skip-build \
-            --only alpine
-
-      - name: Upload Alpine packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: alpine-packages-${{ matrix.arch }}
-          path: |
-            dist/*.apk
-            dist/hew-v*-linux-musl-*.tar.gz
+  # Alpine/musl release assets are deferred for v0.4.0 until the
+  # ghcr.io/hew-lang/llvm-alpine:22 toolchain is repaired. The failed v0.4.0
+  # rerun showed aarch64 mlir-tblgen loader failures and x86_64 llvm-config
+  # wiring failures, so this workflow does not claim or publish Alpine assets.
 
   # ─────────────────────────────────────────────────────────────────────────
   # Docker clean-room test — verifies the Linux release tarball installs and
@@ -1073,12 +944,13 @@ jobs:
   # Release — download all artifacts, generate checksums, publish
   # ─────────────────────────────────────────────────────────────────────────
   release:
-    needs: [build, build-linux, build-freebsd, linux-packages, alpine-package, docker-clean-room-test]
+    needs: [build, build-linux, build-freebsd, linux-packages, docker-clean-room-test]
     runs-on: ubuntu-24.04
-    # Run as long as build and build-linux didn't hard-fail and the Docker
-    # clean-room tarball smoke test passed; the Windows continue-on-error leg
-    # in build and the separate FreeBSD continue-on-error job do not block release
-    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' && needs.docker-clean-room-test.result == 'success' }}
+    # The published v0.4.0 release requires successful macOS, Windows, Linux,
+    # package, and clean-room validation jobs. FreeBSD remains a documented
+    # tier-2 optional artifact, and Alpine/musl assets are deferred until the
+    # llvm-alpine:22 toolchain is repaired.
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-linux.result == 'success' && needs.linux-packages.result == 'success' && needs.docker-clean-room-test.result == 'success' }}
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -1093,22 +965,13 @@ jobs:
           pattern: "linux-packages-*"
           path: artifacts
           merge-multiple: true
-        continue-on-error: true
-
-      - name: Download Alpine package artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: "alpine-packages-*"
-          path: artifacts
-          merge-multiple: true
-        continue-on-error: true
 
       - name: Generate checksums
         run: |
           cd artifacts
           sha256sum \
             hew-v*-*.tar.gz hew-v*-*.zip \
-            hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst hew-*.apk \
+            hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst \
             2>/dev/null | tee checksums.txt
           VERSION="${RELEASE_TAG#v}"
           mv checksums.txt "hew-v${VERSION}-checksums.txt"
@@ -1125,7 +988,6 @@ jobs:
             artifacts/hew_*.deb
             artifacts/hew-*.rpm
             artifacts/hew-bin-*.pkg.tar.zst
-            artifacts/hew-*.apk
             artifacts/hew-v*-checksums.txt
 
   # ─────────────────────────────────────────────────────────────────────────

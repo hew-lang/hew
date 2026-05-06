@@ -1,0 +1,84 @@
+//! Tests for std::misc::uuid — v4/v7 generation and is_valid validation.
+//!
+//! UUID generation is non-deterministic; tests verify structural properties
+//! (length, format, is_valid round-trip) rather than specific values.
+
+import std::misc::uuid;
+import std::testing;
+
+// ── is_valid rejects known-bad strings ───────────────────────────────
+
+#[test]
+fn test_is_valid_rejects_empty_string() {
+    testing.assert_false(uuid.is_valid(""));
+}
+
+#[test]
+fn test_is_valid_rejects_plain_text() {
+    testing.assert_false(uuid.is_valid("not-a-uuid"));
+}
+
+#[test]
+fn test_is_valid_rejects_short_string() {
+    testing.assert_false(uuid.is_valid("1234-5678"));
+}
+
+#[test]
+fn test_is_valid_rejects_non_hex_characters() {
+    // 'z' and 'g' are not valid hex digits; a UUID with them is malformed.
+    testing.assert_false(uuid.is_valid("zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"));
+}
+
+// ── is_valid accepts well-formed UUID strings ─────────────────────────
+
+#[test]
+fn test_is_valid_accepts_canonical_nil_uuid() {
+    testing.assert_true(uuid.is_valid("00000000-0000-0000-0000-000000000000"));
+}
+
+#[test]
+fn test_is_valid_accepts_known_uuid_lowercase() {
+    testing.assert_true(uuid.is_valid("550e8400-e29b-41d4-a716-446655440000"));
+}
+
+#[test]
+fn test_is_valid_accepts_known_uuid_uppercase() {
+    testing.assert_true(uuid.is_valid("550E8400-E29B-41D4-A716-446655440000"));
+}
+
+// ── v4 generation round-trip ──────────────────────────────────────────
+
+#[test]
+fn test_v4_produces_valid_uuid() {
+    let id = uuid.v4();
+    testing.assert_true(uuid.is_valid(id));
+}
+
+#[test]
+fn test_v4_produces_correct_length() {
+    let id = uuid.v4();
+    // Canonical UUID: 8-4-4-4-12 = 32 hex digits + 4 hyphens = 36 characters.
+    testing.assert_eq(id.len(), 36);
+}
+
+#[test]
+fn test_v4_two_calls_produce_distinct_ids() {
+    let a = uuid.v4();
+    let b = uuid.v4();
+    // The probability of two random UUIDs colliding is astronomically small.
+    testing.assert_false(a == b);
+}
+
+// ── v7 generation round-trip ──────────────────────────────────────────
+
+#[test]
+fn test_v7_produces_valid_uuid() {
+    let id = uuid.v7();
+    testing.assert_true(uuid.is_valid(id));
+}
+
+#[test]
+fn test_v7_produces_correct_length() {
+    let id = uuid.v7();
+    testing.assert_eq(id.len(), 36);
+}

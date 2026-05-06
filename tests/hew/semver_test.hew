@@ -1,0 +1,139 @@
+//! Tests for std::text::semver — parse, accessors, compare, matches,
+//! and to_string. Version is a value type; no explicit free() is required.
+
+import std::text::semver;
+import std::testing;
+
+// ── parse / accessors ─────────────────────────────────────────────────
+
+#[test]
+fn test_parse_simple_version_components() {
+    let v = semver.parse("1.2.3");
+    testing.assert_eq(v.major(), 1);
+    testing.assert_eq(v.minor(), 2);
+    testing.assert_eq(v.patch(), 3);
+}
+
+#[test]
+fn test_parse_zero_version() {
+    let v = semver.parse("0.0.0");
+    testing.assert_eq(v.major(), 0);
+    testing.assert_eq(v.minor(), 0);
+    testing.assert_eq(v.patch(), 0);
+}
+
+#[test]
+fn test_parse_pre_release_label() {
+    let v = semver.parse("2.0.0-alpha.1");
+    testing.assert_eq(v.major(), 2);
+    testing.assert_eq_str(v.pre(), "alpha.1");
+}
+
+#[test]
+fn test_parse_no_pre_release_returns_empty_string() {
+    let v = semver.parse("1.0.0");
+    testing.assert_eq_str(v.pre(), "");
+}
+
+#[test]
+fn test_parse_large_component_values() {
+    let v = semver.parse("10.20.30");
+    testing.assert_eq(v.major(), 10);
+    testing.assert_eq(v.minor(), 20);
+    testing.assert_eq(v.patch(), 30);
+}
+
+// ── to_string ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_to_string_round_trips_simple_version() {
+    let v = semver.parse("1.2.3");
+    testing.assert_eq_str(v.to_string(), "1.2.3");
+}
+
+#[test]
+fn test_to_string_includes_pre_release() {
+    let v = semver.parse("1.0.0-beta");
+    testing.assert_eq_str(v.to_string(), "1.0.0-beta");
+}
+
+// ── compare ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_compare_equal_versions_returns_zero() {
+    let a = semver.parse("1.2.3");
+    let b = semver.parse("1.2.3");
+    testing.assert_eq(a.compare(b), 0);
+}
+
+#[test]
+fn test_compare_greater_major_returns_one() {
+    let a = semver.parse("2.0.0");
+    let b = semver.parse("1.9.9");
+    testing.assert_eq(a.compare(b), 1);
+}
+
+#[test]
+fn test_compare_lesser_major_returns_neg_one() {
+    let a = semver.parse("1.0.0");
+    let b = semver.parse("2.0.0");
+    testing.assert_eq(a.compare(b), -1);
+}
+
+#[test]
+fn test_compare_minor_difference() {
+    let a = semver.parse("1.3.0");
+    let b = semver.parse("1.2.0");
+    testing.assert_eq(a.compare(b), 1);
+    testing.assert_eq(b.compare(a), -1);
+}
+
+#[test]
+fn test_compare_patch_difference() {
+    let a = semver.parse("1.2.4");
+    let b = semver.parse("1.2.3");
+    testing.assert_eq(a.compare(b), 1);
+}
+
+// ── matches ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_matches_exact_version() {
+    let v = semver.parse("1.2.3");
+    testing.assert_true(v.matches("=1.2.3"));
+}
+
+#[test]
+fn test_matches_gte_satisfied() {
+    let v = semver.parse("1.2.3");
+    testing.assert_true(v.matches(">=1.0.0"));
+    testing.assert_true(v.matches(">=1.2.3"));
+}
+
+#[test]
+fn test_matches_gte_not_satisfied() {
+    let v = semver.parse("1.0.0");
+    testing.assert_false(v.matches(">=2.0.0"));
+}
+
+#[test]
+fn test_matches_gt_strictly_greater() {
+    let v = semver.parse("2.0.0");
+    testing.assert_true(v.matches(">1.9.9"));
+    testing.assert_false(v.matches(">2.0.0"));
+}
+
+#[test]
+fn test_matches_lt_strictly_less() {
+    let v = semver.parse("1.0.0");
+    testing.assert_true(v.matches("<2.0.0"));
+    testing.assert_false(v.matches("<1.0.0"));
+}
+
+#[test]
+fn test_matches_lte_satisfied() {
+    let v = semver.parse("1.0.0");
+    testing.assert_true(v.matches("<=1.0.0"));
+    testing.assert_true(v.matches("<=2.0.0"));
+    testing.assert_false(v.matches("<=0.9.9"));
+}

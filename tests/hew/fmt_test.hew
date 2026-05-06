@@ -1,0 +1,177 @@
+//! Tests for std::fmt — base-conversion formatters and string padding helpers.
+//!
+//! `to_hex`, `to_binary`, `to_octal`, `pad_left`, `pad_right`, and `repeat`
+//! are all pure, allocation-only functions with no I/O or handles.
+
+import std::fmt;
+import std::testing;
+
+// ── to_hex ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_to_hex_zero() {
+    testing.assert_eq_str(fmt.to_hex(0), "0");
+}
+
+#[test]
+fn test_to_hex_single_digit_values() {
+    testing.assert_eq_str(fmt.to_hex(10), "a");
+    testing.assert_eq_str(fmt.to_hex(15), "f");
+}
+
+#[test]
+fn test_to_hex_byte_boundary() {
+    testing.assert_eq_str(fmt.to_hex(255), "ff");
+    testing.assert_eq_str(fmt.to_hex(256), "100");
+}
+
+#[test]
+fn test_to_hex_negative_value() {
+    testing.assert_eq_str(fmt.to_hex(-16), "-10");
+    testing.assert_eq_str(fmt.to_hex(-255), "-ff");
+}
+
+#[test]
+fn test_to_hex_larger_value() {
+    testing.assert_eq_str(fmt.to_hex(65535), "ffff");
+    testing.assert_eq_str(fmt.to_hex(4096), "1000");
+}
+
+// ── to_binary ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_to_binary_zero() {
+    testing.assert_eq_str(fmt.to_binary(0), "0");
+}
+
+#[test]
+fn test_to_binary_powers_of_two() {
+    testing.assert_eq_str(fmt.to_binary(1), "1");
+    testing.assert_eq_str(fmt.to_binary(2), "10");
+    testing.assert_eq_str(fmt.to_binary(4), "100");
+    testing.assert_eq_str(fmt.to_binary(8), "1000");
+}
+
+#[test]
+fn test_to_binary_arbitrary_values() {
+    testing.assert_eq_str(fmt.to_binary(10), "1010");
+    testing.assert_eq_str(fmt.to_binary(255), "11111111");
+}
+
+#[test]
+fn test_to_binary_negative_value() {
+    testing.assert_eq_str(fmt.to_binary(-5), "-101");
+    testing.assert_eq_str(fmt.to_binary(-1), "-1");
+}
+
+// ── to_octal ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_to_octal_zero() {
+    testing.assert_eq_str(fmt.to_octal(0), "0");
+}
+
+#[test]
+fn test_to_octal_single_digit() {
+    testing.assert_eq_str(fmt.to_octal(7), "7");
+}
+
+#[test]
+fn test_to_octal_multi_digit_values() {
+    testing.assert_eq_str(fmt.to_octal(8), "10");
+    testing.assert_eq_str(fmt.to_octal(64), "100");
+    testing.assert_eq_str(fmt.to_octal(511), "777");
+}
+
+#[test]
+fn test_to_octal_negative_value() {
+    testing.assert_eq_str(fmt.to_octal(-8), "-10");
+}
+
+// ── round-trip: to_hex / to_binary / to_octal boundaries ─────────────
+
+#[test]
+fn test_base_conversions_at_16() {
+    // 16 in hex = "10", in binary = "10000", in octal = "20"
+    testing.assert_eq_str(fmt.to_hex(16), "10");
+    testing.assert_eq_str(fmt.to_binary(16), "10000");
+    testing.assert_eq_str(fmt.to_octal(16), "20");
+}
+
+// ── pad_left ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_pad_left_adds_leading_zeros() {
+    testing.assert_eq_str(fmt.pad_left("7", 3, "0"), "007");
+    testing.assert_eq_str(fmt.pad_left("42", 5, "0"), "00042");
+}
+
+#[test]
+fn test_pad_left_already_at_width() {
+    testing.assert_eq_str(fmt.pad_left("hello", 5, "0"), "hello");
+}
+
+#[test]
+fn test_pad_left_wider_than_width() {
+    testing.assert_eq_str(fmt.pad_left("toolong", 3, "*"), "toolong");
+}
+
+#[test]
+fn test_pad_left_space_fill() {
+    testing.assert_eq_str(fmt.pad_left("x", 4, " "), "   x");
+}
+
+#[test]
+fn test_pad_left_empty_string() {
+    testing.assert_eq_str(fmt.pad_left("", 3, "-"), "---");
+}
+
+// ── pad_right ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_pad_right_adds_trailing_dots() {
+    testing.assert_eq_str(fmt.pad_right("hi", 5, "."), "hi...");
+}
+
+#[test]
+fn test_pad_right_already_at_width() {
+    testing.assert_eq_str(fmt.pad_right("hello", 5, "."), "hello");
+}
+
+#[test]
+fn test_pad_right_wider_than_width() {
+    testing.assert_eq_str(fmt.pad_right("toolong", 3, "."), "toolong");
+}
+
+#[test]
+fn test_pad_right_empty_string() {
+    testing.assert_eq_str(fmt.pad_right("", 3, "x"), "xxx");
+}
+
+// ── repeat ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_repeat_zero_times_returns_empty() {
+    testing.assert_eq_str(fmt.repeat("abc", 0), "");
+}
+
+#[test]
+fn test_repeat_once_returns_original() {
+    testing.assert_eq_str(fmt.repeat("ab", 1), "ab");
+}
+
+#[test]
+fn test_repeat_multiple_times() {
+    testing.assert_eq_str(fmt.repeat("ab", 3), "ababab");
+    testing.assert_eq_str(fmt.repeat("*", 5), "*****");
+}
+
+// ── combined usage: zero-pad hex with pad_left ────────────────────────
+
+#[test]
+fn test_zero_padded_hex_byte_representation() {
+    // to_hex(10) = "a"; padded to 2 digits → "0a"
+    testing.assert_eq_str(fmt.pad_left(fmt.to_hex(10), 2, "0"), "0a");
+    // to_hex(255) = "ff"; already 2 digits
+    testing.assert_eq_str(fmt.pad_left(fmt.to_hex(255), 2, "0"), "ff");
+}

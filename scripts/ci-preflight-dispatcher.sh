@@ -565,7 +565,7 @@ i=0
 for cmd in "${COMMANDS[@]}"; do
     elapsed="${PREFLIGHT_CMD_ELAPSED[$i]:-?}"
     status_label="ok"
-    for failed in "${PREFLIGHT_FAILURES[@]}"; do
+    for failed in "${PREFLIGHT_FAILURES[@]+"${PREFLIGHT_FAILURES[@]}"}"; do
         [[ "$failed" == "$cmd" ]] && status_label="FAILED"
     done
     printf "    %s  %ss  [%s]\n" "$cmd" "$elapsed" "$status_label"
@@ -577,7 +577,7 @@ if [[ -n "$PROFILE_JSON_PATH" ]]; then
     {
         printf '['
         first=1
-        for entry in "${_json_entries[@]}"; do
+        for entry in "${_json_entries[@]+"${_json_entries[@]}"}"; do
             if (( first == 0 )); then printf ','; fi
             printf '%s' "$entry"
             first=0
@@ -596,3 +596,4 @@ if [[ ${#PREFLIGHT_FAILURES[@]} -gt 0 ]]; then
     exit 1
 fi
 
+echo "==> Preflight passed."

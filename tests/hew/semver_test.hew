@@ -137,3 +137,23 @@ fn test_matches_lte_satisfied() {
     testing.assert_true(v.matches("<=2.0.0"));
     testing.assert_false(v.matches("<=0.9.9"));
 }
+
+// ── parse error boundaries ─────────────────────────────────────────────
+// The parse() doc explicitly states it panics on malformed input.
+// These tests exercise the two explicit panic branches in the
+// implementation: missing first dot (no major separator) and missing
+// second dot (no minor.patch separator).
+
+#[test]
+#[should_panic]
+fn test_parse_panics_on_missing_first_dot() {
+    // "1" has no dot at all — hits the `first_dot < 0` panic branch.
+    semver.parse("1");
+}
+
+#[test]
+#[should_panic]
+fn test_parse_panics_on_missing_second_dot() {
+    // "1.2" has a first dot but no second — hits the `second_dot < 0` panic branch.
+    semver.parse("1.2");
+}

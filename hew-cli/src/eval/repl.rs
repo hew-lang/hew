@@ -2212,23 +2212,16 @@ mod tests {
     }
 
     /// `JitMode::Auto` routes to the same execution path as `JitMode::Inprocess`.
-    /// Without the embedded backend both return an error from the JIT stub rather
-    /// than reaching actual execution, so we verify they produce the same error
-    /// variant (both fail at the same point).
+    /// Without the embedded backend both return an explicit error from the JIT
+    /// stub rather than reaching actual execution, so we verify they produce the
+    /// same success/error shape.
     ///
-    /// SHIM: gated `#[ignore]` because the no-backend FFI path SIGSEGVs on
-    /// Linux runners — the `hew_jit_session_eval_msgpack` symbol resolves to
-    /// something that derefs an uninitialised pointer when codegen isn't
-    /// linked in. Windows + macOS pass; only Linux fails.
-    /// WHY: parity check between Auto and Inprocess is an edge-case test, not
-    /// a critical M1 invariant.
-    /// WHEN obsolete: when the no-backend stubs are made truly safe (a
-    /// follow-up issue tracks the SEGV root cause).
-    /// WHAT the real solution looks like: either link a stable no-op stub for
-    /// `hew_jit_session_eval_msgpack` when `hew_embedded_codegen` is off, or
-    /// gate the FFI declaration itself behind the cfg so the call site fails
-    /// to compile rather than link-fail-then-segfault.
-    #[ignore = "no-backend FFI path SIGSEGVs on Linux runners; tracked as a follow-up"]
+    /// Previously gated `#[ignore]` (issue #1523) because the `extern "C"`
+    /// declarations for `hew_jit_session_eval_msgpack` and siblings were not
+    /// cfg-gated, causing a Linux SIGSEGV when codegen was absent.  The fix
+    /// (#1523) placed those declarations inside `#[cfg(hew_embedded_codegen)]`
+    /// and added an explicit no-backend stub in `crate::jit` that returns
+    /// `Err(JitError::ExecFailed(...))`.  The `#[ignore]` is therefore removed.
     #[test]
     fn jit_auto_and_inprocess_produce_same_error_shape_without_backend() {
         // A minimal valid Hew program: a function definition.
@@ -2262,12 +2255,28 @@ mod tests {
             Some(crate::args::JitMode::Inprocess),
         );
 
-        // Both should produce the same success/error shape.
+        // In a no-backend build the stub always returns an error; in a backend
+        // build both paths succeed (or both fail for the same reason).  Either
+        // way the shapes must be identical.
         assert_eq!(
             auto_result.is_err(),
             inprocess_result.is_err(),
             "Auto and Inprocess should produce the same success/error shape"
         );
+
+        // Stronger no-backend invariant: both must be errors — the stub never
+        // returns Ok because there is no JIT engine to run the program.
+        #[cfg(not(hew_embedded_codegen))]
+        {
+            assert!(
+                auto_result.is_err(),
+                "Auto mode without codegen backend must return an error, not Ok"
+            );
+            assert!(
+                inprocess_result.is_err(),
+                "Inprocess mode without codegen backend must return an error, not Ok"
+            );
+        }
     }
 
     /// `JitMode::Worker` routes to the AOT+spawn path (`run_inprocess_compiled`),

@@ -497,7 +497,7 @@ assemble-release:
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 
-test: test-rust test-codegen test-cpp
+test: test-rust test-codegen
 
 # test-all: the full sweep including the Hew JIT test suite and WASM tests.
 # Hew tests (~354 functions through JIT+LLVM) are omitted from the default

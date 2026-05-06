@@ -4405,6 +4405,13 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
           return r;
       }
     } else {
+      // NOTE: isKnownI32HandleMethod matches methods on i32-typed handle
+      // receivers (e.g. net.Connection tokens stored as i32).  If a future
+      // primitive trait impl adds a method whose name collides with one of
+      // the strings below (accept, close, read, write, …) on an i32-typed
+      // receiver, this branch will intercept it before the primitive-trait
+      // dispatch path in generateMethodCall can fire.  Extend or gate this
+      // list with receiver-kind metadata when adding such an impl.
       auto isKnownI32HandleMethod = [&](llvm::StringRef method) {
         return method == "accept" || method == "close" || method == "read" ||
                method == "read_string" || method == "write" || method == "write_string" ||
@@ -4767,6 +4774,12 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     }
     if (auto *prim =
             std::get_if<ast::MethodCallReceiverKindPrimitiveTraitImpl>(&receiverKind->kind)) {
+      // NOTE: prim->trait_name is authored by the checker and carried here for
+      // diagnostic context and future use (e.g. specialisation, reflection).
+      // Dispatch itself is keyed exclusively on prim->canonical_receiver, which
+      // is the qualified name the checker resolved the impl to (e.g. "i64").
+      // trait_name is intentionally not validated against the MLIR symbol table
+      // here — that is the checker's responsibility.
       if (prim->canonical_receiver.empty()) {
         ++errorCount_;
         emitError(location) << "primitive trait receiver-kind metadata missing canonical_receiver";

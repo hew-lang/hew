@@ -1023,11 +1023,10 @@ static bool replacePrimitiveTraitMethodReceiverKindForSpan(hew::ast::Program &pr
                                                                     canonicalReceiver.str()};
     return true;
   }
-  program.method_call_receiver_kinds.push_back(hew::ast::MethodCallReceiverKindEntry{
-      static_cast<uint64_t>(span.start), static_cast<uint64_t>(span.end),
-      hew::ast::MethodCallReceiverKindPrimitiveTraitImpl{traitName.str(),
-                                                         canonicalReceiver.str()}});
-  return true;
+  // No entry found for this span; return false so callers can detect the
+  // absence of checker-authored metadata rather than silently inserting a
+  // synthetic entry that may not reflect a real call site.
+  return false;
 }
 
 static bool eraseAssignTargetKindEntryForSpan(hew::ast::Program &program,
@@ -11561,6 +11560,72 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: primitive trait impl with empty canonical_receiver fails closed with
+// the explicit "missing canonical_receiver" diagnostic (not an unresolved
+// lookup error or silent null dereference).
+// ============================================================================
+static void test_primitive_trait_dispatch_empty_canonical_receiver_fails_closed() {
+  TEST(primitive_trait_dispatch_empty_canonical_receiver_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+trait Display {
+    fn fmt(val: Self) -> String;
+}
+
+impl Display for i64 {
+    fn fmt(n: i64) -> String {
+        "i64"
+    }
+}
+
+fn use_value() -> String {
+    let x: i64 = 42;
+    return x.fmt();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run empty canonical_receiver negative test");
+    return;
+  }
+
+  auto *useValue = findFunctionDecl(program, "use_value");
+  if (!useValue) {
+    FAIL("failed to find use_value for empty canonical_receiver test");
+    return;
+  }
+
+  auto methodCallSpan = findFunctionMethodCallSpan(*useValue, "fmt");
+  if (!methodCallSpan ||
+      !replacePrimitiveTraitMethodReceiverKindForSpan(program, *methodCallSpan, "Display", "")) {
+    FAIL("failed to replace primitive trait receiver-kind entry with empty canonical_receiver");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for primitive trait dispatch with empty canonical_receiver");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("primitive trait receiver-kind metadata missing canonical_receiver") ==
+      std::string::npos) {
+    FAIL("expected 'primitive trait receiver-kind metadata missing canonical_receiver' diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: named-type method dispatch reports missing receiver expr_types metadata
 // before falling back to the opaque non-struct/enum diagnostic.
 // ============================================================================
@@ -14243,6 +14308,7 @@ int main() {
   test_named_type_dispatch_pruned_receiver_kind_fails_closed();
   test_primitive_trait_dispatch_uses_receiver_kind_metadata();
   test_primitive_trait_dispatch_unknown_canonical_receiver_fails_closed();
+  test_primitive_trait_dispatch_empty_canonical_receiver_fails_closed();
   test_named_type_method_dispatch_missing_expr_type_fails_closed();
   test_math_pow_wrong_arity_fails_closed();
   test_math_max_wrong_arity_fails_closed();

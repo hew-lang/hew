@@ -198,6 +198,10 @@ impl TraitRegistry {
                     RcFreeStatus::ContainsRc
                 }
             }
+            // ActorRef<T> lowers to *mut HewActor with no ref-counted fields.
+            // T is a phantom dispatch type, and actor graph cycles are handled
+            // separately by cycle.rs.
+            Ty::Named { name, .. } if name == "ActorRef" => RcFreeStatus::RcFree,
             Ty::Named { name, args } => {
                 match self.combine_rc_free_status(args.iter().cloned(), visiting) {
                     RcFreeStatus::RcFree => {}
@@ -743,6 +747,67 @@ mod tests {
         assert!(
             registry.implements_marker(&Ty::Tuple(vec![Ty::I32, Ty::Bool]), MarkerTrait::RcFree)
         );
+    }
+
+    #[test]
+    fn actorref_with_rc_bearing_actor_is_rc_free() {
+        let mut registry = TraitRegistry::new();
+        registry.register_rcfree_members("Worker".to_string(), vec![Ty::rc(Ty::I32)]);
+        let actor_ref = Ty::actor_ref(Ty::Named {
+            name: "Worker".to_string(),
+            args: vec![],
+        });
+
+        assert_eq!(registry.rc_free_status(&actor_ref), RcFreeStatus::RcFree);
+        assert!(registry.implements_marker(&actor_ref, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn actorref_simple_is_rc_free() {
+        let mut registry = TraitRegistry::new();
+        registry.register_rcfree_members("SimpleActor".to_string(), vec![Ty::I32, Ty::Bool]);
+        let actor_ref = Ty::actor_ref(Ty::Named {
+            name: "SimpleActor".to_string(),
+            args: vec![],
+        });
+
+        assert_eq!(registry.rc_free_status(&actor_ref), RcFreeStatus::RcFree);
+        assert!(registry.implements_marker(&actor_ref, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn vec_rc_in_named_still_contains_rc() {
+        let registry = TraitRegistry::new();
+        let vec_rc = Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![Ty::rc(Ty::I32)],
+        };
+
+        assert_eq!(registry.rc_free_status(&vec_rc), RcFreeStatus::ContainsRc);
+        assert!(!registry.implements_marker(&vec_rc, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn mutual_actorref_cycle_is_rc_free_not_recursive() {
+        let mut registry = TraitRegistry::new();
+        let a = Ty::Named {
+            name: "A".to_string(),
+            args: vec![],
+        };
+        let b = Ty::Named {
+            name: "B".to_string(),
+            args: vec![],
+        };
+        registry.register_rcfree_members("A".to_string(), vec![Ty::actor_ref(b.clone())]);
+        registry.register_rcfree_members("B".to_string(), vec![Ty::actor_ref(a.clone())]);
+
+        let a_ref = Ty::actor_ref(a);
+        let b_ref = Ty::actor_ref(b);
+
+        assert_eq!(registry.rc_free_status(&a_ref), RcFreeStatus::RcFree);
+        assert_eq!(registry.rc_free_status(&b_ref), RcFreeStatus::RcFree);
+        assert!(registry.implements_marker(&a_ref, MarkerTrait::RcFree));
+        assert!(registry.implements_marker(&b_ref, MarkerTrait::RcFree));
     }
 
     #[test]

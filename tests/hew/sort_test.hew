@@ -1,0 +1,304 @@
+//! Tests for std::sort — sort_ints, sort_strings, sort_floats and the
+//! reverse_* family. Each function returns a new vector; the original
+//! is never mutated.
+
+import std::sort;
+import std::testing;
+
+// ── sort_ints ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_sort_ints_ascending_order() {
+    let v: Vec<int> = Vec::new();
+    v.push(3);
+    v.push(1);
+    v.push(4);
+    v.push(1);
+    v.push(5);
+    let out = sort.sort_ints(v);
+    testing.assert_eq(out.len(), 5);
+    testing.assert_eq(out.get(0), 1);
+    testing.assert_eq(out.get(1), 1);
+    testing.assert_eq(out.get(2), 3);
+    testing.assert_eq(out.get(3), 4);
+    testing.assert_eq(out.get(4), 5);
+}
+
+#[test]
+fn test_sort_ints_does_not_mutate_original() {
+    let v: Vec<int> = Vec::new();
+    v.push(9);
+    v.push(3);
+    v.push(7);
+    sort.sort_ints(v);
+    testing.assert_eq(v.get(0), 9);
+    testing.assert_eq(v.get(1), 3);
+    testing.assert_eq(v.get(2), 7);
+}
+
+#[test]
+fn test_sort_ints_already_sorted() {
+    let v: Vec<int> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let out = sort.sort_ints(v);
+    testing.assert_eq(out.get(0), 1);
+    testing.assert_eq(out.get(1), 2);
+    testing.assert_eq(out.get(2), 3);
+}
+
+#[test]
+fn test_sort_ints_reverse_sorted_input() {
+    let v: Vec<int> = Vec::new();
+    v.push(5);
+    v.push(4);
+    v.push(3);
+    v.push(2);
+    v.push(1);
+    let out = sort.sort_ints(v);
+    testing.assert_eq(out.get(0), 1);
+    testing.assert_eq(out.get(4), 5);
+}
+
+#[test]
+fn test_sort_ints_single_element() {
+    let v: Vec<int> = Vec::new();
+    v.push(42);
+    let out = sort.sort_ints(v);
+    testing.assert_eq(out.len(), 1);
+    testing.assert_eq(out.get(0), 42);
+}
+
+#[test]
+fn test_sort_ints_empty() {
+    let v: Vec<int> = Vec::new();
+    let out = sort.sort_ints(v);
+    testing.assert_eq(out.len(), 0);
+}
+
+#[test]
+fn test_sort_ints_negative_values() {
+    let v: Vec<int> = Vec::new();
+    v.push(0);
+    v.push(-5);
+    v.push(3);
+    v.push(-2);
+    let out = sort.sort_ints(v);
+    testing.assert_eq(out.get(0), -5);
+    testing.assert_eq(out.get(1), -2);
+    testing.assert_eq(out.get(2), 0);
+    testing.assert_eq(out.get(3), 3);
+}
+
+// ── sort_strings ──────────────────────────────────────────────────────
+
+#[test]
+fn test_sort_strings_alphabetical_order() {
+    let v: Vec<String> = Vec::new();
+    v.push("banana");
+    v.push("apple");
+    v.push("cherry");
+    let out = sort.sort_strings(v);
+    testing.assert_eq(out.len(), 3);
+    testing.assert_eq_str(out.get(0), "apple");
+    testing.assert_eq_str(out.get(1), "banana");
+    testing.assert_eq_str(out.get(2), "cherry");
+}
+
+#[test]
+fn test_sort_strings_does_not_mutate_original() {
+    let v: Vec<String> = Vec::new();
+    v.push("zebra");
+    v.push("ant");
+    sort.sort_strings(v);
+    testing.assert_eq_str(v.get(0), "zebra");
+    testing.assert_eq_str(v.get(1), "ant");
+}
+
+#[test]
+fn test_sort_strings_single_element() {
+    let v: Vec<String> = Vec::new();
+    v.push("only");
+    let out = sort.sort_strings(v);
+    testing.assert_eq(out.len(), 1);
+    testing.assert_eq_str(out.get(0), "only");
+}
+
+#[test]
+fn test_sort_strings_empty() {
+    let v: Vec<String> = Vec::new();
+    let out = sort.sort_strings(v);
+    testing.assert_eq(out.len(), 0);
+}
+
+#[test]
+fn test_sort_strings_duplicate_entries() {
+    let v: Vec<String> = Vec::new();
+    v.push("b");
+    v.push("a");
+    v.push("b");
+    let out = sort.sort_strings(v);
+    testing.assert_eq_str(out.get(0), "a");
+    testing.assert_eq_str(out.get(1), "b");
+    testing.assert_eq_str(out.get(2), "b");
+}
+
+// ── sort_floats ───────────────────────────────────────────────────────
+
+#[test]
+fn test_sort_floats_ascending_order() {
+    let v: Vec<f64> = Vec::new();
+    v.push(3.5);
+    v.push(1.25);
+    v.push(2.0);
+    let out = sort.sort_floats(v);
+    testing.assert_eq(out.len(), 3);
+    testing.assert_true(out.get(0) == 1.25);
+    testing.assert_true(out.get(1) == 2.0);
+    testing.assert_true(out.get(2) == 3.5);
+}
+
+#[test]
+fn test_sort_floats_negative_values() {
+    let v: Vec<f64> = Vec::new();
+    v.push(1.0);
+    v.push(-3.0);
+    v.push(0.5);
+    v.push(-1.5);
+    let out = sort.sort_floats(v);
+    testing.assert_true(out.get(0) == -3.0);
+    testing.assert_true(out.get(1) == -1.5);
+    testing.assert_true(out.get(2) == 0.5);
+    testing.assert_true(out.get(3) == 1.0);
+}
+
+#[test]
+fn test_sort_floats_single_element() {
+    let v: Vec<f64> = Vec::new();
+    v.push(9.9);
+    let out = sort.sort_floats(v);
+    testing.assert_eq(out.len(), 1);
+    testing.assert_true(out.get(0) == 9.9);
+}
+
+#[test]
+fn test_sort_floats_empty() {
+    let v: Vec<f64> = Vec::new();
+    let out = sort.sort_floats(v);
+    testing.assert_eq(out.len(), 0);
+}
+
+// ── reverse_ints ──────────────────────────────────────────────────────
+
+#[test]
+fn test_reverse_ints_three_elements() {
+    let v: Vec<int> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let out = sort.reverse_ints(v);
+    testing.assert_eq(out.get(0), 3);
+    testing.assert_eq(out.get(1), 2);
+    testing.assert_eq(out.get(2), 1);
+}
+
+#[test]
+fn test_reverse_ints_does_not_mutate_original() {
+    let v: Vec<int> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    sort.reverse_ints(v);
+    testing.assert_eq(v.get(0), 1);
+}
+
+#[test]
+fn test_reverse_ints_single_element() {
+    let v: Vec<int> = Vec::new();
+    v.push(7);
+    let out = sort.reverse_ints(v);
+    testing.assert_eq(out.len(), 1);
+    testing.assert_eq(out.get(0), 7);
+}
+
+#[test]
+fn test_reverse_ints_empty() {
+    let v: Vec<int> = Vec::new();
+    let out = sort.reverse_ints(v);
+    testing.assert_eq(out.len(), 0);
+}
+
+#[test]
+fn test_reverse_then_sort_round_trips() {
+    let v: Vec<int> = Vec::new();
+    v.push(3);
+    v.push(1);
+    v.push(2);
+    let sorted = sort.sort_ints(v);
+    let reversed = sort.reverse_ints(sorted);
+    let re_sorted = sort.sort_ints(reversed);
+    testing.assert_eq(re_sorted.get(0), 1);
+    testing.assert_eq(re_sorted.get(1), 2);
+    testing.assert_eq(re_sorted.get(2), 3);
+}
+
+// ── reverse_strings ───────────────────────────────────────────────────
+
+#[test]
+fn test_reverse_strings_three_elements() {
+    let v: Vec<String> = Vec::new();
+    v.push("a");
+    v.push("b");
+    v.push("c");
+    let out = sort.reverse_strings(v);
+    testing.assert_eq_str(out.get(0), "c");
+    testing.assert_eq_str(out.get(1), "b");
+    testing.assert_eq_str(out.get(2), "a");
+}
+
+#[test]
+fn test_reverse_strings_single_element() {
+    let v: Vec<String> = Vec::new();
+    v.push("solo");
+    let out = sort.reverse_strings(v);
+    testing.assert_eq(out.len(), 1);
+    testing.assert_eq_str(out.get(0), "solo");
+}
+
+#[test]
+fn test_reverse_strings_empty() {
+    let v: Vec<String> = Vec::new();
+    let out = sort.reverse_strings(v);
+    testing.assert_eq(out.len(), 0);
+}
+
+// ── reverse_floats ────────────────────────────────────────────────────
+
+#[test]
+fn test_reverse_floats_three_elements() {
+    let v: Vec<f64> = Vec::new();
+    v.push(1.0);
+    v.push(2.5);
+    v.push(3.0);
+    let out = sort.reverse_floats(v);
+    testing.assert_true(out.get(0) == 3.0);
+    testing.assert_true(out.get(1) == 2.5);
+    testing.assert_true(out.get(2) == 1.0);
+}
+
+#[test]
+fn test_reverse_floats_single_element() {
+    let v: Vec<f64> = Vec::new();
+    v.push(4.4);
+    let out = sort.reverse_floats(v);
+    testing.assert_eq(out.len(), 1);
+    testing.assert_true(out.get(0) == 4.4);
+}
+
+#[test]
+fn test_reverse_floats_empty() {
+    let v: Vec<f64> = Vec::new();
+    let out = sort.reverse_floats(v);
+    testing.assert_eq(out.len(), 0);
+}

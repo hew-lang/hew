@@ -56,7 +56,10 @@ struct HewWsConnInner {
     /// WHY: tungstenite's `WebSocket` is single-owner with a blocking `read()`
     ///      that holds the mutex for up to `READER_READ_TIMEOUT` (250 ms).
     ///      `hew_ws_send_text`/`hew_ws_send_binary` acquire the same mutex, so
-    ///      each send stalls up to 250 ms in attached mode. Fix #1324.
+    ///      each send used to stall on the reader framer in attached mode.
+    ///      Plain TCP sends now use a separate framer plus `write_operation_gate`
+    ///      so they avoid reader-framer mutex contention while still serializing
+    ///      complete tungstenite write operations. Fix #1324/#1632.
     /// WHEN: This split is only possible for plain TCP; TLS connections still
     ///       use the single `ws` mutex (the TLS record layer is not thread-safe
     ///       across two independently-created contexts).
@@ -70,6 +73,14 @@ struct HewWsConnInner {
     /// not poison, so the previous `lock_or_recover` recovery is unnecessary
     /// for these locks and is replaced with `pl_lock`.
     write_ws: Option<PlMutex<Option<HewWs>>>,
+    /// Plain-TCP split-framer serialization gate.
+    ///
+    /// LOCK ORDER: acquire a framer mutex (`ws` / `write_ws`) before this gate;
+    /// tungstenite may then acquire `SharedPlainWsStream::write_stream` inside
+    /// its `Write` calls. This gate is held across the complete tungstenite
+    /// operation (`send` or `read` auto-flush) so short socket writes cannot
+    /// allow another framer to splice control-frame bytes into a data frame.
+    write_operation_gate: Option<WriteOperationGate>,
     shutdown_stream: Option<TcpStream>,
     reader: Mutex<Option<ReaderControl>>,
     closed: AtomicBool,
@@ -77,6 +88,8 @@ struct HewWsConnInner {
 }
 
 type HewWs = WebSocket<HewWsStream>;
+type WriteOperationGate = Arc<PlMutex<()>>;
+type PreparedWebsockets = (HewWs, Option<HewWs>, Option<WriteOperationGate>);
 
 /// Stream type used by Hew's websocket wrapper after connection setup.
 ///
@@ -93,19 +106,16 @@ enum HewWsStream {
 /// Plain-TCP attached-mode stream with a shared socket write half.
 ///
 /// LOCK ORDER: Hew code may acquire a framer mutex (`inner.ws` or
-/// `inner.write_ws`) and then tungstenite may call this stream's `Write`
-/// implementation, which briefly locks `write_stream`. No Hew code may lock
-/// `write_stream` and then acquire a framer mutex. This keeps user sends,
-/// explicit attach-reader Pongs, and tungstenite 0.29 auto-Pong flushes
-/// serialized at the TCP socket boundary without reintroducing reader/write
-/// framer contention.
+/// `inner.write_ws`), then `write_operation_gate`, and then tungstenite may
+/// call this stream's `Write` implementation, which briefly locks
+/// `write_stream`. No Hew code may lock `write_stream` and then acquire the
+/// operation gate or a framer mutex.
 ///
-/// BLOCKING-FD INVARIANT: these streams must remain in blocking mode after the
-/// websocket handshake. The shared mutex serializes each `Write::write` and
-/// `Write::flush` syscall, not whole logical websocket frames. With blocking
-/// fds, tungstenite's frame emission either makes progress under the mutex or
-/// returns a real socket error. A future nonblocking conversion would require a
-/// frame-buffering write gate instead of this narrow adapter.
+/// SERIALIZATION INVARIANT: `write_stream` is only the shared-fd ownership
+/// mutex. Frame/operation atomicity comes from `write_operation_gate`, which is
+/// held above tungstenite `send` and `read` auto-flush operations. That outer
+/// gate is what prevents a short blocking `TcpStream::write` from letting a
+/// competing framer splice Pong bytes into the middle of a data frame.
 #[derive(Debug)]
 struct SharedPlainWsStream {
     read_stream: TcpStream,
@@ -294,12 +304,13 @@ unsafe impl Send for HewActorRef {}
 impl HewWsConn {
     fn new(ws: WebSocket<MaybeTlsStream<TcpStream>>, role: Role) -> Self {
         let shutdown_stream = clone_shutdown_stream(&ws);
-        let (ws, write_ws) = prepare_websockets(ws, role);
+        let (ws, write_ws, write_operation_gate) = prepare_websockets(ws, role);
         let write_ws = write_ws.map(|w| PlMutex::new(Some(w)));
         Self {
             inner: Arc::new(HewWsConnInner {
                 ws: PlMutex::new(Some(ws)),
                 write_ws,
+                write_operation_gate,
                 shutdown_stream,
                 reader: Mutex::new(None),
                 closed: AtomicBool::new(false),
@@ -374,10 +385,7 @@ fn clone_shutdown_stream(ws: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<Tc
 /// between user sends, explicit Pongs, and tungstenite 0.29's auto-Pong flush
 /// on `read()`. If cloning fails, Hew falls back to a single plain stream: safe
 /// (one framer mutex) but with the pre-#1324 attached-send stall.
-fn prepare_websockets(
-    ws: WebSocket<MaybeTlsStream<TcpStream>>,
-    role: Role,
-) -> (HewWs, Option<HewWs>) {
+fn prepare_websockets(ws: WebSocket<MaybeTlsStream<TcpStream>>, role: Role) -> PreparedWebsockets {
     let config = *ws.get_config();
     match ws.into_inner() {
         MaybeTlsStream::Plain(stream) => split_plain_websockets(stream, role, config)
@@ -385,10 +393,12 @@ fn prepare_websockets(
                 (
                     WebSocket::from_raw_socket(HewWsStream::Plain(stream), role, Some(config)),
                     None,
+                    None,
                 )
             }),
         stream => (
             WebSocket::from_raw_socket(HewWsStream::Tls(stream), role, Some(config)),
+            None,
             None,
         ),
     }
@@ -401,15 +411,18 @@ fn prepare_websockets(
 /// because the TLS record layer is stateful and not safe to share across two
 /// independently-created contexts writing to the same underlying file descriptor.
 ///
-/// WHY: Fixes the 250 ms send stall in attached mode (issue #1324). The reader
-///      holds `inner.ws` for up to 250 ms per read; with a split write WebSocket,
-///      sends acquire an independent mutex and never contend with the reader.
-/// #1632 note: the two framers must not write through dup-cloned fds without a
-/// shared write mutex. tungstenite 0.29 queues auto-Pongs during `read()` and
-/// flushes them through the read-side stream on a later read entry, so routing
-/// only Hew's explicit Pong through `write_ws` would leave the race open.
-/// The accepted plain-TCP/client streams are left in blocking mode; see
-/// `SharedPlainWsStream` for why this adapter relies on that invariant.
+/// WHY: Fixes the reader-framer mutex stall in attached mode (issue #1324)
+///      while preserving frame integrity (issue #1632). With a split write
+///      WebSocket, sends acquire an independent framer mutex; the separate
+///      `write_operation_gate` is only for complete-operation serialization
+///      against read-side auto-Pong flushes.
+/// #1632 note: the two framers must not write through dup-cloned fds without
+/// operation-granularity serialization. tungstenite 0.29 queues auto-Pongs
+/// during `read()` and flushes them through the read-side stream on a later
+/// read entry, so routing only Hew's explicit Pong through `write_ws` would
+/// leave the race open. `write_operation_gate` is held across complete
+/// tungstenite `send` and `read` operations so short socket writes cannot
+/// interleave frames from the sibling framer.
 ///
 /// WHEN: Extend to TLS once a thread-safe TLS write-half abstraction is available.
 /// WHAT: TLS split would require sharing a single `TlsStream` write half under a
@@ -418,7 +431,7 @@ fn split_plain_websockets(
     stream: TcpStream,
     role: Role,
     config: WebSocketConfig,
-) -> Result<(HewWs, Option<HewWs>), TcpStream> {
+) -> Result<PreparedWebsockets, TcpStream> {
     let Ok(write_stream) = stream.try_clone() else {
         return Err(stream);
     };
@@ -427,6 +440,7 @@ fn split_plain_websockets(
     };
 
     let shared_write = Arc::new(PlMutex::new(write_stream));
+    let write_operation_gate = Arc::new(PlMutex::new(()));
     let read_ws = WebSocket::from_raw_socket(
         HewWsStream::SplitPlain(SharedPlainWsStream {
             read_stream: stream,
@@ -443,7 +457,7 @@ fn split_plain_websockets(
         role,
         Some(config),
     );
-    Ok((read_ws, Some(write_ws)))
+    Ok((read_ws, Some(write_ws), Some(write_operation_gate)))
 }
 
 #[allow(
@@ -494,6 +508,30 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// two lock kinds in this crate.
 fn pl_lock<T>(mutex: &PlMutex<T>) -> parking_lot::MutexGuard<'_, T> {
     mutex.lock()
+}
+
+fn with_write_operation_gate<R>(gate: Option<&WriteOperationGate>, op: impl FnOnce() -> R) -> R {
+    if let Some(gate) = gate {
+        let _operation_guard = pl_lock(gate);
+        op()
+    } else {
+        op()
+    }
+}
+
+fn read_ws_with_operation_gate(
+    inner: &HewWsConnInner,
+    ws: &mut HewWs,
+) -> Result<Message, tungstenite::Error> {
+    with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.read())
+}
+
+fn send_ws_with_operation_gate(
+    inner: &HewWsConnInner,
+    ws: &mut HewWs,
+    message: Message,
+) -> Result<(), tungstenite::Error> {
+    with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.send(message))
 }
 
 fn signal_reader_cancel(inner: &Arc<HewWsConnInner>) {
@@ -680,7 +718,7 @@ fn spawn_attach_reader(
                 let Some(ws) = guard.as_mut() else {
                     break;
                 };
-                ws.read()
+                read_ws_with_operation_gate(&inner, ws)
             };
 
             match read_result {
@@ -798,7 +836,7 @@ fn recv_message(inner: &Arc<HewWsConnInner>) -> (HewWsRecvResult, *mut HewWsMess
                 eprintln!("[recv] failed to set read timeout: {err}");
                 return (HewWsRecvResult::Error, std::ptr::null_mut());
             }
-            ws.read()
+            read_ws_with_operation_gate(inner, ws)
         };
 
         match read_result {
@@ -848,10 +886,11 @@ pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
 ///
 /// In attached mode (where the reader holds `ws` for up to 250 ms), `write_ws`
 /// is an independent WebSocket framer for plain TCP. Both framers share one
-/// mutex-protected TCP write half, so bytes from user sends, explicit Pongs,
-/// and tungstenite auto-Pong flushes cannot interleave. For TLS connections
-/// `write_ws` is absent and sends fall back to the shared `ws` mutex (the
-/// 250 ms stall persists for TLS; see `split_plain_websockets` for details).
+/// TCP write half plus an operation-level serialization gate, so short socket
+/// writes cannot let bytes from user sends, explicit Pongs, or tungstenite
+/// auto-Pong flushes interleave. For TLS connections `write_ws` is absent and
+/// sends fall back to the shared `ws` mutex (the 250 ms stall persists for TLS;
+/// see `split_plain_websockets` for details).
 fn send_ws_message(
     inner: &Arc<HewWsConnInner>,
     message: Message,
@@ -861,13 +900,13 @@ fn send_ws_message(
         let Some(ws) = guard.as_mut() else {
             return Err(tungstenite::Error::AlreadyClosed);
         };
-        return ws.send(message);
+        return send_ws_with_operation_gate(inner, ws, message);
     }
     let mut guard = pl_lock(&inner.ws);
     let Some(ws) = guard.as_mut() else {
         return Err(tungstenite::Error::AlreadyClosed);
     };
-    ws.send(message)
+    send_ws_with_operation_gate(inner, ws, message)
 }
 
 /// Send a text message over a WebSocket connection.
@@ -1057,7 +1096,7 @@ pub unsafe extern "C" fn hew_ws_recv_timeout(
         return std::ptr::null_mut();
     }
 
-    let read_result = ws_ref.read();
+    let read_result = read_ws_with_operation_gate(&inner, ws_ref);
     // Restore the timeout to the reader's pacing value so subsequent
     // attached-reader cycles continue with their normal cadence.
     let _ = set_read_timeout(ws_ref, Some(READER_READ_TIMEOUT));
@@ -1427,6 +1466,7 @@ mod tests {
     use std::os::fd::AsRawFd;
     use std::sync::atomic::AtomicU64;
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::sync::Barrier;
     use std::sync::OnceLock;
 
     const TEST_MSG_TYPE: i32 = 11;
@@ -1454,6 +1494,27 @@ mod tests {
     struct CancelOwnerState {
         server: usize,
         conn: usize,
+    }
+
+    #[derive(Clone)]
+    struct ShortWriteLog {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        max_per_write: usize,
+    }
+
+    impl Write for ShortWriteLog {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let n = self.max_per_write.min(buf.len());
+            self.bytes
+                .lock()
+                .expect("short-write log poisoned")
+                .extend_from_slice(&buf[..n]);
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -1844,6 +1905,77 @@ mod tests {
         assert_eq!(data_slice, payload);
         // SAFETY: msg was allocated by build_message.
         unsafe { hew_ws_message_free(msg) };
+    }
+
+    #[test]
+    fn write_operation_gate_spans_short_write_drain() {
+        let gate = Arc::new(PlMutex::new(()));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let ready = Arc::new(Barrier::new(2));
+        let (first_short_write_tx, first_short_write_rx) = mpsc::channel();
+
+        let user_gate = Arc::clone(&gate);
+        let user_ready = Arc::clone(&ready);
+        let mut user_writer = ShortWriteLog {
+            bytes: Arc::clone(&log),
+            max_per_write: 4,
+        };
+        let user = std::thread::spawn(move || {
+            user_ready.wait();
+            with_write_operation_gate(Some(&user_gate), || {
+                let mut written = 0;
+                let data = b"USERFRAME";
+                while written < data.len() {
+                    let n = user_writer
+                        .write(&data[written..])
+                        .expect("forced short write should succeed");
+                    written += n;
+                    if written == n {
+                        first_short_write_tx
+                            .send(())
+                            .expect("signal first short write");
+                        // Keep the operation gate held while the competing
+                        // Pong writer tries to run. Without operation-level
+                        // serialization this would deterministically produce
+                        // USERPONGFRAME.
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+                user_writer.flush().expect("flush user frame");
+            });
+        });
+
+        let pong_gate = Arc::clone(&gate);
+        let pong_ready = Arc::clone(&ready);
+        let mut pong_writer = ShortWriteLog {
+            bytes: Arc::clone(&log),
+            max_per_write: 4,
+        };
+        let pong = std::thread::spawn(move || {
+            pong_ready.wait();
+            first_short_write_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("first short user write should happen");
+            with_write_operation_gate(Some(&pong_gate), || {
+                let mut written = 0;
+                let data = b"PONG";
+                while written < data.len() {
+                    written += pong_writer
+                        .write(&data[written..])
+                        .expect("forced pong write should succeed");
+                }
+                pong_writer.flush().expect("flush pong");
+            });
+        });
+
+        user.join().expect("user writer should finish");
+        pong.join().expect("pong writer should finish");
+        let bytes = log.lock().expect("short-write log poisoned").clone();
+        assert_eq!(
+            bytes.as_slice(),
+            b"USERFRAMEPONG",
+            "operation gate must cover the whole short-write drain, not just one write syscall"
+        );
     }
 
     #[test]

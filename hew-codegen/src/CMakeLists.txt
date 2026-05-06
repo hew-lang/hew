@@ -365,14 +365,20 @@ function(hew_collect_llvm_system_link_items out_var found_var)
   if(LLVM_CONFIG_EXE)
     execute_process(
       COMMAND "${LLVM_CONFIG_EXE}" --system-libs --link-static
+      RESULT_VARIABLE _hew_llvm_system_libs_result
       OUTPUT_VARIABLE _hew_llvm_system_libs_raw
       OUTPUT_STRIP_TRAILING_WHITESPACE
       ERROR_QUIET
     )
-    separate_arguments(_hew_llvm_system_libs NATIVE_COMMAND "${_hew_llvm_system_libs_raw}")
-    set(${out_var} "${_hew_llvm_system_libs}" PARENT_SCOPE)
-    set(${found_var} ON PARENT_SCOPE)
-    return()
+    if(_hew_llvm_system_libs_result EQUAL 0 AND NOT "${_hew_llvm_system_libs_raw}" STREQUAL "")
+      separate_arguments(_hew_llvm_system_libs NATIVE_COMMAND "${_hew_llvm_system_libs_raw}")
+      set(${out_var} "${_hew_llvm_system_libs}" PARENT_SCOPE)
+      set(${found_var} ON PARENT_SCOPE)
+      return()
+    endif()
+    message(STATUS
+      "HEW_STATIC_LINK: llvm-config did not return usable system libraries; "
+      "falling back to LLVMSupport interface metadata")
   endif()
 
   # Source-built LLVM installs can omit llvm-config from the shipped toolchain
@@ -389,6 +395,11 @@ function(hew_collect_llvm_system_link_items out_var found_var)
         endif()
         if("${_item}" MATCHES "^\\$<LINK_ONLY:(.+)>$")
           set(_item "${CMAKE_MATCH_1}")
+        endif()
+        if("${_item}" MATCHES "^\\$<")
+          # Ignore generator expressions that are still unevaluated here rather
+          # than turning them into malformed -l$<...> linker flags.
+          continue()
         endif()
         if(TARGET "${_item}" OR
            "${_item}" MATCHES "^(LLVM|MLIR)" OR
@@ -409,6 +420,9 @@ function(hew_collect_llvm_system_link_items out_var found_var)
         set(${found_var} ON PARENT_SCOPE)
         return()
       endif()
+      message(STATUS
+        "HEW_STATIC_LINK: LLVMSupport exported interface metadata was present, "
+        "but no system libraries survived filtering")
     endif()
   endif()
 

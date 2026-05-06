@@ -1,0 +1,173 @@
+//! Tests for std::collections::hashset — insert, contains, remove, len,
+//! is_empty, clear, and the explicit free() lifecycle.
+//!
+//! HashSet is an opaque handle type; every test that creates one must call
+//! free() before returning so resources are not leaked.
+
+import std::collections::hashset;
+import std::testing;
+
+// ── int operations ────────────────────────────────────────────────────
+
+#[test]
+fn test_insert_int_returns_true_for_new_values() {
+    let s = hashset.new();
+    testing.assert_true(s.insert_int(1));
+    testing.assert_true(s.insert_int(2));
+    s.free();
+}
+
+#[test]
+fn test_insert_int_returns_false_for_duplicate() {
+    let s = hashset.new();
+    s.insert_int(42);
+    testing.assert_false(s.insert_int(42));
+    s.free();
+}
+
+#[test]
+fn test_contains_int_after_insert() {
+    let s = hashset.new();
+    s.insert_int(10);
+    testing.assert_true(s.contains_int(10));
+    testing.assert_false(s.contains_int(99));
+    s.free();
+}
+
+#[test]
+fn test_remove_int_returns_true_when_present() {
+    let s = hashset.new();
+    s.insert_int(5);
+    testing.assert_true(s.remove_int(5));
+    s.free();
+}
+
+#[test]
+fn test_remove_int_returns_false_when_absent() {
+    let s = hashset.new();
+    testing.assert_false(s.remove_int(99));
+    s.free();
+}
+
+#[test]
+fn test_remove_int_element_no_longer_present() {
+    let s = hashset.new();
+    s.insert_int(7);
+    s.remove_int(7);
+    testing.assert_false(s.contains_int(7));
+    s.free();
+}
+
+// ── len / is_empty ────────────────────────────────────────────────────
+
+#[test]
+fn test_new_set_is_empty() {
+    let s = hashset.new();
+    testing.assert_true(s.is_empty());
+    testing.assert_eq(s.len(), 0);
+    s.free();
+}
+
+#[test]
+fn test_len_grows_with_unique_inserts() {
+    let s = hashset.new();
+    s.insert_int(1);
+    s.insert_int(2);
+    s.insert_int(3);
+    testing.assert_eq(s.len(), 3);
+    testing.assert_false(s.is_empty());
+    s.free();
+}
+
+#[test]
+fn test_len_unchanged_by_duplicate_insert() {
+    let s = hashset.new();
+    s.insert_int(1);
+    s.insert_int(1);
+    testing.assert_eq(s.len(), 1);
+    s.free();
+}
+
+#[test]
+fn test_len_decreases_after_remove() {
+    let s = hashset.new();
+    s.insert_int(1);
+    s.insert_int(2);
+    s.remove_int(1);
+    testing.assert_eq(s.len(), 1);
+    s.free();
+}
+
+// ── clear ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_clear_empties_the_set() {
+    let s = hashset.new();
+    s.insert_int(1);
+    s.insert_int(2);
+    s.insert_int(3);
+    s.clear();
+    testing.assert_eq(s.len(), 0);
+    testing.assert_true(s.is_empty());
+    s.free();
+}
+
+#[test]
+fn test_clear_allows_reinsert() {
+    let s = hashset.new();
+    s.insert_int(5);
+    s.clear();
+    testing.assert_true(s.insert_int(5));
+    testing.assert_eq(s.len(), 1);
+    s.free();
+}
+
+// ── string operations ─────────────────────────────────────────────────
+
+#[test]
+fn test_insert_string_returns_true_for_new_values() {
+    let s = hashset.new();
+    testing.assert_true(s.insert_string("alpha"));
+    testing.assert_true(s.insert_string("beta"));
+    s.free();
+}
+
+#[test]
+fn test_insert_string_returns_false_for_duplicate() {
+    let s = hashset.new();
+    s.insert_string("hello");
+    testing.assert_false(s.insert_string("hello"));
+    s.free();
+}
+
+#[test]
+fn test_contains_string_after_insert() {
+    let s = hashset.new();
+    s.insert_string("world");
+    testing.assert_true(s.contains_string("world"));
+    testing.assert_false(s.contains_string("missing"));
+    s.free();
+}
+
+#[test]
+fn test_remove_string_removes_only_target() {
+    let s = hashset.new();
+    s.insert_string("a");
+    s.insert_string("b");
+    s.remove_string("a");
+    testing.assert_false(s.contains_string("a"));
+    testing.assert_true(s.contains_string("b"));
+    s.free();
+}
+
+#[test]
+fn test_string_and_int_operations_are_independent() {
+    let s = hashset.new();
+    s.insert_int(1);
+    s.insert_string("one");
+    // len counts both domains together if the implementation uses one bucket
+    // table, or independently. Either way, both must be reachable.
+    testing.assert_true(s.contains_int(1));
+    testing.assert_true(s.contains_string("one"));
+    s.free();
+}

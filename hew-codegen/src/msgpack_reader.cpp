@@ -1862,6 +1862,13 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
     entry.kind = std::move(data);
     return entry;
   }
+  if (kind == "primitive_trait_impl") {
+    ast::MethodCallReceiverKindPrimitiveTraitImpl data;
+    data.trait_name = getString(mapReq(obj, "trait_name"));
+    data.canonical_receiver = getString(mapReq(obj, "canonical_receiver"));
+    entry.kind = std::move(data);
+    return entry;
+  }
   if (kind == "trait_object") {
     ast::MethodCallReceiverKindTraitObject data;
     data.trait_name = getString(mapReq(obj, "trait_name"));

@@ -1017,6 +1017,11 @@ struct MethodCallReceiverKindHandleInstance {
   std::string type_name;
 };
 
+struct MethodCallReceiverKindPrimitiveTraitImpl {
+  std::string trait_name;
+  std::string canonical_receiver;
+};
+
 struct MethodCallReceiverKindTraitObject {
   std::string trait_name;
 };
@@ -1027,7 +1032,8 @@ struct MethodCallReceiverKindStreamInstance {
 
 using MethodCallReceiverKindData =
     std::variant<MethodCallReceiverKindNamedTypeInstance, MethodCallReceiverKindHandleInstance,
-                 MethodCallReceiverKindTraitObject, MethodCallReceiverKindStreamInstance>;
+                 MethodCallReceiverKindTraitObject, MethodCallReceiverKindStreamInstance,
+                 MethodCallReceiverKindPrimitiveTraitImpl>;
 
 struct MethodCallReceiverKindEntry {
   uint64_t start = 0;

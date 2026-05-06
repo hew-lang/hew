@@ -4765,6 +4765,18 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
       consumeCloneTemp();
       return r;
     }
+    if (auto *prim =
+            std::get_if<ast::MethodCallReceiverKindPrimitiveTraitImpl>(&receiverKind->kind)) {
+      if (prim->canonical_receiver.empty()) {
+        ++errorCount_;
+        emitError(location) << "primitive trait receiver-kind metadata missing canonical_receiver";
+        consumeCloneTemp();
+        return nullptr;
+      }
+      auto r = generateNamedTypeDispatch(prim->canonical_receiver);
+      consumeCloneTemp();
+      return r;
+    }
     if (std::get_if<ast::MethodCallReceiverKindStreamInstance>(&receiverKind->kind)) {
       // Stream map/filter/take dispatch is handled in generateBuiltinMethodCall below.
     } else if (auto *trait =

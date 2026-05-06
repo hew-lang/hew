@@ -188,6 +188,13 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
     entry.kind = std::move(data);
     return entry;
   }
+  if (kind == "primitive_trait_impl") {
+    ast::MethodCallReceiverKindPrimitiveTraitImpl data;
+    data.trait_name = getString(mapReq(obj, "trait_name"));
+    data.canonical_receiver = getString(mapReq(obj, "canonical_receiver"));
+    entry.kind = std::move(data);
+    return entry;
+  }
   if (kind == "trait_object") {
     ast::MethodCallReceiverKindTraitObject data;
     data.trait_name = getString(mapReq(obj, "trait_name"));
@@ -536,16 +543,18 @@ pub fn select_arm_parser() -> &'static str {
 }
 
 /// Hard-coded parser lifted from the working C++ reader.
-#[allow(
-    dead_code,
-    reason = "coverage enum reserves explicit rejection slots for explicit rejections"
-)]
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VariantDisposition {
     Parsed,
+    #[expect(
+        dead_code,
+        reason = "coverage tables reserve explicit rejection slots for future parser gaps"
+    )]
     Rejected,
 }
 
+#[cfg(test)]
 const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("Binary", VariantDisposition::Parsed),
     ("Unary", VariantDisposition::Parsed),
@@ -589,6 +598,7 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("ByteArrayLiteral", VariantDisposition::Parsed),
 ];
 
+#[cfg(test)]
 const STMT_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("Let", VariantDisposition::Parsed),
     ("Var", VariantDisposition::Parsed),
@@ -1626,10 +1636,12 @@ mod tests {
         assert!(src.contains("entry.end"));
         assert!(src.contains("named_type_instance"));
         assert!(src.contains("handle_instance"));
+        assert!(src.contains("primitive_trait_impl"));
         assert!(src.contains("trait_object"));
         assert!(src.contains("stream_instance"));
         assert!(src.contains("type_name"));
         assert!(src.contains("trait_name"));
+        assert!(src.contains("canonical_receiver"));
         assert!(src.contains("element_kind"));
     }
 

@@ -161,7 +161,7 @@ jobs:
           }
           $ninjaVer = & "$ninjaDir\ninja.exe" --version
           Write-Host "Ninja $ninjaVer at $ninjaDir"
-          "$ninjaDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
+          $ninjaDir | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
 
           # Initialise the MSVC developer environment from vcvars64.bat
           # and export all resulting changes to GITHUB_ENV / GITHUB_PATH so
@@ -171,23 +171,73 @@ jobs:
           $vcvars = "$vsInstall\VC\Auxiliary\Build\vcvars64.bat"
           $pathBefore = $env:PATH
           $rawEnv = cmd.exe /c "`"$vcvars`" x64 > nul 2>&1 && set" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::vcvars64.bat failed to initialise the MSVC environment"
+            $rawEnv | ForEach-Object { Write-Host $_ }
+            exit 1
+          }
+          $vcEnvAllow = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase)
+          @(
+            'CommandPromptType',
+            'DevEnvDir',
+            'ExtensionSdkDir',
+            'FrameworkDir',
+            'FrameworkDIR64',
+            'FrameworkVersion',
+            'FrameworkVersion64',
+            'INCLUDE',
+            'LIB',
+            'LIBPATH',
+            'NETFXSDKDir',
+            'Platform',
+            'UCRTVersion',
+            'UniversalCRTSdkDir',
+            'VCIDEInstallDir',
+            'VCINSTALLDIR',
+            'VCToolsInstallDir',
+            'VCToolsRedistDir',
+            'VCToolsVersion',
+            'VisualStudioVersion',
+            'VS170COMNTOOLS',
+            'VSCMD_ARG_app_plat',
+            'VSCMD_ARG_HOST_ARCH',
+            'VSCMD_ARG_TGT_ARCH',
+            'VSCMD_VER',
+            'VSINSTALLDIR',
+            'WindowsLibPath',
+            'WindowsSdkBinPath',
+            'WindowsSdkDir',
+            'WindowsSDKLibVersion',
+            'WindowsSDKVersion'
+          ) | ForEach-Object { [void]$vcEnvAllow.Add($_) }
+          $before = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase)
+          foreach ($entry in ($pathBefore -split ';' | Where-Object { $_ })) {
+            [void]$before.Add($entry)
+          }
           foreach ($line in $rawEnv) {
             if ($line -notmatch '^([^=]+)=(.*)$') { continue }
             $k = $Matches[1]; $v = $Matches[2]
             if ($k -ieq 'PATH') {
               # Append only the entries that vcvars64 added; avoid duplicates.
-              $before = [System.Collections.Generic.HashSet[string]]::new(
-                ($pathBefore -split ';' | Where-Object { $_ }),
-                [System.StringComparer]::OrdinalIgnoreCase)
+              $env:PATH = $v
               foreach ($entry in ($v -split ';' | Where-Object { $_ })) {
                 if (-not $before.Contains($entry)) {
                   $entry | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
                 }
               }
-            } else {
+            } elseif ($vcEnvAllow.Contains($k)) {
+              Set-Item -Path "Env:\$k" -Value $v
               "${k}=${v}" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
             }
           }
+          $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
+          if (-not $cl) {
+            Write-Host "::error::cl.exe was not found after vcvars64.bat initialisation"
+            exit 1
+          }
+          Write-Host "MSVC compiler: $($cl.Source)"
           Write-Host "MSVC developer environment ready"
 
       - name: Sparse-clone llvm-project at ${{ env.LLVM_TAG }}

@@ -11,7 +11,7 @@ extern crate hew_runtime;
 
 use hew_cabi::cabi::malloc_bytes;
 use std::ffi::{c_void, CStr};
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -50,7 +50,7 @@ struct HewWsConnInner {
     /// The primary WebSocket handle.  In attached mode this is used for reading
     /// only; user sends go through `write_ws` when available.  In non-attached
     /// (recv) mode the single mutex covers both directions as before.
-    ws: PlMutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>,
+    ws: PlMutex<Option<HewWs>>,
     /// Separate write-only WebSocket for plain-TCP connections.
     ///
     /// WHY: tungstenite's `WebSocket` is single-owner with a blocking `read()`
@@ -69,11 +69,84 @@ struct HewWsConnInner {
     /// `READER_READ_TIMEOUT` (250 ms) per cycle). `parking_lot::Mutex` does
     /// not poison, so the previous `lock_or_recover` recovery is unnecessary
     /// for these locks and is replaced with `pl_lock`.
-    write_ws: Option<PlMutex<Option<WebSocket<MaybeTlsStream<TcpStream>>>>>,
+    write_ws: Option<PlMutex<Option<HewWs>>>,
     shutdown_stream: Option<TcpStream>,
     reader: Mutex<Option<ReaderControl>>,
     closed: AtomicBool,
     active_recvs: AtomicUsize,
+}
+
+type HewWs = WebSocket<HewWsStream>;
+
+/// Stream type used by Hew's websocket wrapper after connection setup.
+///
+/// Plain TCP can be split into independent tungstenite framers for attached
+/// mode. TLS remains a single stream because two independently-created TLS
+/// contexts cannot safely share one socket.
+#[derive(Debug)]
+enum HewWsStream {
+    Plain(TcpStream),
+    SplitPlain(SharedPlainWsStream),
+    Tls(MaybeTlsStream<TcpStream>),
+}
+
+/// Plain-TCP attached-mode stream with a shared socket write half.
+///
+/// LOCK ORDER: Hew code may acquire a framer mutex (`inner.ws` or
+/// `inner.write_ws`) and then tungstenite may call this stream's `Write`
+/// implementation, which briefly locks `write_stream`. No Hew code may lock
+/// `write_stream` and then acquire a framer mutex. This keeps user sends,
+/// explicit attach-reader Pongs, and tungstenite 0.29 auto-Pong flushes
+/// serialized at the TCP socket boundary without reintroducing reader/write
+/// framer contention.
+#[derive(Debug)]
+struct SharedPlainWsStream {
+    read_stream: TcpStream,
+    write_stream: Arc<PlMutex<TcpStream>>,
+}
+
+impl Read for SharedPlainWsStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.read_stream.read(buf)
+    }
+}
+
+impl Write for SharedPlainWsStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        pl_lock(&self.write_stream).write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        pl_lock(&self.write_stream).flush()
+    }
+}
+
+impl Read for HewWsStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(stream) => stream.read(buf),
+            Self::SplitPlain(stream) => stream.read(buf),
+            Self::Tls(stream) => stream.read(buf),
+        }
+    }
+}
+
+impl Write for HewWsStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(stream) => stream.write(buf),
+            Self::SplitPlain(stream) => stream.write(buf),
+            Self::Tls(stream) => stream.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Plain(stream) => stream.flush(),
+            Self::SplitPlain(stream) => stream.flush(),
+            Self::Tls(stream) => stream.flush(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -214,8 +287,8 @@ unsafe impl Send for HewActorRef {}
 impl HewWsConn {
     fn new(ws: WebSocket<MaybeTlsStream<TcpStream>>, role: Role) -> Self {
         let shutdown_stream = clone_shutdown_stream(&ws);
-        let config = *ws.get_config();
-        let write_ws = try_split_write_ws(&ws, role, config).map(|w| PlMutex::new(Some(w)));
+        let (ws, write_ws) = prepare_websockets(ws, role);
+        let write_ws = write_ws.map(|w| PlMutex::new(Some(w)));
         Self {
             inner: Arc::new(HewWsConnInner {
                 ws: PlMutex::new(Some(ws)),
@@ -286,7 +359,36 @@ fn clone_shutdown_stream(ws: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<Tc
     }
 }
 
-/// Attempt to create an independent write-side WebSocket from a cloned TCP stream.
+/// Convert tungstenite's handshake stream into Hew's post-handshake stream(s).
+///
+/// Plain TCP uses Strategy A from #1632: both the read-side framer and the
+/// write-side framer share one mutex-protected TCP write half. This preserves
+/// #1324's attached-mode latency fix while closing the byte-interleave race
+/// between user sends, explicit Pongs, and tungstenite 0.29's auto-Pong flush
+/// on `read()`. If cloning fails, Hew falls back to a single plain stream: safe
+/// (one framer mutex) but with the pre-#1324 attached-send stall.
+fn prepare_websockets(
+    ws: WebSocket<MaybeTlsStream<TcpStream>>,
+    role: Role,
+) -> (HewWs, Option<HewWs>) {
+    let config = *ws.get_config();
+    match ws.into_inner() {
+        MaybeTlsStream::Plain(stream) => split_plain_websockets(stream, role, config)
+            .unwrap_or_else(|stream| {
+                (
+                    WebSocket::from_raw_socket(HewWsStream::Plain(stream), role, Some(config)),
+                    None,
+                )
+            }),
+        stream => (
+            WebSocket::from_raw_socket(HewWsStream::Tls(stream), role, Some(config)),
+            None,
+        ),
+    }
+}
+
+/// Attempt to create independent read/write WebSocket framers over plain TCP
+/// with a single serialized write half.
 ///
 /// Only succeeds for plain (non-TLS) connections. TLS connections cannot be split
 /// because the TLS record layer is stateful and not safe to share across two
@@ -295,35 +397,44 @@ fn clone_shutdown_stream(ws: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<Tc
 /// WHY: Fixes the 250 ms send stall in attached mode (issue #1324). The reader
 ///      holds `inner.ws` for up to 250 ms per read; with a split write WebSocket,
 ///      sends acquire an independent mutex and never contend with the reader.
+/// #1632 note: the two framers must not write through dup-cloned fds without a
+/// shared write mutex. tungstenite 0.29 queues auto-Pongs during `read()` and
+/// flushes them through the read-side stream on a later read entry, so routing
+/// only Hew's explicit Pong through `write_ws` would leave the race open.
+///
 /// WHEN: Extend to TLS once a thread-safe TLS write-half abstraction is available.
 /// WHAT: TLS split would require sharing a single `TlsStream` write half under a
 ///       mutex between both the read-context and the write-context.
-#[allow(
-    unexpected_cfgs,
-    reason = "Matching tungstenite TLS variants depends on dependency feature cfgs"
-)]
-fn try_split_write_ws(
-    ws: &WebSocket<MaybeTlsStream<TcpStream>>,
+fn split_plain_websockets(
+    stream: TcpStream,
     role: Role,
     config: WebSocketConfig,
-) -> Option<WebSocket<MaybeTlsStream<TcpStream>>> {
-    match ws.get_ref() {
-        MaybeTlsStream::Plain(stream) => {
-            let cloned = stream.try_clone().ok()?;
-            Some(WebSocket::from_raw_socket(
-                MaybeTlsStream::Plain(cloned),
-                role,
-                Some(config),
-            ))
-        }
-        // TLS connections: cannot safely split the write half.
-        // Sends will fall back to the single `ws` mutex (250 ms stall remains for TLS).
-        #[allow(
-            unreachable_patterns,
-            reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
-        )]
-        _ => None,
-    }
+) -> Result<(HewWs, Option<HewWs>), TcpStream> {
+    let Ok(write_stream) = stream.try_clone() else {
+        return Err(stream);
+    };
+    let Ok(write_read_stream) = stream.try_clone() else {
+        return Err(stream);
+    };
+
+    let shared_write = Arc::new(PlMutex::new(write_stream));
+    let read_ws = WebSocket::from_raw_socket(
+        HewWsStream::SplitPlain(SharedPlainWsStream {
+            read_stream: stream,
+            write_stream: Arc::clone(&shared_write),
+        }),
+        role,
+        Some(config),
+    );
+    let write_ws = WebSocket::from_raw_socket(
+        HewWsStream::SplitPlain(SharedPlainWsStream {
+            read_stream: write_read_stream,
+            write_stream: shared_write,
+        }),
+        role,
+        Some(config),
+    );
+    Ok((read_ws, Some(write_ws)))
 }
 
 #[allow(
@@ -331,30 +442,31 @@ fn try_split_write_ws(
     reason = "Matching tungstenite TLS variants depends on dependency feature cfgs"
 )]
 fn with_tcp_stream<R>(
-    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    ws: &mut HewWs,
     f: impl FnOnce(&mut TcpStream) -> io::Result<R>,
 ) -> io::Result<R> {
     match ws.get_mut() {
-        MaybeTlsStream::Plain(stream) => f(stream),
-        #[cfg(feature = "native-tls")]
-        MaybeTlsStream::NativeTls(stream) => f(stream.get_mut()),
-        #[cfg(feature = "__rustls-tls")]
-        MaybeTlsStream::Rustls(stream) => f(&mut stream.sock),
-        #[allow(
-            unreachable_patterns,
-            reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
-        )]
-        _ => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "unsupported websocket stream kind",
-        )),
+        HewWsStream::Plain(stream) => f(stream),
+        HewWsStream::SplitPlain(stream) => f(&mut stream.read_stream),
+        HewWsStream::Tls(stream) => match stream {
+            MaybeTlsStream::Plain(stream) => f(stream),
+            #[cfg(feature = "native-tls")]
+            MaybeTlsStream::NativeTls(stream) => f(stream.get_mut()),
+            #[cfg(feature = "__rustls-tls")]
+            MaybeTlsStream::Rustls(stream) => f(&mut stream.sock),
+            #[allow(
+                unreachable_patterns,
+                reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
+            )]
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "unsupported websocket stream kind",
+            )),
+        },
     }
 }
 
-fn set_read_timeout(
-    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
-    timeout: Option<Duration>,
-) -> io::Result<()> {
+fn set_read_timeout(ws: &mut HewWs, timeout: Option<Duration>) -> io::Result<()> {
     with_tcp_stream(ws, |stream| stream.set_read_timeout(timeout))
 }
 
@@ -592,10 +704,9 @@ fn spawn_attach_reader(
                         break;
                     }
                 }
-                Ok(tungstenite::Message::Ping(_)) => {
-                    let mut guard = pl_lock(&inner.ws);
-                    if let Some(ws) = guard.as_mut() {
-                        let _ = ws.send(tungstenite::Message::Pong(vec![].into()));
+                Ok(tungstenite::Message::Ping(payload)) => {
+                    if !inner.closed.load(Ordering::Acquire) {
+                        let _ = send_ws_message(&inner, tungstenite::Message::Pong(payload));
                     }
                 }
                 Ok(tungstenite::Message::Close(_)) => {
@@ -720,11 +831,11 @@ pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
 /// Route an outbound WebSocket message through the write-side socket when available.
 ///
 /// In attached mode (where the reader holds `ws` for up to 250 ms), `write_ws`
-/// is an independent WebSocket on a cloned plain-TCP file descriptor. Sends
-/// acquire only the `write_ws` mutex and never contend with the reader's
-/// blocking `read()`. For TLS connections `write_ws` is absent and sends fall
-/// back to the shared `ws` mutex (the 250 ms stall persists for TLS; see
-/// `try_split_write_ws` for details).
+/// is an independent WebSocket framer for plain TCP. Both framers share one
+/// mutex-protected TCP write half, so bytes from user sends, explicit Pongs,
+/// and tungstenite auto-Pong flushes cannot interleave. For TLS connections
+/// `write_ws` is absent and sends fall back to the shared `ws` mutex (the
+/// 250 ms stall persists for TLS; see `split_plain_websockets` for details).
 fn send_ws_message(
     inner: &Arc<HewWsConnInner>,
     message: Message,
@@ -1296,6 +1407,8 @@ mod tests {
     use super::*;
     use hew_runtime::{actor, scheduler, transport};
     use std::collections::HashMap;
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
     use std::sync::atomic::AtomicU64;
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
     use std::sync::OnceLock;
@@ -1569,6 +1682,59 @@ mod tests {
         let conn = accept_thread.join().expect("accept thread should finish") as *mut HewWsConn;
         assert!(!conn.is_null(), "accept should return a connection");
         (server, conn, client)
+    }
+
+    #[allow(
+        unexpected_cfgs,
+        reason = "Matching tungstenite TLS variants depends on dependency feature cfgs"
+    )]
+    fn set_peer_read_timeout(
+        ws: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
+        timeout: Duration,
+    ) {
+        match ws.get_mut() {
+            MaybeTlsStream::Plain(stream) => stream
+                .set_read_timeout(Some(timeout))
+                .expect("set peer read timeout"),
+            #[cfg(feature = "native-tls")]
+            MaybeTlsStream::NativeTls(stream) => stream
+                .get_mut()
+                .set_read_timeout(Some(timeout))
+                .expect("set peer read timeout"),
+            #[cfg(feature = "__rustls-tls")]
+            MaybeTlsStream::Rustls(stream) => stream
+                .sock
+                .set_read_timeout(Some(timeout))
+                .expect("set peer read timeout"),
+            #[allow(
+                unreachable_patterns,
+                reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
+            )]
+            _ => panic!("unsupported peer stream kind"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn set_conn_send_buffer(conn: *mut HewWsConn, bytes: libc::c_int) {
+        let fd = unsafe { &*conn }
+            .inner
+            .shutdown_stream
+            .as_ref()
+            .expect("plain test connection should have a shutdown stream")
+            .as_raw_fd();
+        let value = bytes;
+        let opt_len = libc::socklen_t::try_from(std::mem::size_of_val(&value))
+            .expect("SO_SNDBUF option length should fit socklen_t");
+        let rc = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                (&raw const value).cast(),
+                opt_len,
+            )
+        };
+        assert_eq!(rc, 0, "setsockopt(SO_SNDBUF) should succeed");
     }
 
     fn spawn_attached_actor(
@@ -2211,6 +2377,149 @@ mod tests {
                 assert_eq!(inner.active_accepts.load(Ordering::Acquire), 0);
 
                 assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+            },
+        );
+    }
+
+    #[test]
+    fn attached_plain_ping_pong_echoes_payload() {
+        run_in_isolated_test_process(
+            "attached_plain_ping_pong_echoes_payload",
+            "HEW_WS_ATTACH_PING_PONG_ISOLATED",
+            || {
+                let _runtime = RuntimeGuard::new();
+                let (server, conn, mut client) = attach_test_conn();
+                let (actor, test_id, _rx) = spawn_attached_actor(conn);
+                set_peer_read_timeout(
+                    &mut client,
+                    (READER_READ_TIMEOUT * 2) + READER_WAIT_POLL + Duration::from_secs(1),
+                );
+
+                let payload = b"abc".to_vec();
+                client
+                    .send(Message::Ping(payload.clone().into()))
+                    .expect("client ping should send");
+                let msg = client.read().expect("client should receive a pong");
+                match msg {
+                    Message::Pong(bytes) => assert_eq!(&bytes[..], payload.as_slice()),
+                    other => panic!("expected pong response, got {other:?}"),
+                }
+
+                teardown_attached_actor(actor, test_id, conn, server);
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attached_plain_large_send_and_ping_are_serialized() {
+        run_in_isolated_test_process(
+            "attached_plain_large_send_and_ping_are_serialized",
+            "HEW_WS_ATTACH_LARGE_SEND_PING_ISOLATED",
+            || {
+                let _runtime = RuntimeGuard::new();
+                let (server, conn, mut client) = attach_test_conn();
+                let (actor, test_id, _rx) = spawn_attached_actor(conn);
+                set_conn_send_buffer(conn, 4096);
+                set_peer_read_timeout(&mut client, Duration::from_secs(5));
+
+                let payload: Vec<u8> = (0u8..=250).cycle().take(1024 * 1024).collect();
+                let expected = payload.clone();
+                let conn_addr = conn as usize;
+                let (started_tx, started_rx) = mpsc::channel();
+                let send_thread = std::thread::spawn(move || {
+                    started_tx.send(()).expect("signal send start");
+                    unsafe {
+                        hew_ws_send_binary(
+                            conn_addr as *mut HewWsConn,
+                            payload.as_ptr(),
+                            payload.len(),
+                        )
+                    }
+                });
+                started_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("send thread should start");
+                std::thread::sleep(Duration::from_millis(25));
+
+                client
+                    .send(Message::Ping(b"race".to_vec().into()))
+                    .expect("client ping should send during large send");
+
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut saw_binary = false;
+                let mut saw_pong = false;
+                while !(saw_binary && saw_pong) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "client should observe intact binary frame and pong"
+                    );
+                    match client
+                        .read()
+                        .expect("peer parser should not see corrupt frames")
+                    {
+                        Message::Binary(bytes) => {
+                            assert_eq!(&bytes[..], expected.as_slice());
+                            saw_binary = true;
+                        }
+                        Message::Pong(bytes) => {
+                            assert_eq!(&bytes[..], b"race");
+                            saw_pong = true;
+                        }
+                        Message::Close(close) => panic!("unexpected close frame: {close:?}"),
+                        _ => {}
+                    }
+                }
+
+                assert_eq!(
+                    send_thread.join().expect("send thread should join"),
+                    0,
+                    "large Hew send should succeed"
+                );
+                teardown_attached_actor(actor, test_id, conn, server);
+            },
+        );
+    }
+
+    #[test]
+    fn attached_reader_cancel_after_ping_exits_cleanly() {
+        run_in_isolated_test_process(
+            "attached_reader_cancel_after_ping_exits_cleanly",
+            "HEW_WS_ATTACH_PING_CANCEL_ISOLATED",
+            || {
+                let _runtime = RuntimeGuard::new();
+                OUTER_CONN_DROPS.store(0, Ordering::Relaxed);
+                let (server, conn, mut client) = attach_test_conn();
+                let inner = unsafe { &*conn }.inner.clone();
+                let (actor, test_id, _rx) = spawn_attached_actor(conn);
+
+                client
+                    .send(Message::Ping(b"cancel".to_vec().into()))
+                    .expect("client ping should send before cancellation");
+                unsafe { hew_ws_close(conn) };
+
+                assert!(
+                    wait_for_condition(Duration::from_millis(750), || {
+                        inner
+                            .reader
+                            .lock()
+                            .expect("reader mutex poisoned")
+                            .as_ref()
+                            .is_none_or(|reader| reader.exited.load(Ordering::Acquire))
+                    }),
+                    "reader should exit within the cancel deadline"
+                );
+                assert_eq!(
+                    OUTER_CONN_DROPS.load(Ordering::Relaxed),
+                    1,
+                    "attached close should drop the outer connection exactly once"
+                );
+
+                drop(client);
+                unsafe { actor::hew_actor_stop(actor) };
+                assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+                unregister_actor_events(test_id);
+                unsafe { hew_ws_server_close(server) };
             },
         );
     }

@@ -1183,6 +1183,7 @@ add_wasm_file_test(generic_multi_param_clash      e2e_generics generic_multi_par
 # Traits and impl
 add_wasm_file_test(trait_impl           e2e_traits trait_impl)
 add_wasm_file_test(trait_multi_impl     e2e_traits trait_multi_impl)
+add_wasm_file_test(primitive_trait_impl_display_int e2e_traits primitive_trait_impl_display_int)
 add_wasm_file_test(struct_impl_method   e2e_impl struct_impl_method)
 add_wasm_file_test(dyn_dispatch         e2e_dyn_trait dyn_dispatch)
 add_wasm_file_test(dyn_dispatch_string  e2e_dyn_trait dyn_dispatch_string)

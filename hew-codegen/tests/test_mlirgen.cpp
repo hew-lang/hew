@@ -1012,6 +1012,23 @@ static bool replaceStreamMethodReceiverKindForSpan(hew::ast::Program &program,
   return true;
 }
 
+static bool replacePrimitiveTraitMethodReceiverKindForSpan(hew::ast::Program &program,
+                                                           const hew::ast::Span &span,
+                                                           llvm::StringRef traitName,
+                                                           llvm::StringRef canonicalReceiver) {
+  for (auto &entry : program.method_call_receiver_kinds) {
+    if (entry.start != span.start || entry.end != span.end)
+      continue;
+    entry.kind = hew::ast::MethodCallReceiverKindPrimitiveTraitImpl{traitName.str(),
+                                                                    canonicalReceiver.str()};
+    return true;
+  }
+  // No entry found for this span; return false so callers can detect the
+  // absence of checker-authored metadata rather than silently inserting a
+  // synthetic entry that may not reflect a real call site.
+  return false;
+}
+
 static bool eraseAssignTargetKindEntryForSpan(hew::ast::Program &program,
                                               const hew::ast::Span &span) {
   auto oldSize = program.assign_target_kinds.size();
@@ -11398,6 +11415,217 @@ fn main() {}
 }
 
 // ============================================================================
+// Test: primitive trait impl dispatch uses the checker-authored canonical
+// receiver-kind metadata instead of falling back to structural dispatch.
+// ============================================================================
+static void test_primitive_trait_dispatch_uses_receiver_kind_metadata() {
+  TEST(primitive_trait_dispatch_uses_receiver_kind_metadata);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+trait Display {
+    fn fmt(val: Self) -> String;
+}
+
+impl Display for i64 {
+    fn fmt(n: i64) -> String {
+        "i64"
+    }
+}
+
+fn use_value() -> String {
+    let x: i64 = 42;
+    return x.fmt();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run primitive trait dispatch positive test");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (!module) {
+    FAIL("expected codegen to succeed for primitive trait dispatch");
+    return;
+  }
+
+  if (!stderrText.empty()) {
+    FAIL("expected no diagnostics for primitive trait dispatch backed by receiver-kind metadata");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto useValueFn = lookupFuncBySuffix(module, "use_value");
+  if (!useValueFn) {
+    FAIL("use_value function not found for primitive trait dispatch");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  auto fmtFn = lookupFuncBySuffix(module, "fmt");
+  if (!fmtFn) {
+    FAIL("fmt impl function not found for primitive trait dispatch");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  bool hasTraitDispatch = false;
+  useValueFn.walk([&](hew::TraitDispatchOp) { hasTraitDispatch = true; });
+
+  if (countCallsByCallee(useValueFn.getOperation(), fmtFn.getName()) != 1) {
+    FAIL("expected primitive trait dispatch to lower to one direct fmt call");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (hasTraitDispatch) {
+    FAIL("primitive trait dispatch should not lower through hew.trait_dispatch");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: malformed primitive trait impl receiver-kind metadata fails closed.
+// ============================================================================
+static void test_primitive_trait_dispatch_unknown_canonical_receiver_fails_closed() {
+  TEST(primitive_trait_dispatch_unknown_canonical_receiver_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+trait Display {
+    fn fmt(val: Self) -> String;
+}
+
+impl Display for i64 {
+    fn fmt(n: i64) -> String {
+        "i64"
+    }
+}
+
+fn use_value() -> String {
+    let x: i64 = 42;
+    return x.fmt();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run primitive trait dispatch negative test");
+    return;
+  }
+
+  auto *useValue = findFunctionDecl(program, "use_value");
+  if (!useValue) {
+    FAIL("failed to find use_value function for primitive trait dispatch negative test");
+    return;
+  }
+
+  auto methodCallSpan = findFunctionMethodCallSpan(*useValue, "fmt");
+  if (!methodCallSpan || !replacePrimitiveTraitMethodReceiverKindForSpan(
+                             program, *methodCallSpan, "Display", "missing.PrimitiveCanonical")) {
+    FAIL("failed to replace primitive trait receiver-kind metadata");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for primitive trait dispatch with unknown canonical receiver");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("undefined method 'fmt' on type 'missing.PrimitiveCanonical'") ==
+      std::string::npos) {
+    FAIL("expected unknown canonical receiver diagnostic for primitive trait dispatch");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
+// Test: primitive trait impl with empty canonical_receiver fails closed with
+// the explicit "missing canonical_receiver" diagnostic (not an unresolved
+// lookup error or silent null dereference).
+// ============================================================================
+static void test_primitive_trait_dispatch_empty_canonical_receiver_fails_closed() {
+  TEST(primitive_trait_dispatch_empty_canonical_receiver_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+trait Display {
+    fn fmt(val: Self) -> String;
+}
+
+impl Display for i64 {
+    fn fmt(n: i64) -> String {
+        "i64"
+    }
+}
+
+fn use_value() -> String {
+    let x: i64 = 42;
+    return x.fmt();
+}
+
+fn main() {}
+  )",
+                             program)) {
+    FAIL("hew CLI unavailable; cannot run empty canonical_receiver negative test");
+    return;
+  }
+
+  auto *useValue = findFunctionDecl(program, "use_value");
+  if (!useValue) {
+    FAIL("failed to find use_value for empty canonical_receiver test");
+    return;
+  }
+
+  auto methodCallSpan = findFunctionMethodCallSpan(*useValue, "fmt");
+  if (!methodCallSpan ||
+      !replacePrimitiveTraitMethodReceiverKindForSpan(program, *methodCallSpan, "Display", "")) {
+    FAIL("failed to replace primitive trait receiver-kind entry with empty canonical_receiver");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected codegen to fail for primitive trait dispatch with empty canonical_receiver");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (stderrText.find("primitive trait receiver-kind metadata missing canonical_receiver") ==
+      std::string::npos) {
+    FAIL("expected 'primitive trait receiver-kind metadata missing canonical_receiver' diagnostic");
+    return;
+  }
+
+  PASS();
+}
+
+// ============================================================================
 // Test: named-type method dispatch reports missing receiver expr_types metadata
 // before falling back to the opaque non-struct/enum diagnostic.
 // ============================================================================
@@ -14078,6 +14306,9 @@ int main() {
   test_trait_dispatch_uses_mlir_trait_object_type_without_receiver_expr_type();
   test_trait_dispatch_requires_receiver_kind();
   test_named_type_dispatch_pruned_receiver_kind_fails_closed();
+  test_primitive_trait_dispatch_uses_receiver_kind_metadata();
+  test_primitive_trait_dispatch_unknown_canonical_receiver_fails_closed();
+  test_primitive_trait_dispatch_empty_canonical_receiver_fails_closed();
   test_named_type_method_dispatch_missing_expr_type_fails_closed();
   test_math_pow_wrong_arity_fails_closed();
   test_math_max_wrong_arity_fails_closed();

@@ -322,7 +322,7 @@ jobs:
       - name: Package archive (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
-          $Version = "${{ github.ref_name }}".TrimStart("v")
+          $Version = $env:RELEASE_TAG.TrimStart("v")
           $ArchiveName = "hew-v${Version}-${{ matrix.target }}"
           $ReleaseDir = "target/${{ matrix.rust_target }}/release"
 
@@ -1005,11 +1005,20 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
+          VERSION="${RELEASE_TAG#v}"
+          if compgen -G "hew-vmain-*" > /dev/null; then
+            echo "::error::Release artifacts used workflow branch name instead of release tag:"
+            ls -1 hew-vmain-*
+            exit 1
+          fi
+          if [ ! -f "hew-v${VERSION}-windows-x86_64.zip" ]; then
+            echo "::error::Missing Windows release archive: hew-v${VERSION}-windows-x86_64.zip"
+            exit 1
+          fi
           sha256sum \
             hew-v*-*.tar.gz hew-v*-*.zip \
             hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst \
             2>/dev/null | tee checksums.txt
-          VERSION="${RELEASE_TAG#v}"
           mv checksums.txt "hew-v${VERSION}-checksums.txt"
 
       - name: Create GitHub Release
@@ -1017,7 +1026,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           body_path: .github/RELEASE_NOTES_v0.4.0.md
-          generate_release_notes: true
+          generate_release_notes: false
           files: |
             artifacts/hew-v*-*.tar.gz
             artifacts/hew-v*-*.zip

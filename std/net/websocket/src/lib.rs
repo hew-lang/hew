@@ -99,6 +99,13 @@ enum HewWsStream {
 /// explicit attach-reader Pongs, and tungstenite 0.29 auto-Pong flushes
 /// serialized at the TCP socket boundary without reintroducing reader/write
 /// framer contention.
+///
+/// BLOCKING-FD INVARIANT: these streams must remain in blocking mode after the
+/// websocket handshake. The shared mutex serializes each `Write::write` and
+/// `Write::flush` syscall, not whole logical websocket frames. With blocking
+/// fds, tungstenite's frame emission either makes progress under the mutex or
+/// returns a real socket error. A future nonblocking conversion would require a
+/// frame-buffering write gate instead of this narrow adapter.
 #[derive(Debug)]
 struct SharedPlainWsStream {
     read_stream: TcpStream,
@@ -401,6 +408,8 @@ fn prepare_websockets(
 /// shared write mutex. tungstenite 0.29 queues auto-Pongs during `read()` and
 /// flushes them through the read-side stream on a later read entry, so routing
 /// only Hew's explicit Pong through `write_ws` would leave the race open.
+/// The accepted plain-TCP/client streams are left in blocking mode; see
+/// `SharedPlainWsStream` for why this adapter relies on that invariant.
 ///
 /// WHEN: Extend to TLS once a thread-safe TLS write-half abstraction is available.
 /// WHAT: TLS split would require sharing a single `TlsStream` write half under a
@@ -706,6 +715,13 @@ fn spawn_attach_reader(
                 }
                 Ok(tungstenite::Message::Ping(payload)) => {
                     if !inner.closed.load(Ordering::Acquire) {
+                        // tungstenite also queues an auto-Pong on `read()`. We
+                        // still send an explicit Pong here intentionally: it
+                        // gives the peer a prompt payload echo instead of
+                        // waiting for the next read-cycle flush, and it routes
+                        // through `send_ws_message` so the serialized plain-TCP
+                        // write half covers it. Duplicate Pong frames are
+                        // protocol-valid and preferable to delayed liveness.
                         let _ = send_ws_message(&inner, tungstenite::Message::Pong(payload));
                     }
                 }

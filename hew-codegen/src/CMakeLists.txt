@@ -361,6 +361,61 @@ function(hew_emit_system_link_items)
   endforeach()
 endfunction()
 
+function(hew_collect_llvm_system_link_items out_var found_var)
+  if(LLVM_CONFIG_EXE)
+    execute_process(
+      COMMAND "${LLVM_CONFIG_EXE}" --system-libs --link-static
+      OUTPUT_VARIABLE _hew_llvm_system_libs_raw
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+    separate_arguments(_hew_llvm_system_libs NATIVE_COMMAND "${_hew_llvm_system_libs_raw}")
+    set(${out_var} "${_hew_llvm_system_libs}" PARENT_SCOPE)
+    set(${found_var} ON PARENT_SCOPE)
+    return()
+  endif()
+
+  # Source-built LLVM installs can omit llvm-config from the shipped toolchain
+  # (for example the minimal Alpine image used by Dockerfile.release). Fall back
+  # to LLVMSupport's exported interface so static release builds still discover
+  # the required linker tail libraries.
+  if(TARGET LLVMSupport)
+    get_target_property(_hew_llvm_support_iface LLVMSupport INTERFACE_LINK_LIBRARIES)
+    if(_hew_llvm_support_iface)
+      set(_hew_llvm_system_libs "")
+      foreach(_item IN LISTS _hew_llvm_support_iface)
+        if("${_item}" STREQUAL "")
+          continue()
+        endif()
+        if("${_item}" MATCHES "^\\$<LINK_ONLY:(.+)>$")
+          set(_item "${CMAKE_MATCH_1}")
+        endif()
+        if(TARGET "${_item}" OR
+           "${_item}" MATCHES "^(LLVM|MLIR)" OR
+           "${_item}" MATCHES "^(ZLIB::|zstd::)")
+          continue()
+        endif()
+        if(IS_ABSOLUTE "${_item}" OR "${_item}" MATCHES "^-")
+          list(APPEND _hew_llvm_system_libs "${_item}")
+        else()
+          list(APPEND _hew_llvm_system_libs "-l${_item}")
+        endif()
+      endforeach()
+      if(_hew_llvm_system_libs)
+        list(REMOVE_DUPLICATES _hew_llvm_system_libs)
+        message(STATUS
+          "HEW_STATIC_LINK: llvm-config not found; using LLVMSupport interface for system libraries")
+        set(${out_var} "${_hew_llvm_system_libs}" PARENT_SCOPE)
+        set(${found_var} ON PARENT_SCOPE)
+        return()
+      endif()
+    endif()
+  endif()
+
+  set(${out_var} "" PARENT_SCOPE)
+  set(${found_var} OFF PARENT_SCOPE)
+endfunction()
+
 function(hew_emit_cxx_runtime)
   if(HEW_STATIC_LINK AND NOT MSVC)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
@@ -576,18 +631,12 @@ if(HEW_STATIC_LINK)
   endif()
 
   # System libraries required by LLVM (rt, dl, m, xml2, etc.)
-  if(NOT LLVM_CONFIG_EXE)
+  hew_collect_llvm_system_link_items(HEW_LLVM_SYSTEM_LIBS HEW_LLVM_SYSTEM_LIBS_FOUND)
+  if(NOT HEW_LLVM_SYSTEM_LIBS_FOUND)
     message(FATAL_ERROR
-      "HEW_STATIC_LINK=ON requires llvm-config to determine system library "
-      "dependencies. Set LLVM_CONFIG_EXE or ensure llvm-config is on PATH.")
+      "HEW_STATIC_LINK=ON requires llvm-config or exported LLVMSupport system "
+      "library metadata to determine system library dependencies.")
   endif()
-  execute_process(
-    COMMAND "${LLVM_CONFIG_EXE}" --system-libs --link-static
-    OUTPUT_VARIABLE HEW_LLVM_SYSTEM_LIBS_RAW
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-  )
-  separate_arguments(HEW_LLVM_SYSTEM_LIBS NATIVE_COMMAND "${HEW_LLVM_SYSTEM_LIBS_RAW}")
   hew_emit_system_link_items(${HEW_LLVM_SYSTEM_LIBS})
 
   # macOS: statically link zstd and zlib from Homebrew so the release

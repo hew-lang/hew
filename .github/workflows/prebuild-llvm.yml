@@ -1,15 +1,14 @@
 # Publish and pre-build LLVM+MLIR toolchain artifacts.
 #
-# Windows toolchain: downloads the official LLVM 22.1.0 Windows MSVC archive
-# on a Linux runner, verifies upstream provenance, normalizes the layout to
-# llvm-22/, repackages it as a Hew-owned toolchain archive (.tar.gz), generates
-# a SHA-256 checksum, and publishes it to a versioned toolchain release
-# (toolchain/llvm-22.1.0-windows-msvc-v1). Extraction on Linux avoids the
-# multi-hour tar/xz decompression penalty on Windows runners.
-# release.yml downloads and verifies that asset instead of fetching the upstream
-# archive at release time. The publish step is idempotent — it skips if the
-# versioned asset already exists (immutable once published; bump TOOLCHAIN_TAG
-# to republish).
+# Windows toolchain: builds LLVM+MLIR 22.1.0 from source on a windows-2022
+# runner using MSVC + Ninja, installs to C:\llvm-22, packages as a Hew-owned
+# toolchain archive (.tar.gz), generates a SHA-256 checksum, and publishes to
+# a versioned toolchain release (toolchain/llvm-22.1.0-windows-msvc-v1). The
+# official LLVM Windows binary archive omits MLIR cmake package files
+# (lib/cmake/mlir/MLIRConfig.cmake); a source build is required. release.yml
+# downloads and verifies that asset instead of building LLVM at release time.
+# The publish step is idempotent — it skips if the versioned asset already
+# exists (immutable once published; bump TOOLCHAIN_TAG to republish).
 #
 # FreeBSD: builds LLVM+MLIR from source and warms the GitHub Actions cache used
 # by the FreeBSD release path (tier-2, continue-on-error). This job is
@@ -51,14 +50,14 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
-  # Windows toolchain: ingest the official LLVM Windows archive on Linux
-  # (fast tar/xz extraction) and publish as a Hew toolchain artifact
-  # consumed by release.yml. The Windows release job extracts the
-  # resulting .tar.gz to C:\llvm-22 on the Windows runner.
+  # Windows toolchain: build LLVM+MLIR from source on windows-2022 with
+  # MSVC + Ninja, install to C:\llvm-22, and publish as a Hew-owned
+  # toolchain archive consumed by release.yml. The official upstream binary
+  # archive lacks MLIR cmake package files; a source build is required.
   # ─────────────────────────────────────────────────────────────────────
   publish-windows-toolchain:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    runs-on: windows-2022
+    timeout-minutes: 360
     permissions:
       contents: write       # create toolchain release and upload assets
       id-token: write       # OIDC token for build-provenance attestation
@@ -69,6 +68,7 @@ jobs:
     steps:
       - name: Check toolchain publication state
         id: check
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -136,73 +136,170 @@ jobs:
           echo "All toolchain assets and provenance verified — skipping publish (digest: sha256:$hash, attestations: $attest_count)"
           echo "skip=true" >> "$GITHUB_OUTPUT"
 
-      - name: Download and verify official LLVM+MLIR archive
+      - name: Set up MSVC developer environment and Ninja
         if: steps.check.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
         run: |
-          archive="clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz"
-          bundle="${archive}.jsonl"
-          base="https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0"
+          # Locate VS2022 via preinstalled vswhere.exe — no external download.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Host "::error::vswhere.exe not found at $vswhere"; exit 1
+          }
+          $vsInstall = (& $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath) | Select-Object -First 1
+          if (-not $vsInstall -or -not (Test-Path $vsInstall)) {
+            Write-Host "::error::Visual Studio with MSVC tools not found"; exit 1
+          }
+          Write-Host "VS install: $vsInstall"
 
-          curl -fsSL --retry 5 --retry-delay 5 \
-            -o "$archive" "${base}/clang%2Bllvm-22.1.0-x86_64-pc-windows-msvc.tar.xz"
-          curl -fsSL --retry 5 --retry-delay 5 \
-            -o "$bundle"  "${base}/clang%2Bllvm-22.1.0-x86_64-pc-windows-msvc.tar.xz.jsonl"
-          gh attestation verify --repo llvm/llvm-project "$archive" --bundle "$bundle"
+          # Expose VS-internal Ninja — ships with the VS CMake component,
+          # no external package manager or download required.
+          $ninjaDir = "$vsInstall\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
+          if (-not (Test-Path "$ninjaDir\ninja.exe")) {
+            Write-Host "::error::VS-internal ninja.exe not found at $ninjaDir"; exit 1
+          }
+          $ninjaVer = & "$ninjaDir\ninja.exe" --version
+          Write-Host "Ninja $ninjaVer at $ninjaDir"
+          "$ninjaDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
 
-      - name: Extract and normalize LLVM layout
+          # Initialise the MSVC developer environment from vcvars64.bat
+          # and export all resulting changes to GITHUB_ENV / GITHUB_PATH so
+          # that every subsequent step sees the correct INCLUDE, LIB, and
+          # tool paths. Uses only first-party runner tooling; no third-party
+          # actions involved.
+          $vcvars = "$vsInstall\VC\Auxiliary\Build\vcvars64.bat"
+          $pathBefore = $env:PATH
+          $rawEnv = cmd.exe /c "`"$vcvars`" x64 > nul 2>&1 && set" 2>&1
+          foreach ($line in $rawEnv) {
+            if ($line -notmatch '^([^=]+)=(.*)$') { continue }
+            $k = $Matches[1]; $v = $Matches[2]
+            if ($k -ieq 'PATH') {
+              # Append only the entries that vcvars64 added; avoid duplicates.
+              $before = [System.Collections.Generic.HashSet[string]]::new(
+                ($pathBefore -split ';' | Where-Object { $_ }),
+                [System.StringComparer]::OrdinalIgnoreCase)
+              foreach ($entry in ($v -split ';' | Where-Object { $_ })) {
+                if (-not $before.Contains($entry)) {
+                  $entry | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
+                }
+              }
+            } else {
+              "${k}=${v}" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+            }
+          }
+          Write-Host "MSVC developer environment ready"
+
+      - name: Sparse-clone llvm-project at ${{ env.LLVM_TAG }}
         if: steps.check.outputs.skip != 'true'
+        shell: pwsh
         run: |
-          mkdir -p /tmp/llvm-extract
-          # Linux tar handles .tar.xz natively; extraction is fast on Linux.
-          tar -xf "clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz" -C /tmp/llvm-extract
-          # The upstream archive contains a single top-level directory; normalize to llvm-22/.
-          root_dir=$(find /tmp/llvm-extract -mindepth 1 -maxdepth 1 -type d | head -1)
-          mv "$root_dir" /tmp/llvm-22
-          rm -rf /tmp/llvm-extract
-          rm -f "clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz" \
-                "clang+llvm-22.1.0-x86_64-pc-windows-msvc.tar.xz.jsonl"
+          # Clone with long-path support onto D:\ which has more free space
+          # than C:\ on windows-2022 runners.
+          git clone --depth 1 --branch "${{ env.LLVM_TAG }}" `
+            --filter=blob:none --sparse `
+            --config core.longpaths=true `
+            https://github.com/llvm/llvm-project.git D:\llvm-src
+          Set-Location D:\llvm-src
+          # clang and lld are required for clang.exe and lld-link.exe;
+          # mlir is required for MLIRConfig.cmake. All are separate projects
+          # in the LLVM monorepo.
+          git sparse-checkout set llvm clang lld mlir cmake third-party
+          Write-Host "Source tree ready at D:\llvm-src"
 
-      - name: Validate required LLVM layout
+      - name: Configure LLVM+MLIR with CMake (MSVC, Ninja, static libs)
         if: steps.check.outputs.skip != 'true'
+        shell: pwsh
         run: |
-          # Validate as plain files — no Windows execution needed.
-          # release.yml extracts the resulting .tar.gz to C:\llvm-22 on Windows.
-          required=(
-            "llvm-22/bin/clang.exe"
-            "llvm-22/lib/cmake/llvm/LLVMConfig.cmake"
-            "llvm-22/lib/cmake/mlir/MLIRConfig.cmake"
+          cmake -S D:\llvm-src\llvm -B D:\llvm-build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
+            -DCMAKE_C_COMPILER=cl `
+            -DCMAKE_CXX_COMPILER=cl `
+            -DLLVM_ENABLE_PROJECTS="clang;lld;mlir" `
+            -DLLVM_TARGETS_TO_BUILD="X86" `
+            -DLLVM_BUILD_TOOLS=ON `
+            -DLLVM_BUILD_UTILS=ON `
+            -DLLVM_INSTALL_UTILS=ON `
+            -DLLVM_INCLUDE_TESTS=OFF `
+            -DLLVM_INCLUDE_BENCHMARKS=OFF `
+            -DLLVM_INCLUDE_EXAMPLES=OFF `
+            -DLLVM_INCLUDE_DOCS=OFF `
+            -DLLVM_ENABLE_BINDINGS=OFF `
+            -DLLVM_ENABLE_ZLIB=OFF `
+            -DLLVM_ENABLE_ZSTD=OFF `
+            -DLLVM_BUILD_LLVM_DYLIB=OFF `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DMLIR_BUILD_MLIR_C_DYLIB=OFF `
+            -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+
+      - name: Build and install LLVM+MLIR to C:\llvm-22
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          cmake --build D:\llvm-build --target install `
+            --parallel $env:NUMBER_OF_PROCESSORS
+          Write-Host "LLVM+MLIR installed to C:\llvm-22"
+
+      - name: Clean build tree to free disk space
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force D:\llvm-src, D:\llvm-build `
+            -ErrorAction SilentlyContinue
+          Write-Host "Build tree cleaned"
+
+      - name: Validate installed LLVM+MLIR layout
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          # Validate layout before packaging. release.yml extracts the
+          # resulting .tar.gz to C:\llvm-22 on a Windows runner and requires
+          # the same paths.
+          $required = @(
+            "C:\llvm-22\bin\clang.exe",
+            "C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake",
+            "C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake"
           )
-          for rel in "${required[@]}"; do
-            if [ ! -f "/tmp/$rel" ]; then
-              echo "::error::Required path not found in LLVM archive: $rel"
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) {
+              Write-Host "::error::Required path not found: $path"
               exit 1
-            fi
-          done
+            }
+            Write-Host "OK: $path"
+          }
 
           # At least one LLVM linker must be present for the Hew MSVC build.
-          linker_found=false
-          for rel in llvm-22/bin/lld-link.exe llvm-22/bin/lld.exe llvm-22/bin/ld.lld.exe; do
-            if [ -f "/tmp/$rel" ]; then
-              linker_found=true
-              echo "Linker present: $rel"
-            fi
-          done
-          if [ "$linker_found" = "false" ]; then
-            echo "::error::No LLVM linker (lld-link.exe / lld.exe / ld.lld.exe) found under llvm-22/bin"
+          $linkers = @(
+            "C:\llvm-22\bin\lld-link.exe",
+            "C:\llvm-22\bin\lld.exe",
+            "C:\llvm-22\bin\ld.lld.exe"
+          )
+          $linkerFound = $false
+          foreach ($lnk in $linkers) {
+            if (Test-Path $lnk) {
+              Write-Host "Linker present: $lnk"
+              $linkerFound = $true
+            }
+          }
+          if (-not $linkerFound) {
+            Write-Host "::error::No LLVM linker (lld-link.exe / lld.exe / ld.lld.exe) found under C:\llvm-22\bin"
             exit 1
-          fi
+          }
 
-          size_bytes=$(du -sb /tmp/llvm-22 | awk '{print $1}')
-          size_mb=$(( size_bytes / 1024 / 1024 ))
-          echo "Layout validated. LLVM install size: ${size_mb} MB"
+          $sizeMB = [math]::Round(
+            (Get-ChildItem C:\llvm-22 -Recurse -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum).Sum / 1MB
+          )
+          Write-Host "Layout validated. LLVM install size: ${sizeMB} MB"
 
       - name: Package Hew toolchain archive
         if: steps.check.outputs.skip != 'true'
+        shell: bash
         run: |
           # Archive root is llvm-22/ so extracting to C:\ on Windows gives C:\llvm-22.
-          tar -czf "$ASSET_NAME" -C /tmp llvm-22
+          # Run tar from /c (C:\) so the root entry is llvm-22/.
+          tar -czf "$ASSET_NAME" -C /c llvm-22
           hash=$(sha256sum "$ASSET_NAME" | awk '{print $1}')
           # Single-line checksum: <hash>  <filename>
           printf '%s  %s\n' "$hash" "$ASSET_NAME" > "${ASSET_NAME}.sha256"
@@ -211,6 +308,7 @@ jobs:
 
       - name: Ensure toolchain release exists
         if: steps.check.outputs.skip != 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -219,7 +317,7 @@ jobs:
             gh release create "$TOOLCHAIN_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "LLVM 22.1.0 Windows MSVC toolchain (v1)" \
-              --notes "Repackaged LLVM 22.1.0 Windows MSVC archive for Hew release builds. Layout normalized to llvm-22/. Not a Hew product release." \
+              --notes "Source-built LLVM+MLIR 22.1.0 for Hew Windows release builds. Layout: llvm-22/. Not a Hew product release." \
               --latest=false \
               --prerelease
             echo "Created toolchain release: $TOOLCHAIN_TAG"
@@ -229,6 +327,7 @@ jobs:
 
       - name: Upload toolchain assets
         if: steps.check.outputs.skip != 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

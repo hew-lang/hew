@@ -465,12 +465,16 @@ fn actor_decl_registers_rcfree_members_for_collection_checks() {
     });
 
     assert!(
-        !checker.validate_hashset_owned_element_type(&actor_ref_ty, &(0..0)),
-        "ActorRef<Worker> should fail RcFree collection admissibility when Worker stores Rc"
+        checker.reject_rc_collection_element("HashSet", &actor_ref_ty, &(0..0)),
+        "ActorRef<Worker> should pass RcFree collection admissibility even when Worker stores Rc"
     );
-    assert!(checker.errors.iter().any(|err| {
-        err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("HashSet")
-    }));
+    assert!(
+        !checker.errors.iter().any(|err| {
+            err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("HashSet")
+        }),
+        "ActorRef<Worker> should not emit a HashSet UnsafeCollectionElement error, got: {:?}",
+        checker.errors
+    );
 }
 
 #[test]

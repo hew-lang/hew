@@ -198,6 +198,10 @@ impl TraitRegistry {
                     RcFreeStatus::ContainsRc
                 }
             }
+            // ActorRef<T> lowers to *mut HewActor with no ref-counted fields.
+            // T is a phantom dispatch type, and actor graph cycles are handled
+            // separately by cycle.rs.
+            Ty::Named { name, .. } if name == "ActorRef" => RcFreeStatus::RcFree,
             Ty::Named { name, args } => {
                 match self.combine_rc_free_status(args.iter().cloned(), visiting) {
                     RcFreeStatus::RcFree => {}

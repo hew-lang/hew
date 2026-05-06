@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # scripts/tests/test_ci_preflight_timeout.sh
 #
-# Integration tests for the timeout wrapper used by ci-preflight-dispatcher.sh.
-# These tests exercise scripts/lib/timeout.sh directly — the same library that
-# the dispatcher sources — so they verify the actual hang-killing behaviour
-# without needing to replace real make/cargo targets.
+# Integration tests for timeout behaviour used by ci-preflight-dispatcher.sh.
+#
+# Tests 1–3: exercise scripts/lib/timeout.sh's run_with_timeout directly.
+# Test 4:    dispatcher dry-run output shape (budget annotation).
+# Test 5:    regression for orphaned-grandchild bug — proves that the
+#            dispatcher's perl-setpgid + Perl-watchdog pattern kills the
+#            entire process tree (bash -lc → grandchild), not only the
+#            direct child.  Standard system timeout binaries do not provide
+#            this guarantee; the Perl approach does.
 #
 # Exit 0 = all passed.  Exit 1 = at least one failure.
 
@@ -24,21 +29,21 @@ fail() { echo "FAIL: $*" >&2; (( FAILURES++ )) || true; }
 
 # ---------------------------------------------------------------------------
 # Test 1: run_with_timeout kills a command that exceeds the budget.
+#
+# After the lib/timeout.sh fix (bare timeout/gtimeout without --kill-after
+# removed), this always uses the Perl process-group-safe backend on hosts
+# without GNU coreutils timeout.  Perl exits 124 (soft timeout) or 137
+# (SIGKILL hard kill); 143 is no longer produced by this function.
 # ---------------------------------------------------------------------------
 _status=0
 _start=$SECONDS
 run_with_timeout 2 sleep 9999 2>/dev/null || _status=$?
 _elapsed=$(( SECONDS - _start ))
 
-# Acceptable exit codes indicating the command was killed by the timeout wrapper:
-#   124 = GNU timeout's conventional soft-timeout code
-#   137 = GNU timeout's --kill-after SIGKILL code (128+9)
-#   143 = 128+15 (SIGTERM propagated by BSD/simple wrappers)
-# Any 128+N code is acceptable — it means the command was killed by a signal.
-if [[ "$_status" -eq 124 || "$_status" -eq 137 || ( "$_status" -ge 128 && "$_status" -le 165 ) ]]; then
+if [[ "$_status" -eq 124 || "$_status" -eq 137 ]]; then
     pass "run_with_timeout kills a hung command (exit ${_status}, ${_elapsed}s)"
 else
-    fail "run_with_timeout: expected a signal-kill exit code (>=128 or 124), got ${_status}"
+    fail "run_with_timeout: expected Perl timeout exit code (124 or 137), got ${_status}"
 fi
 
 # The whole thing should resolve within 2s + 5s kill-after + 2s margin = 9s.
@@ -100,6 +105,64 @@ if printf '%s\n' "$_result" | grep -q "Selected profile: types"; then
 else
     fail "dispatcher dry-run: expected 'Selected profile: types'"
     printf "  got:\n%s\n" "$_result" >&2
+fi
+
+# ---------------------------------------------------------------------------
+# Test 5: Grandchild termination — the actual dispatcher shape.
+#
+# Reproduces the artifact-lock bug scenario:
+#   perl setpgid(0,0)  →  bash -lc "$cmd"  →  grandchild sleep
+#
+# The grandchild is in the same process group as bash because bash -lc
+# (non-interactive) does NOT use job control (set -m), so background jobs
+# inherit the shell's pgid.  A kill-TERM to -$pgid therefore reaches both
+# bash and its grandchildren simultaneously.
+#
+# If only the direct child (bash) is killed and grandchildren are left alive,
+# kill -0 -$pgid succeeds after the wait, and the test fails.
+# ---------------------------------------------------------------------------
+# Start: perl setpgid → bash -lc → grandchild background sleep.
+perl -e '
+    use POSIX qw(setpgid);
+    setpgid(0, 0) or die "setpgid: $!";
+    exec @ARGV;
+    die "exec: $!";
+' bash -lc 'bash -c "sleep 30" & sleep 9999' &
+_PG_CHILD=$!
+
+# Perl watchdog kills the process group after 1 second.
+perl -e '
+    my ($pg, $s) = @ARGV;
+    $SIG{TERM} = sub { exit 0 };
+    sleep $s;
+    kill TERM => -$pg;
+    sleep 5;
+    kill KILL => -$pg;
+' "$_PG_CHILD" 1 &
+_PG_WATCHDOG=$!
+
+_PG_STATUS=0
+wait "$_PG_CHILD" 2>/dev/null || _PG_STATUS=$?
+kill "$_PG_WATCHDOG" 2>/dev/null || true
+wait "$_PG_WATCHDOG" 2>/dev/null || true
+
+# SIGTERM from the watchdog → bash exits 143 (128+15).
+# SIGKILL fallback → 137 (128+9).
+if [[ "$_PG_STATUS" -eq 143 || "$_PG_STATUS" -eq 137 ]]; then
+    pass "pgid kill: child exited with signal-kill code (${_PG_STATUS})"
+else
+    fail "pgid kill: expected signal-kill exit (143 or 137), got ${_PG_STATUS}"
+fi
+
+# Allow a brief window for SIGTERM to finish propagating to the grandchild.
+sleep 1
+
+# Verify no process remains in the group (grandchild must be dead).
+# POSIX: kill -0 to a pgid succeeds only if at least one process is alive in it.
+if kill -0 -"$_PG_CHILD" 2>/dev/null; then
+    fail "pgid kill: processes still alive in group ${_PG_CHILD} — grandchild NOT terminated"
+else
+    pass "pgid kill terminated entire process tree (bash -lc grandchild also dead)"
 fi
 
 # ---------------------------------------------------------------------------

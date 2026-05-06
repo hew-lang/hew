@@ -2749,6 +2749,52 @@ mod tests {
         );
     }
 
+    /// Two deferred `HashMap` admissions sharing the same unresolved
+    /// `(key_var, val_var)` pair must emit exactly one `InferenceFailed`.
+    #[test]
+    fn finalize_hashmap_admission_dedup_pair_emits_single_error() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let key_var = TypeVar::fresh();
+        let val_var = TypeVar::fresh();
+        let span_a = 100..110;
+        let span_b = 200..210;
+
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::from(&span_a),
+            DeferredHashMapAdmission {
+                span: span_a.clone(),
+                key_ty: Ty::Var(key_var),
+                val_ty: Ty::Var(val_var),
+                source_module: None,
+            },
+        );
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::from(&span_b),
+            DeferredHashMapAdmission {
+                span: span_b.clone(),
+                key_ty: Ty::Var(key_var),
+                val_ty: Ty::Var(val_var),
+                source_module: None,
+            },
+        );
+
+        checker.finalize_hashmap_admission();
+
+        let inference_failed: Vec<_> = checker
+            .errors
+            .iter()
+            .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
+            .collect();
+        assert_eq!(
+            inference_failed.len(),
+            1,
+            "two admissions sharing the same (key_var, val_var) pair must emit exactly one \
+             InferenceFailed; got {}: {:?}",
+            inference_failed.len(),
+            checker.errors,
+        );
+    }
+
     // ── HashSet admission finalization ───────────────────────────────────────
 
     /// A deferred `HashSet` admission whose element type is `Ty::Error` must be

@@ -252,9 +252,17 @@ jobs:
             https://github.com/llvm/llvm-project.git D:\llvm-src
           Set-Location D:\llvm-src
           # clang and lld are required for clang.exe and lld-link.exe;
-          # mlir is required for MLIRConfig.cmake. All are separate projects
-          # in the LLVM monorepo.
-          git sparse-checkout set llvm clang lld mlir cmake third-party
+          # mlir is required for MLIRConfig.cmake. LLD's unified driver also
+          # builds Mach-O support on Windows, which includes libunwind's
+          # mach-o headers, so keep libunwind in the sparse checkout even
+          # though it is not an enabled LLVM project.
+          git sparse-checkout set llvm clang lld mlir libunwind cmake third-party
+          $machOUnwindHeader = "D:\llvm-src\libunwind\include\mach-o\compact_unwind_encoding.h"
+          if (-not (Test-Path $machOUnwindHeader)) {
+            Write-Host "::error::Required LLD Mach-O unwind header missing: $machOUnwindHeader"
+            exit 1
+          }
+          Write-Host "OK: $machOUnwindHeader"
           Write-Host "Source tree ready at D:\llvm-src"
 
       - name: Configure LLVM+MLIR with CMake (MSVC, Ninja, static libs)

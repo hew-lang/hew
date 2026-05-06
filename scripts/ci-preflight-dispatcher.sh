@@ -155,6 +155,46 @@ is_lsp_path() {
     return 1
 }
 
+is_scripts_config_path() {
+    case "$1" in
+        Makefile|scripts/*|.config/nextest.toml|.github/workflows/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+path_changes_ctest_plumbing() {
+    local path="$1"
+    local diff_text=""
+    local file_content=""
+
+    if [[ -n "$BASE_REF" ]]; then
+        diff_text+=$(git diff --no-ext-diff --unified=0 "$BASE_REF...HEAD" -- "$path" || true)
+        diff_text+=$'\n'
+    fi
+
+    diff_text+=$(git diff --no-ext-diff --cached --unified=0 -- "$path" || true)
+    diff_text+=$'\n'
+    diff_text+=$(git diff --no-ext-diff --unified=0 -- "$path" || true)
+
+    if git ls-files --others --exclude-standard -- "$path" | grep -Fxq "$path" && [[ -f "$path" ]]; then
+        while IFS= read -r line; do
+            file_content+="+${line}"$'\n'
+        done <"$path"
+        diff_text+=$'\n'
+        diff_text+="$file_content"
+    fi
+
+    if printf '%s\n' "$diff_text" | grep -Eq \
+        '^[+-](test-codegen|test-wasm|test-cpp):|^[+-][[:space:]]*ctest([[:space:]]|$)|^[+-][[:space:]]*cd[[:space:]]+hew-codegen/build([[:space:]]|$)|^[+-].*CTEST_[A-Z_]+|^[+-][[:space:]]*\$\(MAKE\)[[:space:]]+(test-codegen|test-wasm|test-cpp)([[:space:]]|$)|^[+-][[:space:]]*run:[[:space:]].*(ctest([[:space:]]|$)|make[[:space:]]+test-codegen([[:space:]]|$)|make[[:space:]]+test-wasm([[:space:]]|$)|make[[:space:]]+test-cpp([[:space:]]|$))'
+    then
+        return 0
+    fi
+
+    return 1
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)
@@ -223,6 +263,8 @@ has_parser=0
 has_types=0
 has_cli=0
 has_runtime_net=0
+has_scripts_config=0
+needs_scripts_config_codegen=0
 needs_codegen_lint=0
 needs_codegen_release_smoke=0
 needs_stdlib_lint=0
@@ -253,6 +295,11 @@ for path in "${CHANGED_FILES[@]}"; do
         has_grammar=1
     elif is_docs_path "$path"; then
         continue
+    elif is_scripts_config_path "$path"; then
+        has_scripts_config=1
+        if path_changes_ctest_plumbing "$path"; then
+            needs_scripts_config_codegen=1
+        fi
     elif is_parser_path "$path"; then
         has_parser=1
     elif is_types_path "$path"; then
@@ -266,7 +313,7 @@ for path in "${CHANGED_FILES[@]}"; do
     fi
 done
 
-bucket_count=$((has_grammar + has_parser + has_types + has_cli + has_runtime_net))
+bucket_count=$((has_grammar + has_parser + has_types + has_cli + has_runtime_net + has_scripts_config))
 
 if (( fallback_lane == 1 )); then
     LANE="fallback"
@@ -277,6 +324,9 @@ elif (( bucket_count == 0 )); then
 elif (( bucket_count > 1 )); then
     LANE="fallback"
     LANE_REASON="multiple targeted buckets changed; keeping the first slice conservative"
+elif (( has_scripts_config == 1 )); then
+    LANE="scripts-config"
+    LANE_REASON="build / scripts / workflow configuration changed"
 elif (( has_grammar == 1 )); then
     LANE="grammar"
     LANE_REASON="grammar/spec inputs changed"
@@ -294,13 +344,20 @@ else
     LANE_REASON="CLI surface changed"
 fi
 
-if [[ "$LANE" != "docs" ]]; then
+if [[ "$LANE" != "docs" && "$LANE" != "scripts-config" ]]; then
     add_command "cargo fmt --all -- --check"
     add_command "cargo clippy --workspace --tests -- -D warnings"
 fi
 
 case "$LANE" in
     docs)
+        ;;
+    scripts-config)
+        add_command "cargo fmt --all -- --check"
+        add_command "make test-rust"
+        if (( needs_scripts_config_codegen == 1 )); then
+            add_command "make test-codegen"
+        fi
         ;;
     grammar)
         add_command "make grammar"
@@ -357,6 +414,9 @@ fi
 case "$LANE" in
     docs)
         PROFILE_LABEL="docs-only"
+        ;;
+    scripts-config)
+        PROFILE_LABEL="scripts-config"
         ;;
     grammar)
         PROFILE_LABEL="grammar"

@@ -77,7 +77,7 @@ fi
 mkdir -p "$OUT_DIR"
 
 echo "ctest-flake-probe: runs=$RUNS jobs=$JOBS build=$BUILD_DIR labels='$LABEL_REGEX' out=$OUT_DIR"
-[ "${#EXTRA[@]}" -gt 0 ] && echo "extra ctest args: ${EXTRA[*]}"
+[ "${#EXTRA[@]:-0}" -gt 0 ] && echo "extra ctest args: ${EXTRA[*]}"
 
 PASS=0
 FAIL=0
@@ -87,7 +87,7 @@ FAILED_RUNS=()
 for i in $(seq -f "%02g" 1 "$RUNS"); do
   log="$OUT_DIR/run$i.txt"
   start=$(date +%s)
-  ( cd "$BUILD_DIR" && ctest --output-on-failure $LABEL_REGEX -j"$JOBS" "${EXTRA[@]}" ) \
+  ( cd "$BUILD_DIR" && ctest --output-on-failure $LABEL_REGEX -j"$JOBS" ${EXTRA[@]+"${EXTRA[@]}"} ) \
     > "$log" 2>&1
   rc=$?
   elapsed=$(( $(date +%s) - start ))

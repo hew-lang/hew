@@ -427,6 +427,10 @@ fi
 # Test-only override for dispatcher command execution. This keeps failure-policy
 # tests deterministic without widening the public command-substitution surface.
 if [[ -n "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
+    if [[ "${PREFLIGHT_TEST_ALLOW_OVERRIDE:-}" != "1" ]]; then
+        die "PREFLIGHT_TEST_COMMANDS requires PREFLIGHT_TEST_ALLOW_OVERRIDE=1 for test-only use; unset PREFLIGHT_TEST_COMMANDS to run the normal preflight."
+    fi
+    echo "warning: PREFLIGHT_TEST_COMMANDS override active (test-only); replacing dispatcher command list." >&2
     COMMANDS=()
     while IFS= read -r test_cmd; do
         [[ -n "$test_cmd" ]] || continue

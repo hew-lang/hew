@@ -14,6 +14,7 @@ def run_dispatcher(
     extra_args: list[str] | None = None,
     env: dict[str, str] | None = None,
     dry_run: bool = True,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     extra_args = extra_args or []
     args = ["bash", str(SCRIPT)]
@@ -31,6 +32,7 @@ def run_dispatcher(
         capture_output=True,
         text=True,
         env=run_env,
+        timeout=timeout,
     )
 
 
@@ -148,13 +150,15 @@ def test_run_all_continues_after_failure_and_profiles_all_commands() -> None:
             "Makefile",
             extra_args=["--profile-json", profile.name],
             env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
                 "PREFLIGHT_TEST_COMMANDS": (
                     "exit 7\n"
                     "printf '%s' RUN_TWO >/dev/null\n"
                     "printf '%s' RUN_THREE >/dev/null\n"
-                )
+                ),
             },
             dry_run=False,
+            timeout=30,
         )
         assert result.returncode == 1, result.stdout
         assert "Failure policy: run-all (default)" in result.stdout, result.stdout
@@ -179,13 +183,15 @@ def test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands() ->
             "Makefile",
             extra_args=["--fail-fast", "--profile-json", profile.name],
             env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
                 "PREFLIGHT_TEST_COMMANDS": (
                     "exit 7\n"
                     "printf '%s' RUN_TWO >/dev/null\n"
                     "printf '%s' RUN_THREE >/dev/null\n"
-                )
+                ),
             },
             dry_run=False,
+            timeout=30,
         )
         assert result.returncode == 1, result.stdout
         assert "Failure policy: fail-fast" in result.stdout, result.stdout
@@ -201,6 +207,88 @@ def test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands() ->
     assert "RUN_TWO" not in summary, result.stdout
     assert "RUN_THREE" not in summary, result.stdout
     assert "remaining commands not run" in result.stdout, result.stdout
+
+
+def test_override_without_sentinel_is_rejected() -> None:
+    """PREFLIGHT_TEST_COMMANDS alone hard-fails before the dispatcher banner."""
+    result = run_dispatcher(
+        "Makefile",
+        env={"PREFLIGHT_TEST_COMMANDS": "true"},
+    )
+    assert result.returncode != 0, result.stdout
+    assert "PREFLIGHT_TEST_COMMANDS" in result.stderr, result.stderr
+    assert "PREFLIGHT_TEST_ALLOW_OVERRIDE=1" in result.stderr, result.stderr
+    assert "unset PREFLIGHT_TEST_COMMANDS" in result.stderr, result.stderr
+    assert "==> Hew CI preflight dispatcher" not in result.stdout, result.stdout
+
+
+def test_override_with_sentinel_emits_stderr_warning() -> None:
+    """The test-only override requires a sentinel and emits a warning on stderr."""
+    result = run_dispatcher(
+        "Makefile",
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_COMMANDS": "printf '%s' OVERRIDE_OK >/dev/null",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert "warning:" in result.stderr, result.stderr
+    assert "PREFLIGHT_TEST_COMMANDS" in result.stderr, result.stderr
+    assert "test-only" in result.stderr, result.stderr
+    assert "==> Hew CI preflight dispatcher" in result.stdout, result.stdout
+    assert "  - printf '%s' OVERRIDE_OK >/dev/null  (budget: 180s)" in result.stdout, (
+        result.stdout
+    )
+
+
+def test_synthetic_timeout_via_run_loop() -> None:
+    """A synthetic long-running command times out through the dispatcher loop."""
+    with tempfile.NamedTemporaryFile() as profile:
+        result = run_dispatcher(
+            "hew-parser/src/lib.rs",
+            extra_args=["--profile-json", profile.name],
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_COMMANDS": "sleep 30",
+                "PREFLIGHT_TIMEOUT_NARROW": "1",
+            },
+            dry_run=False,
+            timeout=30,
+        )
+        profile_entries = json.loads(Path(profile.name).read_text())
+
+    assert result.returncode != 0, result.stdout
+    assert "TIMEOUT: 'sleep 30' exceeded 1s budget" in result.stdout, result.stdout
+    assert len(profile_entries) == 1, profile_entries
+    assert profile_entries[0]["cmd"] == "sleep 30", profile_entries
+    assert profile_entries[0]["status"] in {137, 143}, profile_entries
+    assert 1 <= profile_entries[0]["elapsed_s"] <= 10, profile_entries
+    summary = result.stdout.split("==> Preflight summary", 1)[1]
+    assert "sleep 30" in summary, result.stdout
+    assert "[FAILED]" in summary, result.stdout
+
+
+def test_profile_json_records_elapsed_for_each_command() -> None:
+    """Profile JSON records elapsed_s for each overridden command."""
+    with tempfile.NamedTemporaryFile() as profile:
+        result = run_dispatcher(
+            "Makefile",
+            extra_args=["--profile-json", profile.name],
+            env={
+                "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+                "PREFLIGHT_TEST_COMMANDS": "true\nfalse\ntrue",
+            },
+            dry_run=False,
+            timeout=30,
+        )
+        profile_entries = json.loads(Path(profile.name).read_text())
+
+    assert result.returncode == 1, result.stdout
+    assert [entry["cmd"] for entry in profile_entries] == ["true", "false", "true"]
+    assert [entry["status"] for entry in profile_entries] == [0, 1, 0]
+    for entry in profile_entries:
+        assert isinstance(entry["elapsed_s"], int), profile_entries
+        assert entry["elapsed_s"] >= 0, profile_entries
 
 
 def test_scripts_config_budget_annotation() -> None:
@@ -235,8 +323,12 @@ _TESTS = [
     test_profile_json_flag_accepted_in_dry_run,
     test_help_includes_fail_fast_and_run_all_default,
     test_dry_run_reports_run_all_default_policy,
+    test_override_without_sentinel_is_rejected,
+    test_override_with_sentinel_emits_stderr_warning,
     test_run_all_continues_after_failure_and_profiles_all_commands,
     test_fail_fast_stops_after_first_failure_and_profiles_only_run_commands,
+    test_synthetic_timeout_via_run_loop,
+    test_profile_json_records_elapsed_for_each_command,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,
 ]

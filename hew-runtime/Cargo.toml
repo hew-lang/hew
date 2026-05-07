@@ -101,8 +101,14 @@ tracing-subscriber.workspace = true
 ureq = { version = "3", default-features = false }
 # For profiler server JSON-escape unit tests
 serde_json.workspace = true
+
 # Property-based testing for the deterministic SimTransport (HEW-DIST-SPEC §14
-# invariants). Dev-only — never linked into release runtime builds.
+# invariants). Dev-only — never linked into release runtime builds. Scoped to
+# non-wasm targets because `proptest` transitively depends on `wait-timeout`,
+# which does not compile for `wasm32-wasip1` (no process/timeout primitives).
+# The `sim-transport` integration test that consumes proptest is itself
+# native-only, so this scoping costs no test coverage on wasm.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest = "1"
 
 [lints]

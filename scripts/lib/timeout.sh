@@ -100,3 +100,70 @@ run_with_timeout() {
     fi
     return "$status"
 }
+
+# run_in_pgroup_with_timeout <seconds> <cmd_string>
+#
+# Runs <cmd_string> via "bash -lc" in a dedicated process group, with a
+# SIGTERM-then-SIGKILL watchdog implemented in a single Perl process.
+#
+# Designed for the dispatcher's use case: bash -lc forks cargo/make/ctest
+# grandchildren that must all die on timeout.  kill(-$pgid) reaches every
+# process in the tree simultaneously, preventing artifact-lock contention
+# from orphaned cargo processes.
+#
+# Exit-code semantics differ from run_with_timeout INTENTIONALLY:
+#   Signal exits are surfaced raw — no translation to 124/137.
+#   SIGTERM kill → 143 (128+15)   SIGKILL fallback → 137 (128+9)
+#
+# Three independent assertions lock this contract and must not be relaxed:
+#   scripts/tests/test_ci_preflight_timeout.sh (Test 5): exit ∈ {143, 137}
+#   scripts/tests/test_ci_preflight_dispatcher.py:       JSON status ∈ {137, 143}
+#   scripts/ci-preflight-dispatcher.sh:                  ==> TIMEOUT: keyed on 137||143
+run_in_pgroup_with_timeout() {
+    local seconds="$1"
+    local cmd_string="$2"
+    perl -e '
+        use strict;
+        use warnings;
+        use POSIX qw(setpgid);
+
+        my ($seconds, $cmd_string) = @ARGV;
+        die "run_in_pgroup_with_timeout: seconds and cmd_string required\n"
+            unless defined $cmd_string;
+
+        my $pid = fork();
+        die "fork failed: $!\n" unless defined $pid;
+
+        if ($pid == 0) {
+            setpgid(0, 0) or die "setpgid: $!\n";
+            exec "bash", "-lc", $cmd_string;
+            die "exec failed: $!\n";
+        }
+        setpgid($pid, $pid);
+
+        my $timed_out = 0;
+        local $SIG{ALRM} = sub {
+            if (!$timed_out) {
+                $timed_out = 1;
+                kill "TERM", -$pid;
+                alarm 5;
+                return;
+            }
+            kill "KILL", -$pid;
+        };
+
+        alarm $seconds;
+        waitpid($pid, 0);
+        alarm 0;
+
+        if ($? == -1) {
+            exit 1;
+        }
+        # Surface raw signal exit codes.  Do NOT translate to 124/137 as
+        # run_with_timeout does: the dispatcher and its tests key on 143/137.
+        if ($? & 127) {
+            exit 128 + ($? & 127);
+        }
+        exit $? >> 8;
+    ' "$seconds" "$cmd_string"
+}

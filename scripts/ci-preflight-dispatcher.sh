@@ -5,6 +5,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=scripts/lib/timeout.sh
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/lib/timeout.sh"
+
 # Per-lane wall-clock budgets (seconds).  These values bound hung commands and
 # surface the dominant-cost step in the summary table.  Override via env vars
 # *for measurement only* — the timeout still kills the command on expiry; these
@@ -528,16 +532,15 @@ fi
 
 # Execution — per-command timing with process-group-safe outer timeout.
 #
-# run_timed_command forks each command into its own process group (via
-# perl setpgid) so that a timeout kills the entire tree — bash -lc, cargo,
-# make, and all their grandchildren — not just the direct child.  This
-# prevents artifact-directory lock contention when cargo is orphaned by a
-# timeout that only kills the bash wrapper.
+# run_timed_command delegates to run_in_pgroup_with_timeout (scripts/lib/timeout.sh)
+# which forks each command into its own process group via perl setpgid so that
+# a timeout kills the entire tree — bash -lc, cargo, make, and all grandchildren
+# — not just the direct child.  This prevents artifact-directory lock contention
+# when cargo is orphaned by a timeout that only kills the bash wrapper.
 #
-# A Perl watchdog (not scripts/lib/timeout.sh's run_with_timeout) is used
-# for the same reason: standard system timeout/gtimeout binaries only kill
-# the direct child; the Perl watchdog sends kill to the *process group*
-# (-$pgid), which is the only portable POSIX mechanism to kill the full tree.
+# Exit-code contract: SIGTERM → 143 (128+15), SIGKILL → 137 (128+9).  These
+# raw signal codes deliberately differ from run_with_timeout's translated 124/137;
+# the ==> TIMEOUT: message and the dispatcher python tests both key on 143||137.
 
 PREFLIGHT_OVERALL_START=$SECONDS
 
@@ -554,36 +557,7 @@ run_timed_command() {
     echo ""
     echo "==> $cmd"
 
-    # Fork bash -lc into a new process group so kill -TERM/-KILL to -$pgid
-    # reaches cargo, make, and every grandchild spawned by the command.
-    # perl setpgid(0,0) is POSIX-portable (macOS + Linux) and does not depend
-    # on the system timeout binary.
-    perl -e '
-        use POSIX qw(setpgid);
-        setpgid(0, 0) or die "setpgid: $!";
-        exec @ARGV;
-        die "exec: $!";
-    ' bash -lc "$cmd" &
-    local child_pid=$!
-
-    # Perl watchdog: sends SIGTERM to the process group after $CMD_TIMEOUT
-    # seconds, then SIGKILL 5 s later if still alive.  The $SIG{TERM} handler
-    # lets the dispatcher cancel the watchdog cleanly without leaving an
-    # orphaned sleep subprocess.
-    perl -e '
-        my ($pg, $s) = @ARGV;
-        $SIG{TERM} = sub { exit 0 };
-        sleep $s;
-        kill TERM => -$pg;
-        sleep 5;
-        kill KILL => -$pg;
-    ' "$child_pid" "$CMD_TIMEOUT" &
-    local watchdog_pid=$!
-
-    wait "$child_pid" 2>/dev/null || status=$?
-    # Cancel the watchdog; the SIGTERM handler exits cleanly with no orphans.
-    kill "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
+    run_in_pgroup_with_timeout "$CMD_TIMEOUT" "$cmd" || status=$?
 
     _elapsed_s=$(( SECONDS - start ))
 

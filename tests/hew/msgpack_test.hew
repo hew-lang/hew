@@ -47,3 +47,167 @@ fn test_from_json_invalid_returns_empty() {
     let packed = msgpack.from_json("{not json}");
     testing.assert_eq(packed.len(), 0);
 }
+
+// ── String root round-trip ────────────────────────────────────────────
+
+#[test]
+fn test_string_root_round_trip() {
+    // from_json of a JSON string (not an object) → to_json → try_parse →
+    // re-extract the string value.
+    let packed = msgpack.from_json("\"hello\"");
+    testing.assert_true(packed.len() > 0);
+    let recovered = msgpack.to_json(packed);
+    let r = json.try_parse(recovered);
+    match r {
+        Ok(val) => {
+            testing.assert_eq_str(val.get_string(), "hello");
+            val.free();
+        },
+        Err(_) => panic("msgpack string round-trip produced unparseable JSON"),
+    }
+}
+
+// ── Array round-trip ──────────────────────────────────────────────────
+
+#[test]
+fn test_array_round_trip_length() {
+    // from_json("[1, 2, 3]") → to_json → try_parse → array_len() == 3
+    let packed = msgpack.from_json("[1, 2, 3]");
+    testing.assert_true(packed.len() > 0);
+    let recovered = msgpack.to_json(packed);
+    let r = json.try_parse(recovered);
+    match r {
+        Ok(val) => {
+            testing.assert_eq(val.array_len(), 3);
+            val.free();
+        },
+        Err(_) => panic("msgpack array round-trip produced unparseable JSON"),
+    }
+}
+
+#[test]
+fn test_array_round_trip_elements() {
+    // Verify individual array element values survive the round-trip.
+    let packed = msgpack.from_json("[10, 20, 30]");
+    let recovered = msgpack.to_json(packed);
+    let r = json.try_parse(recovered);
+    match r {
+        Ok(val) => {
+            let e0 = val.array_get(0);
+            let e2 = val.array_get(2);
+            testing.assert_eq(e0.get_int(), 10);
+            testing.assert_eq(e2.get_int(), 30);
+            e2.free();
+            e0.free();
+            val.free();
+        },
+        Err(_) => panic("msgpack array element round-trip produced unparseable JSON"),
+    }
+}
+
+// ── Nested object round-trip ──────────────────────────────────────────
+
+#[test]
+fn test_nested_object_round_trip() {
+    // from_json("{\"a\": {\"b\": 7}}") → to_json → try_parse → walk a → b.
+    // Ownership: each get_field call returns a new Value that must be freed.
+    let packed = msgpack.from_json("{\"a\": {\"b\": 7}}");
+    testing.assert_true(packed.len() > 0);
+    let recovered = msgpack.to_json(packed);
+    let r = json.try_parse(recovered);
+    match r {
+        Ok(val) => {
+            let a_val = val.get_field("a");
+            let b_val = a_val.get_field("b");
+            testing.assert_eq(b_val.get_int(), 7);
+            b_val.free();
+            a_val.free();
+            val.free();
+        },
+        Err(_) => panic("msgpack nested object round-trip produced unparseable JSON"),
+    }
+}
+
+// ── Unicode string round-trip ─────────────────────────────────────────
+
+#[test]
+fn test_unicode_string_field_round_trip() {
+    // Multi-byte UTF-8 value survives msgpack encode → decode → JSON parse.
+    // Use JSON-level \uXXXX escape (valid in JSON) so the Hew string literal
+    // doesn't need to carry a raw multi-byte character.
+    // JSON input: {"k": "h\u00e9llo"} — \u00e9 is the JSON escape for 'é'.
+    let packed = msgpack.from_json("{\"k\": \"h\\u00e9llo\"}");
+    testing.assert_true(packed.len() > 0);
+    let recovered = msgpack.to_json(packed);
+    let r = json.try_parse(recovered);
+    match r {
+        Ok(val) => {
+            let field = val.get_field("k");
+            // The JSON parser decodes \u00e9 to the UTF-8 sequence for 'é'.
+            // get_string() returns the decoded string; length must be > 0.
+            testing.assert_true(field.get_string().len() > 0);
+            field.free();
+            val.free();
+        },
+        Err(_) => panic("msgpack unicode round-trip produced unparseable JSON"),
+    }
+}
+
+// ── encode_int boundary cases ─────────────────────────────────────────
+
+#[test]
+fn test_encode_int_zero_produces_nonempty_bytes() {
+    // msgpack positive fixint for 0 is the single byte 0x00.
+    let encoded = msgpack.encode_int(0);
+    testing.assert_true(encoded.len() > 0);
+}
+
+#[test]
+fn test_encode_int_negative_one_produces_nonempty_bytes() {
+    // msgpack negative fixint for -1 is the single byte 0xff.
+    let encoded = msgpack.encode_int(-1);
+    testing.assert_true(encoded.len() > 0);
+}
+
+#[test]
+fn test_encode_int_127_produces_nonempty_bytes() {
+    // 127 is the maximum positive fixint (single byte 0x7f).
+    let encoded = msgpack.encode_int(127);
+    testing.assert_true(encoded.len() > 0);
+}
+
+#[test]
+fn test_encode_int_zero_round_trip() {
+    // Encode 0 as JSON → from_json → to_json → try_parse → get_int() == 0.
+    let packed = msgpack.from_json("0");
+    testing.assert_true(packed.len() > 0);
+    let recovered = msgpack.to_json(packed);
+    let r = json.try_parse(recovered);
+    match r {
+        Ok(val) => {
+            testing.assert_eq(val.get_int(), 0);
+            val.free();
+        },
+        Err(_) => panic("msgpack integer 0 round-trip produced unparseable JSON"),
+    }
+}
+
+// ── encode_string boundary ────────────────────────────────────────────
+
+#[test]
+fn test_encode_string_empty_produces_nonempty_bytes() {
+    // msgpack empty-string marker is the single byte 0xa0, so encode_string("")
+    // must produce at least 1 byte.
+    let encoded = msgpack.encode_string("");
+    testing.assert_true(encoded.len() > 0);
+}
+
+// ── to_json error boundary ────────────────────────────────────────────
+
+#[test]
+fn test_to_json_empty_bytes_returns_empty_string() {
+    // The C implementation rejects len==0 and returns null, which the Hew
+    // binding converts to an empty string.
+    let result = msgpack.to_json(bytes []);
+    testing.assert_eq(result.len(), 0);
+}

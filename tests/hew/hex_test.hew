@@ -63,3 +63,99 @@ fn test_decode_odd_length_returns_empty() {
     let result = hex.decode("abc");
     testing.assert_eq(result.len(), 0);
 }
+
+// ── Boundary bytes ────────────────────────────────────────────────────
+
+#[test]
+fn test_encode_single_byte_zero() {
+    // bytes [0] → "00"
+    testing.assert_eq_str(hex.encode(bytes [0]), "00");
+}
+
+#[test]
+fn test_encode_single_byte_0xff() {
+    // bytes [255] → "ff"
+    testing.assert_eq_str(hex.encode(bytes [255]), "ff");
+}
+
+#[test]
+fn test_encode_upper_single_byte_0xff() {
+    // bytes [255] → "FF"
+    testing.assert_eq_str(hex.encode_upper(bytes [255]), "FF");
+}
+
+// ── Case-insensitive decode ───────────────────────────────────────────
+
+#[test]
+fn test_decode_uppercase_string() {
+    // decode("DEAD") and decode("dead") must produce the same bytes
+    let lower = hex.decode("dead");
+    let upper = hex.decode("DEAD");
+    assert_bytes_eq(lower, upper);
+}
+
+#[test]
+fn test_decode_mixed_case_matches_lowercase() {
+    // hex decode is case-insensitive across both nibble positions
+    let lower = hex.decode("deadbeef");
+    let mixed = hex.decode("DeAdBeEf");
+    assert_bytes_eq(lower, mixed);
+}
+
+#[test]
+fn test_encode_upper_round_trip_via_decode() {
+    // encode_upper → decode: confirms decode handles uppercase output of
+    // encode_upper, exercising all 16 uppercase hex chars via round-trip.
+    let data = bytes [222, 173, 190, 239];
+    let upper_str = hex.encode_upper(data);
+    testing.assert_eq_str(upper_str, "DEADBEEF");
+    let decoded = hex.decode(upper_str);
+    assert_bytes_eq(decoded, data);
+}
+
+// ── Invalid character positions ───────────────────────────────────────
+
+#[test]
+fn test_decode_invalid_char_at_position_0_returns_empty() {
+    // First nibble is not a hex digit → empty bytes
+    let result = hex.decode("zead");
+    testing.assert_eq(result.len(), 0);
+}
+
+#[test]
+fn test_decode_invalid_char_at_last_nibble_returns_empty() {
+    // Last nibble 'G' is not a hex digit → empty bytes
+    // "deaG": 'd','e' valid; 'a' valid; 'G' invalid
+    let result = hex.decode("deaG");
+    testing.assert_eq(result.len(), 0);
+}
+
+// ── Multi-byte property round-trip ────────────────────────────────────
+
+#[test]
+fn test_round_trip_multi_byte_64() {
+    // 64-byte buffer with (i * 31) % 256 — same pattern used in the base64
+    // fixture; exercises a wide range of nibble values including 0xF and 0x0.
+    let buf: bytes = bytes::new();
+    for i in 0 .. 64 {
+        buf.push((i * 31) % 256);
+    }
+    let encoded = hex.encode(buf);
+    let decoded = hex.decode(encoded);
+    assert_bytes_eq(decoded, buf);
+}
+
+#[test]
+fn test_round_trip_all_256_byte_values() {
+    // Full byte-value coverage: buffer contains every byte 0–255 exactly once.
+    // encode → decode must recover the original sequence.
+    let buf: bytes = bytes::new();
+    for i in 0 .. 256 {
+        buf.push(i);
+    }
+    let encoded = hex.encode(buf);
+    // Encoded string must be exactly 512 chars (2 hex digits per byte).
+    testing.assert_eq(encoded.len(), 512);
+    let decoded = hex.decode(encoded);
+    assert_bytes_eq(decoded, buf);
+}

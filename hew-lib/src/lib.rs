@@ -6,6 +6,7 @@
 
 extern crate hew_runtime;
 extern crate hew_std_crypto_crypto;
+extern crate hew_std_crypto_encrypt;
 extern crate hew_std_crypto_jwt;
 extern crate hew_std_crypto_password;
 extern crate hew_std_encoding_base64;

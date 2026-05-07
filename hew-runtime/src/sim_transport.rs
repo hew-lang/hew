@@ -72,10 +72,25 @@ use crate::lifetime::poison_safe::PoisonSafe;
 use crate::set_last_error;
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
-// Error codes — kept in sync with `transport.rs`. We reuse the same values so
-// reviewers and downstream code see `SimTransport` failures as identical to TCP
-// / QUIC failures (`transparent-but-typed-failure`).
+// Error codes — kept in sync with `transport.rs`. We reuse the same value
+// for the partition error so reviewers and downstream code see `SimTransport`
+// partition failures as identical to TCP / QUIC transport errors
+// (`transparent-but-typed-failure`).
 const HEW_ERR_TRANSPORT: c_int = -14;
+
+// Sim-only negative return codes used by the test-only vtable to convey
+// distinct typed outcomes through the `c_int` return channel without
+// conflating them under the single `HEW_ERR_TRANSPORT` bucket. Production
+// transports never return these codes; only the classifier helpers below
+// inspect them, and any unrecognised negative collapses to `InvalidConn`.
+//
+// Values are chosen to be far from any code already used by `transport.rs`
+// (`-1`, `-14`, `HEW_CONN_INVALID`) and from each other so a future raw
+// vtable consumer that only checks `rc < 0` keeps treating them as failures
+// — fail-closed (`match-fail-closed`).
+const HEW_ERR_SIM_PEER_CLOSED: c_int = -200;
+const HEW_ERR_SIM_BUFFER_TOO_SMALL: c_int = -201;
+const HEW_ERR_SIM_DROPPED: c_int = -202;
 
 /// Maximum frame payload accepted by `SimTransport`. Mirrors
 /// `transport.rs::MAX_FRAME_SIZE`. Frames exceeding this size return
@@ -141,10 +156,17 @@ pub enum SimSendOutcome {
     /// caller's perspective this is still a successful send (matches TCP's
     /// "the network ate your packet" semantics).
     DroppedByPolicy,
-    /// Partition is active or the connection is no longer attached to a peer.
-    /// Caller sees a typed transport failure, never a success.
+    /// Partition flag is active. Caller sees a typed transport failure,
+    /// never a success.
     Partitioned,
-    /// Connection id is unknown, closed, or otherwise invalid.
+    /// Peer endpoint has been closed or detached (the peer called
+    /// `close_conn`, or the local side was closed). Distinct from
+    /// [`Self::Partitioned`] (a network-level partition that may heal) and
+    /// from [`Self::DroppedByPolicy`] (a transient drop). Terminal for the
+    /// connection — fail-closed.
+    PeerClosed,
+    /// Connection id is unknown, closed locally before send, or otherwise
+    /// invalid.
     InvalidConn,
     /// Frame exceeded `MAX_FRAME_SIZE` — fail-closed (`serializer-fail-closed`).
     FrameTooLarge,
@@ -157,12 +179,20 @@ pub enum SimRecvOutcome {
     /// Frame was successfully delivered. `bytes_received` matches the caller
     /// buffer fill.
     Received { bytes_received: usize },
-    /// Partition is active or the peer endpoint went away while we were
-    /// blocked. Typed failure, never silent.
+    /// Partition flag is active. Typed failure, never silent.
     Partitioned,
+    /// Peer endpoint went away — peer called `close_conn`, or the transport
+    /// was destroyed. Any remaining queued frames have been drained first;
+    /// once `PeerClosed` surfaces, no further frames will arrive on this
+    /// connection. Distinct from [`Self::Partitioned`] (a network split that
+    /// may heal) and from [`Self::BufferTooSmall`] (a sizing mistake).
+    /// Terminal — fail-closed.
+    PeerClosed,
     /// Connection id is unknown, closed, or otherwise invalid.
     InvalidConn,
-    /// Caller buffer was too small for the next frame — fail-closed.
+    /// Caller buffer was too small for the next frame — fail-closed. The
+    /// frame is left at the head of the queue so the caller can retry with
+    /// a larger buffer; no data is lost.
     BufferTooSmall,
 }
 
@@ -407,13 +437,13 @@ unsafe extern "C" fn sim_send(
         }
         let peer_id = sender.peer;
         if peer_id == HEW_CONN_INVALID {
-            return SendInternal::Partitioned;
+            return SendInternal::PeerClosed;
         }
         let Some(peer_state) = t.conns.get_mut(&peer_id) else {
-            return SendInternal::Partitioned;
+            return SendInternal::PeerClosed;
         };
         if peer_state.closed {
-            return SendInternal::Partitioned;
+            return SendInternal::PeerClosed;
         }
         if dropped {
             return SendInternal::Dropped;
@@ -436,17 +466,22 @@ unsafe extern "C" fn sim_send(
             }
         }
         SendInternal::Dropped => {
-            // Caller sees a successful "0 bytes sent — peer closed" signal
-            // converted to a typed transport failure rather than fabricating
-            // a positive ack. This matches `transparent-but-typed-failure`:
-            // the caller cannot distinguish drop from partition without the
-            // classified helper, but neither is mistaken for success.
+            // Caller sees a successful "0 bytes sent — frame ate by the
+            // network" condition converted to a typed transport failure
+            // rather than fabricating a positive ack. The classifier maps
+            // the sim-only `HEW_ERR_SIM_DROPPED` code to `DroppedByPolicy`
+            // so it can never collide with a peer-close or partition.
             set_last_error("sim_send: frame dropped by drop_rate policy");
-            HEW_ERR_TRANSPORT
+            HEW_ERR_SIM_DROPPED
         }
-        SendInternal::Partitioned => {
-            set_last_error("sim_send: peer endpoint partitioned or closed");
-            HEW_ERR_TRANSPORT
+        SendInternal::PeerClosed => {
+            // Peer endpoint was closed (or our own conn's peer link was
+            // detached by `close_conn` on the other side). This is terminal
+            // for the connection and must NOT be reported as a transient
+            // drop or a network partition (see review: drop-bucket and
+            // buffer-too-small must not swallow peer-close).
+            set_last_error("sim_send: peer endpoint closed or detached");
+            HEW_ERR_SIM_PEER_CLOSED
         }
         SendInternal::InvalidConn => {
             set_last_error(format!("sim_send: invalid conn {conn}"));
@@ -459,7 +494,7 @@ unsafe extern "C" fn sim_send(
 enum SendInternal {
     Delivered,
     Dropped,
-    Partitioned,
+    PeerClosed,
     InvalidConn,
 }
 
@@ -503,19 +538,30 @@ unsafe extern "C" fn sim_recv(
             let Some(state) = t.conns.get_mut(&conn) else {
                 return RecvInternal::InvalidConn;
             };
+            // Local side closed (we called `close_conn` on this conn). Even
+            // if the inbox still holds data, the conn is no longer readable
+            // — fail-closed (`cleanup-all-exits`).
             if state.closed {
-                return RecvInternal::Partitioned;
+                return RecvInternal::PeerClosed;
             }
-            let Some(frame) = state.inbox.pop_front() else {
-                return RecvInternal::Empty;
-            };
-            if frame.len() > buf_size {
-                // Put it back so the caller can retry with a bigger buffer
-                // — fail-closed without losing data.
-                state.inbox.push_front(frame);
-                return RecvInternal::BufferTooSmall;
+            if let Some(frame) = state.inbox.pop_front() {
+                if frame.len() > buf_size {
+                    // Put it back so the caller can retry with a bigger buffer
+                    // — fail-closed without losing data.
+                    state.inbox.push_front(frame);
+                    return RecvInternal::BufferTooSmall;
+                }
+                return RecvInternal::Frame(frame);
             }
-            RecvInternal::Frame(frame)
+            // Inbox is empty. If the peer endpoint is gone, this is terminal:
+            // no further frames can ever arrive, and a blocked recv must wake
+            // and surface a typed close failure rather than spin forever
+            // (review item 1: peer-close must wake waiters and surface a
+            // terminal typed transport/closed failure).
+            if state.peer == HEW_CONN_INVALID {
+                return RecvInternal::PeerClosed;
+            }
+            RecvInternal::Empty
         });
         match outcome {
             RecvInternal::Frame(frame) => {
@@ -534,9 +580,9 @@ unsafe extern "C" fn sim_recv(
                     return n as c_int;
                 }
             }
-            RecvInternal::Partitioned => {
-                set_last_error("sim_recv: connection closed by peer");
-                return HEW_ERR_TRANSPORT;
+            RecvInternal::PeerClosed => {
+                set_last_error("sim_recv: peer endpoint closed or detached");
+                return HEW_ERR_SIM_PEER_CLOSED;
             }
             RecvInternal::InvalidConn => {
                 set_last_error(format!("sim_recv: invalid conn {conn}"));
@@ -544,7 +590,7 @@ unsafe extern "C" fn sim_recv(
             }
             RecvInternal::BufferTooSmall => {
                 set_last_error("sim_recv: caller buffer too small for next frame");
-                return HEW_ERR_TRANSPORT;
+                return HEW_ERR_SIM_BUFFER_TOO_SMALL;
             }
             RecvInternal::Empty => {
                 // Park briefly with a bounded timeout. `notify_all` from
@@ -569,7 +615,7 @@ unsafe extern "C" fn sim_recv(
 enum RecvInternal {
     Frame(Vec<u8>),
     Empty,
-    Partitioned,
+    PeerClosed,
     InvalidConn,
     BufferTooSmall,
 }
@@ -719,14 +765,12 @@ pub unsafe fn sim_transport_send_classified(
     let Some(send_fn) = ops.send else {
         return SimSendOutcome::InvalidConn;
     };
-    // Pre-flight checks before invoking the FFI so we can distinguish the
-    // partition outcome from drop-by-policy without scraping `last_error`.
+    // Pre-flight checks before invoking the FFI so the FrameTooLarge variant
+    // is unambiguously reported even if the underlying `sim_send` would also
+    // return `HEW_ERR_TRANSPORT` for an oversized frame.
     if payload.len() > MAX_FRAME_SIZE {
         return SimSendOutcome::FrameTooLarge;
     }
-    // SAFETY: see `state_from_impl` contract.
-    let st = unsafe { state_from_impl(transport_ref.r#impl) };
-    let partition_before = st.partition.load(Ordering::Acquire);
 
     // SAFETY: payload pointer is valid for payload.len() bytes; impl pointer
     // is non-null because the transport is live.
@@ -744,19 +788,22 @@ pub unsafe fn sim_transport_send_classified(
             bytes_sent: rc as usize,
         };
     }
-    if rc == HEW_ERR_TRANSPORT {
-        if partition_before || st.partition.load(Ordering::Acquire) {
-            return SimSendOutcome::Partitioned;
+    // Map sim-only error codes to typed outcomes. Each cause has a distinct
+    // negative return code from `sim_send`, so the classifier never has to
+    // disambiguate by inspecting state (which would be racy and was the
+    // cause of review items 2 and 3 — drop and peer-close were both being
+    // collapsed under `HEW_ERR_TRANSPORT`).
+    match rc {
+        HEW_ERR_TRANSPORT => {
+            // Top-of-fn partition check inside `sim_send`. Oversized-frame
+            // is caught above (FrameTooLarge), so this branch is exclusively
+            // the partition flag.
+            SimSendOutcome::Partitioned
         }
-        // Not partitioned ⇒ either drop policy fired or the peer endpoint
-        // detached. Differentiate via drop_rate_ppm: zero means it must be
-        // a peer-side condition, non-zero allows drop-by-policy.
-        if st.drop_rate_ppm > 0 {
-            return SimSendOutcome::DroppedByPolicy;
-        }
-        return SimSendOutcome::Partitioned;
+        HEW_ERR_SIM_DROPPED => SimSendOutcome::DroppedByPolicy,
+        HEW_ERR_SIM_PEER_CLOSED => SimSendOutcome::PeerClosed,
+        _ => SimSendOutcome::InvalidConn,
     }
-    SimSendOutcome::InvalidConn
 }
 
 /// Classified recv helper for property tests. See
@@ -799,18 +846,16 @@ pub unsafe fn sim_transport_recv_classified(
             bytes_received: rc as usize,
         };
     }
-    if rc == HEW_ERR_TRANSPORT {
-        // SAFETY: see `state_from_impl` contract.
-        let st = unsafe { state_from_impl(transport_ref.r#impl) };
-        if st.partition.load(Ordering::Acquire) {
-            return SimRecvOutcome::Partitioned;
-        }
-        // Buffer-too-small returns HEW_ERR_TRANSPORT inside `sim_recv`. We
-        // distinguish it here by re-checking that no partition flag is set
-        // and labelling accordingly.
-        return SimRecvOutcome::BufferTooSmall;
+    // Each cause has a distinct sim-only return code; the classifier maps
+    // them directly rather than scraping `partition` (which was the cause
+    // of review item 2 — buffer-too-small and peer-close were both being
+    // collapsed onto the same `BufferTooSmall` arm).
+    match rc {
+        HEW_ERR_TRANSPORT => SimRecvOutcome::Partitioned,
+        HEW_ERR_SIM_PEER_CLOSED => SimRecvOutcome::PeerClosed,
+        HEW_ERR_SIM_BUFFER_TOO_SMALL => SimRecvOutcome::BufferTooSmall,
+        _ => SimRecvOutcome::InvalidConn,
     }
-    SimRecvOutcome::InvalidConn
 }
 
 // ---------------------------------------------------------------------------
@@ -885,6 +930,226 @@ mod tests {
             let big = vec![0u8; MAX_FRAME_SIZE + 1];
             let outcome = sim_transport_send_classified(t, client, &big);
             assert!(matches!(outcome, SimSendOutcome::FrameTooLarge));
+            sim_transport_free(t);
+        }
+    }
+
+    /// Review item 1: when one side calls `close_conn`, the peer's blocked
+    /// `recv` must wake up and surface a typed `PeerClosed` outcome rather
+    /// than spinning forever waiting for a frame that can never arrive.
+    ///
+    /// We simulate the wake by closing the local conn between recv attempts
+    /// (single-threaded so we don't depend on thread scheduling — the
+    /// invariant under test is "close marks the conn terminal for recv",
+    /// not "Condvar wakes Y nanoseconds after notify").
+    #[test]
+    fn recv_returns_peer_closed_after_close_conn() {
+        // SAFETY: standard test construction / destruction.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let (client, server) = make_pair(t, "sim://peer-close-recv:0");
+
+            // Close the client side; this sets server.peer = HEW_CONN_INVALID.
+            let transport_ref = &*t;
+            let ops = &*transport_ref.ops;
+            ops.close_conn.unwrap()(transport_ref.r#impl, client);
+
+            let mut buf = [0u8; 32];
+            let outcome = sim_transport_recv_classified(t, server, &mut buf);
+            assert!(
+                matches!(outcome, SimRecvOutcome::PeerClosed),
+                "expected PeerClosed after peer close_conn, got {outcome:?}"
+            );
+            sim_transport_free(t);
+        }
+    }
+
+    /// Review item 1 (waker variant): a `recv` that is already blocked when
+    /// the peer closes must be woken via the per-transport `Condvar` and
+    /// return `PeerClosed` rather than parking forever. Spawning a thread
+    /// here exercises the actual wake path; the bounded `wait_timeout` in
+    /// `sim_recv` is only a deadlock fuse, not the primary wake mechanism.
+    #[test]
+    fn blocked_recv_wakes_on_peer_close() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        // SAFETY: t is owned for the duration of this test; both threads
+        // hold the address as a usize and reconstitute the pointer locally.
+        // The transport is freed only after the recv thread joins.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let (client, server) = make_pair(t, "sim://peer-close-wake:0");
+
+            let t_addr = t as usize;
+            let started = Arc::new(AtomicBool::new(false));
+            let started_clone = Arc::clone(&started);
+
+            let recv_handle = thread::spawn(move || {
+                started_clone.store(true, Ordering::Release);
+                let mut buf = [0u8; 32];
+                let t_local = t_addr as *mut HewTransport;
+                #[allow(
+                    unused_unsafe,
+                    reason = "explicit unsafe block documents the FFI call site \
+                              even though the lexical scope already permits it"
+                )]
+                // SAFETY: `t_local` outlives this thread (joined below); the
+                // closure executes on a new thread but reconstitutes the
+                // transport pointer from a usize captured via `move`.
+                unsafe {
+                    sim_transport_recv_classified(t_local, server, &mut buf)
+                }
+            });
+
+            // Wait for the recv thread to actually enter sim_recv. A short
+            // sleep is enough because `started` flips before the FFI call,
+            // and the recv loop parks within microseconds.
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !started.load(Ordering::Acquire) {
+                assert!(Instant::now() <= deadline, "recv thread never started");
+                thread::sleep(Duration::from_millis(1));
+            }
+            thread::sleep(Duration::from_millis(20));
+
+            // Close the client side — this should wake the blocked recv via
+            // `cv.notify_all()` inside `sim_close_conn`.
+            let transport_ref = &*t;
+            let ops = &*transport_ref.ops;
+            ops.close_conn.unwrap()(transport_ref.r#impl, client);
+
+            // The recv must complete promptly (well under the watchdog).
+            // We give it a generous budget to absorb CI scheduler jitter
+            // but the actual wake is immediate.
+            let join_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if recv_handle.is_finished() {
+                    break;
+                }
+                assert!(
+                    Instant::now() <= join_deadline,
+                    "recv did not wake within 5s of peer close"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+            let outcome = recv_handle.join().expect("recv thread panicked");
+            assert!(
+                matches!(outcome, SimRecvOutcome::PeerClosed),
+                "expected PeerClosed wake, got {outcome:?}"
+            );
+            sim_transport_free(t);
+        }
+    }
+
+    /// Review item 2: `sim_recv` returning `HEW_ERR_TRANSPORT` for a
+    /// buffer-too-small condition must NOT be reclassified as `PeerClosed`,
+    /// and a peer-close must NOT be reclassified as `BufferTooSmall`. The
+    /// distinction is preserved because each cause has a distinct sim-only
+    /// return code.
+    #[test]
+    fn recv_classifier_distinguishes_buffer_too_small_from_peer_close() {
+        // SAFETY: standard test construction / destruction.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let (client, server) = make_pair(t, "sim://classify-recv:0");
+
+            // Send a 9-byte payload, then attempt to recv into a 4-byte
+            // buffer — must surface BufferTooSmall, not PeerClosed.
+            let send_outcome = sim_transport_send_classified(t, client, b"hello hew");
+            assert!(matches!(send_outcome, SimSendOutcome::Sent { .. }));
+            let mut tiny = [0u8; 4];
+            let too_small = sim_transport_recv_classified(t, server, &mut tiny);
+            assert!(
+                matches!(too_small, SimRecvOutcome::BufferTooSmall),
+                "expected BufferTooSmall, got {too_small:?}"
+            );
+
+            // Now drain with a big-enough buffer — frame must still be there
+            // (fail-closed: BufferTooSmall does not consume the frame).
+            let mut big = [0u8; 32];
+            let drained = sim_transport_recv_classified(t, server, &mut big);
+            assert!(
+                matches!(drained, SimRecvOutcome::Received { bytes_received: 9 }),
+                "expected drained Received, got {drained:?}"
+            );
+
+            // Close the client and recv again — must surface PeerClosed,
+            // not BufferTooSmall.
+            let transport_ref = &*t;
+            let ops = &*transport_ref.ops;
+            ops.close_conn.unwrap()(transport_ref.r#impl, client);
+            let after_close = sim_transport_recv_classified(t, server, &mut big);
+            assert!(
+                matches!(after_close, SimRecvOutcome::PeerClosed),
+                "expected PeerClosed after peer close, got {after_close:?}"
+            );
+
+            sim_transport_free(t);
+        }
+    }
+
+    /// Review item 3: `sim_send` must distinguish a peer-detached failure
+    /// from a drop-by-policy failure even when `drop_rate_ppm > 0`. With
+    /// the peer closed, every send must report `PeerClosed`, not
+    /// `DroppedByPolicy`, regardless of the drop rate.
+    #[test]
+    fn send_classifier_preserves_peer_close_under_nonzero_drop_rate() {
+        // SAFETY: standard test construction / destruction.
+        unsafe {
+            // Drop rate well above zero so the old classifier would have
+            // misclassified a peer-close as DroppedByPolicy.
+            let cfg = SimConfig {
+                seed: 42,
+                drop_rate_ppm: 500_000,
+                ..SimConfig::default()
+            };
+            let t = sim_transport_new(cfg);
+            let (client, server) = make_pair(t, "sim://classify-send:0");
+
+            // Close the server side; the client's peer link becomes invalid.
+            let transport_ref = &*t;
+            let ops = &*transport_ref.ops;
+            ops.close_conn.unwrap()(transport_ref.r#impl, server);
+
+            // Attempt many sends — every single one must report PeerClosed,
+            // never DroppedByPolicy, because the cause is structural, not
+            // probabilistic. Looping defends against a future regression
+            // where the classifier might "sometimes" pick the wrong arm.
+            for i in 0..32 {
+                let outcome = sim_transport_send_classified(t, client, b"x");
+                assert!(
+                    matches!(outcome, SimSendOutcome::PeerClosed),
+                    "send #{i}: expected PeerClosed under peer-detach + nonzero drop_rate, \
+                     got {outcome:?}"
+                );
+            }
+            sim_transport_free(t);
+        }
+    }
+
+    /// Review item 3 corollary: with the peer alive, drop-by-policy still
+    /// classifies as `DroppedByPolicy`. Belt-and-braces test that the
+    /// classifier did not just pin everything to `PeerClosed`.
+    #[test]
+    fn send_classifier_reports_drop_by_policy_when_peer_alive() {
+        // SAFETY: standard test construction / destruction.
+        unsafe {
+            // 100% drop rate guarantees the policy fires.
+            let cfg = SimConfig {
+                seed: 7,
+                drop_rate_ppm: 1_000_000,
+                ..SimConfig::default()
+            };
+            let t = sim_transport_new(cfg);
+            let (client, _server) = make_pair(t, "sim://classify-drop:0");
+
+            let outcome = sim_transport_send_classified(t, client, b"x");
+            assert!(
+                matches!(outcome, SimSendOutcome::DroppedByPolicy),
+                "expected DroppedByPolicy with peer alive and 100% drop rate, got {outcome:?}"
+            );
             sim_transport_free(t);
         }
     }

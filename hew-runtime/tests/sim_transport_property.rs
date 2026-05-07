@@ -124,6 +124,7 @@ fn is_typed_partition_send_failure(outcome: SimSendOutcome) -> bool {
         SimSendOutcome::Partitioned => true,
         SimSendOutcome::Sent { .. }
         | SimSendOutcome::DroppedByPolicy
+        | SimSendOutcome::PeerClosed
         | SimSendOutcome::InvalidConn
         | SimSendOutcome::FrameTooLarge => false,
     }
@@ -135,6 +136,7 @@ fn is_typed_partition_recv_failure(outcome: SimRecvOutcome) -> bool {
     match outcome {
         SimRecvOutcome::Partitioned => true,
         SimRecvOutcome::Received { .. }
+        | SimRecvOutcome::PeerClosed
         | SimRecvOutcome::InvalidConn
         | SimRecvOutcome::BufferTooSmall => false,
     }
@@ -236,6 +238,7 @@ proptest! {
                 }
                 SimSendOutcome::DroppedByPolicy
                 | SimSendOutcome::Partitioned
+                | SimSendOutcome::PeerClosed
                 | SimSendOutcome::InvalidConn
                 | SimSendOutcome::FrameTooLarge => {
                     prop_assert!(false,
@@ -257,6 +260,7 @@ proptest! {
                     received.push(u32::from_le_bytes(buf));
                 }
                 SimRecvOutcome::Partitioned
+                | SimRecvOutcome::PeerClosed
                 | SimRecvOutcome::InvalidConn
                 | SimRecvOutcome::BufferTooSmall => {
                     prop_assert!(false,

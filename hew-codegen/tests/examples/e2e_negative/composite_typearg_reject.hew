@@ -7,6 +7,5 @@
 fn identity<T>(x: T) -> T { x }
 
 fn main() {
-    let x = identity<Option<int>>(Some(42));
-    println(x);
+    let _x = identity<Option<int>>(Some(42));
 }

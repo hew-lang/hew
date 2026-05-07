@@ -2554,6 +2554,95 @@ fn parse_and_check_with_stdlib(source: &str) -> (Vec<TypeError>, Vec<TypeError>)
     (output.errors, output.warnings)
 }
 
+#[test]
+fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
+    let mut checker = Checker::new(test_registry());
+    checker.register_builtins();
+
+    for name in ["print", "println", "to_string", "assert_eq", "assert_ne"] {
+        let sig = checker
+            .fn_sigs
+            .get(name)
+            .unwrap_or_else(|| panic!("missing builtin signature for {name}"));
+        assert_eq!(
+            sig.type_params,
+            vec!["T".to_string()],
+            "{name} should expose a single generic parameter"
+        );
+        assert_eq!(
+            sig.type_param_bounds.get("T"),
+            Some(&vec!["Display".to_string()]),
+            "{name} should keep a Display bound on its bare-name registration"
+        );
+    }
+
+    let len_sig = checker.fn_sigs.get("len").expect("missing len builtin");
+    assert!(
+        len_sig.type_param_bounds.is_empty(),
+        "len must stay out of the Display migration"
+    );
+}
+
+#[test]
+fn print_and_println_reject_struct_without_display_impl() {
+    let (errors, warnings) = parse_and_check_with_stdlib(
+        r"
+        type Hidden {
+            value: int;
+        }
+
+        fn main() {
+            let hidden = Hidden { value: 1 };
+            print(hidden);
+            println(hidden);
+        }
+        ",
+    );
+
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    let bounds_errors: Vec<_> = errors
+        .iter()
+        .filter(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied && error.message.contains("Display")
+        })
+        .collect();
+    assert_eq!(
+        bounds_errors.len(),
+        2,
+        "print/println should reject values without Display: {errors:?}"
+    );
+}
+
+#[test]
+fn display_impl_satisfies_bounded_magic_builtins() {
+    let (errors, warnings) = parse_and_check_with_stdlib(
+        r#"
+        type Widget {
+            value: int;
+        }
+
+        impl Display for Widget {
+            fn fmt(widget: Widget) -> String {
+                "widget"
+            }
+        }
+
+        fn main() {
+            let widget = Widget { value: 1 };
+            print(widget);
+            println(widget);
+            let text = to_string(widget);
+            assert_eq(widget, widget);
+            assert_ne(widget, widget);
+            println(text);
+        }
+        "#,
+    );
+
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+}
+
 // ---- unused variable ----
 
 #[test]
@@ -6007,6 +6096,10 @@ fn test_trait_object_type_args_substitution() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "proof assertions for all 6 call_type_args entries"
+)]
 fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
     let source = r#"
         trait Transform {
@@ -6057,10 +6150,14 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
         "type check errors: {:?}",
         output.errors
     );
+    // Exact count: 3 compound-bound generic method calls (apply<U=bool>, tag<V=int>,
+    // tag<V=string>) + 3 println builtins now registered with Display bounds.  Each
+    // call site produces one entry keyed by span, so the total is deterministic.
     assert_eq!(
         output.call_type_args.len(),
-        3,
-        "expected one entry per compound-bound generic method call"
+        6,
+        "expected 3 generic-method calls + 3 println Display-bound calls, got {:?}",
+        output.call_type_args
     );
     assert!(
         output
@@ -6084,6 +6181,39 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
             .values()
             .any(|args| args == &vec![crate::ty::Ty::String]),
         "expected one Label call to infer V=string, got {:?}",
+        output.call_type_args
+    );
+    // Per-value count proof: pin exactly how many entries carry each type.
+    // apply<U=bool> + println<T=bool> = 2; tag<V=int> only = 1;
+    // tag<V=string> + println<T=string> × 2 = 3.
+    let bool_count = output
+        .call_type_args
+        .values()
+        .filter(|args| args.as_slice() == [crate::ty::Ty::Bool])
+        .count();
+    assert_eq!(
+        bool_count, 2,
+        "apply<U=bool> and println<T=bool>: expected 2 [bool] entries, got {:?}",
+        output.call_type_args
+    );
+    let int_count = output
+        .call_type_args
+        .values()
+        .filter(|args| args.as_slice() == [crate::ty::Ty::I64])
+        .count();
+    assert_eq!(
+        int_count, 1,
+        "tag<V=int>: expected exactly 1 [int] entry, got {:?}",
+        output.call_type_args
+    );
+    let string_count = output
+        .call_type_args
+        .values()
+        .filter(|args| args.as_slice() == [crate::ty::Ty::String])
+        .count();
+    assert_eq!(
+        string_count, 3,
+        "tag<V=string> + println<T=string> × 2: expected 3 [string] entries, got {:?}",
         output.call_type_args
     );
 }

@@ -942,6 +942,24 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     return emitOptionWrap(isValid, rawVal, optionType, location);
   }
 
+  // Codegen-special builtins that do not require generic specialisation must be
+  // intercepted before the type_args guard below.  The typechecker registers
+  // these with type_params (carrying Display or other bounds) so inferred type
+  // args are now hydrated into their call AST nodes.  The guard rejects any
+  // composite arg (Option<T>, tuples, …) because it cannot mangle them into
+  // a specialised function name — but these builtins never need that path.
+  //
+  // print / println — routed to generatePrintCall().
+  if (calleeName == "println")
+    return generatePrintCall(call, /*newline=*/true);
+  if (calleeName == "print")
+    return generatePrintCall(call, /*newline=*/false);
+  // assert_eq / assert_ne — routed to generateBuiltinCall() which emits
+  // AssertEqOp / AssertNeOp directly from the argument values; type_args unused.
+  if (calleeName == "assert_eq" || calleeName == "assert_ne")
+    return generateBuiltinCall(calleeName, call.args, location, exprSpan,
+                               typeHint.value_or(mlir::Type{}));
+
   // Handle generic function calls with explicit type arguments
   if (call.type_args.has_value() && !call.type_args->empty()) {
     std::vector<std::string> typeArgNames;
@@ -1065,14 +1083,6 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
                                                          llvm::ArrayRef<int64_t>{1});
 
     return hew::BitcastOp::create(builder, location, optType, withPayload).getResult();
-  }
-
-  // Handle built-in print/println
-  if (calleeName == "println") {
-    return generatePrintCall(call, /*newline=*/true);
-  }
-  if (calleeName == "print") {
-    return generatePrintCall(call, /*newline=*/false);
   }
 
   // Check for named builtins (O(1) lookup before calling generateBuiltinCall).

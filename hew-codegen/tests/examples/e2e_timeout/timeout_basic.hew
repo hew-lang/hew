@@ -1,4 +1,5 @@
 // Test: Timeout expression (| after) evaluates inner expression
+import std::option;
 actor Worker {
     let value: int;
     receive fn get() -> int {
@@ -9,5 +10,5 @@ actor Worker {
 fn main() {
     let w = spawn Worker(value: 42);
     let result = await w.get() | after 5s;
-    println(result);
+    println(option.unwrap_or_int(result, -1));
 }

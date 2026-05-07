@@ -310,6 +310,34 @@ def test_runtime_net_lane_budget_annotation() -> None:
     )
 
 
+def test_zero_timeout_fails_closed() -> None:
+    """PREFLIGHT_TIMEOUT_NARROW=0 must fail closed, not bypass the watchdog.
+
+    alarm(0) in Perl cancels the watchdog; if the helper accepted 0 as a valid
+    budget the command would run unguarded.  The validation in
+    run_in_pgroup_with_timeout must reject it before launching the command.
+    """
+    result = run_dispatcher(
+        "hew-types/src/lib.rs",
+        env={
+            "PREFLIGHT_TEST_ALLOW_OVERRIDE": "1",
+            "PREFLIGHT_TEST_COMMANDS": "true",
+            "PREFLIGHT_TIMEOUT_NARROW": "0",
+        },
+        dry_run=False,
+        timeout=10,
+    )
+    assert result.returncode != 0, (
+        "Expected nonzero exit when PREFLIGHT_TIMEOUT_NARROW=0 "
+        "(watchdog must not be bypassed)"
+    )
+    combined = result.stdout + result.stderr
+    assert "positive integer" in combined, (
+        f"Expected 'positive integer' diagnostic in output.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
 _TESTS = [
     test_makefile_routes_to_scripts_config_profile,
     test_scripts_path_routes_to_scripts_config_profile,
@@ -331,6 +359,7 @@ _TESTS = [
     test_profile_json_records_elapsed_for_each_command,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,
+    test_zero_timeout_fails_closed,
 ]
 
 if __name__ == "__main__":

@@ -108,62 +108,101 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 5: Grandchild termination — the actual dispatcher shape.
+# Test 5: Grandchild termination — exercises the shared run_in_pgroup_with_timeout
+#         helper that the dispatcher routes through.
 #
-# Reproduces the artifact-lock bug scenario:
-#   perl setpgid(0,0)  →  bash -lc "$cmd"  →  grandchild sleep
+# Uses a FIFO handshake so the pgid probe is deterministic and mandatory:
+#   1. The test creates a FIFO before starting the helper.
+#   2. The command string written to bash -lc begins with
+#          printf '%s\n' "$$" > FIFO
+#      where $$ inside bash -lc equals the pgid leader's PID (because the
+#      Perl child called setpgid(0,0) then exec'd bash; same PID, new pgid).
+#   3. The test reads from the FIFO while the helper runs in the background.
+#      FIFO semantics block the writer until the reader opens the read end,
+#      so the handshake is race-free.
+#   4. If the FIFO read times out the test fails hard (no silent skip).
+#   5. After the helper completes, kill -0 -$pgid must fail (grandchild dead).
 #
-# The grandchild is in the same process group as bash because bash -lc
-# (non-interactive) does NOT use job control (set -m), so background jobs
-# inherit the shell's pgid.  A kill-TERM to -$pgid therefore reaches both
-# bash and its grandchildren simultaneously.
-#
-# If only the direct child (bash) is killed and grandchildren are left alive,
-# kill -0 -$pgid succeeds after the wait, and the test fails.
+# The bash -lc (non-interactive, no job control / set -m) leaves background
+# jobs in the same process group, so kill(-pgid) reaches both bash and the
+# grandchild sleep 30 simultaneously.
 # ---------------------------------------------------------------------------
-# Start: perl setpgid → bash -lc → grandchild background sleep.
-perl -e '
-    use POSIX qw(setpgid);
-    setpgid(0, 0) or die "setpgid: $!";
-    exec @ARGV;
-    die "exec: $!";
-' bash -lc 'bash -c "sleep 30" & sleep 9999' &
-_PG_CHILD=$!
 
-# Perl watchdog kills the process group after 1 second.
-perl -e '
-    my ($pg, $s) = @ARGV;
-    $SIG{TERM} = sub { exit 0 };
-    sleep $s;
-    kill TERM => -$pg;
-    sleep 5;
-    kill KILL => -$pg;
-' "$_PG_CHILD" 1 &
-_PG_WATCHDOG=$!
+_T5_FIFO=$(mktemp -u /tmp/hew-test5-pgid.XXXXXX)
+mkfifo "$_T5_FIFO"
+_t5_cleanup() { rm -f "$_T5_FIFO"; }
+trap _t5_cleanup EXIT
 
-_PG_STATUS=0
-wait "$_PG_CHILD" 2>/dev/null || _PG_STATUS=$?
-kill "$_PG_WATCHDOG" 2>/dev/null || true
-wait "$_PG_WATCHDOG" 2>/dev/null || true
+# Command string: bash -lc writes its own PID (= pgid leader) to the FIFO,
+# then starts the grandchild scenario.  $$ inside bash -lc is that bash's
+# own PID (not a subshell $$), which equals the pgid after exec.
+run_in_pgroup_with_timeout 1 \
+    "printf '%s\n' \"\$\$\" > '$_T5_FIFO'; bash -c 'sleep 30' & sleep 9999" &
+_T5_HELPER_PID=$!
 
-# SIGTERM from the watchdog → bash exits 143 (128+15).
-# SIGKILL fallback → 137 (128+9).
-if [[ "$_PG_STATUS" -eq 143 || "$_PG_STATUS" -eq 137 ]]; then
-    pass "pgid kill: child exited with signal-kill code (${_PG_STATUS})"
+# Read the pgid from the FIFO.  bash -lc writes before sleeping, so the
+# read returns almost instantly.  -t 2 guards against a setup failure.
+_PGROUP_ID=""
+read -r -t 2 _PGROUP_ID < "$_T5_FIFO" 2>/dev/null || true
+_PGROUP_ID="${_PGROUP_ID//[[:space:]]/}"  # strip any trailing whitespace/CR
+
+rm -f "$_T5_FIFO"
+trap - EXIT  # FIFO cleaned up
+
+# Fail hard if the pgid was not captured — the handshake is mandatory.
+if [[ -z "$_PGROUP_ID" ]]; then
+    fail "Test 5: pgid handshake failed — bash -lc did not write its PID within 2s"
+    wait "$_T5_HELPER_PID" 2>/dev/null || true
 else
-    fail "pgid kill: expected signal-kill exit (143 or 137), got ${_PG_STATUS}"
+    _T5_STATUS=0
+    wait "$_T5_HELPER_PID" 2>/dev/null || _T5_STATUS=$?
+
+    # SIGTERM from the watchdog → bash exits 143 (128+15).
+    # SIGKILL fallback → 137 (128+9).
+    if [[ "$_T5_STATUS" -eq 143 || "$_T5_STATUS" -eq 137 ]]; then
+        pass "run_in_pgroup_with_timeout: exited with signal-kill code (${_T5_STATUS})"
+    else
+        fail "run_in_pgroup_with_timeout: expected signal-kill exit (143 or 137), got ${_T5_STATUS}"
+    fi
+
+    # Allow a brief window for SIGTERM to finish propagating to the grandchild.
+    sleep 1
+
+    # Verify no process remains in the group (grandchild must be dead too).
+    # POSIX: kill -0 to a pgid succeeds only if at least one process is alive.
+    if kill -0 -"$_PGROUP_ID" 2>/dev/null; then
+        fail "run_in_pgroup_with_timeout: processes still alive in group ${_PGROUP_ID} — grandchild NOT terminated"
+    else
+        pass "run_in_pgroup_with_timeout: entire process tree terminated (bash -lc grandchild also dead)"
+    fi
 fi
 
-# Allow a brief window for SIGTERM to finish propagating to the grandchild.
-sleep 1
+# ---------------------------------------------------------------------------
+# Test 6: Validation of invalid seconds — run_in_pgroup_with_timeout must
+#         fail closed (exit 1, no command launched) for zero, negative,
+#         empty, or non-numeric budgets.  alarm(0) cancels the Perl watchdog;
+#         these values must never silently bypass the preflight time budget.
+# ---------------------------------------------------------------------------
 
-# Verify no process remains in the group (grandchild must be dead).
-# POSIX: kill -0 to a pgid succeeds only if at least one process is alive in it.
-if kill -0 -"$_PG_CHILD" 2>/dev/null; then
-    fail "pgid kill: processes still alive in group ${_PG_CHILD} — grandchild NOT terminated"
-else
-    pass "pgid kill terminated entire process tree (bash -lc grandchild also dead)"
-fi
+_SENTINEL_FILE=$(mktemp -u /tmp/hew-test6-sentinel.XXXXXX)
+
+for _invalid_seconds in "0" "-1" "" "abc" "1.5"; do
+    _t6_status=0
+    run_in_pgroup_with_timeout "$_invalid_seconds" \
+        "touch '$_SENTINEL_FILE'; echo 'SHOULD_NOT_RUN'" 2>/dev/null \
+        || _t6_status=$?
+    if [[ "$_t6_status" -eq 0 ]]; then
+        fail "run_in_pgroup_with_timeout '${_invalid_seconds}': expected nonzero exit for invalid seconds"
+    else
+        pass "run_in_pgroup_with_timeout '${_invalid_seconds}': rejected invalid budget (exit ${_t6_status})"
+    fi
+    if [[ -f "$_SENTINEL_FILE" ]]; then
+        fail "run_in_pgroup_with_timeout '${_invalid_seconds}': command was launched despite invalid seconds"
+        rm -f "$_SENTINEL_FILE"
+    fi
+done
+
+unset _invalid_seconds _t6_status _SENTINEL_FILE
 
 # ---------------------------------------------------------------------------
 # Summary

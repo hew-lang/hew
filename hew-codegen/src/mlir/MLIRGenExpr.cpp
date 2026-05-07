@@ -942,6 +942,16 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     return emitOptionWrap(isValid, rawVal, optionType, location);
   }
 
+  // print/println are handled entirely by generatePrintCall() and never need
+  // generic specialisation, even though the typechecker now attaches type_args
+  // to their call sites (Display-bound inference from PR #1654).  Intercept
+  // here so the composite-type-arg guard below does not reject Ty::Unit
+  // (serialised as TypeExpr::Tuple([])) before we reach the builtin handler.
+  if (calleeName == "println")
+    return generatePrintCall(call, /*newline=*/true);
+  if (calleeName == "print")
+    return generatePrintCall(call, /*newline=*/false);
+
   // Handle generic function calls with explicit type arguments
   if (call.type_args.has_value() && !call.type_args->empty()) {
     std::vector<std::string> typeArgNames;
@@ -1065,14 +1075,6 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
                                                          llvm::ArrayRef<int64_t>{1});
 
     return hew::BitcastOp::create(builder, location, optType, withPayload).getResult();
-  }
-
-  // Handle built-in print/println
-  if (calleeName == "println") {
-    return generatePrintCall(call, /*newline=*/true);
-  }
-  if (calleeName == "print") {
-    return generatePrintCall(call, /*newline=*/false);
   }
 
   // Check for named builtins (O(1) lookup before calling generateBuiltinCall).

@@ -1,0 +1,44 @@
+//! Behavioural tests for std::crypto::crypto.
+
+import std::crypto::crypto;
+import std::testing;
+
+#[test]
+fn test_sha256_returns_32_byte_digest() {
+    let digest = crypto.sha256(bytes [104, 101, 119]);
+    testing.assert_eq(digest.len(), 32);
+}
+
+#[test]
+fn test_sha384_returns_48_byte_digest() {
+    let digest = crypto.sha384(bytes [104, 101, 119]);
+    testing.assert_eq(digest.len(), 48);
+}
+
+#[test]
+fn test_sha512_returns_64_byte_digest() {
+    let digest = crypto.sha512(bytes [104, 101, 119]);
+    testing.assert_eq(digest.len(), 64);
+}
+
+#[test]
+fn test_hmac_sha256_returns_32_byte_tag() {
+    let tag = crypto.hmac_sha256(bytes [107, 101, 121], bytes [104, 101, 119]);
+    testing.assert_eq(tag.len(), 32);
+}
+
+#[test]
+fn test_constant_time_eq_accepts_equal_bytes() {
+    testing.assert_true(crypto.constant_time_eq(bytes [1, 2, 3], bytes [1, 2, 3]));
+}
+
+#[test]
+fn test_constant_time_eq_rejects_different_bytes() {
+    testing.assert_false(crypto.constant_time_eq(bytes [1, 2, 3], bytes [1, 2, 4]));
+}
+
+#[test]
+fn test_random_bytes_returns_requested_length() {
+    let generated = crypto.random_bytes(16);
+    testing.assert_eq(generated.len(), 16);
+}

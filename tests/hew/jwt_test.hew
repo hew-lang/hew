@@ -1,0 +1,41 @@
+//! Behavioural tests for std::crypto::jwt.
+
+import std::crypto::jwt;
+import std::testing;
+
+#[test]
+fn test_try_encode_and_try_decode_round_trip_payload() {
+    let payload = "{\"sub\":\"user42\"}";
+    let secret = "fixture-secret";
+
+    match jwt.try_encode(payload, secret, "HS256") {
+        Ok(token) => {
+            testing.assert_true(token.len() > 0);
+
+            match jwt.try_decode(token, secret, "HS256") {
+                Ok(decoded) => testing.assert_eq_str(decoded, payload),
+                Err(err) => panic(jwt.error_message(err)),
+            }
+        },
+        Err(err) => panic(jwt.error_message(err)),
+    }
+}
+
+#[test]
+fn test_validate_accepts_matching_secret() {
+    let token = jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS256");
+    testing.assert_true(jwt.validate(token, "fixture-secret", "HS256"));
+}
+
+#[test]
+fn test_validate_rejects_wrong_secret() {
+    let token = jwt.encode("{\"sub\":\"user42\"}", "fixture-secret", "HS256");
+    testing.assert_false(jwt.validate(token, "wrong-secret", "HS256"));
+}
+
+#[test]
+fn test_decode_insecure_returns_payload_without_verification() {
+    let payload = "{\"sub\":\"user42\"}";
+    let token = jwt.encode(payload, "fixture-secret", "HS256");
+    testing.assert_eq_str(jwt.decode_insecure(token), payload);
+}

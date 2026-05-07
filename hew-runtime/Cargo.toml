@@ -30,7 +30,19 @@ quic = [
 ]
 
 # Built-in profiler (dashboard, pprof export)
-profiler = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio", "dep:flate2"]
+profiler = [
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:http-body-util",
+  "dep:tokio",
+  "dep:flate2",
+]
+# Deterministic in-process SimTransport for HEW-DIST-SPEC §14 property tests.
+# Test-only — never enabled in `default` or `full`. The module is also
+# auto-enabled under `cfg(test)` so unit tests inside the crate can exercise it
+# without the feature flag, but integration tests must opt in via
+# `--features sim-transport`. Adds no production dependencies.
+sim-transport = []
 # OpenTelemetry OTLP/HTTP trace exporter (no tokio — pure sync HTTP via ureq)
 otel = ["dep:ureq"]
 
@@ -89,6 +101,9 @@ tracing-subscriber.workspace = true
 ureq = { version = "3", default-features = false }
 # For profiler server JSON-escape unit tests
 serde_json.workspace = true
+# Property-based testing for the deterministic SimTransport (HEW-DIST-SPEC §14
+# invariants). Dev-only — never linked into release runtime builds.
+proptest = "1"
 
 [lints]
 workspace = true

@@ -29,17 +29,35 @@
 //!   way to construct a `SimTransport` is the Rust-only [`sim_transport_new`]
 //!   constructor. `hew_node_api_set_transport` is **not** extended to accept
 //!   `"sim"` in this slice.
-//! - **No process globals.** Address resolution, connection IDs, and the
-//!   PRNG live inside the boxed impl owned by the `*mut HewTransport`. Two
-//!   `SimTransport` instances are wholly independent.
-//! - **`destroy` is the canonical release path** (`ffi-ownership-contracts`).
-//!   [`sim_transport_free`] mirrors `hew_node::free_transport` for tests.
-//!   Double-destroy and stale-handle reentry are detected by an
-//!   internal liveness registry (see [`LivenessRegistry`]) BEFORE any
-//!   `Box::from_raw` reclaim runs, so reentry on a freed handle is a
-//!   typed `set_last_error` no-op rather than a use-after-free.
-//! - **Cleanup-all-exits.** `Drop` on the boxed impl wakes every pending
-//!   recv via per-conn `Condvar`s so a panicking test does not leak threads.
+//! - **No process globals for transport state.** Address resolution,
+//!   connection IDs, and the PRNG live inside the heavy
+//!   [`SimTransportState`] held behind an `Arc` inside a per-instance
+//!   leaked handle shell. Two `SimTransport` instances are wholly
+//!   independent.
+//! - **[`sim_transport_free`] is the only canonical release path**
+//!   (`ffi-ownership-contracts`). The vtable's `destroy` op is a
+//!   sub-step that tombstones the inner heavy state; it does **not**
+//!   permit the historical "vtable destroy + `Box::from_raw` outer"
+//!   pattern (the outer is not a `Box` you can reclaim — see below).
+//! - **Stale-handle / address-reuse safety by design.** Both the outer
+//!   `*mut HewTransport` and the inner impl pointer are addresses of
+//!   permanently-leaked fixed-size handle shells (see
+//!   [`TransportShell`] / [`ImplShell`]). Because we never return those
+//!   addresses to the allocator, no later `sim_transport_new` (or any
+//!   other allocation in the process) can produce a pointer that
+//!   aliases a stale one. A stale reentry therefore reads a
+//!   tombstoned (state-`None`) shell and fails closed via
+//!   `set_last_error` rather than authenticating a different live
+//!   allocation. The bounded leak (a few dozen bytes per construction)
+//!   is acceptable because this entire module is dev/test-only and
+//!   never compiled into release/WASM. Heavy resources — bounded
+//!   queues, listener tables, RNG — still release on `destroy` /
+//!   `sim_transport_free` because they live behind an `Arc` inside the
+//!   shell, not inside the leaked shell itself.
+//! - **Cleanup-all-exits.** `destroy` (and `Drop` on
+//!   `SimTransportState`) clears partition / closes every conn and
+//!   calls `cv.notify_all()`, so any blocked `recv` wakes and exits
+//!   before its `Arc` clone is dropped — no parked thread leak.
 //!
 //! ## Determinism model (slice 1)
 //!
@@ -63,10 +81,10 @@
     reason = "type names mirror the existing TcpTransport / QuicTransport convention"
 )]
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex};
 
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -231,9 +249,10 @@ struct ConnTable {
     listeners: HashMap<String, VecDeque<c_int>>,
 }
 
-/// Internal state behind a `*mut HewTransport`. Owned via `Box::into_raw` and
-/// reclaimed by [`sim_destroy`] (the vtable's `destroy` fn pointer) — exactly
-/// like `TcpTransport` / `QuicTransport`.
+/// Internal heavy state for a `SimTransport`. Held behind an `Arc`
+/// inside an [`ImplShell`]; reclaimed when the last `Arc` clone is
+/// dropped (i.e. after `sim_destroy` has tombstoned the shell *and*
+/// every in-flight vtable call has returned).
 struct SimTransportState {
     table: PoisonSafe<ConnTable>,
     cv: Condvar,
@@ -277,13 +296,16 @@ impl SimTransportState {
             id
         }
     }
-}
 
-impl Drop for SimTransportState {
-    fn drop(&mut self) {
-        // Wake any waiter so a panicking test never leaks a parked thread
-        // (`cleanup-all-exits`). The `closed` flag is set transitively when
-        // we mark partition + clear conn map below.
+    /// Mark the transport as terminally torn-down: forces every later
+    /// `send` / `recv` / `accept` to fail closed, and wakes any thread
+    /// currently parked inside `sim_recv`'s `cv.wait_timeout`.
+    ///
+    /// Idempotent: safe to call from both [`sim_destroy`] and from the
+    /// `Drop` impl (the second call sees an already-empty conn table
+    /// and an already-`true` partition flag and only re-issues
+    /// `notify_all`, which is harmless).
+    fn shutdown(&self) {
         self.partition.store(true, Ordering::Release);
         // PoisonSafe::access recovers from poison transparently.
         self.table.access(|t| {
@@ -298,15 +320,56 @@ impl Drop for SimTransportState {
     }
 }
 
+impl Drop for SimTransportState {
+    fn drop(&mut self) {
+        // `shutdown` is the single source of truth for "wake every
+        // waiter and release queued frames" (`cleanup-all-exits`).
+        // `sim_destroy` calls it explicitly so blocked recvs wake
+        // *before* their `Arc<SimTransportState>` clones are dropped;
+        // this `Drop` call is the safety net for the case where the
+        // last `Arc` is held by something other than `sim_destroy`
+        // (e.g. an in-flight op that outlived destroy).
+        self.shutdown();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Vtable callbacks
 // ---------------------------------------------------------------------------
 
-/// SAFETY: `impl_ptr` was created by `Box::into_raw(Box<SimTransportState>)`
-/// in [`sim_transport_new`] and is non-null while the transport lives.
-unsafe fn state_from_impl<'a>(impl_ptr: *mut c_void) -> &'a SimTransportState {
-    // SAFETY: caller upholds the contract documented above.
-    unsafe { &*impl_ptr.cast::<SimTransportState>() }
+/// Resolve a vtable `impl_ptr` (passed by the C-ABI) into a strong
+/// reference to the live `SimTransportState`, or return `None` if the
+/// transport has been destroyed (or was never live and the caller
+/// violated the SAFETY contract — same fail-closed return).
+///
+/// Because [`ImplShell`] is permanently leaked by [`sim_transport_new`],
+/// any address we ever minted remains a valid `&ImplShell` for the
+/// entire program lifetime. Stale impl pointers therefore read a
+/// tombstoned (`state == None`) shell rather than reused/freed memory:
+/// no `Box::from_raw` happens here, and address reuse by the system
+/// allocator cannot fabricate liveness for a stale pointer because
+/// the address is still owned by us.
+///
+/// # SAFETY
+///
+/// `impl_ptr` must be either null or a pointer that was produced by
+/// [`sim_transport_new`] and embedded in a `HewTransport.r#impl` slot.
+/// Passing an arbitrary integer is undefined behaviour, exactly as for
+/// the rest of the C-ABI.
+unsafe fn shell_state(impl_ptr: *mut c_void) -> Option<Arc<SimTransportState>> {
+    if impl_ptr.is_null() {
+        return None;
+    }
+    // SAFETY: caller upholds the contract documented above. `ImplShell`
+    // is permanently leaked, so the dereference is sound regardless of
+    // how many destroy/free cycles have occurred against this address.
+    let shell = unsafe { &*impl_ptr.cast::<ImplShell>() };
+    shell
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(Arc::clone)
 }
 
 unsafe extern "C" fn sim_connect(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
@@ -316,8 +379,11 @@ unsafe extern "C" fn sim_connect(impl_ptr: *mut c_void, address: *const c_char) 
         set_last_error("sim_connect: address was not valid UTF-8");
         return HEW_CONN_INVALID;
     };
-    // SAFETY: see `state_from_impl` contract.
-    let st = unsafe { state_from_impl(impl_ptr) };
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(impl_ptr) }) else {
+        set_last_error("sim_connect: transport destroyed or stale");
+        return HEW_CONN_INVALID;
+    };
 
     if st.partition.load(Ordering::Acquire) {
         set_last_error("sim_connect: transport partitioned");
@@ -357,8 +423,11 @@ unsafe extern "C" fn sim_listen(impl_ptr: *mut c_void, address: *const c_char) -
         set_last_error("sim_listen: address was not valid UTF-8");
         return -1;
     };
-    // SAFETY: see `state_from_impl` contract.
-    let st = unsafe { state_from_impl(impl_ptr) };
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(impl_ptr) }) else {
+        set_last_error("sim_listen: transport destroyed or stale");
+        return -1;
+    };
     st.table.access(|t| {
         t.listeners.entry(addr_str.to_owned()).or_default();
     });
@@ -367,8 +436,11 @@ unsafe extern "C" fn sim_listen(impl_ptr: *mut c_void, address: *const c_char) -
 
 unsafe extern "C" fn sim_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_int {
     cabi_guard!(impl_ptr.is_null(), HEW_CONN_INVALID);
-    // SAFETY: see `state_from_impl` contract.
-    let st = unsafe { state_from_impl(impl_ptr) };
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(impl_ptr) }) else {
+        set_last_error("sim_accept: transport destroyed or stale");
+        return HEW_CONN_INVALID;
+    };
 
     // Non-blocking poll suffices for the slice-2 property tests: the test
     // driver always calls `connect` before `accept`. We still honour the
@@ -392,8 +464,11 @@ unsafe extern "C" fn sim_send(
     len: usize,
 ) -> c_int {
     cabi_guard!(impl_ptr.is_null() || (data.is_null() && len != 0), -1);
-    // SAFETY: see `state_from_impl` contract.
-    let st = unsafe { state_from_impl(impl_ptr) };
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(impl_ptr) }) else {
+        set_last_error("sim_send: transport destroyed or stale");
+        return HEW_ERR_TRANSPORT;
+    };
 
     if st.partition.load(Ordering::Acquire) {
         set_last_error("sim_send: partition active");
@@ -502,8 +577,11 @@ unsafe extern "C" fn sim_recv(
     buf_size: usize,
 ) -> c_int {
     cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
-    // SAFETY: see `state_from_impl` contract.
-    let st = unsafe { state_from_impl(impl_ptr) };
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(impl_ptr) }) else {
+        set_last_error("sim_recv: transport destroyed or stale");
+        return HEW_ERR_TRANSPORT;
+    };
 
     // Acquire the table lock and wait on `cv` until a frame is available,
     // partition activates, or the conn is closed. This mirrors the blocking
@@ -619,8 +697,11 @@ enum RecvInternal {
 
 unsafe extern "C" fn sim_close_conn(impl_ptr: *mut c_void, conn: c_int) {
     cabi_guard!(impl_ptr.is_null());
-    // SAFETY: see `state_from_impl` contract.
-    let st = unsafe { state_from_impl(impl_ptr) };
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(impl_ptr) }) else {
+        set_last_error("sim_close_conn: transport destroyed or stale");
+        return;
+    };
     st.table.access(|t| {
         if let Some(state) = t.conns.get_mut(&conn) {
             state.closed = true;
@@ -635,111 +716,82 @@ unsafe extern "C" fn sim_close_conn(impl_ptr: *mut c_void, conn: c_int) {
 }
 
 // ---------------------------------------------------------------------------
-// Liveness registry — the security-critical invariant
+// Handle shells — the security-critical invariant
 // ---------------------------------------------------------------------------
 
-/// Process-wide registry of live `SimTransport` allocations.
+/// Inner handle slab. Permanently leaked by [`sim_transport_new`] so
+/// the address of the slab — which the C-ABI vtable carries around as
+/// the `impl_ptr` — can never be reused by the system allocator for a
+/// different live object. That is how stale-impl-pointer reentry stays
+/// bounded to a tombstoned shell rather than authenticating a later
+/// allocation that happened to land at the same address (the
+/// security-review-r2 / local-review-r3 ABA finding).
 ///
-/// **Why this exists.** The vtable signature for `destroy` (and the
-/// mirror helper [`sim_transport_free`]) takes a raw pointer by value.
-/// The C-ABI cannot nullify the caller's storage, so the only way to
-/// detect a stale or double-destroy reentry without dereferencing
-/// possibly-freed memory is to consult an out-of-band registry first.
-/// Reconstructing `Box::from_raw(impl_ptr)` and then asking the boxed
-/// value "are you already destroyed?" is unsound: the read happens
-/// after the freed allocation has already been claimed (and may have
-/// been reused by another allocation by then).
+/// The heavy [`SimTransportState`] (queues, conn table, RNG) lives
+/// behind an `Arc` inside the shell. On `sim_destroy` (or
+/// [`sim_transport_free`], which calls it) we `take()` the `Arc`,
+/// wake any parked recv via [`SimTransportState::shutdown`], then
+/// drop our `Arc` clone. In-flight vtable callers each hold their
+/// own `Arc` clone obtained via [`shell_state`]; the heavy state is
+/// reclaimed when the last `Arc` clone (ours or theirs) is dropped,
+/// so heavy resources still release.
 ///
-/// **Lock ordering.** Both mutexes here are leaf mutexes — they are
-/// never held while taking any other lock (`PoisonSafe<ConnTable>`'s
-/// inner `Mutex`, the per-transport `rng` mutex, the `Condvar`'s
-/// associated mutex, or `set_last_error`'s thread-local). Hold time
-/// is bounded to a single `HashSet::insert` / `HashSet::remove`. This
-/// makes them deadlock-safe regardless of which subsystem currently
-/// holds the conn table.
-///
-/// **Cleanup.** Entries are removed by `claim_transport` /
-/// `claim_impl` at the moment ownership transfers back to Rust for
-/// `Box::from_raw`. Insertion happens in [`sim_transport_new`] before
-/// the pointer is observable to any other thread. There is no
-/// background sweeper and no entry can outlive the program; the
-/// registry is `'static` only because individual transport allocations
-/// can be created and freed across many test threads without a single
-/// owning scope.
-///
-/// **Why a registry and not e.g. an `Arc<AtomicBool>` tombstone on
-/// the impl itself.** A tombstone living inside the freed allocation
-/// is exactly the design that the security finding rejected — reading
-/// it requires dereferencing the pointer, which is precisely what we
-/// must not do. The registry deliberately stores the *integer value*
-/// of each pointer so the liveness check is a pure hash-set lookup
-/// against `usize` keys.
-struct LivenessRegistry {
-    /// Live `*mut HewTransport` outer pointers (cast to `usize`).
-    transports: Mutex<HashSet<usize>>,
-    /// Live `*mut SimTransportState` impl pointers (cast to `usize`).
-    impls: Mutex<HashSet<usize>>,
+/// `state` is a `Mutex<Option<...>>` rather than an `AtomicPtr` so the
+/// destroy-and-take and the shell_state-and-clone sequences are both
+/// trivially race-free. The mutex is a leaf — never held across any
+/// other lock, never held across an `Arc::clone`-and-return — so it
+/// cannot deadlock with the conn-table lock or the recv `Condvar`.
+struct ImplShell {
+    state: Mutex<Option<Arc<SimTransportState>>>,
 }
 
-fn registry() -> &'static LivenessRegistry {
-    static REG: OnceLock<LivenessRegistry> = OnceLock::new();
-    REG.get_or_init(|| LivenessRegistry {
-        transports: Mutex::new(HashSet::new()),
-        impls: Mutex::new(HashSet::new()),
-    })
-}
-
-fn register_alloc(transport: *mut HewTransport, impl_ptr: *mut c_void) {
-    let reg = registry();
-    reg.transports
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(transport as usize);
-    reg.impls
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(impl_ptr as usize);
-}
-
-/// Atomically remove `transport` from the live-transport set. Returns
-/// `true` only on the single call that observed it as live; subsequent
-/// or stale callers see `false` and MUST NOT dereference `transport`.
-fn claim_transport(transport: *mut HewTransport) -> bool {
-    registry()
-        .transports
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&(transport as usize))
-}
-
-/// Atomically remove `impl_ptr` from the live-impl set. Returns `true`
-/// only on the single call that observed it as live; subsequent or
-/// stale callers see `false` and MUST NOT dereference `impl_ptr`.
-fn claim_impl(impl_ptr: *mut c_void) -> bool {
-    registry()
-        .impls
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&(impl_ptr as usize))
+/// Outer handle slab. Permanently leaked for the same ABA-resistance
+/// reason as [`ImplShell`]: the address handed back from
+/// [`sim_transport_new`] (cast from the shell address) can never be
+/// reused by the allocator while a stale `*mut HewTransport` exists.
+/// `repr(C)` + `inner` first guarantees the `*mut HewTransport`
+/// pointer arithmetic is layout-equivalent to a `*mut TransportShell`
+/// cast.
+///
+/// `freed` makes [`sim_transport_free`] idempotent without needing a
+/// process-global registry: a second free observes `freed == true`
+/// and short-circuits before the inner `destroy` is invoked.
+#[repr(C)]
+struct TransportShell {
+    inner: HewTransport,
+    freed: AtomicBool,
 }
 
 unsafe extern "C" fn sim_destroy(impl_ptr: *mut c_void) {
     cabi_guard!(impl_ptr.is_null());
-    // Liveness check BEFORE any pointer dereference / `Box::from_raw`.
-    // A stale or double-destroy reentry sees the impl absent from the
-    // registry and returns without touching the (possibly freed)
-    // allocation — fail-closed (`ffi-ownership-contracts`).
-    if !claim_impl(impl_ptr) {
+    // SAFETY: `ImplShell` is permanently leaked by `sim_transport_new`,
+    // so the dereference is sound for any pointer this module ever
+    // minted, regardless of how many destroy/free cycles preceded it.
+    // The C-ABI safety contract (`impl_ptr` must be a sim-minted
+    // address) covers the everything-else case.
+    let shell = unsafe { &*impl_ptr.cast::<ImplShell>() };
+    let arc_opt = shell
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    let Some(arc) = arc_opt else {
+        // Either a double-destroy or a stale pointer reentry. Either
+        // way, fail-closed: no dereference of heavy state, no
+        // double-drop of the `Arc`.
         set_last_error("sim_destroy: stale or double-destroy on impl pointer");
         return;
-    }
-    // SAFETY: `impl_ptr` was created by `Box::into_raw` in
-    // [`sim_transport_new`] and `claim_impl` just removed it from the
-    // live-impl registry, transferring exclusive ownership to us. No
-    // other thread can subsequently observe it as live, so the
-    // `Box::from_raw` reclaim cannot race with another `sim_destroy`.
-    let boxed = unsafe { Box::from_raw(impl_ptr.cast::<SimTransportState>()) };
-    drop(boxed);
+    };
+    // Wake any parked recv BEFORE dropping our `Arc` clone — otherwise
+    // a thread parked inside `cv.wait_timeout` would keep its own
+    // `Arc` clone alive and the heavy state would not release until
+    // the watchdog timeout fires.
+    arc.shutdown();
+    // Heavy state releases when the refcount hits zero. That happens
+    // here if no in-flight op holds a clone, or in the in-flight op's
+    // own `drop(arc)` otherwise. Either way `SimTransportState::Drop`
+    // runs (idempotent with `shutdown`) and reclaims queues / RNG.
+    drop(arc);
 }
 
 static SIM_OPS: HewTransportOps = HewTransportOps {
@@ -756,100 +808,129 @@ static SIM_OPS: HewTransportOps = HewTransportOps {
 // Rust-only constructor / destructor
 // ---------------------------------------------------------------------------
 
-/// Construct a new `SimTransport`. The returned pointer mirrors the layout of
-/// `hew_transport_tcp_new` / `hew_transport_quic_new` and must be released by
-/// [`sim_transport_free`] (or by the vtable's `destroy` plus `Box::from_raw`
-/// for the outer struct).
+/// Construct a new `SimTransport`. The returned pointer must be released
+/// by [`sim_transport_free`]. Direct vtable `destroy` followed by
+/// `Box::from_raw` on the outer pointer is **not** a valid release path
+/// — the outer is not a `Box` you can reclaim; it is a pointer into a
+/// permanently-leaked [`TransportShell`] (see module docs for the
+/// stale-handle / address-reuse rationale).
 ///
 /// # Safety
 ///
-/// - The caller must release the returned pointer via [`sim_transport_free`]
-///   or an equivalent canonical release sequence. Failing to do so leaks the
-///   boxed impl plus the outer `HewTransport`.
-/// - The returned pointer must not be passed to a transport implementation
-///   that expects a different vtable.
+/// - The returned pointer must be released via [`sim_transport_free`].
+///   Failing to call it leaks the heavy [`SimTransportState`] (queues,
+///   listener table, RNG); the surrounding handle shells are
+///   intentionally bounded leaks.
+/// - The returned pointer must not be passed to a transport
+///   implementation that expects a different vtable.
 #[must_use]
 pub unsafe fn sim_transport_new(cfg: SimConfig) -> *mut HewTransport {
-    let state = Box::new(SimTransportState::new(cfg));
-    let impl_ptr = Box::into_raw(state).cast::<c_void>();
-    let transport = Box::new(HewTransport {
-        ops: &raw const SIM_OPS,
-        r#impl: impl_ptr,
-    });
-    let transport_ptr = Box::into_raw(transport);
-    // Register both allocations BEFORE returning so any subsequent
-    // `sim_destroy` / `sim_transport_free` call can validate liveness
-    // without touching the underlying memory. See [`LivenessRegistry`].
-    register_alloc(transport_ptr, impl_ptr);
-    transport_ptr
+    // Heavy state behind an `Arc`. `Arc::new` keeps it alive even
+    // after `sim_destroy` drops its own clone, until every in-flight
+    // op also drops its `shell_state` clone.
+    let state = Arc::new(SimTransportState::new(cfg));
+    // `Box::into_raw` returns a `*mut` we never reclaim — that is the
+    // intentional shell leak. See [`ImplShell`] docs for why the
+    // address must outlive any stale pointer to it.
+    let impl_shell_ptr: *mut ImplShell = Box::into_raw(Box::new(ImplShell {
+        state: Mutex::new(Some(state)),
+    }));
+    let impl_ptr = impl_shell_ptr.cast::<c_void>();
+    let outer_shell_ptr: *mut TransportShell = Box::into_raw(Box::new(TransportShell {
+        inner: HewTransport {
+            ops: &raw const SIM_OPS,
+            r#impl: impl_ptr,
+        },
+        freed: AtomicBool::new(false),
+    }));
+    // `repr(C)` + `inner` first guarantees the address of the shell
+    // and the address of `shell.inner` are equal, so a later
+    // `*mut HewTransport`-to-`*mut TransportShell` cast in
+    // `sim_transport_free` is sound.
+    outer_shell_ptr.cast::<HewTransport>()
 }
 
-/// Release a `SimTransport` returned by [`sim_transport_new`]. Mirrors
-/// `hew_node::free_transport` so tests can clean up symmetrically without
-/// reaching into private node internals.
+/// Release a `SimTransport` returned by [`sim_transport_new`]. This is
+/// the **only** canonical release path. It tombstones the inner heavy
+/// state via the vtable's `destroy` op (which atomically takes the
+/// `Arc<SimTransportState>` out of the [`ImplShell`] and wakes
+/// waiters), then marks the outer shell as freed. Both shells remain
+/// leaked by design so subsequent stale-pointer reentry sees
+/// tombstoned slabs rather than reused/freed memory — the
+/// stale-handle / address-reuse invariant.
 ///
 /// # Safety
 ///
-/// `transport` must be either null or a pointer that was returned by
-/// [`sim_transport_new`] at some point in this process. A second call on
-/// the same pointer (or a call on a stale pointer that was never live)
-/// is a typed `set_last_error` no-op rather than a use-after-free: the
-/// internal liveness registry is consulted before any dereference, so
-/// the function never reads through a freed `Box`. This is what makes
-/// the security invariant ("stale reentry cannot touch freed memory
-/// before liveness validation") hold.
+/// `transport` must be either null or a pointer returned by
+/// [`sim_transport_new`] in this process. A second call on the same
+/// pointer (or a stale call from a sim-minted pointer) is a typed
+/// `set_last_error` no-op rather than a use-after-free: the outer
+/// shell's `freed` flag short-circuits before the inner destroy runs,
+/// and the inner destroy itself is idempotent because the shell's
+/// `Mutex<Option<Arc<...>>>::take()` returns `None` on the second call.
 pub unsafe fn sim_transport_free(transport: *mut HewTransport) {
     if transport.is_null() {
         return;
     }
-    // Liveness check BEFORE any pointer dereference / `Box::from_raw`.
-    // A stale or double-free reentry sees the transport absent from the
-    // registry and returns without touching the (possibly freed)
-    // allocation — fail-closed.
-    if !claim_transport(transport) {
+    // SAFETY: `TransportShell` is permanently leaked by
+    // `sim_transport_new`, so this dereference is sound regardless of
+    // how many free/destroy cycles preceded it. C-ABI contract covers
+    // the everything-else case (caller must pass a sim-minted ptr).
+    let shell = unsafe { &*transport.cast::<TransportShell>() };
+    if shell
+        .freed
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        // Another free already won the race (or this is a second call
+        // from the same caller). Fail-closed.
         set_last_error("sim_transport_free: stale or double-free on transport pointer");
         return;
     }
-    // SAFETY: registry confirmed liveness; we now hold exclusive
-    // ownership of the outer allocation and no concurrent free can race.
-    let transport_ref = unsafe { &*transport };
-    // SAFETY: ops pointer is part of a valid transport.
-    if let Some(ops) = unsafe { transport_ref.ops.as_ref() } {
+    // We won the CAS. Tombstone the inner state via the vtable; the
+    // destroy op is itself idempotent (so a prior direct vtable
+    // `destroy` followed by `sim_transport_free` is harmless).
+    // SAFETY: ops pointer is part of the leaked shell's HewTransport.
+    if let Some(ops) = unsafe { shell.inner.ops.as_ref() } {
         if let Some(destroy_fn) = ops.destroy {
-            // SAFETY: impl belongs to this transport. `destroy_fn`
-            // (i.e. [`sim_destroy`]) performs its own liveness check
-            // against the impl registry, so a prior direct vtable
-            // destroy followed by `sim_transport_free` does not
-            // double-free the impl.
-            unsafe { destroy_fn(transport_ref.r#impl) };
+            // SAFETY: `r#impl` is the address of our leaked `ImplShell`
+            // (or a previously-tombstoned one if vtable destroy already
+            // fired); both are safe to pass to `sim_destroy`.
+            unsafe { destroy_fn(shell.inner.r#impl) };
         }
     }
-    // SAFETY: outer struct was allocated by `Box::into_raw` in
-    // `sim_transport_new` and we just claimed exclusive ownership via
-    // `claim_transport`.
-    let _ = unsafe { Box::from_raw(transport) };
+    // Outer shell is intentionally NOT freed — see [`TransportShell`]
+    // docs. Heavy state inside `ImplShell.state` released above (or
+    // when the last in-flight `Arc` clone drops).
 }
 
 /// Toggle the partition state of a `SimTransport` at runtime.
 ///
 /// While `partitioned` is true, every `send` and `recv` returns
 /// `HEW_ERR_TRANSPORT` immediately. Any thread blocked in `recv` is woken
-/// before the function returns.
+/// before the function returns. Calling on a destroyed/stale transport
+/// is a typed no-op (fail-closed).
 ///
 /// # Safety
 ///
-/// `transport` must be a live pointer returned by [`sim_transport_new`].
+/// `transport` must be either null or a pointer returned by
+/// [`sim_transport_new`] in this process. Stale or destroyed pointers
+/// are detected via the [`ImplShell`] tombstone and short-circuit
+/// without dereferencing heavy state.
 pub unsafe fn sim_transport_set_partition(transport: *mut HewTransport, partitioned: bool) {
     if transport.is_null() {
         return;
     }
-    // SAFETY: caller guarantees the pointer is live.
-    let transport_ref = unsafe { &*transport };
-    if transport_ref.r#impl.is_null() {
+    // SAFETY: leaked `TransportShell`; dereference is always sound.
+    let shell = unsafe { &*transport.cast::<TransportShell>() };
+    if shell.inner.r#impl.is_null() {
         return;
     }
-    // SAFETY: see `state_from_impl` contract.
-    let st = unsafe { state_from_impl(transport_ref.r#impl) };
+    // SAFETY: see `shell_state` contract; fail-closed if tombstoned.
+    let Some(st) = (unsafe { shell_state(shell.inner.r#impl) }) else {
+        set_last_error("sim_transport_set_partition: transport destroyed or stale");
+        return;
+    };
     st.partition.store(partitioned, Ordering::Release);
     st.cv.notify_all();
 }
@@ -1380,6 +1461,279 @@ mod tests {
                 SimRecvOutcome::Received { bytes_received: 4 }
             ));
             sim_transport_free(b);
+        }
+    }
+
+    /// Security regression (ABA / stale-handle after address reuse —
+    /// security review r2 finding 1, local review r3 blocker).
+    ///
+    /// The previous design kept a `HashSet<usize>` of live pointer
+    /// addresses; if the system allocator reused an old transport's
+    /// address for a new live transport, the stale pointer could
+    /// authenticate against the registry and free/destroy the new
+    /// allocation. The new design defeats this by leaking the outer
+    /// `TransportShell` and inner `ImplShell` permanently — the
+    /// allocator can never hand out the same address for any other
+    /// allocation while we still own it.
+    ///
+    /// This test pins both halves of the invariant deterministically:
+    ///
+    ///   1. After `sim_transport_free(t1)`, no subsequent
+    ///      `sim_transport_new` call may produce a `*mut HewTransport`
+    ///      with the same address as `t1` — proving the outer shell
+    ///      is not returned to the allocator.
+    ///   2. The same property holds for the inner impl pointer
+    ///      (`(*t).r#impl`) — proving the inner shell is not returned
+    ///      either, so a stale impl pointer cannot alias a new live
+    ///      `ImplShell`.
+    ///   3. Reentry on the stale outer/impl pointers must be a typed
+    ///      no-op (no UB) regardless of the new allocations.
+    ///
+    /// "Many" here is `64`. That is overkill for the address-reuse
+    /// invariant (a single new alloc would be enough proof if the
+    /// design is sound) but it makes the test robust against
+    /// allocator-pool warmup quirks and gives the property a wide
+    /// margin.
+    #[test]
+    fn stale_handle_cannot_authenticate_after_address_reuse() {
+        // SAFETY: stale-pointer reentry exercises the leaked-shell
+        // tombstone path. No `Box::from_raw` is reconstructed; both
+        // dereferences are sound because the shells are leaked.
+        unsafe {
+            let t1 = sim_transport_new(SimConfig::default());
+            let stale_outer = t1 as usize;
+            let stale_impl = (*t1).r#impl as usize;
+            sim_transport_free(t1);
+
+            // Allocate many fresh transports. Save their addresses
+            // so we can later assert no aliasing against the stale
+            // pair, and also so we can free them at the end.
+            let mut fresh: Vec<*mut HewTransport> = Vec::with_capacity(64);
+            for _ in 0..64 {
+                fresh.push(sim_transport_new(SimConfig::default()));
+            }
+            for &p in &fresh {
+                assert_ne!(
+                    p as usize, stale_outer,
+                    "outer shell address was reused — leaked-shell invariant violated"
+                );
+                assert_ne!(
+                    (*p).r#impl as usize,
+                    stale_impl,
+                    "inner shell address was reused — leaked-shell invariant violated"
+                );
+            }
+
+            // Reentry on the stale outer pointer: must be a typed
+            // no-op (idempotent freed flag short-circuits before the
+            // inner destroy). Crucially, this MUST NOT free or
+            // destroy any of the freshly-allocated transports.
+            sim_transport_free(stale_outer as *mut HewTransport);
+
+            // Reentry on the stale impl pointer via the static
+            // vtable: must be a typed no-op (the tombstoned
+            // `ImplShell.state == None` short-circuits before any
+            // heavy-state access). MUST NOT touch any fresh impl.
+            let destroy_fn = SIM_OPS.destroy.unwrap();
+            destroy_fn(stale_impl as *mut c_void);
+
+            // Every fresh transport must still be fully functional
+            // — proves the stale reentry did not free/destroy them.
+            for &p in &fresh {
+                let (client, server) = make_pair(p, &format!("sim://aba:{:p}", p as *const ()));
+                let send = sim_transport_send_classified(p, client, b"ok");
+                assert!(
+                    matches!(send, SimSendOutcome::Sent { bytes_sent: 2 }),
+                    "fresh transport at {p:p} was disturbed by stale reentry: {send:?}"
+                );
+                let mut buf = [0u8; 8];
+                let recv = sim_transport_recv_classified(p, server, &mut buf);
+                assert!(
+                    matches!(recv, SimRecvOutcome::Received { bytes_received: 2 }),
+                    "fresh transport at {p:p} recv was disturbed: {recv:?}"
+                );
+            }
+
+            for p in fresh {
+                sim_transport_free(p);
+            }
+        }
+    }
+
+    /// Security regression (release-contract symmetry — security
+    /// review r2 finding 2). Previously the docs allowed a caller to
+    /// call the vtable's `destroy` and then `Box::from_raw` the outer
+    /// pointer themselves; only `sim_transport_free` removed the
+    /// outer pointer from the registry, so the registry kept a stale
+    /// entry for freed memory.
+    ///
+    /// The new design closes this: the outer is not a `Box` to
+    /// reclaim; it is a leaked `TransportShell`. After a direct
+    /// vtable destroy, every later vtable op on the same outer
+    /// pointer fails closed (the inner `ImplShell.state` is `None`),
+    /// and a follow-on `sim_transport_free` is harmless (the inner
+    /// destroy is idempotent and the outer `freed` CAS still wins
+    /// exactly once).
+    #[test]
+    fn vtable_destroy_then_outer_ops_fail_closed() {
+        // SAFETY: standard construction; the direct vtable destroy
+        // tombstones the inner shell, after which every vtable op
+        // must fail closed without UB.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let (client, _server) = make_pair(t, "sim://vtable-destroy:0");
+
+            // Call the vtable's destroy directly — the historical
+            // "alternate" release path. With the new design this
+            // tombstones the inner state but does NOT release the
+            // outer shell.
+            let transport_ref = &*t;
+            let ops = &*transport_ref.ops;
+            ops.destroy.unwrap()(transport_ref.r#impl);
+
+            // Subsequent vtable ops must fail closed. Send → typed
+            // partition (HEW_ERR_TRANSPORT). This proves the inner
+            // state is no longer accessible.
+            let send = sim_transport_send_classified(t, client, b"x");
+            assert!(
+                matches!(send, SimSendOutcome::Partitioned),
+                "send after vtable destroy must fail closed, got {send:?}"
+            );
+            let mut buf = [0u8; 8];
+            let recv = sim_transport_recv_classified(t, client, &mut buf);
+            assert!(
+                matches!(recv, SimRecvOutcome::Partitioned),
+                "recv after vtable destroy must fail closed, got {recv:?}"
+            );
+
+            // A second vtable destroy on the same impl is also a
+            // typed no-op (Mutex<Option<Arc<…>>>::take returned
+            // None), not a double-free.
+            ops.destroy.unwrap()(transport_ref.r#impl);
+
+            // sim_transport_free still completes cleanly — the
+            // inner destroy it invokes is idempotent, and the outer
+            // `freed` flag flips on the first (and only) call.
+            sim_transport_free(t);
+
+            // After the canonical release, a second sim_transport_free
+            // is also a typed no-op via the outer `freed` CAS.
+            sim_transport_free(t);
+        }
+    }
+
+    /// Security regression: `sim_destroy` must release the heavy
+    /// inner state (queues, listener table, RNG) so a long-running
+    /// test process does not accumulate `SimTransportState` heaps
+    /// across many destroy/free cycles. The shells themselves leak
+    /// by design (bounded ~ tens of bytes per construction); the
+    /// heavy state must not.
+    ///
+    /// We pin this with `Arc::strong_count` indirectly: after
+    /// `sim_destroy`, the inner shell's `state` slot must be `None`
+    /// — i.e. no `Arc<SimTransportState>` reference is retained by
+    /// the shell. Combined with no in-flight ops, the heavy state
+    /// drops immediately.
+    #[test]
+    fn sim_destroy_releases_inner_heavy_state() {
+        // SAFETY: we read the leaked `ImplShell` directly to confirm
+        // its `state` slot tombstones to `None` after destroy.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let impl_ptr = (*t).r#impl;
+            // Pre-destroy: state is Some.
+            {
+                let shell = &*impl_ptr.cast::<ImplShell>();
+                assert!(
+                    shell.state.lock().unwrap().is_some(),
+                    "pre-destroy: shell state must be Some"
+                );
+            }
+            // Direct vtable destroy.
+            let ops = &*(*t).ops;
+            ops.destroy.unwrap()(impl_ptr);
+            // Post-destroy: state is None — Arc has been taken and
+            // dropped, heavy state released (no in-flight clones).
+            {
+                let shell = &*impl_ptr.cast::<ImplShell>();
+                assert!(
+                    shell.state.lock().unwrap().is_none(),
+                    "post-destroy: shell state must be None (heavy state released)"
+                );
+            }
+            sim_transport_free(t);
+        }
+    }
+
+    /// Security regression: a `sim_transport_free` must wake any
+    /// recv parked inside `cv.wait_timeout` so the parked thread's
+    /// `Arc<SimTransportState>` clone is dropped promptly and the
+    /// heavy state can be reclaimed. Without the explicit
+    /// `shutdown()` call inside `sim_destroy`, the parked thread
+    /// would keep the heavy state alive until its own watchdog
+    /// timer fired.
+    #[test]
+    fn destroy_wakes_blocked_recv() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        // SAFETY: we leak `t` to the recv thread via a usize and
+        // call sim_transport_free from the main thread; the recv
+        // thread only holds an `Arc` clone of the heavy state, so
+        // dropping the outer pointer's tombstone is safe.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let (_client, server) = make_pair(t, "sim://destroy-wake:0");
+            let t_addr = t as usize;
+            let started = StdArc::new(AtomicBool::new(false));
+            let started_clone = StdArc::clone(&started);
+
+            let recv_handle = thread::spawn(move || {
+                started_clone.store(true, Ordering::Release);
+                let mut buf = [0u8; 32];
+                let t_local = t_addr as *mut HewTransport;
+                #[allow(unused_unsafe, reason = "explicit unsafe block at the FFI call site")]
+                // SAFETY: t_local points to a leaked TransportShell;
+                // dereference is sound for the entire program lifetime.
+                unsafe {
+                    sim_transport_recv_classified(t_local, server, &mut buf)
+                }
+            });
+
+            // Wait for the recv thread to enter the FFI loop.
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !started.load(Ordering::Acquire) {
+                assert!(Instant::now() <= deadline, "recv thread never started");
+                thread::sleep(Duration::from_millis(1));
+            }
+            thread::sleep(Duration::from_millis(20));
+
+            // Free the transport — this must wake the parked recv
+            // via `shutdown()` (partition + notify_all) so it exits
+            // promptly, dropping its `Arc` clone.
+            sim_transport_free(t);
+
+            let join_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if recv_handle.is_finished() {
+                    break;
+                }
+                assert!(
+                    Instant::now() <= join_deadline,
+                    "recv did not wake within 5s of sim_transport_free"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+            let outcome = recv_handle.join().expect("recv thread panicked");
+            // After destroy the partition flag is set and the conn
+            // table is cleared; whichever the recv loop sees first
+            // surfaces as Partitioned.
+            assert!(
+                matches!(outcome, SimRecvOutcome::Partitioned),
+                "expected Partitioned wake from destroy, got {outcome:?}"
+            );
         }
     }
 }

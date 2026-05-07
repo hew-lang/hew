@@ -195,7 +195,7 @@ fn test_encode_url_safe_known_output() {
     // URL-safe chars should be '-' and '_'.
     // The '_' substitution (index 63) works. The '-' substitution (index 62)
     // currently returns '+' instead of '-'.
-    // TODO(encode_url-index62-bug): encode_url returns '+' for base64 index 62
+    // TODO(#1673): encode_url returns '+' for base64 index 62
     // instead of '-'. The round-trip still works because decode treats '+' and
     // '-' identically. Pending investigation and fix.
     let data = bytes [251, 255];

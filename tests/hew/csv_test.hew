@@ -179,6 +179,6 @@ fn test_header_out_of_range_returns_empty() {
 // The line splitter in parse_impl splits naively on '\n' before handling
 // quoted fields. A quoted field containing a literal '\n' will be split
 // across multiple lines and produce unexpected results.
-// TODO(csv-embedded-newline): add embedded-newline quoted-field support.
+// TODO(#1674): add embedded-newline quoted-field support.
 // Example that would need to work: csv.parse("a,b\n\"line1\nline2\",2")
 // producing get(0,0) == "line1\nline2". Skipped until parser is extended.

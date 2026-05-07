@@ -133,9 +133,19 @@ fn test_nested_object_round_trip() {
 #[test]
 fn test_unicode_string_field_round_trip() {
     // Multi-byte UTF-8 value survives msgpack encode → decode → JSON parse.
-    // Use JSON-level \uXXXX escape (valid in JSON) so the Hew string literal
-    // doesn't need to carry a raw multi-byte character.
-    // JSON input: {"k": "h\u00e9llo"} — \u00e9 is the JSON escape for 'é'.
+    // The JSON input uses a JSON-level \uXXXX escape (valid JSON syntax) because
+    // Hew source does not support \u{NNNN} escape sequences in string literals
+    // (tracked in #1675). Raw UTF-8 literals in .hew source work fine, so the
+    // assertion uses "héllo" directly.
+    // JSON input: {"k": "h\u00e9llo"} — \u00e9 is the JSON escape for 'é' (U+00E9).
+    // After JSON parse → msgpack encode → msgpack decode → JSON serialize →
+    // JSON parse, get_string() must return exactly "héllo".
+    // Precision contract:
+    //   - exact string equality: "héllo"
+    //   - byte length 6 (h=1 + é=2 + l=1 + l=1 + o=1 in UTF-8)
+    //   - ASCII anchors: starts_with("h"), ends_with("llo")
+    // Any corruption of the multi-byte 'é' (U+00E9 → 0xC3 0xA9) fails at
+    // least the equality and length assertions.
     let packed = msgpack.from_json("{\"k\": \"h\\u00e9llo\"}");
     testing.assert_true(packed.len() > 0);
     let recovered = msgpack.to_json(packed);
@@ -143,9 +153,11 @@ fn test_unicode_string_field_round_trip() {
     match r {
         Ok(val) => {
             let field = val.get_field("k");
-            // The JSON parser decodes \u00e9 to the UTF-8 sequence for 'é'.
-            // get_string() returns the decoded string; length must be > 0.
-            testing.assert_true(field.get_string().len() > 0);
+            let s = field.get_string();
+            testing.assert_eq_str(s, "héllo");
+            testing.assert_eq(s.len(), 6);
+            testing.assert_true(s.starts_with("h"));
+            testing.assert_true(s.ends_with("llo"));
             field.free();
             val.free();
         },

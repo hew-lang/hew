@@ -34,7 +34,10 @@
 //!   `SimTransport` instances are wholly independent.
 //! - **`destroy` is the canonical release path** (`ffi-ownership-contracts`).
 //!   [`sim_transport_free`] mirrors `hew_node::free_transport` for tests.
-//!   Double-destroy panics under `debug_assert!`.
+//!   Double-destroy and stale-handle reentry are detected by an
+//!   internal liveness registry (see [`LivenessRegistry`]) BEFORE any
+//!   `Box::from_raw` reclaim runs, so reentry on a freed handle is a
+//!   typed `set_last_error` no-op rather than a use-after-free.
 //! - **Cleanup-all-exits.** `Drop` on the boxed impl wakes every pending
 //!   recv via per-conn `Condvar`s so a panicking test does not leak threads.
 //!
@@ -60,10 +63,10 @@
     reason = "type names mirror the existing TcpTransport / QuicTransport convention"
 )]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, OnceLock};
 
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -246,10 +249,6 @@ struct SimTransportState {
     // ships an invariant that requires it (HEW-DIST-SPEC §14 invariants 5/6).
     _min_delay_ms: u64,
     _max_delay_ms: u64,
-    /// Debug-only flag set by `sim_destroy` so a second destroy detects
-    /// double-free (`ffi-ownership-contracts`).
-    #[cfg(debug_assertions)]
-    destroyed: AtomicBool,
 }
 
 impl SimTransportState {
@@ -264,8 +263,6 @@ impl SimTransportState {
             rng: Mutex::new(SmallRng::seed_from_u64(cfg.seed)),
             _min_delay_ms: cfg.min_delay_ms,
             _max_delay_ms: cfg.max_delay_ms,
-            #[cfg(debug_assertions)]
-            destroyed: AtomicBool::new(false),
         }
     }
 
@@ -637,18 +634,111 @@ unsafe extern "C" fn sim_close_conn(impl_ptr: *mut c_void, conn: c_int) {
     st.cv.notify_all();
 }
 
+// ---------------------------------------------------------------------------
+// Liveness registry — the security-critical invariant
+// ---------------------------------------------------------------------------
+
+/// Process-wide registry of live `SimTransport` allocations.
+///
+/// **Why this exists.** The vtable signature for `destroy` (and the
+/// mirror helper [`sim_transport_free`]) takes a raw pointer by value.
+/// The C-ABI cannot nullify the caller's storage, so the only way to
+/// detect a stale or double-destroy reentry without dereferencing
+/// possibly-freed memory is to consult an out-of-band registry first.
+/// Reconstructing `Box::from_raw(impl_ptr)` and then asking the boxed
+/// value "are you already destroyed?" is unsound: the read happens
+/// after the freed allocation has already been claimed (and may have
+/// been reused by another allocation by then).
+///
+/// **Lock ordering.** Both mutexes here are leaf mutexes — they are
+/// never held while taking any other lock (`PoisonSafe<ConnTable>`'s
+/// inner `Mutex`, the per-transport `rng` mutex, the `Condvar`'s
+/// associated mutex, or `set_last_error`'s thread-local). Hold time
+/// is bounded to a single `HashSet::insert` / `HashSet::remove`. This
+/// makes them deadlock-safe regardless of which subsystem currently
+/// holds the conn table.
+///
+/// **Cleanup.** Entries are removed by `claim_transport` /
+/// `claim_impl` at the moment ownership transfers back to Rust for
+/// `Box::from_raw`. Insertion happens in [`sim_transport_new`] before
+/// the pointer is observable to any other thread. There is no
+/// background sweeper and no entry can outlive the program; the
+/// registry is `'static` only because individual transport allocations
+/// can be created and freed across many test threads without a single
+/// owning scope.
+///
+/// **Why a registry and not e.g. an `Arc<AtomicBool>` tombstone on
+/// the impl itself.** A tombstone living inside the freed allocation
+/// is exactly the design that the security finding rejected — reading
+/// it requires dereferencing the pointer, which is precisely what we
+/// must not do. The registry deliberately stores the *integer value*
+/// of each pointer so the liveness check is a pure hash-set lookup
+/// against `usize` keys.
+struct LivenessRegistry {
+    /// Live `*mut HewTransport` outer pointers (cast to `usize`).
+    transports: Mutex<HashSet<usize>>,
+    /// Live `*mut SimTransportState` impl pointers (cast to `usize`).
+    impls: Mutex<HashSet<usize>>,
+}
+
+fn registry() -> &'static LivenessRegistry {
+    static REG: OnceLock<LivenessRegistry> = OnceLock::new();
+    REG.get_or_init(|| LivenessRegistry {
+        transports: Mutex::new(HashSet::new()),
+        impls: Mutex::new(HashSet::new()),
+    })
+}
+
+fn register_alloc(transport: *mut HewTransport, impl_ptr: *mut c_void) {
+    let reg = registry();
+    reg.transports
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(transport as usize);
+    reg.impls
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(impl_ptr as usize);
+}
+
+/// Atomically remove `transport` from the live-transport set. Returns
+/// `true` only on the single call that observed it as live; subsequent
+/// or stale callers see `false` and MUST NOT dereference `transport`.
+fn claim_transport(transport: *mut HewTransport) -> bool {
+    registry()
+        .transports
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&(transport as usize))
+}
+
+/// Atomically remove `impl_ptr` from the live-impl set. Returns `true`
+/// only on the single call that observed it as live; subsequent or
+/// stale callers see `false` and MUST NOT dereference `impl_ptr`.
+fn claim_impl(impl_ptr: *mut c_void) -> bool {
+    registry()
+        .impls
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&(impl_ptr as usize))
+}
+
 unsafe extern "C" fn sim_destroy(impl_ptr: *mut c_void) {
     cabi_guard!(impl_ptr.is_null());
-    // SAFETY: `impl_ptr` was created by `Box::into_raw` in
-    // [`sim_transport_new`] and the caller is the canonical release path.
-    let boxed = unsafe { Box::from_raw(impl_ptr.cast::<SimTransportState>()) };
-    #[cfg(debug_assertions)]
-    {
-        debug_assert!(
-            !boxed.destroyed.swap(true, Ordering::AcqRel),
-            "SimTransport destroy called twice on the same impl pointer",
-        );
+    // Liveness check BEFORE any pointer dereference / `Box::from_raw`.
+    // A stale or double-destroy reentry sees the impl absent from the
+    // registry and returns without touching the (possibly freed)
+    // allocation — fail-closed (`ffi-ownership-contracts`).
+    if !claim_impl(impl_ptr) {
+        set_last_error("sim_destroy: stale or double-destroy on impl pointer");
+        return;
     }
+    // SAFETY: `impl_ptr` was created by `Box::into_raw` in
+    // [`sim_transport_new`] and `claim_impl` just removed it from the
+    // live-impl registry, transferring exclusive ownership to us. No
+    // other thread can subsequently observe it as live, so the
+    // `Box::from_raw` reclaim cannot race with another `sim_destroy`.
+    let boxed = unsafe { Box::from_raw(impl_ptr.cast::<SimTransportState>()) };
     drop(boxed);
 }
 
@@ -681,11 +771,17 @@ static SIM_OPS: HewTransportOps = HewTransportOps {
 #[must_use]
 pub unsafe fn sim_transport_new(cfg: SimConfig) -> *mut HewTransport {
     let state = Box::new(SimTransportState::new(cfg));
+    let impl_ptr = Box::into_raw(state).cast::<c_void>();
     let transport = Box::new(HewTransport {
         ops: &raw const SIM_OPS,
-        r#impl: Box::into_raw(state).cast::<c_void>(),
+        r#impl: impl_ptr,
     });
-    Box::into_raw(transport)
+    let transport_ptr = Box::into_raw(transport);
+    // Register both allocations BEFORE returning so any subsequent
+    // `sim_destroy` / `sim_transport_free` call can validate liveness
+    // without touching the underlying memory. See [`LivenessRegistry`].
+    register_alloc(transport_ptr, impl_ptr);
+    transport_ptr
 }
 
 /// Release a `SimTransport` returned by [`sim_transport_new`]. Mirrors
@@ -694,24 +790,43 @@ pub unsafe fn sim_transport_new(cfg: SimConfig) -> *mut HewTransport {
 ///
 /// # Safety
 ///
-/// `transport` must be a pointer returned by [`sim_transport_new`] that has
-/// not yet been freed. Calling this function twice on the same pointer is
-/// undefined behaviour; in `debug_assertions` builds the second call panics
-/// before reaching `Box::from_raw`.
+/// `transport` must be either null or a pointer that was returned by
+/// [`sim_transport_new`] at some point in this process. A second call on
+/// the same pointer (or a call on a stale pointer that was never live)
+/// is a typed `set_last_error` no-op rather than a use-after-free: the
+/// internal liveness registry is consulted before any dereference, so
+/// the function never reads through a freed `Box`. This is what makes
+/// the security invariant ("stale reentry cannot touch freed memory
+/// before liveness validation") hold.
 pub unsafe fn sim_transport_free(transport: *mut HewTransport) {
     if transport.is_null() {
         return;
     }
-    // SAFETY: caller guarantees the pointer was returned by `sim_transport_new`.
+    // Liveness check BEFORE any pointer dereference / `Box::from_raw`.
+    // A stale or double-free reentry sees the transport absent from the
+    // registry and returns without touching the (possibly freed)
+    // allocation — fail-closed.
+    if !claim_transport(transport) {
+        set_last_error("sim_transport_free: stale or double-free on transport pointer");
+        return;
+    }
+    // SAFETY: registry confirmed liveness; we now hold exclusive
+    // ownership of the outer allocation and no concurrent free can race.
     let transport_ref = unsafe { &*transport };
     // SAFETY: ops pointer is part of a valid transport.
     if let Some(ops) = unsafe { transport_ref.ops.as_ref() } {
         if let Some(destroy_fn) = ops.destroy {
-            // SAFETY: impl belongs to this transport and has not been freed.
+            // SAFETY: impl belongs to this transport. `destroy_fn`
+            // (i.e. [`sim_destroy`]) performs its own liveness check
+            // against the impl registry, so a prior direct vtable
+            // destroy followed by `sim_transport_free` does not
+            // double-free the impl.
             unsafe { destroy_fn(transport_ref.r#impl) };
         }
     }
-    // SAFETY: outer struct was allocated by `Box::into_raw` in `sim_transport_new`.
+    // SAFETY: outer struct was allocated by `Box::into_raw` in
+    // `sim_transport_new` and we just claimed exclusive ownership via
+    // `claim_transport`.
     let _ = unsafe { Box::from_raw(transport) };
 }
 
@@ -1151,6 +1266,120 @@ mod tests {
                 "expected DroppedByPolicy with peer alive and 100% drop rate, got {outcome:?}"
             );
             sim_transport_free(t);
+        }
+    }
+
+    /// Security regression (FFI ownership / invalid-handle safety):
+    /// calling `sim_transport_free` twice on the same pointer must NOT
+    /// reconstruct a `Box` from already-freed memory. With the
+    /// liveness registry in place, the second call is a typed
+    /// `set_last_error` no-op — the registry says "not live" before
+    /// any dereference happens.
+    ///
+    /// Without the fix, the second `sim_transport_free` would call
+    /// `Box::from_raw(transport)` on a freed allocation and read
+    /// `transport_ref.ops` / `transport_ref.r#impl` from reclaimed
+    /// memory before any liveness check could fire. Miri / `ASan` would
+    /// flag the original code; this test exists to prevent regression.
+    #[test]
+    fn double_free_is_safe_noop() {
+        // SAFETY: registry-mediated; the second free deliberately
+        // exercises a stale pointer and the redesigned free path is
+        // documented to handle it without dereferencing.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            sim_transport_free(t);
+            // Second free on the same pointer: must NOT touch freed
+            // memory. Asserting "did not crash / did not UB" is what
+            // this test enforces; the typed signal is also written to
+            // `set_last_error`.
+            sim_transport_free(t);
+        }
+    }
+
+    /// Security regression: calling the vtable's `destroy` twice on
+    /// the same impl pointer must NOT reconstruct a `Box` from freed
+    /// memory. The second call is gated by `claim_impl` against the
+    /// registry and returns early without dereferencing.
+    #[test]
+    fn double_destroy_via_vtable_is_safe_noop() {
+        // SAFETY: registry-mediated double-destroy exercise. After the
+        // first destroy the impl is freed and removed from the live
+        // set; the second destroy short-circuits before `Box::from_raw`.
+        // We then `sim_transport_free` to clean up the outer struct;
+        // its embedded destroy_fn call is itself a registry-checked
+        // no-op, so it does not double-free the impl.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            let transport_ref = &*t;
+            let ops = &*transport_ref.ops;
+            let destroy_fn = ops.destroy.unwrap();
+            destroy_fn(transport_ref.r#impl);
+            // Second destroy on the same impl pointer: must NOT touch
+            // freed memory.
+            destroy_fn(transport_ref.r#impl);
+            // Outer cleanup. The internal destroy_fn invocation here
+            // also short-circuits because the impl is already claimed.
+            sim_transport_free(t);
+        }
+    }
+
+    /// Security regression: a stale handle from a freed transport
+    /// must not be dereferenced by `sim_transport_free` or by the
+    /// vtable's `destroy`. Both paths consult the registry first and
+    /// fail closed.
+    #[test]
+    fn stale_handle_after_free_is_safe() {
+        // SAFETY: we deliberately retain a stale pointer after free
+        // and exercise both reentry paths. The redesigned API is
+        // documented to short-circuit via the registry before any
+        // dereference, so neither call touches freed memory.
+        unsafe {
+            let t = sim_transport_new(SimConfig::default());
+            // Capture impl pointer BEFORE free so we can probe the
+            // vtable destroy path with a stale value too. We re-read
+            // the ops fn pointer through the static `SIM_OPS`, NOT
+            // through `t`, to avoid touching the freed outer struct.
+            let stale_impl = (*t).r#impl;
+            sim_transport_free(t);
+
+            // Stale outer pointer reentry — registry check fails,
+            // function returns without dereferencing.
+            sim_transport_free(t);
+
+            // Stale impl pointer reentry via the static vtable —
+            // `claim_impl` fails, function returns without
+            // reconstructing `Box::from_raw(stale_impl)`.
+            let destroy_fn = SIM_OPS.destroy.unwrap();
+            destroy_fn(stale_impl);
+        }
+    }
+
+    /// Two independent `SimTransport` instances must each be freeable
+    /// without affecting the other's registry entry. Catches a class
+    /// of bug where the registry might be incorrectly keyed or
+    /// globally cleared.
+    #[test]
+    fn independent_transports_free_independently() {
+        // SAFETY: standard construction; both transports are freed
+        // exactly once each.
+        unsafe {
+            let a = sim_transport_new(SimConfig::default());
+            let b = sim_transport_new(SimConfig::default());
+            assert_ne!(a as usize, b as usize);
+            sim_transport_free(a);
+            // `b` must still be live and freeable — the registry
+            // entry for `b` is independent of `a`.
+            let (client, server) = make_pair(b, "sim://independent:0");
+            let outcome = sim_transport_send_classified(b, client, b"ping");
+            assert!(matches!(outcome, SimSendOutcome::Sent { bytes_sent: 4 }));
+            let mut buf = [0u8; 16];
+            let recv = sim_transport_recv_classified(b, server, &mut buf);
+            assert!(matches!(
+                recv,
+                SimRecvOutcome::Received { bytes_received: 4 }
+            ));
+            sim_transport_free(b);
         }
     }
 }

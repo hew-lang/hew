@@ -517,16 +517,16 @@ test-rust:
 	fi
 
 test-parser:
-	cargo test -p hew-parser -p hew-lexer
+	cargo nextest run --profile ci -p hew-parser -p hew-lexer
 
 test-types:
-	cargo test -p hew-types -p hew-parser -p hew-lexer
+	cargo nextest run --profile ci -p hew-types -p hew-parser -p hew-lexer
 
 test-cli:
-	cargo test -p hew-cli -p adze-cli
+	cargo nextest run --profile ci -p hew-cli -p adze-cli
 
 test-runtime-net:
-	cargo test --no-fail-fast \
+	cargo nextest run --profile ci --no-fail-fast \
 		-p hew-runtime \
 		-p hew-analysis \
 		-p hew-lsp \
@@ -546,7 +546,7 @@ test-runtime-net:
 # Profiler allocator tests in transport.rs are skipped (they require feature = "profiler").
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
 test-runtime-unit:
-	cargo test -p hew-runtime --no-default-features
+	cargo nextest run --profile ci -p hew-runtime --no-default-features
 
 test-codegen: hew codegen runtime stdlib
 	cd hew-codegen/build && ctest --output-on-failure -LE wasm

@@ -2643,6 +2643,120 @@ fn display_impl_satisfies_bounded_magic_builtins() {
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
 }
 
+#[test]
+fn deferred_bound_check_drains_after_defaulting() {
+    let mut checker = make_checker_with_trait("MyTrait", &[], false, false);
+    let span = 0..0;
+    let var = TypeVar::fresh();
+    let sig = FnSig {
+        type_params: vec!["T".to_string()],
+        type_param_bounds: HashMap::from([("T".to_string(), vec!["MyTrait".to_string()])]),
+        ..Default::default()
+    };
+
+    checker.enforce_type_param_bounds(&sig, &[Ty::Var(var)], &span);
+    assert!(
+        checker
+            .errors
+            .iter()
+            .all(|error| error.kind != TypeErrorKind::BoundsNotSatisfied),
+        "unresolved arg should defer bound enforcement: {:?}",
+        checker.errors
+    );
+    assert_eq!(checker.deferred_bound_checks.len(), 1);
+
+    checker.subst.insert(var, &Ty::I64).unwrap();
+    checker.drain_deferred_bound_checks();
+
+    let bounds_errors: Vec<_> = checker
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert_eq!(
+        bounds_errors.len(),
+        1,
+        "expected exactly one deferred bound failure after resolution: {:?}",
+        checker.errors
+    );
+    assert!(
+        bounds_errors[0].message.contains("MyTrait") && bounds_errors[0].message.contains("int"),
+        "expected deferred diagnostic to mention MyTrait and int: {:?}",
+        bounds_errors[0]
+    );
+}
+
+#[test]
+fn deferred_bound_check_skips_when_var_remains_unresolved() {
+    let mut checker = make_checker_with_trait("MyTrait", &[], false, false);
+    let span = 0..0;
+    let var = TypeVar::fresh();
+    let sig = FnSig {
+        type_params: vec!["T".to_string()],
+        type_param_bounds: HashMap::from([("T".to_string(), vec!["MyTrait".to_string()])]),
+        ..Default::default()
+    };
+
+    checker.enforce_type_param_bounds(&sig, &[Ty::Var(var)], &span);
+    checker
+        .deferred_inference_holes
+        .push(DeferredInferenceHole {
+            span: span.clone(),
+            context: "test deferred bound hole".to_string(),
+            hole_vars: vec![var],
+            source_module: None,
+        });
+
+    checker.drain_deferred_bound_checks();
+    let program = hew_parser::parse("").program;
+    checker.report_unresolved_inference_holes(&program);
+
+    let bounds_errors: Vec<_> = checker
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::BoundsNotSatisfied)
+        .collect();
+    assert!(
+        bounds_errors.is_empty(),
+        "unresolved hole should not also emit bound noise: {:?}",
+        checker.errors
+    );
+    let inference_errors: Vec<_> = checker
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::InferenceFailed)
+        .collect();
+    assert_eq!(
+        inference_errors.len(),
+        1,
+        "expected unresolved-hole reporter to stay authoritative: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn deferred_bound_check_drains_when_var_resolves_to_satisfying_type() {
+    let mut checker = Checker::new(test_registry());
+    checker.register_builtins();
+    let span = 0..0;
+    let var = TypeVar::fresh();
+    let sig = FnSig {
+        type_params: vec!["T".to_string()],
+        type_param_bounds: HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+        ..Default::default()
+    };
+
+    checker.enforce_type_param_bounds(&sig, &[Ty::Var(var)], &span);
+    checker.subst.insert(var, &Ty::I64).unwrap();
+    checker.drain_deferred_bound_checks();
+
+    assert!(
+        checker.errors.is_empty(),
+        "resolved Display-bound arg should pass deferred drain: {:?}",
+        checker.errors
+    );
+}
+
 // ---- unused variable ----
 
 #[test]

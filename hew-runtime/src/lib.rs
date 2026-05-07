@@ -421,6 +421,12 @@ pub mod hew_node;
 pub mod supervisor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transport;
+// Deterministic in-process SimTransport — gated behind `cfg(test)` for unit
+// tests inside the crate and the `sim-transport` feature for integration
+// tests. Never compiled into a release runtime; the module's own attribute
+// gate enforces this and excludes wasm32 per HEW-DIST-SPEC §15.
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "sim-transport")))]
+pub mod sim_transport;
 pub mod wire;
 
 #[cfg(not(target_arch = "wasm32"))]

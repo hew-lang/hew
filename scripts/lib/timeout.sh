@@ -22,15 +22,12 @@ _pick_timeout_cmd() {
             return 0
         fi
     done
-    # Fallback: use whatever is available without --kill-after (e.g. BSD/wrapper)
-    for bin in timeout gtimeout; do
-        command -v "$bin" >/dev/null 2>&1 || continue
-        TIMEOUT_BACKEND="cmd"
-        TIMEOUT_CMD=("$bin")
-        return 0
-    done
+    # Bare timeout/gtimeout without --kill-after support are intentionally
+    # skipped: they only kill the direct child process, not the full process
+    # group, so cargo/make grandchildren survive and hold artifact locks.
+    # Fall through to the Perl process-group-safe backend.
     command -v perl >/dev/null 2>&1 || {
-        echo "error: timeout, gtimeout, or perl is required for bounded execution" >&2
+        echo "error: GNU timeout (with --kill-after) or perl is required for bounded execution" >&2
         exit 1
     }
     TIMEOUT_BACKEND="perl"

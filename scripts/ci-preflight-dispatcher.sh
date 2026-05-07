@@ -5,6 +5,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Per-lane wall-clock budgets (seconds).  These values bound hung commands and
+# surface the dominant-cost step in the summary table.  Override via env vars
+# *for measurement only* — the timeout still kills the command on expiry; these
+# variables only adjust the budget ceiling, they are not a bypass.
+PREFLIGHT_TIMEOUT_DOCS="${PREFLIGHT_TIMEOUT_DOCS:-30}"
+PREFLIGHT_TIMEOUT_NARROW="${PREFLIGHT_TIMEOUT_NARROW:-180}"
+PREFLIGHT_TIMEOUT_FALLBACK="${PREFLIGHT_TIMEOUT_FALLBACK:-600}"
+
 DRY_RUN=0
 BASE_REF=""
 EXPLICIT_PATHS=0
@@ -12,16 +20,19 @@ LANE=""
 LANE_REASON=""
 CHANGED_FILES=()
 COMMANDS=()
+PROFILE_JSON_PATH=""
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--base <ref>] [--] [path...]
+Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--base <ref>] [--profile-json <path>] [--] [path...]
 
 Dispatch a conservative local CI preflight based on changed files.
 
 - Pass explicit paths to classify those files directly.
 - With no paths, the script inspects committed, staged, unstaged, and untracked changes.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
+- --profile-json <path>  Write per-command timing as a JSON array to <path> (one object per
+                         command, with "cmd", "elapsed_s", "status" fields).
 EOF
 }
 
@@ -205,6 +216,12 @@ while [[ $# -gt 0 ]]; do
             shift
             [[ $# -gt 0 ]] || die "--base requires a ref"
             BASE_REF="$1"
+            shift
+            ;;
+        --profile-json)
+            shift
+            [[ $# -gt 0 ]] || die "--profile-json requires a path"
+            PROFILE_JSON_PATH="$1"
             shift
             ;;
         --help|-h)
@@ -441,6 +458,19 @@ case "$LANE" in
         ;;
 esac
 
+# Resolve the per-command timeout budget for this lane.
+case "$LANE" in
+    docs)
+        CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_DOCS"
+        ;;
+    fallback)
+        CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_FALLBACK"
+        ;;
+    *)
+        CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_NARROW"
+        ;;
+esac
+
 echo "Selected profile: $PROFILE_LABEL"
 echo "Reason: $LANE_REASON"
 echo "Changed files:"
@@ -458,7 +488,11 @@ fi
 
 echo "Commands:"
 for cmd in "${COMMANDS[@]}"; do
-    echo "  - $cmd"
+    if (( DRY_RUN == 1 )); then
+        echo "  - $cmd  (budget: ${CMD_TIMEOUT}s)"
+    else
+        echo "  - $cmd"
+    fi
 done
 
 if (( DRY_RUN == 1 )); then
@@ -466,7 +500,133 @@ if (( DRY_RUN == 1 )); then
     exit 0
 fi
 
-for cmd in "${COMMANDS[@]}"; do
+# Execution — per-command timing with process-group-safe outer timeout.
+#
+# run_timed_command forks each command into its own process group (via
+# perl setpgid) so that a timeout kills the entire tree — bash -lc, cargo,
+# make, and all their grandchildren — not just the direct child.  This
+# prevents artifact-directory lock contention when cargo is orphaned by a
+# timeout that only kills the bash wrapper.
+#
+# A Perl watchdog (not scripts/lib/timeout.sh's run_with_timeout) is used
+# for the same reason: standard system timeout/gtimeout binaries only kill
+# the direct child; the Perl watchdog sends kill to the *process group*
+# (-$pgid), which is the only portable POSIX mechanism to kill the full tree.
+
+PREFLIGHT_OVERALL_START=$SECONDS
+
+# Accumulator for --profile-json output.
+_json_entries=()
+
+_elapsed_s=0
+
+run_timed_command() {
+    local cmd="$1"
+    local start=$SECONDS
+    local status=0
+
+    echo ""
     echo "==> $cmd"
-    bash -lc "$cmd"
+
+    # Fork bash -lc into a new process group so kill -TERM/-KILL to -$pgid
+    # reaches cargo, make, and every grandchild spawned by the command.
+    # perl setpgid(0,0) is POSIX-portable (macOS + Linux) and does not depend
+    # on the system timeout binary.
+    perl -e '
+        use POSIX qw(setpgid);
+        setpgid(0, 0) or die "setpgid: $!";
+        exec @ARGV;
+        die "exec: $!";
+    ' bash -lc "$cmd" &
+    local child_pid=$!
+
+    # Perl watchdog: sends SIGTERM to the process group after $CMD_TIMEOUT
+    # seconds, then SIGKILL 5 s later if still alive.  The $SIG{TERM} handler
+    # lets the dispatcher cancel the watchdog cleanly without leaving an
+    # orphaned sleep subprocess.
+    perl -e '
+        my ($pg, $s) = @ARGV;
+        $SIG{TERM} = sub { exit 0 };
+        sleep $s;
+        kill TERM => -$pg;
+        sleep 5;
+        kill KILL => -$pg;
+    ' "$child_pid" "$CMD_TIMEOUT" &
+    local watchdog_pid=$!
+
+    wait "$child_pid" 2>/dev/null || status=$?
+    # Cancel the watchdog; the SIGTERM handler exits cleanly with no orphans.
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+
+    _elapsed_s=$(( SECONDS - start ))
+
+    # Timeout exit codes from the watchdog:
+    #   143 = SIGTERM (128+15): watchdog's initial soft kill reached the child
+    #   137 = SIGKILL (128+9): watchdog's hard-kill fallback fired
+    if [[ "$status" -eq 137 || "$status" -eq 143 ]]; then
+        echo "==> TIMEOUT: '$cmd' exceeded ${CMD_TIMEOUT}s budget and was killed."
+    fi
+
+    if [[ "$status" -ne 0 ]]; then
+        echo "<-- $cmd  elapsed ${_elapsed_s}s  FAILED (exit $status)"
+    else
+        echo "<-- $cmd  elapsed ${_elapsed_s}s  ok"
+    fi
+
+    # Accumulate JSON entry.
+    _json_entries+=("{\"cmd\":$(printf '%s' "$cmd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),\"elapsed_s\":${_elapsed_s},\"status\":${status}}")
+
+    return "$status"
+}
+
+PREFLIGHT_FAILURES=()
+PREFLIGHT_CMD_ELAPSED=()
+for cmd in "${COMMANDS[@]}"; do
+    if ! run_timed_command "$cmd"; then
+        PREFLIGHT_FAILURES+=("$cmd")
+    fi
+    PREFLIGHT_CMD_ELAPSED+=("$_elapsed_s")
 done
+
+PREFLIGHT_OVERALL_ELAPSED=$(( SECONDS - PREFLIGHT_OVERALL_START ))
+
+# Summary table.
+echo ""
+echo "==> Preflight summary (${PREFLIGHT_OVERALL_ELAPSED}s total)"
+i=0
+for cmd in "${COMMANDS[@]}"; do
+    elapsed="${PREFLIGHT_CMD_ELAPSED[$i]:-?}"
+    status_label="ok"
+    for failed in "${PREFLIGHT_FAILURES[@]+"${PREFLIGHT_FAILURES[@]}"}"; do
+        [[ "$failed" == "$cmd" ]] && status_label="FAILED"
+    done
+    printf "    %s  %ss  [%s]\n" "$cmd" "$elapsed" "$status_label"
+    (( i++ )) || true
+done
+
+# Write --profile-json if requested.
+if [[ -n "$PROFILE_JSON_PATH" ]]; then
+    {
+        printf '['
+        first=1
+        for entry in "${_json_entries[@]+"${_json_entries[@]}"}"; do
+            if (( first == 0 )); then printf ','; fi
+            printf '%s' "$entry"
+            first=0
+        done
+        printf ']\n'
+    } > "$PROFILE_JSON_PATH"
+    echo "Timing profile written to: $PROFILE_JSON_PATH"
+fi
+
+if [[ ${#PREFLIGHT_FAILURES[@]} -gt 0 ]]; then
+    echo ""
+    echo "==> Preflight FAILED — ${#PREFLIGHT_FAILURES[@]} command(s) did not pass:"
+    for failed in "${PREFLIGHT_FAILURES[@]}"; do
+        echo "    - $failed"
+    done
+    exit 1
+fi
+
+echo "==> Preflight passed."

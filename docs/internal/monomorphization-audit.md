@@ -1,16 +1,25 @@
 # Monomorphization audit — primitive trait dispatch
 
 Status: **partial**. Type-checker side is feature-complete for the user-defined
-trait dispatch case (#1596, #1642, #1654, #1664). Two residual gaps survive
-for the magic-builtin → user-`Display` path on the codegen side and for the
-literal-form primitive receiver on the checker side; both are itemised under
-[Residual gaps](#residual-gaps) below and are tracked by separate child
-issues, leaving #1565's audit deliverable closed even though the underlying
-behaviour migration is not.
+trait dispatch case (#1596, #1642, #1654, #1664). Three residual gaps survive
+and are itemised under [Residual gaps](#residual-gaps) below, each tracked by
+a separate child issue:
+
+- **#1668** — literal-form primitive receiver dispatch (`(42).fmt()`) fails
+  even though the let-bound form works (checker side, `hew-types`).
+- **#1669** — `std/builtins.hew` `Display` blanket impls are not
+  method-dispatchable; user code must redeclare `trait Display` in-file
+  for `x.fmt()` to resolve on a primitive (checker / stdlib registration).
+- **#1670** — `hew.print` MLIR lowering does not honour user `impl Display`;
+  the post-#1654 trait-bounded checker contract is ahead of codegen.
+
+#1565's audit deliverable closes with this document even though the
+underlying behaviour migration is not complete; the three follow-ups
+above are the durable trackers.
 
 This document records what shipped, the boundary contracts that future
-changes must preserve, and the residual gaps with reproducible probe
-transcripts. It is intended to be the durable reference; the per-PR
+changes must preserve, and the residual gaps with reproducible diagnostic
+snippets. It is intended to be the durable reference; the per-PR
 narrative for #1580 / #1596 / #1642 / #1654 / #1664 lives in those PRs'
 descriptions.
 
@@ -100,15 +109,17 @@ descriptions.
 ## Residual gaps
 
 Three behaviours remain broken on `main` at the time of this audit
-closeout. None are fixed in this lane (which is audit + e2e only); each
-is documented with a verbatim probe transcript so a future change can
-verify resolution by re-running the probe.
+closeout. None are fixed in this lane (which is audit-doc only); each
+is tracked by a child issue (#1668 / #1669 / #1670) and is documented
+below with a self-contained source snippet plus the verbatim diagnostic
+so a future change can verify resolution by reproducing the snippet.
 
-All probe sources are at `.tmp/probes/monomorphization/*.hew` in the
-audit-closeout branch (gitignored — transient evidence, not committed).
-The four-line outputs below were captured against `origin/main` at
-`1a6d00fc` (`feat(runtime): add test-only SimTransport for transport
-property tests (#1667)`).
+The diagnostics below were captured against `origin/main` at `1a6d00fc`
+(`feat(runtime): add test-only SimTransport for transport property
+tests (#1667)`). Local probe sources used during the audit are
+preserved in the audit-closeout branch under a gitignored scratch
+directory; they are not the source of truth — the snippets and
+diagnostics inlined below are.
 
 ### Residual 1 — Literal-form primitive receiver dispatch fails
 
@@ -124,16 +135,18 @@ i64
 The **literal-form** receiver case does not, even with an in-file
 trait + impl declaration matching the shipping fixture verbatim:
 
-```
-$ cat .tmp/probes/monomorphization/integer_literal_fmt_local_trait.hew
+```hew
+// reproducer
 trait Display { fn fmt(val: Self) -> String; }
 impl Display for i64 { fn fmt(val: i64) -> String { "i64" } }
 fn main() { println((42).fmt()); }
+```
 
-$ hew check .tmp/probes/monomorphization/integer_literal_fmt_local_trait.hew
-integer_literal_fmt_local_trait.hew:16:14: error: no method `fmt` on `int`
- 16 |     println((42).fmt());
-    |              ^^^^^^^^^
+```
+$ hew check reproducer.hew
+reproducer.hew:4:14: error: no method `fmt` on `int`
+ 4 |     println((42).fmt());
+   |              ^^^^^^^^^
 type errors found
 ```
 
@@ -144,10 +157,11 @@ works because the explicit type annotation `let x: i64 = 42` resolves
 the receiver to `Ty::I64` before `try_dispatch_primitive_trait_method`
 runs.
 
-**Tracking:** to be filed as a child issue of #1565; see closeout
-handoff for proposed body. Until that issue lands and is fixed,
-documentation that says "primitive trait dispatch works on integer
-receivers" needs the qualifier "non-literal".
+**Tracking:** [#1668](https://github.com/hew-lang/hew/issues/1668)
+(`types: literal-form primitive receiver fails trait method dispatch`).
+Until that issue lands and is fixed, documentation that says
+"primitive trait dispatch works on integer receivers" needs the
+qualifier "non-literal".
 
 ### Residual 2 — `std/builtins.hew` `Display` is not method-dispatchable
 
@@ -155,16 +169,18 @@ The same let-bound `int` case that works when the user redeclares
 `trait Display` in-file fails when only the `std/builtins.hew`
 declaration is in scope:
 
-```
-$ cat .tmp/probes/monomorphization/integer_var_fmt_builtin_only.hew
+```hew
+// reproducer (no in-file trait redeclaration)
 fn main() {
     let x: i64 = 42;
     println(x.fmt());
 }
+```
 
-$ hew check .tmp/probes/monomorphization/integer_var_fmt_builtin_only.hew
-integer_var_fmt_builtin_only.hew:6:13: error: no method `fmt` on `int`
- 6 |     println(x.fmt());
+```
+$ hew check reproducer.hew
+reproducer.hew:4:13: error: no method `fmt` on `int`
+ 4 |     println(x.fmt());
    |             ^^^^^^^
 type errors found
 ```
@@ -172,18 +188,20 @@ type errors found
 The blanket `impl Display for i64` at `std/builtins.hew:47–51` is
 present in source but not landing in the primitive trait impl table
 that `try_dispatch_primitive_trait_method` consults. The shipping
-fixture papers over this by redeclaring `trait Display` in the test
-file; that registration is what populates the side-table for the test.
+fixture `primitive_trait_impl_display_int.hew` papers over this by
+redeclaring `trait Display` in the test file; that registration is
+what populates the side-table for the test.
 
 This is the gap that the `std/builtins.hew` Display surface was
 intended to close — without it, user code cannot use the
 `println(x.fmt())` pattern on a primitive without redeclaring the
 trait themselves.
 
-**Tracking:** to be filed as a child issue of #1565; see closeout
-handoff for proposed body. The likely fix lives at the
-`std/builtins.hew` registration boundary in `stdlib_loader.rs` /
-`registration.rs`, not in `methods.rs`.
+**Tracking:** [#1669](https://github.com/hew-lang/hew/issues/1669)
+(`types: std/builtins.hew Display blanket impls are not
+method-dispatchable`). The likely fix lives at the `std/builtins.hew`
+registration boundary in `stdlib_loader.rs` / `registration.rs`, not
+in `methods.rs`.
 
 ### Residual 3 — `print(MyStruct{})` codegen lowering rejects user Display impls
 
@@ -191,18 +209,20 @@ The post-#1654 checker accepts `print` / `println` calls on a user
 struct that `impl Display`s; codegen does not honour the resolved
 Display impl and rejects the call at MLIR lowering:
 
-```
-$ cat .tmp/probes/monomorphization/user_struct_println_via_magic.hew
+```hew
+// reproducer
 pub type Greeting { who: String; }
 impl Display for Greeting {
     fn fmt(val: Greeting) -> String { "hello, " + val.who }
 }
 fn main() { println(Greeting { who: "world" }); }
+```
 
-$ hew check .tmp/probes/monomorphization/user_struct_println_via_magic.hew
-user_struct_println_via_magic.hew: OK
+```
+$ hew check reproducer.hew
+reproducer.hew: OK
 
-$ hew run .tmp/probes/monomorphization/user_struct_println_via_magic.hew
+$ hew run reproducer.hew
 …unsupported type for print
 …failed to legalize operation 'hew.print' that was explicitly marked illegal
 Error: failed to lower Hew dialect ops
@@ -213,8 +233,8 @@ object emission failed
 `print` and `println` produce identical lowering failures. The
 user-receiver path through method syntax does work end-to-end:
 
-```
-$ cat .tmp/probes/monomorphization/user_struct_method_fmt.hew
+```hew
+// works today
 pub type Greeting { who: String; }
 impl Display for Greeting {
     fn fmt(val: Greeting) -> String { "hello, " + val.who }
@@ -223,8 +243,10 @@ fn main() {
     let g = Greeting { who: "world" };
     println(g.fmt());
 }
+```
 
-$ hew run .tmp/probes/monomorphization/user_struct_method_fmt.hew
+```
+$ hew run works.hew
 hello, world
 ```
 
@@ -237,17 +259,20 @@ emitter. `println(g.fmt())` works because the `print` operand is
 "`hew.print` lowering of an arbitrary user type via its resolved
 Display dispatch decision".
 
-**Tracking:** to be filed as a child issue of #1565 — this is the
-genuine "lift magic builtin into trait-bounded sig" Phase 2 work that
-#1565's body itemises. The checker side has shipped; codegen has not.
+**Tracking:** [#1670](https://github.com/hew-lang/hew/issues/1670)
+(`codegen: hew.print lowering does not honor user impl Display`) —
+this is the genuine "lift magic builtin into trait-bounded sig"
+Phase 2 work that #1565's body itemises. The checker side has
+shipped; codegen has not.
 
-**Implication for this lane:** the originally-planned e2e fixture
-(`hew-codegen/tests/examples/e2e_traits/print_user_display.hew`,
-exercising `print(Greeting{...})`) is **not runnable** today. Adding
-it as `check`-only would violate the
-`check-pass-does-not-imply-run-pass` lesson. The fixture is therefore
-deferred to the codegen child issue that fixes Residual 3. The
-already-shipping
+**Implication for this audit lane (deferred fixture):** the
+originally-planned e2e fixture
+`hew-codegen/tests/examples/e2e_traits/print_user_display.hew`
+exercising `print(Greeting{...})` is **not added in this lane** and
+remains deferred. It is not runnable today (would fail with the
+diagnostic above) and adding it as `check`-only would violate the
+`check-pass-does-not-imply-run-pass` lesson. The fixture lands when
+#1670 is fixed. The already-shipping
 `hew-codegen/tests/examples/e2e_traits/primitive_trait_impl_display_int.hew`
 remains the canonical proof for the let-bound primitive receiver
 path; the user-receiver method-syntax path
@@ -309,4 +334,7 @@ above.
 
 This audit document is the closeout artefact for #1565's audit
 deliverable. The three residual gaps are tracked as separate child
-issues; #1565 itself can be closed once those issues are filed.
+issues — #1668 (literal-form primitive receiver), #1669 (`std/builtins`
+Display method-dispatch registration), and #1670 (`hew.print` user
+Display lowering) — so #1565 itself can be closed; the underlying
+behaviour migration continues against those trackers.

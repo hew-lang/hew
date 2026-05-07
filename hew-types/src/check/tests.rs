@@ -6096,6 +6096,10 @@ fn test_trait_object_type_args_substitution() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "proof assertions for all 6 call_type_args entries"
+)]
 fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
     let source = r#"
         trait Transform {
@@ -6146,6 +6150,15 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
         "type check errors: {:?}",
         output.errors
     );
+    // Exact count: 3 compound-bound generic method calls (apply<U=bool>, tag<V=int>,
+    // tag<V=string>) + 3 println builtins now registered with Display bounds.  Each
+    // call site produces one entry keyed by span, so the total is deterministic.
+    assert_eq!(
+        output.call_type_args.len(),
+        6,
+        "expected 3 generic-method calls + 3 println Display-bound calls, got {:?}",
+        output.call_type_args
+    );
     assert!(
         output
             .call_type_args
@@ -6168,6 +6181,39 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
             .values()
             .any(|args| args == &vec![crate::ty::Ty::String]),
         "expected one Label call to infer V=string, got {:?}",
+        output.call_type_args
+    );
+    // Per-value count proof: pin exactly how many entries carry each type.
+    // apply<U=bool> + println<T=bool> = 2; tag<V=int> only = 1;
+    // tag<V=string> + println<T=string> × 2 = 3.
+    let bool_count = output
+        .call_type_args
+        .values()
+        .filter(|args| args.as_slice() == [crate::ty::Ty::Bool])
+        .count();
+    assert_eq!(
+        bool_count, 2,
+        "apply<U=bool> and println<T=bool>: expected 2 [bool] entries, got {:?}",
+        output.call_type_args
+    );
+    let int_count = output
+        .call_type_args
+        .values()
+        .filter(|args| args.as_slice() == [crate::ty::Ty::I64])
+        .count();
+    assert_eq!(
+        int_count, 1,
+        "tag<V=int>: expected exactly 1 [int] entry, got {:?}",
+        output.call_type_args
+    );
+    let string_count = output
+        .call_type_args
+        .values()
+        .filter(|args| args.as_slice() == [crate::ty::Ty::String])
+        .count();
+    assert_eq!(
+        string_count, 3,
+        "tag<V=string> + println<T=string> × 2: expected 3 [string] entries, got {:?}",
         output.call_type_args
     );
 }

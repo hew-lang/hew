@@ -173,6 +173,12 @@ impl Checker {
                 continue;
             };
             let resolved_arg = self.subst.resolve(type_arg);
+            // Skip bound enforcement for unresolved inference variables: the type
+            // is not yet known, so we cannot evaluate the bound.  The parallel
+            // guard in `record_concrete_call_type_args` (calls.rs) ensures that
+            // any entry that still carries an inference var is also excluded from
+            // the codegen `call_type_args` output, preventing unresolved holes
+            // from reaching the C++ MLIR generator.
             if resolved_arg.has_inference_var() {
                 continue;
             }

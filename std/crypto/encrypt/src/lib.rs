@@ -4,7 +4,7 @@
 //! Returned `bytes` use the runtime `HewVec` allocation path; returned strings
 //! are allocated with `libc::malloc` and must follow the standard runtime drop
 //! path (`free`).
-// WASM-TODO: `std::crypto::encrypt` mirrors the sibling native-only crypto
+// WASM-TODO(#1451): `std::crypto::encrypt` mirrors the sibling native-only crypto
 // modules and is excluded from the wasm runtime's ecosystem-FFI link set.
 
 extern crate hew_runtime;

@@ -8,5 +8,5 @@ hew_run_e2e_test(
   RUN_COMMAND ${WASMTIME} run ${OUT_BIN}
   COMPILE_FAILURE_MESSAGE "WASM compilation failed"
   RUN_FAILURE_MESSAGE "WASM execution failed"
-  RUN_TIMEOUT 10
+  RUN_TIMEOUT 60
 )

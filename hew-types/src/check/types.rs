@@ -547,6 +547,14 @@ pub(super) struct DeferredMonomorphicSite {
     pub(super) source_module: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct DeferredBoundCheck {
+    pub(super) type_param: String,
+    pub(super) bounds: Vec<String>,
+    pub(super) type_arg: Ty,
+    pub(super) span: Span,
+}
+
 /// The main type checker.
 #[derive(Debug)]
 #[expect(
@@ -711,6 +719,8 @@ pub struct Checker {
     /// Builtin `Ok`/`Err` constructor calls whose output type may need
     /// checked-output fallback when one side remains unconstrained.
     pub(super) builtin_result_output_type_args: HashMap<SpanKey, (Ty, Ty)>,
+    /// Trait-bound checks deferred until inference/defaulting settles.
+    pub(super) deferred_bound_checks: Vec<DeferredBoundCheck>,
     /// Maps a let-binding's definition span to the generic lambda call
     /// signature captured when that binding was type-checked. Used to freshen
     /// type variables per call site and populate `call_type_args`.
@@ -818,6 +828,7 @@ impl Checker {
             const_values: HashMap::new(),
             call_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),
+            deferred_bound_checks: Vec::new(),
             lambda_poly_sig_map: HashMap::new(),
             last_lambda_generic_sig: None,
             deferred_range_bounds: Vec::new(),

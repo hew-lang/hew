@@ -38,10 +38,11 @@ pub use self::types::{
     SpanKey, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
-    ConstValue, DeferredCastCheck, DeferredChannelMethodRewrite, DeferredHashMapAdmission,
-    DeferredHashSetAdmission, DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission,
-    ImplAliasEntry, ImplAliasScope, ImportKey, IntegerTypeInfo, PendingLoweringFact,
-    TraitAssociatedTypeInfo, TraitInfo, WasmUnsupportedFeature,
+    ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
+    DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
+    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
+    IntegerTypeInfo, PendingLoweringFact, TraitAssociatedTypeInfo, TraitInfo,
+    WasmUnsupportedFeature,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -236,6 +237,10 @@ impl Checker {
         // Re-record range bound spans with their concrete element types
         // (resolved after inference + defaulting) and validate fits.
         self.apply_deferred_range_bound_types(&mut expr_types);
+        // Drain deferred trait-bound checks after inference/defaulting settles,
+        // but before unresolved-hole reporting so concrete bound failures stay
+        // specific and unresolved holes remain authoritative.
+        self.drain_deferred_bound_checks();
 
         let resolved_builtin_result_output_type_args: HashMap<SpanKey, (Ty, Ty)> =
             std::mem::take(&mut self.builtin_result_output_type_args)

@@ -178,26 +178,61 @@ impl Checker {
             // guard in `record_concrete_call_type_args` (calls.rs) ensures that
             // any entry that still carries an inference var is also excluded from
             // the codegen `call_type_args` output, preventing unresolved holes
-            // from reaching the C++ MLIR generator.
+            // from reaching the C++ MLIR generator. `drain_deferred_bound_checks`
+            // revisits the deferred entry once post-inference defaulting settles.
+            if resolved_arg.has_inference_var() {
+                self.deferred_bound_checks.push(DeferredBoundCheck {
+                    type_param: param_name.clone(),
+                    bounds: bounds.clone(),
+                    type_arg: type_arg.clone(),
+                    span: span.clone(),
+                });
+                continue;
+            }
+            self.report_unsatisfied_type_param_bounds(param_name, bounds, &resolved_arg, span);
+        }
+    }
+
+    pub(super) fn drain_deferred_bound_checks(&mut self) {
+        for entry in std::mem::take(&mut self.deferred_bound_checks) {
+            let resolved_arg = self
+                .subst
+                .resolve(&entry.type_arg)
+                .materialize_literal_defaults();
             if resolved_arg.has_inference_var() {
                 continue;
             }
-            for bound in bounds {
-                if self.type_satisfies_trait_bound(&resolved_arg, bound) {
-                    continue;
-                }
-                let msg = format!(
-                    "type `{}` does not implement trait `{bound}` required by `{param_name}`",
-                    resolved_arg.user_facing()
-                );
-                let suggestions = self.diagnose_bound_failure_suggestions(&resolved_arg, bound);
-                self.report_error_with_suggestions(
-                    TypeErrorKind::BoundsNotSatisfied,
-                    span,
-                    msg,
-                    suggestions,
-                );
+            self.report_unsatisfied_type_param_bounds(
+                &entry.type_param,
+                &entry.bounds,
+                &resolved_arg,
+                &entry.span,
+            );
+        }
+    }
+
+    fn report_unsatisfied_type_param_bounds(
+        &mut self,
+        param_name: &str,
+        bounds: &[String],
+        resolved_arg: &Ty,
+        span: &Span,
+    ) {
+        for bound in bounds {
+            if self.type_satisfies_trait_bound(resolved_arg, bound) {
+                continue;
             }
+            let msg = format!(
+                "type `{}` does not implement trait `{bound}` required by `{param_name}`",
+                resolved_arg.user_facing()
+            );
+            let suggestions = self.diagnose_bound_failure_suggestions(resolved_arg, bound);
+            self.report_error_with_suggestions(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                msg,
+                suggestions,
+            );
         }
     }
 

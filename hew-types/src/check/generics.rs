@@ -173,6 +173,9 @@ impl Checker {
                 continue;
             };
             let resolved_arg = self.subst.resolve(type_arg);
+            if resolved_arg.has_inference_var() {
+                continue;
+            }
             for bound in bounds {
                 if self.type_satisfies_trait_bound(&resolved_arg, bound) {
                     continue;

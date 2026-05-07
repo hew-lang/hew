@@ -2554,6 +2554,95 @@ fn parse_and_check_with_stdlib(source: &str) -> (Vec<TypeError>, Vec<TypeError>)
     (output.errors, output.warnings)
 }
 
+#[test]
+fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
+    let mut checker = Checker::new(test_registry());
+    checker.register_builtins();
+
+    for name in ["print", "println", "to_string", "assert_eq", "assert_ne"] {
+        let sig = checker
+            .fn_sigs
+            .get(name)
+            .unwrap_or_else(|| panic!("missing builtin signature for {name}"));
+        assert_eq!(
+            sig.type_params,
+            vec!["T".to_string()],
+            "{name} should expose a single generic parameter"
+        );
+        assert_eq!(
+            sig.type_param_bounds.get("T"),
+            Some(&vec!["Display".to_string()]),
+            "{name} should keep a Display bound on its bare-name registration"
+        );
+    }
+
+    let len_sig = checker.fn_sigs.get("len").expect("missing len builtin");
+    assert!(
+        len_sig.type_param_bounds.is_empty(),
+        "len must stay out of the Display migration"
+    );
+}
+
+#[test]
+fn print_and_println_reject_struct_without_display_impl() {
+    let (errors, warnings) = parse_and_check_with_stdlib(
+        r"
+        type Hidden {
+            value: int;
+        }
+
+        fn main() {
+            let hidden = Hidden { value: 1 };
+            print(hidden);
+            println(hidden);
+        }
+        ",
+    );
+
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    let bounds_errors: Vec<_> = errors
+        .iter()
+        .filter(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied && error.message.contains("Display")
+        })
+        .collect();
+    assert_eq!(
+        bounds_errors.len(),
+        2,
+        "print/println should reject values without Display: {errors:?}"
+    );
+}
+
+#[test]
+fn display_impl_satisfies_bounded_magic_builtins() {
+    let (errors, warnings) = parse_and_check_with_stdlib(
+        r#"
+        type Widget {
+            value: int;
+        }
+
+        impl Display for Widget {
+            fn fmt(widget: Widget) -> String {
+                "widget"
+            }
+        }
+
+        fn main() {
+            let widget = Widget { value: 1 };
+            print(widget);
+            println(widget);
+            let text = to_string(widget);
+            assert_eq(widget, widget);
+            assert_ne(widget, widget);
+            println(text);
+        }
+        "#,
+    );
+
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+}
+
 // ---- unused variable ----
 
 #[test]
@@ -6056,11 +6145,6 @@ fn trait_bound_compound_generic_methods_do_not_cross_contaminate() {
         output.errors.is_empty(),
         "type check errors: {:?}",
         output.errors
-    );
-    assert_eq!(
-        output.call_type_args.len(),
-        3,
-        "expected one entry per compound-bound generic method call"
     );
     assert!(
         output

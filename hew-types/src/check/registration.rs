@@ -152,9 +152,27 @@ impl Checker {
         self.register_builtin_fn("println_bool", vec![Ty::Bool], Ty::Unit);
         self.register_builtin_fn("print_float", vec![Ty::F64], Ty::Unit);
         self.register_builtin_fn("print_bool", vec![Ty::Bool], Ty::Unit);
-        // Generic print/println that accept any type
-        self.register_builtin_fn("println", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
-        self.register_builtin_fn("print", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
+        // Generic print/println require Display.
+        self.register_builtin_fn_with_bounds(
+            "println",
+            vec!["T".to_string()],
+            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+            vec![Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            }],
+            Ty::Unit,
+        );
+        self.register_builtin_fn_with_bounds(
+            "print",
+            vec!["T".to_string()],
+            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+            vec![Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            }],
+            Ty::Unit,
+        );
 
         // Math functions
         self.register_builtin_fn("abs", vec![Ty::I64], Ty::I64);
@@ -166,7 +184,16 @@ impl Checker {
         // String operations
         self.register_builtin_fn("string_concat", vec![Ty::String, Ty::String], Ty::String);
         self.register_builtin_fn("string_length", vec![Ty::String], Ty::I64);
-        self.register_builtin_fn("to_string", vec![Ty::Var(TypeVar::fresh())], Ty::String);
+        self.register_builtin_fn_with_bounds(
+            "to_string",
+            vec!["T".to_string()],
+            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+            vec![Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            }],
+            Ty::String,
+        );
         self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
 
         // I/O and system
@@ -210,10 +237,38 @@ impl Checker {
 
         // Assertions (test support)
         self.register_builtin_fn("assert", vec![Ty::Bool], Ty::Unit);
-        let t_eq = TypeVar::fresh();
-        self.register_builtin_fn("assert_eq", vec![Ty::Var(t_eq), Ty::Var(t_eq)], Ty::Unit);
-        let t_ne = TypeVar::fresh();
-        self.register_builtin_fn("assert_ne", vec![Ty::Var(t_ne), Ty::Var(t_ne)], Ty::Unit);
+        self.register_builtin_fn_with_bounds(
+            "assert_eq",
+            vec!["T".to_string()],
+            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+            vec![
+                Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                },
+                Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                },
+            ],
+            Ty::Unit,
+        );
+        self.register_builtin_fn_with_bounds(
+            "assert_ne",
+            vec!["T".to_string()],
+            HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
+            vec![
+                Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                },
+                Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                },
+            ],
+            Ty::Unit,
+        );
 
         // Option/Result constructors
         // Option/Result constructors are handled specially in check_call
@@ -352,17 +407,41 @@ impl Checker {
     }
 
     pub(super) fn register_builtin_fn(&mut self, name: &str, params: Vec<Ty>, return_type: Ty) {
-        if name.contains('.') {
-            self.module_fn_exports.insert(name.to_string());
-        }
-        self.fn_sigs.insert(
-            name.to_string(),
+        self.register_builtin_sig(
+            name,
             FnSig {
                 params,
                 return_type,
                 ..FnSig::default()
             },
         );
+    }
+
+    pub(super) fn register_builtin_fn_with_bounds(
+        &mut self,
+        name: &str,
+        type_params: Vec<String>,
+        type_param_bounds: HashMap<String, Vec<String>>,
+        params: Vec<Ty>,
+        return_type: Ty,
+    ) {
+        self.register_builtin_sig(
+            name,
+            FnSig {
+                type_params,
+                type_param_bounds,
+                params,
+                return_type,
+                ..FnSig::default()
+            },
+        );
+    }
+
+    fn register_builtin_sig(&mut self, name: &str, sig: FnSig) {
+        if name.contains('.') {
+            self.module_fn_exports.insert(name.to_string());
+        }
+        self.fn_sigs.insert(name.to_string(), sig);
     }
 
     fn resolve_registered_annotation_ty(

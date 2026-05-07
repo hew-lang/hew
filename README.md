@@ -294,9 +294,12 @@ make lint     # cargo clippy
 See the [Makefile](Makefile) header for all targets.
 
 Use `make ci-preflight ARGS="--dry-run"` to inspect the selected commands before
-running them. The first slice stays conservative: known docs/parser/types/CLI
-diffs get narrower checks, and everything else falls back to broader local
-preflight commands.
+running them. By default the dispatcher runs every selected command, collects
+any failures, and reports the full timing summary at the end so one local run
+shows the whole preflight picture. Pass `make ci-preflight ARGS="--fail-fast"`
+if you want it to stop after the first failed command instead. The first slice
+stays conservative: known docs/parser/types/CLI diffs get narrower checks, and
+everything else falls back to broader local preflight commands.
 
 ### Browser / Playground Validation
 

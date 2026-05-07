@@ -4501,13 +4501,15 @@ hew-observe --addr node1:6060 --node node2:6060 --node node3:6060
 
 ## 11. Distributed computing and the Node API
 
-Hew provides built-in distributed computing through the `Node` API. Actors on different nodes communicate transparently — message sends to a remote actor use the same syntax as local sends. The runtime handles serialization, transport, and routing automatically.
+The normative distributed contract lives in [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md). This section is the surface summary for the current `Node::*` API.
+
+Hew provides built-in distributed computing through the `Node` API. Remote actor operations may use local-looking syntax, but they are **not** specified as local-equivalent operations: lookup, send, ask, timeout, cancellation, version negotiation, authorization, and backpressure remain typed distributed boundaries.
 
 **Design principles:**
 
-- **Location transparency:** An actor reference obtained from `Node::lookup` behaves identically to a local `spawn` reference. The caller does not need to know whether the target actor is local or remote.
+- **Transparent syntax, explicit failure:** local-looking syntax is allowed, but remote operations must expose typed failure instead of sentinel values or fabricated local-shaped success.
 - **Pluggable transport:** TCP (default) or QUIC with TLS 1.3. Selected before the node starts.
-- **Gossip-based registry:** Actor names propagate across the cluster via SWIM protocol piggybacking, so `Node::lookup` can resolve actors on any connected node.
+- **Gossip-based registry:** Actor names propagate across the cluster via SWIM protocol piggybacking, so `Node::lookup` can resolve actors on any connected node when connectivity, authorization, and version compatibility permit.
 
 ### 11.1 Node lifecycle
 
@@ -4528,7 +4530,7 @@ fn main() {
 
 **Node states:** `Starting` → `Running` → `Stopping` → `Stopped`
 
-The runtime maintains a single implicit current node per process. All `Node::` calls operate on this current node.
+The runtime currently maintains a single implicit current node per process. All `Node::` calls operate on this current node today. That implementation detail is not the same thing as the distributed identity contract; see `HEW-DIST-SPEC.md` for the NodeId/incarnation rules.
 
 ### 11.2 API reference
 
@@ -4572,21 +4574,29 @@ Node::register("counter", counter);
 - The runtime automatically removes the name when that actor is freed or when
   the owning node shuts down
 
-#### 11.2.4 `Node::lookup(name: string) -> T`
+#### 11.2.4 `Node::lookup(name: string) -> Result<T, LookupError>`
 
-Look up an actor by its registered name. Returns the actor reference if found, or a zero value if not found.
+Look up an actor by its registered name. Distributed lookup is a typed-failure boundary: failure is reported explicitly, never as a zero value or sentinel actor reference.
 
 ```hew
-let found = Node::lookup("counter");
-if found != 0 {
-    found.increment(10);          // fire-and-forget to remote actor
-    let n = await found.get_count();  // request-response across nodes
+match Node::lookup("counter") {
+    Ok(found) => {
+        found.increment(10);                           // remote fire-and-forget
+        // Remote ask returns typed failure and uses a caller-supplied timeout/deadline.
+        let reply = await found.get_count();
+        match reply {
+            Ok(n) => println(n),
+            Err(err) => println(err),
+        }
+    }
+    Err(err) => println(err),
 }
 ```
 
 - Checks the local registry first, then the remote names learned via gossip
-- The return type is generic (`T`) — assign to a typed binding at the call site
-- Remote request-response (`await`) has a 5-second timeout; when the caller expects a reply value, timeout or other remote delivery failures surface as an explicit runtime failure instead of a synthesized zero/default reply
+- The success type is generic (`T`) — assign to a typed binding at the call site
+- The failure type is typed (`LookupError` or a tighter equivalent)
+- Remote request-response requires a caller-supplied timeout or deadline; the exact surface spelling is specified by the distributed spec, and distributed failure surfaces as a typed error instead of a synthesized zero/default reply
 
 #### 11.2.5 `Node::shutdown()`
 
@@ -4620,7 +4630,7 @@ If not called, TCP is used. Calling `set_transport` after `start` has no effect 
 
 ### 11.3 Remote message dispatch
 
-Messages sent to a remote actor are routed transparently by the runtime:
+Messages sent to a remote actor are routed by the runtime, but routing does not erase the distributed failure boundary:
 
 ```hew
 // On node A
@@ -4632,9 +4642,18 @@ Node::register("counter", counter);
 Node::start("127.0.0.1:9001");
 Node::connect("127.0.0.1:9000");
 
-let remote_counter = Node::lookup("counter");
-remote_counter.increment(5);              // fire-and-forget (routed to node A)
-let n = await remote_counter.get_count(); // request-response (routed to node A, awaits reply)
+match Node::lookup("counter") {
+    Ok(remote_counter) => {
+        remote_counter.increment(5);                            // routed to node A
+        // Remote ask returns typed failure and uses a caller-supplied timeout/deadline.
+        let reply = await remote_counter.get_count();
+        match reply {
+            Ok(n) => println(n),
+            Err(err) => println(err),
+        }
+    }
+    Err(err) => println(err),
+}
 ```
 
 **Routing rules:**
@@ -4642,7 +4661,7 @@ let n = await remote_counter.get_count(); // request-response (routed to node A,
 - Each actor PID encodes a 16-bit node ID and a 48-bit actor index.
 - When the target node ID matches the local node, the message is delivered directly via the local scheduler.
 - When the target node ID differs, the message is serialized using HBF framing (4-byte little-endian length prefix + payload) and sent over the transport to the remote node.
-- Remote request-response (`await`) assigns a unique request ID, sends the request, and blocks the caller until the reply arrives (5-second timeout). When a reply value is expected, remote ask failures surface as an explicit failure instead of fabricating a zero/default reply value.
+- Remote request-response (`await`) assigns a unique request ID and waits for either a reply or a typed failure. The caller supplies the timeout/deadline; there is no hidden global distributed timeout in the language contract.
 
 ### 11.4 Cross-node registry gossip
 
@@ -4651,7 +4670,7 @@ Actor name registrations propagate across the cluster using the SWIM protocol's 
 1. `Node::register("name", actor)` queues a registry-add event.
 2. The event is piggybacked on the next SWIM ping or ack message sent to peers.
 3. Receiving nodes update their remote name table.
-4. `Node::lookup("name")` on any node can now resolve the actor.
+4. `Node::lookup("name")` on any node can now resolve the actor to `Ok(actor)` when registry state, connectivity, authorization, and version compatibility all line up; otherwise the lookup returns a typed failure.
 
 Registry events have a bounded dissemination count (pruned after 8 gossips). Unregister events propagate the same way when an actor is removed.
 
@@ -4699,12 +4718,18 @@ fn main() {
     counter.increment(5);
     Node::register("counter", counter);
 
-    // Look up the actor by name and verify it works.
-    let found = Node::lookup("counter");
-    println(found != 0);               // true
-
-    let result = await counter.get_count();
-    println(result);                    // 15
+    // Look up the actor by name and handle the distributed boundary explicitly.
+    match Node::lookup("counter") {
+        Ok(found) => {
+            // Remote ask returns typed failure and uses a caller-supplied timeout/deadline.
+            let result = await found.get_count();
+            match result {
+                Ok(n) => println(n),    // 15
+                Err(err) => println(err),
+            }
+        }
+        Err(err) => println(err),
+    }
 
     await close(counter);
     Node::shutdown();

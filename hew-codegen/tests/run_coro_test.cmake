@@ -36,7 +36,7 @@ execute_process(
   RESULT_VARIABLE run_rc
   OUTPUT_VARIABLE run_out
   ERROR_VARIABLE run_err
-  TIMEOUT 10
+  TIMEOUT 60
 )
 if(NOT run_rc EQUAL 0)
   message(FATAL_ERROR "Execution failed (rc=${run_rc}):\n${run_err}")

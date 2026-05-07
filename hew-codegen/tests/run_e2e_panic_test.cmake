@@ -9,5 +9,5 @@ hew_run_panic_test(
   COMPILE_FAILURE_MESSAGE "Compilation failed"
   SUCCESS_MESSAGE "Expected non-zero exit but got 0."
   EXPECTED_STDERR "${EXPECTED_STDERR}"
-  RUN_TIMEOUT 10
+  RUN_TIMEOUT 60
 )

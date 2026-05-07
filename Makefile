@@ -115,6 +115,11 @@ NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES)
 SANITIZER_LLVM_VERSION ?= 22
 SANITIZER_RUST_TARGET ?= x86_64-unknown-linux-gnu
 SANITIZER_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || getconf NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+# Parallel-job count for the local ctest sweeps in test-codegen / test-wasm.
+# Override on the command line for constrained hosts: `make test-codegen CTEST_JOBS=4`.
+# Raising this beyond the host CPU count requires re-proving suite reliability;
+# see scripts/tests/ctest-flake-probe.sh.
+CTEST_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || getconf NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
 SANITIZER_CC ?= $(or $(shell command -v clang-$(SANITIZER_LLVM_VERSION) 2>/dev/null),$(CC))
 SANITIZER_CXX ?= $(or $(shell command -v clang++-$(SANITIZER_LLVM_VERSION) 2>/dev/null),$(CXX))
 CODEGEN_SANITIZER_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -549,10 +554,10 @@ test-runtime-unit:
 	cargo nextest run --profile ci -p hew-runtime --no-default-features
 
 test-codegen: hew codegen runtime stdlib
-	cd hew-codegen/build && ctest --output-on-failure -LE wasm
+	cd hew-codegen/build && ctest --output-on-failure -LE wasm -j"$(CTEST_JOBS)"
 
 test-wasm: hew codegen wasm-runtime
-	cd hew-codegen/build && ctest --output-on-failure -L wasm
+	cd hew-codegen/build && ctest --output-on-failure -L wasm -j"$(CTEST_JOBS)"
 
 test-stdlib: hew
 	@echo "==> Type-checking stdlib .hew files"

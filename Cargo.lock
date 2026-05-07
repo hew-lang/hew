@@ -1544,6 +1544,7 @@ version = "0.4.0"
 dependencies = [
  "hew-runtime",
  "hew-std-crypto-crypto",
+ "hew-std-crypto-encrypt",
  "hew-std-crypto-jwt",
  "hew-std-crypto-password",
  "hew-std-encoding-base64",
@@ -1658,6 +1659,16 @@ dependencies = [
 
 [[package]]
 name = "hew-std-crypto-crypto"
+version = "0.4.0"
+dependencies = [
+ "hew-cabi",
+ "hew-runtime",
+ "libc",
+ "ring",
+]
+
+[[package]]
+name = "hew-std-crypto-encrypt"
 version = "0.4.0"
 dependencies = [
  "hew-cabi",

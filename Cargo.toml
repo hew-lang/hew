@@ -13,6 +13,7 @@ members = [
   "std/encoding/yaml",
   "std/encoding/hex",
   "std/crypto/crypto",
+  "std/crypto/encrypt",
   "std/crypto/jwt",
   "std/crypto/password",
   "std/net/dns",

@@ -12,6 +12,7 @@ crate-type = ["staticlib"]
 [dependencies]
 hew-runtime = { path = "../hew-runtime" }
 hew-std-crypto-crypto = { path = "../std/crypto/crypto" }
+hew-std-crypto-encrypt = { path = "../std/crypto/encrypt" }
 hew-std-crypto-jwt = { path = "../std/crypto/jwt" }
 hew-std-crypto-password = { path = "../std/crypto/password" }
 hew-std-encoding-base64 = { path = "../std/encoding/base64" }

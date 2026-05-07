@@ -14,6 +14,7 @@ PREFLIGHT_TIMEOUT_NARROW="${PREFLIGHT_TIMEOUT_NARROW:-180}"
 PREFLIGHT_TIMEOUT_FALLBACK="${PREFLIGHT_TIMEOUT_FALLBACK:-600}"
 
 DRY_RUN=0
+FAIL_FAST=0
 BASE_REF=""
 EXPLICIT_PATHS=0
 LANE=""
@@ -24,15 +25,17 @@ PROFILE_JSON_PATH=""
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--base <ref>] [--profile-json <path>] [--] [path...]
+Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--profile-json <path>] [--] [path...]
 
 Dispatch a conservative local CI preflight based on changed files.
 
 - Pass explicit paths to classify those files directly.
 - With no paths, the script inspects committed, staged, unstaged, and untracked changes.
+- By default, all selected commands run and failures are reported together at the end.
+- --fail-fast           Stop after the first failed command.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
-- --profile-json <path>  Write per-command timing as a JSON array to <path> (one object per
-                         command, with "cmd", "elapsed_s", "status" fields).
+- --profile-json <path> Write per-command timing as a JSON array to <path> (one object per
+                        command, with "cmd", "elapsed_s", "status" fields).
 EOF
 }
 
@@ -210,6 +213,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)
             DRY_RUN=1
+            shift
+            ;;
+        --fail-fast)
+            FAIL_FAST=1
             shift
             ;;
         --base)
@@ -417,6 +424,16 @@ if (( needs_stdlib_lint == 1 )); then
     add_command "make stdlib-lint"
 fi
 
+# Test-only override for dispatcher command execution. This keeps failure-policy
+# tests deterministic without widening the public command-substitution surface.
+if [[ -n "${PREFLIGHT_TEST_COMMANDS:-}" ]]; then
+    COMMANDS=()
+    while IFS= read -r test_cmd; do
+        [[ -n "$test_cmd" ]] || continue
+        add_command "$test_cmd"
+    done <<< "$PREFLIGHT_TEST_COMMANDS"
+fi
+
 echo "==> Hew CI preflight dispatcher"
 if (( EXPLICIT_PATHS == 1 )); then
     echo "Source: explicit paths"
@@ -472,6 +489,11 @@ case "$LANE" in
 esac
 
 echo "Selected profile: $PROFILE_LABEL"
+if (( FAIL_FAST == 1 )); then
+    echo "Failure policy: fail-fast"
+else
+    echo "Failure policy: run-all (default)"
+fi
 echo "Reason: $LANE_REASON"
 echo "Changed files:"
 for path in "${CHANGED_FILES[@]}"; do
@@ -581,12 +603,28 @@ run_timed_command() {
 }
 
 PREFLIGHT_FAILURES=()
+PREFLIGHT_EXECUTED_COMMANDS=()
 PREFLIGHT_CMD_ELAPSED=()
+PREFLIGHT_CMD_STATUS=()
+STOPPED_EARLY=0
 for cmd in "${COMMANDS[@]}"; do
-    if ! run_timed_command "$cmd"; then
+    status=0
+    if run_timed_command "$cmd"; then
+        status=0
+    else
+        status=$?
         PREFLIGHT_FAILURES+=("$cmd")
     fi
+
+    PREFLIGHT_EXECUTED_COMMANDS+=("$cmd")
     PREFLIGHT_CMD_ELAPSED+=("$_elapsed_s")
+    PREFLIGHT_CMD_STATUS+=("$status")
+
+    if (( status != 0 && FAIL_FAST == 1 )); then
+        STOPPED_EARLY=1
+        echo "==> Stopping after first failed command (--fail-fast)."
+        break
+    fi
 done
 
 PREFLIGHT_OVERALL_ELAPSED=$(( SECONDS - PREFLIGHT_OVERALL_START ))
@@ -595,15 +633,20 @@ PREFLIGHT_OVERALL_ELAPSED=$(( SECONDS - PREFLIGHT_OVERALL_START ))
 echo ""
 echo "==> Preflight summary (${PREFLIGHT_OVERALL_ELAPSED}s total)"
 i=0
-for cmd in "${COMMANDS[@]}"; do
+for cmd in "${PREFLIGHT_EXECUTED_COMMANDS[@]+"${PREFLIGHT_EXECUTED_COMMANDS[@]}"}"; do
     elapsed="${PREFLIGHT_CMD_ELAPSED[$i]:-?}"
+    status="${PREFLIGHT_CMD_STATUS[$i]:-0}"
     status_label="ok"
-    for failed in "${PREFLIGHT_FAILURES[@]+"${PREFLIGHT_FAILURES[@]}"}"; do
-        [[ "$failed" == "$cmd" ]] && status_label="FAILED"
-    done
+    if [[ "$status" -ne 0 ]]; then
+        status_label="FAILED"
+    fi
     printf "    %s  %ss  [%s]\n" "$cmd" "$elapsed" "$status_label"
     (( i++ )) || true
 done
+
+if (( STOPPED_EARLY == 1 )); then
+    echo "    ... remaining commands not run"
+fi
 
 # Write --profile-json if requested.
 if [[ -n "$PROFILE_JSON_PATH" ]]; then

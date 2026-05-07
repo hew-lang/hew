@@ -111,6 +111,13 @@ run_with_timeout() {
 # process in the tree simultaneously, preventing artifact-lock contention
 # from orphaned cargo processes.
 #
+# <seconds> MUST be a positive integer (>= 1).  Zero or negative values are
+# rejected before the command is launched: alarm(0) in Perl cancels the
+# watchdog, which would allow the command to run without any time budget —
+# a silent preflight bypass.  Empty, non-numeric, or fractional values are
+# also rejected.  All invalid inputs produce a diagnostic on stderr and
+# return exit code 1 without running the command.
+#
 # Exit-code semantics differ from run_with_timeout INTENTIONALLY:
 #   Signal exits are surfaced raw — no translation to 124/137.
 #   SIGTERM kill → 143 (128+15)   SIGKILL fallback → 137 (128+9)
@@ -122,6 +129,13 @@ run_with_timeout() {
 run_in_pgroup_with_timeout() {
     local seconds="$1"
     local cmd_string="$2"
+    # Validate seconds before touching Perl.  alarm(0) disables the watchdog;
+    # alarm(negative) is undefined in Perl.  Both would let the command run
+    # unbounded, silently defeating the preflight budget.
+    if [[ ! "$seconds" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: run_in_pgroup_with_timeout: seconds must be a positive integer (>= 1), got '${seconds}'" >&2
+        return 1
+    fi
     perl -e '
         use strict;
         use warnings;

@@ -91,3 +91,94 @@ fn test_parse_no_headers_generates_synthetic_headers() {
     testing.assert_eq_str(tbl.get(0, 0), "a");
     tbl.free();
 }
+
+// ── Empty input ───────────────────────────────────────────────────────
+
+#[test]
+fn test_parse_empty_string_returns_zero_rows_and_cols() {
+    // parse("") → input.len() == 0 → no lines processed →
+    // Table { hdrs: empty, data: empty } → rows == 0, cols == 0.
+    let tbl = csv.parse("");
+    testing.assert_eq(tbl.rows(), 0);
+    testing.assert_eq(tbl.cols(), 0);
+    tbl.free();
+}
+
+#[test]
+fn test_parse_no_headers_empty_string_returns_zero_rows_and_cols() {
+    let tbl = csv.parse_no_headers("");
+    testing.assert_eq(tbl.rows(), 0);
+    testing.assert_eq(tbl.cols(), 0);
+    tbl.free();
+}
+
+// ── Trailing newline tolerance ────────────────────────────────────────
+
+#[test]
+fn test_parse_trailing_newline_yields_one_data_row() {
+    // parse_impl strips a trailing newline before splitting lines, so
+    // "a,b\n1,2\n" must produce exactly one data row (not two, and not zero).
+    let tbl = csv.parse("a,b\n1,2\n");
+    testing.assert_eq(tbl.rows(), 1);
+    testing.assert_eq_str(tbl.get(0, 0), "1");
+    testing.assert_eq_str(tbl.get(0, 1), "2");
+    tbl.free();
+}
+
+// ── parse_no_headers: multi-row multi-col ────────────────────────────
+
+#[test]
+fn test_parse_no_headers_three_rows_three_cols_data() {
+    // Verify all nine cells of a 3×3 parse_no_headers parse are accessible.
+    let tbl = csv.parse_no_headers("1,2,3\n4,5,6\n7,8,9");
+    testing.assert_eq(tbl.rows(), 3);
+    testing.assert_eq(tbl.cols(), 3);
+    testing.assert_eq_str(tbl.get(0, 0), "1");
+    testing.assert_eq_str(tbl.get(1, 1), "5");
+    testing.assert_eq_str(tbl.get(2, 2), "9");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_no_headers_three_cols_get_by_name() {
+    // parse_no_headers generates col0, col1, col2 synthetic headers;
+    // get_by_name must resolve all three for each data row.
+    let tbl = csv.parse_no_headers("a,b,c\nd,e,f");
+    testing.assert_eq_str(tbl.get_by_name(0, "col0"), "a");
+    testing.assert_eq_str(tbl.get_by_name(0, "col2"), "c");
+    testing.assert_eq_str(tbl.get_by_name(1, "col1"), "e");
+    tbl.free();
+}
+
+// ── Ownership: two tables, reverse-order free ─────────────────────────
+
+#[test]
+fn test_two_tables_sequential_alloc_free_reverse_order() {
+    // Allocate two independent Table values, verify cells, then free in
+    // reverse allocation order. Table.free() is a no-op (value type), but
+    // the pattern establishes discipline for future handle-type codecs.
+    let tbl1 = csv.parse("x,y\n1,2");
+    let tbl2 = csv.parse("p,q\n3,4");
+    testing.assert_eq_str(tbl1.get_by_name(0, "x"), "1");
+    testing.assert_eq_str(tbl2.get_by_name(0, "q"), "4");
+    tbl2.free();
+    tbl1.free();
+}
+
+// ── Out-of-range header access ────────────────────────────────────────
+
+#[test]
+fn test_header_out_of_range_returns_empty() {
+    // header(col) bounds-checks and returns "" for col >= hdrs.len().
+    let tbl = csv.parse("a,b\n1,2");
+    testing.assert_eq_str(tbl.header(99), "");
+    tbl.free();
+}
+
+// ── Note: embedded-newline in quoted field is not supported ───────────
+// The line splitter in parse_impl splits naively on '\n' before handling
+// quoted fields. A quoted field containing a literal '\n' will be split
+// across multiple lines and produce unexpected results.
+// TODO(csv-embedded-newline): add embedded-newline quoted-field support.
+// Example that would need to work: csv.parse("a,b\n\"line1\nline2\",2")
+// producing get(0,0) == "line1\nline2". Skipped until parser is extended.

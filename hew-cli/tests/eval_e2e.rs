@@ -1666,6 +1666,26 @@ fn write_cross_chunk_failure_file(dir: &std::path::Path) -> std::path::PathBuf {
     path
 }
 
+/// Return a multi-line diagnostic string for a cross-chunk failure assertion.
+///
+/// Embeds exit code (or "signal" when the process was killed by a signal),
+/// full stderr, full stdout, and the input file path so that a failing
+/// assertion message is immediately classifiable — e.g. tempdir setup
+/// error, compile diagnostic, linker failure, or a real exit-code
+/// regression — without needing to re-run or re-trigger the job.
+fn cross_chunk_failure_ctx(output: &Output, path: &Path) -> String {
+    let code = match output.status.code() {
+        Some(c) => format!("{c}"),
+        None => "signal".to_owned(),
+    };
+    format!(
+        "\n  file:      {}\n  exit_code: {code}\n  stderr:    {:?}\n  stdout:    {:?}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+    )
+}
+
 #[test]
 fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     require_codegen();
@@ -1681,19 +1701,20 @@ fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
         .output()
         .unwrap();
 
+    let ctx = cross_chunk_failure_ctx(&output, &path);
     assert!(
         !output.status.success(),
-        "expected non-zero exit on runtime failure"
+        "expected non-zero exit on runtime failure{ctx}"
     );
     assert_eq!(
         output.status.code(),
         Some(101),
-        "expected child exit code 101"
+        "expected child exit code 101{ctx}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("prior-chunk"),
-        "stdout from earlier chunk was dropped; got: {stdout:?}"
+        "stdout from earlier chunk was dropped{ctx}"
     );
 }
 
@@ -1711,18 +1732,25 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "expected exit 0 with --json");
+    let ctx = cross_chunk_failure_ctx(&output, &path);
+    assert!(output.status.success(), "expected exit 0 with --json{ctx}");
 
     let raw = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nraw: {raw}"));
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nraw: {raw}\n{ctx}"));
 
-    assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
-    assert_eq!(v["exit_code"], 101, "expected child exit code 101: {v}");
+    assert_eq!(
+        v["status"], "runtime_failure",
+        "unexpected status: {v}{ctx}"
+    );
+    assert_eq!(
+        v["exit_code"], 101,
+        "expected child exit code 101: {v}{ctx}"
+    );
     let captured = v["stdout"].as_str().unwrap_or("");
     assert!(
         captured.contains("prior-chunk"),
-        "stdout from earlier chunk was absent in JSON contract: {v}"
+        "stdout from earlier chunk was absent in JSON contract: {v}{ctx}"
     );
 }
 

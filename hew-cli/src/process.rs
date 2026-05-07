@@ -765,6 +765,13 @@ mod tests {
             "grandchild should have written its PID before the timeout fired"
         );
 
+        let pid_str = std::fs::read_to_string(&pid_file)
+            .expect("grandchild should have written its PID before the timeout fired");
+        let grandchild_pid: u32 = pid_str
+            .trim()
+            .parse()
+            .expect("grandchild PID file should contain a numeric PID");
+
         let outcome = bounded
             .wait_with_timeout(Duration::from_secs(1))
             .expect("wait_with_timeout failed");
@@ -773,22 +780,27 @@ mod tests {
             "expected Timeout outcome, got: {outcome:?}"
         );
 
-        // Allow the OS to finish reaping.
-        std::thread::sleep(Duration::from_millis(200));
-
-        let pid_str = std::fs::read_to_string(&pid_file)
-            .expect("grandchild should have written its PID before the timeout fired");
-        let grandchild_pid: u32 = pid_str
-            .trim()
-            .parse()
-            .expect("grandchild PID file should contain a numeric PID");
-
+        // Poll for the grandchild to be fully reaped by the OS rather than
+        // assuming a fixed sleep window. SIGKILL delivery is asynchronous;
+        // under full nextest load the scheduler may take longer than 200ms to
+        // reap. Allow up to 5 seconds (200 × 25ms), but exit early as soon as
+        // the OS reports the process is gone.
         #[allow(
             clippy::cast_possible_wrap,
             reason = "PIDs fit in i32 on all supported Unix platforms"
         )]
-        // SAFETY: `kill(pid, 0)` is a POSIX liveness probe — no signal is sent.
-        let alive = unsafe { libc::kill(grandchild_pid as libc::pid_t, 0) } == 0;
+        let alive = {
+            let mut alive = true;
+            for _ in 0..200 {
+                // SAFETY: `kill(pid, 0)` is a POSIX liveness probe — no signal is sent.
+                alive = unsafe { libc::kill(grandchild_pid as libc::pid_t, 0) } == 0;
+                if !alive {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            alive
+        };
         assert!(
             !alive,
             "grandchild PID {grandchild_pid} should be dead after process-group kill on timeout"

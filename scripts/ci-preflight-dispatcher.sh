@@ -182,6 +182,15 @@ is_codegen_path() {
     return 1
 }
 
+is_wasm_path() {
+    case "$1" in
+        hew-wasm/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 is_scripts_config_path() {
     case "$1" in
         Makefile|.gitignore|scripts/*|.config/nextest.toml|.github/workflows/*)
@@ -302,6 +311,7 @@ has_cli=0
 has_runtime_net=0
 has_scripts_config=0
 has_codegen=0
+has_wasm=0
 needs_scripts_config_codegen=0
 needs_codegen_lint=0
 needs_codegen_release_smoke=0
@@ -346,12 +356,14 @@ for path in "${CHANGED_FILES[@]}"; do
         has_codegen=1
         needs_codegen_lint=1
         needs_codegen_release_smoke=1
+    elif is_wasm_path "$path"; then
+        has_wasm=1
     else
         fallback_lane=1
     fi
 done
 
-bucket_count=$((has_grammar + has_parser + has_types + has_cli + has_runtime_net + has_scripts_config + has_codegen))
+bucket_count=$((has_grammar + has_parser + has_types + has_cli + has_runtime_net + has_scripts_config + has_codegen + has_wasm))
 
 if (( fallback_lane == 1 )); then
     LANE="fallback"
@@ -380,6 +392,9 @@ elif (( has_runtime_net == 1 )); then
 elif (( has_codegen == 1 )); then
     LANE="codegen"
     LANE_REASON="hew-codegen C++ / MLIR surface changed"
+elif (( has_wasm == 1 )); then
+    LANE="wasm"
+    LANE_REASON="hew-wasm browser WASM surface changed"
 else
     LANE="cli"
     LANE_REASON="CLI surface changed"
@@ -420,6 +435,12 @@ case "$LANE" in
         # codegen-lint and test-release-binary are appended below as add-ons
         # (needs_codegen_lint and needs_codegen_release_smoke are already set).
         add_command "make test-codegen"
+        ;;
+    wasm)
+        # hew-wasm/* changes: run the WASM lib tests and the playground build
+        # (which includes wasm-pack --release and the curated-manifest smoke test).
+        add_command "cargo test -p hew-wasm --lib"
+        add_command "make playground-check"
         ;;
     fallback)
         add_command "make lint"

@@ -2979,6 +2979,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   for (const auto &entry : program.call_type_args) {
     callTypeArgsMap[{entry.start, entry.end}] = &entry;
   }
+  for (const auto &entry : program.actor_send_aliasing) {
+    actorSendAliasingMap[{entry.start, entry.end}] = &entry;
+  }
   for (const auto &entry : program.assign_target_kinds) {
     assignTargetKindMap[{entry.start, entry.end}] = &entry;
   }

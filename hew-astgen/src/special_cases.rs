@@ -239,6 +239,27 @@ parseCallTypeArgsEntry(const msgpack::object &obj) {
 }"#
 }
 
+/// Hard-coded parser for `ActorSendAliasingEntry` (C++-only type from
+/// serialization layer; mirrors the Rust producer in
+/// `Checker::enforce_actor_boundary_send`).
+pub fn actor_send_aliasing_entry_parser() -> &'static str {
+    r#"static ast::ActorSendAliasingEntry parseActorSendAliasingEntry(const msgpack::object &obj) {
+  ast::ActorSendAliasingEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  auto kind = getString(mapReq(obj, "kind"));
+  if (kind == "copy") {
+    entry.kind = ast::ActorSendAliasingKind::Copy;
+    return entry;
+  }
+  if (kind == "alias") {
+    entry.kind = ast::ActorSendAliasingKind::Alias;
+    return entry;
+  }
+  fail("unknown actor_send_aliasing kind '" + kind + "'");
+}"#
+}
+
 /// Hard-coded parser for `ModuleId` to preserve string-key compatibility in
 /// `ModuleGraph.modules`.
 pub fn module_id_parser() -> &'static str {
@@ -372,6 +393,8 @@ pub fn program_parser() -> &'static str {
       mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
   prog.call_type_args = parseVec<ast::CallTypeArgsEntry>(
       mapReq(obj, "call_type_args"), parseCallTypeArgsEntry);
+  prog.actor_send_aliasing = parseVec<ast::ActorSendAliasingEntry>(
+      mapReq(obj, "actor_send_aliasing"), parseActorSendAliasingEntry);
   prog.assign_target_kinds = parseVec<ast::AssignTargetKindEntry>(
       mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
   prog.assign_target_shapes = parseVec<ast::AssignTargetShapeEntry>(

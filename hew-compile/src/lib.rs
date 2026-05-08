@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 
 use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use hew_serialize::{
-    build_assign_target_kind_entries, build_assign_target_shape_entries,
-    build_call_type_args_entries, build_lowering_fact_entries,
+    build_actor_send_aliasing_entries, build_assign_target_kind_entries,
+    build_assign_target_shape_entries, build_call_type_args_entries, build_lowering_fact_entries,
     build_method_call_receiver_kind_entries, serialize_to_json, serialize_to_msgpack,
-    AssignTargetKindEntry, AssignTargetShapeEntry, CallTypeArgsEntry, ExprTypeEntry,
-    LoweringFactEntry, MethodCallReceiverKindEntry, TypeExprConversionError,
+    ActorSendAliasingEntry, AssignTargetKindEntry, AssignTargetShapeEntry, CallTypeArgsEntry,
+    ExprTypeEntry, LoweringFactEntry, MethodCallReceiverKindEntry, TypeExprConversionError,
     TypeExprConversionKind,
 };
 use serde::{de::DeserializeOwned, Deserialize};
@@ -168,6 +168,7 @@ pub struct FrontendArtifacts {
     pub expr_type_entries: Vec<ExprTypeEntry>,
     pub method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
     pub call_type_args: Vec<CallTypeArgsEntry>,
+    pub actor_send_aliasing: Vec<ActorSendAliasingEntry>,
     pub assign_target_kinds: Vec<AssignTargetKindEntry>,
     pub assign_target_shapes: Vec<AssignTargetShapeEntry>,
     pub lowering_facts: Vec<LoweringFactEntry>,
@@ -187,6 +188,7 @@ impl FrontendArtifacts {
             self.expr_type_entries.clone(),
             self.method_call_receiver_kinds.clone(),
             self.call_type_args.clone(),
+            self.actor_send_aliasing.clone(),
             self.assign_target_kinds.clone(),
             self.assign_target_shapes.clone(),
             self.lowering_facts.clone(),
@@ -206,6 +208,7 @@ impl FrontendArtifacts {
             self.expr_type_entries.clone(),
             self.method_call_receiver_kinds.clone(),
             self.call_type_args.clone(),
+            self.actor_send_aliasing.clone(),
             self.assign_target_kinds.clone(),
             self.assign_target_shapes.clone(),
             self.lowering_facts.clone(),
@@ -1586,6 +1589,10 @@ fn finish_compile(
         };
     diagnostics.extend(enrich_diagnostics);
 
+    let actor_send_aliasing = typecheck_result
+        .tco
+        .as_ref()
+        .map_or_else(Vec::new, build_actor_send_aliasing_entries);
     let assign_target_kinds = typecheck_result.tco.as_ref().map_or_else(Vec::new, |tco| {
         build_assign_target_kind_entries(&program, tco)
     });
@@ -1624,6 +1631,7 @@ fn finish_compile(
         expr_type_entries,
         method_call_receiver_kinds,
         call_type_args,
+        actor_send_aliasing,
         assign_target_kinds,
         assign_target_shapes,
         lowering_facts,

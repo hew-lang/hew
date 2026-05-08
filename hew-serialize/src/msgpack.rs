@@ -11,7 +11,7 @@ use hew_parser::ast::{
 };
 use hew_parser::module::{Module, ModuleId};
 use hew_types::check::{
-    AssignTargetKind as CheckedAssignTargetKind,
+    ActorSendAliasing as CheckedActorSendAliasing, AssignTargetKind as CheckedAssignTargetKind,
     MethodCallReceiverKind as CheckedMethodCallReceiverKind, SpanKey, TypeCheckOutput,
 };
 use hew_types::LoweringFact as CheckedLoweringFact;
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// codegen cannot understand. The embedded reader requires an explicit
 /// `schema_version` field and rejects mismatches instead of carrying
 /// fallback decoding for pre-versioned payloads.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
 ///
@@ -114,6 +114,35 @@ pub struct AssignTargetShapeEntry {
     pub is_unsigned: bool,
 }
 
+/// Wire representation of an actor-send alias-vs-copy decision variant.
+///
+/// Mirrors [`hew_types::check::ActorSendAliasing`] across the serialization
+/// boundary. Keyed by the message expression's source span (the same span
+/// the move-checker uses on the sender's binding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActorSendAliasingData {
+    /// Sender retains the payload independently; runtime deep-copies into
+    /// the mailbox. The legacy mailbox path; safe everywhere.
+    Copy,
+    /// Sender and receiver share a refcounted [`HewMsgEnvelope`] payload.
+    /// Requires the move-checker to have invalidated the sender's binding.
+    Alias,
+}
+
+/// A single entry in the actor-send aliasing side table.
+///
+/// Keyed by the message expression's source span — codegen looks up this
+/// span at every actor-send lowering call site and reads the variant
+/// fail-closed (a missing entry for a known send is a hard compile error).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorSendAliasingEntry {
+    pub start: usize,
+    pub end: usize,
+    #[serde(flatten)]
+    pub kind: ActorSendAliasingData,
+}
+
 /// A checker-owned lowering fact keyed by the lowering site's source span.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoweringFactEntry {
@@ -163,6 +192,7 @@ pub struct CallTypeArgsEntry {
 /// - `"expr_types"`
 /// - `"method_call_receiver_kinds"`
 /// - `"call_type_args"`
+/// - `"actor_send_aliasing"`
 /// - `"assign_target_kinds"`
 /// - `"assign_target_shapes"`
 /// - `"lowering_facts"`
@@ -188,6 +218,10 @@ struct TypedProgram<'a, ModuleGraphRepr> {
     /// Populated from `tco.call_type_args`; empty for programs with no
     /// module-qualified generic free-function calls.
     call_type_args: &'a [CallTypeArgsEntry],
+    /// Checker-resolved alias-vs-copy decision for every accepted actor send.
+    /// Keyed by the message expression's span. Codegen reads this fail-closed
+    /// at every actor-send lowering site.
+    actor_send_aliasing: &'a [ActorSendAliasingEntry],
     /// Checker-resolved assignment target classifications (keyed by target span).
     /// Missing entries indicate the checker rejected those targets.
     assign_target_kinds: &'a [AssignTargetKindEntry],
@@ -235,6 +269,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
         expr_types: &'a [ExprTypeEntry],
         method_call_receiver_kinds: &'a [MethodCallReceiverKindEntry],
         call_type_args: &'a [CallTypeArgsEntry],
+        actor_send_aliasing: &'a [ActorSendAliasingEntry],
         assign_target_kinds: &'a [AssignTargetKindEntry],
         assign_target_shapes: &'a [AssignTargetShapeEntry],
         lowering_facts: &'a [LoweringFactEntry],
@@ -253,6 +288,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
             expr_types,
             method_call_receiver_kinds,
             call_type_args,
+            actor_send_aliasing,
             assign_target_kinds,
             assign_target_shapes,
             lowering_facts,
@@ -288,6 +324,7 @@ pub fn serialize_to_msgpack(
     expr_types: Vec<ExprTypeEntry>,
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
     call_type_args: Vec<CallTypeArgsEntry>,
+    actor_send_aliasing: Vec<ActorSendAliasingEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
     lowering_facts: Vec<LoweringFactEntry>,
@@ -303,6 +340,7 @@ pub fn serialize_to_msgpack(
         &expr_types,
         &method_call_receiver_kinds,
         &call_type_args,
+        &actor_send_aliasing,
         &assign_target_kinds,
         &assign_target_shapes,
         &lowering_facts,
@@ -348,6 +386,7 @@ pub fn serialize_to_json(
     expr_types: Vec<ExprTypeEntry>,
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
     call_type_args: Vec<CallTypeArgsEntry>,
+    actor_send_aliasing: Vec<ActorSendAliasingEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
     lowering_facts: Vec<LoweringFactEntry>,
@@ -368,6 +407,7 @@ pub fn serialize_to_json(
         &expr_types,
         &method_call_receiver_kinds,
         &call_type_args,
+        &actor_send_aliasing,
         &assign_target_kinds,
         &assign_target_shapes,
         &lowering_facts,
@@ -1234,6 +1274,34 @@ pub fn build_call_type_args_entries(
         errors.extend(errs);
     }
     (entries, errors)
+/// Build the actor-send aliasing side table from the type-checker output.
+///
+/// The producer ([`Checker::enforce_actor_boundary_send`]) records every
+/// accepted actor send in [`TypeCheckOutput::actor_send_aliasing`], keyed
+/// by the message expression's span. This helper just lifts the map into
+/// the wire format with deterministic ordering by span — no AST walk is
+/// needed because the map already enumerates every relevant span.
+///
+/// Codegen is expected to look up each lowering site's span in the
+/// resulting list fail-closed (per the `serializer-fail-closed` LESSONS
+/// row): a missing entry for a span the C++ side believes is an actor
+/// send is a hard error.
+#[must_use]
+pub fn build_actor_send_aliasing_entries(tco: &TypeCheckOutput) -> Vec<ActorSendAliasingEntry> {
+    let mut entries: Vec<ActorSendAliasingEntry> = tco
+        .actor_send_aliasing
+        .iter()
+        .map(|(span, decision)| ActorSendAliasingEntry {
+            start: span.start,
+            end: span.end,
+            kind: match decision {
+                CheckedActorSendAliasing::Copy => ActorSendAliasingData::Copy,
+                CheckedActorSendAliasing::Alias => ActorSendAliasingData::Alias,
+            },
+        })
+        .collect();
+    entries.sort_by_key(|e| (e.start, e.end));
+    entries
 }
 
 #[cfg(test)]
@@ -2595,6 +2663,137 @@ mod tests {
         // is extra metadata that Program doesn't carry, so it's silently ignored).
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
+    }
+
+    /// Construct an empty `TypeCheckOutput` for actor-send aliasing tests.
+    /// Mirrors the shape used elsewhere in this module's tests; the only
+    /// field these tests exercise is `actor_send_aliasing`.
+    fn empty_tco_for_aliasing_tests() -> TypeCheckOutput {
+        TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+            actor_send_aliasing: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn actor_send_aliasing_entries_round_trip_through_wire_format() {
+        // Producer-side: synthesize a TypeCheckOutput with a single Copy entry,
+        // run the builder, and assert the resulting list lifts the span and
+        // variant unchanged.
+        use hew_types::check::{ActorSendAliasing, SpanKey};
+
+        let mut tco = empty_tco_for_aliasing_tests();
+        tco.actor_send_aliasing
+            .insert(SpanKey { start: 42, end: 58 }, ActorSendAliasing::Copy);
+
+        let entries = build_actor_send_aliasing_entries(&tco);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].start, 42);
+        assert_eq!(entries[0].end, 58);
+        assert_eq!(entries[0].kind, ActorSendAliasingData::Copy);
+
+        // Consumer-side: serialize to msgpack and back; the entry must
+        // survive the wire-format round trip with both span and variant
+        // intact, and the variant tag must be the exact `snake_case` form
+        // the C++ reader matches on.
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            entries.clone(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize to generic value");
+        let arr = value
+            .as_object()
+            .expect("top-level should be a map")
+            .get("actor_send_aliasing")
+            .expect("actor_send_aliasing key should be present")
+            .as_array()
+            .expect("actor_send_aliasing should be an array");
+        assert_eq!(arr.len(), 1, "one entry expected");
+        let entry = arr[0].as_object().expect("entry should be a map");
+        assert_eq!(
+            entry.get("start").and_then(serde_json::Value::as_u64),
+            Some(42)
+        );
+        assert_eq!(
+            entry.get("end").and_then(serde_json::Value::as_u64),
+            Some(58)
+        );
+        assert_eq!(
+            entry.get("kind").and_then(|v| v.as_str()),
+            Some("copy"),
+            "kind tag must round-trip as snake_case `copy` so the C++ reader matches",
+        );
+    }
+
+    #[test]
+    fn actor_send_aliasing_alias_variant_serializes_with_alias_kind_tag() {
+        use hew_types::check::{ActorSendAliasing, SpanKey};
+
+        let mut tco = empty_tco_for_aliasing_tests();
+        tco.actor_send_aliasing
+            .insert(SpanKey { start: 1, end: 2 }, ActorSendAliasing::Alias);
+        let entries = build_actor_send_aliasing_entries(&tco);
+        assert_eq!(entries[0].kind, ActorSendAliasingData::Alias);
+
+        // serde tag must be "alias" so the C++ reader picks the Alias arm.
+        let serialized = serde_json::to_value(&entries[0]).expect("entry should serialize");
+        assert_eq!(serialized["kind"].as_str(), Some("alias"));
+    }
+
+    #[test]
+    fn build_actor_send_aliasing_entries_produces_deterministic_order() {
+        use hew_types::check::{ActorSendAliasing, SpanKey};
+
+        let mut tco = empty_tco_for_aliasing_tests();
+        tco.actor_send_aliasing.insert(
+            SpanKey {
+                start: 100,
+                end: 200,
+            },
+            ActorSendAliasing::Copy,
+        );
+        tco.actor_send_aliasing
+            .insert(SpanKey { start: 10, end: 20 }, ActorSendAliasing::Copy);
+        tco.actor_send_aliasing
+            .insert(SpanKey { start: 50, end: 60 }, ActorSendAliasing::Copy);
+
+        let entries = build_actor_send_aliasing_entries(&tco);
+        assert_eq!(entries.len(), 3);
+        // Sorted by (start, end): 10, 50, 100.
+        assert_eq!(entries[0].start, 10);
+        assert_eq!(entries[1].start, 50);
+        assert_eq!(entries[2].start, 100);
     }
 
     #[test]

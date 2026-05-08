@@ -1,10 +1,10 @@
 //! Behavioural tests for std::encoding::csv.
 
 import std::encoding::csv;
+
 import std::testing;
 
 // ── Happy-path parse ──────────────────────────────────────────────────
-
 #[test]
 fn test_parse_rows_count() {
     let tbl = csv.parse("name,age\nAlice,30\nBob,25");
@@ -45,7 +45,6 @@ fn test_parse_header_names() {
 }
 
 // ── Boundary / error ─────────────────────────────────────────────────
-
 #[test]
 fn test_parse_get_out_of_bounds_returns_empty() {
     let tbl = csv.parse("x\n1");
@@ -62,7 +61,6 @@ fn test_parse_get_by_name_missing_column_returns_empty() {
 }
 
 // ── Quoted-field parsing ──────────────────────────────────────────────
-
 #[test]
 fn test_parse_quoted_field_with_comma_parses_as_one_field() {
     // "city" field contains a comma — must remain a single field, not split
@@ -81,7 +79,6 @@ fn test_parse_escaped_quote_in_quoted_field_decoded() {
 }
 
 // ── Property round-trip (parse_no_headers → header naming) ───────────
-
 #[test]
 fn test_parse_no_headers_generates_synthetic_headers() {
     let tbl = csv.parse_no_headers("a,b\nc,d");
@@ -93,7 +90,6 @@ fn test_parse_no_headers_generates_synthetic_headers() {
 }
 
 // ── Empty input ───────────────────────────────────────────────────────
-
 #[test]
 fn test_parse_empty_string_returns_zero_rows_and_cols() {
     // parse("") → input.len() == 0 → no lines processed →
@@ -113,7 +109,6 @@ fn test_parse_no_headers_empty_string_returns_zero_rows_and_cols() {
 }
 
 // ── Trailing newline tolerance ────────────────────────────────────────
-
 #[test]
 fn test_parse_trailing_newline_yields_one_data_row() {
     // parse_impl strips a trailing newline before splitting lines, so
@@ -126,7 +121,6 @@ fn test_parse_trailing_newline_yields_one_data_row() {
 }
 
 // ── parse_no_headers: multi-row multi-col ────────────────────────────
-
 #[test]
 fn test_parse_no_headers_three_rows_three_cols_data() {
     // Verify all nine cells of a 3×3 parse_no_headers parse are accessible.
@@ -151,7 +145,6 @@ fn test_parse_no_headers_three_cols_get_by_name() {
 }
 
 // ── Ownership: two tables, reverse-order free ─────────────────────────
-
 #[test]
 fn test_two_tables_sequential_alloc_free_reverse_order() {
     // Allocate two independent Table values, verify cells, then free in
@@ -166,7 +159,6 @@ fn test_two_tables_sequential_alloc_free_reverse_order() {
 }
 
 // ── Out-of-range header access ────────────────────────────────────────
-
 #[test]
 fn test_header_out_of_range_returns_empty() {
     // header(col) bounds-checks and returns "" for col >= hdrs.len().
@@ -175,10 +167,79 @@ fn test_header_out_of_range_returns_empty() {
     tbl.free();
 }
 
-// ── Note: embedded-newline in quoted field is not supported ───────────
-// The line splitter in parse_impl splits naively on '\n' before handling
-// quoted fields. A quoted field containing a literal '\n' will be split
-// across multiple lines and produce unexpected results.
-// TODO(#1674): add embedded-newline quoted-field support.
-// Example that would need to work: csv.parse("a,b\n\"line1\nline2\",2")
-// producing get(0,0) == "line1\nline2". Skipped until parser is extended.
+// ── Embedded newlines in quoted fields (RFC 4180 §2.6) ───────────────
+#[test]
+fn test_parse_embedded_lf_in_quoted_field_preserved() {
+    // A quoted field containing a literal '\n' must be treated as one field;
+    // the newline is part of the value, not a record separator.
+    let tbl = csv.parse("a,b\n\"line1\nline2\",2");
+    testing.assert_eq(tbl.rows(), 1);
+    testing.assert_eq_str(tbl.get(0, 0), "line1\nline2");
+    testing.assert_eq_str(tbl.get(0, 1), "2");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_crlf_row_terminator_produces_correct_rows() {
+    // '\r\n' is the canonical RFC 4180 row terminator and must work the same
+    // as a bare '\n'.
+    let tbl = csv.parse("name,age\r\nAlice,30\r\nBob,25");
+    testing.assert_eq(tbl.rows(), 2);
+    testing.assert_eq_str(tbl.get_by_name(0, "name"), "Alice");
+    testing.assert_eq_str(tbl.get_by_name(1, "age"), "25");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_mixed_lf_and_crlf_terminators() {
+    // Some producers mix '\n' and '\r\n'; both must split records correctly.
+    let tbl = csv.parse("a,b\r\n1,2\n3,4");
+    testing.assert_eq(tbl.rows(), 2);
+    testing.assert_eq_str(tbl.get(0, 0), "1");
+    testing.assert_eq_str(tbl.get(1, 0), "3");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_crlf_inside_quoted_field_preserved() {
+    // '\r\n' inside a quoted field must be kept verbatim, not collapsed to '\n'.
+    // The old pre-normalization `data.replace("\r\n", "\n")` would corrupt this.
+    let tbl = csv.parse("a\n\"x\r\ny\"");
+    testing.assert_eq(tbl.rows(), 1);
+    testing.assert_eq_str(tbl.get(0, 0), "x\r\ny");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_empty_quoted_field() {
+    // An empty quoted field ("") should decode to the empty string, not a
+    // two-character literal.
+    let tbl = csv.parse("a,b,c\n1,\"\",3");
+    testing.assert_eq(tbl.rows(), 1);
+    testing.assert_eq_str(tbl.get(0, 1), "");
+    testing.assert_eq_str(tbl.get(0, 0), "1");
+    testing.assert_eq_str(tbl.get(0, 2), "3");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_embedded_newline_with_escaped_quote_in_same_field() {
+    // Combined case: a quoted field that contains both an embedded newline and
+    // an escaped quote ('""') — exercises multiple state transitions inside
+    // state 2 before the closing quote.
+    let tbl = csv.parse("h\n\"say \"\"hi\"\"\nbye\"");
+    testing.assert_eq(tbl.rows(), 1);
+    testing.assert_eq_str(tbl.get(0, 0), "say \"hi\"\nbye");
+    tbl.free();
+}
+
+#[test]
+fn test_parse_trailing_crlf_yields_correct_row_count() {
+
+    // A trailing '\r\n' should not produce a phantom empty row, same as the
+    // existing trailing-'\n' test.
+    let tbl = csv.parse("a,b\r\n1,2\r\n");
+    testing.assert_eq(tbl.rows(), 1);
+    testing.assert_eq_str(tbl.get(0, 0), "1");
+    tbl.free();
+}

@@ -105,106 +105,149 @@ pub fn parse_file(path: String) -> Table {
 
 // ── Internal parsing ──────────────────────────────────────────────────
 /// Parse CSV data with optional header row handling.
+///
+/// Single-pass quote-aware state machine (RFC 4180 §2).
+/// States:
+///   0 = Outside       — between fields, before any character of next field
+///   1 = InUnquoted    — inside an unquoted field
+///   2 = InQuoted      — inside a quoted field (newlines are data)
+///   3 = AfterClosingQuote — just saw closing '"'; expect ',' or row terminator
+///
+/// Row terminators: bare '\n' or '\r\n'. The '\r\n' case is recognised by
+/// peeking at the character after '\r' inside the loop — both characters are
+/// consumed before advancing to the next field. Inside a quoted field
+/// (state 2), '\r\n' is preserved verbatim in the field value per RFC 4180 §2.6.
 fn parse_impl(data: String, has_headers: bool) -> Table {
-    // Normalize \r\n to \n
-    let normalized = data.replace("\r\n", "\n");
-    // Remove trailing newline
-    var input = normalized;
-    if input.len() > 0 && input.ends_with("\n") {
-        input = input.slice(0, input.len() - 1);
-    }
-    var headers: Vec<String> = Vec::new();
+    let headers: Vec<String> = Vec::new();
     let rows: Vec<Vec<String>> = Vec::new();
-    if input.len() > 0 {
-        // Split into lines manually
-        let lines: Vec<String> = Vec::new();
-        var pos = 0;
-        let ilen = input.len();
-        while pos <= ilen {
-            let rest = input.slice(pos, ilen);
-            let nl = rest.find("\n");
-            if nl < 0 {
-                lines.push(input.slice(pos, ilen));
-                break;
+    let ilen = data.len();
+    if ilen == 0 {
+        return Table { hdrs: headers, data: rows };
+    }
+    // Current row accumulator and field accumulator.
+    let cur_row: Vec<String> = Vec::new();
+    var cur_field = "";
+    // state: 0=Outside, 1=InUnquoted, 2=InQuoted, 3=AfterClosingQuote
+    var state = 0;
+    var pos = 0;
+    while pos < ilen {
+        let ch = data.slice(pos, pos + 1);
+        if state == 2 {
+            // Inside a quoted field — only '"' is special; newlines are data.
+            if ch == "\"" {
+                if pos + 1 < ilen && data.slice(pos + 1, pos + 2) == "\"" {
+                    // Escaped quote: "" → literal '"'
+                    cur_field = cur_field + "\"";
+                    pos = pos + 2;
+                } else {
+                    // Closing quote
+                    state = 3;
+                    pos = pos + 1;
+                }
+            } else {
+                // Any other character, including '\n' and '\r', is field data.
+                cur_field = cur_field + ch;
+                pos = pos + 1;
             }
-            lines.push(input.slice(pos, pos + nl));
-            pos = pos + nl + 1;
-        }
-        let nlines = lines.len();
-        var start_row = 0;
-        if has_headers {
-            headers = parse_csv_line(lines.get(0));
-            start_row = 1;
-        }
-        for i in start_row .. nlines {
-            let line = lines.get(i);
-            if line.len() > 0 {
-                rows.push(parse_csv_line(line));
+        } else if ch == "\"" && state == 0 {
+            // Opening quote — begin quoted field
+            state = 2;
+            pos = pos + 1;
+        } else if ch == "," && (state == 0 || state == 1 || state == 3) {
+            // Field separator — emit current field, reset for next
+            cur_row.push(cur_field);
+            cur_field = "";
+            state = 0;
+            pos = pos + 1;
+        } else if ch == "\r" && (state == 0 || state == 1 || state == 3) {
+            // Potential CRLF row terminator outside quotes
+            if pos + 1 < ilen && data.slice(pos + 1, pos + 2) == "\n" {
+                // CRLF: consume both bytes, flush completed row
+                cur_row.push(cur_field);
+                cur_field = "";
+                if cur_row.len() > 0 {
+                    if has_headers && rows.len() == 0 && headers.len() == 0 {
+                        for i in 0 .. cur_row.len() {
+                            headers.push(cur_row.get(i));
+                        }
+                    } else {
+                        rows.push(copy_str_vec(cur_row));
+                    }
+                    cur_row.clear();
+                }
+                state = 0;
+                pos = pos + 2;
+            } else {
+                // Bare '\r' — treat as field data (not a standard terminator)
+                cur_field = cur_field + ch;
+                state = 1;
+                pos = pos + 1;
             }
-        }
-        // Generate synthetic headers if no header row
-        if !has_headers && rows.len() > 0 {
-            let ncols = rows.get(0).len();
-            for i in 0 .. ncols {
-                headers.push(f"col{i}");
+        } else if ch == "\n" && (state == 0 || state == 1 || state == 3) {
+            // LF row terminator outside quotes — flush completed row
+            cur_row.push(cur_field);
+            cur_field = "";
+            if cur_row.len() > 0 {
+                if has_headers && rows.len() == 0 && headers.len() == 0 {
+                    for i in 0 .. cur_row.len() {
+                        headers.push(cur_row.get(i));
+                    }
+                } else {
+                    rows.push(copy_str_vec(cur_row));
+                }
+                cur_row.clear();
             }
+            state = 0;
+            pos = pos + 1;
+        } else if state == 3 {
+            // After closing quote: only ',' or row terminator are valid (RFC 4180).
+            // Any other character is technically malformed; skip it gracefully.
+            pos = pos + 1;
+        } else {
+            // Regular character in Outside or InUnquoted state
+            cur_field = cur_field + ch;
+            state = 1;
+            pos = pos + 1;
+        }
+    }
+    // EOF — flush any pending field/row (handles inputs without trailing newline).
+    // A completely empty trailing line (state==0, cur_row empty, cur_field=="")
+    // means the input ended with a row terminator — don't emit a phantom row.
+    let has_pending_field = cur_field.len() > 0 || state == 3 || state == 1;
+    if has_pending_field || cur_row.len() > 0 {
+        cur_row.push(cur_field);
+        if has_headers && rows.len() == 0 && headers.len() == 0 {
+            for i in 0 .. cur_row.len() {
+                headers.push(cur_row.get(i));
+            }
+        } else {
+            rows.push(copy_str_vec(cur_row));
+        }
+        cur_row.clear();
+    }
+    // Generate synthetic headers if no header row
+    if !has_headers && rows.len() > 0 {
+        let ncols = rows.get(0).len();
+        for i in 0 .. ncols {
+            headers.push(f"col{i}");
         }
     }
     Table { hdrs: headers, data: rows }
 }
 
-/// Parse a single CSV line into fields, handling quoted fields.
-fn parse_csv_line(line: String) -> Vec<String> {
-    let fields: Vec<String> = Vec::new();
-    let len = line.len();
-    var pos = 0;
-    while pos <= len {
-        if pos == len {
-            // Trailing comma → empty field
-            fields.push("");
-            break;
-        }
-        let ch = line.slice(pos, pos + 1);
-        if ch == "\"" {
-            // Quoted field: scan for closing quote
-            pos = pos + 1;
-            var field = "";
-            while pos < len {
-                let c = line.slice(pos, pos + 1);
-                if c == "\"" {
-                    // Check for escaped quote ("")
-                    if pos + 1 < len && line.slice(pos + 1, pos + 2) == "\"" {
-                        field = field + "\"";
-                        pos = pos + 2;
-                    } else {
-                        // End of quoted field
-                        pos = pos + 1;
-                        break;
-                    }
-                } else {
-                    field = field + c;
-                    pos = pos + 1;
-                }
-            }
-            fields.push(field);
-            // Skip comma after closing quote
-            if pos < len && line.slice(pos, pos + 1) == "," {
-                pos = pos + 1;
-            }
-        } else {
-            // Unquoted field: find next comma
-            let rest = line.slice(pos, len);
-            let comma_idx = rest.find(",");
-            if comma_idx < 0 {
-                fields.push(rest);
-                break;
-            } else {
-                fields.push(line.slice(pos, pos + comma_idx));
-                pos = pos + comma_idx + 1;
-            }
-        }
+/// Copy a `Vec<String>` into a new `Vec<String>`.
+///
+/// Returning the copy from a function rather than building it inline avoids a
+/// Hew runtime lifetime issue where a `Vec<String>` created inside a block
+/// scope and pushed into a `Vec<Vec<String>>` loses its contents when the
+/// inner scope exits.  Returning from a function correctly extends the
+/// lifetime of the contained strings through the ownership transfer.
+fn copy_str_vec(src: Vec<String>) -> Vec<String> {
+    let dst: Vec<String> = Vec::new();
+    for i in 0 .. src.len() {
+        dst.push(src.get(i));
     }
-    fields
+    dst
 }
 
 /// Find the column index for a header name. Returns -1 if not found.

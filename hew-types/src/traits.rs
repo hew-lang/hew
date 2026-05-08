@@ -97,6 +97,15 @@ pub struct MethodSig {
     pub takes_self: bool,
     /// Whether the method takes self by mutable reference
     pub self_mutable: bool,
+    /// Whether the method consumes its receiver (i.e. takes `self` by value
+    /// and ends the receiver binding's lifetime). When `true`, every call
+    /// site marks the receiver moved so the move-checker rejects subsequent
+    /// uses and the codegen scope-exit drop becomes a null-guarded no-op.
+    ///
+    /// PR 1 (issue #1295) ships this field with the recognised set empty:
+    /// no Hew surface syntax sets it today. PR 2 populates it for
+    /// `Closable::close`. No attribute syntax is exposed.
+    pub consumes_receiver: bool,
 }
 
 /// A trait definition.

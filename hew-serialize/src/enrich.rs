@@ -3913,6 +3913,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_consumes_receiver: HashSet::new(),
             method_call_rewrites: HashMap::new(),
         }
     }

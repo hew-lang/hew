@@ -653,6 +653,7 @@ mod tests {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),

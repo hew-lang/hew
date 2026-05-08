@@ -70,6 +70,14 @@ pub struct MethodCallReceiverKindEntry {
     pub end: usize,
     #[serde(flatten)]
     pub kind: MethodCallReceiverKindData,
+    /// Whether the resolved method declares `consumes_receiver`. Defaults
+    /// to `false` for backward compatibility with cached artefacts emitted
+    /// before this field existed. Codegen reads this flag to null the
+    /// receiver's drop slot after the call. Plumbed by issue #1295; the
+    /// recognised set is empty in PR 1, so this field is `false` for every
+    /// Hew program until PR 2 introduces `Closable::close`.
+    #[serde(default)]
+    pub consumes_receiver: bool,
 }
 
 /// Wire representation of an assignment target kind variant.
@@ -1002,6 +1010,7 @@ pub fn build_method_call_receiver_kind_entries(
                         canonical_receiver: canonical_receiver.clone(),
                     },
                 },
+                consumes_receiver: tco.method_call_consumes_receiver.contains(&key),
             });
         }
         fn on_call_expr(
@@ -1049,6 +1058,7 @@ pub fn build_method_call_receiver_kind_entries(
                         canonical_receiver: canonical_receiver.clone(),
                     },
                 },
+                consumes_receiver: tco.method_call_consumes_receiver.contains(&key),
             });
         }
         fn if_stmt_order(&self) -> IfStmtOrder {
@@ -1513,6 +1523,7 @@ mod tests {
                 kind: MethodCallReceiverKindData::NamedTypeInstance {
                     type_name: "Widget".to_string(),
                 },
+                consumes_receiver: false,
             }],
             vec![],
             vec![],
@@ -1552,12 +1563,74 @@ mod tests {
                 kind: MethodCallReceiverKindData::StreamInstance {
                     element_kind: element_kind.to_string(),
                 },
+                consumes_receiver: false,
             };
             let bytes = rmp_serde::to_vec_named(&entry).expect("entry should serialize");
             let restored: MethodCallReceiverKindEntry =
                 rmp_serde::from_slice(&bytes).expect("entry should deserialize");
             assert_eq!(restored, entry);
         }
+    }
+
+    /// Issue #1295: the `consumes_receiver` flag on
+    /// [`MethodCallReceiverKindEntry`] survives msgpack encode/decode for
+    /// every receiver-kind variant. Codegen reads the flag to null the
+    /// receiver's drop slot after a consuming method call.
+    #[test]
+    fn method_call_receiver_kind_consumes_receiver_roundtrips() {
+        let entry = MethodCallReceiverKindEntry {
+            start: 7,
+            end: 13,
+            kind: MethodCallReceiverKindData::NamedTypeInstance {
+                type_name: "Server".to_string(),
+            },
+            consumes_receiver: true,
+        };
+        let bytes = rmp_serde::to_vec_named(&entry).expect("entry should serialize");
+        let restored: MethodCallReceiverKindEntry =
+            rmp_serde::from_slice(&bytes).expect("entry should deserialize");
+        assert_eq!(restored, entry);
+        assert!(restored.consumes_receiver);
+
+        // The default (`false`) round-trips as well.
+        let entry_off = MethodCallReceiverKindEntry {
+            consumes_receiver: false,
+            ..entry.clone()
+        };
+        let bytes_off = rmp_serde::to_vec_named(&entry_off).expect("entry should serialize");
+        let restored_off: MethodCallReceiverKindEntry =
+            rmp_serde::from_slice(&bytes_off).expect("entry should deserialize");
+        assert!(!restored_off.consumes_receiver);
+    }
+
+    /// Forward compatibility: msgpack payloads emitted before the
+    /// `consumes_receiver` field existed must deserialise with the field
+    /// defaulted to `false`. The serde `#[serde(default)]` annotation on
+    /// the field is what makes this work.
+    #[test]
+    fn method_call_receiver_kind_consumes_receiver_defaults_when_absent() {
+        // Mimic a pre-#1295 payload by serializing a legacy shadow struct
+        // that omits `consumes_receiver`. The new reader must accept it.
+        #[derive(Serialize)]
+        struct LegacyEntry {
+            start: usize,
+            end: usize,
+            #[serde(flatten)]
+            kind: MethodCallReceiverKindData,
+        }
+        let legacy = LegacyEntry {
+            start: 0,
+            end: 5,
+            kind: MethodCallReceiverKindData::NamedTypeInstance {
+                type_name: "Legacy".to_string(),
+            },
+        };
+        let bytes = rmp_serde::to_vec_named(&legacy).expect("legacy entry should serialize");
+        let restored: MethodCallReceiverKindEntry =
+            rmp_serde::from_slice(&bytes).expect("legacy entry should deserialize");
+        assert!(!restored.consumes_receiver);
+        assert_eq!(restored.start, 0);
+        assert_eq!(restored.end, 5);
     }
 
     #[test]
@@ -1739,6 +1812,7 @@ mod tests {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1821,6 +1895,7 @@ mod tests {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1898,6 +1973,7 @@ mod tests {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2001,6 +2077,7 @@ mod tests {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2198,6 +2275,7 @@ mod tests {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2285,6 +2363,7 @@ mod tests {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2365,6 +2444,7 @@ mod tests {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2444,6 +2524,7 @@ mod tests {
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2536,6 +2617,7 @@ mod tests {
                 kind: MethodCallReceiverKindData::TraitObject {
                     trait_name: "Greeter".to_string(),
                 },
+                consumes_receiver: false,
             }],
             vec![],
             vec![],
@@ -2587,6 +2669,7 @@ mod tests {
                 kind: MethodCallReceiverKindData::HandleInstance {
                     type_name: "net.Connection".to_string(),
                 },
+                consumes_receiver: false,
             }],
             vec![],
             vec![],
@@ -2642,6 +2725,7 @@ mod tests {
                     trait_name: "Display".to_string(),
                     canonical_receiver: "i64".to_string(),
                 },
+                consumes_receiver: false,
             }],
             vec![],
             vec![],

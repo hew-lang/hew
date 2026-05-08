@@ -175,6 +175,11 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
   ast::MethodCallReceiverKindEntry entry;
   entry.start = getUint(mapReq(obj, "start"));
   entry.end = getUint(mapReq(obj, "end"));
+  // `consumes_receiver` is optional for forward compatibility with cached
+  // payloads emitted before the field existed (issue #1295).
+  if (const auto *consumes = mapGet(obj, "consumes_receiver")) {
+    entry.consumes_receiver = getBool(*consumes);
+  }
   auto kind = getString(mapReq(obj, "kind"));
   if (kind == "named_type_instance") {
     ast::MethodCallReceiverKindNamedTypeInstance data;

@@ -4699,9 +4699,38 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
     if (recvMethod->method == "clone")
       materializeTemporary(receiver, mc.receiver->value, &tempAlloca);
 
-  // Helper: if this method call consumed a clone temporary via .free(), zero
-  // its alloca so the scope-exit drop is skipped.
+  // Helper: when the resolved method declares `consumes_receiver` (issue
+  // #1295), null out the receiver's drop slot so the scope-exit drop becomes
+  // a null-guarded no-op. Reads the per-call-site flag from the
+  // method_call_receiver_kinds side table populated by the type checker.
+  // Returns true if the consume marker fired, false otherwise.
+  //
+  // The recognised consume set is empty in PR 1, so this returns false for
+  // every Hew program. PR 2 populates the set for `Closable::close` when the
+  // trait is registered.
+  auto consumeReceiverIfFlagged = [&]() -> bool {
+    auto *entry = methodCallReceiverKindOf(exprSpan);
+    if (!entry || !entry->consumes_receiver)
+      return false;
+    if (tempAlloca) {
+      nullOutDropSlotByAlloca(tempAlloca, location);
+      return true;
+    }
+    std::string vname;
+    if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+      vname = ident->name;
+    nullOutDropSlot(vname, receiver, location);
+    return true;
+  };
+
+  // Helper: if this method call consumed a clone temporary, zero its alloca
+  // so the scope-exit drop is skipped. Tries the metadata-driven path first
+  // (issue #1295); falls back to the literal `mc.method == "free"` check
+  // that PR 3 will retire once stdlib `pub fn free` declarations are
+  // removed.
   auto consumeCloneTemp = [&]() {
+    if (consumeReceiverIfFlagged())
+      return;
     if (tempAlloca && mc.method == "free")
       nullOutDropSlotByAlloca(tempAlloca, location);
   };

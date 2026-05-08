@@ -319,6 +319,7 @@ impl Checker {
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
+            method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),

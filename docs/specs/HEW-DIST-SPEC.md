@@ -61,9 +61,44 @@ Name registration is scoped by namespace. Re-registering a name creates a new in
 
 The implementation may expose local convenience APIs, but distributed identity must remain inspectable enough for latency-aware, failure-aware, and authorization-aware code.
 
-> RATIFIED-PENDING: handle-safety-and-resource-lifetime.md slice 1
->
-> This v0 spec defines the identity shape of `ActorRef`, but does not yet ratify whether remote actor references are copyable, affine, linear, or move-only across node boundaries.
+### 3.1 ActorRef ownership
+
+`ActorRef<A>` is a **refcounted identity reference** (`Rc`/`Arc`-shaped),
+consistent with [`HEW-SPEC.md`](./HEW-SPEC.md) §3.7.8. It is `Frozen` and
+`Send`: the same identity may be addressed concurrently from many holders,
+locally and across node boundaries. It is **not** an affine per-call handle
+in the sense of [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+§7 tier-1; it is the *identity* side of the identity-vs-authority split that
+governs distributed references.
+
+- Identity may be cloned freely (refcount bump) and shared. Cloning an
+  `ActorRef` does not duplicate authority, mailbox capacity, supervision
+  power, or any other resource — it only duplicates the means to *name*
+  the actor.
+- Cycles between actors that hold strong identity references to one
+  another are broken with `Weak<ActorRef<A>>`, per `HEW-SPEC.md` §3.7.8.
+  Supervision trees naturally avoid cycles: parents hold strong identity
+  references to children; children, when they need to address their
+  parent, hold `Weak<ActorRef<A>>` or use an explicit message protocol.
+- No user-visible `close()`, `free()`, or `release()` is ever required on
+  an `ActorRef` in normal Hew code. This satisfies the prime invariant of
+  `handle-safety-and-resource-lifetime.md` §1 ("no user-visible manual
+  free in normal Hew code") for distributed identity.
+- Identity does **not** confer authority. Holding an `ActorRef` lets the
+  holder *address* the actor; whether a given message, observation, or
+  capability invocation is permitted is governed by §12 (security &
+  capabilities). A capability transferred over an `ActorRef` is a
+  separate value with its own ownership shape (§12); revoking that
+  capability does not invalidate the underlying identity.
+- Stale identity — a reference whose `NodeId` is gone, whose `slot` is
+  vacated, or whose `incarnation` has been replaced — must fail closed
+  with `StaleRef` (§3, §6). This is consistent with the fail-closed
+  posture of `handle-safety-and-resource-lifetime.md` §3.1 and with the
+  general distributed prohibition on sentinel substitutes in §4.
+- The checker is the authority for ownership classification of
+  `ActorRef` values, per `handle-safety-and-resource-lifetime.md` §5
+  (single ownership oracle). Codegen and the runtime consume that
+  classification fail-closed and do not re-derive it.
 
 ## 4. Delivery semantics
 

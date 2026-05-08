@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::actor::HewActor;
 use crate::internal::types::{HewActorState, HewError, HewOverflowPolicy};
@@ -177,6 +177,425 @@ fn wasm_worker_count_matches_native_shutdown_state() {
     assert_eq!(crate::scheduler_wasm::hew_sched_metrics_worker_count(), 1);
     crate::scheduler_wasm::hew_sched_shutdown();
     assert_eq!(crate::scheduler_wasm::hew_sched_metrics_worker_count(), 0);
+}
+
+// ── Phase-α envelope parity tests ───────────────────────────────────────────
+//
+// Each test captures an `EnvelopeSnapshot` from both the native mailbox and the
+// WASM mailbox and asserts they are identical. This is the parity contract: the
+// same sequence of operations on both surfaces must produce identical observable
+// state (refcount, header bits, payload content, drop-glue firing).
+//
+// The WASM envelope functions are defined in `mailbox_wasm.rs` and are
+// structurally identical to the native ones; the tests below prove the two
+// implementations stay in sync.
+
+/// Observable state of a [`HewMsgEnvelope`] captured after an operation
+/// sequence. Used to compare native and WASM envelope behaviour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EnvelopeSnapshot {
+    refcount: usize,
+    header_bits: u32,
+    payload_size: usize,
+    /// Content of the first N bytes of payload (0 if payload is null).
+    payload_prefix: Vec<u8>,
+    /// How many times `drop_glue` fired during the operation sequence.
+    drop_count: usize,
+}
+
+/// Process-wide drop counter for envelope parity tests. Serialised via
+/// `WASM_ENVELOPE_DROP_LOCK` so concurrent test threads don't interfere.
+static WASM_ENVELOPE_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WASM_ENVELOPE_DROP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+unsafe extern "C" fn wasm_parity_drop_glue(_payload: *mut c_void) {
+    WASM_ENVELOPE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+}
+
+fn alloc_bytes(bytes: &[u8]) -> *mut c_void {
+    // SAFETY: standard malloc + memcpy.
+    unsafe {
+        let buf = libc::malloc(bytes.len());
+        assert!(!buf.is_null(), "alloc_bytes: OOM");
+        libc::memcpy(buf, bytes.as_ptr().cast(), bytes.len());
+        buf
+    }
+}
+
+fn read_payload_prefix(payload: *mut c_void, n: usize) -> Vec<u8> {
+    if payload.is_null() || n == 0 {
+        return Vec::new();
+    }
+    // SAFETY: caller guarantees payload is readable for at least `n` bytes.
+    unsafe { std::slice::from_raw_parts(payload.cast::<u8>(), n).to_vec() }
+}
+
+/// Capture `EnvelopeSnapshot` from a live native envelope.
+unsafe fn native_snapshot(env: *mut crate::mailbox::HewMsgEnvelope, n: usize) -> EnvelopeSnapshot {
+    // SAFETY: caller guarantees `env` is a live, exclusively-accessible envelope.
+    unsafe {
+        let payload = (*env).payload;
+        EnvelopeSnapshot {
+            refcount: (*env).refcount.load(Ordering::SeqCst),
+            header_bits: (*env).header_bits.load(Ordering::SeqCst),
+            payload_size: (*env).payload_size,
+            payload_prefix: read_payload_prefix(payload, n),
+            drop_count: WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
+        }
+    }
+}
+
+/// Capture `EnvelopeSnapshot` from a live WASM envelope.
+unsafe fn wasm_snapshot(
+    env: *mut crate::mailbox_wasm::HewMsgEnvelope,
+    n: usize,
+) -> EnvelopeSnapshot {
+    // SAFETY: caller guarantees `env` is a live, exclusively-accessible envelope.
+    unsafe {
+        let payload = (*env).payload;
+        EnvelopeSnapshot {
+            refcount: (*env).refcount.load(Ordering::SeqCst),
+            header_bits: (*env).header_bits.load(Ordering::SeqCst),
+            payload_size: (*env).payload_size,
+            payload_prefix: read_payload_prefix(payload, n),
+            drop_count: WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
+        }
+    }
+}
+
+// ── Constants parity ─────────────────────────────────────────────────────────
+
+/// Header-bit constants in `mailbox_wasm` must equal those in `mailbox`.
+///
+/// This is documentation-as-test: if a constant moves in either module the
+/// test fails loudly instead of silently allowing the two surfaces to drift.
+#[test]
+fn envelope_header_bit_constants_match_native_and_wasm() {
+    use crate::mailbox as native;
+    use crate::mailbox_wasm as wasm;
+
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_ALIAS_ACTIVE,
+        wasm::HEW_MSG_ENVELOPE_ALIAS_ACTIVE
+    );
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_SHARED_FROZEN,
+        wasm::HEW_MSG_ENVELOPE_SHARED_FROZEN
+    );
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_ARENA_BACKED,
+        wasm::HEW_MSG_ENVELOPE_ARENA_BACKED
+    );
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_FORKED,
+        wasm::HEW_MSG_ENVELOPE_FORKED
+    );
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER,
+        wasm::HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER
+    );
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_RESERVED_GAMMA_A,
+        wasm::HEW_MSG_ENVELOPE_RESERVED_GAMMA_A
+    );
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_RESERVED_GAMMA_B,
+        wasm::HEW_MSG_ENVELOPE_RESERVED_GAMMA_B
+    );
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_RESERVED_DELTA_A,
+        wasm::HEW_MSG_ENVELOPE_RESERVED_DELTA_A
+    );
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_RESERVED_DELTA_B,
+        wasm::HEW_MSG_ENVELOPE_RESERVED_DELTA_B
+    );
+    assert_eq!(
+        native::HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK,
+        wasm::HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK
+    );
+}
+
+// ── Refcount + alias bit parity ──────────────────────────────────────────────
+
+/// `hew_msg_envelope_new` starts at refcount=1, alias bit clear, on both
+/// native and WASM.
+#[test]
+fn envelope_new_parity_refcount_one_no_alias() {
+    let _guard = WASM_ENVELOPE_DROP_LOCK.lock().unwrap();
+    WASM_ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+    // SAFETY: standard envelope-new + release. Test owns both envelopes.
+    let native_snap = unsafe {
+        let payload = alloc_bytes(b"parity-new");
+        let env = crate::mailbox::hew_msg_envelope_new(payload, 10, Some(wasm_parity_drop_glue));
+        assert!(!env.is_null());
+        let snap = native_snapshot(env, 10);
+        crate::mailbox::hew_msg_envelope_release(env);
+        snap
+    };
+    let after_native_drop = WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst);
+
+    WASM_ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+    // SAFETY: standard envelope-new + release. Test owns the envelope.
+    let wasm_snap = unsafe {
+        let payload = alloc_bytes(b"parity-new");
+        let env =
+            crate::mailbox_wasm::hew_msg_envelope_new(payload, 10, Some(wasm_parity_drop_glue));
+        assert!(!env.is_null());
+        let snap = wasm_snapshot(env, 10);
+        crate::mailbox_wasm::hew_msg_envelope_release(env);
+        snap
+    };
+    let after_wasm_drop = WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst);
+
+    assert_eq!(
+        native_snap, wasm_snap,
+        "new: native and WASM snapshots diverged"
+    );
+    assert_eq!(
+        after_native_drop, 1,
+        "native: drop_glue must fire exactly once on release"
+    );
+    assert_eq!(
+        after_wasm_drop, 1,
+        "wasm: drop_glue must fire exactly once on release"
+    );
+}
+
+/// `hew_msg_envelope_clone_alias` bumps refcount to 2 and sets `ALIAS_ACTIVE`
+/// on both native and WASM; first release drops to 1 without firing `drop_glue`;
+/// second release fires `drop_glue` exactly once on both surfaces.
+#[test]
+fn envelope_clone_alias_parity_refcount_and_bit() {
+    let _guard = WASM_ENVELOPE_DROP_LOCK.lock().unwrap();
+    WASM_ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+    // SAFETY: standard envelope alias contract. Test owns all references.
+    let native_after_clone = unsafe {
+        let payload = alloc_bytes(b"alias-parity");
+        let env = crate::mailbox::hew_msg_envelope_new(payload, 12, Some(wasm_parity_drop_glue));
+        crate::mailbox::hew_msg_envelope_clone_alias(env);
+        let snap = native_snapshot(env, 12);
+        // First release: refcount 2 → 1; drop_glue must NOT fire.
+        crate::mailbox::hew_msg_envelope_release(env);
+        let mid_drop = WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst);
+        assert_eq!(
+            mid_drop, 0,
+            "native: drop_glue must not fire on non-final release"
+        );
+        // Second release: refcount 1 → 0; drop_glue fires.
+        crate::mailbox::hew_msg_envelope_release(env);
+        snap
+    };
+    let native_final_drop = WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst);
+
+    WASM_ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+    // SAFETY: standard envelope alias contract. Test owns all references.
+    let wasm_after_clone = unsafe {
+        let payload = alloc_bytes(b"alias-parity");
+        let env =
+            crate::mailbox_wasm::hew_msg_envelope_new(payload, 12, Some(wasm_parity_drop_glue));
+        crate::mailbox_wasm::hew_msg_envelope_clone_alias(env);
+        let snap = wasm_snapshot(env, 12);
+        crate::mailbox_wasm::hew_msg_envelope_release(env);
+        let mid_drop = WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst);
+        assert_eq!(
+            mid_drop, 0,
+            "wasm: drop_glue must not fire on non-final release"
+        );
+        crate::mailbox_wasm::hew_msg_envelope_release(env);
+        snap
+    };
+    let wasm_final_drop = WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst);
+
+    assert_eq!(
+        native_after_clone, wasm_after_clone,
+        "clone_alias: native and WASM snapshots diverged"
+    );
+    assert_eq!(
+        native_final_drop, 1,
+        "native: drop_glue fires exactly once at final release"
+    );
+    assert_eq!(
+        wasm_final_drop, 1,
+        "wasm: drop_glue fires exactly once at final release"
+    );
+    // Alias bit must be set on both snapshots.
+    assert_ne!(
+        native_after_clone.header_bits & crate::mailbox::HEW_MSG_ENVELOPE_ALIAS_ACTIVE,
+        0,
+        "native: ALIAS_ACTIVE bit must be set after clone_alias"
+    );
+}
+
+// ── Fork-on-write parity ─────────────────────────────────────────────────────
+
+/// `hew_msg_envelope_fork_for_write` produces a distinct envelope with:
+/// - refcount=1 on the forked envelope
+/// - `FORKED` bit set on the forked envelope
+/// - a separate payload buffer holding the same bytes
+/// - the original's refcount decremented by one
+///
+/// Verified on both native and WASM; the snapshot captures forked envelope
+/// state, not the original's state post-fork.
+#[test]
+fn envelope_fork_for_write_parity() {
+    let _guard = WASM_ENVELOPE_DROP_LOCK.lock().unwrap();
+    WASM_ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+    // SAFETY: standard envelope fork contract. Test owns all references.
+    let (native_forked_snap, native_original_rc_after_fork) = unsafe {
+        let payload = alloc_bytes(b"fork-bytes");
+        let env = crate::mailbox::hew_msg_envelope_new(payload, 10, Some(wasm_parity_drop_glue));
+        // Two-observer state, like a real in-process send.
+        crate::mailbox::hew_msg_envelope_clone_alias(env);
+        // Fork: caller's reference transfers to the new envelope.
+        let forked = crate::mailbox::hew_msg_envelope_fork_for_write(env);
+        assert!(!forked.is_null());
+        let forked_snap = native_snapshot(forked, 10);
+        let original_rc = (*env).refcount.load(Ordering::SeqCst);
+        // Forked payload must be a distinct allocation with the same bytes.
+        assert_ne!(
+            (*forked).payload,
+            payload,
+            "native: forked payload must be a copy"
+        );
+        crate::mailbox::hew_msg_envelope_release(forked);
+        crate::mailbox::hew_msg_envelope_release(env);
+        (forked_snap, original_rc)
+    };
+    let native_final_drop = WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst);
+
+    WASM_ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+    // SAFETY: standard envelope fork contract. Test owns all references.
+    let (wasm_forked_snap, wasm_original_rc_after_fork) = unsafe {
+        let payload = alloc_bytes(b"fork-bytes");
+        let env =
+            crate::mailbox_wasm::hew_msg_envelope_new(payload, 10, Some(wasm_parity_drop_glue));
+        crate::mailbox_wasm::hew_msg_envelope_clone_alias(env);
+        let forked = crate::mailbox_wasm::hew_msg_envelope_fork_for_write(env);
+        assert!(!forked.is_null());
+        let forked_snap = wasm_snapshot(forked, 10);
+        let original_rc = (*env).refcount.load(Ordering::SeqCst);
+        assert_ne!(
+            (*forked).payload,
+            payload,
+            "wasm: forked payload must be a copy"
+        );
+        crate::mailbox_wasm::hew_msg_envelope_release(forked);
+        crate::mailbox_wasm::hew_msg_envelope_release(env);
+        (forked_snap, original_rc)
+    };
+    let wasm_final_drop = WASM_ENVELOPE_DROP_COUNT.load(Ordering::SeqCst);
+
+    assert_eq!(
+        native_forked_snap, wasm_forked_snap,
+        "fork_for_write: native and WASM forked-envelope snapshots diverged"
+    );
+    assert_eq!(
+        native_original_rc_after_fork, wasm_original_rc_after_fork,
+        "fork_for_write: original refcount after fork diverged"
+    );
+    // FORKED bit must be set on both forked envelopes.
+    assert_ne!(
+        native_forked_snap.header_bits & crate::mailbox::HEW_MSG_ENVELOPE_FORKED,
+        0,
+        "native: FORKED bit must be set on forked envelope"
+    );
+    // Both final drops: two envelopes, each with drop_glue.
+    assert_eq!(
+        native_final_drop, 2,
+        "native: drop_glue fires once per envelope"
+    );
+    assert_eq!(
+        wasm_final_drop, 2,
+        "wasm: drop_glue fires once per envelope"
+    );
+}
+
+// ── Header-bit get/mask parity ───────────────────────────────────────────────
+
+/// Header-bit round-trip: set a live bit and verify it reads back identically
+/// on both native and WASM. Uses `ARENA_BACKED` (bit 2) as the probe because
+/// it's a named reserved-future bit that's safe to set in a test.
+#[test]
+fn envelope_header_bit_set_get_round_trip_parity() {
+    // SAFETY: standard envelope-new + release contract.
+    let native_bits = unsafe {
+        let payload = alloc_bytes(b"bits");
+        let env = crate::mailbox::hew_msg_envelope_new(payload, 4, None);
+        assert!(!env.is_null());
+        (*env).header_bits.fetch_or(
+            crate::mailbox::HEW_MSG_ENVELOPE_ARENA_BACKED,
+            Ordering::Relaxed,
+        );
+        let bits = (*env).header_bits.load(Ordering::SeqCst);
+        // Clear the bit so header_validate passes on release.
+        (*env).header_bits.fetch_and(
+            !crate::mailbox::HEW_MSG_ENVELOPE_ARENA_BACKED,
+            Ordering::Relaxed,
+        );
+        crate::mailbox::hew_msg_envelope_release(env);
+        bits
+    };
+
+    // SAFETY: standard envelope-new + release contract.
+    let wasm_bits = unsafe {
+        let payload = alloc_bytes(b"bits");
+        let env = crate::mailbox_wasm::hew_msg_envelope_new(payload, 4, None);
+        assert!(!env.is_null());
+        (*env).header_bits.fetch_or(
+            crate::mailbox_wasm::HEW_MSG_ENVELOPE_ARENA_BACKED,
+            Ordering::Relaxed,
+        );
+        let bits = (*env).header_bits.load(Ordering::SeqCst);
+        (*env).header_bits.fetch_and(
+            !crate::mailbox_wasm::HEW_MSG_ENVELOPE_ARENA_BACKED,
+            Ordering::Relaxed,
+        );
+        crate::mailbox_wasm::hew_msg_envelope_release(env);
+        bits
+    };
+
+    assert_eq!(
+        native_bits, wasm_bits,
+        "header-bit round-trip: native and WASM disagree on bit readback"
+    );
+    assert_ne!(
+        native_bits & crate::mailbox::HEW_MSG_ENVELOPE_ARENA_BACKED,
+        0,
+        "ARENA_BACKED bit must read back set"
+    );
+}
+
+// ── MUST_BE_ZERO mask shape ───────────────────────────────────────────────────
+
+/// The WASM `MUST_BE_ZERO` mask covers the same bit range (9..31) as the
+/// native one. The fail-closed panic at `header_validate` cannot be exercised
+/// under `panic = "abort"` (it would kill the test runner), so we assert the
+/// mask shape directly on both surfaces.
+#[test]
+fn wasm_envelope_must_be_zero_mask_covers_bits_nine_through_thirtyone() {
+    use crate::mailbox_wasm::HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK as WASM_MASK;
+
+    for bit in 0..9 {
+        assert_eq!(
+            WASM_MASK & (1u32 << bit),
+            0,
+            "wasm: bit {bit} is in the live header range; mask must not cover it"
+        );
+    }
+    for bit in 9..32 {
+        assert_ne!(
+            WASM_MASK & (1u32 << bit),
+            0,
+            "wasm: bit {bit} is reserved-zero; mask must cover it"
+        );
+    }
 }
 
 #[test]

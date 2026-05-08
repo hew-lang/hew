@@ -400,11 +400,6 @@ else
     LANE_REASON="CLI surface changed"
 fi
 
-if [[ "$LANE" != "docs" && "$LANE" != "scripts-config" ]]; then
-    add_command "cargo fmt --all -- --check"
-    add_command "cargo clippy --workspace --tests -- -D warnings"
-fi
-
 case "$LANE" in
     docs)
         ;;
@@ -416,33 +411,48 @@ case "$LANE" in
         fi
         ;;
     grammar)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make grammar"
         ;;
     parser)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-parser"
         ;;
     types)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-types"
         ;;
     cli)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-cli"
         ;;
     runtime-net)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-runtime-net"
         ;;
     codegen)
         # hew-codegen/* changes: run test-codegen (ctest).
         # codegen-lint and test-release-binary are appended below as add-ons
         # (needs_codegen_lint and needs_codegen_release_smoke are already set).
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-codegen"
         ;;
     wasm)
         # hew-wasm/* changes: run the WASM lib tests and the playground build
         # (which includes wasm-pack --release and the curated-manifest smoke test).
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "cargo test -p hew-wasm --lib"
         add_command "make playground-check"
         ;;
     fallback)
+        # make lint already runs cargo clippy --workspace --tests; no pre-clippy needed.
         add_command "make lint"
         add_command "make playground-check"
         add_command "make test"

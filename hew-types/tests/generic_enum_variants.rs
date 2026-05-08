@@ -191,3 +191,69 @@ fn variant_constructors_preserve_type_args() {
         output.errors
     );
 }
+
+// Pattern-matching a generic enum tuple-variant should bind the payload with
+// the concrete scrutinee type args substituted in, so a downstream call that
+// requires a trait bound (e.g. `Display`) on the payload resolves against the
+// concrete type rather than the enum's free type parameter. Regression for the
+// generic-enum bound-inference gap (Section D.2 of the language-feature audit).
+#[test]
+fn tuple_variant_pattern_binds_concrete_payload_for_bound_resolution() {
+    let output = typecheck(
+        r"
+        pub enum Either<A, B> {
+            Left(A);
+            Right(B);
+        }
+
+        fn main() -> int {
+            let e: Either<int, String> = Either::Left(42);
+            match e {
+                Either::Left(n) => println(n),
+                Either::Right(s) => println(s),
+            }
+            0
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+}
+
+// A generic function with a `T: Display` where-clause bound should be able to
+// pass a value of type `T` to a builtin (`println`) that itself requires
+// `Display`, even when `T` is destructured from a generic enum payload. The
+// abstract type parameter satisfies the bound by carrying it on the function
+// signature.
+#[test]
+fn generic_fn_type_param_bound_satisfies_display_via_enum_payload() {
+    let output = typecheck(
+        r#"
+        pub enum Foo<T: Display> {
+            Item(T);
+            Nothing;
+        }
+
+        fn show<T: Display>(f: Foo<T>) {
+            match f {
+                Foo::Item(x) => println(x),
+                Foo::Nothing => println("nothing"),
+            }
+        }
+
+        fn main() -> int {
+            show(Foo::Item(42));
+            show(Foo::Item("hello"));
+            0
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+}

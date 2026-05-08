@@ -432,17 +432,32 @@ impl Checker {
         let type_name_opt = enum_ty.type_name();
         if let Some(type_name) = type_name_opt {
             if let Some(td) = self.lookup_type_def(type_name) {
+                // Substitute the scrutinee's concrete type args into tuple-variant
+                // payload types so generic enum tuple variants bind with the
+                // concrete type rather than the enum's free type parameters.
+                let type_params = td.type_params.clone();
+                let type_args = if let Ty::Named { args, .. } = enum_ty {
+                    args.clone()
+                } else {
+                    vec![]
+                };
+                let subst_fields = |fields: &[Ty]| -> Vec<Ty> {
+                    fields
+                        .iter()
+                        .map(|f| substitute_pattern_field_ty(f, &type_params, &type_args))
+                        .collect()
+                };
                 if let Some(v) = td.variants.get(short_name) {
                     return match v {
                         VariantDef::Unit => Some(vec![]),
-                        VariantDef::Tuple(fields) => Some(fields.clone()),
+                        VariantDef::Tuple(fields) => Some(subst_fields(fields)),
                         VariantDef::Struct(_) => None,
                     };
                 }
                 if let Some(v) = td.variants.get(variant_name) {
                     return match v {
                         VariantDef::Unit => Some(vec![]),
-                        VariantDef::Tuple(fields) => Some(fields.clone()),
+                        VariantDef::Tuple(fields) => Some(subst_fields(fields)),
                         VariantDef::Struct(_) => None,
                     };
                 }

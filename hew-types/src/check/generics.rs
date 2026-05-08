@@ -387,8 +387,17 @@ impl Checker {
         match ty {
             Ty::Named { name, .. } => {
                 let name = name.clone();
-                self.type_implements_trait(&name, trait_name)
+                if self.type_implements_trait(&name, trait_name)
                     || self.type_structurally_satisfies(&name, trait_name)
+                {
+                    return true;
+                }
+                // The arg might be a type parameter of the enclosing function
+                // (e.g. `T` in `fn show<T: Display>(...)`). When the function's
+                // where-clause declares a matching bound, the parameter
+                // satisfies it abstractly — even though `T` is not a concrete
+                // type with a registered impl.
+                self.type_param_carries_bound(&name, trait_name)
             }
             Ty::TraitObject { traits } => {
                 let matched = traits.iter().any(|t| {
@@ -406,6 +415,27 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// Check whether a type parameter `param_name` of the current function (or
+    /// its enclosing impl) carries `trait_name` as a where-clause bound, either
+    /// directly or via super-trait extension.
+    pub(super) fn type_param_carries_bound(&self, param_name: &str, trait_name: &str) -> bool {
+        let Some(fn_name) = self.current_function.as_ref() else {
+            return false;
+        };
+        let Some(sig) = self.fn_sigs.get(fn_name) else {
+            return false;
+        };
+        if !sig.type_params.contains(&param_name.to_string()) {
+            return false;
+        }
+        let Some(bounds) = sig.type_param_bounds.get(param_name) else {
+            return false;
+        };
+        bounds
+            .iter()
+            .any(|b| b == trait_name || self.trait_extends(b, trait_name))
     }
 
     /// Check if a concrete type implements a trait (directly or via super-trait chain).

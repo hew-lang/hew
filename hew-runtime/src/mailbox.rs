@@ -93,6 +93,19 @@ fn mailbox_malloc(size: usize) -> *mut c_void {
 ///
 /// Allocated with [`libc::malloc`] and freed by the caller (or by
 /// [`hew_msg_node_free`]).
+///
+/// ## Envelope discriminator (Phase α COW)
+///
+/// `envelope` is `null` for legacy copy-mode nodes (the existing
+/// `data` / `data_size` / `libc::memcpy` path). When `envelope` is
+/// non-null the payload lives behind a refcounted [`HewMsgEnvelope`]
+/// and `data` / `data_size` are unused — `hew_msg_node_free` releases
+/// the envelope instead of `libc::free`-ing `data`.
+///
+/// The legacy and envelope paths coexist; codegen flips sites to the
+/// envelope path in a later commit. This commit is strictly additive:
+/// every existing allocator zero-initialises `envelope`, so all current
+/// nodes take the legacy free path.
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewMsgNode {
@@ -101,14 +114,329 @@ pub struct HewMsgNode {
     pub next: AtomicPtr<HewMsgNode>,
     /// Application-defined message type tag.
     pub msg_type: i32,
-    /// Pointer to deep-copied message payload (malloc'd).
+    /// Pointer to deep-copied message payload (malloc'd) on the legacy
+    /// copy path. Unused (and may be null) when `envelope` is non-null.
     pub data: *mut c_void,
-    /// Size of `data` in bytes.
+    /// Size of `data` in bytes on the legacy copy path. Unused on the
+    /// envelope path.
     pub data_size: usize,
     /// Optional reply channel for the ask pattern (unused by mailbox).
     pub reply_channel: *mut c_void,
+    /// Phase-α COW envelope discriminator. Null = legacy copy-mode
+    /// (use `data` / `data_size`); non-null = refcounted envelope path
+    /// (`hew_msg_envelope_release` on free).
+    pub envelope: *mut HewMsgEnvelope,
     /// Trace context captured when the message was enqueued.
     pub trace_context: HewTraceContext,
+}
+
+// ── Phase-α COW message envelope ────────────────────────────────────────
+//
+// `HewMsgEnvelope` is a refcounted container for actor message payloads.
+// Today, every actor send `libc::memcpy`s the payload bytes into a fresh
+// buffer; under the COW envelope, the receiver borrows the sender's
+// already-owned payload by bumping the envelope's refcount, and the
+// sender's binding is invalidated by the move-checker so no observable
+// alias remains. The fork-on-write path exists for completeness but is
+// expected to be cold — the move-checker rejects observable writes after
+// send for non-`Copy` types, so a runtime fork only fires for the
+// narrow corner cases the static analysis cannot prove safe.
+//
+// This commit lands the envelope FFI surface and reserved header bits.
+// No call site calls into the envelope path yet; codegen flips selected
+// sites in a later commit.
+
+/// Header bit: ≥2 observers hold this envelope (sender + receiver).
+pub const HEW_MSG_ENVELOPE_ALIAS_ACTIVE: u32 = 1 << 0;
+/// Header bit: payload is `Frozen`; never forks (γ uses).
+pub const HEW_MSG_ENVELOPE_SHARED_FROZEN: u32 = 1 << 1;
+/// Header bit: payload was bumped from a per-dispatch arena (δ uses).
+pub const HEW_MSG_ENVELOPE_ARENA_BACKED: u32 = 1 << 2;
+/// Header bit: a fork-on-write has fired (diagnostic / metric).
+pub const HEW_MSG_ENVELOPE_FORKED: u32 = 1 << 3;
+/// Header bit: payload is a §12 capability transfer; alias forbidden.
+pub const HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER: u32 = 1 << 4;
+/// Reserved for γ (captured by ≥2 `task_scope` children).
+pub const HEW_MSG_ENVELOPE_RESERVED_GAMMA_A: u32 = 1 << 5;
+/// Reserved for γ aux.
+pub const HEW_MSG_ENVELOPE_RESERVED_GAMMA_B: u32 = 1 << 6;
+/// Reserved for δ aux.
+pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_A: u32 = 1 << 7;
+/// Reserved for δ aux.
+pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_B: u32 = 1 << 8;
+/// All bits ≥ 9 must read zero on every envelope load (fail-closed).
+pub const HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK: u32 = !((1u32 << 9) - 1);
+
+/// Drop glue invoked when an envelope's refcount drops to zero.
+///
+/// Receives the payload pointer; runs destructors on the payload's
+/// fields. The envelope's release path calls this BEFORE freeing the
+/// payload buffer itself, mirroring how `hew_msg_node_free` walked
+/// drop responsibilities for legacy nodes.
+pub type HewMsgEnvelopeDropFn = unsafe extern "C" fn(*mut c_void);
+
+/// Refcounted COW envelope for actor message payloads.
+///
+/// All envelope FFI functions take `*mut HewMsgEnvelope`. The struct
+/// is `#[repr(C)]` so codegen can reference its layout; the fields
+/// are `pub` for the same reason but should only be read/written
+/// through the FFI surface.
+#[repr(C)]
+pub struct HewMsgEnvelope {
+    /// Number of live observers. Released atomically; payload + drop
+    /// glue fire on the transition to zero.
+    pub refcount: AtomicUsize,
+    /// Header bits — see `HEW_MSG_ENVELOPE_*` constants.
+    pub header_bits: std::sync::atomic::AtomicU32,
+    /// Pointer to the heap-allocated payload bytes (malloc'd).
+    pub payload: *mut c_void,
+    /// Size of `payload` in bytes.
+    pub payload_size: usize,
+    /// Optional drop glue invoked once the refcount drops to zero,
+    /// before the envelope frees the payload buffer.
+    pub drop_glue: Option<HewMsgEnvelopeDropFn>,
+}
+
+impl std::fmt::Debug for HewMsgEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewMsgEnvelope")
+            .field("refcount", &self.refcount.load(Ordering::Relaxed))
+            .field("header_bits", &self.header_bits.load(Ordering::Relaxed))
+            .field("payload", &self.payload)
+            .field("payload_size", &self.payload_size)
+            .field("drop_glue_set", &self.drop_glue.is_some())
+            .finish()
+    }
+}
+
+// SAFETY: the envelope's mutable state is the atomics on refcount and
+// header_bits; payload bytes are only read while ≥1 observer holds
+// the envelope, and codegen guarantees the alias contract (read-only).
+// The raw `*mut c_void` payload pointer is opaque to Rust here — the
+// only reads/writes through it are by the receiver (read-only) and
+// the drop_glue invoked under exclusive last-release ownership.
+unsafe impl Send for HewMsgEnvelope {}
+// SAFETY: see the `Send` impl above; concurrent reads are read-only,
+// concurrent refcount/header mutations go through atomics.
+unsafe impl Sync for HewMsgEnvelope {}
+
+/// Validate that bits 9..31 of `bits` are zero; panic on mismatch.
+///
+/// This is the `serializer-fail-closed` invariant for the envelope
+/// header: any forwards-incompatible bit set by a future runtime
+/// would otherwise be interpreted as zero by today's release path,
+/// silently dropping a contract. Loud panic instead.
+#[inline]
+fn header_validate(bits: u32) -> u32 {
+    assert!(
+        bits & HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK == 0,
+        "hew_msg_envelope: reserved header bits set (bits = {bits:#x}); \
+         this runtime does not understand the envelope's contract — \
+         refusing to proceed (fail-closed)"
+    );
+    bits
+}
+
+/// Allocate a fresh envelope wrapping `payload`.
+///
+/// The envelope takes ownership of `payload` (which must be a pointer
+/// returned by `libc::malloc` or compatible) and of running `drop_glue`
+/// before freeing the buffer. Initial refcount is 1. Initial header
+/// bits are 0 (no alias active until `clone_alias` bumps the refcount).
+///
+/// Returns null on OOM.
+///
+/// # Safety
+///
+/// `payload` must be a `libc::malloc`-allocated buffer of at least
+/// `payload_size` bytes, or null when `payload_size` is 0. After this
+/// call the envelope owns the buffer; the caller must not free it
+/// directly.
+///
+/// `drop_glue`, when set, is called exactly once with the payload
+/// pointer when the refcount drops to zero. It must run destructors
+/// only — the envelope frees the buffer afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msg_envelope_new(
+    payload: *mut c_void,
+    payload_size: usize,
+    drop_glue: Option<HewMsgEnvelopeDropFn>,
+) -> *mut HewMsgEnvelope {
+    let env = mailbox_malloc(std::mem::size_of::<HewMsgEnvelope>()).cast::<HewMsgEnvelope>();
+    if env.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `env` is non-null, properly aligned, and we own it exclusively.
+    unsafe {
+        ptr::write(&raw mut (*env).refcount, AtomicUsize::new(1));
+        ptr::write(
+            &raw mut (*env).header_bits,
+            std::sync::atomic::AtomicU32::new(0),
+        );
+        (*env).payload = payload;
+        (*env).payload_size = payload_size;
+        (*env).drop_glue = drop_glue;
+    }
+    env
+}
+
+/// Bump the envelope's refcount and set the `ALIAS_ACTIVE` bit.
+///
+/// Used by the in-process COW send path: the sender's already-owned
+/// payload is wrapped, then `clone_alias` bumps to refcount=2 so both
+/// the sender's send-site bookkeeping and the receiver's mailbox node
+/// hold one count. (Under symmetric-affine sends — see Q7 — the
+/// sender's count is released at the send site immediately, leaving
+/// the receiver as the sole observer.)
+///
+/// Returns the same pointer for caller convenience.
+///
+/// # Safety
+///
+/// `env` must be a live envelope obtained from `hew_msg_envelope_new`
+/// (or already-cloned). The caller guarantees no concurrent
+/// `hew_msg_envelope_release` on the last reference.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msg_envelope_clone_alias(
+    env: *mut HewMsgEnvelope,
+) -> *mut HewMsgEnvelope {
+    cabi_guard!(env.is_null(), ptr::null_mut());
+    // SAFETY: `env` is live; refcount + header_bits are atomics.
+    unsafe {
+        let prev = (*env).refcount.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(prev >= 1, "clone_alias on a released envelope");
+        (*env)
+            .header_bits
+            .fetch_or(HEW_MSG_ENVELOPE_ALIAS_ACTIVE, Ordering::Relaxed);
+    }
+    env
+}
+
+/// Drop one observer's reference. Frees the envelope (and runs drop
+/// glue + frees the payload) when the count reaches zero.
+///
+/// Idempotent against a null pointer; calling this twice on the same
+/// reference is undefined (the standard refcount contract).
+///
+/// # Safety
+///
+/// `env` must be a live envelope; the caller is decrementing exactly
+/// one reference they own.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msg_envelope_release(env: *mut HewMsgEnvelope) {
+    cabi_guard!(env.is_null());
+    // SAFETY: `env` is live; refcount is atomic.
+    unsafe {
+        let prev = (*env).refcount.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(prev >= 1, "release on a zero-count envelope");
+        if prev == 1 {
+            // Final release: validate header bits, run drop glue, free
+            // the payload buffer, and free the envelope itself.
+            let bits = (*env).header_bits.load(Ordering::Acquire);
+            header_validate(bits);
+            if let Some(drop_fn) = (*env).drop_glue {
+                if !(*env).payload.is_null() {
+                    drop_fn((*env).payload);
+                }
+            }
+            if !(*env).payload.is_null() {
+                libc::free((*env).payload);
+            }
+            libc::free(env.cast());
+        }
+    }
+}
+
+/// Borrow the payload pointer for read-only access.
+///
+/// The receiver uses this to read fields off an aliased payload. The
+/// returned pointer is borrow-only — the receiver must not free it
+/// (the envelope owns the allocation).
+///
+/// Returns null on a null envelope.
+///
+/// # Safety
+///
+/// `env` must be a live envelope. The returned pointer is valid for
+/// reads only as long as the caller holds a refcount.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msg_envelope_payload_ptr(env: *mut HewMsgEnvelope) -> *mut c_void {
+    if env.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: `env` is live; payload is a stable pointer for the life
+    // of the envelope (forks allocate a fresh envelope, not a fresh
+    // payload on the original).
+    unsafe { (*env).payload }
+}
+
+/// Fork an envelope for write. Allocates a fresh, single-observer
+/// envelope holding a private copy of the payload bytes; decrements
+/// the original's refcount; sets `FORKED` on the new envelope.
+///
+/// Used as the fail-safe write path when codegen could not prove the
+/// sender's binding was invalidated post-send. Expected to be cold —
+/// the move-checker rejects observable post-send writes for non-`Copy`
+/// types. The runtime fork is the safety net for cases the static
+/// analysis cannot reason about.
+///
+/// Returns null on OOM (the original envelope's refcount is
+/// unchanged in that case so the caller still owns it).
+///
+/// # Safety
+///
+/// `env` must be a live envelope the caller holds a reference on.
+/// After a successful fork the caller's reference points to the new
+/// envelope; the old reference has been released as part of the fork.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msg_envelope_fork_for_write(
+    env: *mut HewMsgEnvelope,
+) -> *mut HewMsgEnvelope {
+    cabi_guard!(env.is_null(), ptr::null_mut());
+
+    // SAFETY: `env` is live; we read payload size + bytes under the
+    // alias contract (read-only) and write into a fresh buffer.
+    let (payload_size, drop_glue, src_payload) =
+        unsafe { ((*env).payload_size, (*env).drop_glue, (*env).payload) };
+
+    // Allocate fresh payload buffer + memcpy.
+    let new_payload = if payload_size > 0 && !src_payload.is_null() {
+        let buf = mailbox_malloc(payload_size);
+        if buf.is_null() {
+            return ptr::null_mut();
+        }
+        // SAFETY: `buf` is a fresh allocation of `payload_size` bytes;
+        // `src_payload` is readable for `payload_size` bytes under
+        // the alias contract.
+        unsafe { libc::memcpy(buf, src_payload, payload_size) };
+        buf
+    } else {
+        ptr::null_mut()
+    };
+
+    // SAFETY: standard envelope-new path. The new envelope inherits
+    // payload_size + drop_glue; refcount=1; header_bits initialised
+    // to 0 then we set FORKED.
+    let forked = unsafe { hew_msg_envelope_new(new_payload, payload_size, drop_glue) };
+    if forked.is_null() {
+        if !new_payload.is_null() {
+            // SAFETY: we allocated this buffer above and never published it.
+            unsafe { libc::free(new_payload) };
+        }
+        return ptr::null_mut();
+    }
+    // SAFETY: `forked` is a live envelope we just created.
+    unsafe {
+        (*forked)
+            .header_bits
+            .fetch_or(HEW_MSG_ENVELOPE_FORKED, Ordering::Relaxed);
+    }
+
+    // Release the caller's old reference; the new envelope replaces it.
+    // SAFETY: caller transferred their reference into this call.
+    unsafe { hew_msg_envelope_release(env) };
+
+    forked
 }
 
 /// Allocate a [`HewMsgNode`] via `libc::malloc`, deep-copying `data`.
@@ -135,6 +463,9 @@ unsafe fn msg_node_alloc(
         (*node).msg_type = msg_type;
         (*node).data_size = data_size;
         (*node).reply_channel = reply_channel;
+        // Phase-α: legacy copy path nodes hold no envelope. Codegen
+        // flips selected sites to `msg_node_alloc_aliased` later.
+        (*node).envelope = ptr::null_mut();
         (*node).trace_context = crate::tracing::current_context();
 
         // Deep-copy message data for actor isolation.
@@ -149,6 +480,51 @@ unsafe fn msg_node_alloc(
         } else {
             (*node).data = ptr::null_mut();
         }
+    }
+
+    node
+}
+
+/// Allocate a [`HewMsgNode`] that takes the Phase-α envelope path
+/// instead of `libc::memcpy`'ing `data` into a fresh buffer.
+///
+/// The caller transfers one refcount on `envelope` to the new node;
+/// on `hew_msg_node_free` the node releases that refcount via
+/// [`hew_msg_envelope_release`].
+///
+/// # Safety
+///
+/// `envelope` must be a live envelope obtained from
+/// [`hew_msg_envelope_new`] (or whose refcount the caller has bumped
+/// via [`hew_msg_envelope_clone_alias`]). The caller must not release
+/// its own reference if it intends the new node to own it; this
+/// function consumes one refcount.
+#[allow(
+    dead_code,
+    reason = "Wired up by codegen in a later commit (commit 6 in the lane plan)."
+)]
+unsafe fn msg_node_alloc_aliased(
+    msg_type: i32,
+    envelope: *mut HewMsgEnvelope,
+    reply_channel: *mut c_void,
+) -> *mut HewMsgNode {
+    // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
+    let node = mailbox_malloc(std::mem::size_of::<HewMsgNode>()).cast::<HewMsgNode>();
+    if node.is_null() {
+        return ptr::null_mut();
+    }
+
+    // SAFETY: `node` is non-null, properly aligned, and we own it exclusively.
+    unsafe {
+        ptr::write(&raw mut (*node).next, AtomicPtr::new(ptr::null_mut()));
+        (*node).msg_type = msg_type;
+        // Legacy fields unused on the envelope path; zero them so any
+        // accidental read fails predictably.
+        (*node).data = ptr::null_mut();
+        (*node).data_size = 0;
+        (*node).reply_channel = reply_channel;
+        (*node).envelope = envelope;
+        (*node).trace_context = crate::tracing::current_context();
     }
 
     node
@@ -188,9 +564,9 @@ unsafe fn retire_msg_node_ask_sender_ref(node: *mut HewMsgNode) {
 ///
 /// # Safety
 ///
-/// `node` must have been allocated by [`msg_node_alloc`] (or
-/// [`libc::malloc`] with the same layout) and must not be used after
-/// this call.
+/// `node` must have been allocated by [`msg_node_alloc`],
+/// [`msg_node_alloc_aliased`], or [`libc::malloc`] with the same
+/// layout and must not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     cabi_guard!(node.is_null());
@@ -199,7 +575,16 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
         // Explicit orphaned-ask teardown: queued ask nodes own a sender-side
         // reply reference that must be retired before the node memory is freed.
         retire_msg_node_ask_sender_ref(node);
-        libc::free((*node).data);
+        // Phase-α COW: branch on the envelope discriminator. Legacy
+        // nodes hold a malloc'd payload buffer in `data`; envelope
+        // nodes drop one refcount on the shared envelope and let the
+        // envelope's release path run drop glue + free the payload.
+        if (*node).envelope.is_null() {
+            libc::free((*node).data);
+        } else {
+            hew_msg_envelope_release((*node).envelope);
+            (*node).envelope = ptr::null_mut();
+        }
         libc::free(node.cast());
     }
 }
@@ -223,6 +608,9 @@ fn alloc_sentinel() -> *mut HewMsgNode {
         (*node).data = ptr::null_mut();
         (*node).data_size = 0;
         (*node).reply_channel = ptr::null_mut();
+        // Sentinels never carry an envelope payload; zero so that
+        // hew_msg_node_free routes through the legacy `libc::free` path.
+        (*node).envelope = ptr::null_mut();
         (*node).trace_context = HewTraceContext::default();
     }
     node
@@ -2249,6 +2637,230 @@ mod tests {
 
             hew_msg_node_free(node);
             hew_mailbox_free(mb);
+        }
+    }
+
+    // ── Phase-α envelope tests ──────────────────────────────────────
+
+    /// Reserved-bit layout is documented and tested. Any reordering
+    /// here will be caught at compile-time on the constants and at
+    /// run-time on the assertion.
+    #[test]
+    fn envelope_header_bits_layout_locked() {
+        assert_eq!(HEW_MSG_ENVELOPE_ALIAS_ACTIVE, 1u32 << 0);
+        assert_eq!(HEW_MSG_ENVELOPE_SHARED_FROZEN, 1u32 << 1);
+        assert_eq!(HEW_MSG_ENVELOPE_ARENA_BACKED, 1u32 << 2);
+        assert_eq!(HEW_MSG_ENVELOPE_FORKED, 1u32 << 3);
+        assert_eq!(HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER, 1u32 << 4);
+        assert_eq!(HEW_MSG_ENVELOPE_RESERVED_GAMMA_A, 1u32 << 5);
+        assert_eq!(HEW_MSG_ENVELOPE_RESERVED_GAMMA_B, 1u32 << 6);
+        assert_eq!(HEW_MSG_ENVELOPE_RESERVED_DELTA_A, 1u32 << 7);
+        assert_eq!(HEW_MSG_ENVELOPE_RESERVED_DELTA_B, 1u32 << 8);
+        // Bits 9..31 are reserved-zero.
+        assert_eq!(HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK, 0xFFFF_FE00);
+    }
+
+    /// Drop-glue probe used by envelope tests; bumps a counter so the
+    /// test can assert that the final release fires `drop_glue` exactly
+    /// once. Each test that touches this state takes
+    /// `ENVELOPE_DROP_LOCK` to serialise — the counter is process-wide.
+    static ENVELOPE_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static ENVELOPE_DROP_LOCK: Mutex<()> = Mutex::new(());
+
+    unsafe extern "C" fn envelope_test_drop_glue(_payload: *mut c_void) {
+        ENVELOPE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn alloc_test_payload(bytes: &[u8]) -> *mut c_void {
+        // SAFETY: malloc + memcpy under the standard contract.
+        unsafe {
+            let buf = libc::malloc(bytes.len());
+            assert!(!buf.is_null());
+            libc::memcpy(buf, bytes.as_ptr().cast(), bytes.len());
+            buf
+        }
+    }
+
+    #[test]
+    fn envelope_new_starts_at_refcount_one_no_alias() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: standard envelope-new + release contract.
+        unsafe {
+            let payload = alloc_test_payload(b"hello envelope");
+            let env = hew_msg_envelope_new(payload, 14, Some(envelope_test_drop_glue));
+            assert!(!env.is_null());
+            assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
+            assert_eq!((*env).header_bits.load(Ordering::SeqCst), 0);
+            assert_eq!((*env).payload_size, 14);
+
+            // Final release: drop glue fires once, payload + envelope freed.
+            hew_msg_envelope_release(env);
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn envelope_clone_alias_bumps_refcount_and_sets_alias_bit() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: standard envelope contract.
+        unsafe {
+            let payload = alloc_test_payload(b"alias me");
+            let env = hew_msg_envelope_new(payload, 8, Some(envelope_test_drop_glue));
+
+            let same = hew_msg_envelope_clone_alias(env);
+            assert_eq!(same, env, "clone_alias returns the same pointer");
+            assert_eq!((*env).refcount.load(Ordering::SeqCst), 2);
+            assert!((*env).header_bits.load(Ordering::SeqCst) & HEW_MSG_ENVELOPE_ALIAS_ACTIVE != 0);
+
+            // First release: refcount → 1; drop glue must NOT fire yet.
+            hew_msg_envelope_release(env);
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
+
+            // Final release: drop glue fires.
+            hew_msg_envelope_release(env);
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn envelope_payload_ptr_is_borrow_only() {
+        // SAFETY: standard envelope contract.
+        unsafe {
+            let payload = alloc_test_payload(b"borrow");
+            let env = hew_msg_envelope_new(payload, 6, None);
+            let p = hew_msg_envelope_payload_ptr(env);
+            assert_eq!(p, payload, "payload_ptr returns the original allocation");
+            // Read-through borrow.
+            let slice = std::slice::from_raw_parts(p.cast::<u8>(), 6);
+            assert_eq!(slice, b"borrow");
+            hew_msg_envelope_release(env);
+        }
+    }
+
+    #[test]
+    fn envelope_fork_for_write_makes_distinct_payload_with_forked_bit() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: standard envelope contract.
+        unsafe {
+            let payload = alloc_test_payload(b"original-bytes");
+            let env = hew_msg_envelope_new(payload, 14, Some(envelope_test_drop_glue));
+            // Two-observer state, like a real send.
+            let _ = hew_msg_envelope_clone_alias(env);
+            assert_eq!((*env).refcount.load(Ordering::SeqCst), 2);
+
+            // Fork transfers the caller's reference to the new envelope.
+            let forked = hew_msg_envelope_fork_for_write(env);
+            assert!(!forked.is_null());
+            assert_ne!(forked, env, "fork returns a new envelope");
+            assert_eq!((*forked).refcount.load(Ordering::SeqCst), 1);
+            assert!((*forked).header_bits.load(Ordering::SeqCst) & HEW_MSG_ENVELOPE_FORKED != 0);
+            // Forked payload is a distinct buffer with the same bytes.
+            assert_ne!((*forked).payload, payload);
+            let forked_slice = std::slice::from_raw_parts((*forked).payload.cast::<u8>(), 14);
+            assert_eq!(forked_slice, b"original-bytes");
+            // Original envelope's refcount dropped from 2 → 1.
+            assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
+
+            // Drain everything; drop_glue fires twice (once per envelope).
+            hew_msg_envelope_release(forked);
+            hew_msg_envelope_release(env);
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    /// `MUST_BE_ZERO` mask covers exactly bits 9..31. The fail-closed
+    /// panic itself cannot be exercised under `panic = "abort"` (the
+    /// process would abort the test runner), so we assert the mask
+    /// shape directly. The panic site is the `header_validate` call
+    /// in `hew_msg_envelope_release`; reviewers should confirm that
+    /// path is wired by inspection.
+    #[test]
+    fn envelope_must_be_zero_mask_covers_bits_nine_through_thirtyone() {
+        for bit in 0..9 {
+            assert_eq!(
+                HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK & (1u32 << bit),
+                0,
+                "bit {bit} is in the live header range; mask must not cover it"
+            );
+        }
+        for bit in 9..32 {
+            assert_ne!(
+                HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK & (1u32 << bit),
+                0,
+                "bit {bit} is reserved-zero; mask must cover it"
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_node_free_releases_envelope_branch() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: build a node on the envelope path and free it through
+        // the same `hew_msg_node_free` entry point used by the runtime.
+        unsafe {
+            let payload = alloc_test_payload(b"node-envelope");
+            let env = hew_msg_envelope_new(payload, 13, Some(envelope_test_drop_glue));
+            let node = msg_node_alloc_aliased(7, env, ptr::null_mut());
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, 7);
+            assert!((*node).data.is_null(), "envelope nodes have null data");
+            assert_eq!((*node).envelope, env);
+
+            hew_msg_node_free(node);
+            // node free released the envelope; drop glue fired once.
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    /// Cycle-break audit. The COW envelope is for *message payloads*,
+    /// not for `ActorRef` itself; an `ActorRef` (or `Weak<ActorRef>`)
+    /// inside a payload struct is reachable through the payload's
+    /// drop glue, which the envelope runs exactly once on the
+    /// transition to refcount==0. We model that with a plain
+    /// `Arc<()>` here: dropping the envelope must release exactly one
+    /// strong reference, never zero (leak) and never two (double-free).
+    #[test]
+    fn envelope_drop_glue_decrements_arc_exactly_once() {
+        use std::sync::Arc;
+
+        /// Drop glue for a payload buffer that holds an in-place
+        /// `Arc<()>`. The envelope free's the buffer afterwards via
+        /// `libc::free`; this glue only runs the destructor.
+        unsafe extern "C" fn arc_in_buf_drop_glue(payload: *mut c_void) {
+            // SAFETY: caller (envelope release) guarantees the buffer
+            // holds an initialised `Arc<()>` constructed in-place via
+            // `ptr::write` below.
+            unsafe { std::ptr::drop_in_place(payload.cast::<Arc<()>>()) };
+        }
+
+        let observed: Arc<()> = Arc::new(());
+        assert_eq!(Arc::strong_count(&observed), 1);
+
+        // SAFETY: we libc::malloc a buffer the size of one `Arc<()>`,
+        // ptr::write a clone into it, and hand ownership to the
+        // envelope. The envelope releases the clone via drop_glue and
+        // free's the buffer afterwards.
+        unsafe {
+            let arc_size = std::mem::size_of::<Arc<()>>();
+            let buf = libc::malloc(arc_size).cast::<Arc<()>>();
+            assert!(!buf.is_null());
+            std::ptr::write(buf, Arc::clone(&observed));
+            // The clone is now owned by `buf`; observed strong = 2.
+            assert_eq!(Arc::strong_count(&observed), 2);
+
+            let env = hew_msg_envelope_new(buf.cast(), arc_size, Some(arc_in_buf_drop_glue));
+            assert!(!env.is_null());
+            // Envelope construction does not touch strong count.
+            assert_eq!(Arc::strong_count(&observed), 2);
+
+            // Final release: drop_glue runs (strong → 1), then the
+            // envelope free's the buffer + envelope itself.
+            hew_msg_envelope_release(env);
+            assert_eq!(Arc::strong_count(&observed), 1);
         }
     }
 }

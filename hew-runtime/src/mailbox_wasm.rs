@@ -139,6 +139,12 @@ fn report_stop_enqueue_failure() {
 ///
 /// The native struct appends a `trace_context` tail field that WASM omits;
 /// this struct is a strict prefix of the native layout.
+///
+/// ## Phase-α COW envelope
+///
+/// `envelope` mirrors the native field at the same offset. On WASM
+/// the envelope's atomics degrade to single-threaded ops (the WASM
+/// scheduler is single-threaded) but the API contract is identical.
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewMsgNode {
@@ -146,12 +152,15 @@ pub struct HewMsgNode {
     pub next: AtomicPtr<HewMsgNode>,
     /// Application-defined message type tag.
     pub msg_type: i32,
-    /// Pointer to deep-copied message payload (malloc'd).
+    /// Pointer to deep-copied message payload (malloc'd) on the legacy
+    /// copy path. Unused (and may be null) when `envelope` is non-null.
     pub data: *mut c_void,
-    /// Size of `data` in bytes.
+    /// Size of `data` in bytes on the legacy copy path.
     pub data_size: usize,
     /// Optional reply channel for the ask pattern (unused by mailbox).
     pub reply_channel: *mut c_void,
+    /// Phase-α COW envelope discriminator (mirrors the native field).
+    pub envelope: *mut HewMsgEnvelope,
 }
 
 // Compile-time check: this WASM HewMsgNode must have identical alignment
@@ -185,9 +194,257 @@ const _: () = {
     assert!(offset_of!(W, data) == offset_of!(N, data));
     assert!(offset_of!(W, data_size) == offset_of!(N, data_size));
     assert!(offset_of!(W, reply_channel) == offset_of!(N, reply_channel));
+    assert!(offset_of!(W, envelope) == offset_of!(N, envelope));
 };
 
 // ── Message node helpers ────────────────────────────────────────────────
+
+// ── Phase-α COW message envelope (WASM parity surface) ──────────────────
+//
+// Mirrors the native envelope in `crate::mailbox`. WASM is single-threaded
+// today; the atomic operations degrade to non-contended ops but the API
+// contract (refcount-based COW, fail-closed reserved bits) is identical
+// so codegen-emitted calls resolve transparently on both targets.
+
+/// Header bit: ≥2 observers hold this envelope (WASM parity).
+pub const HEW_MSG_ENVELOPE_ALIAS_ACTIVE: u32 = 1 << 0;
+/// Header bit: payload is `Frozen`; never forks (γ uses).
+pub const HEW_MSG_ENVELOPE_SHARED_FROZEN: u32 = 1 << 1;
+/// Header bit: payload was bumped from a per-dispatch arena (δ uses).
+pub const HEW_MSG_ENVELOPE_ARENA_BACKED: u32 = 1 << 2;
+/// Header bit: a fork-on-write has fired (diagnostic / metric).
+pub const HEW_MSG_ENVELOPE_FORKED: u32 = 1 << 3;
+/// Header bit: payload is a §12 capability transfer; alias forbidden.
+pub const HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER: u32 = 1 << 4;
+/// Reserved for γ.
+pub const HEW_MSG_ENVELOPE_RESERVED_GAMMA_A: u32 = 1 << 5;
+/// Reserved for γ aux.
+pub const HEW_MSG_ENVELOPE_RESERVED_GAMMA_B: u32 = 1 << 6;
+/// Reserved for δ aux.
+pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_A: u32 = 1 << 7;
+/// Reserved for δ aux.
+pub const HEW_MSG_ENVELOPE_RESERVED_DELTA_B: u32 = 1 << 8;
+/// All bits ≥ 9 must read zero on every envelope load (fail-closed).
+pub const HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK: u32 = !((1u32 << 9) - 1);
+
+/// Drop glue invoked when an envelope's refcount drops to zero.
+pub type HewMsgEnvelopeDropFn = unsafe extern "C" fn(*mut c_void);
+
+/// Refcounted COW envelope — WASM mirror of the native struct.
+#[repr(C)]
+pub struct HewMsgEnvelope {
+    pub refcount: std::sync::atomic::AtomicUsize,
+    pub header_bits: std::sync::atomic::AtomicU32,
+    pub payload: *mut c_void,
+    pub payload_size: usize,
+    pub drop_glue: Option<HewMsgEnvelopeDropFn>,
+}
+
+impl std::fmt::Debug for HewMsgEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::sync::atomic::Ordering;
+        f.debug_struct("HewMsgEnvelope")
+            .field("refcount", &self.refcount.load(Ordering::Relaxed))
+            .field("header_bits", &self.header_bits.load(Ordering::Relaxed))
+            .field("payload", &self.payload)
+            .field("payload_size", &self.payload_size)
+            .field("drop_glue_set", &self.drop_glue.is_some())
+            .finish()
+    }
+}
+
+// SAFETY: WASM is single-threaded today; the atomics still provide a
+// stable contract should the runtime ever gain a worker model. The
+// payload pointer is opaque — only the receiver (read-only) and the
+// drop_glue (under exclusive last-release ownership) touch it.
+unsafe impl Send for HewMsgEnvelope {}
+// SAFETY: see the `Send` impl above; concurrent reads are read-only,
+// concurrent refcount/header mutations go through atomics.
+unsafe impl Sync for HewMsgEnvelope {}
+
+#[inline]
+fn header_validate(bits: u32) -> u32 {
+    assert!(
+        bits & HEW_MSG_ENVELOPE_MUST_BE_ZERO_MASK == 0,
+        "hew_msg_envelope: reserved header bits set (bits = {bits:#x}); \
+         this runtime does not understand the envelope's contract — \
+         refusing to proceed (fail-closed)"
+    );
+    bits
+}
+
+// On native builds the WASM envelope must layout-match the native one
+// so codegen treats them interchangeably across targets.
+#[cfg(not(target_arch = "wasm32"))]
+const _: () = {
+    use std::mem::offset_of;
+    type W = HewMsgEnvelope;
+    type N = crate::mailbox::HewMsgEnvelope;
+
+    assert!(
+        align_of::<W>() == align_of::<N>(),
+        "WASM HewMsgEnvelope alignment diverged from native"
+    );
+    assert!(
+        size_of::<W>() == size_of::<N>(),
+        "WASM HewMsgEnvelope size diverged from native"
+    );
+    assert!(offset_of!(W, refcount) == offset_of!(N, refcount));
+    assert!(offset_of!(W, header_bits) == offset_of!(N, header_bits));
+    assert!(offset_of!(W, payload) == offset_of!(N, payload));
+    assert!(offset_of!(W, payload_size) == offset_of!(N, payload_size));
+    assert!(offset_of!(W, drop_glue) == offset_of!(N, drop_glue));
+};
+
+wasm_no_mangle! {
+    /// WASM-side `hew_msg_envelope_new`. See native module for full docs.
+    ///
+    /// # Safety
+    ///
+    /// Same as the native variant.
+    pub unsafe extern "C" fn hew_msg_envelope_new(
+        payload: *mut c_void,
+        payload_size: usize,
+        drop_glue: Option<HewMsgEnvelopeDropFn>,
+    ) -> *mut HewMsgEnvelope {
+        use std::sync::atomic::{AtomicU32, AtomicUsize};
+        let env = mailbox_malloc(size_of::<HewMsgEnvelope>()).cast::<HewMsgEnvelope>();
+        if env.is_null() {
+            return ptr::null_mut();
+        }
+        // SAFETY: env is non-null and we own it exclusively.
+        unsafe {
+            ptr::write(&raw mut (*env).refcount, AtomicUsize::new(1));
+            ptr::write(&raw mut (*env).header_bits, AtomicU32::new(0));
+            (*env).payload = payload;
+            (*env).payload_size = payload_size;
+            (*env).drop_glue = drop_glue;
+        }
+        env
+    }
+}
+
+wasm_no_mangle! {
+    /// WASM-side `hew_msg_envelope_clone_alias`.
+    ///
+    /// # Safety
+    ///
+    /// Same as the native variant.
+    pub unsafe extern "C" fn hew_msg_envelope_clone_alias(
+        env: *mut HewMsgEnvelope,
+    ) -> *mut HewMsgEnvelope {
+        use std::sync::atomic::Ordering;
+        if env.is_null() {
+            set_last_error("hew_msg_envelope_clone_alias: env is null");
+            return ptr::null_mut();
+        }
+        // SAFETY: env is live; refcount + header_bits are atomics.
+        unsafe {
+            let prev = (*env).refcount.fetch_add(1, Ordering::Relaxed);
+            debug_assert!(prev >= 1, "clone_alias on a released envelope");
+            (*env).header_bits.fetch_or(HEW_MSG_ENVELOPE_ALIAS_ACTIVE, Ordering::Relaxed);
+        }
+        env
+    }
+}
+
+wasm_no_mangle! {
+    /// WASM-side `hew_msg_envelope_release`.
+    ///
+    /// # Safety
+    ///
+    /// Same as the native variant.
+    pub unsafe extern "C" fn hew_msg_envelope_release(env: *mut HewMsgEnvelope) {
+        use std::sync::atomic::Ordering;
+        if env.is_null() {
+            return;
+        }
+        // SAFETY: env is live; refcount is atomic.
+        unsafe {
+            let prev = (*env).refcount.fetch_sub(1, Ordering::AcqRel);
+            debug_assert!(prev >= 1, "release on a zero-count envelope");
+            if prev == 1 {
+                let bits = (*env).header_bits.load(Ordering::Acquire);
+                header_validate(bits);
+                if let Some(drop_fn) = (*env).drop_glue {
+                    if !(*env).payload.is_null() {
+                        drop_fn((*env).payload);
+                    }
+                }
+                if !(*env).payload.is_null() {
+                    libc::free((*env).payload);
+                }
+                libc::free(env.cast());
+            }
+        }
+    }
+}
+
+wasm_no_mangle! {
+    /// WASM-side `hew_msg_envelope_payload_ptr`.
+    ///
+    /// # Safety
+    ///
+    /// Same as the native variant.
+    pub unsafe extern "C" fn hew_msg_envelope_payload_ptr(
+        env: *mut HewMsgEnvelope,
+    ) -> *mut c_void {
+        if env.is_null() {
+            return ptr::null_mut();
+        }
+        // SAFETY: env is live; payload is stable for the envelope's lifetime.
+        unsafe { (*env).payload }
+    }
+}
+
+wasm_no_mangle! {
+    /// WASM-side `hew_msg_envelope_fork_for_write`.
+    ///
+    /// # Safety
+    ///
+    /// Same as the native variant.
+    pub unsafe extern "C" fn hew_msg_envelope_fork_for_write(
+        env: *mut HewMsgEnvelope,
+    ) -> *mut HewMsgEnvelope {
+        use std::sync::atomic::Ordering;
+        if env.is_null() {
+            set_last_error("hew_msg_envelope_fork_for_write: env is null");
+            return ptr::null_mut();
+        }
+        // SAFETY: env is live; alias contract is read-only on payload.
+        let (payload_size, drop_glue, src_payload) =
+            unsafe { ((*env).payload_size, (*env).drop_glue, (*env).payload) };
+
+        let new_payload = if payload_size > 0 && !src_payload.is_null() {
+            let buf = mailbox_malloc(payload_size);
+            if buf.is_null() {
+                return ptr::null_mut();
+            }
+            // SAFETY: `buf` is fresh; src is readable for payload_size bytes.
+            unsafe { libc::memcpy(buf, src_payload, payload_size) };
+            buf
+        } else {
+            ptr::null_mut()
+        };
+
+        // SAFETY: standard envelope-new path, mirroring native.
+        let forked = unsafe { hew_msg_envelope_new(new_payload, payload_size, drop_glue) };
+        if forked.is_null() {
+            if !new_payload.is_null() {
+                // SAFETY: we allocated `new_payload` above and never published it.
+                unsafe { libc::free(new_payload) };
+            }
+            return ptr::null_mut();
+        }
+        // SAFETY: forked is a live envelope we just created.
+        unsafe {
+            (*forked).header_bits.fetch_or(HEW_MSG_ENVELOPE_FORKED, Ordering::Relaxed);
+        }
+        // SAFETY: caller transferred their reference into this call.
+        unsafe { hew_msg_envelope_release(env) };
+        forked
+    }
+}
 
 /// Allocate a [`HewMsgNode`] via `libc::malloc`, deep-copying `data`.
 ///
@@ -210,6 +467,8 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
         (*node).msg_type = msg_type;
         (*node).data_size = data_size;
         (*node).reply_channel = ptr::null_mut();
+        // Phase-α: legacy nodes carry no envelope.
+        (*node).envelope = ptr::null_mut();
 
         // Deep-copy message data for actor isolation.
         if data_size > 0 && !data.is_null() {
@@ -251,7 +510,13 @@ unsafe fn msg_node_free(node: *mut HewMsgNode) {
             retire_reply_channel((*node).reply_channel);
             (*node).reply_channel = ptr::null_mut();
         }
-        libc::free((*node).data);
+        // Phase-α: branch on the envelope discriminator.
+        if (*node).envelope.is_null() {
+            libc::free((*node).data);
+        } else {
+            hew_msg_envelope_release((*node).envelope);
+            (*node).envelope = ptr::null_mut();
+        }
         libc::free(node.cast());
     }
 }

@@ -3845,10 +3845,21 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
     let mut checker = Checker::new(test_registry());
     let _output = checker.check_program(&parsed.program);
 
+    // The side table is non-empty after `register_builtins` because the ten
+    // `std/builtins.hew` Display blanket impls (i8/i16/i32/i64/u8/u16/u32/u64/
+    // bool/char) land here as the source-of-truth dispatch entries (see
+    // `register_builtins_hew_impls`).  The invariant this test enforces is
+    // narrower: a user `impl Display for MyType` (where `MyType` is a
+    // user-declared struct) must NOT leak into this primitive-keyed table —
+    // user-struct method dispatch goes through `type_defs.methods` instead.
+    let leaked: Vec<_> = checker
+        .primitive_trait_impls
+        .keys()
+        .filter(|(rx_key, _)| rx_key == "MyType")
+        .collect();
     assert!(
-        checker.primitive_trait_impls.is_empty(),
-        "user struct impls must not leak into the primitive trait table: {:?}",
-        checker.primitive_trait_impls.keys().collect::<Vec<_>>()
+        leaked.is_empty(),
+        "user struct impls must not leak into the primitive trait table: {leaked:?}"
     );
 }
 
@@ -4287,6 +4298,239 @@ fn primitive_impl_dispatch_unknown_method_still_emits_error() {
         "expected `no method` diagnostic, got: {:?}",
         output.errors
     );
+}
+
+// ---------------------------------------------------------------------------
+// Slice 1 (#1668, #1669): literal-form receivers and builtins blanket impls
+// ---------------------------------------------------------------------------
+
+#[test]
+fn primitive_trait_dispatch_int_literal_receiver() {
+    // #1668 reproducer: an `IntLiteral` receiver (no enclosing typed binding)
+    // must default to `i64` before the side-table lookup so `(42).fmt()`
+    // resolves the same way `let x: int = 42; x.fmt()` does.  Pre-fix this
+    // emitted `no method `fmt` on int` because
+    // `canonical_primitive_or_builtin_key` short-circuited on the literal.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for int {
+                fn fmt(n: int) -> String { "" }
+            }
+            fn main() {
+                let _ = (42).fmt();
+            }
+        "#,
+        "i64",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_trait_dispatch_float_literal_receiver() {
+    // Mirror of the int-literal case for `FloatLiteral`.  Defaulting must
+    // collapse the literal to `f64` (via `materialize_literal_defaults`)
+    // before canonical-key lookup.
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for f64 {
+                fn fmt(x: f64) -> String { "" }
+            }
+            fn main() {
+                let _ = (3.14).fmt();
+            }
+        "#,
+        "f64",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_trait_dispatch_ufcs_int_literal() {
+    // Stage A3 (UFCS) sentinel: `Display::fmt(42)` must default the
+    // synthesized receiver `IntLiteral` the same way Stage A2 does for
+    // method-form.  Without UFCS-side defaulting the helper returns None
+    // and the trait-qualified path mis-arities (sig.params=[] vs args=[42]).
+    assert_primitive_trait_dispatch_records_metadata(
+        r#"
+            pub trait Display { fn fmt(val: Self) -> String; }
+            impl Display for int {
+                fn fmt(n: int) -> String { "" }
+            }
+            fn main() {
+                let _ = Display::fmt(42);
+            }
+        "#,
+        "i64",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_trait_dispatch_builtins_blanket_no_redeclare() {
+    // #1669 reproducer: with no in-file `trait Display` declaration, the
+    // ten `std/builtins.hew` blanket impls must already be reachable so
+    // `let x: i64 = 42; x.fmt()` typechecks.  This is the "registration
+    // boundary" fix — `register_builtins_hew_impls` populates
+    // `primitive_trait_impls` from the compiled-in stdlib source.
+    assert_primitive_trait_dispatch_records_metadata(
+        r"
+            fn main() {
+                let x: i64 = 42;
+                let _ = x.fmt();
+            }
+        ",
+        "i64",
+        "Display",
+    );
+}
+
+#[test]
+fn primitive_trait_dispatch_builtins_blanket_each_kind() {
+    // One receiver per kind covered by std/builtins.hew lines 29–87.
+    // Each row asserts `x.fmt()` resolves with NO in-file `trait Display`
+    // declaration, exercising the builtins-blanket registration end to end.
+    let cases: &[(&str, &str, &str)] = &[
+        ("i8", "1 as i8", "i8"),
+        ("i16", "1 as i16", "i16"),
+        ("i32", "1 as i32", "i32"),
+        ("i64", "1 as i64", "i64"),
+        ("u8", "1 as u8", "u8"),
+        ("u16", "1 as u16", "u16"),
+        ("u32", "1 as u32", "u32"),
+        ("u64", "1 as u64", "u64"),
+        ("bool", "true", "bool"),
+        ("char", "'a'", "char"),
+    ];
+    for (annotation, init, canonical) in cases {
+        let source = format!(
+            r"
+                fn main() {{
+                    let x: {annotation} = {init};
+                    let _ = x.fmt();
+                }}
+            "
+        );
+        assert_primitive_trait_dispatch_records_metadata(&source, canonical, "Display");
+    }
+}
+
+#[test]
+fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
+    // Builtin-precedence sentinel: the audit's invariant is that a user's
+    // in-file `trait Display { ... }` declaration continues to take
+    // precedence over the builtins-blanket impls.  Concretely, if a user
+    // redeclares Display with a *different* method name, the builtins
+    // `fmt` lookup must NOT silently satisfy a call to that user method
+    // name on a primitive receiver — it should still diagnose "no method
+    // on int".  This guards the registration ordering risk called out in
+    // the lane plan: builtins.hew impls land in the side table only; they
+    // do not pollute `trait_defs` or hijack user names.
+    let source = r"
+        pub trait Display {
+            fn render(val: Self) -> String;
+        }
+        fn main() {
+            let x: i64 = 42;
+            // `render` is the user trait's method name; no impl exists for i64.
+            let _ = x.render();
+        }
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("no method `render`")),
+        "expected `no method `render`` diagnostic, got: {:?}",
+        output.errors
+    );
+    // And the user's own trait redeclaration must still be present in
+    // trait_defs (i.e. our builtins-blanket loader did NOT register
+    // Display first and force the user declaration to be skipped).
+    assert!(
+        checker.trait_defs.contains_key("Display"),
+        "user trait Display must remain registered; trait_defs keys: {:?}",
+        checker.trait_defs.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn primitive_trait_dispatch_negative_non_display_method_still_diagnoses() {
+    // Negative sentinel: a method name that no Display impl provides on
+    // a primitive receiver must continue to emit the existing
+    // `no method `<name>` on int` diagnostic.  Defaulting the literal must
+    // not silently swallow the not-found path.
+    let source = r"
+        fn main() {
+            let _ = (42).no_such_method();
+        }
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("no method `no_such_method`")),
+        "expected `no method `no_such_method`` diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn primitive_trait_dispatch_builtins_blanket_populates_side_table_at_register_builtins() {
+    // White-box sentinel: confirm `register_builtins` alone (no
+    // user source, no full `check_program`) seeds the
+    // `primitive_trait_impls` side table with the ten builtins blanket
+    // impls.  This guards against the registration boundary regressing
+    // — if `register_builtins_hew_impls` ever stops being called, the
+    // method-form Display dispatch silently regresses without any test
+    // source needing to fail, so we pin the table contents here.
+    let mut checker = Checker::new(test_registry());
+    checker.register_builtins();
+    let expected_canonical_keys = [
+        "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "bool", "char",
+    ];
+    for key in expected_canonical_keys {
+        let entry = checker
+            .primitive_trait_impls
+            .get(&(key.to_string(), "Display".to_string()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing builtins-blanket Display impl for primitive `{key}`; \
+                     primitive_trait_impls keys: {:?}",
+                    checker.primitive_trait_impls.keys().collect::<Vec<_>>()
+                )
+            });
+        let fmt_sig = entry
+            .get("fmt")
+            .unwrap_or_else(|| panic!("missing fmt method for ({key}, Display) entry: {entry:?}"));
+        assert!(
+            fmt_sig.params.is_empty(),
+            "receiver should be filtered from fmt sig for `{key}`: {fmt_sig:?}"
+        );
+        assert_eq!(
+            fmt_sig.return_type,
+            Ty::String,
+            "fmt for `{key}` must return String, got: {:?}",
+            fmt_sig.return_type
+        );
+    }
 }
 
 #[test]

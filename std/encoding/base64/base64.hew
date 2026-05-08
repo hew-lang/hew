@@ -100,25 +100,16 @@ fn b64_char(idx: i32, url_safe: bool) -> i32 { // INTERNAL-ABI: byte-level 6-bit
     if idx < 62 {
         return 48 + idx - 52;
     } // 0-9
-    // Indices 62 and 63 differ between standard and URL-safe alphabets.
-    // RFC 4648 §4: '+' (43), '/' (47)
-    // RFC 4648 §5: '-' (45), '_' (95)
-    // Use arithmetic on the alphabet flags to avoid nested conditionals that
-    // trigger a codegen mis-classification of the idx==62 arm.
-    let c62 = if url_safe {
-        45
-    } else {
-        43
-    }; // '-' or '+'
-    let c63 = if url_safe {
-        95
-    } else {
-        47
-    }; // '_' or '/'
     if idx == 62 {
-        return c62;
+        if url_safe {
+            return 45;
+        } // '-'
+        return 43; // '+'
     }
-    c63 as i32
+    if url_safe {
+        return 95;
+    } // '_'
+    47 as i32 // '/'
 }
 
 /// Encode binary data to a Base64 string using the standard or URL-safe alphabet.

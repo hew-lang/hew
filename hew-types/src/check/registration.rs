@@ -4,6 +4,14 @@
 )]
 use super::*;
 
+/// Embedded source for `std/io/closable.hew`.
+///
+/// Parsed at import-registration time for `std::io::closable` so the
+/// `Closable` trait and `CloseError` enum are visible in the checker even
+/// in programs that were not loaded through the module-graph path (e.g.
+/// inline programs in tests).
+const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
+
 impl Checker {
     fn refresh_handle_bearing_structs(&mut self) {
         // Tracked for testing: callers can assert this stays O(1) after the
@@ -2668,6 +2676,35 @@ impl Checker {
                             self.register_stdlib_hew_items(&short, resolved_items);
                         }
                     }
+
+                    // `std::io::closable` is a pure-Hew trait module with no C
+                    // bindings.  The normal `resolved_items` path only fires for
+                    // modules whose items were pre-parsed in a module graph; for
+                    // inline programs we use the embedded source instead.  Parsing
+                    // it here registers `Closable` in `trait_defs` and `CloseError`
+                    // in `type_defs`.  The `register_stdlib_hew_items` loop then
+                    // fires the `tr.name == "Closable"` arm which wires
+                    // `"Closable::close"` into `consume_receiver_methods`.
+                    if module_path == "std::io::closable" {
+                        let identity = format!("module:{module_path}");
+                        if !self
+                            .registered_stdlib_hew_sources
+                            .contains(identity.as_str())
+                        {
+                            self.registered_stdlib_hew_sources.insert(identity);
+                            let parsed = hew_parser::parse(CLOSABLE_HEW);
+                            debug_assert!(
+                                parsed.errors.is_empty(),
+                                "std/io/closable.hew failed to parse: {:?}",
+                                parsed.errors,
+                            );
+                            if parsed.errors.is_empty() {
+                                let items: Vec<_> = parsed.program.items.into_iter().collect();
+                                self.register_stdlib_hew_items(&short, &items);
+                            }
+                        }
+                    }
+
                     self.handle_bearing_dirty = true;
                     return;
                 }
@@ -2822,6 +2859,16 @@ impl Checker {
                     self.trait_defs.insert(tr.name.clone(), info.clone());
                     let qualified = format!("{module_short}.{}", tr.name);
                     self.trait_defs.insert(qualified, info);
+                    // When the stdlib `Closable` trait is registered, wire its
+                    // `close` method into the consume-receiver set so the
+                    // move-checker marks the receiver moved at every call site.
+                    // This must happen at trait-load time (not Checker::new) so
+                    // programs that never import std::io::closable do not see
+                    // phantom consume markers.
+                    if tr.name == "Closable" {
+                        self.consume_receiver_methods
+                            .insert("Closable::close".to_string());
+                    }
                 }
                 Item::Function(fd) => {
                     if !fd.visibility.is_pub() {

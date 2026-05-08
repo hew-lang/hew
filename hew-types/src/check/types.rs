@@ -98,6 +98,20 @@ pub struct TypeCheckOutput {
     /// slices (A.1/A.2/A.3) progressively suppress false positives by adding
     /// escape predicates. Hint accuracy is not a stable contract until A.4.
     pub stack_hints: Vec<StackHint>,
+    /// Checker-owned alias-vs-copy decision per actor send site.
+    ///
+    /// Populated during `enforce_actor_boundary_send` for every accepted
+    /// actor-send call. Codegen consumes this side table fail-closed: a
+    /// missing entry for a known send span is a hard error.
+    ///
+    /// Phase α (this commit) records [`ActorSendAliasing::Copy`] at every
+    /// site — the always-copy runtime path is unchanged. A later commit in
+    /// the COW envelope lane flips eligible non-`Copy` sends to
+    /// [`ActorSendAliasing::Alias`] once codegen learns the alias path.
+    /// Until then this map serves the producer side of the
+    /// [`serializer-fail-closed`] contract so the codegen consumer can land
+    /// independently without breaking existing actor messaging.
+    pub actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
 }
 
 /// Classification of a binding's right-hand-side allocation shape.
@@ -147,6 +161,23 @@ pub struct StackHint {
     pub binding_name: String,
     /// Allocation class assigned to the binding's RHS.
     pub alloc_class: AllocationClass,
+}
+
+/// Codegen choice between aliasing the sender's payload buffer (refcount
+/// bump on a [`HewMsgEnvelope`]) and the legacy deep-copy mailbox path.
+///
+/// Phase α records `Copy` everywhere; the alias path becomes available
+/// once codegen wires `hew_msg_envelope_new` and the move-checker has
+/// proven the sender cannot observe the value after send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorSendAliasing {
+    /// Sender retains the payload independently; runtime deep-copies into
+    /// the mailbox. Always safe; this is the only mode wired in α.
+    Copy,
+    /// Sender and receiver share a refcounted payload buffer. Requires the
+    /// move-checker to have invalidated the sender's binding so no
+    /// post-send observation is possible.
+    Alias,
 }
 
 /// Checker-owned classification of an assignment target.
@@ -644,6 +675,11 @@ pub struct Checker {
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) method_call_consumes_receiver: HashSet<SpanKey>,
+    /// Codegen alias-vs-copy decision per actor send site.
+    /// Mirrors [`TypeCheckOutput::actor_send_aliasing`]; populated in
+    /// `enforce_actor_boundary_send` and moved out at the end of
+    /// `check_program`.
+    pub(super) actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
     /// Qualified method names (e.g. `"Closable::close"`) whose dispatch should
     /// mark the receiver moved and propagate `consumes_receiver` into the
     /// per-call-site side table. Empty in PR 1 (issue #1295); PR 2 populates
@@ -846,6 +882,7 @@ impl Checker {
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
+            actor_send_aliasing: HashMap::new(),
             consume_receiver_methods: HashSet::new(),
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),

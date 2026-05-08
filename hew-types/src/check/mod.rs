@@ -34,8 +34,9 @@ mod types;
 mod util;
 
 pub use self::types::{
-    AllocationClass, AssignTargetKind, AssignTargetShape, Checker, FnSig, MethodCallReceiverKind,
-    MethodCallRewrite, SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    ActorSendAliasing, AllocationClass, AssignTargetKind, AssignTargetShape, Checker, FnSig,
+    MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint, TypeCheckOutput, TypeDef,
+    TypeDefKind, VariantDef,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -320,6 +321,7 @@ impl Checker {
             expr_types: resolved_expr_types,
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
             method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),
+            actor_send_aliasing: std::mem::take(&mut self.actor_send_aliasing),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),

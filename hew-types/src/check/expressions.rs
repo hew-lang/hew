@@ -647,6 +647,13 @@ impl Checker {
             self.report_invalid_actor_send(&ty, error_span);
         }
         self.mark_expr_moved_if_non_copy(expr, move_span, &ty);
+        // Record the alias-vs-copy decision for codegen. Phase α emits the
+        // legacy deep-copy mailbox path everywhere; the COW envelope lane
+        // flips eligible non-`Copy` sends to `Alias` once codegen is wired.
+        // Keying by the boundary span (the same span the move-marker uses)
+        // matches what codegen sees at the lowering call site.
+        self.actor_send_aliasing
+            .insert(SpanKey::from(move_span), ActorSendAliasing::Copy);
     }
 
     pub(super) fn synthesize_yield(&mut self, value: Option<&Spanned<Expr>>, span: &Span) -> Ty {

@@ -2240,6 +2240,7 @@ mod tests {
             user_modules: std::collections::HashSet::new(),
             call_type_args: std::collections::HashMap::new(),
             stack_hints: Vec::new(),
+            actor_send_aliasing: std::collections::HashMap::new(),
         };
 
         let err = enrich_program_ast(

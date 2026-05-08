@@ -430,10 +430,72 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
       return nullptr;
     }
 
+    // Path B: no trailing_expr, no function-body return guards, but stmts
+    // is non-empty. Same structural defect as Path A — a sibling statement
+    // can soft-return via returnFlag, and subsequent statements (including
+    // the value-producing last statement) must not run unconditionally.
+    // See #1692.
+    //
+    // The guard only fires for non-void functions. Void functions allocate
+    // a returnFlag (so nested `return` works inside SCF regions) but do not
+    // allocate a returnSlot, so there is no clobbering concern; introducing
+    // an scf.if(notReturned) wrapper there would create a new SSA region
+    // that crosses with the surrounding block-exit drops and produces
+    // dominance violations.
+    //
+    // When the guard fires, the last statement runs in statement-position
+    // form: its block-expression value is dead because returnFlag has
+    // routed control to function exit.
+    bool nonVoidFunction = currentFunction && !currentFunction.getResultTypes().empty();
+    auto lastStmtAsStatement = [&]() {
+      const auto &lastInGuard = stmts.back()->value;
+      if (auto *exprStmt = std::get_if<ast::StmtExpression>(&lastInGuard.kind)) {
+        generateDiscardedExpr(exprStmt->expr);
+        return;
+      }
+      generateStatement(lastInGuard);
+    };
+    auto runGuardedRemainder = [&](auto &self, size_t startIdx) -> void {
+      for (size_t i = startIdx; i + 1 < stmts.size(); ++i) {
+        generateStatement(stmts[i]->value);
+        if (hasRealTerminator(builder.getInsertionBlock()))
+          return;
+        if (nonVoidFunction && returnFlag && stmtMightContainReturn(stmts[i]->value)) {
+          auto guardLoc = loc(stmts[i]->value.span);
+          auto flagVal =
+              mlir::memref::LoadOp::create(builder, guardLoc, returnFlag, mlir::ValueRange{});
+          auto trueConst = createIntConstant(builder, guardLoc, builder.getI1Type(), 1);
+          auto notReturned = mlir::arith::XOrIOp::create(builder, guardLoc, flagVal, trueConst);
+          auto guard = mlir::scf::IfOp::create(builder, guardLoc, mlir::TypeRange{}, notReturned,
+                                               /*withElseRegion=*/false);
+          builder.setInsertionPointToStart(&guard.getThenRegion().front());
+          self(self, i + 1);
+          ensureYieldTerminator(guardLoc);
+          builder.setInsertionPointAfter(guard);
+          return;
+        }
+      }
+      lastStmtAsStatement();
+    };
+
     // Generate all statements except the last one
     for (size_t i = 0; i + 1 < stmts.size(); ++i) {
       generateStatement(stmts[i]->value);
       if (hasRealTerminator(builder.getInsertionBlock())) {
+        return nullptr;
+      }
+      if (nonVoidFunction && returnFlag && stmtMightContainReturn(stmts[i]->value)) {
+        auto guardLoc = loc(stmts[i]->value.span);
+        auto flagVal =
+            mlir::memref::LoadOp::create(builder, guardLoc, returnFlag, mlir::ValueRange{});
+        auto trueConst = createIntConstant(builder, guardLoc, builder.getI1Type(), 1);
+        auto notReturned = mlir::arith::XOrIOp::create(builder, guardLoc, flagVal, trueConst);
+        auto guard = mlir::scf::IfOp::create(builder, guardLoc, mlir::TypeRange{}, notReturned,
+                                             /*withElseRegion=*/false);
+        builder.setInsertionPointToStart(&guard.getThenRegion().front());
+        runGuardedRemainder(runGuardedRemainder, i + 1);
+        ensureYieldTerminator(guardLoc);
+        builder.setInsertionPointAfter(guard);
         return nullptr;
       }
     }

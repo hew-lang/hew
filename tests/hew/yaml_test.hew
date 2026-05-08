@@ -132,10 +132,11 @@ fn test_try_parse_empty_mapping_missing_field_is_invalid() {
 // ── from_* constructor round-trips ────────────────────────────────────
 
 #[test]
-fn test_from_float_stringify_no_panic() {
+fn test_from_float_stringify_exact() {
+    // serde_yaml serializes 2.71 as "2.71\n".
     let val = yaml.from_float(2.71);
     let s = val.stringify();
-    testing.assert_true(s.len() > 0);
+    testing.assert_eq_str(s, "2.71\n");
     val.free();
 }
 
@@ -156,10 +157,11 @@ fn test_from_bool_stringify_round_trip() {
 }
 
 #[test]
-fn test_null_value_stringify_no_panic() {
+fn test_null_value_stringify_exact() {
+    // serde_yaml serializes null as "null\n".
     let val = yaml.null();
     let s = val.stringify();
-    testing.assert_true(s.len() > 0);
+    testing.assert_eq_str(s, "null\n");
     val.free();
 }
 
@@ -285,18 +287,15 @@ fn test_nested_builder_stringify_reparse() {
     outer.free();
 }
 
-// ── Additional negative (duplicate-key / bad indent) ──────────────────
+// ── Additional negative: deterministic malformed input ────────────────
 
 #[test]
-fn test_try_parse_bad_block_indent_returns_err() {
-    // Extra indentation on a mapping value is a parse error in strict YAML.
-    let r = yaml.try_parse("key: value\n    extra: bad");
+fn test_try_parse_unclosed_flow_sequence_returns_err() {
+    // "foo: [unclosed" has an unclosed flow sequence; serde_yaml
+    // deterministically rejects this with a parse error.
+    let r = yaml.try_parse("foo: [unclosed");
     match r {
-        Ok(val) => {
-            // serde_yaml may accept this as a multiline scalar; free and skip.
-            val.free();
-        },
+        Ok(val) => { val.free(); panic("expected Err for unclosed YAML flow sequence"); },
         Err(ParseError::Invalid(_)) => {},
     }
 }
-

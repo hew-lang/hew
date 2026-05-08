@@ -255,20 +255,21 @@ fn test_builder_push_consumes_element() {
 // ── keys() walk ──────────────────────────────────────────────────────
 
 #[test]
-fn test_keys_returns_two_string_keys() {
+fn test_keys_returns_exact_key_set() {
     // keys() on {"a":1,"b":2} returns a JSON Array of two string Values.
+    // serde_json uses BTreeMap (no preserve_order feature), so keys are
+    // returned in alphabetical order: "a" then "b".
     // Each array_get result is independently owned and must be freed.
     let r = json.try_parse("{\"a\":1,\"b\":2}");
     match r {
         Ok(obj) => {
             let ks = obj.keys();
             testing.assert_eq(ks.array_len(), 2);
-            // Each key is a JSON string; get_string() is non-empty.
             let k0 = ks.array_get(0);
-            testing.assert_true(k0.get_string().len() > 0);
+            testing.assert_eq_str(k0.get_string(), "a");
             k0.free();
             let k1 = ks.array_get(1);
-            testing.assert_true(k1.get_string().len() > 0);
+            testing.assert_eq_str(k1.get_string(), "b");
             k1.free();
             ks.free();
             obj.free();
@@ -316,11 +317,19 @@ fn test_try_parse_truncated_array_returns_err() {
 // ── from_float / from_string round-trips ─────────────────────────────
 
 #[test]
-fn test_from_float_stringify_no_panic() {
-    // from_float produces a non-empty stringify result.
+fn test_from_float_stringify_parse_round_trip() {
+    // from_float(3.14) → stringify → parse → get_float() == 3.14.
+    // 3.14 is exactly representable in IEEE 754 double; round-trip is exact.
     let val = json.from_float(3.14);
     let s = val.stringify();
-    testing.assert_true(s.len() > 0);
+    let r = json.try_parse(s);
+    match r {
+        Ok(reparsed) => {
+            testing.assert_true(reparsed.get_float() == 3.14);
+            reparsed.free();
+        },
+        Err(_) => panic("expected Ok for stringified float"),
+    }
     val.free();
 }
 

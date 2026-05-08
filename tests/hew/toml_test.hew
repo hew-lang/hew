@@ -227,13 +227,34 @@ fn test_builder_push_consumes_element() {
 
 #[test]
 fn test_from_float_round_trip_via_table_field() {
-    // TOML can only stringify table-rooted values; a bare float value from
-    // from_float() returns empty string from stringify(). Test float
-    // round-trip by placing it in a table field via with_float.
+    // TOML stringify only works on table-rooted values.
+    // Round-trip: with_float → stringify → reparse → get_field → get_float.
     let tbl = toml.table().with_float("ratio", 1.5);
     let s = tbl.stringify();
-    testing.assert_true(s.len() > 0);
+    let r = toml.try_parse(s);
+    match r {
+        Ok(reparsed) => {
+            let f = reparsed.get_field("ratio");
+            // 1.5 is exactly representable in IEEE 754; round-trip equality holds.
+            testing.assert_true(f.get_float() == 1.5);
+            f.free();
+            reparsed.free();
+        },
+        Err(_) => panic("stringify + reparse of float table failed"),
+    }
     tbl.free();
+}
+
+#[test]
+fn test_from_float_bare_stringify_is_empty() {
+    // toml::to_string requires a table-rooted value. A bare float value
+    // (not inside a table) cannot be serialized to TOML text, so stringify
+    // returns an empty string. Asserted via len() == 0 because assert_eq_str
+    // has a known quirk comparing null-derived strings to literal "".
+    let val = toml.from_float(1.5);
+    let s = val.stringify();
+    testing.assert_eq(s.len(), 0);
+    val.free();
 }
 
 #[test]
@@ -286,4 +307,3 @@ fn test_try_parse_duplicate_key_returns_err() {
         Err(ParseError::Invalid(_)) => {},
     }
 }
-

@@ -175,7 +175,7 @@ is_lsp_path() {
 
 is_scripts_config_path() {
     case "$1" in
-        Makefile|scripts/*|.config/nextest.toml|.github/workflows/*)
+        Makefile|.gitignore|scripts/*|.config/nextest.toml|.github/workflows/*)
             return 0
             ;;
     esac

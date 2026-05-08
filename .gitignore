@@ -35,6 +35,10 @@ __pycache__/
 hew-parser/fuzz/corpus/
 hew-parser/fuzz/artifacts/
 node_modules/
+node_modules
+target
+/.bin
+/.cache
 .claude/
 /Testing/
 

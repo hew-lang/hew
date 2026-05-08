@@ -404,6 +404,112 @@ impl Checker {
             vec![Ty::Var(TypeVar::fresh()), Ty::F64, Ty::I64],
             Ty::I64,
         );
+
+        // Register the eleven `impl Display for <primitive>` blanket impls
+        // declared in `std/builtins.hew`.  Without this, method-form
+        // primitive Display dispatch (`x.fmt()` for `x: i64` etc.) cannot
+        // find an entry in `primitive_trait_impls` because the file is not
+        // routed through any `import` that would invoke
+        // `register_stdlib_hew_items` for the root module.  The Display
+        // *marker* (`MarkerTrait::Display`) already satisfies `T: Display`
+        // bounds for `print` / `println`, but receiver-keyed method dispatch
+        // (Stage A2 / A3) reads the impl table directly.  See #1669.
+        self.register_builtins_hew_impls();
+    }
+
+    /// Parse the compiled-in `std/builtins.hew` source and feed only its
+    /// `Item::Impl` blocks through the existing stdlib registration path.
+    ///
+    /// `register_stdlib_hew_items` runs Pass 1 (types/traits/functions) and
+    /// Pass 2 (impl methods) on its input.  We deliberately filter to just
+    /// the impl items so:
+    ///
+    /// - The `pub trait Display { fn fmt(...) }` declaration is not
+    ///   inserted into `trait_defs`, leaving the existing user-redeclare
+    ///   path untouched (a user's in-file `trait Display` continues to win
+    ///   namespace registration via `register_type_namespace_name`).
+    /// - The `pub fn println(value: dyn Display)` etc. wrapper signatures
+    ///   in builtins.hew do not collide with the `register_builtin_fn_with_bounds`
+    ///   registrations above, which already encode the canonical
+    ///   `T: Display`-bounded shape these helpers expose to user code.
+    ///
+    /// Pass 2 does not validate `trait_bound.name` against `trait_defs`; it
+    /// only requires the target type name to canonicalise to a primitive or
+    /// builtin generic key.  All eleven impls (`i8`–`i64`, `u8`–`u64`,
+    /// `bool`, `char`) target primitives that round-trip through
+    /// `Ty::from_name` → `canonical_lowering_name`, so each one lands as a
+    /// `(canonical_key, "Display") → { "fmt" → FnSig }` entry in
+    /// `primitive_trait_impls`.
+    fn register_builtins_hew_impls(&mut self) {
+        const BUILTINS_HEW_SOURCE: &str = include_str!("../../../std/builtins.hew");
+        let parsed = hew_parser::parse(BUILTINS_HEW_SOURCE);
+        // The compiled-in source is part of the build; a parse failure is
+        // a compiler bug, not a user-facing error.  Surface it loudly in
+        // debug builds so contributors notice; in release, fail closed by
+        // skipping registration (the existing "no method `fmt` on int"
+        // diagnostic is the worst-case fallback, which matches today's
+        // pre-fix behaviour).
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/builtins.hew failed to parse: {:?}",
+            parsed.errors
+        );
+        if !parsed.errors.is_empty() {
+            return;
+        }
+        // Pre-register the trait definitions from builtins.hew into
+        // `trait_defs` WITHOUT claiming `type_def_spans` for them.  The
+        // checker output-boundary validator (admissibility.rs:491-505)
+        // retains `MethodCallReceiverKind::PrimitiveTraitImpl` entries only
+        // when their `trait_name` is present in `trait_defs`; without this
+        // pre-registration, the dispatch metadata for `x.fmt()` would be
+        // pruned at the boundary even though `primitive_trait_impls` was
+        // populated correctly.  Skipping `register_type_namespace_name`
+        // preserves the user-redeclare path: a user `pub trait Display`
+        // declared in their own source file still registers cleanly (no
+        // duplicate-definition error) and overwrites the trait_defs entry
+        // with the user's version.  The primitive_trait_impls side table
+        // remains keyed independently by canonical receiver kind so the
+        // `x.fmt()` dispatch continues to find the builtins-registered
+        // impl regardless of which `trait_defs[Display]` shape is current.
+        for (item, _) in &parsed.program.items {
+            if let Item::Trait(tr) = item {
+                if !tr.visibility.is_pub() {
+                    continue;
+                }
+                let info = Self::trait_info_from_decl(tr);
+                self.trait_defs
+                    .entry(tr.name.clone())
+                    .or_insert_with(|| info.clone());
+                let qualified = format!("builtins.{}", tr.name);
+                self.trait_defs.entry(qualified).or_insert(info);
+            }
+        }
+        // Now feed only the `Item::Impl` blocks through the existing
+        // stdlib registration path.  Pass 1 of `register_stdlib_hew_items`
+        // is a no-op on this filtered list (no traits/types/functions to
+        // register), and Pass 2 records each `impl Display for <prim>` in
+        // `primitive_trait_impls` via the same `record_primitive_trait_impl_method`
+        // helper that user-source impls go through.  All eleven targets
+        // (i8/i16/i32/i64/u8/u16/u32/u64/bool/char) round-trip through
+        // `Ty::from_name` → `canonical_lowering_name`, so each lands as a
+        // `(canonical_key, "Display") → { "fmt" → FnSig }` entry.
+        let impl_items: Vec<Spanned<Item>> = parsed
+            .program
+            .items
+            .into_iter()
+            .filter(|(item, _)| matches!(item, Item::Impl(_)))
+            .collect();
+        if impl_items.is_empty() {
+            return;
+        }
+        // Module short name "builtins" matches the on-disk file stem and
+        // would be the namespace if anything ever imports `std::builtins`
+        // directly; nothing currently does, so this name is only visible
+        // as the qualified-key prefix on per-method `td.methods` insertions
+        // (none of which fire for primitive targets that lack a
+        // `type_defs` entry).
+        self.register_stdlib_hew_items("builtins", &impl_items);
     }
 
     pub(super) fn register_builtin_fn(&mut self, name: &str, params: Vec<Ty>, return_type: Ty) {

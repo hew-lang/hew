@@ -1526,8 +1526,19 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Option<Ty> {
-        let canonical = Checker::canonical_primitive_or_builtin_key(resolved_receiver)?;
-        let (trait_name, sig) = self.lookup_primitive_trait_method(resolved_receiver, method)?;
+        // Default `IntLiteral` / `FloatLiteral` receivers to their canonical
+        // numeric kind before the side-table lookup.  Without this,
+        // `(42).fmt()` (literal-form receiver, never bound to a typed `let`)
+        // would short-circuit on `canonical_primitive_or_builtin_key` returning
+        // `None` for the still-polymorphic literal shape and the caller would
+        // emit `no method `fmt` on int`, even though `(42_i64).fmt()` and
+        // `let x: i64 = 42; x.fmt()` both succeed.  Mirrors the existing
+        // defaulting sites at methods.rs:49 / 125 / 129 / 157 / 161 / 202 /
+        // 254 / 317 — collapse the literal exactly at the boundary that would
+        // otherwise diagnose, never eagerly upstream.
+        let defaulted_receiver = resolved_receiver.materialize_literal_defaults();
+        let canonical = Checker::canonical_primitive_or_builtin_key(&defaulted_receiver)?;
+        let (trait_name, sig) = self.lookup_primitive_trait_method(&defaulted_receiver, method)?;
         let applied_sig = self.apply_instantiated_call_signature(
             &sig,
             None,
@@ -1591,7 +1602,18 @@ impl Checker {
         // Synthesize the receiver arg's type so we can route to the
         // canonical primitive/builtin-generic key.
         let receiver_ty = self.synthesize(first_expr, first_sp);
-        let resolved_receiver = self.subst.resolve(&receiver_ty);
+        // Default `IntLiteral` / `FloatLiteral` receivers in UFCS form
+        // (e.g. `Display::fmt(42)`) for the same reason as the method-form
+        // path at try_dispatch_primitive_trait_method: without defaulting,
+        // the synthesized receiver_ty is still in literal shape and
+        // `canonical_primitive_or_builtin_key` returns `None`, causing the
+        // caller to fall through to the trait-qualified path which then
+        // mis-arities (the receiver-stripped sig has 0 params vs the 1 arg
+        // we just synthesized).
+        let resolved_receiver = self
+            .subst
+            .resolve(&receiver_ty)
+            .materialize_literal_defaults();
         let canonical = Checker::canonical_primitive_or_builtin_key(&resolved_receiver)?;
         // Lookup keyed on the canonical receiver kind + trait name +
         // method.  We call into the table directly (not the

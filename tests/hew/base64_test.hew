@@ -1,6 +1,7 @@
 //! Behavioural tests for std::encoding::base64.
 
 import std::encoding::base64;
+
 import std::testing;
 
 fn assert_bytes_eq(actual: bytes, expected: bytes) {
@@ -11,26 +12,24 @@ fn assert_bytes_eq(actual: bytes, expected: bytes) {
 }
 
 // ── Happy-path ────────────────────────────────────────────────────────
-
 #[test]
 fn test_encode_known_value() {
     // "Hi" = bytes [72, 105] → Base64 "SGk="
-    let data = bytes [72, 105];
+    let data = bytes [0x48, 0x69];
     testing.assert_eq_str(base64.encode(data), "SGk=");
 }
 
 #[test]
 fn test_decode_known_value() {
     let result = base64.decode("SGk=");
-    assert_bytes_eq(result, bytes [72, 105]);
+    assert_bytes_eq(result, bytes [0x48, 0x69]);
 }
 
 // ── Property round-trip ───────────────────────────────────────────────
-
 #[test]
 fn test_round_trip_nonempty() {
     // decode(encode(x)) == x for a representative input
-    let original = bytes [1, 2, 3, 4, 5];
+    let original = bytes [0x01, 0x02, 0x03, 0x04, 0x05];
     let encoded = base64.encode(original);
     let decoded = base64.decode(encoded);
     assert_bytes_eq(decoded, original);
@@ -45,7 +44,6 @@ fn test_round_trip_empty() {
 }
 
 // ── Error / boundary ─────────────────────────────────────────────────
-
 #[test]
 fn test_decode_invalid_returns_empty() {
     // Characters outside the Base64 alphabet → empty bytes
@@ -57,7 +55,7 @@ fn test_decode_invalid_returns_empty() {
 fn test_encode_url_safe_differs_from_standard() {
     // Bytes that produce '+' or '/' in standard, '-' or '_' in URL-safe
     // 0xFB = 1111 1011 → standard chars end with '+' or '/'
-    let data = bytes [251, 255];
+    let data = bytes [0xfb, 0xff];
     let standard = base64.encode(data);
     let url_safe = base64.encode_url(data);
     // Round-trip: decode accepts both alphabets, so url-safe encoded data must
@@ -69,12 +67,11 @@ fn test_encode_url_safe_differs_from_standard() {
 }
 
 // ── Padding cases ─────────────────────────────────────────────────────
-
 #[test]
 fn test_encode_1_byte_produces_double_padding() {
     // 1-byte input → 2 significant Base64 chars + "==" (2 padding chars)
     // bytes [65] = 'A' (0b01000001): bits 010000 010000 → 'Q','Q','=','='
-    let data = bytes [65];
+    let data = bytes [0x41];
     testing.assert_eq_str(base64.encode(data), "QQ==");
 }
 
@@ -82,7 +79,7 @@ fn test_encode_1_byte_produces_double_padding() {
 fn test_encode_2_bytes_produces_single_padding() {
     // 2-byte input → 3 significant Base64 chars + "=" (1 padding char)
     // bytes [65, 66] ('A','B'): 010000 010100 001000 → 'Q','U','I','='
-    let data = bytes [65, 66];
+    let data = bytes [0x41, 0x42];
     testing.assert_eq_str(base64.encode(data), "QUI=");
 }
 
@@ -90,7 +87,7 @@ fn test_encode_2_bytes_produces_single_padding() {
 fn test_encode_3_bytes_produces_no_padding() {
     // 3-byte input → 4 Base64 chars, no padding
     // bytes [65, 66, 67] ('A','B','C') → "QUJD"
-    let data = bytes [65, 66, 67];
+    let data = bytes [0x41, 0x42, 0x43];
     testing.assert_eq_str(base64.encode(data), "QUJD");
 }
 
@@ -98,40 +95,39 @@ fn test_encode_3_bytes_produces_no_padding() {
 fn test_decode_double_padding_round_trip() {
     // decode of a double-padded string recovers the single byte
     let result = base64.decode("QQ==");
-    assert_bytes_eq(result, bytes [65]);
+    assert_bytes_eq(result, bytes [0x41]);
 }
 
 #[test]
 fn test_decode_single_padding_round_trip() {
     // decode of a single-padded string recovers the two bytes
     let result = base64.decode("QUI=");
-    assert_bytes_eq(result, bytes [65, 66]);
+    assert_bytes_eq(result, bytes [0x41, 0x42]);
 }
 
 #[test]
 fn test_decode_no_padding_round_trip() {
     // decode of a non-padded 4-char block recovers the three bytes
     let result = base64.decode("QUJD");
-    assert_bytes_eq(result, bytes [65, 66, 67]);
+    assert_bytes_eq(result, bytes [0x41, 0x42, 0x43]);
 }
 
 // ── All-zero / all-0xFF boundary ──────────────────────────────────────
-
 #[test]
 fn test_round_trip_all_zeros_length_1() {
-    let data = bytes [0];
+    let data = bytes [0x00];
     assert_bytes_eq(base64.decode(base64.encode(data)), data);
 }
 
 #[test]
 fn test_round_trip_all_zeros_length_2() {
-    let data = bytes [0, 0];
+    let data = bytes [0x00, 0x00];
     assert_bytes_eq(base64.decode(base64.encode(data)), data);
 }
 
 #[test]
 fn test_round_trip_all_zeros_length_3() {
-    let data = bytes [0, 0, 0];
+    let data = bytes [0x00, 0x00, 0x00];
     assert_bytes_eq(base64.decode(base64.encode(data)), data);
 }
 
@@ -146,19 +142,19 @@ fn test_round_trip_all_zeros_length_16() {
 
 #[test]
 fn test_round_trip_all_0xff_length_1() {
-    let data = bytes [255];
+    let data = bytes [0xff];
     assert_bytes_eq(base64.decode(base64.encode(data)), data);
 }
 
 #[test]
 fn test_round_trip_all_0xff_length_2() {
-    let data = bytes [255, 255];
+    let data = bytes [0xff, 0xff];
     assert_bytes_eq(base64.decode(base64.encode(data)), data);
 }
 
 #[test]
 fn test_round_trip_all_0xff_length_3() {
-    let data = bytes [255, 255, 255];
+    let data = bytes [0xff, 0xff, 0xff];
     assert_bytes_eq(base64.decode(base64.encode(data)), data);
 }
 
@@ -172,14 +168,13 @@ fn test_round_trip_all_0xff_length_16() {
 }
 
 // ── Multi-byte property round-trip ────────────────────────────────────
-
 #[test]
 fn test_round_trip_multi_byte_64() {
     // 64-byte buffer filled with (i * 31) % 256; covers a wide range of bit
     // patterns including values that span 3-byte block boundaries.
     let buf: bytes = bytes::new();
     for i in 0 .. 64 {
-        buf.push((i * 31) % 256);
+        buf.push(i * 31 % 256);
     }
     let encoded = base64.encode(buf);
     let decoded = base64.decode(encoded);
@@ -187,19 +182,24 @@ fn test_round_trip_multi_byte_64() {
 }
 
 // ── URL-safe alphabet round-trip ──────────────────────────────────────
-
 #[test]
 fn test_encode_url_safe_known_output() {
     // bytes [251, 255] encode to indices [62, 63, 60] + '='.
-    // Standard chars for 62 and 63 are '+' and '/'.
-    // URL-safe chars should be '-' and '_'.
-    // The '_' substitution (index 63) works. The '-' substitution (index 62)
-    // currently returns '+' instead of '-'.
-    // TODO(#1673): encode_url returns '+' for base64 index 62
-    // instead of '-'. The round-trip still works because decode treats '+' and
-    // '-' identically. Pending investigation and fix.
-    let data = bytes [251, 255];
-    testing.assert_eq_str(base64.encode_url(data), "+_8=");
+    // RFC 4648 §5: index 62 → '-', index 63 → '_'.
+    let data = bytes [0xfb, 0xff];
+    testing.assert_eq_str(base64.encode_url(data), "-_8=");
+}
+
+#[test]
+fn test_encode_url_safe_index_62_is_dash() {
+    // Targeted regression for #1673: encode_url must produce '-' (ASCII 45)
+    // for base64 index 62, not '+' (ASCII 43) from the standard alphabet.
+    // bytes [0xfb, 0xff] = [251, 255]; the first encoded character lands at
+    // index 62 (bits 111110 from the high six bits of 0xfb).
+    let data = bytes [0xfb, 0xff];
+    let encoded = base64.encode_url(data);
+    testing.assert_eq_str(encoded.slice(0, 1), "-");
+    testing.assert_eq_str(encoded, "-_8=");
 }
 
 #[test]
@@ -207,15 +207,15 @@ fn test_decode_url_safe_encoded_string() {
     // Confirm that decode accepts both '+' (standard) and '-' (URL-safe) for
     // base64 index 62, and both '/' (standard) and '_' (URL-safe) for index 63.
     let result_standard = base64.decode("+_8=");
-    assert_bytes_eq(result_standard, bytes [251, 255]);
+    assert_bytes_eq(result_standard, bytes [0xfb, 0xff]);
     let result_url_safe = base64.decode("-_8=");
-    assert_bytes_eq(result_url_safe, bytes [251, 255]);
+    assert_bytes_eq(result_url_safe, bytes [0xfb, 0xff]);
 }
 
 // ── Invalid input boundary ────────────────────────────────────────────
-
 #[test]
 fn test_decode_invalid_single_char_returns_empty() {
+
     // A single character after padding strip gives remainder == 1, which the
     // decoder does not emit — result is empty bytes.
     // Contract: "Q" → strips no '=', 1 value remaining, no output → 0 bytes.

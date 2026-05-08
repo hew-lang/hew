@@ -864,10 +864,15 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     return hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{lhs, rhs});
   }
 
-  case ast::BinaryOp::Send:
-    hew::ActorSendOp::create(builder, location, lhs, builder.getI32IntegerAttr(0),
+  case ast::BinaryOp::Send: {
+    // The type-checker keys actor_send_aliasing on the right operand's span
+    // (`right.1` in `enforce_actor_boundary_send`).
+    ast::Span msgSpan = expr.right->span;
+    auto sendAliasingAttr = builder.getI32IntegerAttr(aliasingAttrForSpans({msgSpan}, location));
+    hew::ActorSendOp::create(builder, location, lhs, builder.getI32IntegerAttr(0), sendAliasingAttr,
                              mlir::ValueRange{rhs});
     return nullptr;
+  }
 
   default:
     ++errorCount_;
@@ -4792,13 +4797,18 @@ std::optional<mlir::Value> MLIRGen::generateActorMethodCall(const ast::ExprMetho
       }
 
       llvm::SmallVector<mlir::Value, 4> argVals;
+      llvm::SmallVector<ast::Span, 4> argSpans;
       for (const auto &arg : mc.args) {
-        auto val = generateExpression(ast::callArgExpr(arg).value);
+        const auto &argSpanned = ast::callArgExpr(arg);
+        auto val = generateExpression(argSpanned.value);
         if (!val)
           return nullptr;
         argVals.push_back(val);
+        argSpans.push_back(argSpanned.span);
       }
-      hew::ActorSendOp::create(builder, location, receiver, builder.getI32IntegerAttr(0), argVals);
+      auto sendAliasingAttr = builder.getI32IntegerAttr(aliasingAttrForSpans(argSpans, location));
+      hew::ActorSendOp::create(builder, location, receiver, builder.getI32IntegerAttr(0),
+                               sendAliasingAttr, argVals);
       return nullptr;
     }
 

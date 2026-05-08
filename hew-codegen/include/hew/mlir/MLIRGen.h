@@ -701,6 +701,21 @@ private:
       return it->second;
     return nullptr;
   }
+  /// Aggregate the per-arg alias-vs-copy classifications for an actor send
+  /// op into the single `aliasing` MLIR attribute.
+  ///
+  /// In Phase α the type checker records `Copy` at every accepted actor
+  /// send, so this returns 0 (Copy) for every program that compiles today.
+  /// The follow-on alias-enable commit flips the rule to record `Alias`
+  /// at sites the move-checker has invalidated and then tightens this
+  /// lookup to fail-closed (per `serializer-fail-closed`).  Until then a
+  /// missing entry is treated as `Copy` — the legacy mailbox path — to
+  /// preserve today's runtime behaviour for dispatch paths the producer
+  /// does not yet visit (e.g. `check_named_method_fallback`).
+  ///
+  /// Returns the integer attribute value (`0` Copy, `1` Alias) suitable
+  /// for `builder.getI32IntegerAttr`.
+  int32_t aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans, mlir::Location location);
   const ast::AssignTargetKindEntry *assignTargetKindOf(const ast::Span &span) const {
     auto it = assignTargetKindMap.find({span.start, span.end});
     if (it != assignTargetKindMap.end())

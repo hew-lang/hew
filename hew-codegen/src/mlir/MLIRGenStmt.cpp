@@ -2893,9 +2893,14 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   }
 
   // Call init: actor_ask(actor, init_msg_type, args) → { i8, YieldType }
+  // Generator init/next is a codegen-internal actor protocol message, not a
+  // user-written actor send, so it never visits the alias path. The Copy
+  // attr (0) is the only legal value here regardless of what the user-side
+  // alias rule decides about the actor's normal sends.
   auto initAsk = hew::ActorAskOp::create(builder, location, wrapperType, actorRef,
                                          builder.getI32IntegerAttr(static_cast<int32_t>(initIdx)),
-                                         initArgs, /*timeout_ms=*/mlir::IntegerAttr{});
+                                         /*aliasing=*/builder.getI32IntegerAttr(0), initArgs,
+                                         /*timeout_ms=*/mlir::IntegerAttr{});
   auto initResult = initAsk.getResult();
 
   // Store wrapper result in alloca for mutable updates across iterations
@@ -2970,9 +2975,11 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   builder.setInsertionPointToStart(&nextIfOp.getThenRegion().front());
 
   // Call next: actor_ask(actor, next_msg_type) → { i8, YieldType }
-  auto nextAsk = hew::ActorAskOp::create(builder, location, wrapperType, actorRef,
-                                         builder.getI32IntegerAttr(static_cast<int32_t>(nextIdx)),
-                                         mlir::ValueRange{}, /*timeout_ms=*/mlir::IntegerAttr{});
+  auto nextAsk =
+      hew::ActorAskOp::create(builder, location, wrapperType, actorRef,
+                              builder.getI32IntegerAttr(static_cast<int32_t>(nextIdx)),
+                              /*aliasing=*/builder.getI32IntegerAttr(0), mlir::ValueRange{},
+                              /*timeout_ms=*/mlir::IntegerAttr{});
   mlir::LLVM::StoreOp::create(builder, location, nextAsk.getResult(), resultAlloca);
 
   builder.setInsertionPointAfter(nextIfOp);

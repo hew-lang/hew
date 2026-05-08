@@ -1557,6 +1557,73 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
   }
 
+  // Generate state-drop for the lambda actor.  Captured variables that
+  // are owned types (Vec, String, HashMap, closures, user-Drop structs)
+  // are deep-copied into the lambda actor's state at spawn time, so the
+  // lambda actor owns those copies for its lifetime and must drop them
+  // before the runtime free path raw-frees the state allocation. Mirror
+  // the four-touch pattern from `generateActorDecl` section 2d.
+  {
+    std::string stateDropName = actorName + "_state_drop";
+    auto stateDropFuncType = builder.getFunctionType({ptrType}, {});
+    builder.setInsertionPointToEnd(module.getBody());
+    auto stateDropFuncOp =
+        mlir::func::FuncOp::create(builder, location, stateDropName, stateDropFuncType);
+    auto *entryBlock = stateDropFuncOp.addEntryBlock();
+    builder.setInsertionPointToStart(entryBlock);
+
+    FunctionGenerationScope funcScope(*this, stateDropFuncOp);
+    auto selfPtr = entryBlock->getArgument(0);
+    auto i1Type = builder.getI1Type();
+
+    for (size_t i = 0; i < capturedVars.size(); ++i) {
+      auto fieldSemType = capturedVars[i].value.getType();
+      auto dropFn = dropFuncForMLIRType(fieldSemType, /*includeStructTypes=*/true);
+      if (dropFn.empty())
+        continue;
+
+      auto storageType = toLLVMStorageType(fieldSemType);
+      auto fieldPtr =
+          mlir::LLVM::GEPOp::create(builder, location, ptrType, stateType, selfPtr,
+                                    llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(i)});
+      mlir::Value fieldVal =
+          mlir::LLVM::LoadOp::create(builder, location, storageType, fieldPtr).getResult();
+
+      if (mlir::isa<hew::ClosureType>(fieldSemType)) {
+        if (auto closureSt = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType())) {
+          if (!closureSt.isIdentified() && closureSt.getBody().size() == 2) {
+            auto envPtr = mlir::LLVM::ExtractValueOp::create(builder, location, fieldVal,
+                                                             llvm::ArrayRef<int64_t>{1});
+            auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+            auto isNotNull =
+                mlir::LLVM::ICmpOp::create(builder, location, i1Type, mlir::LLVM::ICmpPredicate::ne,
+                                           envPtr.getResult(), nullPtr);
+            auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, isNotNull,
+                                                 /*withElseRegion=*/false);
+            builder.setInsertionPointToStart(&guard.getThenRegion().front());
+            hew::DropOp::create(builder, location, envPtr.getResult(), dropFn,
+                                /*isUserDrop=*/false);
+            builder.setInsertionPointAfter(guard);
+            continue;
+          }
+        }
+      }
+
+      bool isUserDrop = false;
+      if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldSemType)) {
+        if (fst.isIdentified() && userDropFuncs.count(fst.getName().str()))
+          isUserDrop = true;
+      }
+      mlir::Value dropVal = fieldVal;
+      if (!isUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
+        dropVal = hew::BitcastOp::create(builder, location, ptrType, dropVal);
+      hew::DropOp::create(builder, location, dropVal, dropFn, isUserDrop);
+    }
+
+    if (!hasRealTerminator(builder.getInsertionBlock()))
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
+  }
+
   builder.restoreInsertionPoint(savedIP);
 
   // Register actor info

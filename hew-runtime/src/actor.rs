@@ -653,6 +653,35 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
         return;
     }
 
+    // Run codegen-generated state-drop on the live state so types
+    // implementing `impl Drop` (Vec, String, HashMap, IO handles) release
+    // their resources before the underlying allocation goes away.
+    //
+    // SAFETY rationale for skipping `a.init_state`:
+    // 1. `a.init_state` is a byte-wise `deep_copy_state` of the spawn-time
+    //    state buffer (see `spawn_actor_internal` and `deep_copy_state`).
+    //    Nothing in the runtime reads the bytes of `a.init_state` between
+    //    here and the trailing `libc::free(a.init_state)` two lines down,
+    //    so calling state-drop on `a.state` cannot create a stale-pointer
+    //    read against `a.init_state`.
+    // 2. Supervisor restart goes through `spec.init_state`, an independent
+    //    allocation that the supervisor child-spec deep-copies at
+    //    registration time (see `supervisor.rs::add_child_actor_spec`),
+    //    not through the dead actor's `a.init_state`.
+    // The pre-existing fragility of supervised restart with owned-handle
+    // spawn args (the supervisor's spec deep-copies bytes that may include
+    // an OS handle whose Drop will run on the live actor) is independent
+    // of this lane and tracked separately.
+    if let Some(state_drop_fn) = a.state_drop_fn {
+        if !a.state.is_null() {
+            // SAFETY: `a.state` is the live state allocation; `state_drop_fn`
+            // is a codegen-emitted function that walks owned fields and
+            // tolerates null sub-pointers per LESSONS row
+            // `raii-null-after-move`.
+            unsafe { state_drop_fn(a.state) };
+        }
+    }
+
     // SAFETY: State was malloc'd by deep_copy_state.
     unsafe {
         libc::free(a.state);
@@ -696,6 +725,21 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    // Run codegen-generated state-drop on the live state so types
+    // implementing `impl Drop` release their resources before the
+    // allocation goes away. See the native `free_actor_resources` for
+    // the full SAFETY rationale; the WASM path has identical layout
+    // (compile-time enforced by the offset assertions in
+    // `scheduler_wasm.rs`) and the same `init_state` invariants.
+    if let Some(state_drop_fn) = a.state_drop_fn {
+        if !a.state.is_null() {
+            // SAFETY: `a.state` is the live state allocation;
+            // `state_drop_fn` is a codegen-emitted function that walks
+            // owned fields and tolerates null sub-pointers.
+            unsafe { state_drop_fn(a.state) };
+        }
+    }
 
     // SAFETY: State was malloc'd by deep_copy_state.
     unsafe {

@@ -1100,6 +1100,31 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
       }
     }
 
+    // Register state-drop function. Codegen emits `<ActorName>_state_drop`
+    // for declared actors (MLIRGenActor.cpp section 2d) and for spawned
+    // lambda actors (`generateSpawnLambdaActorExpr`). The lookup guard
+    // mirrors `_terminate` above so that any future actor-emit path that
+    // skips state-drop generation degrades to a no-op rather than a link
+    // failure.
+    {
+      std::string stateDropName = op.getActorName().str() + "_state_drop";
+      if (module.lookupSymbol<mlir::func::FuncOp>(stateDropName)) {
+        auto stateDropFuncType = rewriter.getFunctionType({ptrType}, {});
+        getOrInsertFuncDecl(module, rewriter, stateDropName, stateDropFuncType);
+        auto stateDropFuncRef = mlir::func::ConstantOp::create(
+            rewriter, loc, stateDropFuncType,
+            mlir::SymbolRefAttr::get(rewriter.getContext(), stateDropName));
+        auto stateDropPtr = mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType,
+                                                                     stateDropFuncRef.getResult())
+                                .getResult(0);
+
+        auto setStateDropFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
+        getOrInsertFuncDecl(module, rewriter, "hew_actor_set_state_drop", setStateDropFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "hew_actor_set_state_drop", mlir::TypeRange{},
+                                   mlir::ValueRange{result, stateDropPtr});
+      }
+    }
+
     rewriter.replaceOp(op, result);
     return mlir::success();
   }

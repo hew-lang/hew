@@ -2962,6 +2962,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
 mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   module = mlir::ModuleOp::create(builder.getUnknownLoc());
+  displayImplTypes.clear();
 
   // Set pointer width attribute so lowering patterns use the correct size type.
   int ptrWidth = isWasm32_ ? 32 : 64;
@@ -3279,6 +3280,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
         typeName = named->name;
       }
       if (!typeName.empty()) {
+        if (impl->trait_bound && impl->trait_bound->name == "Display")
+          displayImplTypes.insert(typeName);
+
         // Use the type's defining module for mangling (not the importing module).
         auto savedModPath = currentModulePath;
         if (typeDefModulePath.count(typeName)) {

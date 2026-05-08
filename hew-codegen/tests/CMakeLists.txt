@@ -670,6 +670,10 @@ add_e2e_reject_test(if_let_trailing_return_field      e2e_param_drops reject_if_
 add_e2e_reject_test(else_if_let_trailing_return_field e2e_param_drops reject_else_if_let_trailing_return_field "returning a field of an owned parameter")
 add_e2e_reject_test(if_let_trailing_call_arg_field    e2e_param_drops reject_if_let_trailing_call_arg_field    "passing a struct field to a function that takes ownership")
 add_e2e_reject_test(generator_yield_field_of_drop     e2e_generators  reject_yield_field_of_drop                "yielding a field from a generator")
+# Display::fmt field-alias guard: print(holder.field) where field: T and T: Display
+# must be rejected at codegen to prevent a double-drop (callee drops the field,
+# then caller's scope-exit drops the owning struct).
+add_e2e_reject_test(print_field_display_reject        e2e_negative    print_field_display_reject                "print of field-aliased Display value is not yet supported")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
@@ -1184,6 +1188,7 @@ add_wasm_file_test(generic_multi_param_clash      e2e_generics generic_multi_par
 add_wasm_file_test(trait_impl           e2e_traits trait_impl)
 add_wasm_file_test(trait_multi_impl     e2e_traits trait_multi_impl)
 add_wasm_file_test(primitive_trait_impl_display_int e2e_traits primitive_trait_impl_display_int)
+add_wasm_file_test(print_user_display   e2e_traits print_user_display)
 add_wasm_file_test(struct_impl_method   e2e_impl struct_impl_method)
 add_wasm_file_test(dyn_dispatch         e2e_dyn_trait dyn_dispatch)
 add_wasm_file_test(dyn_dispatch_string  e2e_dyn_trait dyn_dispatch_string)

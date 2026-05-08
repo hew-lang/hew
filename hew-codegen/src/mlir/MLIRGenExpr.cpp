@@ -2903,6 +2903,17 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!val)
         return true;
       hew::VecSetOp::create(builder, location, vecValue, idx, val);
+      // hew_vec_set_generic performs a shallow byte copy of the value struct
+      // into the existing index slot; for non-Copy element types the set slot
+      // now aliases the source identifier's heap buffer. Zero the source's
+      // drop slot so popDropScope's null-guard skips the free. Bare identifier
+      // args only — temp/anonymous args use the temp-alloca path. See LESSONS
+      // raii-null-after-move and #1698.
+      if (!dropFuncForMLIRType(elemType).empty()) {
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[1]).value.kind)) {
+          nullOutDropSlot(id->name, val, location);
+        }
+      }
       resultOut = nullptr;
       return true;
     }
@@ -2954,6 +2965,18 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_vec_append");
       hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{}, calleeAttr,
                                  mlir::ValueRange{vecValue, src});
+      // hew_vec_append transfers ownership of the src Vec's heap buffer to
+      // dst; for non-Copy Vec types (always true — Vecs always have a drop
+      // function) the src identifier's drop slot must be nulled so
+      // popDropScope's null-guard skips the free of a buffer that dst now
+      // owns. Guard on the src Vec's own drop function, not elemType, because
+      // the consumed value is the Vec itself. See LESSONS raii-null-after-move
+      // and #1698.
+      if (!dropFuncForMLIRType(src.getType()).empty()) {
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[0]).value.kind)) {
+          nullOutDropSlot(id->name, src, location);
+        }
+      }
       resultOut = nullptr;
       return true;
     }
@@ -3213,6 +3236,22 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!val)
         return true;
       hew::HashMapInsertOp::create(builder, location, mapValue, key, val);
+      // hew_hashmap_insert_impl performs a shallow byte copy of both the key
+      // and value structs into the map's internal storage; for non-Copy types
+      // (String, Vec, etc.) both source identifiers' drop slots must be nulled
+      // so popDropScope's null-guard skips the free of buffers that the map
+      // now owns. Bare identifier args only. See LESSONS raii-null-after-move
+      // and #1698.
+      if (!dropFuncForMLIRType(keyType).empty()) {
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[0]).value.kind)) {
+          nullOutDropSlot(id->name, key, location);
+        }
+      }
+      if (!dropFuncForMLIRType(valueType).empty()) {
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[1]).value.kind)) {
+          nullOutDropSlot(id->name, val, location);
+        }
+      }
       resultOut = nullptr;
       return true;
     }
@@ -3339,6 +3378,21 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
                       builder, location, mlir::TypeRange{builder.getI1Type()},
                       mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
                       .getResult();
+      // hew_hashset_insert_string performs a shallow byte copy of the String
+      // struct into the set's internal storage; the source identifier's drop
+      // slot must be nulled so popDropScope's null-guard skips the free of a
+      // buffer the set now owns. Applies only to insert (not contains/remove,
+      // which do not consume ownership). i64 elements are Copy (no drop func)
+      // so the guard is a safe no-op for the int ABI. Bare identifier args
+      // only. See LESSONS raii-null-after-move and #1698.
+      if (opName == "insert" && !dropFuncForMLIRType(elemType).empty()) {
+        if (!mc.args.empty()) {
+          if (auto *id =
+                  std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[0]).value.kind)) {
+            nullOutDropSlot(id->name, val, location);
+          }
+        }
+      }
       return true;
     };
 

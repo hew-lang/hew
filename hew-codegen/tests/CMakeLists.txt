@@ -1441,6 +1441,7 @@ add_wasm_file_test(early_return_param        e2e_param_drops      early_return_p
 add_wasm_file_test(shadowed_binding_drop     e2e_param_drops      shadowed_binding_drop)
 
 add_wasm_file_test(return_after_drop          e2e_return           return_after_drop)
+add_wasm_file_test(return_nested_if_early_return e2e_return        nested_if_early_return)
 add_wasm_file_test(string_lifecycle           e2e_memory           string_lifecycle)
 add_wasm_file_test(large_vec                  e2e_memory           large_vec_lifecycle)
 add_wasm_file_test(closure_capture            e2e_memory           closure_capture_safety)

@@ -178,9 +178,45 @@ Remote restart policy must specify:
 
 Monitor delivery is itself best-effort across distributed failures. If the monitor relationship cannot be maintained, the observer receives `MonitorLost`; the implementation must not fabricate a successful completion event for the monitored operation.
 
-> RATIFIED-PENDING: handle-safety-and-resource-lifetime.md slice 1
->
-> This v0 spec does not yet ratify whether a parent supervisor owns, borrows, or otherwise linearly tracks a remote child handle or remote supervision token.
+### 8.1 Supervision ownership
+
+A parent supervisor's *reference* to a remote child is a refcounted `ActorRef`
+(the §3.1 identity shape). The reference may be cloned and used for messaging
+without affecting restart authority.
+
+A parent supervisor's *restart authority* over a remote child is a **supervision
+token** in the sense of
+[`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+§3.1 mechanism D (adopted for shutdown / cancellation / session lifetime). The
+supervision token:
+
+- **Must** be held by exactly one supervisor at a time. Transfer is explicit;
+  the token is not duplicated on clone.
+- **Must not** be implicitly copied across a cross-node `link` boundary. Cross-node
+  `link` remains opt-in (per §8 above); if offered, an opt-in cross-node link
+  *transfers* (does not duplicate) restart authority to the accepting end.
+- **Must** be invalidated on any of the following exit paths: supervisor stop,
+  explicit `unlink`, child incarnation bump, peer reaching `Dead`, or session
+  reset. This enumeration is exhaustive for v0; implementations must not treat
+  partial teardown as sufficient (LESSONS `cleanup-all-exits`).
+- After invalidation, any attempt to exercise restart authority **must** resolve
+  to a typed failure. The typed failure is the existing `MonitorLost` variant
+  (§6); no new `SupervisionLost` variant is introduced in v0. This keeps the §6
+  taxonomy stable and the soundness matrix untouched.
+
+The checker is the authority for ownership classification of supervision tokens,
+per [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+§5 (single ownership oracle).
+
+**Implementation gap:** Single-holder restart-authority enforcement at the type
+level is not yet implemented. This clause is normative spec intent; runtime
+enforcement is tracked under issue #1228 (RuntimeContext handle-shaped API) and
+issue #1399 (move-checker substrate). No existing supervision scaffolding claims
+to enforce single-holder tokens; the gap is absence of enforcement, not wrong
+enforcement.
+
+**WASM policy:** Supervision token obligations are native-only; see §15 for WASM
+policy.
 
 ## 9. Failure detector model
 

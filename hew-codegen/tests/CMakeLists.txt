@@ -1400,6 +1400,7 @@ add_wasm_file_test(hex_test                   e2e_hex              hex_test)
 add_wasm_file_test(vec_bool                   e2e_vec              vec_bool)
 add_wasm_file_test(vec_pop_tuple              e2e_vec              vec_pop_tuple)
 add_wasm_file_test(vec_of_vec_push            e2e_vec              vec_of_vec_push)
+add_wasm_file_test(vec_push_block_arg         e2e_vec              vec_push_block_arg)
 
 # Indirect enums
 add_wasm_file_test(indirect_expr              e2e_indirect_enum    indirect_expr)

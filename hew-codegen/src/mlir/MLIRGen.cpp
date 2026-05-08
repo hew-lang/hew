@@ -6971,29 +6971,6 @@ void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVa
         // We also store the live handle value right after its defining op so
         // that the drop correctly fires at scope exit when .free() was NOT
         // called (e.g. the enclosing branch was not taken).
-        auto guardSlot = createHoistedAlloca(ptrType, ptrType);
-
-        // Retroactively insert the handle-value store at the definition site
-        // so the guard slot is populated before any branch can observe it.
-        //
-        // Two shapes are handled:
-        //   1. Ordinary op result (including ops inside nested SCF regions):
-        //      insert the store immediately after the defining op, inside
-        //      its own block.  The store is conditional on the branch being
-        //      entered, which is the correct behaviour — if the branch is
-        //      not taken the handle was never allocated so the null-initialized
-        //      slot correctly causes the scope-exit drop to be skipped.
-        //   2. Block argument (function / SCF block parameter):  insert the
-        //      store at the start of the block that owns the argument.  For
-        //      function parameters the argument is always live, so the store
-        //      fires unconditionally at function entry.
-        //
-        // Previously only case (1) was handled, and only when defOp was
-        // directly inside the function body.  Handles defined inside nested
-        // SCF regions (if branches, match arms) were left with a null guard
-        // slot, causing the scope-exit drop to be silently skipped even when
-        // .free() was never called — a guaranteed leak under ASAN/LSAN.
-        //
         // Coercion unwrapping: receiverVal may have passed through one or
         // more hew.bitcast ops that were inserted at the call site (e.g. when
         // the .free() implementation expects an LLVMPointerType but the handle
@@ -7010,8 +6987,39 @@ void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVa
             break;
         }
 
+        // Allocate a guard slot for the live handle value.  Two shapes are
+        // handled:
+        //
+        //   1. Ordinary op result (including ops inside nested SCF regions):
+        //      hoist the alloca to the function-entry block via
+        //      createHoistedAlloca (which null-inits at entry), then insert
+        //      the live-handle store immediately after the defining op so
+        //      the guard slot is populated before any branch can observe it.
+        //      The store is conditional on the branch being entered, which
+        //      is the correct behaviour — if the branch is not taken the
+        //      handle was never allocated so the null-initialized slot
+        //      correctly causes the scope-exit drop to be skipped.
+        //
+        //   2. Block argument (function / SCF block parameter): the
+        //      live-handle store must go at the START of the owner block
+        //      (because the argument is only live there), so the alloca
+        //      itself MUST also be created at block start to dominate that
+        //      store.  Using createHoistedAlloca (which hoists to
+        //      currentFunction.front() only when returnFlag is set) would
+        //      otherwise place the alloca at the current insertion point
+        //      (the .push()/.free() call site), violating SSA dominance for
+        //      the block-start store. See #1697 / services_pub_sub.
+        //
+        // Previously case (1) was handled only when defOp was directly
+        // inside the function body.  Handles defined inside nested SCF
+        // regions (if branches, match arms) were left with a null guard
+        // slot, causing the scope-exit drop to be silently skipped even
+        // when .free() was never called — a guaranteed leak under ASAN/LSAN.
+        mlir::Value guardSlot;
         auto *defOp = originVal.getDefiningOp();
+        auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(originVal);
         if (defOp) {
+          guardSlot = createHoistedAlloca(ptrType, ptrType);
           auto savedIP = builder.saveInsertionPoint();
           builder.setInsertionPointAfter(defOp);
           mlir::Value handlePtr = originVal;
@@ -7019,14 +7027,28 @@ void MLIRGen::nullOutDropSlot(const std::string &varName, mlir::Value receiverVa
             handlePtr = hew::BitcastOp::create(builder, loc, ptrType, handlePtr);
           mlir::memref::StoreOp::create(builder, loc, handlePtr, guardSlot);
           builder.restoreInsertionPoint(savedIP);
-        } else if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(originVal)) {
+        } else if (blockArg) {
+          // Place the alloca, its null init, and the live-handle store all
+          // at the start of the owner block, in that order, so SSA
+          // dominance holds.
           auto savedIP = builder.saveInsertionPoint();
           builder.setInsertionPointToStart(blockArg.getOwner());
+          auto memrefType = mlir::MemRefType::get({}, ptrType);
+          guardSlot = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), memrefType);
+          auto nullInit = createDefaultValue(builder, builder.getUnknownLoc(), ptrType);
+          mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), nullInit, guardSlot);
           mlir::Value handlePtr = originVal;
           if (!mlir::isa<mlir::LLVM::LLVMPointerType>(handlePtr.getType()))
             handlePtr = hew::BitcastOp::create(builder, loc, ptrType, handlePtr);
           mlir::memref::StoreOp::create(builder, loc, handlePtr, guardSlot);
           builder.restoreInsertionPoint(savedIP);
+        } else {
+          // Unknown SSA shape — fall back to a hoisted alloca with no
+          // live-handle store.  This is a safe degeneration: the slot is
+          // null-initialized, so the scope-exit drop will be skipped.  We
+          // intentionally do not emit a store from an SSA value we cannot
+          // anchor to a defining op or block.
+          guardSlot = createHoistedAlloca(ptrType, ptrType);
         }
 
         // At the .free() call site: null out the guard slot.

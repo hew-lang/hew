@@ -2864,6 +2864,22 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!val)
         return true;
       hew::VecPushOp::create(builder, location, vecValue, val);
+      // hew_vec_push_generic performs a shallow byte copy of the element
+      // struct; for non-Copy element types (Vec, String, HashMap, etc.) the
+      // pushed slot now aliases the source identifier's heap buffer. Zero the
+      // source's drop slot so popDropScope's null-guard skips the free of a
+      // buffer that the destination Vec now owns. See LESSONS row
+      // raii-null-after-move and #1694. nullOutDropSlot (not
+      // nullOutRaiiAlloca) is the right tool: Vec drop entries do not set
+      // closeAlloca; they use promotedSlot or hoisted guard slots. Bare
+      // identifier args only — temp/anonymous args route through the
+      // temp-alloca materialization path; Copy elements have no registered
+      // drop function so the guard is a safe no-op.
+      if (!dropFuncForMLIRType(elemType).empty()) {
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[0]).value.kind)) {
+          nullOutDropSlot(id->name, val, location);
+        }
+      }
       resultOut = nullptr;
       return true;
     }

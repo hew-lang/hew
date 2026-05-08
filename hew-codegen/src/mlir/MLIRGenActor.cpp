@@ -793,6 +793,116 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     builder.restoreInsertionPoint(savedIP);
   }
 
+  // 2d. Generate state-drop function:
+  //     void ActorName_state_drop(ptr state)
+  //
+  // Walks every owned field of the actor's state struct (user-declared
+  // fields + init-param hidden fields) and invokes its Drop callback so
+  // that types like Vec, String, HashMap, closures, and user `impl Drop`
+  // handles release their resources before `libc::free(a.state)` runs in
+  // the runtime free path.  Emitted unconditionally for every actor: when
+  // the state has no owned fields the body is empty and the call is a
+  // cheap no-op the optimizer can inline away.
+  //
+  // The state-drop runs AFTER the user's `terminate { }` block and BEFORE
+  // the trailing `libc::free(a.state)` (see free_actor_resources in
+  // hew-runtime/src/actor.rs).  It mirrors the four-touch pattern used for
+  // terminate_fn: codegen emits the symbol here, hew.actor_spawn lowering
+  // wires it via hew_actor_set_state_drop, and the runtime invokes the
+  // pointer through the HewActor::state_drop_fn slot.
+  {
+    auto location = actorLoc;
+    std::string stateDropName = actorName + "_state_drop";
+    auto stateDropFuncType = builder.getFunctionType({ptrType}, {});
+
+    auto savedIP = builder.saveInsertionPoint();
+    builder.setInsertionPointToEnd(module.getBody());
+    auto stateDropFuncOp =
+        mlir::func::FuncOp::create(builder, location, stateDropName, stateDropFuncType);
+    auto *entryBlock = stateDropFuncOp.addEntryBlock();
+    builder.setInsertionPointToStart(entryBlock);
+
+    FunctionGenerationScope funcScope(*this, stateDropFuncOp);
+
+    auto selfPtr = entryBlock->getArgument(0);
+
+    // Walk every owned field of the actor state struct.  We work directly
+    // off `actorInfo` rather than the shared `emitFieldDropsForUserStruct`
+    // helper because that helper keys lookups by the MLIR struct name
+    // (`<actor>_state`) while `structTypes` registers actors under their
+    // bare name; reusing the helper would silently drop nothing.
+    //
+    // Both user-declared fields (`fieldHewTypes[0..numUserFields]`) and
+    // hidden init-param fields (`fieldHewTypes[numUserFields..]`) are
+    // covered: an init param of an owned type (Vec, String, HashMap, an
+    // owned handle) is byte-copied into the state struct at spawn and
+    // outlives the spawning scope, so it must drop here.  Trailing
+    // generator-frame `ptr` slots are skipped: `dropFuncForMLIRType`
+    // returns empty for raw `!llvm.ptr` (no Drop semantics) and for
+    // numeric / boolean fields.
+    if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(actorInfo.stateType)) {
+      auto i1Type = builder.getI1Type();
+      for (size_t i = 0; i < actorInfo.fieldHewTypes.size(); ++i) {
+        auto fieldType = actorInfo.fieldHewTypes[i];
+        auto dropFn = dropFuncForMLIRType(fieldType, /*includeStructTypes=*/true);
+        if (dropFn.empty())
+          continue;
+        // GEP into the state struct, load the field's storage value.
+        auto storageType = toLLVMStorageType(fieldType);
+        auto fieldPtr = mlir::LLVM::GEPOp::create(
+            builder, location, ptrType, structTy, selfPtr,
+            llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(i)});
+        mlir::Value fieldVal =
+            mlir::LLVM::LoadOp::create(builder, location, storageType, fieldPtr).getResult();
+
+        // Closures are stored as `!llvm.struct<(ptr, ptr)>`; the env
+        // pointer (slot 1) is the rc-managed allocation.  Null-guard the
+        // env ptr so unused closure slots stay safe.
+        if (mlir::isa<hew::ClosureType>(fieldType)) {
+          if (auto closureSt = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType())) {
+            if (!closureSt.isIdentified() && closureSt.getBody().size() == 2) {
+              auto envPtr = mlir::LLVM::ExtractValueOp::create(builder, location, fieldVal,
+                                                               llvm::ArrayRef<int64_t>{1});
+              auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+              auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location, i1Type,
+                                                          mlir::LLVM::ICmpPredicate::ne,
+                                                          envPtr.getResult(), nullPtr);
+              auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, isNotNull,
+                                                   /*withElseRegion=*/false);
+              builder.setInsertionPointToStart(&guard.getThenRegion().front());
+              hew::DropOp::create(builder, location, envPtr.getResult(), dropFn,
+                                  /*isUserDrop=*/false);
+              builder.setInsertionPointAfter(guard);
+              continue;
+            }
+          }
+        }
+
+        // For nested user-Drop struct fields, the drop function expects
+        // the struct value directly (matches emitFieldDropsForUserStruct).
+        bool isUserDrop = false;
+        if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldType)) {
+          if (fst.isIdentified() && userDropFuncs.count(fst.getName().str()))
+            isUserDrop = true;
+        }
+
+        // Field-level drop callees (hew_string_drop, hew_vec_free,
+        // hew_hashmap_free_impl, hew_rc_drop, stdlib handle closers) all
+        // tolerate null per LESSONS row `raii-null-after-move`, so no
+        // top-level null guard is needed for plain pointer-shaped fields.
+        mlir::Value dropVal = fieldVal;
+        if (!isUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
+          dropVal = hew::BitcastOp::create(builder, location, ptrType, dropVal);
+        hew::DropOp::create(builder, location, dropVal, dropFn, isUserDrop);
+      }
+    }
+
+    if (!hasRealTerminator(builder.getInsertionBlock()))
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
+
+    builder.restoreInsertionPoint(savedIP);
+  }
+
   // 3. Generate dispatch function:
   //    void ActorName_dispatch(ptr state, i32 msg_type, ptr data, size_t data_size)
   {

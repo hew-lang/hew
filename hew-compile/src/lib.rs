@@ -2190,6 +2190,7 @@ mod tests {
             type_defs: std::collections::HashMap::new(),
             fn_sigs: std::collections::HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: std::collections::HashSet::new(),
             cycle_capable_actors: std::collections::HashSet::new(),
             user_modules: std::collections::HashSet::new(),
             call_type_args: std::collections::HashMap::new(),

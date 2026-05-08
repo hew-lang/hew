@@ -397,6 +397,54 @@ impl Checker {
             .insert(SpanKey::from(span), kind);
     }
 
+    /// Returns whether the qualified method name `Trait::method` is in the
+    /// recognised consume-receiver set. PR 1 (#1295) ships an empty set; PR 2
+    /// populates it for `Closable::close` when the trait is registered.
+    fn is_consume_receiver_method(&self, qualified_name: &str) -> bool {
+        self.consume_receiver_methods.contains(qualified_name)
+    }
+
+    /// Returns true if any trait impl on `type_name` registered a method
+    /// named `method` that is in the recognised consume-receiver set.
+    ///
+    /// Stdlib `impl Closable for T { fn close }` flattens trait methods into
+    /// the inherent-method table on `T`, so the dispatch at the named-type
+    /// site doesn't carry the originating trait. To honour
+    /// `consumes_receiver` declared on the trait, we walk the
+    /// `trait_impls_set` for matching `(type, trait)` pairs and check the
+    /// qualified `Trait::method` form against the consume set.
+    fn named_type_method_consumes_receiver(&self, type_name: &str, method: &str) -> bool {
+        if self.consume_receiver_methods.is_empty() {
+            return false;
+        }
+        self.trait_impls_set
+            .iter()
+            .filter(|(ty, _)| ty == type_name)
+            .any(|(_, trait_name)| {
+                self.is_consume_receiver_method(&format!("{trait_name}::{method}"))
+            })
+    }
+
+    /// Apply the consume-receiver marker for a trait-dispatched method call:
+    /// record the per-call-site flag for codegen and mark the receiver
+    /// expression moved so subsequent uses surface `UseAfterMove`. No-op
+    /// when the resolved method does not declare `consumes_receiver`.
+    fn apply_consume_receiver_if_flagged(
+        &mut self,
+        qualified_method: &str,
+        receiver: &Spanned<Expr>,
+        receiver_ty: &Ty,
+        span: &Span,
+    ) {
+        if !self.is_consume_receiver_method(qualified_method) {
+            return;
+        }
+        self.method_call_consumes_receiver
+            .insert(SpanKey::from(span));
+        let resolved_ty = self.subst.resolve(receiver_ty);
+        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
+    }
+
     fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
         self.method_call_rewrites
             .insert(SpanKey::from(span), rewrite);
@@ -2444,6 +2492,16 @@ impl Checker {
                             type_name: name.clone(),
                         },
                     );
+                    // #1295: stdlib `impl Closable for T { fn close }` flattens
+                    // into the inherent-method table on T; honour any
+                    // `consumes_receiver` declared on a trait whose impl
+                    // contributed this method.
+                    if self.named_type_method_consumes_receiver(name, method) {
+                        self.method_call_consumes_receiver
+                            .insert(SpanKey::from(span));
+                        let resolved_recv = self.subst.resolve(&receiver_ty);
+                        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                    }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     return applied_sig.return_type;
                 }
@@ -2487,6 +2545,13 @@ impl Checker {
                                     type_name: name.clone(),
                                 },
                             );
+                            let qualified = format!("{bound_trait}::{method}");
+                            self.apply_consume_receiver_if_flagged(
+                                &qualified,
+                                receiver,
+                                &receiver_ty,
+                                span,
+                            );
                             return applied_sig.return_type;
                         }
                     }
@@ -2524,6 +2589,13 @@ impl Checker {
                             MethodCallReceiverKind::TraitObject {
                                 trait_name: bound.trait_name.clone(),
                             },
+                        );
+                        let qualified = format!("{}::{method}", bound.trait_name);
+                        self.apply_consume_receiver_if_flagged(
+                            &qualified,
+                            receiver,
+                            &receiver_ty,
+                            span,
                         );
                     }
                     // Apply type substitutions from bound's type arguments

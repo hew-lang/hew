@@ -1039,6 +1039,12 @@ struct MethodCallReceiverKindEntry {
   uint64_t start = 0;
   uint64_t end = 0;
   MethodCallReceiverKindData kind;
+  /// Whether the resolved method declares `consumes_receiver`. When true,
+  /// codegen nulls the receiver's drop slot after the call so the
+  /// scope-exit drop becomes a null-guarded no-op. Plumbed by issue #1295.
+  /// Defaults to false (and remains false for every Hew program until PR 2
+  /// introduces `Closable::close`).
+  bool consumes_receiver = false;
 };
 
 // ── Assign-target authority side table ────────────────────────────────────

@@ -548,6 +548,7 @@ fn register_and_lookup_trait() {
             return_type: Ty::Unit,
             takes_self: true,
             self_mutable: false,
+            consumes_receiver: false,
         }],
         associated_types: vec!["Output".to_string()],
     });
@@ -578,6 +579,7 @@ fn register_and_lookup_impl() {
             return_type: Ty::String,
             takes_self: true,
             self_mutable: false,
+            consumes_receiver: false,
         },
         MethodSig {
             name: "format".to_string(),
@@ -585,6 +587,7 @@ fn register_and_lookup_impl() {
             return_type: Ty::String,
             takes_self: true,
             self_mutable: false,
+            consumes_receiver: false,
         },
     ];
     reg.register_impl("Dog".to_string(), "Display".to_string(), methods);
@@ -610,6 +613,7 @@ fn lookup_impl_wrong_type_returns_none() {
             return_type: Ty::String,
             takes_self: true,
             self_mutable: false,
+            consumes_receiver: false,
         }],
     );
     assert!(reg.lookup_impl("Cat", "Display").is_none());
@@ -653,6 +657,7 @@ fn trait_with_super_traits() {
             return_type: Ty::I64,
             takes_self: true,
             self_mutable: false,
+            consumes_receiver: false,
         }],
         associated_types: vec![],
     });
@@ -677,6 +682,7 @@ fn trait_with_associated_types() {
             return_type: Ty::option(Ty::I32),
             takes_self: true,
             self_mutable: true,
+            consumes_receiver: false,
         }],
         associated_types: vec!["Item".to_string()],
     });
@@ -710,6 +716,7 @@ fn method_sig_mutable_self() {
         return_type: Ty::Unit,
         takes_self: true,
         self_mutable: true,
+        consumes_receiver: false,
     }];
     reg.register_impl("Buffer".to_string(), "Collection".to_string(), methods);
     let found = reg.lookup_impl("Buffer", "Collection").unwrap();

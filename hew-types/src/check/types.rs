@@ -38,6 +38,16 @@ use std::path::PathBuf;
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
     pub method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
+    /// Spans of method calls whose resolved method declares `consumes_receiver`.
+    ///
+    /// Per-call-site flag derived from [`MethodSig::consumes_receiver`] at the
+    /// dispatch site. Codegen consults this side table to null the receiver's
+    /// drop slot after the call, so the scope-exit drop becomes a null-guarded
+    /// no-op. PR 1 (issue #1295) ships the plumbing; the recognised set is
+    /// empty (no Hew surface syntax sets the flag yet), so this map is empty
+    /// for Hew programs — but tests can populate `consume_receiver_methods` on
+    /// the [`Checker`] to exercise the path end-to-end.
+    pub method_call_consumes_receiver: HashSet<SpanKey>,
     /// Checker-owned lowering metadata keyed by the lowering site's source span.
     ///
     /// Populated for erased runtime types whose lowering must not guess from
@@ -571,6 +581,13 @@ pub struct Checker {
     pub(super) expr_types: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
+    pub(super) method_call_consumes_receiver: HashSet<SpanKey>,
+    /// Qualified method names (e.g. `"Closable::close"`) whose dispatch should
+    /// mark the receiver moved and propagate `consumes_receiver` into the
+    /// per-call-site side table. Empty in PR 1 (issue #1295); PR 2 populates
+    /// this set when `trait Closable` is registered. Tests may insert names
+    /// directly to exercise the consume-marker path before PR 2 lands.
+    pub(super) consume_receiver_methods: HashSet<String>,
     pub(super) pending_lowering_facts: HashMap<SpanKey, PendingLoweringFact>,
     /// `HashMap` key/value admission checks deferred until after inference
     /// completes.  Keyed by span to suppress duplicates from repeated
@@ -762,6 +779,8 @@ impl Checker {
             expr_types: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
+            method_call_consumes_receiver: HashSet::new(),
+            consume_receiver_methods: HashSet::new(),
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
             deferred_hashset_admission: HashMap::new(),
@@ -838,6 +857,20 @@ impl Checker {
     /// Enable WASM32-specific validation and warnings.
     pub fn enable_wasm_target(&mut self) {
         self.wasm_target = true;
+    }
+
+    /// Register a qualified `Trait::method` name as one whose dispatch
+    /// consumes the receiver. The move-checker marks the receiver moved
+    /// after the call, and the per-call-site flag in
+    /// [`TypeCheckOutput::method_call_consumes_receiver`] is set so codegen
+    /// can null the drop slot.
+    ///
+    /// PR 1 (issue #1295) ships this seam unused in production: no Hew
+    /// surface syntax populates the set, and stdlib trait registration does
+    /// not call this until PR 2 introduces `Closable::close`. Tests use it
+    /// to exercise the consume-marker pipeline before PR 2 lands.
+    pub fn register_consume_receiver_method(&mut self, qualified_name: impl Into<String>) {
+        self.consume_receiver_methods.insert(qualified_name.into());
     }
 
     /// Extract the module registry after type checking is done.

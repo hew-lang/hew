@@ -4493,6 +4493,39 @@ fn primitive_trait_dispatch_negative_non_display_method_still_diagnoses() {
 }
 
 #[test]
+fn print_user_struct_without_display_impl_is_rejected_by_checker() {
+    // #1670 sentinel: user structs must not reach codegen's print lowering
+    // unless the checker has resolved a Display impl for the printed type.
+    // Without that bound, `print(Foo { ... })` should fail here rather than
+    // relying on PrintOpLowering's unsupported-aggregate terminal.
+    let source = r#"
+        pub type Foo {
+            label: String;
+        }
+
+        fn main() {
+            print(Foo { label: "no display" });
+        }
+    "#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("does not implement trait `Display`")),
+        "expected missing Display diagnostic for print(Foo {{ ... }}), got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn primitive_trait_dispatch_builtins_blanket_populates_side_table_at_register_builtins() {
     // White-box sentinel: confirm `register_builtins` alone (no
     // user source, no full `check_program`) seeds the

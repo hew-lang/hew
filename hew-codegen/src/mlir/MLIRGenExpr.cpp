@@ -2009,14 +2009,85 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
   if (!val)
     return nullptr;
 
-  // Materialize temporary strings (f-strings, to_string(), etc.) so they
-  // are dropped at scope exit instead of requiring ad-hoc cleanup.
-  materializeTemporary(val, ast::callArgExpr(call.args[0]).value);
-
   auto *argType = requireResolvedTypeOf(ast::callArgExpr(call.args[0]).span,
                                         "print/println argument signedness", location);
   if (!argType)
     return nullptr;
+
+  auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+  auto classified = classifyResolvedType(*argType, resolveAliasExpr);
+  if (classified.named &&
+      primitiveTypeKind(classified.canonicalName) == PrimitiveTypeKind::Unknown) {
+    std::string typeName = classified.named->name;
+    if (typeName.empty())
+      typeName = classified.canonicalName;
+
+    bool hasDisplayImpl = displayImplTypes.count(typeName) > 0 ||
+                          displayImplTypes.count(classified.canonicalName) > 0;
+
+    if (hasDisplayImpl) {
+      auto savedModulePath = currentModulePath;
+      if (typeDefModulePath.count(typeName))
+        currentModulePath = typeDefModulePath[typeName];
+      std::string fmtName = resolveTraitImplBodyName(
+          typeName, "Display", "fmt", TraitImplBodyNameMode::PreferQualifiedIfGenerated);
+      currentModulePath = savedModulePath;
+
+      auto callee = module.lookupSymbol<mlir::func::FuncOp>(fmtName);
+      if (!callee)
+        callee = lookupImportedFunc(typeName, "fmt");
+      if (!callee) {
+        ++errorCount_;
+        emitError(location) << "print/println could not lower Display::fmt for type '" << typeName
+                            << "'";
+        return nullptr;
+      }
+
+      auto funcType = callee.getFunctionType();
+      if (funcType.getNumInputs() != 1) {
+        ++errorCount_;
+        emitError(location) << "Display::fmt for type '" << typeName
+                            << "' must take exactly one receiver argument";
+        return nullptr;
+      }
+      if (funcType.getNumResults() != 1 ||
+          !mlir::isa<mlir::LLVM::LLVMPointerType, hew::StringRefType>(funcType.getResult(0))) {
+        ++errorCount_;
+        emitError(location) << "Display::fmt for type '" << typeName << "' must return String";
+        return nullptr;
+      }
+
+      if (val.getType() != funcType.getInput(0)) {
+        val = coerceType(val, funcType.getInput(0), location);
+        if (!val)
+          return nullptr;
+      }
+
+      val =
+          mlir::func::CallOp::create(builder, location, callee, mlir::ValueRange{val}).getResult(0);
+      hew::PrintOp::create(builder, location, val, builder.getBoolAttr(newline));
+
+      ast::Span syntheticSpan{std::numeric_limits<uint64_t>::max() - 1,
+                              std::numeric_limits<uint64_t>::max()};
+      ast::Expr syntheticFunction;
+      syntheticFunction.kind = ast::ExprIdentifier{"Display::fmt"};
+      syntheticFunction.span = syntheticSpan;
+      ast::ExprCall syntheticCallExpr;
+      syntheticCallExpr.function = std::make_unique<ast::Spanned<ast::Expr>>(
+          ast::Spanned<ast::Expr>{std::move(syntheticFunction), syntheticSpan});
+      syntheticCallExpr.type_args = std::nullopt;
+      syntheticCallExpr.is_tail_call = false;
+      ast::Expr syntheticCall;
+      syntheticCall.kind = std::move(syntheticCallExpr);
+      syntheticCall.span = syntheticSpan;
+      materializeTemporary(val, syntheticCall);
+      return nullptr; // print returns void
+    }
+  }
+
+  // Materialize temporary strings (f-strings, to_string(), etc.) so they
+  // are dropped at scope exit instead of requiring ad-hoc cleanup.
+  materializeTemporary(val, ast::callArgExpr(call.args[0]).value);
 
   auto printOp = hew::PrintOp::create(builder, location, val, builder.getBoolAttr(newline));
   // Propagate unsigned type info so the lowering uses unsigned print routines.

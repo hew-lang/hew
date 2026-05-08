@@ -171,11 +171,7 @@ fn parse_impl(data: String, has_headers: bool) -> Table {
                             headers.push(cur_row.get(i));
                         }
                     } else {
-                        let data_row: Vec<String> = Vec::new();
-                        for i in 0 .. cur_row.len() {
-                            data_row.push(cur_row.get(i));
-                        }
-                        rows.push(data_row);
+                        rows.push(copy_str_vec(cur_row));
                     }
                     cur_row.clear();
                 }
@@ -197,11 +193,7 @@ fn parse_impl(data: String, has_headers: bool) -> Table {
                         headers.push(cur_row.get(i));
                     }
                 } else {
-                    let data_row: Vec<String> = Vec::new();
-                    for i in 0 .. cur_row.len() {
-                        data_row.push(cur_row.get(i));
-                    }
-                    rows.push(data_row);
+                    rows.push(copy_str_vec(cur_row));
                 }
                 cur_row.clear();
             }
@@ -229,11 +221,7 @@ fn parse_impl(data: String, has_headers: bool) -> Table {
                 headers.push(cur_row.get(i));
             }
         } else {
-            let data_row: Vec<String> = Vec::new();
-            for i in 0 .. cur_row.len() {
-                data_row.push(cur_row.get(i));
-            }
-            rows.push(data_row);
+            rows.push(copy_str_vec(cur_row));
         }
         cur_row.clear();
     }
@@ -245,6 +233,21 @@ fn parse_impl(data: String, has_headers: bool) -> Table {
         }
     }
     Table { hdrs: headers, data: rows }
+}
+
+/// Copy a `Vec<String>` into a new `Vec<String>`.
+///
+/// Returning the copy from a function rather than building it inline avoids a
+/// Hew runtime lifetime issue where a `Vec<String>` created inside a block
+/// scope and pushed into a `Vec<Vec<String>>` loses its contents when the
+/// inner scope exits.  Returning from a function correctly extends the
+/// lifetime of the contained strings through the ownership transfer.
+fn copy_str_vec(src: Vec<String>) -> Vec<String> {
+    let dst: Vec<String> = Vec::new();
+    for i in 0 .. src.len() {
+        dst.push(src.get(i));
+    }
+    dst
 }
 
 /// Find the column index for a header name. Returns -1 if not found.

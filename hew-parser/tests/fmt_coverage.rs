@@ -1146,9 +1146,7 @@ fn fmt_extern_block() {
 
 #[test]
 fn fmt_pub_function_in_impl() {
-    // Visibility on impl methods is not supported inside impl bodies.
-    // Test pub visibility on top-level functions instead.
-    let src = r"pub fn helper() -> i32 {
+    let src = "pub fn helper() -> i32 {
     42
 }
 
@@ -1159,6 +1157,27 @@ fn internal() -> i32 {
     let out = roundtrip(src);
     assert!(out.contains("pub fn helper"), "output: {out}");
     assert!(out.contains("fn internal"), "output: {out}");
+}
+
+#[test]
+fn fmt_pub_method_in_impl_body() {
+    let src = "type Foo {
+    x: int;
+}
+
+impl Foo {
+    pub fn make(v: int) -> Foo {
+        Foo { x: v }
+    }
+
+    fn private_helper(f: Foo) -> int {
+        f.x
+    }
+}
+";
+    let out = roundtrip(src);
+    assert!(out.contains("pub fn make"), "output: {out}");
+    assert!(out.contains("fn private_helper"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------

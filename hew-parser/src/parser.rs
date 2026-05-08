@@ -1852,9 +1852,20 @@ impl<'src> Parser<'src> {
         let mut type_aliases = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             let doc_comment = self.collect_doc_comments();
+            let vis = if self.peek() == Some(&Token::Pub) {
+                self.parse_visibility()
+            } else {
+                Visibility::Private
+            };
             let is_pure = self.eat(&Token::Pure);
             match self.peek() {
                 Some(Token::Type) => {
+                    if vis != Visibility::Private {
+                        self.error(
+                            "type aliases in impl bodies cannot have visibility modifiers"
+                                .to_string(),
+                        );
+                    }
                     self.advance();
                     let name = self.expect_ident()?;
                     self.expect(&Token::Equal)?;
@@ -1865,14 +1876,9 @@ impl<'src> Parser<'src> {
                 Some(Token::Fn) => {
                     let fn_start = self.peek_span().start;
                     self.advance();
-                    if let Some(mut method) = self.parse_function(
-                        fn_start,
-                        false,
-                        false,
-                        Visibility::Private,
-                        is_pure,
-                        Vec::new(),
-                    ) {
+                    if let Some(mut method) =
+                        self.parse_function(fn_start, false, false, vis, is_pure, Vec::new())
+                    {
                         if let Some(doc) = doc_comment {
                             method.doc_comment = Some(doc);
                         }

@@ -178,9 +178,45 @@ Remote restart policy must specify:
 
 Monitor delivery is itself best-effort across distributed failures. If the monitor relationship cannot be maintained, the observer receives `MonitorLost`; the implementation must not fabricate a successful completion event for the monitored operation.
 
-> RATIFIED-PENDING: handle-safety-and-resource-lifetime.md slice 1
->
-> This v0 spec does not yet ratify whether a parent supervisor owns, borrows, or otherwise linearly tracks a remote child handle or remote supervision token.
+### 8.1 Supervision ownership
+
+A parent supervisor's *reference* to a remote child is a refcounted `ActorRef`
+(the §3.1 identity shape). The reference may be cloned and used for messaging
+without affecting restart authority.
+
+A parent supervisor's *restart authority* over a remote child is a **supervision
+token** in the sense of
+[`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+§3.1 mechanism D (adopted for shutdown / cancellation / session lifetime). The
+supervision token:
+
+- **Must** be held by exactly one supervisor at a time. Transfer is explicit;
+  the token is not duplicated on clone.
+- **Must not** be implicitly copied across a cross-node `link` boundary. Cross-node
+  `link` remains opt-in (per §8 above); if offered, an opt-in cross-node link
+  *transfers* (does not duplicate) restart authority to the accepting end.
+- **Must** be invalidated on any of the following exit paths: supervisor stop,
+  explicit `unlink`, child incarnation bump, peer reaching `Dead`, or session
+  reset. This enumeration is exhaustive for v0; implementations must not treat
+  partial teardown as sufficient (LESSONS `cleanup-all-exits`).
+- After invalidation, any attempt to exercise restart authority **must** resolve
+  to a typed failure. The typed failure is the existing `MonitorLost` variant
+  (§6); no new `SupervisionLost` variant is introduced in v0. This keeps the §6
+  taxonomy stable and the soundness matrix untouched.
+
+The checker is the authority for ownership classification of supervision tokens,
+per [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+§5 (single ownership oracle).
+
+**Implementation gap:** Single-holder restart-authority enforcement at the type
+level is not yet implemented. This clause is normative spec intent; runtime
+enforcement is tracked under issue #1228 (RuntimeContext handle-shaped API) and
+issue #1399 (move-checker substrate). No existing supervision scaffolding claims
+to enforce single-holder tokens; the gap is absence of enforcement, not wrong
+enforcement.
+
+**WASM policy:** Supervision token obligations are native-only; see §15 for WASM
+policy.
 
 ## 9. Failure detector model
 
@@ -238,11 +274,45 @@ Authorization is explicit and scoped:
 
 Named lookup is not ambient authority. A string name is valid only within an opened or granted namespace. Public docs and examples must not present the global registry as an unrestricted authority surface.
 
-Sealed actor references and explicit capability transfer are the design target for untrusted or partially trusted boundaries, but v0 does not freeze their ownership mechanics.
+Sealed actor references and explicit capability transfer are the design target for untrusted or partially trusted boundaries. Their ownership mechanics are ratified in §12.1.
 
-> RATIFIED-PENDING: handle-safety-and-resource-lifetime.md slice 1
->
-> This v0 spec names sealed-reference and capability-transfer requirements, but defers whether cross-node transfer is move-only, affine, revocable-copy, or another ownership shape until handle-safety ratifies the ownership model.
+### 12.1 Sealed-reference and capability ownership
+
+A **sealed actor reference** is a refcounted identity object — it has the same
+§3.1 shape as `ActorRef`. Sealing limits *who* may mint exercise of authority
+through the reference; it does not make the identity affine. Sealed references
+may be cloned and shared, and no user-visible `close()` or `free()` is required.
+
+A **capability** is an authority token in the sense of
+[`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+§3.1 mechanism D. Key ownership properties:
+
+- Capability transfer between principals (local or remote) is **move-by-default**.
+  Duplicating authority requires an explicit re-grant by the original grantor.
+  Cloning a sealed reference does not duplicate the capability.
+- Capabilities are **revocable** by the grantor. After revocation, any attempt
+  to exercise the capability **must** resolve to the existing `Unauthorized`
+  typed failure variant (§6). No new `Revoked` variant is introduced in v0;
+  this keeps the §6 taxonomy and soundness matrix stable.
+- Wire-encoded capability frames are subject to the existing fail-closed
+  serialization posture (LESSONS `serializer-fail-closed`). A malformed or
+  expired capability frame **must** resolve to `DecodeFailure` or `Unauthorized`,
+  never to a silent local-shape success. Partial or best-effort wire encoding
+  of capability proofs is forbidden.
+
+The checker is the authority for ownership classification of capability tokens,
+per [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+§5 (single ownership oracle). Cross-linking §11: capability proof appropriate
+to the transport/security mode is carried in the handshake contract; §12.1 does
+not restate those mechanics, only the ownership shape of tokens once transferred.
+
+**Implementation gap:** Capability transfer and grantor-side revocation are not
+yet runtime-enforced. This clause is normative spec intent; runtime enforcement
+is tracked under issue #1706 (capability transfer ownership and revocation per
+HEW-DIST-SPEC §12).
+
+**WASM policy:** Capability token obligations are native-only; see §15 for WASM
+policy.
 
 Authorization failure resolves to `Unauthorized`; authn/authz teardown during an active operation must not collapse into a local-shaped success.
 
@@ -349,10 +419,23 @@ The concrete follow-on work named by the distributed research record maps to thi
 8. authenticated nodes by default plus per-name authorization — gated by section 12
 9. distributed observability (`traceparent`/stats/flight recorder) — gated by section 13
 10. end-to-end backpressure credits for fire-and-forget — gated by section 10
-11. `RuntimeContext` replacing permanent process-global node ownership — gated by sections 3 and 18, with ownership ratification deferred to [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+11. `RuntimeContext` replacing permanent process-global node ownership — gated by sections 3 and 18; §3 ActorRef ownership is ratified and matches already-shipped runtime behaviour; §8 supervision-token and §12 capability-transfer ownership are ratified as normative spec intent, pending runtime enforcement under issues #1228 and #1399
 12. defining link versus monitor across node boundaries — gated by section 8
 13. `Node::*` WASM policy — defined by section 15
 14. virtual-actor placement (`Cluster::activate`) — explicitly later than v0, stage 7
 15. production hardening and soak/version-skew readiness — stage 8, after the earlier stages land
 
-Any follow-on lane that ratifies the deferred ownership clauses in sections 3, 8, or 12 must remove the `RATIFIED-PENDING` markers only after the handle-safety spec has published the relevant ownership answer.
+Ratification of the deferred ownership clauses in sections 3, 8, and 12 is
+complete. All deferred-ownership markers have been resolved:
+
+- **§3 (ActorRef ownership):** Ratified. `ActorRef` is a refcounted identity
+  reference (`Frozen`, `Send`) consistent with `HEW-SPEC.md` §3.7.8. This
+  matches already-shipped runtime behaviour; no implementation obligation
+  survives.
+- **§8 (supervision ownership):** Ratified as normative spec intent. Runtime
+  enforcement of single-holder restart-authority tokens is tracked under issue
+  #1228 (RuntimeContext handle-shaped API) and issue #1399 (move-checker
+  substrate).
+- **§12 (capability transfer):** Ratified as normative spec intent. Runtime
+  enforcement of capability transfer ownership and revocation is tracked under
+  issue #1706.

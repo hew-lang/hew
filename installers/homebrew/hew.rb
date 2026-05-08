@@ -1,29 +1,32 @@
+# Reference scaffold for the Homebrew formula.
+# The live tap formula (hew-lang/homebrew-hew/Formula/hew.rb) is updated
+# automatically by the release workflow via update-formula.yml.
+# This file is NOT read by release.yml — it is a human-readable reference
+# for the next release author. SHA256 values below reflect v0.4.0; recompute
+# from the release tarballs at the next release.
 class Hew < Formula
   desc "Statically-typed, actor-oriented programming language"
   homepage "https://hew.sh"
-  version "0.1.0"
+  version "0.4.0"
   license any_of: ["MIT", "Apache-2.0"]
-
-  # NOTE: Replace __SHA256_*__ with actual SHA256 hashes at release time.
-  # Run: sha256sum hew-v#{version}-{darwin,linux}-{x86_64,aarch64}.tar.gz
 
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-darwin-aarch64.tar.gz"
-      sha256 "__SHA256_DARWIN_AARCH64__"
+      sha256 "d0c8fcb38ec4c6114f4a3d90d762ec92b2a4371a0c426dd07db0fcb427956350"
     else
       url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-darwin-x86_64.tar.gz"
-      sha256 "__SHA256_DARWIN_X86_64__"
+      sha256 "fc73f71bb93e7d24a621aee7fd82a4f2be1668ccbf30244b78ead3f61c760c0f"
     end
   end
 
   on_linux do
     if Hardware::CPU.intel?
       url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-linux-x86_64.tar.gz"
-      sha256 "__SHA256_LINUX_X86_64__"
+      sha256 "a0af9de33c36a199760fbb07314b273103efa30ea5838c59de74b4e2a977115b"
     else
       url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-linux-aarch64.tar.gz"
-      sha256 "__SHA256_LINUX_AARCH64__"
+      sha256 "a51b8acf5a8a685d09676c050964c9519146ae50c6210a244bdd5efc6a918ec3"
     end
   end
 

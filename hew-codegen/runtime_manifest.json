@@ -210,6 +210,20 @@
           "returns": "u32"
         },
         {
+          "name": "hew_actor_set_state_drop",
+          "params": [
+            {
+              "name": "actor",
+              "type": "ptr"
+            },
+            {
+              "name": "state_drop_fn",
+              "type": "ptr"
+            }
+          ],
+          "returns": "void"
+        },
+        {
           "name": "hew_actor_set_terminate",
           "params": [
             {

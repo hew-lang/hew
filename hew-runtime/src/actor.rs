@@ -282,6 +282,18 @@ pub struct HewActor {
     /// Generated from the `terminate { ... }` block in the actor declaration.
     pub terminate_fn: Option<unsafe extern "C" fn(*mut c_void)>,
 
+    /// Optional state-drop function that runs `impl Drop` callbacks on every
+    /// owned field of the actor's live state immediately before
+    /// `libc::free(a.state)`. Generated unconditionally for every actor by
+    /// `MLIRGenActor`, even when the body is empty (no owned fields). Wired
+    /// at spawn time via [`hew_actor_set_state_drop`]. Distinct from
+    /// `terminate_fn`: terminate runs the user's `terminate { }` block while
+    /// the actor is still RUNNING; state-drop runs unconditionally after
+    /// terminate has finished, immediately before the state allocation is
+    /// freed, so that types implementing `Drop` (Vec, String, IO handles)
+    /// release their resources rather than being raw-freed.
+    pub state_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+
     /// Guard flag ensuring the terminate callback runs exactly once.
     pub terminate_called: AtomicBool,
 
@@ -982,6 +994,7 @@ fn build_spawned_actor(
         init_state_size: config.state_size,
         coalesce_key_fn: config.coalesce_key_fn,
         terminate_fn: None,
+        state_drop_fn: None,
         terminate_called: AtomicBool::new(false),
         terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
@@ -2026,6 +2039,39 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &mut *actor };
     a.terminate_fn = Some(terminate_fn);
+}
+
+/// Register a state-drop callback on an actor.
+///
+/// The state-drop function is called with the actor's live state pointer
+/// (`a.state`) immediately before `libc::free(a.state)` in
+/// `free_actor_resources`. Codegen emits one such function per actor that
+/// walks every owned field and invokes its `impl Drop`. Types that do not
+/// participate in RAII generate an empty body — calling state-drop is a
+/// no-op for actors with only value-type fields.
+///
+/// State-drop runs after the user's `terminate { }` block has finished and
+/// before the state allocation is freed, so the field-level `Drop` callbacks
+/// see the same state pointer the runtime is about to release. The companion
+/// `init_state` byte-copy is left untouched: nothing in the runtime reads its
+/// bytes after the actor's terminate path completes (it is consumed only by
+/// the trailing `libc::free(a.init_state)`), and the supervisor child spec
+/// holds its own independent deep copy used for restarts.
+///
+/// # Safety
+///
+/// - `actor` must be a valid pointer returned by a spawn function.
+/// - `state_drop_fn` must point to a function with C ABI that accepts a
+///   single `*mut c_void` (the actor state), and must be safe to call once
+///   on that allocation immediately before it is freed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_set_state_drop(
+    actor: *mut HewActor,
+    state_drop_fn: unsafe extern "C" fn(*mut c_void),
+) {
+    // SAFETY: Caller guarantees `actor` is valid.
+    let a = unsafe { &mut *actor };
+    a.state_drop_fn = Some(state_drop_fn);
 }
 
 /// Set the per-actor reduction budget (operations per dispatch).
@@ -3782,6 +3828,7 @@ mod tests {
                 init_state_size: 0,
                 coalesce_key_fn: None,
                 terminate_fn: None,
+                state_drop_fn: None,
                 terminate_called: AtomicBool::new(false),
                 terminate_finished: AtomicBool::new(false),
                 error_code: AtomicI32::new(0),
@@ -3816,6 +3863,7 @@ mod tests {
             init_state_size: 0,
             coalesce_key_fn: None,
             terminate_fn: None,
+            state_drop_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
@@ -5359,6 +5407,35 @@ mod tests {
     }
 
     #[test]
+    fn hew_actor_set_state_drop_records_callback_pointer() {
+        // Verify the field roundtrip: setter stores the function pointer and
+        // a subsequent read sees the same address. This is the four-touch
+        // counterpart of `terminate_fn`'s setter and uses the same shape.
+        unsafe extern "C" fn dummy_state_drop(_state: *mut c_void) {}
+
+        let (actor, mailbox) = make_stop_test_actor(HewActorState::Idle);
+        // SAFETY: actor is freshly built and not published; setter is the only
+        // writer.
+        unsafe {
+            assert!(
+                (*actor).state_drop_fn.is_none(),
+                "state_drop_fn must default to None"
+            );
+            hew_actor_set_state_drop(actor, dummy_state_drop);
+            let stored = (*actor).state_drop_fn.expect("setter must populate slot");
+            assert_eq!(
+                stored as *const () as usize, dummy_state_drop as *const () as usize,
+                "stored callback pointer must match the one passed to the setter"
+            );
+        }
+        // SAFETY: actor and mailbox were allocated above and never published.
+        unsafe {
+            drop(Box::from_raw(actor));
+            mailbox::hew_mailbox_free(mailbox);
+        }
+    }
+
+    #[test]
     fn deep_copy_state_alloc_failure_returns_null_and_sets_error() {
         let _guard = crate::runtime_test_guard();
         let src: u8 = 1;
@@ -5564,6 +5641,7 @@ mod tests {
             init_state_size: 0,
             coalesce_key_fn: None,
             terminate_fn: None,
+            state_drop_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),

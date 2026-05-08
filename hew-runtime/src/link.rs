@@ -440,6 +440,7 @@ mod tests {
             init_state_size: 0,
             coalesce_key_fn: None,
             terminate_fn: None,
+            state_drop_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),

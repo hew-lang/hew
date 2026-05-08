@@ -1,0 +1,78 @@
+//! The `Closable` trait for types that expose an explicit early-release path.
+//!
+//! IO and protocol-handle types implement `Closable` to let the caller
+//! observe a close error and to make the receiver move (consume) at the
+//! call site, so a subsequent use is a compile error.
+//!
+//! # Usage
+//!
+//! ```
+//! import std::net;
+//! import std::io::closable;
+//!
+//! fn serve_one(addr: string) -> Result<(), closable.CloseError> {
+//!     let listener = net.listen(addr);
+//!     let conn = listener.accept();
+//!     conn.write("hello\n");
+//!     listener.close()
+//! }
+//! ```
+//!
+//! If you do not call `close()` explicitly, the handle is released
+//! automatically when it leaves scope. Any error from the implicit
+//! release is silently discarded.
+
+import std::fs;
+
+/// A type that can be explicitly closed before it leaves scope.
+///
+/// Calling `close()` consumes the receiver, so any subsequent use of the
+/// binding is a compile error. On auto-drop (scope exit without an explicit
+/// `close()`), the same release is performed silently, ignoring any error.
+///
+/// Only IO and protocol-handle types implement this trait. Pure-memory types
+/// (parsed trees, collections, etc.) use `impl Drop` only and have no
+/// user-visible release surface.
+pub trait Closable {
+    /// Explicitly release the resource and observe any close error.
+    ///
+    /// Consumes `self`. Any subsequent use of the binding after a call to
+    /// `close()` is a compile error (`UseAfterMove`).
+    ///
+    /// Returns `Ok(())` on success. Returns `Err(CloseError)` if the
+    /// underlying release fails (e.g., a pending write could not be
+    /// flushed, or the network peer reported a protocol error).
+    ///
+    /// Calling `close()` on a value whose underlying handle has already
+    /// been released (e.g., via a previous explicit close in a sibling
+    /// scope) is idempotent: the C-level release guard checks for a null
+    /// handle and returns success without further work.
+    fn close(val: Self) -> Result<(), CloseError>;
+}
+
+/// Structured error type for explicit close operations.
+///
+/// Returned by `Closable::close()` when the underlying release fails.
+/// On auto-drop (scope-exit), close errors are silently discarded.
+///
+/// # Pattern matching
+///
+/// ```
+/// match handle.close() {
+///     Ok(()) => {},
+///     Err(CloseError::Io(e)) => println(fs.io_error_message(e)),
+///     Err(CloseError::AlreadyClosed) => {},
+/// }
+/// ```
+pub enum CloseError {
+    /// The close failed with an underlying I/O error.
+    Io(fs.IoError);
+    /// The resource was already closed before this call.
+    ///
+    /// This variant is returned only in rare cases where the static
+    /// move-checker cannot prove the handle is still live (e.g., a
+    /// shared handle released by a peer). In the common case, calling
+    /// `close()` on an already-moved value is a compile error, not a
+    /// runtime `AlreadyClosed`.
+    AlreadyClosed;
+}

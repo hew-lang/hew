@@ -419,10 +419,23 @@ The concrete follow-on work named by the distributed research record maps to thi
 8. authenticated nodes by default plus per-name authorization — gated by section 12
 9. distributed observability (`traceparent`/stats/flight recorder) — gated by section 13
 10. end-to-end backpressure credits for fire-and-forget — gated by section 10
-11. `RuntimeContext` replacing permanent process-global node ownership — gated by sections 3 and 18, with ownership ratification deferred to [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+11. `RuntimeContext` replacing permanent process-global node ownership — gated by sections 3 and 18; §3 ActorRef ownership is ratified and matches already-shipped runtime behaviour; §8 supervision-token and §12 capability-transfer ownership are ratified as normative spec intent, pending runtime enforcement under issues #1228 and #1399
 12. defining link versus monitor across node boundaries — gated by section 8
 13. `Node::*` WASM policy — defined by section 15
 14. virtual-actor placement (`Cluster::activate`) — explicitly later than v0, stage 7
 15. production hardening and soak/version-skew readiness — stage 8, after the earlier stages land
 
-Any follow-on lane that ratifies the deferred ownership clauses in sections 3, 8, or 12 must remove the `RATIFIED-PENDING` markers only after the handle-safety spec has published the relevant ownership answer.
+Ratification of the deferred ownership clauses in sections 3, 8, and 12 is
+complete. All deferred-ownership markers have been resolved:
+
+- **§3 (ActorRef ownership):** Ratified. `ActorRef` is a refcounted identity
+  reference (`Frozen`, `Send`) consistent with `HEW-SPEC.md` §3.7.8. This
+  matches already-shipped runtime behaviour; no implementation obligation
+  survives.
+- **§8 (supervision ownership):** Ratified as normative spec intent. Runtime
+  enforcement of single-holder restart-authority tokens is tracked under issue
+  #1228 (RuntimeContext handle-shaped API) and issue #1399 (move-checker
+  substrate).
+- **§12 (capability transfer):** Ratified as normative spec intent. Runtime
+  enforcement of capability transfer ownership and revocation is tracked under
+  issue #1706.

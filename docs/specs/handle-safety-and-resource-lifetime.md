@@ -250,6 +250,10 @@ ownership model, not two.
   vocabulary *or* this spec amends its mechanism choice — but only after both
   sides' reviewers concur. This spec does not silently introduce a parallel
   oracle.
+- **Analysis contract:** the full spec for what the move-checker substrate
+  must implement — DROP-TODO inventory, failure-mode mapping, diagnostic
+  vocabulary, and rejection fixtures — is in
+  [`move-checker.md`](./move-checker.md).
 
 ---
 

@@ -247,3 +247,31 @@ work:
 
 These are prototype-shaping questions. None of them reopen the upstream
 authority on ownership semantics.
+
+## 11. Downstream slices
+
+This spec is the deliverable for the analysis-substrate spec milestone of
+issue #1399. Two further slices follow, both held until v0.4.0 publication
+completes:
+
+**Slice 2 — TypedProgram `handle_ownership_kinds` seam.** Threads the
+ownership-classification wire field across the msgpack boundary — producer
+(`hew-types/src/check/`) → boundary validator
+(`hew-types/src/check/admissibility.rs`) → serializer
+(`hew-serialize/src/msgpack.rs`) → C++ reader
+(`hew-codegen/src/msgpack_reader.cpp`) → codegen consumer
+(`hew-codegen/src/mlir/MLIRGen.cpp`). The producer returns an empty map in
+this slice; no existing program changes drop-emission shape. The reference
+implementation is the analogous `method_call_receiver_kinds` field. The
+soundness matrix row `handle_ownership_kinds` (`docs/specs/typedprogram-soundness-matrix.md`)
+is graduated from *planned* to *on the wire* in the same diff.
+
+**Slice 3 — Prototype move-checker analysis.** Populates ownership
+classifications for one DROP-TODO site (recommended pilot: D8 —
+`ClosureCapture` / `FieldAlias`) behind the `--experimental-handle-safety`
+flag. New `e2e_move_checker/` acceptance and rejection fixtures exercise the
+classifications; a calibration memo records agreement and divergence with the
+existing field-alias scanner. The prototype is read-only relative to the live
+oracles; it does not change drop-emission shape for any existing program.
+
+Neither slice modifies the vocabulary or authority defined in this spec.

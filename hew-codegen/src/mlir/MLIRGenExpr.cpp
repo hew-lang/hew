@@ -2880,6 +2880,18 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           nullOutDropSlot(id->name, val, location);
         }
       }
+      // Struct elements whose fields carry ownership (String, Vec, etc.) are
+      // registered with dropFuncName == "__auto_field_drop".  dropFuncForMLIRType
+      // without includeStructTypes returns empty for these, so the nullOutDropSlot
+      // guard above silently skips them; nullOutDropSlot itself also early-returns
+      // for __auto_field_drop entries (MLIRGen.cpp:6951).  Use unregisterDroppable
+      // instead: ownership has transferred to the Vec element so the source
+      // binding must not fire its field-drop at scope exit.  Mirrors the pattern
+      // at MLIRGenStmt.cpp:1784 and MLIRGenExpr.cpp:1895.  Fixes #1699.
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[0]).value.kind)) {
+        if (getRegisteredDropFunc(id->name) == "__auto_field_drop")
+          unregisterDroppable(id->name);
+      }
       resultOut = nullptr;
       return true;
     }
@@ -2913,6 +2925,13 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[1]).value.kind)) {
           nullOutDropSlot(id->name, val, location);
         }
+      }
+      // Struct elements with __auto_field_drop: unregisterDroppable so the
+      // source binding's field-drop does not fire after ownership transfers to
+      // the Vec slot.  See Vec::push comment above and #1699.
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[1]).value.kind)) {
+        if (getRegisteredDropFunc(id->name) == "__auto_field_drop")
+          unregisterDroppable(id->name);
       }
       resultOut = nullptr;
       return true;
@@ -3252,6 +3271,17 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           nullOutDropSlot(id->name, val, location);
         }
       }
+      // Struct key/value with __auto_field_drop: unregisterDroppable so the
+      // source bindings' field-drops do not fire after ownership transfers to
+      // the map's internal storage.  See Vec::push comment and #1699.
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[0]).value.kind)) {
+        if (getRegisteredDropFunc(id->name) == "__auto_field_drop")
+          unregisterDroppable(id->name);
+      }
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[1]).value.kind)) {
+        if (getRegisteredDropFunc(id->name) == "__auto_field_drop")
+          unregisterDroppable(id->name);
+      }
       resultOut = nullptr;
       return true;
     }
@@ -3391,6 +3421,15 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
                   std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[0]).value.kind)) {
             nullOutDropSlot(id->name, val, location);
           }
+        }
+      }
+      // Struct elements with __auto_field_drop: unregisterDroppable so the
+      // source binding's field-drop does not fire after ownership transfers to
+      // the set's internal storage.  See Vec::push comment and #1699.
+      if (opName == "insert" && !mc.args.empty()) {
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&ast::callArgExpr(mc.args[0]).value.kind)) {
+          if (getRegisteredDropFunc(id->name) == "__auto_field_drop")
+            unregisterDroppable(id->name);
         }
       }
       return true;

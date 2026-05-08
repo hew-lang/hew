@@ -1405,6 +1405,8 @@ add_wasm_file_test(vec_of_vec_push            e2e_vec              vec_of_vec_pu
 add_wasm_file_test(vec_push_block_arg         e2e_vec              vec_push_block_arg)
 add_wasm_file_test(vec_set_non_copy           e2e_vec              vec_set_non_copy)
 add_wasm_file_test(vec_append_non_copy        e2e_vec              vec_append_non_copy)
+add_wasm_file_test(vec_push_struct_element    e2e_vec              vec_push_struct_element)
+add_wasm_file_test(vec_set_struct_element     e2e_vec              vec_set_struct_element)
 
 # Indirect enums
 add_wasm_file_test(indirect_expr              e2e_indirect_enum    indirect_expr)

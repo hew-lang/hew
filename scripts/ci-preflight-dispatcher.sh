@@ -130,7 +130,16 @@ is_types_path() {
 
 is_cli_path() {
     case "$1" in
+        # Direct CLI crates.
         hew-cli/*|adze-cli/*)
+            return 0
+            ;;
+        # CLI pipeline support crates: compile pipeline, C ABI helpers,
+        # wire/codec, AST serialization, code generators.  Changes here
+        # are covered by cargo nextest run -p hew-cli -p adze-cli because
+        # hew-cli links the full pipeline including hew-runtime (which
+        # links hew-cabi) and hew-compile.
+        hew-compile/*|hew-cabi/*|hew-serialize/*|hew-wirecodec/*|hew-astgen/*|hew-capability-gen/*)
             return 0
             ;;
     esac

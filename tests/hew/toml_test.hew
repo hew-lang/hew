@@ -70,3 +70,240 @@ fn test_stringify_produces_valid_toml() {
     }
     tbl.free();
 }
+
+// ── Empty / scalar parses ─────────────────────────────────────────────
+
+#[test]
+fn test_try_parse_empty_string_is_empty_table() {
+    // "" is valid TOML (empty document → empty table).
+    // get_field on any key returns a null handle (array_len == -1).
+    let r = toml.try_parse("");
+    match r {
+        Ok(val) => {
+            let missing = val.get_field("x");
+            testing.assert_eq(missing.array_len(), -1);
+            missing.free(); // null-safe no-op
+            val.free();
+        },
+        Err(_) => panic("expected Ok for empty TOML"),
+    }
+}
+
+#[test]
+fn test_try_parse_simple_key_value() {
+    // "x = 1" → table with integer field x.
+    let r = toml.try_parse("x = 1");
+    match r {
+        Ok(val) => {
+            let f = val.get_field("x");
+            testing.assert_eq(f.get_int(), 1);
+            f.free();
+            val.free();
+        },
+        Err(_) => panic("expected Ok for simple TOML key-value"),
+    }
+}
+
+// ── Array of integers ─────────────────────────────────────────────────
+
+#[test]
+fn test_parse_array_of_integers() {
+    // "a = [1, 2, 3]" → root table; get_field("a") → array of 3 ints.
+    let r = toml.try_parse("a = [1, 2, 3]");
+    match r {
+        Ok(root) => {
+            let a = root.get_field("a");
+            testing.assert_eq(a.array_len(), 3);
+            let v0 = a.array_get(0);
+            testing.assert_eq(v0.get_int(), 1);
+            v0.free();
+            let v1 = a.array_get(1);
+            testing.assert_eq(v1.get_int(), 2);
+            v1.free();
+            let v2 = a.array_get(2);
+            testing.assert_eq(v2.get_int(), 3);
+            v2.free();
+            a.free();
+            root.free();
+        },
+        Err(_) => panic("expected Ok for TOML integer array"),
+    }
+}
+
+// ── Nested table (dotted section) ────────────────────────────────────
+
+#[test]
+fn test_nested_table_dotted_key() {
+    // [outer] x=1 [outer.inner] y=2 → walk outer → inner → y; free leaf-first.
+    let r = toml.try_parse("[outer]\nx = 1\n[outer.inner]\ny = 2");
+    match r {
+        Ok(root) => {
+            let outer = root.get_field("outer");
+            let inner = outer.get_field("inner");
+            let y = inner.get_field("y");
+            testing.assert_eq(y.get_int(), 2);
+            // Free leaf first, root last.
+            y.free();
+            inner.free();
+            outer.free();
+            root.free();
+        },
+        Err(_) => panic("expected Ok for nested TOML table"),
+    }
+}
+
+// ── Array of tables ───────────────────────────────────────────────────
+
+#[test]
+fn test_array_of_tables_walk() {
+    // [[items]] k=1 [[items]] k=2 → root.get_field("items") is an array.
+    let r = toml.try_parse("[[items]]\nk = 1\n[[items]]\nk = 2");
+    match r {
+        Ok(root) => {
+            let items = root.get_field("items");
+            testing.assert_eq(items.array_len(), 2);
+            let item0 = items.array_get(0);
+            let k0 = item0.get_field("k");
+            testing.assert_eq(k0.get_int(), 1);
+            k0.free();
+            item0.free();
+            let item1 = items.array_get(1);
+            let k1 = item1.get_field("k");
+            testing.assert_eq(k1.get_int(), 2);
+            k1.free();
+            item1.free();
+            items.free();
+            root.free();
+        },
+        Err(_) => panic("expected Ok for TOML array of tables"),
+    }
+}
+
+// ── Missing field — null handle discipline ────────────────────────────
+
+#[test]
+fn test_missing_field_handle_is_invalid() {
+    // get_field on absent key: Rust returns null_ptr. array_len on null
+    // handle returns -1. free() is null-safe.
+    let r = toml.try_parse("a = 1");
+    match r {
+        Ok(root) => {
+            let missing = root.get_field("nope");
+            testing.assert_eq(missing.array_len(), -1);
+            missing.free(); // null-safe no-op; call to document discipline
+            root.free();
+        },
+        Err(_) => panic("expected Ok"),
+    }
+}
+
+// ── Composed builder — child consumed by with() ───────────────────────
+
+#[test]
+fn test_builder_with_consumes_child() {
+    // child consumed by with(); do not free child.
+    let child = toml.from_int(77);
+    let tbl = toml.table().with("k", child); // child consumed here
+    let v = tbl.get_field("k");
+    testing.assert_eq(v.get_int(), 77);
+    v.free();
+    tbl.free();
+}
+
+// ── Composed array push — element consumed by push() ─────────────────
+
+#[test]
+fn test_builder_push_consumes_element() {
+    // elem consumed by push(); do not free elem.
+    let elem = toml.from_string("hi");
+    let arr = toml.array().push(elem); // elem consumed here
+    let got = arr.array_get(0);
+    testing.assert_eq_str(got.get_string(), "hi");
+    got.free();
+    arr.free();
+}
+
+// ── from_* constructor round-trips ────────────────────────────────────
+
+#[test]
+fn test_from_float_round_trip_via_table_field() {
+    // TOML stringify only works on table-rooted values.
+    // Round-trip: with_float → stringify → reparse → get_field → get_float.
+    let tbl = toml.table().with_float("ratio", 1.5);
+    let s = tbl.stringify();
+    let r = toml.try_parse(s);
+    match r {
+        Ok(reparsed) => {
+            let f = reparsed.get_field("ratio");
+            // 1.5 is exactly representable in IEEE 754; round-trip equality holds.
+            testing.assert_true(f.get_float() == 1.5);
+            f.free();
+            reparsed.free();
+        },
+        Err(_) => panic("stringify + reparse of float table failed"),
+    }
+    tbl.free();
+}
+
+#[test]
+fn test_from_float_bare_stringify_is_empty() {
+    // toml::to_string requires a table-rooted value. A bare float value
+    // (not inside a table) cannot be serialized to TOML text, so stringify
+    // returns an empty string. Asserted via len() == 0 because assert_eq_str
+    // has a known quirk comparing null-derived strings to literal "".
+    let val = toml.from_float(1.5);
+    let s = val.stringify();
+    testing.assert_eq(s.len(), 0);
+    val.free();
+}
+
+#[test]
+fn test_from_string_get_string_round_trip() {
+    let val = toml.from_string("hew");
+    testing.assert_eq_str(val.get_string(), "hew");
+    val.free();
+}
+
+#[test]
+fn test_from_bool_get_bool_round_trip() {
+    // from_bool(true) → get_bool() == 1 (INTERNAL-ABI: C ABI returns bool as i32).
+    let val = toml.from_bool(true);
+    testing.assert_eq(val.get_bool(), 1);
+    val.free();
+}
+
+// ── Nested builder → stringify → reparse ─────────────────────────────
+
+#[test]
+fn test_nested_builder_stringify_reparse() {
+    // Build table {inner: {v: 9}}.
+    // inner consumed by outer's with(); do not free inner separately.
+    let inner = toml.table().with_int("v", 9);
+    let outer = toml.table().with("inner", inner); // inner consumed here
+    let s = outer.stringify();
+    let r = toml.try_parse(s);
+    match r {
+        Ok(reparsed) => {
+            let inner_f = reparsed.get_field("inner");
+            let v_f = inner_f.get_field("v");
+            testing.assert_eq(v_f.get_int(), 9);
+            v_f.free();
+            inner_f.free();
+            reparsed.free();
+        },
+        Err(_) => panic("stringify + reparse of nested TOML table failed"),
+    }
+    outer.free();
+}
+
+// ── Malformed input ───────────────────────────────────────────────────
+
+#[test]
+fn test_try_parse_duplicate_key_returns_err() {
+    // TOML forbids duplicate keys in the same table.
+    let r = toml.try_parse("a = 1\na = 2");
+    match r {
+        Ok(val) => { val.free(); panic("expected Err for duplicate TOML key"); },
+        Err(ParseError::Invalid(_)) => {},
+    }
+}

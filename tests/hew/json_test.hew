@@ -88,3 +88,254 @@ fn test_free_no_panic() {
     let val = json.from_int(0);
     val.free();
 }
+
+// ── Empty / boundary parses ───────────────────────────────────────────
+
+#[test]
+fn test_try_parse_empty_object_has_zero_keys() {
+    // "{}" → empty object; keys() returns a JSON array with length 0.
+    let r = json.try_parse("{}");
+    match r {
+        Ok(val) => {
+            let ks = val.keys();
+            testing.assert_eq(ks.array_len(), 0);
+            ks.free();
+            val.free();
+        },
+        Err(_) => panic("expected Ok for empty object"),
+    }
+}
+
+#[test]
+fn test_try_parse_empty_array_has_zero_len() {
+    // "[]" → empty array; array_len() == 0.
+    let r = json.try_parse("[]");
+    match r {
+        Ok(val) => {
+            testing.assert_eq(val.array_len(), 0);
+            val.free();
+        },
+        Err(_) => panic("expected Ok for empty array"),
+    }
+}
+
+#[test]
+fn test_try_parse_empty_string_value() {
+    // "\"\"" → JSON string ""; get_string() returns "".
+    let r = json.try_parse("\"\"");
+    match r {
+        Ok(val) => {
+            testing.assert_eq_str(val.get_string(), "");
+            val.free();
+        },
+        Err(_) => panic("expected Ok for empty string value"),
+    }
+}
+
+#[test]
+fn test_null_value_stringify_no_panic() {
+    // json.null() → null value; stringify → "null".
+    let val = json.null();
+    let s = val.stringify();
+    testing.assert_eq_str(s, "null");
+    val.free();
+}
+
+#[test]
+fn test_from_bool_stringify_round_trip() {
+    // from_bool(true) → stringify → "true"; from_bool(false) → "false".
+    let t = json.from_bool(true);
+    let st = t.stringify();
+    testing.assert_eq_str(st, "true");
+    t.free();
+    let f = json.from_bool(false);
+    let sf = f.stringify();
+    testing.assert_eq_str(sf, "false");
+    f.free();
+}
+
+// ── Nested object walk — free leaf-first ─────────────────────────────
+
+#[test]
+fn test_nested_object_descent_leaf_first_free() {
+    // Parse {"a": {"b": {"c": 7}}}; walk a → b → c; assert 7; free leaf-first.
+    // Each get_field call allocates an independent owned handle.
+    let r = json.try_parse("{\"a\": {\"b\": {\"c\": 7}}}");
+    match r {
+        Ok(root) => {
+            let a = root.get_field("a");
+            let b = a.get_field("b");
+            let c = b.get_field("c");
+            testing.assert_eq(c.get_int(), 7);
+            // Canonical free order: leaf first, root last.
+            c.free();
+            b.free();
+            a.free();
+            root.free();
+        },
+        Err(_) => panic("expected Ok for nested object"),
+    }
+}
+
+// ── Array of objects ─────────────────────────────────────────────────
+
+#[test]
+fn test_array_of_objects_walk() {
+    // [{\"k\":1},{\"k\":2},{\"k\":3}]: for each index, array_get then get_field;
+    // free child before parent per item before moving to next index.
+    let r = json.try_parse("[{\"k\":1},{\"k\":2},{\"k\":3}]");
+    match r {
+        Ok(arr) => {
+            testing.assert_eq(arr.array_len(), 3);
+            let item0 = arr.array_get(0);
+            let v0 = item0.get_field("k");
+            testing.assert_eq(v0.get_int(), 1);
+            v0.free();
+            item0.free();
+            let item1 = arr.array_get(1);
+            let v1 = item1.get_field("k");
+            testing.assert_eq(v1.get_int(), 2);
+            v1.free();
+            item1.free();
+            let item2 = arr.array_get(2);
+            let v2 = item2.get_field("k");
+            testing.assert_eq(v2.get_int(), 3);
+            v2.free();
+            item2.free();
+            arr.free();
+        },
+        Err(_) => panic("expected Ok for array of objects"),
+    }
+}
+
+// ── Missing field — null handle discipline ────────────────────────────
+
+#[test]
+fn test_missing_field_handle_is_invalid() {
+    // get_field on absent key: Rust returns null_ptr. array_len on a null
+    // handle returns -1 (documented Rust contract). free() is null-safe.
+    let r = json.try_parse("{\"a\": 1}");
+    match r {
+        Ok(obj) => {
+            let missing = obj.get_field("nope");
+            testing.assert_eq(missing.array_len(), -1);
+            missing.free(); // null-safe no-op; call to document discipline
+            obj.free();
+        },
+        Err(_) => panic("expected Ok"),
+    }
+}
+
+// ── Composed builder — child consumed by with() ───────────────────────
+
+#[test]
+fn test_builder_with_consumes_child() {
+    // child consumed by with(); do not free child.
+    let child = json.from_int(42);
+    let obj = json.object().with("k", child); // child consumed here
+    let v = obj.get_field("k");
+    testing.assert_eq(v.get_int(), 42);
+    v.free();
+    obj.free();
+}
+
+// ── Composed array push — element consumed by push() ─────────────────
+
+#[test]
+fn test_builder_push_consumes_element() {
+    // elem consumed by push(); do not free elem.
+    let elem = json.from_string("hi");
+    let arr = json.array().push(elem); // elem consumed here
+    let got = arr.array_get(0);
+    testing.assert_eq_str(got.get_string(), "hi");
+    got.free();
+    arr.free();
+}
+
+// ── keys() walk ──────────────────────────────────────────────────────
+
+#[test]
+fn test_keys_returns_exact_key_set() {
+    // keys() on {"a":1,"b":2} returns a JSON Array of two string Values.
+    // serde_json uses BTreeMap (no preserve_order feature), so keys are
+    // returned in alphabetical order: "a" then "b".
+    // Each array_get result is independently owned and must be freed.
+    let r = json.try_parse("{\"a\":1,\"b\":2}");
+    match r {
+        Ok(obj) => {
+            let ks = obj.keys();
+            testing.assert_eq(ks.array_len(), 2);
+            let k0 = ks.array_get(0);
+            testing.assert_eq_str(k0.get_string(), "a");
+            k0.free();
+            let k1 = ks.array_get(1);
+            testing.assert_eq_str(k1.get_string(), "b");
+            k1.free();
+            ks.free();
+            obj.free();
+        },
+        Err(_) => panic("expected Ok"),
+    }
+}
+
+// ── Nested builder → stringify → reparse ─────────────────────────────
+
+#[test]
+fn test_nested_builder_stringify_reparse() {
+    // Build {outer: {inner: 5}}.
+    // inner consumed by outer's with(); do not free inner separately.
+    let inner = json.object().with_int("inner", 5);
+    let outer = json.object().with("outer", inner); // inner consumed here
+    let s = outer.stringify();
+    let r = json.try_parse(s);
+    match r {
+        Ok(reparsed) => {
+            let outer_f = reparsed.get_field("outer");
+            let inner_f = outer_f.get_field("inner");
+            testing.assert_eq(inner_f.get_int(), 5);
+            inner_f.free();
+            outer_f.free();
+            reparsed.free();
+        },
+        Err(_) => panic("stringify + reparse of nested object failed"),
+    }
+    outer.free();
+}
+
+// ── Malformed input (truncated array) ────────────────────────────────
+
+#[test]
+fn test_try_parse_truncated_array_returns_err() {
+    // "[1, 2," is not valid JSON; must return Err.
+    let r = json.try_parse("[1, 2,");
+    match r {
+        Ok(val) => { val.free(); panic("expected Err for truncated JSON"); },
+        Err(ParseError::Invalid(_)) => {},
+    }
+}
+
+// ── from_float / from_string round-trips ─────────────────────────────
+
+#[test]
+fn test_from_float_stringify_parse_round_trip() {
+    // from_float(3.14) → stringify → parse → get_float() == 3.14.
+    // 3.14 is exactly representable in IEEE 754 double; round-trip is exact.
+    let val = json.from_float(3.14);
+    let s = val.stringify();
+    let r = json.try_parse(s);
+    match r {
+        Ok(reparsed) => {
+            testing.assert_true(reparsed.get_float() == 3.14);
+            reparsed.free();
+        },
+        Err(_) => panic("expected Ok for stringified float"),
+    }
+    val.free();
+}
+
+#[test]
+fn test_from_string_get_string_round_trip() {
+    let val = json.from_string("hello");
+    testing.assert_eq_str(val.get_string(), "hello");
+    val.free();
+}

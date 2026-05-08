@@ -71,3 +71,231 @@ fn test_stringify_produces_valid_yaml() {
     }
     obj.free();
 }
+
+// ── Empty / scalar parses ─────────────────────────────────────────────
+
+#[test]
+fn test_try_parse_empty_string_returns_ok() {
+    // serde_yaml parses "" as Null → Ok(val); type is null (array_len == -1).
+    let r = yaml.try_parse("");
+    match r {
+        Ok(val) => {
+            // Null value: array_len returns -1 (not a sequence).
+            testing.assert_eq(val.array_len(), -1);
+            val.free();
+        },
+        Err(_) => panic("expected Ok for empty YAML string"),
+    }
+}
+
+#[test]
+fn test_try_parse_null_scalar_returns_ok() {
+    // "null" is valid YAML scalar.
+    let r = yaml.try_parse("null");
+    match r {
+        Ok(val) => {
+            testing.assert_eq(val.array_len(), -1);
+            val.free();
+        },
+        Err(_) => panic("expected Ok for YAML null scalar"),
+    }
+}
+
+#[test]
+fn test_try_parse_empty_sequence_has_zero_len() {
+    // "[]" → empty sequence; array_len() == 0.
+    let r = yaml.try_parse("[]");
+    match r {
+        Ok(val) => {
+            testing.assert_eq(val.array_len(), 0);
+            val.free();
+        },
+        Err(_) => panic("expected Ok for empty YAML sequence"),
+    }
+}
+
+#[test]
+fn test_try_parse_empty_mapping_missing_field_is_invalid() {
+    // "{}" → empty mapping; get_field on any key returns null handle.
+    let r = yaml.try_parse("{}");
+    match r {
+        Ok(val) => {
+            let missing = val.get_field("x");
+            testing.assert_eq(missing.array_len(), -1);
+            missing.free(); // null-safe no-op
+            val.free();
+        },
+        Err(_) => panic("expected Ok for empty YAML mapping"),
+    }
+}
+
+// ── from_* constructor round-trips ────────────────────────────────────
+
+#[test]
+fn test_from_float_stringify_exact() {
+    // serde_yaml serializes 2.71 as "2.71\n".
+    let val = yaml.from_float(2.71);
+    let s = val.stringify();
+    testing.assert_eq_str(s, "2.71\n");
+    val.free();
+}
+
+#[test]
+fn test_from_string_get_string_round_trip() {
+    let val = yaml.from_string("hello");
+    testing.assert_eq_str(val.get_string(), "hello");
+    val.free();
+}
+
+#[test]
+fn test_from_bool_stringify_round_trip() {
+    // YAML true → stringify → "true".
+    let t = yaml.from_bool(true);
+    let s = t.stringify();
+    testing.assert_eq_str(s, "true\n");
+    t.free();
+}
+
+#[test]
+fn test_null_value_stringify_exact() {
+    // serde_yaml serializes null as "null\n".
+    let val = yaml.null();
+    let s = val.stringify();
+    testing.assert_eq_str(s, "null\n");
+    val.free();
+}
+
+// ── Nested mapping walk — free leaf-first ────────────────────────────
+
+#[test]
+fn test_nested_mapping_descent_leaf_first_free() {
+    // Parse "a:\n  b:\n    c: 7"; walk a → b → c; assert 7; free leaf-first.
+    // Each get_field call allocates an independent owned handle.
+    let r = yaml.try_parse("a:\n  b:\n    c: 7");
+    match r {
+        Ok(root) => {
+            let a = root.get_field("a");
+            let b = a.get_field("b");
+            let c = b.get_field("c");
+            testing.assert_eq(c.get_int(), 7);
+            // Canonical free order: leaf first, root last.
+            c.free();
+            b.free();
+            a.free();
+            root.free();
+        },
+        Err(_) => panic("expected Ok for nested YAML mapping"),
+    }
+}
+
+// ── Sequence of mappings ─────────────────────────────────────────────
+
+#[test]
+fn test_sequence_of_mappings_walk() {
+    // "- k: 1\n- k: 2\n- k: 3": for each index, array_get then get_field;
+    // free field before item, item before moving to next.
+    let r = yaml.try_parse("- k: 1\n- k: 2\n- k: 3");
+    match r {
+        Ok(seq) => {
+            testing.assert_eq(seq.array_len(), 3);
+            let item0 = seq.array_get(0);
+            let v0 = item0.get_field("k");
+            testing.assert_eq(v0.get_int(), 1);
+            v0.free();
+            item0.free();
+            let item1 = seq.array_get(1);
+            let v1 = item1.get_field("k");
+            testing.assert_eq(v1.get_int(), 2);
+            v1.free();
+            item1.free();
+            let item2 = seq.array_get(2);
+            let v2 = item2.get_field("k");
+            testing.assert_eq(v2.get_int(), 3);
+            v2.free();
+            item2.free();
+            seq.free();
+        },
+        Err(_) => panic("expected Ok for sequence of mappings"),
+    }
+}
+
+// ── Missing field — null handle discipline ────────────────────────────
+
+#[test]
+fn test_missing_field_handle_is_invalid() {
+    // get_field on absent key: Rust returns null_ptr. array_len on null
+    // handle returns -1 (documented Rust contract). free() is null-safe.
+    let r = yaml.try_parse("a: 1");
+    match r {
+        Ok(obj) => {
+            let missing = obj.get_field("nope");
+            testing.assert_eq(missing.array_len(), -1);
+            missing.free(); // null-safe no-op; call to document discipline
+            obj.free();
+        },
+        Err(_) => panic("expected Ok"),
+    }
+}
+
+// ── Composed builder — child consumed by with() ───────────────────────
+
+#[test]
+fn test_builder_with_consumes_child() {
+    // child consumed by with(); do not free child.
+    let child = yaml.from_int(99);
+    let obj = yaml.object().with("k", child); // child consumed here
+    let v = obj.get_field("k");
+    testing.assert_eq(v.get_int(), 99);
+    v.free();
+    obj.free();
+}
+
+// ── Composed array push — element consumed by push() ─────────────────
+
+#[test]
+fn test_builder_push_consumes_element() {
+    // elem consumed by push(); do not free elem.
+    let elem = yaml.from_string("hi");
+    let arr = yaml.array().push(elem); // elem consumed here
+    let got = arr.array_get(0);
+    testing.assert_eq_str(got.get_string(), "hi");
+    got.free();
+    arr.free();
+}
+
+// ── Nested builder → stringify → reparse ─────────────────────────────
+
+#[test]
+fn test_nested_builder_stringify_reparse() {
+    // Build mapping {outer: {inner: 5}}.
+    // inner consumed by outer's with(); do not free inner separately.
+    let inner = yaml.object().with_int("inner", 5);
+    let outer = yaml.object().with("outer", inner); // inner consumed here
+    let s = outer.stringify();
+    let r = yaml.try_parse(s);
+    match r {
+        Ok(reparsed) => {
+            let outer_f = reparsed.get_field("outer");
+            let inner_f = outer_f.get_field("inner");
+            testing.assert_eq(inner_f.get_int(), 5);
+            inner_f.free();
+            outer_f.free();
+            reparsed.free();
+        },
+        Err(_) => panic("stringify + reparse of nested mapping failed"),
+    }
+    outer.free();
+}
+
+// ── Additional negative: deterministic malformed input ────────────────
+
+#[test]
+fn test_try_parse_unclosed_flow_sequence_returns_err() {
+    // "foo: [unclosed" has an unclosed flow sequence; serde_yaml
+    // deterministically rejects this with a parse error.
+    let r = yaml.try_parse("foo: [unclosed");
+    match r {
+        Ok(val) => { val.free(); panic("expected Err for unclosed YAML flow sequence"); },
+        Err(ParseError::Invalid(_)) => {},
+    }
+}

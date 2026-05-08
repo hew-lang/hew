@@ -274,11 +274,45 @@ Authorization is explicit and scoped:
 
 Named lookup is not ambient authority. A string name is valid only within an opened or granted namespace. Public docs and examples must not present the global registry as an unrestricted authority surface.
 
-Sealed actor references and explicit capability transfer are the design target for untrusted or partially trusted boundaries, but v0 does not freeze their ownership mechanics.
+Sealed actor references and explicit capability transfer are the design target for untrusted or partially trusted boundaries. Their ownership mechanics are ratified in §12.1.
 
-> RATIFIED-PENDING: handle-safety-and-resource-lifetime.md slice 1
->
-> This v0 spec names sealed-reference and capability-transfer requirements, but defers whether cross-node transfer is move-only, affine, revocable-copy, or another ownership shape until handle-safety ratifies the ownership model.
+### 12.1 Sealed-reference and capability ownership
+
+A **sealed actor reference** is a refcounted identity object — it has the same
+§3.1 shape as `ActorRef`. Sealing limits *who* may mint exercise of authority
+through the reference; it does not make the identity affine. Sealed references
+may be cloned and shared, and no user-visible `close()` or `free()` is required.
+
+A **capability** is an authority token in the sense of
+[`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+§3.1 mechanism D. Key ownership properties:
+
+- Capability transfer between principals (local or remote) is **move-by-default**.
+  Duplicating authority requires an explicit re-grant by the original grantor.
+  Cloning a sealed reference does not duplicate the capability.
+- Capabilities are **revocable** by the grantor. After revocation, any attempt
+  to exercise the capability **must** resolve to the existing `Unauthorized`
+  typed failure variant (§6). No new `Revoked` variant is introduced in v0;
+  this keeps the §6 taxonomy and soundness matrix stable.
+- Wire-encoded capability frames are subject to the existing fail-closed
+  serialization posture (LESSONS `serializer-fail-closed`). A malformed or
+  expired capability frame **must** resolve to `DecodeFailure` or `Unauthorized`,
+  never to a silent local-shape success. Partial or best-effort wire encoding
+  of capability proofs is forbidden.
+
+The checker is the authority for ownership classification of capability tokens,
+per [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
+§5 (single ownership oracle). Cross-linking §11: capability proof appropriate
+to the transport/security mode is carried in the handshake contract; §12.1 does
+not restate those mechanics, only the ownership shape of tokens once transferred.
+
+**Implementation gap:** Capability transfer and grantor-side revocation are not
+yet runtime-enforced. This clause is normative spec intent; runtime enforcement
+is tracked under issue #1706 (capability transfer ownership and revocation per
+HEW-DIST-SPEC §12).
+
+**WASM policy:** Capability token obligations are native-only; see §15 for WASM
+policy.
 
 Authorization failure resolves to `Unauthorized`; authn/authz teardown during an active operation must not collapse into a local-shaped success.
 

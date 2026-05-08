@@ -38,6 +38,7 @@ RUN apk add --no-cache \
     zlib-dev zlib-static zstd-dev zstd-static
 
 ENV LLVM_PREFIX=/opt/llvm-22
+ENV PATH=/opt/llvm-22/bin:$PATH
 ENV CC=clang
 ENV CXX=clang++
 ENV HEW_EMBED_STATIC=1

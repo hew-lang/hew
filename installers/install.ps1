@@ -16,7 +16,7 @@
     Works on Windows PowerShell 5.1+ and PowerShell Core 7+.
 
     Usage via web:
-      irm https://install.hew.sh/install.ps1 | iex
+      irm https://hew.sh/install.ps1 | iex
 
 .PARAMETER Version
     Specific version to install (e.g. "0.1.0"). Defaults to latest.
@@ -28,7 +28,7 @@
     Show this help message.
 
 .EXAMPLE
-    irm https://install.hew.sh/install.ps1 | iex
+    irm https://hew.sh/install.ps1 | iex
 
 .EXAMPLE
     .\install.ps1 -Version 0.1.0
@@ -105,7 +105,7 @@ function Show-Help {
     Write-Host "    -Help            Show this help message"
     Write-Host ""
     Write-Host "  EXAMPLES:" -ForegroundColor White
-    Write-Host "    irm https://install.hew.sh/install.ps1 | iex"
+    Write-Host "    irm https://hew.sh/install.ps1 | iex"
     Write-Host "    .\install.ps1 -Version 0.1.0"
     Write-Host "    .\install.ps1 -Prefix C:\tools\hew"
     Write-Host ""
@@ -384,14 +384,11 @@ try {
             }
         }
 
-        # Copy combined library
-        $hewLib = Join-Path $innerDir.FullName "lib/libhew.a"
-        if (Test-Path $hewLib) {
-            Copy-Item -Path $hewLib -Destination (Join-Path $InstallDir "lib/libhew.a") -Force
-        }
-        $hewLibWin = Join-Path $innerDir.FullName "lib/hew.lib"
-        if (Test-Path $hewLibWin) {
-            Copy-Item -Path $hewLibWin -Destination (Join-Path $InstallDir "lib/hew.lib") -Force
+        # Copy all of lib/ — preserves libhew.a at both the flat path and any
+        # triple-specific subdirectory (e.g. lib/x86_64-pc-windows-msvc/hew.lib)
+        $libSrc = Join-Path $innerDir.FullName "lib"
+        if (Test-Path $libSrc) {
+            Copy-Item -Path (Join-Path $libSrc "*") -Destination (Join-Path $InstallDir "lib") -Recurse -Force
         }
 
         # Standard library (best-effort — may not be in older releases)

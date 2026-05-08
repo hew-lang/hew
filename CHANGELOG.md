@@ -644,7 +644,7 @@ See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
 
 ```bash
 # Install Hew
-curl -fsSL https://hew.sh/install.sh | bash
+curl -fsSL https://hew.sh/install | bash
 
 # Create and run your first program
 echo 'fn main() { println("Hello from Hew!"); }' > hello.hew

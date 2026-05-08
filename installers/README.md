@@ -5,13 +5,13 @@ Installation options for [Hew](https://hew.sh) and [Adze](https://hew.sh/adze).
 ## Quick Install (Linux / macOS)
 
 ```sh
-curl -fsSL https://install.hew.sh | bash
+curl -fsSL https://hew.sh/install | bash
 ```
 
 ## Quick Install (Windows)
 
 ```powershell
-irm https://install.hew.sh/install.ps1 | iex
+irm https://hew.sh/install.ps1 | iex
 ```
 
 ## Package Managers

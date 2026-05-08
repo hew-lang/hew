@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2059
 # Hew installer — https://hew.sh
-# Usage: curl -fsSL https://install.hew.sh | bash
+# Usage: curl -fsSL https://hew.sh/install | bash
+#        irm https://hew.sh/install.ps1 | iex  (Windows PowerShell)
 #        bash install.sh [--version <ver>] [--prefix <dir>] [--help]
 set -euo pipefail
 
@@ -26,10 +26,10 @@ setup_colours() {
     fi
 }
 
-info() { printf "  ${GREEN}%s${RESET} %s\n" "$1" "$2"; }
-warn() { printf "  ${YELLOW}warning:${RESET} %s\n" "$1" >&2; }
+info() { printf "  %b%s%b %s\n" "${GREEN}" "$1" "${RESET}" "$2"; }
+warn() { printf "  %bwarning:%b %s\n" "${YELLOW}" "${RESET}" "$1" >&2; }
 err() {
-    printf "\n  ${RED}error:${RESET} %s\n\n" "$1" >&2
+    printf "\n  %berror:%b %s\n\n" "${RED}" "${RESET}" "$1" >&2
     exit 1
 }
 
@@ -192,8 +192,8 @@ ART
 # Progress helper
 # ---------------------------------------------------------------------------
 step_start() { printf "  %-18s" "$1..."; }
-step_done() { printf " ${GREEN}done${RESET}\n"; }
-step_skip() { printf " ${DIM}skipped${RESET}\n"; }
+step_done() { printf " %bdone%b\n" "${GREEN}" "${RESET}"; }
+step_skip() { printf " %bskipped%b\n" "${DIM}" "${RESET}"; }
 
 # ---------------------------------------------------------------------------
 # Main
@@ -211,7 +211,7 @@ main() {
     resolve_version
 
     print_banner
-    printf "  ${BOLD}Installing Hew v%s (%s-%s)${RESET}\n\n" "$VERSION" "$OS" "$ARCH"
+    printf "  %bInstalling Hew v%s (%s-%s)%b\n\n" "${BOLD}" "$VERSION" "$OS" "$ARCH" "${RESET}"
 
     # Check if same version is already installed
     local version_file="$INSTALL_PREFIX/.hew-version"
@@ -268,17 +268,10 @@ main() {
         fi
     done
 
-    cp -f "${extracted_dir}/lib/libhew.a" "${INSTALL_PREFIX}/lib/libhew.a"
-
-    # Install target-specific lib subtrees so find_hew_lib() can probe
-    # lib/<triple>/libhew.a before falling back to the flat path.
-    for triple_dir in "${extracted_dir}/lib"/*/; do
-        [ -d "$triple_dir" ] || continue
-        triple="$(basename "$triple_dir")"
-        [ -f "${triple_dir}/libhew.a" ] || continue
-        mkdir -p "${INSTALL_PREFIX}/lib/${triple}"
-        cp -f "${triple_dir}/libhew.a" "${INSTALL_PREFIX}/lib/${triple}/libhew.a"
-    done
+    # Copy all of lib/ — preserves libhew.a at both the flat path and any
+    # triple-specific subdirectory (e.g. lib/aarch64-apple-darwin/libhew.a)
+    # that hew uses when resolving the linker search path.
+    cp -rf "${extracted_dir}/lib/." "${INSTALL_PREFIX}/lib/"
 
     # Standard library (best-effort — may not be in older releases)
     if [ -d "${extracted_dir}/std" ]; then
@@ -301,12 +294,12 @@ main() {
     step_done
 
     printf '\n'
-    printf "  ${GREEN}Hew was installed to ${BOLD}%s${RESET}\n\n" "$INSTALL_PREFIX"
+    printf "  %bHew was installed to %b%s%b\n\n" "${GREEN}" "${BOLD}" "$INSTALL_PREFIX" "${RESET}"
 
     # Check if already on PATH
     local bin_dir="${INSTALL_PREFIX}/bin"
     if echo "$PATH" | tr ':' '\n' | grep -qx "$bin_dir" 2>/dev/null; then
-        printf "  Run ${CYAN}hew version${RESET} and ${CYAN}adze --version${RESET} to verify the installation.\n\n"
+        printf "  Run %bhew version%b and %badze --version%b to verify the installation.\n\n" "${CYAN}" "${RESET}" "${CYAN}" "${RESET}"
         return
     fi
 
@@ -315,9 +308,9 @@ main() {
     user_shell="$(basename "${SHELL:-/bin/bash}")"
 
     printf "  To get started, add Hew to your PATH:\n\n"
-    printf "    ${CYAN}export HEW_HOME=\"%s\"${RESET}\n" "$INSTALL_PREFIX"
-    printf "    ${CYAN}export HEW_STD=\"\$HEW_HOME/std\"${RESET}\n"
-    printf "    ${CYAN}export PATH=\"\$HEW_HOME/bin:\$PATH\"${RESET}\n\n"
+    printf "    %bexport HEW_HOME=\"%s\"%b\n" "${CYAN}" "$INSTALL_PREFIX" "${RESET}"
+    printf "    %bexport HEW_STD=\"\$HEW_HOME/std\"%b\n" "${CYAN}" "${RESET}"
+    printf "    %bexport PATH=\"\$HEW_HOME/bin:\$PATH\"%b\n\n" "${CYAN}" "${RESET}"
 
     local rc_file=""
     case "$user_shell" in
@@ -330,23 +323,23 @@ main() {
             rc_file="$HOME/.bashrc"
         fi
         printf "  Or add it permanently by running:\n\n"
-        printf "    ${DIM}echo 'export HEW_HOME=\"%s\"' >> %s${RESET}\n" "$INSTALL_PREFIX" "$rc_file"
-        printf "    ${DIM}echo 'export HEW_STD=\"\$HEW_HOME/std\"' >> %s${RESET}\n" "$rc_file"
-        printf "    ${DIM}echo 'export PATH=\"\$HEW_HOME/bin:\$PATH\"' >> %s${RESET}\n\n" "$rc_file"
+        printf "    %becho 'export HEW_HOME=\"%s\"' >> %s%b\n" "${DIM}" "$INSTALL_PREFIX" "$rc_file" "${RESET}"
+        printf "    %becho 'export HEW_STD=\"\$HEW_HOME/std\"' >> %s%b\n" "${DIM}" "$rc_file" "${RESET}"
+        printf "    %becho 'export PATH=\"\$HEW_HOME/bin:\$PATH\"' >> %s%b\n\n" "${DIM}" "$rc_file" "${RESET}"
         ;;
     zsh)
         rc_file="${ZDOTDIR:-$HOME}/.zshrc"
         printf "  Or add it permanently by running:\n\n"
-        printf "    ${DIM}echo 'export HEW_HOME=\"%s\"' >> %s${RESET}\n" "$INSTALL_PREFIX" "$rc_file"
-        printf "    ${DIM}echo 'export HEW_STD=\"\$HEW_HOME/std\"' >> %s${RESET}\n" "$rc_file"
-        printf "    ${DIM}echo 'export PATH=\"\$HEW_HOME/bin:\$PATH\"' >> %s${RESET}\n\n" "$rc_file"
+        printf "    %becho 'export HEW_HOME=\"%s\"' >> %s%b\n" "${DIM}" "$INSTALL_PREFIX" "$rc_file" "${RESET}"
+        printf "    %becho 'export HEW_STD=\"\$HEW_HOME/std\"' >> %s%b\n" "${DIM}" "$rc_file" "${RESET}"
+        printf "    %becho 'export PATH=\"\$HEW_HOME/bin:\$PATH\"' >> %s%b\n\n" "${DIM}" "$rc_file" "${RESET}"
         ;;
     fish)
         rc_file="$HOME/.config/fish/config.fish"
         printf "  Or add it permanently by running:\n\n"
-        printf "    ${DIM}set -Ux HEW_HOME %s${RESET}\n" "$INSTALL_PREFIX"
-        printf "    ${DIM}set -Ux HEW_STD \$HEW_HOME/std${RESET}\n"
-        printf "    ${DIM}fish_add_path \$HEW_HOME/bin${RESET}\n\n"
+        printf "    %bset -Ux HEW_HOME %s%b\n" "${DIM}" "$INSTALL_PREFIX" "${RESET}"
+        printf "    %bset -Ux HEW_STD \$HEW_HOME/std%b\n" "${DIM}" "${RESET}"
+        printf "    %bfish_add_path \$HEW_HOME/bin%b\n\n" "${DIM}" "${RESET}"
         ;;
     *)
         printf "  Add the above lines to your shell's configuration file.\n\n"

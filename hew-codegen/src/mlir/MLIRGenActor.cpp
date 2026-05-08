@@ -826,23 +826,25 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
     auto selfPtr = entryBlock->getArgument(0);
 
-    // Walk every owned field of the actor state struct.  We work directly
-    // off `actorInfo` rather than the shared `emitFieldDropsForUserStruct`
+    // Walk only the user-declared fields of the actor state struct
+    // (`fieldHewTypes[0..numUserFields]`).  We work directly off
+    // `actorInfo` rather than the shared `emitFieldDropsForUserStruct`
     // helper because that helper keys lookups by the MLIR struct name
     // (`<actor>_state`) while `structTypes` registers actors under their
     // bare name; reusing the helper would silently drop nothing.
     //
-    // Both user-declared fields (`fieldHewTypes[0..numUserFields]`) and
-    // hidden init-param fields (`fieldHewTypes[numUserFields..]`) are
-    // covered: an init param of an owned type (Vec, String, HashMap, an
-    // owned handle) is byte-copied into the state struct at spawn and
-    // outlives the spawning scope, so it must drop here.  Trailing
-    // generator-frame `ptr` slots are skipped: `dropFuncForMLIRType`
-    // returns empty for raw `!llvm.ptr` (no Drop semantics) and for
-    // numeric / boolean fields.
+    // Hidden init-param slots (`numUserFields..numUserFields+numInitParams`)
+    // are intentionally skipped: their bytes remain byte-identical to
+    // whatever the init body moved out of them (typically `field = arg`),
+    // so dropping them in addition to the user field would be a
+    // double-drop. The Hew move-checker is responsible for ensuring init
+    // bodies consume owned init arguments rather than leaving them
+    // unmoved in the hidden slot. Trailing generator-frame `ptr` slots
+    // resolve to empty drops via `dropFuncForMLIRType` and would be
+    // no-ops anyway.
     if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(actorInfo.stateType)) {
       auto i1Type = builder.getI1Type();
-      for (size_t i = 0; i < actorInfo.fieldHewTypes.size(); ++i) {
+      for (size_t i = 0; i < actorInfo.numUserFields; ++i) {
         auto fieldType = actorInfo.fieldHewTypes[i];
         auto dropFn = dropFuncForMLIRType(fieldType, /*includeStructTypes=*/true);
         if (dropFn.empty())

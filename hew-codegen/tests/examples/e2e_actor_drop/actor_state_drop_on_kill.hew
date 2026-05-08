@@ -1,0 +1,49 @@
+// Regression: when an actor is killed (terminate path runs and the runtime
+// frees its state allocation), the codegen-emitted state-drop function must
+// invoke `impl Drop` on every owned field of the state struct. Before this
+// fix, `free_actor_resources` raw-libc::free'd `a.state` and any `impl Drop`
+// callback for fields was silently bypassed.
+//
+// `Token` carries a custom `impl Drop` that prints "drop_state:<id>". The
+// actor holds one `Token` and one `Vec<String>` in its state. After the
+// program awaits a ping (proving the actor is alive and the Token has been
+// stored), the cleanup at program exit closes the actor, runs its terminate
+// path, and the new state-drop function fires `impl Drop` on the `Token`
+// field. The expected output therefore contains TWO `drop_state:9` lines
+// after "done": one from the spawning scope's `starter` cleanup (which
+// already runs on origin/main, because actor spawn deep-copies init args),
+// and one new line from the state-drop running on the actor's `tok` field
+// before its state allocation is freed. Without this lane's changes the
+// second line is missing — that's the bug this fixture pins down.
+type Token {
+    id: int;
+}
+
+impl Drop for Token {
+    fn drop(t: Token) {
+        println(f"drop_state:{t.id}");
+    }
+}
+
+actor Holder {
+    let tok: Token;
+    let labels: Vec<String>;
+    init(t: Token) {
+        tok = t;
+        let v: Vec<String> = [];
+        v.push("alpha");
+        v.push("beta");
+        labels = v;
+    }
+    receive fn ping() -> int {
+        tok.id
+    }
+}
+
+fn main() {
+    let starter = Token { id: 9 };
+    let h = spawn Holder(t: starter);
+    let n = await h.ping();
+    println(n);
+    println("done");
+}

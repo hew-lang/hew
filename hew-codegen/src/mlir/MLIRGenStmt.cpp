@@ -211,15 +211,38 @@ void MLIRGen::generateStmtsWithReturnGuards(
   }
 
   // After all guarded statements, generate the trailing expression if any.
+  //
+  // The trailing-expression write to returnSlot/returnFlag must itself be
+  // guarded by `scf.if(notReturned)`. Earlier stmts may have soft-returned
+  // through a path that `stmtMightContainReturn` does not detect (e.g. a
+  // `let x = if ... { return ...; } else { ... };` — `StmtLet` is not in
+  // `stmtIsCompound`, so the loop above falls through without wrapping the
+  // trailing-expr write in a guard). Without this guard, the trailing
+  // expression's value silently clobbers `returnSlot`, dropping the real
+  // return value chosen by the soft-return. See #1701.
   if (trailingExpr) {
+    if (!returnFlag || !returnSlot) {
+      // Defensive: this helper is only invoked from useReturnGuards paths,
+      // where both returnFlag and returnSlot exist. If they don't, just
+      // evaluate the expression and drop the value.
+      generateExpression(*trailingExpr);
+      return;
+    }
+    auto flagVal = mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
+    auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
+    auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+    auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                         /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&guard.getThenRegion().front());
     mlir::Value val = generateExpression(*trailingExpr);
-    if (val && returnSlot) {
+    if (val) {
       auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
       val = coerceTypeForSink(val, slotType, location);
       mlir::memref::StoreOp::create(builder, location, val, returnSlot);
-      auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
       mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
     }
+    ensureYieldTerminator(location);
+    builder.setInsertionPointAfter(guard);
   }
 }
 
@@ -323,10 +346,71 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
       return nullptr; // Value is in returnSlot
     }
 
-    for (const auto &stmtPtr : stmts) {
-      generateStatement(stmtPtr->value);
+    // Path A: trailing_expr is set, but useReturnGuards=false (this block is
+    // an inline sub-block of a non-void function — e.g. an if-arm whose
+    // value flows through a surrounding scf.if's yield).
+    //
+    // Bug #1701 / structural-mate of #1692: a sibling statement here can
+    // soft-return through `returnFlag` (set by a nested `return` lowered to
+    // a memref store). Without a guard, subsequent *statements* run
+    // unconditionally; if any of those statements is itself a soft-return
+    // (e.g. `if c { return X; }`) it overwrites returnSlot with the wrong
+    // value.
+    //
+    // Mirror Path B's fix (#1700): when a prior statement might contain a
+    // return AND we are in a non-void function with returnFlag, wrap the
+    // remaining *statements* in an `scf.if(notReturned)` guard. The
+    // trailing expression itself is evaluated unconditionally afterwards.
+    // Its value is bogus on the soft-returned path, but harmless: it flows
+    // through the surrounding scf.if's yield into a let-binding (or
+    // similar) and the function epilogue selects `returnSlot` instead
+    // because returnFlag is true. Skipping the trailing expression here
+    // would forfeit its value on the *no-return* runtime path (when
+    // `notReturned=true`), where the value is needed by the caller.
+    bool nonVoidFunction = currentFunction && !currentFunction.getResultTypes().empty();
+    auto runGuardedRemainderA = [&](auto &self, size_t startIdx) -> void {
+      for (size_t i = startIdx; i < stmts.size(); ++i) {
+        generateStatement(stmts[i]->value);
+        if (hasRealTerminator(builder.getInsertionBlock()))
+          return;
+        if (nonVoidFunction && returnFlag && stmtMightContainReturn(stmts[i]->value)) {
+          auto guardLoc = loc(stmts[i]->value.span);
+          auto flagVal =
+              mlir::memref::LoadOp::create(builder, guardLoc, returnFlag, mlir::ValueRange{});
+          auto trueConst = createIntConstant(builder, guardLoc, builder.getI1Type(), 1);
+          auto notReturned = mlir::arith::XOrIOp::create(builder, guardLoc, flagVal, trueConst);
+          auto guard = mlir::scf::IfOp::create(builder, guardLoc, mlir::TypeRange{}, notReturned,
+                                               /*withElseRegion=*/false);
+          builder.setInsertionPointToStart(&guard.getThenRegion().front());
+          self(self, i + 1);
+          ensureYieldTerminator(guardLoc);
+          builder.setInsertionPointAfter(guard);
+          return;
+        }
+      }
+    };
+
+    for (size_t i = 0; i < stmts.size(); ++i) {
+      generateStatement(stmts[i]->value);
       if (hasRealTerminator(builder.getInsertionBlock())) {
         return nullptr;
+      }
+      if (nonVoidFunction && returnFlag && stmtMightContainReturn(stmts[i]->value)) {
+        auto guardLoc = loc(stmts[i]->value.span);
+        auto flagVal =
+            mlir::memref::LoadOp::create(builder, guardLoc, returnFlag, mlir::ValueRange{});
+        auto trueConst = createIntConstant(builder, guardLoc, builder.getI1Type(), 1);
+        auto notReturned = mlir::arith::XOrIOp::create(builder, guardLoc, flagVal, trueConst);
+        auto guard = mlir::scf::IfOp::create(builder, guardLoc, mlir::TypeRange{}, notReturned,
+                                             /*withElseRegion=*/false);
+        builder.setInsertionPointToStart(&guard.getThenRegion().front());
+        runGuardedRemainderA(runGuardedRemainderA, i + 1);
+        ensureYieldTerminator(guardLoc);
+        builder.setInsertionPointAfter(guard);
+        // Fall through to trailing-expression evaluation below. On the
+        // soft-returned path, the value is bogus but unused (function
+        // epilogue prefers returnSlot when returnFlag is set).
+        break;
       }
     }
     auto result = generateTailExpr(*block.trailing_expr);
@@ -385,10 +469,26 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
           builder.setInsertionPointToStart(&guard.getThenRegion().front());
           auto val = generateIfStmtAsExpr(*ifNode);
           if (val && returnSlot) {
+            // Re-check returnFlag: a nested `return` inside the if-stmt's
+            // body will have soft-returned, written its value to returnSlot,
+            // and forced `val` to be a default-yielded placeholder from the
+            // scf.if. Storing that placeholder unconditionally would clobber
+            // the real return value. Guard the store with another
+            // scf.if(notReturned) so we only commit `val` when no inner
+            // return fired during evaluation. See #1701.
+            auto innerFlag =
+                mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
+            auto innerNotReturned =
+                mlir::arith::XOrIOp::create(builder, location, innerFlag, trueConst);
+            auto innerGuard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{},
+                                                      innerNotReturned, /*withElseRegion=*/false);
+            builder.setInsertionPointToStart(&innerGuard.getThenRegion().front());
             auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
             val = coerceTypeForSink(val, slotType, location);
             mlir::memref::StoreOp::create(builder, location, val, returnSlot);
             mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
+            ensureYieldTerminator(location);
+            builder.setInsertionPointAfter(innerGuard);
           }
           ensureYieldTerminator(location);
           builder.setInsertionPointAfter(guard);
@@ -414,10 +514,22 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
           auto val = scrutinee ? generateMatchImpl(scrutinee, matchNode->arms, resultType, location)
                                : nullptr;
           if (val && returnSlot) {
+            // See sibling if-stmt branch above: re-check returnFlag before
+            // committing `val`, so a nested `return` inside the match arms
+            // is not clobbered by a default-yielded placeholder. #1701.
+            auto innerFlag =
+                mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
+            auto innerNotReturned =
+                mlir::arith::XOrIOp::create(builder, location, innerFlag, trueConst);
+            auto innerGuard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{},
+                                                      innerNotReturned, /*withElseRegion=*/false);
+            builder.setInsertionPointToStart(&innerGuard.getThenRegion().front());
             auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
             val = coerceTypeForSink(val, slotType, location);
             mlir::memref::StoreOp::create(builder, location, val, returnSlot);
             mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
+            ensureYieldTerminator(location);
+            builder.setInsertionPointAfter(innerGuard);
           }
           ensureYieldTerminator(location);
           builder.setInsertionPointAfter(guard);

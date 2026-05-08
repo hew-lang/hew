@@ -2026,6 +2026,23 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
                           displayImplTypes.count(classified.canonicalName) > 0;
 
     if (hasDisplayImpl) {
+      // Fail-closed pre-check: reject print(holder.field) where the argument
+      // is a field access.  Without field-alias / partial-move tracking,
+      // Display::fmt would consume the field value, then the caller's
+      // scope-exit drop of the owning struct would drop it again → double-free.
+      // SCOPE: only the direct ExprFieldAccess case is guarded here; wrapper
+      // expressions (block/if/match) that happen to yield a field are not
+      // yet covered (those wrapper shapes are currently rare in practice and
+      // are handled by the general fail-closed pre-scan in generateExprCall).
+      // Mirror that scanner here once field-alias tracking is implemented.
+      const auto &argExpr = ast::callArgExpr(call.args[0]).value;
+      if (std::holds_alternative<ast::ExprFieldAccess>(argExpr.kind)) {
+        ++errorCount_;
+        emitError(location) << "print of field-aliased Display value is not yet supported; "
+                            << "bind the field to a local variable or pass the whole struct";
+        return nullptr;
+      }
+
       auto savedModulePath = currentModulePath;
       if (typeDefModulePath.count(typeName))
         currentModulePath = typeDefModulePath[typeName];

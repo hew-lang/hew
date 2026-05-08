@@ -91,7 +91,9 @@ def test_dry_run_shows_budget_annotation_narrow_lane() -> None:
 def test_dry_run_shows_budget_annotation_fallback_lane() -> None:
     """--dry-run output must include the fallback budget annotation."""
     # A path that escapes all narrow buckets routes to the fallback lane.
-    result = run_dispatcher("hew-codegen/src/some_new_file.rs")
+    # Use a path that has no bucket predicate (not any recognised hew-* crate or
+    # docs/scripts path) so the else-fallback branch fires.
+    result = run_dispatcher("some-unclassified-root-file.txt")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: comprehensive" in result.stdout, result.stdout
     assert "(budget: 600s)" in result.stdout, (

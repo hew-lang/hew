@@ -118,23 +118,26 @@ static void test_single_byte_garbage_rejects() {
 // Error handling: structurally valid msgpack, semantically wrong AST
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Helper: pack a map with schema_version = 8 and the given extra fields
+// Helper: pack a map with schema_version = 9 and the given extra fields
 static std::vector<uint8_t>
 packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFields,
                int extraCount) {
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   // Required top-level fields: schema_version, items, expr_types,
-  // method_call_receiver_kinds, assign_target_kinds, assign_target_shapes,
-  // lowering_facts, handle_types, handle_bearing_structs, handle_type_repr
-  pk.pack_map(10 + extraCount);
+  // method_call_receiver_kinds, method_call_type_args, assign_target_kinds,
+  // assign_target_shapes, lowering_facts, handle_types, handle_bearing_structs,
+  // handle_type_repr (11 fields as of schema version 9)
+  pk.pack_map(11 + extraCount);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0); // empty array
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -222,8 +225,8 @@ static void test_minimal_valid_program_parses() {
   auto data = packWithSchema([](msgpack::packer<msgpack::sbuffer> &) {}, 0);
   try {
     auto prog = hew::parseMsgpackAST(data.data(), data.size());
-    if (prog.schema_version != 8) {
-      FAIL("schema_version should be 8");
+    if (prog.schema_version != 9) {
+      FAIL("schema_version should be 9");
       return;
     }
     if (!prog.items.empty()) {
@@ -245,14 +248,16 @@ static void test_drop_funcs_roundtrip() {
   // Build a minimal program payload that includes a drop_funcs array.
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(11); // 10 required + drop_funcs
+  pk.pack_map(12); // 11 required + drop_funcs
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -305,14 +310,16 @@ static void test_handle_bearing_structs_roundtrip() {
   TEST(handle_bearing_structs_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(10);
+  pk.pack_map(11);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -383,14 +390,16 @@ static void test_program_metadata_roundtrip() {
   TEST(program_metadata_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(12); // 10 required + source_path + line_map
+  pk.pack_map(13); // 11 required + source_path + line_map
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -466,9 +475,9 @@ static void test_method_call_receiver_kinds_roundtrip() {
   TEST(method_call_receiver_kinds_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(10);
+  pk.pack_map(11);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
@@ -528,6 +537,8 @@ static void test_method_call_receiver_kinds_roundtrip() {
   pk.pack(std::string("element_kind"));
   pk.pack(std::string("bytes"));
 
+  pk.pack(std::string("method_call_type_args"));
+  pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_shapes"));
@@ -592,14 +603,16 @@ static void test_lowering_facts_roundtrip() {
   TEST(lowering_facts_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(10);
+  pk.pack_map(11);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -671,15 +684,17 @@ static void test_assign_target_shapes_roundtrip() {
   TEST(assign_target_shapes_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  // 9 required fields; assign_target_shapes carries the populated entries.
-  pk.pack_map(10);
+  // 11 required fields (schema v9); assign_target_shapes carries the populated entries.
+  pk.pack_map(11);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -751,14 +766,16 @@ static void test_assign_target_kinds_roundtrip() {
   // by the C++ reader: local_var, actor_field, field_access, index.
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(10);
+  pk.pack_map(11);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0);
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
   pk.pack_array(0);
   // Four assign_target_kinds entries — one per variant.
   pk.pack(std::string("assign_target_kinds"));
@@ -872,9 +889,9 @@ static void test_expr_types_named_roundtrip() {
   //   {"Named": {"name": "Int", "type_args": nil}}
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(10);
+  pk.pack_map(11);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0);
 
@@ -906,6 +923,8 @@ static void test_expr_types_named_roundtrip() {
   pk.pack(static_cast<uint64_t>(12));
 
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -963,9 +982,9 @@ static void test_type_infer_in_wire_rejects() {
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
 
-  pk.pack_map(10);
+  pk.pack_map(11);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
   pk.pack(std::string("items"));
   pk.pack_array(0);
 
@@ -991,6 +1010,8 @@ static void test_type_infer_in_wire_rejects() {
   pk.pack(static_cast<uint64_t>(1));
 
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -1030,9 +1051,9 @@ static void test_wire_unknown_decl_kind_rejects() {
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
 
-  pk.pack_map(10);
+  pk.pack_map(11);
   pk.pack(std::string("schema_version"));
-  pk.pack(static_cast<uint64_t>(8));
+  pk.pack(static_cast<uint64_t>(9));
 
   // items: one Wire item with an unknown kind.
   // Items are Spanned<Item> = [item_value, span], where item_value is
@@ -1065,6 +1086,8 @@ static void test_wire_unknown_decl_kind_rejects() {
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
+  pk.pack(std::string("method_call_type_args"));
+  pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_shapes"));
@@ -1082,6 +1105,160 @@ static void test_wire_unknown_decl_kind_rejects() {
                                    reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
 
   EXPECT_REJECTS(hew::parseMsgpackAST(data.data(), data.size()));
+  PASS();
+}
+
+// ─── method_call_type_args parsing ──────────────────────────────────────────
+
+static void test_method_call_type_args_roundtrip() {
+  TEST(method_call_type_args_roundtrip);
+
+  // Pack a v9 payload with two method_call_type_args entries:
+  //   entry 0: call site [10..25], one type arg "Bool"
+  //   entry 1: call site [40..60], two type args "Int" and "String"
+  // Verifies that:
+  //   - prog.method_call_type_args is populated correctly
+  //   - methodCallTypeArgsMap is populated (via MLIRGen helper wiring)
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+
+  pk.pack_map(11);
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(9));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+
+  // method_call_type_args: two entries
+  pk.pack(std::string("method_call_type_args"));
+  pk.pack_array(2);
+
+  // Entry 0: [10..25], one type arg "Bool"
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(10));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(25));
+  pk.pack(std::string("type_args"));
+  pk.pack_array(1);
+  // Spanned<TypeExpr> = [TypeExpr_value, span_map]
+  pk.pack_array(2);
+  // TypeExpr::Named externally tagged: {"Named": {"name": "Bool", "type_args": nil}}
+  pk.pack_map(1);
+  pk.pack(std::string("Named"));
+  pk.pack_map(2);
+  pk.pack(std::string("name"));
+  pk.pack(std::string("Bool"));
+  pk.pack(std::string("type_args"));
+  pk.pack_nil();
+  // span for type arg
+  pk.pack_map(2);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(10));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(14));
+
+  // Entry 1: [40..60], two type args "Int" and "String"
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(40));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(60));
+  pk.pack(std::string("type_args"));
+  pk.pack_array(2);
+  // type arg 0: "Int"
+  pk.pack_array(2);
+  pk.pack_map(1);
+  pk.pack(std::string("Named"));
+  pk.pack_map(2);
+  pk.pack(std::string("name"));
+  pk.pack(std::string("Int"));
+  pk.pack(std::string("type_args"));
+  pk.pack_nil();
+  pk.pack_map(2);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(40));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(43));
+  // type arg 1: "String"
+  pk.pack_array(2);
+  pk.pack_map(1);
+  pk.pack(std::string("Named"));
+  pk.pack_map(2);
+  pk.pack(std::string("name"));
+  pk.pack(std::string("String"));
+  pk.pack(std::string("type_args"));
+  pk.pack_nil();
+  pk.pack_map(2);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(45));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(51));
+
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_bearing_structs"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+
+  auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
+                                   reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+  try {
+    auto prog = hew::parseMsgpackAST(data.data(), data.size());
+    if (prog.method_call_type_args.size() != 2) {
+      FAIL("expected 2 method_call_type_args entries");
+      return;
+    }
+    // Entry 0: span [10..25], one type arg "Bool"
+    const auto &e0 = prog.method_call_type_args[0];
+    if (e0.start != 10 || e0.end != 25) {
+      FAIL("entry 0 span wrong");
+      return;
+    }
+    if (e0.type_args.size() != 1) {
+      FAIL("entry 0 should have 1 type arg");
+      return;
+    }
+    auto *n0 = std::get_if<hew::ast::TypeNamed>(&e0.type_args[0].value.kind);
+    if (!n0 || n0->name != "Bool") {
+      FAIL("entry 0 type arg should be Named('Bool')");
+      return;
+    }
+    // Entry 1: span [40..60], two type args "Int" and "String"
+    const auto &e1 = prog.method_call_type_args[1];
+    if (e1.start != 40 || e1.end != 60) {
+      FAIL("entry 1 span wrong");
+      return;
+    }
+    if (e1.type_args.size() != 2) {
+      FAIL("entry 1 should have 2 type args");
+      return;
+    }
+    auto *n1a = std::get_if<hew::ast::TypeNamed>(&e1.type_args[0].value.kind);
+    if (!n1a || n1a->name != "Int") {
+      FAIL("entry 1 type arg 0 should be Named('Int')");
+      return;
+    }
+    auto *n1b = std::get_if<hew::ast::TypeNamed>(&e1.type_args[1].value.kind);
+    if (!n1b || n1b->name != "String") {
+      FAIL("entry 1 type arg 1 should be Named('String')");
+      return;
+    }
+  } catch (const std::exception &e) {
+    printf("FAILED: exception: %s\n", e.what());
+    ++tests_run;
+    return;
+  }
   PASS();
 }
 
@@ -1124,6 +1301,9 @@ int main() {
 
   // Wire declaration with unknown kind must be rejected
   test_wire_unknown_decl_kind_rejects();
+
+  // method_call_type_args: non-empty roundtrip with typed type-arg entries
+  test_method_call_type_args_roundtrip();
 
   printf("\n%d/%d tests passed\n", tests_passed, tests_run);
   return tests_passed == tests_run ? 0 : 1;

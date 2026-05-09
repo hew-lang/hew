@@ -5,15 +5,14 @@
 //! site list.
 //!
 //! Fixture: `tests/fixtures/explain_cow_actor_sends.hew`
-//! - Line 24: `printer.print_message(greeting)` — sends a `String` value.
-//!   Phase α records COPY (feature gate disabled) at every send site.
-//! - Line 25: `counter.increment(42)` — sends an `int` literal (Copy type).
-//!   Phase α records COPY (feature gate disabled).
+//! - Line 24: `printer.print_message(greeting)` — sends a `String` value
+//!   (non-Copy); classifier returns ALIAS (bare-identifier non-Copy non-Drop
+//!   send, alias gate enabled).
+//! - Line 25: `counter.increment(42)` — sends an `int` literal (Copy type);
+//!   classifier returns COPY (Copy type, not eligible for alias path).
 //!
-//! The golden test pins the Phase-α all-COPY output so that any regression in
-//! the classifier or the renderer is immediately visible. The alias-enable
-//! commit (commit 7 in this lane) will update the String-send entry to ALIAS
-//! once `classify_actor_send_aliasing` is wired in.
+//! The golden test pins the two-class output so that any regression in the
+//! classifier or the renderer is immediately visible.
 
 mod support;
 
@@ -27,17 +26,17 @@ fn fixture_path() -> std::path::PathBuf {
         .join("explain_cow_actor_sends.hew")
 }
 
-/// `hew check --explain-cow` exits 0 and emits one COPY line per actor send.
+/// `hew check --explain-cow` exits 0 and emits one line per actor send site.
 ///
-/// Phase α records COPY at every send site (alias gate disabled). The fixture
-/// has two sends: a `String` (non-Copy, still COPY in α) and an `int`
-/// (Copy type, also COPY). The test verifies:
+/// The fixture has two sends: a `String` (non-Copy bare identifier, yields
+/// ALIAS) and an `int` (Copy type, yields COPY). The test verifies:
 /// - exit code 0 (file type-checks successfully)
 /// - exactly two send entries appear in stdout
-/// - both entries are classified COPY with the feature-gate reason
-/// - each entry names the fixture file at the expected line
+/// - the String send is classified ALIAS
+/// - the int send is classified COPY with the feature-gate reason
+/// - each entry names the fixture file
 #[test]
-fn explain_cow_golden_two_copy_sites() {
+fn explain_cow_golden_alias_and_copy_sites() {
     let fixture = fixture_path();
     let fixture_str = fixture.to_str().expect("fixture path is valid UTF-8");
 
@@ -64,30 +63,32 @@ fn explain_cow_golden_two_copy_sites() {
         send_lines.len()
     );
 
-    // Both entries must be COPY in Phase α (alias gate is disabled).
-    for line in &send_lines {
-        assert!(
-            line.contains("COPY"),
-            "Phase α: every send must be COPY (alias gate disabled), got: {line:?}"
-        );
-        assert!(
-            line.contains("feature gate disabled"),
-            "COPY entry must carry the feature-gate-disabled reason, got: {line:?}"
-        );
-    }
-
-    // Line 24: String send.
-    let line24 = send_lines.iter().find(|l| l.contains(":24:")).copied();
+    // Line 24 (String send) must be ALIAS.
+    let alias_line = send_lines.iter().find(|l| l.contains("ALIAS")).copied();
     assert!(
-        line24.is_some(),
-        "expected a send entry on line 24 (String send), got:\n{stdout}"
+        alias_line.is_some(),
+        "expected one ALIAS entry (String send), got:\n{stdout}"
+    );
+    let alias_line = alias_line.unwrap();
+    assert!(
+        alias_line.contains(":24:"),
+        "ALIAS entry must be on line 24 (String send), got: {alias_line:?}"
     );
 
-    // Line 25: int send.
-    let line25 = send_lines.iter().find(|l| l.contains(":25:")).copied();
+    // Line 25 (int send) must be COPY with the feature-gate reason.
+    let copy_line = send_lines.iter().find(|l| l.contains("COPY")).copied();
     assert!(
-        line25.is_some(),
-        "expected a send entry on line 25 (int send), got:\n{stdout}"
+        copy_line.is_some(),
+        "expected one COPY entry (int send), got:\n{stdout}"
+    );
+    let copy_line = copy_line.unwrap();
+    assert!(
+        copy_line.contains(":25:"),
+        "COPY entry must be on line 25 (int send), got: {copy_line:?}"
+    );
+    assert!(
+        copy_line.contains("feature gate disabled"),
+        "COPY entry must carry the feature-gate-disabled reason, got: {copy_line:?}"
     );
 
     // Both entries must name the fixture file.

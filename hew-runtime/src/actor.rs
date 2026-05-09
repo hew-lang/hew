@@ -666,21 +666,32 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // corrupted"). Structural cleanup (libc::free, arena, mailbox,
     // Box::from_raw) below still runs unconditionally.
     //
-    // SAFETY rationale for skipping `a.init_state`:
-    // 1. `a.init_state` is a byte-wise `deep_copy_state` of the spawn-time
-    //    state buffer (see `spawn_actor_internal` and `deep_copy_state`).
-    //    Nothing in the runtime reads the bytes of `a.init_state` between
-    //    here and the trailing `libc::free(a.init_state)` two lines down,
-    //    so calling state-drop on `a.state` cannot create a stale-pointer
-    //    read against `a.init_state`.
-    // 2. Supervisor restart goes through `spec.init_state`, an independent
-    //    allocation that the supervisor child-spec deep-copies at
-    //    registration time (see `supervisor.rs::add_child_actor_spec`),
-    //    not through the dead actor's `a.init_state`.
-    // The pre-existing fragility of supervised restart with owned-handle
-    // spawn args (the supervisor's spec deep-copies bytes that may include
-    // an OS handle whose Drop will run on the live actor) is independent
-    // of this lane and tracked separately.
+    // SAFETY rationale for NOT calling `state_drop_fn` on `a.init_state`:
+    //
+    // `deep_copy_state` (see line 967) is `ptr::copy_nonoverlapping` — a
+    // byte memcpy, not a semantic clone. At spawn time the runtime takes
+    // one wrapper buffer (already containing field-level deep copies, made
+    // by codegen's `deepCopyOwnedArgs`) and byte-copies it into two slots:
+    // `a.state` and `a.init_state`. Both wrappers therefore contain the
+    // same field pointers (Vec.ptr, String.ptr, IO handle ptrs) for every
+    // owned field of the actor's state struct.
+    //
+    // Consequences:
+    // 1. `state_drop_fn(a.state)` already releases each owned field via
+    //    its `impl Drop`. Calling `state_drop_fn(a.init_state)` afterward
+    //    would walk the same field pointers a second time and double-free.
+    //    The trailing `libc::free(a.init_state)` releases only the wrapper
+    //    bytes; it does not dereference the embedded pointers.
+    // 2. User code that overwrites a state field (`self.x = newHeap`) goes
+    //    through drop-on-assign on `a.state`, which frees the original
+    //    heap. The corresponding pointer inside `a.init_state` becomes
+    //    dangling, but is never dereferenced — only `libc::free` runs over
+    //    the wrapper bytes.
+    // 3. Supervisor restart never reads `a.init_state`. Each restart
+    //    allocates a fresh state buffer from `InternalChildSpec.init_state`,
+    //    which `hew_supervisor_add_child_spec` (supervisor.rs:1379) created
+    //    by independent `libc::malloc` + `ptr::copy_nonoverlapping` from
+    //    the caller's spec bytes at registration time.
     let actor_is_crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
     if !actor_is_crashed {
         if let Some(state_drop_fn) = a.state_drop_fn {
@@ -740,10 +751,12 @@ pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
 
     // Run codegen-generated state-drop on the live state so types
     // implementing `impl Drop` release their resources before the
-    // allocation goes away. See the native `free_actor_resources` for
-    // the full SAFETY rationale; the WASM path has identical layout
+    // allocation goes away. The WASM path has identical layout
     // (compile-time enforced by the offset assertions in
-    // `scheduler_wasm.rs`) and the same `init_state` invariants.
+    // `scheduler_wasm.rs`) and the same `a.init_state` aliasing as the
+    // native path, so state-drop runs on `a.state` only — running it on
+    // `a.init_state` would double-free every owned field. See the SAFETY
+    // block in the native `free_actor_resources` for the full rationale.
     //
     // Crashed actors are skipped here too: same rationale as the native
     // path. Structural cleanup below still runs unconditionally so the
@@ -2115,11 +2128,13 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
 ///
 /// State-drop runs after the user's `terminate { }` block has finished and
 /// before the state allocation is freed, so the field-level `Drop` callbacks
-/// see the same state pointer the runtime is about to release. The companion
-/// `init_state` byte-copy is left untouched: nothing in the runtime reads its
-/// bytes after the actor's terminate path completes (it is consumed only by
-/// the trailing `libc::free(a.init_state)`), and the supervisor child spec
-/// holds its own independent deep copy used for restarts.
+/// see the same state pointer the runtime is about to release. State-drop
+/// is invoked on `a.state` only; the companion `a.init_state` is a byte
+/// memcpy of the same wrapper buffer (its embedded field pointers alias
+/// `a.state`'s) and is released with a raw `libc::free` of just the wrapper
+/// bytes. Walking it through state-drop would double-free every owned field.
+/// The supervisor child spec holds its own independent deep copy used for
+/// restarts and never reads `a.init_state`.
 ///
 /// # Safety
 ///

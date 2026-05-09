@@ -831,15 +831,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     // (MLIRGen.cpp:6814-6815), and closure env null-guard all match the
     // canonical struct-drop path. The helper walks only the first
     // `numUserFields` entries of the state struct; hidden init-param
-    // slots and generator-frame ptrs are intentionally skipped.
-    //
-    // BLOCKER 2 (init-param leak when an init body never consumes the
-    // param) is preserved as a known gap rather than fixed at codegen:
-    // dropping the hidden slot would double-drop on the normal
-    // `field = arg` path because the init body does not null the source
-    // slot after the move. The correct fix lives at typecheck time
-    // (move-checker) or in init-body lowering (null-the-slot after the
-    // assignment), both tracked separately.
+    // slots and generator-frame ptrs are intentionally skipped — dropping
+    // the hidden init-param slot would double-drop on the normal
+    // `field = arg` path, since the init body does not null the source
+    // slot after the move.
     if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(actorInfo.stateType)) {
       emitFieldDropsForActorState(selfPtr, structTy, actorInfo.fieldHewTypes,
                                   actorInfo.numUserFields, location);

@@ -657,6 +657,15 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // implementing `impl Drop` (Vec, String, HashMap, IO handles) release
     // their resources before the underlying allocation goes away.
     //
+    // Crashed actors are skipped: their state may be partially torn down
+    // by the panic that crashed them, so re-entering user Drop on it
+    // risks a second crash or a double-free of fields the crash already
+    // released. This mirrors the terminate-skip in
+    // `finalize_quiescent_actor_cleanup` and the comment in
+    // `cleanup_all_actors` ("Skip crashed actors — their state may be
+    // corrupted"). Structural cleanup (libc::free, arena, mailbox,
+    // Box::from_raw) below still runs unconditionally.
+    //
     // SAFETY rationale for skipping `a.init_state`:
     // 1. `a.init_state` is a byte-wise `deep_copy_state` of the spawn-time
     //    state buffer (see `spawn_actor_internal` and `deep_copy_state`).
@@ -672,13 +681,16 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // spawn args (the supervisor's spec deep-copies bytes that may include
     // an OS handle whose Drop will run on the live actor) is independent
     // of this lane and tracked separately.
-    if let Some(state_drop_fn) = a.state_drop_fn {
-        if !a.state.is_null() {
-            // SAFETY: `a.state` is the live state allocation; `state_drop_fn`
-            // is a codegen-emitted function that walks owned fields and
-            // tolerates null sub-pointers per LESSONS row
-            // `raii-null-after-move`.
-            unsafe { state_drop_fn(a.state) };
+    let actor_is_crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
+    if !actor_is_crashed {
+        if let Some(state_drop_fn) = a.state_drop_fn {
+            if !a.state.is_null() {
+                // SAFETY: `a.state` is the live state allocation;
+                // `state_drop_fn` is a codegen-emitted function that walks
+                // owned fields and tolerates null sub-pointers per LESSONS
+                // row `raii-null-after-move`.
+                unsafe { state_drop_fn(a.state) };
+            }
         }
     }
 
@@ -732,12 +744,19 @@ pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
     // the full SAFETY rationale; the WASM path has identical layout
     // (compile-time enforced by the offset assertions in
     // `scheduler_wasm.rs`) and the same `init_state` invariants.
-    if let Some(state_drop_fn) = a.state_drop_fn {
-        if !a.state.is_null() {
-            // SAFETY: `a.state` is the live state allocation;
-            // `state_drop_fn` is a codegen-emitted function that walks
-            // owned fields and tolerates null sub-pointers.
-            unsafe { state_drop_fn(a.state) };
+    //
+    // Crashed actors are skipped here too: same rationale as the native
+    // path. Structural cleanup below still runs unconditionally so the
+    // allocation, arena, mailbox, and HewActor box are always released.
+    let actor_is_crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
+    if !actor_is_crashed {
+        if let Some(state_drop_fn) = a.state_drop_fn {
+            if !a.state.is_null() {
+                // SAFETY: `a.state` is the live state allocation;
+                // `state_drop_fn` is a codegen-emitted function that walks
+                // owned fields and tolerates null sub-pointers.
+                unsafe { state_drop_fn(a.state) };
+            }
         }
     }
 
@@ -5482,6 +5501,98 @@ mod tests {
             drop(Box::from_raw(actor));
             mailbox::hew_mailbox_free(mailbox);
         }
+    }
+
+    static CRASH_SKIP_STATE_DROP_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    unsafe extern "C" fn crash_skip_state_drop_callback(_state: *mut c_void) {
+        CRASH_SKIP_STATE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn free_actor_resources_skips_state_drop_on_crashed_actor() {
+        // Crashed actors may have partially torn-down state; running user
+        // Drop on it risks a second crash or a double-free of fields the
+        // crash already released. The free path must skip the state-drop
+        // callback when actor_state is Crashed but still run structural
+        // cleanup (libc::free, arena, mailbox, Box::from_raw) so the
+        // allocation is not leaked.
+        let _guard = crate::runtime_test_guard();
+        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+        // Spawn with a malloc'd source so the resulting actor has a
+        // non-null `state` field (deep-copied). This ensures the
+        // state-drop call is only suppressed by the actor_state ==
+        // Crashed check, not by the inner is_null guard.
+        // SAFETY: malloc returns a valid 8-byte allocation or null.
+        let src = unsafe { libc::malloc(8) };
+        assert!(!src.is_null());
+        // SAFETY: spawn deep-copies the bytes; src is freed below.
+        let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn copied the bytes; release the source allocation.
+        unsafe { libc::free(src) };
+
+        // SAFETY: actor is valid and not being dispatched.
+        unsafe {
+            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            let a = &*actor;
+            assert!(!a.state.is_null(), "spawn must produce a non-null state");
+            a.actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+
+            // Go through the public hew_actor_free entry point so the
+            // LIVE_ACTORS untracking, timer cancellation, and link/monitor
+            // teardown all fire in the order the runtime expects. The
+            // crash-skip lives in free_actor_resources, which
+            // hew_actor_free calls after the prerequisites above.
+            let rc = hew_actor_free(actor);
+            assert_eq!(rc, 0);
+        }
+
+        assert_eq!(
+            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            0,
+            "state-drop callback must not run on a Crashed actor"
+        );
+    }
+
+    #[test]
+    fn free_actor_resources_runs_state_drop_on_stopped_actor() {
+        // Companion to free_actor_resources_skips_state_drop_on_crashed_actor:
+        // a non-Crashed actor MUST still see its state-drop callback fire.
+        // Pins the negative case so the crash-skip guard cannot regress to
+        // an unconditional skip.
+        let _guard = crate::runtime_test_guard();
+        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+        // SAFETY: malloc returns a valid 8-byte allocation or null.
+        let src = unsafe { libc::malloc(8) };
+        assert!(!src.is_null());
+        // SAFETY: spawn deep-copies the bytes; src is freed below.
+        let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn copied the bytes; release the source allocation.
+        unsafe { libc::free(src) };
+
+        // SAFETY: actor is valid and not being dispatched.
+        unsafe {
+            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            let a = &*actor;
+            assert!(!a.state.is_null(), "spawn must produce a non-null state");
+            a.actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+
+            let rc = hew_actor_free(actor);
+            assert_eq!(rc, 0);
+        }
+
+        assert_eq!(
+            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            1,
+            "state-drop callback must fire exactly once on a Stopped actor"
+        );
     }
 
     #[test]

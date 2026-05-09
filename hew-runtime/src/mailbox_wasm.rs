@@ -412,8 +412,16 @@ wasm_no_mangle! {
             return ptr::null_mut();
         }
         // SAFETY: env is live; alias contract is read-only on payload.
-        let (payload_size, drop_glue, src_payload) =
-            unsafe { ((*env).payload_size, (*env).drop_glue, (*env).payload) };
+        // Snapshot `header_bits` so reserved/contract bits (`SHARED_FROZEN`,
+        // `CAPABILITY_TRANSFER`, γ/δ reserved) survive the fork.
+        let (payload_size, drop_glue, src_payload, src_bits) = unsafe {
+            (
+                (*env).payload_size,
+                (*env).drop_glue,
+                (*env).payload,
+                (*env).header_bits.load(Ordering::Relaxed),
+            )
+        };
 
         let new_payload = if payload_size > 0 && !src_payload.is_null() {
             let buf = mailbox_malloc(payload_size);
@@ -436,9 +444,12 @@ wasm_no_mangle! {
             }
             return ptr::null_mut();
         }
+        // Preserve reserved/contract bits from the source (everything
+        // except `ALIAS_ACTIVE`) and set `FORKED` on the new envelope.
+        let inherited_bits = (src_bits & !HEW_MSG_ENVELOPE_ALIAS_ACTIVE) | HEW_MSG_ENVELOPE_FORKED;
         // SAFETY: forked is a live envelope we just created.
         unsafe {
-            (*forked).header_bits.fetch_or(HEW_MSG_ENVELOPE_FORKED, Ordering::Relaxed);
+            (*forked).header_bits.fetch_or(inherited_bits, Ordering::Relaxed);
         }
         // SAFETY: caller transferred their reference into this call.
         unsafe { hew_msg_envelope_release(env) };

@@ -395,9 +395,19 @@ pub unsafe extern "C" fn hew_msg_envelope_fork_for_write(
     cabi_guard!(env.is_null(), ptr::null_mut());
 
     // SAFETY: `env` is live; we read payload size + bytes under the
-    // alias contract (read-only) and write into a fresh buffer.
-    let (payload_size, drop_glue, src_payload) =
-        unsafe { ((*env).payload_size, (*env).drop_glue, (*env).payload) };
+    // alias contract (read-only) and write into a fresh buffer. We
+    // also snapshot `header_bits` so the forked envelope inherits the
+    // source's reserved bits (`SHARED_FROZEN`, `CAPABILITY_TRANSFER`,
+    // γ/δ reserved bits). `ALIAS_ACTIVE` is intentionally cleared on
+    // the fork — the new envelope starts as the sole observer.
+    let (payload_size, drop_glue, src_payload, src_bits) = unsafe {
+        (
+            (*env).payload_size,
+            (*env).drop_glue,
+            (*env).payload,
+            (*env).header_bits.load(Ordering::Relaxed),
+        )
+    };
 
     // Allocate fresh payload buffer + memcpy.
     let new_payload = if payload_size > 0 && !src_payload.is_null() {
@@ -416,7 +426,10 @@ pub unsafe extern "C" fn hew_msg_envelope_fork_for_write(
 
     // SAFETY: standard envelope-new path. The new envelope inherits
     // payload_size + drop_glue; refcount=1; header_bits initialised
-    // to 0 then we set FORKED.
+    // to 0 then we set FORKED. `SHARED_FROZEN` / `CAPABILITY_TRANSFER`
+    // / γ-δ reserved bits from the source are OR'd in below so the
+    // contract bits survive a fork; `ALIAS_ACTIVE` is masked out
+    // because the new envelope has only one observer.
     let forked = unsafe { hew_msg_envelope_new(new_payload, payload_size, drop_glue) };
     if forked.is_null() {
         if !new_payload.is_null() {
@@ -425,11 +438,14 @@ pub unsafe extern "C" fn hew_msg_envelope_fork_for_write(
         }
         return ptr::null_mut();
     }
+    // Preserve reserved/contract bits from the source (everything
+    // except `ALIAS_ACTIVE`) and set `FORKED` on the new envelope.
+    let inherited_bits = (src_bits & !HEW_MSG_ENVELOPE_ALIAS_ACTIVE) | HEW_MSG_ENVELOPE_FORKED;
     // SAFETY: `forked` is a live envelope we just created.
     unsafe {
         (*forked)
             .header_bits
-            .fetch_or(HEW_MSG_ENVELOPE_FORKED, Ordering::Relaxed);
+            .fetch_or(inherited_bits, Ordering::Relaxed);
     }
 
     // Release the caller's old reference; the new envelope replaces it.
@@ -2765,6 +2781,68 @@ mod tests {
             assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
 
             // Drain everything; drop_glue fires twice (once per envelope).
+            hew_msg_envelope_release(forked);
+            hew_msg_envelope_release(env);
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn envelope_fork_for_write_preserves_reserved_header_bits() {
+        // Regression: `fork_for_write` must inherit reserved/contract
+        // bits from the source envelope (`SHARED_FROZEN`,
+        // `CAPABILITY_TRANSFER`, γ/δ reserved). Only `ALIAS_ACTIVE` is
+        // intentionally cleared on the fork (the new envelope has one
+        // observer). `FORKED` is set unconditionally.
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: standard envelope contract.
+        unsafe {
+            let payload = alloc_test_payload(b"capability-bytes");
+            let env = hew_msg_envelope_new(payload, 16, Some(envelope_test_drop_glue));
+            // Set the bits the fork must preserve.
+            (*env).header_bits.fetch_or(
+                HEW_MSG_ENVELOPE_SHARED_FROZEN
+                    | HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER
+                    | HEW_MSG_ENVELOPE_RESERVED_GAMMA_A
+                    | HEW_MSG_ENVELOPE_RESERVED_DELTA_B,
+                Ordering::SeqCst,
+            );
+            // Two-observer state.
+            let _ = hew_msg_envelope_clone_alias(env);
+            assert!(
+                (*env).header_bits.load(Ordering::SeqCst) & HEW_MSG_ENVELOPE_ALIAS_ACTIVE != 0,
+                "clone_alias should set ALIAS_ACTIVE on the source"
+            );
+
+            let forked = hew_msg_envelope_fork_for_write(env);
+            assert!(!forked.is_null());
+            let forked_bits = (*forked).header_bits.load(Ordering::SeqCst);
+            assert!(
+                forked_bits & HEW_MSG_ENVELOPE_FORKED != 0,
+                "FORKED bit must be set on the forked envelope"
+            );
+            assert!(
+                forked_bits & HEW_MSG_ENVELOPE_SHARED_FROZEN != 0,
+                "SHARED_FROZEN must transfer to the forked envelope (got bits = {forked_bits:#x})"
+            );
+            assert!(
+                forked_bits & HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER != 0,
+                "CAPABILITY_TRANSFER must transfer to the forked envelope (got bits = {forked_bits:#x})"
+            );
+            assert!(
+                forked_bits & HEW_MSG_ENVELOPE_RESERVED_GAMMA_A != 0,
+                "RESERVED_GAMMA_A must transfer to the forked envelope (got bits = {forked_bits:#x})"
+            );
+            assert!(
+                forked_bits & HEW_MSG_ENVELOPE_RESERVED_DELTA_B != 0,
+                "RESERVED_DELTA_B must transfer to the forked envelope (got bits = {forked_bits:#x})"
+            );
+            assert!(
+                forked_bits & HEW_MSG_ENVELOPE_ALIAS_ACTIVE == 0,
+                "ALIAS_ACTIVE must NOT transfer (the forked envelope has one observer)"
+            );
+
             hew_msg_envelope_release(forked);
             hew_msg_envelope_release(env);
             assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 2);

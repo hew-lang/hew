@@ -314,7 +314,7 @@ fn types() {
     let rc: Rc<i32> = Rc::new(2);
     let weak: Weak<i32> = get_weak();
     let range: Range<i32> = 0..10;
-    let as2: ActorStream<i32> = get_actor_stream();
+    let as2: Stream<i32> = get_actor_stream();
     fn ret_void() -> void {}
     fn ret_never() -> never { loop {} }
 }

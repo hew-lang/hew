@@ -290,7 +290,6 @@ Type           = Ident TypeArgs?
                | "Option" "<" Type ">"
                | "Generator" "<" Type ">"          (* Sync generator: Generator<Y> *)
                | "AsyncGenerator" "<" Type ">"     (* Async generator: AsyncGenerator<Y> *)
-               | "ActorStream" "<" Type ">"        (* Deprecated alias for Stream<Y>; use Stream<T> *)
                | "Stream" "<" Type ">"            (* First-class readable stream: Stream<T> *)
                | "Sink" "<" Type ">"              (* First-class writable sink: Sink<T> *)
                | "Vec" "<" Type ">"               (* Growable array: Vec<T> *)

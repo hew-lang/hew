@@ -1071,10 +1071,10 @@ fn typecheck_generator_yield_mismatch_reports_element_type() {
 }
 
 #[test]
-fn test_actor_stream_annotation_is_stream_alias() {
+fn test_stream_annotation_resolves_to_stream_type() {
     use hew_parser::ast::{FnDecl, Item, TypeExpr};
 
-    // A standalone function returning ActorStream<i32> should resolve to Stream<i32>
+    // Stream<i32> (the canonical name) must resolve to Ty::stream(Ty::I32).
     let fn_decl = FnDecl {
         attributes: vec![],
         is_async: false,
@@ -1082,6 +1082,58 @@ fn test_actor_stream_annotation_is_stream_alias() {
         visibility: Visibility::Private,
         is_pure: false,
         name: "foo".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: Some((
+            TypeExpr::Named {
+                name: "Stream".to_string(),
+                type_args: Some(vec![(
+                    TypeExpr::Named {
+                        name: "i32".to_string(),
+                        type_args: None,
+                    },
+                    0..0,
+                )]),
+            },
+            0..0,
+        )),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: None,
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+    };
+
+    let program = Program {
+        module_graph: None,
+        items: vec![(Item::Function(fn_decl), 0..0)],
+        module_doc: None,
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&program);
+    // The body is empty (returns unit) so there will be a return-type mismatch error,
+    // but fn_sigs is populated in pass 1 (before body checking), so the signature
+    // should already reflect the resolved return type.
+    assert_eq!(output.fn_sigs["foo"].return_type, Ty::stream(Ty::I32));
+}
+
+#[test]
+fn test_actor_stream_name_no_longer_aliases_stream() {
+    use hew_parser::ast::{FnDecl, Item, TypeExpr};
+
+    // ActorStream<i32> must NOT resolve to Ty::stream(Ty::I32) — the alias is removed.
+    // It should resolve to Ty::Named { name: "ActorStream", .. } (an unknown named type).
+    let fn_decl = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Private,
+        is_pure: false,
+        name: "bar".to_string(),
         type_params: None,
         params: vec![],
         return_type: Some((
@@ -1115,10 +1167,12 @@ fn test_actor_stream_annotation_is_stream_alias() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
-    // The body is empty (returns unit) so there will be a return-type mismatch error,
-    // but fn_sigs is populated in pass 1 (before body checking), so the signature
-    // should already reflect the resolved return type.
-    assert_eq!(output.fn_sigs["foo"].return_type, Ty::stream(Ty::I32));
+    // The alias is removed: the resolved return type must not be Ty::stream(Ty::I32).
+    assert_ne!(
+        output.fn_sigs["bar"].return_type,
+        Ty::stream(Ty::I32),
+        "ActorStream<i32> must not alias Stream<i32> after alias removal"
+    );
 }
 
 #[test]

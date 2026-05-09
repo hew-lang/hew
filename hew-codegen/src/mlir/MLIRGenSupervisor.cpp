@@ -247,6 +247,13 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
     // 9. Register state-drop callback on the supervisor spec so that every
     //    restart path (not just the initial spawn) calls it on the new actor.
     //    Mirrors the hew_actor_set_state_drop call emitted after a direct spawn.
+    //
+    //    No null-guard on supervisorPtr here: hew_supervisor_new allocates via
+    //    Box::new which aborts on OOM rather than returning null, so supervisorPtr
+    //    is always non-null at this point. This differs from the direct-spawn path
+    //    in ActorSpawnOpLowering (codegen.cpp) where the spawn result can be null
+    //    on allocation failure and is guarded by an explicit ICmpOp != 0 check
+    //    before calling hew_actor_set_state_drop.
     {
       std::string stateDropName = actorTypeName + "_state_drop";
       if (module.lookupSymbol<mlir::func::FuncOp>(stateDropName)) {

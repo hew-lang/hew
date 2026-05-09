@@ -98,7 +98,11 @@ pub fn try_to_int(s: String) -> Result<int, String> {
     if start >= slen {
         return Err("string.try_to_int: invalid integer literal");
     }
+    // i64::MIN / 10 truncated toward zero (-9223372036854775808 / 10 = -922337203685477580).
+    // If the accumulator goes below this cutoff, the next digit would overflow i64.
     let cutoff = -922337203685477580;
+    // Last digit of i64::MIN (8, for ...5808) vs i64::MAX (7, for ...5807).
+    // Used to detect overflow when the accumulator is exactly at the cutoff.
     let max_last_digit = if negative {
         8
     } else {

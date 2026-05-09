@@ -1,8 +1,10 @@
 //! Iterator-like utility functions for Vec.
 //!
 //! Pure Hew implementations of common functional-style operations.
-//! Since Hew does not yet have a full Iterator trait, these are
-//! specialised per element type: `Vec<int>`, `Vec<String>`, and `Vec<f64>`.
+//! Generic traits and generic fns are supported, but `std/iter.hew` does not
+//! yet define an `Iterator` trait — these specialisations exist as a
+//! transitional shape until that trait lands. A tracking issue will be filed
+//! to drive the migration once the trait design is settled.
 //!
 //! ## Available operations
 //!

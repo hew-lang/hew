@@ -87,8 +87,8 @@ fn explain_cow_golden_alias_and_copy_sites() {
         "COPY entry must be on line 25 (int send), got: {copy_line:?}"
     );
     assert!(
-        copy_line.contains("feature gate disabled"),
-        "COPY entry must carry the feature-gate-disabled reason, got: {copy_line:?}"
+        copy_line.contains("Copy type"),
+        "COPY entry for an int send must name the `Copy type` reason, got: {copy_line:?}"
     );
 
     // Both entries must name the fixture file.

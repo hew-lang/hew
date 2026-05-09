@@ -694,6 +694,149 @@ static void test_lowering_facts_roundtrip() {
   PASS();
 }
 
+// ─── actor_send_aliasing parsing ────────────────────────────────────────────
+
+/// Pack a non-uniform `actor_send_aliasing` array containing both `Copy`
+/// (with each of the four `reason` values) and `Alias` entries, then
+/// parse it through `parseMsgpackAST` and assert the variant + reason on
+/// every entry round-trips.
+///
+/// Mirrors the `method_call_receiver_kinds` / `lowering_facts` /
+/// `assign_target_kinds` non-empty roundtrip tests; closes the gap
+/// where the actor-send aliasing wire-format had only an empty-array
+/// fixture.
+static void test_actor_send_aliasing_roundtrip() {
+  TEST(actor_send_aliasing_roundtrip);
+  msgpack::sbuffer buf;
+  msgpack::packer<msgpack::sbuffer> pk(&buf);
+  pk.pack_map(11);
+  pk.pack(std::string("schema_version"));
+  pk.pack(static_cast<uint64_t>(10));
+  pk.pack(std::string("items"));
+  pk.pack_array(0);
+  pk.pack(std::string("expr_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+
+  pk.pack(std::string("actor_send_aliasing"));
+  pk.pack_array(5);
+
+  // Entry 0: Copy / not_identifier.
+  pk.pack_map(4);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(11));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(15));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("copy"));
+  pk.pack(std::string("reason"));
+  pk.pack(std::string("not_identifier"));
+
+  // Entry 1: Copy / copy_type.
+  pk.pack_map(4);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(20));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(24));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("copy"));
+  pk.pack(std::string("reason"));
+  pk.pack(std::string("copy_type"));
+
+  // Entry 2: Copy / stdlib_drop.
+  pk.pack_map(4);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(30));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(34));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("copy"));
+  pk.pack(std::string("reason"));
+  pk.pack(std::string("stdlib_drop"));
+
+  // Entry 3: Copy / user_drop.
+  pk.pack_map(4);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(40));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(44));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("copy"));
+  pk.pack(std::string("reason"));
+  pk.pack(std::string("user_drop"));
+
+  // Entry 4: Alias.
+  pk.pack_map(3);
+  pk.pack(std::string("start"));
+  pk.pack(static_cast<uint64_t>(50));
+  pk.pack(std::string("end"));
+  pk.pack(static_cast<uint64_t>(54));
+  pk.pack(std::string("kind"));
+  pk.pack(std::string("alias"));
+
+  pk.pack(std::string("assign_target_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("assign_target_shapes"));
+  pk.pack_array(0);
+  pk.pack(std::string("lowering_facts"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_types"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_bearing_structs"));
+  pk.pack_array(0);
+  pk.pack(std::string("handle_type_repr"));
+  pk.pack_map(0);
+
+  auto data = std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(buf.data()),
+                                   reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
+  try {
+    auto prog = hew::parseMsgpackAST(data.data(), data.size());
+    if (prog.actor_send_aliasing.size() != 5) {
+      FAIL("expected five actor_send_aliasing entries");
+      return;
+    }
+    const auto &e0 = prog.actor_send_aliasing[0];
+    if (e0.kind != hew::ast::ActorSendAliasingKind::Copy ||
+        e0.copy_reason != hew::ast::ActorSendCopyReason::NotIdentifier || e0.start != 11 ||
+        e0.end != 15) {
+      FAIL("entry 0: Copy/NotIdentifier did not round-trip");
+      return;
+    }
+    const auto &e1 = prog.actor_send_aliasing[1];
+    if (e1.kind != hew::ast::ActorSendAliasingKind::Copy ||
+        e1.copy_reason != hew::ast::ActorSendCopyReason::CopyType || e1.start != 20 ||
+        e1.end != 24) {
+      FAIL("entry 1: Copy/CopyType did not round-trip");
+      return;
+    }
+    const auto &e2 = prog.actor_send_aliasing[2];
+    if (e2.kind != hew::ast::ActorSendAliasingKind::Copy ||
+        e2.copy_reason != hew::ast::ActorSendCopyReason::StdlibDrop || e2.start != 30 ||
+        e2.end != 34) {
+      FAIL("entry 2: Copy/StdlibDrop did not round-trip");
+      return;
+    }
+    const auto &e3 = prog.actor_send_aliasing[3];
+    if (e3.kind != hew::ast::ActorSendAliasingKind::Copy ||
+        e3.copy_reason != hew::ast::ActorSendCopyReason::UserDrop || e3.start != 40 ||
+        e3.end != 44) {
+      FAIL("entry 3: Copy/UserDrop did not round-trip");
+      return;
+    }
+    const auto &e4 = prog.actor_send_aliasing[4];
+    if (e4.kind != hew::ast::ActorSendAliasingKind::Alias || e4.start != 50 || e4.end != 54) {
+      FAIL("entry 4: Alias did not round-trip");
+      return;
+    }
+  } catch (const std::exception &e) {
+    printf("FAILED: exception: %s\n", e.what());
+    ++tests_run;
+    return;
+  }
+  PASS();
+}
+
 // ─── assign_target_shapes parsing ───────────────────────────────────────────
 
 static void test_assign_target_shapes_roundtrip() {
@@ -1307,6 +1450,7 @@ int main() {
   test_program_metadata_roundtrip();
   test_method_call_receiver_kinds_roundtrip();
   test_lowering_facts_roundtrip();
+  test_actor_send_aliasing_roundtrip();
   test_drop_funcs_roundtrip();
   test_handle_bearing_structs_roundtrip();
   test_drop_funcs_absent_gives_empty_map();

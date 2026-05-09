@@ -701,21 +701,22 @@ private:
       return it->second;
     return nullptr;
   }
-  /// Aggregate the per-arg alias-vs-copy classifications for an actor send
-  /// op into the single `aliasing` MLIR attribute.
+  /// Build the per-arg `aliasing` MLIR array attribute for an actor send
+  /// op.  The returned array has one entry per arg span (`0` Copy,
+  /// `1` Alias), preserving the type checker's per-arg classification
+  /// so the lowering can branch independently for each arg.
   ///
-  /// In Phase α the type checker records `Copy` at every accepted actor
-  /// send, so this returns 0 (Copy) for every program that compiles today.
-  /// The follow-on alias-enable commit flips the rule to record `Alias`
-  /// at sites the move-checker has invalidated and then tightens this
-  /// lookup to fail-closed (per `serializer-fail-closed`).  Until then a
-  /// missing entry is treated as `Copy` — the legacy mailbox path — to
-  /// preserve today's runtime behaviour for dispatch paths the producer
-  /// does not yet visit (e.g. `check_named_method_fallback`).
+  /// The producer (`enforce_actor_boundary_send`) populates an entry
+  /// for every accepted actor send; a missing entry triggers a
+  /// fail-closed compile error rather than a silent degradation.
   ///
-  /// Returns the integer attribute value (`0` Copy, `1` Alias) suitable
-  /// for `builder.getI32IntegerAttr`.
-  int32_t aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans, mlir::Location location);
+  /// Phase α only lights the all-`Alias` lowering path (the lowering
+  /// wraps the entire packed buffer in one envelope when every entry
+  /// is `Alias`); mixed arrays defer to the legacy copy path until a
+  /// follow-up lane wires per-arg cloning.  The array attr is recorded
+  /// regardless so a future lane can read it without a wire-format
+  /// change.
+  mlir::ArrayAttr aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans, mlir::Location location);
   const ast::AssignTargetKindEntry *assignTargetKindOf(const ast::Span &span) const {
     auto it = assignTargetKindMap.find({span.start, span.end});
     if (it != assignTargetKindMap.end())

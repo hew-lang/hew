@@ -2899,7 +2899,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   // alias rule decides about the actor's normal sends.
   auto initAsk = hew::ActorAskOp::create(builder, location, wrapperType, actorRef,
                                          builder.getI32IntegerAttr(static_cast<int32_t>(initIdx)),
-                                         /*aliasing=*/builder.getI32IntegerAttr(0), initArgs,
+                                         /*aliasing=*/builder.getI32ArrayAttr({}), initArgs,
                                          /*timeout_ms=*/mlir::IntegerAttr{});
   auto initResult = initAsk.getResult();
 
@@ -2978,7 +2978,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   auto nextAsk =
       hew::ActorAskOp::create(builder, location, wrapperType, actorRef,
                               builder.getI32IntegerAttr(static_cast<int32_t>(nextIdx)),
-                              /*aliasing=*/builder.getI32IntegerAttr(0), mlir::ValueRange{},
+                              /*aliasing=*/builder.getI32ArrayAttr({}), mlir::ValueRange{},
                               /*timeout_ms=*/mlir::IntegerAttr{});
   mlir::LLVM::StoreOp::create(builder, location, nextAsk.getResult(), resultAlloca);
 

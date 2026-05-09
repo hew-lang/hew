@@ -689,13 +689,13 @@ impl Checker {
     ///   `HEW_MSG_ENVELOPE_CAPABILITY_TRANSFER` on the envelope header.
     fn classify_actor_send_aliasing(&self, expr: &Expr, ty: &Ty) -> ActorSendAliasing {
         if !matches!(expr, Expr::Identifier(_)) {
-            return ActorSendAliasing::Copy;
+            return ActorSendAliasing::Copy(ActorSendCopyReason::NotIdentifier);
         }
         if self.registry.implements_marker(ty, MarkerTrait::Copy) {
-            return ActorSendAliasing::Copy;
+            return ActorSendAliasing::Copy(ActorSendCopyReason::CopyType);
         }
         if self.registry.implements_marker(ty, MarkerTrait::Drop) {
-            return ActorSendAliasing::Copy;
+            return ActorSendAliasing::Copy(ActorSendCopyReason::StdlibDrop);
         }
         // `MarkerTrait::Drop` covers stdlib drop types and `Rc`, but a
         // user-defined `impl Drop for T` records into `trait_impls_set`
@@ -707,7 +707,7 @@ impl Checker {
                 .trait_impls_set
                 .contains(&(name.clone(), "Drop".to_string()))
             {
-                return ActorSendAliasing::Copy;
+                return ActorSendAliasing::Copy(ActorSendCopyReason::UserDrop);
             }
         }
         ActorSendAliasing::Alias

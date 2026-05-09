@@ -1062,10 +1062,31 @@ enum class ActorSendAliasingKind {
   Alias,
 };
 
+/// Why the type-checker classified an actor-send arg as `Copy` instead
+/// of `Alias`.  Mirrors `hew_types::check::ActorSendCopyReason`.  Only
+/// meaningful when `kind == Copy`.
+enum class ActorSendCopyReason {
+  /// Arg expression was not a bare identifier — move-checker would not
+  /// invalidate the parent binding.
+  NotIdentifier,
+  /// Arg's resolved type implements the `Copy` marker.
+  CopyType,
+  /// Arg's resolved type implements the stdlib-registered `Drop`
+  /// marker.
+  StdlibDrop,
+  /// Arg's resolved type carries a user `impl Drop for T` (recorded
+  /// in `trait_impls_set` rather than the marker).
+  UserDrop,
+};
+
 struct ActorSendAliasingEntry {
   uint64_t start = 0;
   uint64_t end = 0;
   ActorSendAliasingKind kind = ActorSendAliasingKind::Copy;
+  /// Populated when `kind == Copy`; meaningless otherwise.  Defaults to
+  /// `CopyType` so a stale build that didn't read the wire field still
+  /// produces a sensible fallback for diagnostic rendering.
+  ActorSendCopyReason copy_reason = ActorSendCopyReason::CopyType;
 };
 
 // ── Assign-target authority side table ────────────────────────────────────

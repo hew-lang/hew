@@ -1614,9 +1614,11 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 // Shared helpers for actor send/ask
 // ============================================================================
 
-int32_t MLIRGen::aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans, mlir::Location location) {
-  // Aggregate: if any arg's checker decision is Alias, the op-level attr is
-  // Alias; otherwise Copy.
+mlir::ArrayAttr MLIRGen::aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans,
+                                              mlir::Location location) {
+  // Build a per-arg array preserving each checker decision (`0` Copy,
+  // `1` Alias).  The op-level lowering decides which arms to emit; this
+  // helper does not collapse the per-arg detail.
   //
   // Fail-closed contract: every actor send/ask path the type-checker
   // accepts must produce an `actor_send_aliasing` entry. The producer is
@@ -1628,7 +1630,8 @@ int32_t MLIRGen::aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans, mlir::
   // emit a hard error rather than silently defaulting to Copy, so the
   // next gap surfaces as a build failure instead of degrading the alias
   // decision.
-  int32_t aggregated = 0; // Copy
+  llvm::SmallVector<int32_t, 4> per_arg;
+  per_arg.reserve(argSpans.size());
   for (const auto &span : argSpans) {
     const auto *entry = actorSendAliasingOf(span);
     if (!entry) {
@@ -1636,12 +1639,14 @@ int32_t MLIRGen::aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans, mlir::
       emitError(location) << "missing actor_send_aliasing entry for actor send/ask arg at span ["
                           << span.start << ", " << span.end
                           << "); every accepted send site must record a decision";
+      // Conservatively record Copy for the missing slot so the lowering
+      // can still emit a (legacy) op without a length mismatch.
+      per_arg.push_back(0);
       continue;
     }
-    if (entry->kind == ast::ActorSendAliasingKind::Alias)
-      aggregated = 1;
+    per_arg.push_back(entry->kind == ast::ActorSendAliasingKind::Alias ? 1 : 0);
   }
-  return aggregated;
+  return builder.getI32ArrayAttr(per_arg);
 }
 
 bool MLIRGen::actorBoundarySenderRetainsOwnership(mlir::Type valueType) const {
@@ -1799,7 +1804,7 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
     llvm::SmallVector<ast::Span, 4> argSpans;
     for (const auto &arg : args)
       argSpans.push_back(ast::callArgExpr(arg).span);
-    auto aliasingAttr = builder.getI32IntegerAttr(aliasingAttrForSpans(argSpans, location));
+    auto aliasingAttr = aliasingAttrForSpans(argSpans, location);
     hew::ActorSendOp::create(builder, location, actorPtr,
                              builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), aliasingAttr,
                              *argVals);
@@ -1808,7 +1813,7 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
     llvm::SmallVector<ast::Span, 4> argSpans;
     for (const auto &arg : args)
       argSpans.push_back(ast::callArgExpr(arg).span);
-    auto aliasingAttr = builder.getI32IntegerAttr(aliasingAttrForSpans(argSpans, location));
+    auto aliasingAttr = aliasingAttrForSpans(argSpans, location);
     hew::ActorSendOp::create(builder, location, actorPtr,
                              builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), aliasingAttr,
                              *argVals);
@@ -1898,7 +1903,7 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
   llvm::SmallVector<ast::Span, 4> askArgSpans;
   for (const auto &arg : args)
     askArgSpans.push_back(ast::callArgExpr(arg).span);
-  auto askAliasingAttr = builder.getI32IntegerAttr(aliasingAttrForSpans(askArgSpans, location));
+  auto askAliasingAttr = aliasingAttrForSpans(askArgSpans, location);
   auto askOp = hew::ActorAskOp::create(builder, location, resultType, actorPtr,
                                        builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)),
                                        askAliasingAttr, *argVals, timeoutAttr);
@@ -1990,7 +1995,7 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
     // binding (see `enforce_actor_boundary_send` for the BinaryOp::Send
     // arm).
     ast::Span msgSpan = expr.message->span;
-    auto sendAliasingAttr = builder.getI32IntegerAttr(aliasingAttrForSpans({msgSpan}, location));
+    auto sendAliasingAttr = aliasingAttrForSpans({msgSpan}, location);
     hew::ActorSendOp::create(builder, location, actorVal, builder.getI32IntegerAttr(0),
                              sendAliasingAttr, mlir::ValueRange{msgVal});
   }

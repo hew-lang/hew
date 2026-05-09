@@ -104,13 +104,11 @@ pub struct TypeCheckOutput {
     /// actor-send call. Codegen consumes this side table fail-closed: a
     /// missing entry for a known send span is a hard error.
     ///
-    /// Phase α (this commit) records [`ActorSendAliasing::Copy`] at every
-    /// site — the always-copy runtime path is unchanged. A later commit in
-    /// the COW envelope lane flips eligible non-`Copy` sends to
-    /// [`ActorSendAliasing::Alias`] once codegen learns the alias path.
-    /// Until then this map serves the producer side of the
-    /// [`serializer-fail-closed`] contract so the codegen consumer can land
-    /// independently without breaking existing actor messaging.
+    /// `Copy` variants carry an [`ActorSendCopyReason`] describing why
+    /// the alias path was rejected (non-identifier expression, `Copy`
+    /// type, stdlib `Drop`, user `impl Drop`); `Alias` variants are a
+    /// unit. Codegen consumes the map fail-closed and propagates the
+    /// reason out to `--explain-cow`.
     pub actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
 }
 
@@ -166,18 +164,42 @@ pub struct StackHint {
 /// Codegen choice between aliasing the sender's payload buffer (refcount
 /// bump on a [`HewMsgEnvelope`]) and the legacy deep-copy mailbox path.
 ///
-/// Phase α records `Copy` everywhere; the alias path becomes available
-/// once codegen wires `hew_msg_envelope_new` and the move-checker has
-/// proven the sender cannot observe the value after send.
+/// `Copy` carries an [`ActorSendCopyReason`] so downstream tooling
+/// (notably `--explain-cow`) can render *why* an arg fell off the alias
+/// path rather than printing a single placeholder string for every
+/// `Copy` site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActorSendAliasing {
     /// Sender retains the payload independently; runtime deep-copies into
-    /// the mailbox. Always safe; this is the only mode wired in α.
-    Copy,
+    /// the mailbox.
+    Copy(ActorSendCopyReason),
     /// Sender and receiver share a refcounted payload buffer. Requires the
     /// move-checker to have invalidated the sender's binding so no
     /// post-send observation is possible.
     Alias,
+}
+
+/// Why the type-checker classified an actor-send arg as `Copy` instead
+/// of `Alias`.  Flows through the side table to codegen and the
+/// `--explain-cow` renderer so users see a precise reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorSendCopyReason {
+    /// Arg expression is not a bare identifier (e.g. a field access,
+    /// projection, or freshly constructed value). The move-checker
+    /// does not invalidate the parent binding, so aliasing would be
+    /// unsound.
+    NotIdentifier,
+    /// Arg's resolved type implements the `Copy` marker — cloning is
+    /// trivial and the alias bit would be ambiguous.
+    CopyType,
+    /// Arg's resolved type implements the stdlib-registered `Drop`
+    /// marker. Sender-side drop suppression has to be coordinated with
+    /// the receiver, which Phase α does not handle yet.
+    StdlibDrop,
+    /// Arg's resolved type carries a user `impl Drop for T` that the
+    /// `Drop` marker does not flag (registered only in
+    /// `trait_impls_set`). Same Phase α restriction as `StdlibDrop`.
+    UserDrop,
 }
 
 /// Checker-owned classification of an assignment target.

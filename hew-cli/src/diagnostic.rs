@@ -496,7 +496,7 @@ fn render_source_underline(
 /// Convert a byte offset to a 1-based (line, column) pair.
 /// Handles both `\n` and `\r\n` line endings; `\r` before `\n` is not counted
 /// as a column so that the column number matches the displayed line content.
-fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+pub(crate) fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     let offset = offset.min(source.len());
     let mut line = 1;
     let mut col = 1;

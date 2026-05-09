@@ -1910,6 +1910,20 @@ static ast::ActorSendAliasingEntry parseActorSendAliasingEntry(const msgpack::ob
   auto kind = getString(mapReq(obj, "kind"));
   if (kind == "copy") {
     entry.kind = ast::ActorSendAliasingKind::Copy;
+    // `Copy` variants carry a `reason` field; fail-closed: missing
+    // reason on a Copy entry is a producer/consumer drift.
+    auto reason = getString(mapReq(obj, "reason"));
+    if (reason == "not_identifier") {
+      entry.copy_reason = ast::ActorSendCopyReason::NotIdentifier;
+    } else if (reason == "copy_type") {
+      entry.copy_reason = ast::ActorSendCopyReason::CopyType;
+    } else if (reason == "stdlib_drop") {
+      entry.copy_reason = ast::ActorSendCopyReason::StdlibDrop;
+    } else if (reason == "user_drop") {
+      entry.copy_reason = ast::ActorSendCopyReason::UserDrop;
+    } else {
+      fail("unknown actor_send_aliasing copy reason '" + reason + "'");
+    }
     return entry;
   }
   if (kind == "alias") {

@@ -8,16 +8,22 @@
 //! Format mirrors `-gcflags=-m` (Go escape analysis):
 //!
 //! ```text
-//! src/handler.hew:42:9: send to `Order` — COPY (feature gate disabled in α)
-//!
-//! src/handler.hew:58:13: send to `i64` — COPY (Copy type)
+//! src/handler.hew:42:9: send — COPY (Copy type)
+//! src/handler.hew:58:13: send — ALIAS
 //! ```
 //!
-//! Phase α records `Copy` at every site; a later commit enables the `Alias`
-//! path. The renderer prints the reason so users understand why the alias path
-//! has not fired yet.
+//! `COPY` lines carry the precise reason the type checker rejected the alias
+//! path so users see *why* a given send fell off the fast path:
+//!
+//! - `(non-identifier expression)` — the arg was not a bare binding
+//!   (field access, projection, freshly-constructed value).
+//! - `(Copy type)` — arg's resolved type implements the `Copy` marker.
+//! - `(stdlib Drop)` — arg's resolved type implements the
+//!   stdlib-registered `Drop` marker.
+//! - `(user impl Drop)` — arg's resolved type carries a user
+//!   `impl Drop for T`.
 
-use hew_serialize::{ActorSendAliasingData, ActorSendAliasingEntry};
+use hew_serialize::{ActorSendAliasingData, ActorSendAliasingEntry, ActorSendCopyReasonData};
 
 /// Render `--explain-cow` output for all entries to the provided writer.
 ///
@@ -29,44 +35,28 @@ pub fn render_explain_cow(
     filename: &str,
     out: &mut dyn std::io::Write,
 ) {
-    let line_map = build_line_map(source);
     for entry in entries {
-        let (line, col) = span_to_line_col(&line_map, entry.start);
-        let kind_label = match entry.kind {
-            ActorSendAliasingData::Alias => "ALIAS",
-            ActorSendAliasingData::Copy => "COPY",
-        };
-        let reason = match entry.kind {
-            ActorSendAliasingData::Alias => String::new(),
-            ActorSendAliasingData::Copy => " (feature gate disabled in α)".to_string(),
+        let (line, col) = crate::diagnostic::offset_to_line_col(source, entry.start);
+        let (kind_label, reason) = match entry.kind {
+            ActorSendAliasingData::Alias => ("ALIAS", String::new()),
+            ActorSendAliasingData::Copy { reason } => {
+                ("COPY", format!(" ({})", reason_label(reason)))
+            }
         };
         // Print: filename:line:col: send — KIND (reason)
         let _ = writeln!(out, "{filename}:{line}:{col}: send — {kind_label}{reason}");
     }
 }
 
-/// Build a line-start-offset map from source text.
-///
-/// `map[i]` is the byte offset of the first character on line `i+1`.
-/// Line numbers are 1-based; line 1 starts at offset 0.
-fn build_line_map(source: &str) -> Vec<usize> {
-    let mut map = vec![0usize];
-    for (i, &byte) in source.as_bytes().iter().enumerate() {
-        if byte == b'\n' {
-            map.push(i + 1);
-        }
+/// Map a wire-side `ActorSendCopyReasonData` to the human-facing label
+/// shown in `--explain-cow` output.
+fn reason_label(reason: ActorSendCopyReasonData) -> &'static str {
+    match reason {
+        ActorSendCopyReasonData::NotIdentifier => "non-identifier expression",
+        ActorSendCopyReasonData::CopyType => "Copy type",
+        ActorSendCopyReasonData::StdlibDrop => "stdlib Drop",
+        ActorSendCopyReasonData::UserDrop => "user impl Drop",
     }
-    map
-}
-
-/// Convert a byte offset to (line, col), both 1-based.
-fn span_to_line_col(line_map: &[usize], offset: usize) -> (usize, usize) {
-    let line_idx = line_map
-        .partition_point(|&start| start <= offset)
-        .saturating_sub(1);
-    let line = line_idx + 1;
-    let col = offset - line_map[line_idx] + 1;
-    (line, col)
 }
 
 #[cfg(test)]
@@ -77,29 +67,21 @@ mod tests {
         ActorSendAliasingEntry { start, end, kind }
     }
 
-    #[test]
-    fn line_col_first_line_first_col() {
-        let map = build_line_map("abc\ndef");
-        assert_eq!(span_to_line_col(&map, 0), (1, 1));
+    fn make_copy(
+        start: usize,
+        end: usize,
+        reason: hew_serialize::ActorSendCopyReasonData,
+    ) -> ActorSendAliasingEntry {
+        make_entry(start, end, ActorSendAliasingData::Copy { reason })
     }
 
     #[test]
-    fn line_col_second_line() {
-        // "abc\ndef" — 'd' is at offset 4
-        let map = build_line_map("abc\ndef");
-        assert_eq!(span_to_line_col(&map, 4), (2, 1));
-    }
-
-    #[test]
-    fn line_col_mid_line() {
-        // "abc\ndef" — 'e' is at offset 5
-        let map = build_line_map("abc\ndef");
-        assert_eq!(span_to_line_col(&map, 5), (2, 2));
-    }
-
-    #[test]
-    fn render_copy_entry_includes_reason() {
-        let entries = vec![make_entry(4, 5, ActorSendAliasingData::Copy)];
+    fn render_copy_entry_includes_copy_type_reason() {
+        let entries = vec![make_copy(
+            4,
+            5,
+            hew_serialize::ActorSendCopyReasonData::CopyType,
+        )];
         let source = "abc\nxyz";
         let mut out = Vec::new();
         render_explain_cow(&entries, source, "test.hew", &mut out);
@@ -113,9 +95,44 @@ mod tests {
             "expected test.hew:2:1 in output, got: {output:?}"
         );
         assert!(
-            output.contains("feature gate disabled"),
-            "expected reason in output, got: {output:?}"
+            output.contains("Copy type"),
+            "Copy-typed reason should render as `Copy type`, got: {output:?}"
         );
+    }
+
+    #[test]
+    fn render_copy_entry_renders_each_reason_distinctly() {
+        // Every reason variant must produce a distinct, descriptive
+        // suffix; this guards against a regression where every Copy
+        // site rendered with the same placeholder reason.
+        let cases = [
+            (
+                hew_serialize::ActorSendCopyReasonData::NotIdentifier,
+                "non-identifier expression",
+            ),
+            (
+                hew_serialize::ActorSendCopyReasonData::CopyType,
+                "Copy type",
+            ),
+            (
+                hew_serialize::ActorSendCopyReasonData::StdlibDrop,
+                "stdlib Drop",
+            ),
+            (
+                hew_serialize::ActorSendCopyReasonData::UserDrop,
+                "user impl Drop",
+            ),
+        ];
+        for (reason, expected_label) in cases {
+            let entries = vec![make_copy(0, 1, reason)];
+            let mut out = Vec::new();
+            render_explain_cow(&entries, "x", "f.hew", &mut out);
+            let output = String::from_utf8(out).unwrap();
+            assert!(
+                output.contains(expected_label),
+                "expected `{expected_label}` for {reason:?}, got: {output:?}"
+            );
+        }
     }
 
     #[test]
@@ -127,8 +144,30 @@ mod tests {
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("ALIAS"), "expected ALIAS in output");
         assert!(
-            !output.contains("feature gate"),
-            "alias entries must not include a reason"
+            !output.contains(" ("),
+            "alias entries must not include a parenthesised reason, got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn render_uses_shared_diagnostic_line_map_for_crlf() {
+        // Regression: the local byte-based mapper miscounted CRLF line
+        // endings.  The shared `diagnostic::offset_to_line_col` is
+        // CRLF-aware; sanity-check that an offset on the second line
+        // of a CRLF source resolves to line 2.
+        let source = "abc\r\nxyz";
+        // 'x' is at byte offset 5 in "abc\r\nxyz".
+        let entries = vec![make_copy(
+            5,
+            6,
+            hew_serialize::ActorSendCopyReasonData::CopyType,
+        )];
+        let mut out = Vec::new();
+        render_explain_cow(&entries, source, "f.hew", &mut out);
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("f.hew:2:1"),
+            "CRLF: 'x' should be 2:1, got: {output:?}"
         );
     }
 }

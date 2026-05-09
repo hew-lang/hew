@@ -868,7 +868,7 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     // The type-checker keys actor_send_aliasing on the right operand's span
     // (`right.1` in `enforce_actor_boundary_send`).
     ast::Span msgSpan = expr.right->span;
-    auto sendAliasingAttr = builder.getI32IntegerAttr(aliasingAttrForSpans({msgSpan}, location));
+    auto sendAliasingAttr = aliasingAttrForSpans({msgSpan}, location);
     hew::ActorSendOp::create(builder, location, lhs, builder.getI32IntegerAttr(0), sendAliasingAttr,
                              mlir::ValueRange{rhs});
     return nullptr;
@@ -4806,7 +4806,7 @@ std::optional<mlir::Value> MLIRGen::generateActorMethodCall(const ast::ExprMetho
         argVals.push_back(val);
         argSpans.push_back(argSpanned.span);
       }
-      auto sendAliasingAttr = builder.getI32IntegerAttr(aliasingAttrForSpans(argSpans, location));
+      auto sendAliasingAttr = aliasingAttrForSpans(argSpans, location);
       hew::ActorSendOp::create(builder, location, receiver, builder.getI32IntegerAttr(0),
                                sendAliasingAttr, argVals);
       return nullptr;

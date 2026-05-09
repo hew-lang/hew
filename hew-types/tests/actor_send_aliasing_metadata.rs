@@ -78,7 +78,10 @@ fn actor_send_aliasing_map_populated_for_copy_send() {
         "actor_send_aliasing must contain an entry for the Copy send"
     );
     for decision in output.actor_send_aliasing.values() {
-        assert_eq!(*decision, ActorSendAliasing::Copy);
+        assert!(
+            matches!(decision, ActorSendAliasing::Copy(_)),
+            "expected Copy, got {decision:?}"
+        );
     }
 }
 
@@ -239,10 +242,9 @@ fn actor_send_aliasing_copy_typed_bare_identifier_stays_copy() {
         output.errors
     );
     for decision in output.actor_send_aliasing.values() {
-        assert_eq!(
-            *decision,
-            ActorSendAliasing::Copy,
-            "Copy-typed sends must stay Copy"
+        assert!(
+            matches!(decision, ActorSendAliasing::Copy(_)),
+            "Copy-typed sends must stay Copy, got {decision:?}"
         );
     }
 }

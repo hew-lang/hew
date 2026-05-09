@@ -11,7 +11,8 @@ use hew_parser::ast::{
 };
 use hew_parser::module::{Module, ModuleId};
 use hew_types::check::{
-    ActorSendAliasing as CheckedActorSendAliasing, AssignTargetKind as CheckedAssignTargetKind,
+    ActorSendAliasing as CheckedActorSendAliasing,
+    ActorSendCopyReason as CheckedActorSendCopyReason, AssignTargetKind as CheckedAssignTargetKind,
     MethodCallReceiverKind as CheckedMethodCallReceiverKind, SpanKey, TypeCheckOutput,
 };
 use hew_types::LoweringFact as CheckedLoweringFact;
@@ -123,11 +124,30 @@ pub struct AssignTargetShapeEntry {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActorSendAliasingData {
     /// Sender retains the payload independently; runtime deep-copies into
-    /// the mailbox. The legacy mailbox path; safe everywhere.
-    Copy,
+    /// the mailbox. The legacy mailbox path; safe everywhere. Carries the
+    /// reason the alias path was rejected so `--explain-cow` can render a
+    /// precise diagnostic per site.
+    Copy { reason: ActorSendCopyReasonData },
     /// Sender and receiver share a refcounted [`HewMsgEnvelope`] payload.
     /// Requires the move-checker to have invalidated the sender's binding.
     Alias,
+}
+
+/// Wire representation of [`hew_types::check::ActorSendCopyReason`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorSendCopyReasonData {
+    /// Arg was not a bare identifier — alias would not be invalidated by
+    /// the move-checker.
+    NotIdentifier,
+    /// Arg's resolved type implements the `Copy` marker.
+    CopyType,
+    /// Arg's resolved type implements the stdlib-registered `Drop`
+    /// marker.
+    StdlibDrop,
+    /// Arg's resolved type carries a user `impl Drop for T` recorded in
+    /// `trait_impls_set` rather than the marker.
+    UserDrop,
 }
 
 /// A single entry in the actor-send aliasing side table.
@@ -1286,6 +1306,16 @@ pub fn build_call_type_args_entries(
 /// resulting list fail-closed (per the `serializer-fail-closed` LESSONS
 /// row): a missing entry for a span the C++ side believes is an actor
 /// send is a hard error.
+#[inline]
+fn reason_to_wire(r: CheckedActorSendCopyReason) -> ActorSendCopyReasonData {
+    match r {
+        CheckedActorSendCopyReason::NotIdentifier => ActorSendCopyReasonData::NotIdentifier,
+        CheckedActorSendCopyReason::CopyType => ActorSendCopyReasonData::CopyType,
+        CheckedActorSendCopyReason::StdlibDrop => ActorSendCopyReasonData::StdlibDrop,
+        CheckedActorSendCopyReason::UserDrop => ActorSendCopyReasonData::UserDrop,
+    }
+}
+
 #[must_use]
 pub fn build_actor_send_aliasing_entries(tco: &TypeCheckOutput) -> Vec<ActorSendAliasingEntry> {
     let mut entries: Vec<ActorSendAliasingEntry> = tco
@@ -1295,7 +1325,9 @@ pub fn build_actor_send_aliasing_entries(tco: &TypeCheckOutput) -> Vec<ActorSend
             start: span.start,
             end: span.end,
             kind: match decision {
-                CheckedActorSendAliasing::Copy => ActorSendAliasingData::Copy,
+                CheckedActorSendAliasing::Copy(reason) => ActorSendAliasingData::Copy {
+                    reason: reason_to_wire(*reason),
+                },
                 CheckedActorSendAliasing::Alias => ActorSendAliasingData::Alias,
             },
         })
@@ -2694,17 +2726,24 @@ mod tests {
         // Producer-side: synthesize a TypeCheckOutput with a single Copy entry,
         // run the builder, and assert the resulting list lifts the span and
         // variant unchanged.
-        use hew_types::check::{ActorSendAliasing, SpanKey};
+        use hew_types::check::{ActorSendAliasing, ActorSendCopyReason, SpanKey};
 
         let mut tco = empty_tco_for_aliasing_tests();
-        tco.actor_send_aliasing
-            .insert(SpanKey { start: 42, end: 58 }, ActorSendAliasing::Copy);
+        tco.actor_send_aliasing.insert(
+            SpanKey { start: 42, end: 58 },
+            ActorSendAliasing::Copy(ActorSendCopyReason::CopyType),
+        );
 
         let entries = build_actor_send_aliasing_entries(&tco);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].start, 42);
         assert_eq!(entries[0].end, 58);
-        assert_eq!(entries[0].kind, ActorSendAliasingData::Copy);
+        assert_eq!(
+            entries[0].kind,
+            ActorSendAliasingData::Copy {
+                reason: ActorSendCopyReasonData::CopyType,
+            }
+        );
 
         // Consumer-side: serialize to msgpack and back; the entry must
         // survive the wire-format round trip with both span and variant
@@ -2773,20 +2812,21 @@ mod tests {
 
     #[test]
     fn build_actor_send_aliasing_entries_produces_deterministic_order() {
-        use hew_types::check::{ActorSendAliasing, SpanKey};
+        use hew_types::check::{ActorSendAliasing, ActorSendCopyReason, SpanKey};
 
+        let copy = ActorSendAliasing::Copy(ActorSendCopyReason::CopyType);
         let mut tco = empty_tco_for_aliasing_tests();
         tco.actor_send_aliasing.insert(
             SpanKey {
                 start: 100,
                 end: 200,
             },
-            ActorSendAliasing::Copy,
+            copy,
         );
         tco.actor_send_aliasing
-            .insert(SpanKey { start: 10, end: 20 }, ActorSendAliasing::Copy);
+            .insert(SpanKey { start: 10, end: 20 }, copy);
         tco.actor_send_aliasing
-            .insert(SpanKey { start: 50, end: 60 }, ActorSendAliasing::Copy);
+            .insert(SpanKey { start: 50, end: 60 }, copy);
 
         let entries = build_actor_send_aliasing_entries(&tco);
         assert_eq!(entries.len(), 3);

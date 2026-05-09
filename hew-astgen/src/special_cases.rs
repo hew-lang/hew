@@ -216,6 +216,28 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
 }"#
 }
 
+/// Hard-coded parser for `MethodCallTypeArgsEntry` (schema version 9+).
+///
+/// Deserializes a single entry from the `method_call_type_args` side table.
+/// The `type_args` field is optional here for forward compatibility: entries
+/// emitted before the field stabilised will lack it and are treated as having
+/// zero type arguments.
+pub fn method_call_type_args_entry_parser() -> &'static str {
+    r#"static ast::MethodCallTypeArgsEntry
+parseMethodCallTypeArgsEntry(const msgpack::object &obj) {
+  ast::MethodCallTypeArgsEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  if (const auto *ta = mapGet(obj, "type_args")) {
+    entry.type_args = parseVec<ast::Spanned<ast::TypeExpr>>(
+        *ta, [](const msgpack::object &o) {
+          return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
+        });
+  }
+  return entry;
+}"#
+}
+
 /// Hard-coded parser for `ModuleId` to preserve string-key compatibility in
 /// `ModuleGraph.modules`.
 pub fn module_id_parser() -> &'static str {
@@ -347,6 +369,8 @@ pub fn program_parser() -> &'static str {
   prog.expr_types = parseVec<ast::ExprTypeEntry>(mapReq(obj, "expr_types"), parseExprTypeEntry);
   prog.method_call_receiver_kinds = parseVec<ast::MethodCallReceiverKindEntry>(
       mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
+  prog.method_call_type_args = parseVec<ast::MethodCallTypeArgsEntry>(
+      mapReq(obj, "method_call_type_args"), parseMethodCallTypeArgsEntry);
   prog.assign_target_kinds = parseVec<ast::AssignTargetKindEntry>(
       mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
   prog.assign_target_shapes = parseVec<ast::AssignTargetShapeEntry>(
@@ -1634,6 +1658,18 @@ mod tests {
     }
 
     #[test]
+    fn method_call_type_args_entry_parser_reads_fields() {
+        let src = method_call_type_args_entry_parser();
+        assert!(src.contains("parseMethodCallTypeArgsEntry("));
+        assert!(src.contains("entry.start"));
+        assert!(src.contains("entry.end"));
+        // type_args is optional in the individual entry (forward compat)
+        assert!(src.contains("mapGet(obj, \"type_args\")"));
+        assert!(src.contains("parseSpanned<ast::TypeExpr>"));
+        assert!(src.contains("parseTypeExpr"));
+    }
+
+    #[test]
     fn method_call_receiver_kind_entry_parser_reads_shape() {
         let src = method_call_receiver_kind_entry_parser();
         assert!(src.contains("parseMethodCallReceiverKindEntry("));
@@ -1722,6 +1758,7 @@ mod tests {
         // Required metadata fields stay strict at the embedded boundary.
         assert!(src.contains("mapReq(obj, \"expr_types\")"));
         assert!(src.contains("mapReq(obj, \"method_call_receiver_kinds\")"));
+        assert!(src.contains("mapReq(obj, \"method_call_type_args\")"));
         assert!(src.contains("mapReq(obj, \"assign_target_kinds\")"));
         assert!(src.contains("mapReq(obj, \"lowering_facts\")"));
         assert!(src.contains("mapReq(obj, \"handle_types\")"));

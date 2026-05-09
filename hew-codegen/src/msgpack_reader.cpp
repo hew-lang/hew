@@ -157,7 +157,7 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
 /// boundary is internal to the current `hew` binary, so missing or
 /// mismatched versions are rejected rather than carrying compatibility
 /// fallbacks for older payloads.
-constexpr uint32_t CURRENT_SCHEMA_VERSION = 8;
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 9;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 
@@ -1889,6 +1889,20 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
   fail("unknown method_call_receiver_kinds kind '" + kind + "'");
 }
 
+static ast::MethodCallTypeArgsEntry
+parseMethodCallTypeArgsEntry(const msgpack::object &obj) {
+  ast::MethodCallTypeArgsEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  if (const auto *ta = mapGet(obj, "type_args")) {
+    entry.type_args = parseVec<ast::Spanned<ast::TypeExpr>>(
+        *ta, [](const msgpack::object &o) {
+          return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
+        });
+  }
+  return entry;
+}
+
 static ast::Program parseProgram(const msgpack::object &obj) {
   ast::Program prog;
 
@@ -1911,6 +1925,8 @@ static ast::Program parseProgram(const msgpack::object &obj) {
   prog.expr_types = parseVec<ast::ExprTypeEntry>(mapReq(obj, "expr_types"), parseExprTypeEntry);
   prog.method_call_receiver_kinds = parseVec<ast::MethodCallReceiverKindEntry>(
       mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
+  prog.method_call_type_args = parseVec<ast::MethodCallTypeArgsEntry>(
+      mapReq(obj, "method_call_type_args"), parseMethodCallTypeArgsEntry);
   prog.assign_target_kinds = parseVec<ast::AssignTargetKindEntry>(
       mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
   prog.assign_target_shapes = parseVec<ast::AssignTargetShapeEntry>(

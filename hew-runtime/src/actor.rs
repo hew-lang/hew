@@ -1392,6 +1392,7 @@ pub unsafe extern "C" fn hew_actor_try_send(
     data: *mut c_void,
     size: usize,
 ) -> i32 {
+    cabi_guard!(actor.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     let mb = a.mailbox.cast::<HewMailbox>();
@@ -2211,6 +2212,7 @@ unsafe fn actor_send_result_internal_reply(
     size: usize,
     reply_channel: *mut c_void,
 ) -> i32 {
+    cabi_guard!(actor.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -3028,6 +3030,7 @@ pub unsafe extern "C" fn hew_actor_send(
     data: *mut c_void,
     size: usize,
 ) {
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     // SAFETY: Mailbox is valid for the actor's lifetime.
@@ -3058,6 +3061,7 @@ pub unsafe extern "C" fn hew_actor_try_send(
     data: *mut c_void,
     size: usize,
 ) -> i32 {
+    cabi_guard!(actor.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: Caller guarantees `actor` is a valid pointer.
     let a = unsafe { &*actor };
     // SAFETY: a.mailbox is a valid mailbox pointer for the actor's lifetime.
@@ -3091,6 +3095,7 @@ pub(crate) unsafe fn ask_with_channel_wasm_internal(
     size: usize,
     ch: *mut c_void,
 ) -> i32 {
+    cabi_guard!(actor.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: the actor now holds the sender-side reference until it replies.
     unsafe { crate::reply_channel_wasm::hew_reply_channel_retain(ch.cast()) };
 
@@ -3913,6 +3918,67 @@ mod tests {
         // SAFETY: null is the input we are testing the guard against.
         let v = unsafe { hew_actor_pid(ptr::null_mut()) };
         assert_eq!(v, 0, "expected zero sentinel for null actor");
+    }
+
+    // --- null-guard regression tests for the high-frequency send/ask paths ---
+    //
+    // These cover the paths the prior batch missed: `hew_actor_send`,
+    // `hew_actor_try_send`, and the ask-family helper.  Each test passes a
+    // null actor pointer and expects the guard to fire without a SIGSEGV and
+    // to return `HewError::ErrActorStopped` for i32-returning variants.
+
+    #[test]
+    fn null_actor_send_returns_without_crash() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        unsafe { hew_actor_send(ptr::null_mut(), 0, ptr::null_mut(), 0) };
+    }
+
+    #[test]
+    fn null_actor_try_send_returns_err_actor_stopped() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        let result = unsafe { hew_actor_try_send(ptr::null_mut(), 0, ptr::null_mut(), 0) };
+        assert_eq!(
+            result,
+            HewError::ErrActorStopped as i32,
+            "expected ErrActorStopped for null actor"
+        );
+    }
+
+    #[test]
+    fn null_actor_send_result_internal_reply_returns_err_actor_stopped() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        let result = unsafe {
+            actor_send_result_internal_reply(
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(
+            result,
+            HewError::ErrActorStopped as i32,
+            "expected ErrActorStopped for null actor"
+        );
+    }
+
+    #[test]
+    fn null_actor_ask_with_channel_wasm_internal_returns_err_actor_stopped() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null actor is the input we are testing the guard against.
+        // A null ch is safe here because the guard fires before the retain.
+        let result = unsafe {
+            ask_with_channel_wasm_internal(ptr::null_mut(), 0, ptr::null_mut(), 0, ptr::null_mut())
+        };
+        assert_eq!(
+            result,
+            HewError::ErrActorStopped as i32,
+            "expected ErrActorStopped for null actor"
+        );
     }
 
     #[test]

@@ -1162,6 +1162,20 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
   }
 };
 
+/// True when every entry of the per-arg `aliasing` array attribute is `1`
+/// (Alias).  An empty array is treated as all-Copy (the default for
+/// emitters that have not opted in).
+static bool actorSendAllAlias(mlir::ArrayAttr aliasing) {
+  if (!aliasing || aliasing.empty())
+    return false;
+  for (auto attr : aliasing) {
+    auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr);
+    if (!intAttr || intAttr.getInt() != 1)
+      return false;
+  }
+  return true;
+}
+
 /// Lower hew.actor_send -> pack args + func.call @hew_actor_send
 struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> {
   using OpConversionPattern<hew::ActorSendOp>::OpConversionPattern;
@@ -1180,8 +1194,59 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
     auto msgTypeVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type,
                                                          static_cast<int64_t>(op.getMsgType()));
 
-    // Deep-copy owned values (strings, vecs) so the receiver gets
-    // independent copies that survive the sender's scope-exit drops.
+    // Phase α COW envelope path: only fire when (a) every arg is
+    // checker-classified as Alias (the move-checker has invalidated
+    // every sender binding so no post-send observation is possible)
+    // *and* (b) the target is a local actor pointer (remote-PID
+    // dispatch still goes through `hew_actor_send_by_id`'s wire-
+    // encoded copy path until the distributed envelope ABI is wired).
+    bool useAliasPath = actorSendAllAlias(op.getAliasing()) && targetVal.getType() != i64Type;
+
+    if (useAliasPath) {
+      // Pack args into a stack alloca, then `malloc(size) + memcpy`
+      // into a heap buffer the envelope owns.  An alloca pointer
+      // handed to the envelope would dangle past the caller's scope.
+      auto [stackPtr, dataSize] = emitPackArgs(rewriter, loc, adaptor.getArgs());
+      auto mallocFuncType = rewriter.getFunctionType({sizeType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, "malloc", mallocFuncType);
+      auto heapBuf = mlir::func::CallOp::create(rewriter, loc, "malloc", mlir::TypeRange{ptrType},
+                                                mlir::ValueRange{dataSize})
+                         .getResult(0);
+      // memcpy(heap, stack, size).
+      auto memcpyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, "memcpy", memcpyFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "memcpy", mlir::TypeRange{ptrType},
+                                 mlir::ValueRange{heapBuf, stackPtr, dataSize});
+
+      // Wrap in an envelope.  drop_glue is null: the packed buffer is
+      // plain bytes and any string/vec sub-allocations inside transfer
+      // ownership to the receiver under the alias contract — sender
+      // bindings are move-invalidated.  On envelope final-release the
+      // payload buffer itself is `libc::free`'d, which is the correct
+      // teardown for a malloc'd packed struct holding handle pointers.
+      auto nullDropGlue = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+      auto envelopeNewFuncType = rewriter.getFunctionType({ptrType, sizeType, ptrType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, "hew_msg_envelope_new", envelopeNewFuncType);
+      auto envelope = mlir::func::CallOp::create(rewriter, loc, "hew_msg_envelope_new",
+                                                 mlir::TypeRange{ptrType},
+                                                 mlir::ValueRange{heapBuf, dataSize, nullDropGlue})
+                          .getResult(0);
+
+      // Hand the envelope to the runtime; it gates on mailbox
+      // capacity and either takes the alias fast path or falls back
+      // to the legacy copy path with the envelope's payload.
+      auto sendFuncType = rewriter.getFunctionType({ptrType, i32Type, ptrType}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_actor_send_aliased", sendFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "hew_actor_send_aliased", mlir::TypeRange{},
+                                 mlir::ValueRange{targetVal, msgTypeVal, envelope});
+
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
+
+    // Legacy copy path: deep-copy owned values (strings, vecs) so the
+    // receiver gets independent copies that survive the sender's
+    // scope-exit drops.
     auto clonedArgs = deepCopyOwnedArgs(rewriter, loc, module, op.getArgs(), adaptor.getArgs());
     auto [dataPtr, dataSize] = emitPackArgs(rewriter, loc, clonedArgs);
 
@@ -1208,6 +1273,17 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
 };
 
 /// Lower hew.actor_ask -> pack args + func.call @hew_actor_ask (blocking)
+///
+/// **Phase α scope cut**: `hew.actor_ask` always takes the legacy
+/// deep-copy path even when every arg is checker-classified as
+/// `Alias`.  The Ask reply-buffer cleanup (panic-on-null sentinel,
+/// `free()` on success, timeout `Option<T>` wrapping) has not been
+/// audited under the envelope path yet.  Lighting the alias fast path
+/// here without that audit risks a use-after-free on the reply
+/// buffer's interaction with the request envelope's drop semantics.
+/// A follow-up lane wires aliased-Ask once the reply contract is
+/// covered; the per-arg `aliasing` array on `Hew_ActorAskOp` is
+/// preserved through codegen for that future commit.
 struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
   using OpConversionPattern<hew::ActorAskOp>::OpConversionPattern;
 

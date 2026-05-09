@@ -515,10 +515,6 @@ unsafe fn msg_node_alloc(
 /// via [`hew_msg_envelope_clone_alias`]). The caller must not release
 /// its own reference if it intends the new node to own it; this
 /// function consumes one refcount.
-#[allow(
-    dead_code,
-    reason = "Wired up by codegen in a later commit (commit 6 in the lane plan)."
-)]
 unsafe fn msg_node_alloc_aliased(
     msg_type: i32,
     envelope: *mut HewMsgEnvelope,
@@ -880,8 +876,8 @@ pub struct HewMailbox {
     pub(crate) count: AtomicI64,
     /// Approximate system-queue message count for observability.
     sys_count: AtomicUsize,
-    /// Maximum user-queue capacity (`-1` = unbounded).
-    capacity: i64,
+    /// Maximum user-queue capacity (`-1` or `0` = unbounded).
+    pub(crate) capacity: i64,
     /// Policy applied when user-queue is at capacity.
     overflow: HewOverflowPolicy,
     /// Optional key extractor used by [`HewOverflowPolicy::Coalesce`].
@@ -898,6 +894,16 @@ pub struct HewMailbox {
     pub(crate) high_water_mark: AtomicI64,
     /// Whether this mailbox uses the slow (mutex) path for user messages.
     use_slow_path: bool,
+}
+
+impl HewMailbox {
+    /// Read-only accessor: `true` when the mailbox uses the mutex
+    /// slow-path queue for user messages (rather than the lock-free
+    /// MPSC queue).  Used by the Phase α aliased-send gate.
+    #[inline]
+    pub(crate) fn use_slow_path(&self) -> bool {
+        self.use_slow_path
+    }
 }
 
 /// Update the high-water mark after incrementing `count`.
@@ -1402,6 +1408,84 @@ unsafe fn send_with_overflow(
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 
     SendOutcome::Enqueued
+}
+
+/// Send an envelope-aliased message to the mailbox (user queue) on the
+/// **unbounded** fast path, without copying the payload.
+///
+/// The caller transfers one refcount on `envelope` to the mailbox node;
+/// `hew_msg_node_free` releases that reference once the receiver has
+/// finished with the message.  On any failure that prevents the
+/// envelope from reaching the queue, the function calls
+/// [`hew_msg_envelope_release`] to drop the caller-transferred
+/// reference.
+///
+/// Phase α restriction: this entry point only services unbounded
+/// mailboxes (`capacity <= 0`) and the lock-free `user_fast` queue.
+/// Bounded / slow-path mailboxes fall back to the legacy copy path at
+/// the runtime layer above (`hew_actor_send_aliased`); a future lane
+/// extends the alias path through the bounded policies.
+///
+/// Returns `0` ([`HewError::Ok`]) on success, `-1`
+/// ([`HewError::ErrMailboxFull`]) if the mailbox is bounded (alias
+/// path not lit there yet), `-2` ([`HewError::ErrActorStopped`]) if
+/// the mailbox is closed, or `-5` ([`HewError::ErrOom`]) if the node
+/// allocation fails.
+///
+/// # Safety
+///
+/// - `mb` must be a valid mailbox pointer.
+/// - `envelope` must be a live envelope obtained from
+///   [`hew_msg_envelope_new`] (or already-cloned).  The caller
+///   transfers exactly one refcount into this call.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_mailbox_send_aliased(
+    mb: *mut HewMailbox,
+    msg_type: i32,
+    envelope: *mut HewMsgEnvelope,
+) -> i32 {
+    if mb.is_null() || envelope.is_null() {
+        if !envelope.is_null() {
+            // SAFETY: envelope was caller-owned; release the
+            // transferred refcount on the early-exit error path.
+            unsafe { hew_msg_envelope_release(envelope) };
+        }
+        return HewError::ErrActorStopped as i32;
+    }
+    // SAFETY: caller guarantees `mb` is valid for the duration of the
+    // call; we hold no &mut so the field reads are sound.
+    let mb_ref = unsafe { &*mb };
+    if mb_ref.closed.load(Ordering::Acquire) {
+        // SAFETY: caller transferred this refcount; release it on
+        // failure so the envelope drops correctly.
+        unsafe { hew_msg_envelope_release(envelope) };
+        return HewError::ErrActorStopped as i32;
+    }
+    if mb_ref.capacity > 0 || mb_ref.use_slow_path {
+        // SAFETY: Phase α gate — bounded / slow-path mailboxes do not
+        // yet have alias lowering; release the transferred refcount
+        // and return so the runtime caller can fall back.
+        unsafe { hew_msg_envelope_release(envelope) };
+        return HewError::ErrMailboxFull as i32;
+    }
+    // SAFETY: msg_node_alloc_aliased consumes one refcount on
+    // `envelope`; its node frees the envelope via `hew_msg_node_free`.
+    let node = unsafe { msg_node_alloc_aliased(msg_type, envelope, ptr::null_mut()) };
+    if node.is_null() {
+        // SAFETY: node alloc failed; envelope has NOT been consumed
+        // (the alloc helper only attaches the envelope after
+        // successful node allocation).  Release the caller-transferred
+        // refcount.
+        unsafe { hew_msg_envelope_release(envelope) };
+        return HewError::ErrOom as i32;
+    }
+    // SAFETY: node was just allocated with next == null.
+    unsafe { mb_ref.user_fast.enqueue(node) };
+    mb_ref.count.fetch_add(1, Ordering::Release);
+    update_high_water_mark(mb_ref);
+    MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+    HewError::Ok as i32
 }
 
 /// Send a message to the mailbox (user queue), deep-copying `data`.

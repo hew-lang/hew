@@ -1409,6 +1409,151 @@ pub unsafe extern "C" fn hew_actor_send(
     unsafe { actor_send_internal(actor, msg_type, data, size) };
 }
 
+/// Send an envelope-aliased message to an actor (fire-and-forget,
+/// **unbounded mailboxes only**).
+///
+/// The caller transfers one refcount on `envelope` to the runtime.
+/// On success the envelope reaches the receiver via the COW path
+/// (`hew_msg_node_free` releases the envelope refcount when the node
+/// is consumed).  On failure (closed mailbox, bounded mailbox, OOM,
+/// null pointers, drop-fault injection) the transferred refcount is
+/// released back to the caller's accounting; the caller treats the
+/// envelope as consumed in all cases.
+///
+/// **Phase α gate** (mirrored at the codegen lowering):
+///
+/// - mailbox must be unbounded (`capacity <= 0`) and not slow-path.
+/// - target must be a local actor (remote-PID dispatch still goes
+///   through `hew_actor_send_by_id`'s wire-encoded copy path).
+///
+/// Bounded / slow-path mailboxes silently fall back: the runtime
+/// extracts the envelope's payload, calls the legacy copy path, and
+/// then releases the envelope.  This keeps the invariants stable
+/// while a follow-up lane lights the alias path under the bounded
+/// policies.
+///
+/// # Safety
+///
+/// - `actor` must be a valid pointer returned by a spawn function (or
+///   null; null actor is a no-op that releases the envelope).
+/// - `envelope` must be a live envelope obtained from
+///   [`hew_msg_envelope_new`].
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_aliased(
+    actor: *mut HewActor,
+    msg_type: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+) {
+    if envelope.is_null() {
+        return;
+    }
+    if actor.is_null() {
+        // SAFETY: caller transferred this refcount; release it on the
+        // null-actor early exit so the envelope drops correctly.
+        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        return;
+    }
+    // SAFETY: caller guarantees `actor` is valid for the call; we read
+    // the mailbox pointer + drop-fault id without taking &mut.
+    let a = unsafe { &*actor };
+
+    if crate::deterministic::check_drop_fault(a.id) {
+        // Test-only fault injection: pretend success but discard.
+        // SAFETY: caller transferred this refcount; release it so the
+        // envelope drops without the receiver observing it.
+        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        return;
+    }
+
+    let mb = a.mailbox.cast::<crate::mailbox::HewMailbox>();
+    // SAFETY: mb is valid for the actor's lifetime; field reads do not
+    // create &mut.
+    let mb_ref = unsafe { &*mb };
+
+    // Phase α: bounded / slow-path mailboxes fall back to the legacy
+    // copy path.  The receiver gets an independent buffer; the
+    // envelope releases its payload on the final `release` below.
+    if mb_ref.capacity > 0 || mb_ref.use_slow_path() {
+        // SAFETY: envelope is live; payload pointer is stable for
+        // the envelope's lifetime under the alias contract.
+        let payload = unsafe { (*envelope).payload };
+        // SAFETY: envelope is live; payload_size is stable for the
+        // envelope's lifetime under the alias contract.
+        let size = unsafe { (*envelope).payload_size };
+        // SAFETY: actor is valid; payload/size satisfy the legacy
+        // contract (deep-copy at the mailbox boundary).
+        unsafe { actor_send_internal(actor, msg_type, payload, size) };
+        // SAFETY: caller transferred this refcount; we release it now
+        // that the legacy path has its independent copy.
+        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        return;
+    }
+
+    // Unbounded fast path: enqueue the aliased node directly.
+    // SAFETY: mb pointer is valid; envelope refcount is transferred.
+    let result = unsafe { crate::mailbox::hew_mailbox_send_aliased(mb, msg_type, envelope) };
+    if result != 0 {
+        return;
+    }
+
+    let sender = hew_actor_self();
+    let trace_actor_id = if sender.is_null() {
+        a.id
+    } else {
+        // SAFETY: scheduler sets CURRENT_ACTOR to a live actor during dispatch.
+        unsafe { (*sender).id }
+    };
+    crate::tracing::record_send(trace_actor_id, msg_type);
+
+    // CAS IDLE → RUNNABLE; on success, schedule the actor.
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Runnable as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        a.idle_count.store(0, Ordering::Relaxed);
+        a.hibernating.store(0, Ordering::Relaxed);
+        scheduler::sched_enqueue(actor);
+    }
+}
+
+/// WASM stub for [`hew_actor_send_aliased`].
+///
+/// Phase α: WASM does not yet host the alias fast path; codegen gates
+/// the alias call site on the native target.  This stub exists so the
+/// symbol resolves under `wasm32`-targeted builds and falls back to
+/// the legacy copy path with the envelope's payload.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_aliased(
+    actor: *mut HewActor,
+    msg_type: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+) {
+    if envelope.is_null() {
+        return;
+    }
+    // SAFETY: envelope is live; payload pointer is stable for the
+    // envelope's lifetime.
+    let payload = unsafe { (*envelope).payload };
+    // SAFETY: envelope is live; payload_size is stable for the
+    // envelope's lifetime.
+    let size = unsafe { (*envelope).payload_size };
+    if !actor.is_null() {
+        // SAFETY: legacy WASM send path; payload/size are valid for
+        // `size` bytes under the alias contract.
+        unsafe { hew_actor_send(actor, msg_type, payload, size) };
+    }
+    // SAFETY: caller transferred this refcount; release it now that
+    // the legacy path has copied the payload.
+    unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+}
+
 /// Send a wire-encoded message to an actor.
 ///
 /// Extracts raw bytes from the `HewVec` (bytes type), deep-copies them

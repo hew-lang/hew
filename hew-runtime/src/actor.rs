@@ -1533,7 +1533,7 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
 pub unsafe extern "C" fn hew_actor_send_aliased(
     actor: *mut HewActor,
     msg_type: i32,
-    envelope: *mut crate::mailbox::HewMsgEnvelope,
+    envelope: *mut crate::mailbox_wasm::HewMsgEnvelope,
 ) {
     if envelope.is_null() {
         return;
@@ -1551,7 +1551,7 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
     }
     // SAFETY: caller transferred this refcount; release it now that
     // the legacy path has copied the payload.
-    unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+    unsafe { crate::mailbox_wasm::hew_msg_envelope_release(envelope) };
 }
 
 /// Send a wire-encoded message to an actor.

@@ -709,6 +709,19 @@ impl Checker {
             {
                 return ActorSendAliasing::Copy(ActorSendCopyReason::UserDrop);
             }
+            // Built-in heap-owning collections (`Vec`, `HashMap`, `HashSet`)
+            // do not implement the `Drop` marker through the trait registry —
+            // their `Drop` derivation depends on element types, and a
+            // collection of `Copy` elements (e.g. `HashMap<String, i64>`)
+            // therefore reports `implements_marker(MarkerTrait::Drop) == false`.
+            // The collection itself still owns heap memory, so the alias
+            // path's contract (no sender-side drop) would leak the
+            // backing buffer.  Classify them as `Copy(StdlibDrop)` so the
+            // legacy `deepCopyOwnedArgs` clone fires and the receiver
+            // gets an independent copy.
+            if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+                return ActorSendAliasing::Copy(ActorSendCopyReason::StdlibDrop);
+            }
         }
         ActorSendAliasing::Alias
     }

@@ -2136,21 +2136,41 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
 /// The supervisor child spec holds its own independent deep copy used for
 /// restarts and never reads `a.init_state`.
 ///
+/// **Calling window**: safe to call any time between a successful spawn and the
+/// first message dispatch. Codegen emits the call immediately after spawn in
+/// the same basic block, satisfying this constraint. Calling after the actor
+/// has started processing messages is a data race on `state_drop_fn`.
+///
+/// **Supervisor back-fill**: [`hew_supervisor_set_child_state_drop`] calls this
+/// function on the already-spawned actor so that both the in-flight actor and
+/// every future restart see the same drop callback. The supervisor stores the
+/// pointer in its child spec and re-applies it to each newly spawned actor in
+/// `restart_child_from_spec`.
+///
 /// # Safety
 ///
 /// - `actor` must be a valid pointer returned by a spawn function.
 /// - `state_drop_fn` must point to a function with C ABI that accepts a
 ///   single `*mut c_void` (the actor state), and must be safe to call once
-///   on that allocation immediately before it is freed.
+///   on that allocation immediately before it is freed. The function pointer
+///   must remain valid for the entire lifetime of the actor — it is stored
+///   in the actor struct and invoked during teardown without further
+///   lifetime checks.
+/// - This setter has a null guard (unlike [`hew_actor_set_terminate`]) because
+///   codegen emits an unconditional call immediately after spawn, and spawn
+///   returns null on allocation failure. The guard prevents an FFI call on a
+///   null pointer in that error path.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_state_drop(
     actor: *mut HewActor,
     state_drop_fn: unsafe extern "C" fn(*mut c_void),
 ) {
     // Spawn paths return null on allocation failure (see hew_actor_spawn /
-    // hew_actor_spawn_opts). Codegen still emits the unconditional setter
-    // call, so guard here as a defence-in-depth measure that mirrors every
-    // other public setter in this module.
+    // hew_actor_spawn_opts). Codegen emits an unconditional setter call
+    // immediately after spawn. The null guard here is the defence-in-depth
+    // that covers this OOM path; hew_actor_set_terminate has no equivalent
+    // guard because its codegen emit site wraps the call in an explicit
+    // `if (result != null)` check instead.
     cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &mut *actor };

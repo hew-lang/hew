@@ -1430,6 +1430,7 @@ pub unsafe extern "C" fn hew_actor_try_send(
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -1470,6 +1471,7 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid and remains valid throughout this function.
     let a = unsafe { &*actor };
     let mb = a.mailbox.cast::<HewMailbox>();
@@ -1976,6 +1978,7 @@ pub unsafe extern "C" fn hew_register_handler_name(
 /// `actor` must be a valid pointer returned by a spawn function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_budget(actor: *mut HewActor, budget: u32) {
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     #[expect(
@@ -1996,6 +1999,7 @@ pub unsafe extern "C" fn hew_actor_set_budget(actor: *mut HewActor, budget: u32)
 /// `actor` must be a valid pointer returned by a spawn function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_get_budget(actor: *const HewActor) -> u32 {
+    cabi_guard!(actor.is_null(), 0);
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     #[expect(
@@ -2023,6 +2027,7 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
     actor: *mut HewActor,
     terminate_fn: unsafe extern "C" fn(*mut c_void),
 ) {
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &mut *actor };
     a.terminate_fn = Some(terminate_fn);
@@ -2038,6 +2043,7 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
 /// `actor` must be a valid pointer returned by a spawn function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_reductions(actor: *mut HewActor, reductions: u32) {
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     #[expect(
@@ -2059,6 +2065,7 @@ pub unsafe extern "C" fn hew_actor_set_reductions(actor: *mut HewActor, reductio
 /// `actor` must be a valid pointer returned by a spawn function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_get_reductions(actor: *const HewActor) -> u32 {
+    cabi_guard!(actor.is_null(), 0);
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     #[expect(
@@ -2764,6 +2771,7 @@ pub unsafe extern "C" fn hew_panic_msg(msg: *const std::ffi::c_char) {
 /// `actor` must be a valid pointer to a [`HewActor`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_pid(actor: *mut HewActor) -> u64 {
+    cabi_guard!(actor.is_null(), 0);
     // SAFETY: Caller guarantees `actor` is valid.
     unsafe { &*actor }.pid
 }
@@ -3362,6 +3370,7 @@ pub unsafe extern "C" fn hew_actor_await_all(actors: *const *mut HewActor, count
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -3413,6 +3422,7 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     if !a.mailbox.is_null() {
@@ -3833,6 +3843,76 @@ mod tests {
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };
         actor
+    }
+
+    // --- null-guard regression tests ---
+    //
+    // Each test passes a null pointer to an FFI setter/getter that previously
+    // dereferenced unconditionally.  The expected behaviour after this fix is:
+    //  - void functions: return without crashing (SIGSEGV before fix)
+    //  - value functions: return the documented zero sentinel
+    //
+    // These tests do NOT need a scheduler or a real actor allocation.
+
+    #[test]
+    fn null_actor_close_returns_without_crash() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        unsafe { hew_actor_close(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn null_actor_stop_returns_without_crash() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        unsafe { hew_actor_stop(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn null_actor_set_budget_returns_without_crash() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        unsafe { hew_actor_set_budget(ptr::null_mut(), 10) };
+    }
+
+    #[test]
+    fn null_actor_get_budget_returns_sentinel() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        let v = unsafe { hew_actor_get_budget(ptr::null()) };
+        assert_eq!(v, 0, "expected zero sentinel for null actor");
+    }
+
+    unsafe extern "C" fn null_guard_dummy_terminate(_: *mut c_void) {}
+
+    #[test]
+    fn null_actor_set_terminate_returns_without_crash() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        unsafe { hew_actor_set_terminate(ptr::null_mut(), null_guard_dummy_terminate) };
+    }
+
+    #[test]
+    fn null_actor_set_reductions_returns_without_crash() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        unsafe { hew_actor_set_reductions(ptr::null_mut(), 5) };
+    }
+
+    #[test]
+    fn null_actor_get_reductions_returns_sentinel() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        let v = unsafe { hew_actor_get_reductions(ptr::null()) };
+        assert_eq!(v, 0, "expected zero sentinel for null actor");
+    }
+
+    #[test]
+    fn null_actor_pid_returns_sentinel() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: null is the input we are testing the guard against.
+        let v = unsafe { hew_actor_pid(ptr::null_mut()) };
+        assert_eq!(v, 0, "expected zero sentinel for null actor");
     }
 
     #[test]

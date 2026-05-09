@@ -257,3 +257,80 @@ fn generic_fn_type_param_bound_satisfies_display_via_enum_payload() {
         output.errors
     );
 }
+
+// An impl-scoped inline bound (`impl<T: Display> Holder<T>`) should allow a
+// method body to pass the field of type T to println, which requires Display.
+#[test]
+fn impl_inline_bound_satisfies_display_in_method_body() {
+    let output = typecheck(
+        r"
+        type Holder<T> { value: T }
+
+        impl<T: Display> Holder<T> {
+            fn show(h: Holder<T>) {
+                println(h.value)
+            }
+        }
+
+        fn main() -> int {
+            let h = Holder { value: 42 };
+            h.show();
+            0
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+}
+
+// An impl-scoped where-clause bound (`impl<T> Holder<T> where T: Display`)
+// should behave identically to the inline form.
+#[test]
+fn impl_where_clause_bound_satisfies_display_in_method_body() {
+    let output = typecheck(
+        r"
+        type Holder<T> { value: T }
+
+        impl<T> Holder<T> where T: Display {
+            fn show(h: Holder<T>) {
+                println(h.value)
+            }
+        }
+
+        fn main() -> int {
+            let h = Holder { value: 42 };
+            h.show();
+            0
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+}
+
+// Without any bound the method body should still fail: `T` alone does not
+// satisfy the `Display` requirement of println.
+#[test]
+fn impl_without_bound_rejects_display_call_in_method_body() {
+    let output = typecheck(
+        r"
+        type Holder<T> { value: T }
+
+        impl<T> Holder<T> {
+            fn show(h: Holder<T>) {
+                println(h.value)
+            }
+        }
+        ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected a type error for missing Display bound, but got none"
+    );
+}

@@ -1909,8 +1909,12 @@ impl Checker {
                     });
 
                     for method in &id.methods {
-                        let sig =
-                            self.register_impl_method(type_name, method, id.type_params.as_ref());
+                        let sig = self.register_impl_method(
+                            type_name,
+                            method,
+                            id.type_params.as_ref(),
+                            id.where_clause.as_ref(),
+                        );
                         // Stage A1: when the receiver is a primitive or compiler-builtin
                         // generic, `lookup_type_def_mut(type_name)` returns `None` so the
                         // sig has nowhere to live for later dispatch.  Mirror it onto the
@@ -2280,6 +2284,11 @@ impl Checker {
     /// `impl_type_params` carries the enclosing `impl<T, U, …>` type
     /// parameter names so they are included in the resulting `FnSig`.
     ///
+    /// `impl_where_clause` carries the enclosing impl block's where-clause so
+    /// that bounds of the form `impl<T> Holder<T> where T: Display` are
+    /// propagated into the method signature — both the `td.methods` entry and
+    /// the `fn_sigs` entry consulted by `type_param_carries_bound`.
+    ///
     /// **Important**: the caller must have already pushed the impl-level type
     /// params into `self.generic_ctx` so that type resolution sees them.
     ///
@@ -2290,9 +2299,34 @@ impl Checker {
         type_name: &str,
         method: &FnDecl,
         impl_type_params: Option<&Vec<TypeParam>>,
+        impl_where_clause: Option<&WhereClause>,
     ) -> FnSig {
         let method_key = format!("{type_name}::{}", method.name);
         self.register_fn_sig_with_name(&method_key, method);
+
+        // Patch the fn_sigs entry to include impl-level type params and their
+        // bounds. `register_fn_sig_with_name` only records method-level params,
+        // so `type_param_carries_bound` would otherwise miss impl-level bounds
+        // such as `T: Display` in `impl<T: Display> Holder<T>`.
+        if let Some(impl_tps) = impl_type_params {
+            let impl_bounds = self.collect_type_param_bounds(impl_type_params, impl_where_clause);
+            let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
+                .unwrap_or_else(|| method_key.clone());
+            if let Some(sig) = self.fn_sigs.get_mut(&key) {
+                for tp in impl_tps {
+                    if !sig.type_params.contains(&tp.name) {
+                        sig.type_params.push(tp.name.clone());
+                    }
+                }
+                for (param, bounds) in impl_bounds {
+                    let entry = sig.type_param_bounds.entry(param).or_default();
+                    for bound in bounds {
+                        Self::push_unique_bound(entry, &bound);
+                    }
+                }
+            }
+        }
+
         let skip = usize::from(
             method
                 .params
@@ -2323,10 +2357,24 @@ impl Checker {
             all_type_params.extend(method_tps.iter().map(|tp| tp.name.clone()));
         }
 
+        // Collect bounds from both the impl's type params/where-clause and the
+        // method's own where-clause. Impl-level bounds cover both inline
+        // (`impl<T: Display>`) and where-clause (`impl<T> … where T: Display`)
+        // shapes because `collect_type_param_bounds` reads both sources.
         let mut type_param_bounds =
-            self.collect_type_param_bounds(impl_type_params, method.where_clause.as_ref());
+            self.collect_type_param_bounds(impl_type_params, impl_where_clause);
         for (type_param, bounds) in self
             .collect_type_param_bounds(method.type_params.as_ref(), method.where_clause.as_ref())
+        {
+            let entry = type_param_bounds.entry(type_param).or_default();
+            for bound in bounds {
+                Self::push_unique_bound(entry, &bound);
+            }
+        }
+        // Method where-clause may also constrain impl-level type params (e.g.
+        // an additional bound on T added at the method level).
+        for (type_param, bounds) in
+            self.collect_type_param_bounds(impl_type_params, method.where_clause.as_ref())
         {
             let entry = type_param_bounds.entry(type_param).or_default();
             for bound in bounds {
@@ -2916,8 +2964,12 @@ impl Checker {
                         Self::canonical_primitive_or_builtin_key_from_name(type_name)
                     });
                     for method in &id.methods {
-                        let sig =
-                            self.register_impl_method(type_name, method, id.type_params.as_ref());
+                        let sig = self.register_impl_method(
+                            type_name,
+                            method,
+                            id.type_params.as_ref(),
+                            id.where_clause.as_ref(),
+                        );
                         // Also register on qualified type name
                         let qualified_type = format!("{module_short}.{type_name}");
                         if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
@@ -3064,6 +3116,7 @@ impl Checker {
                                 type_name,
                                 method,
                                 id.type_params.as_ref(),
+                                id.where_clause.as_ref(),
                             );
                             if let (Some(canonical), Some(tb)) =
                                 (primitive_key.clone(), id.trait_bound.as_ref())
@@ -3296,6 +3349,7 @@ impl Checker {
                                 type_name,
                                 method,
                                 id.type_params.as_ref(),
+                                id.where_clause.as_ref(),
                             );
                             if let (Some(canonical), Some(tb)) =
                                 (primitive_key.clone(), id.trait_bound.as_ref())

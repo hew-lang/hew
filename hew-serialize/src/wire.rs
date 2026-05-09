@@ -5,12 +5,6 @@
 //! hand-written msgpack walker now goes through [`serialize_wire_decl_via_plan`].
 //! The descriptor bytes are stable across runs of the same plan and round-trip
 //! through `rmp-serde`.
-//!
-//! Stages 1-3 of Lane 7 land this behind a default-on code path. The legacy
-//! `serialize_wire_decl_legacy` function is retained behind the
-//! `legacy-wire-msgpack` feature for the 10,000-iteration random-corpus
-//! shadow comparison performed in Lane 7b stage 7; it is not on the hot path
-//! for any default build.
 
 use hew_parser::ast::WireDecl;
 use hew_wirecodec::{MsgpackCodecDesc, WireCodecError, WireCodecPlan};
@@ -29,28 +23,6 @@ pub fn serialize_wire_decl_via_plan(decl: &WireDecl) -> Result<Vec<u8>, WireCode
     let plan = WireCodecPlan::build(decl)?;
     let desc = MsgpackCodecDesc::from_plan(&plan);
     Ok(desc.to_msgpack_bytes())
-}
-
-/// Legacy hand-derived path — encode the `WireDecl` AST directly via
-/// `rmp_serde::to_vec_named`.
-///
-/// The bytes emitted here are a different shape from the descriptor path
-/// (this encodes the source-level AST; the descriptor encodes the lowered
-/// op set) — callers must NOT assume byte equality across the two paths.
-///
-/// Gated behind the `legacy-wire-msgpack` feature so default builds cannot
-/// accidentally reach for it. Lane 7b stage 7 enables the feature to run
-/// the 10,000-iteration random-corpus shadow comparator; once that check
-/// lands green, the legacy symbol is deleted entirely.
-///
-/// # Panics
-///
-/// Panics if `rmp-serde` serialization fails; `to_vec_named` only fails on
-/// IO errors against in-memory buffers, which cannot occur.
-#[cfg(feature = "legacy-wire-msgpack")]
-#[must_use]
-pub fn serialize_wire_decl_legacy(decl: &WireDecl) -> Vec<u8> {
-    rmp_serde::to_vec_named(decl).expect("WireDecl msgpack serialization never fails")
 }
 
 #[cfg(test)]

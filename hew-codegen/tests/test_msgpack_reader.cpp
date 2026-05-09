@@ -1118,7 +1118,6 @@ static void test_call_type_args_roundtrip() {
   //   entry 1: call site [40..60], two type args "Int" and "String"
   // Verifies that:
   //   - prog.call_type_args is populated correctly
-  //   - callTypeArgsMap is populated (via MLIRGen helper wiring)
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
 

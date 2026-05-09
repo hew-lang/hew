@@ -666,14 +666,6 @@ private:
       return it->second;
     return nullptr;
   }
-  /// Look up the inferred type arguments for a generic free-function call site by span.
-  /// Returns nullptr when the call site has no recorded type arguments (non-generic call).
-  const ast::CallTypeArgsEntry *callTypeArgsOf(const ast::Span &span) const {
-    auto it = callTypeArgsMap.find({span.start, span.end});
-    if (it != callTypeArgsMap.end())
-      return it->second;
-    return nullptr;
-  }
   const ast::AssignTargetKindEntry *assignTargetKindOf(const ast::Span &span) const {
     auto it = assignTargetKindMap.find({span.start, span.end});
     if (it != assignTargetKindMap.end())

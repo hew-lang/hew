@@ -1105,6 +1105,22 @@ struct LoweringFactEntry {
   DropKind drop_kind = DropKind::HashSetFree;
 };
 
+/// Inferred type arguments for a generic free-function call site, keyed by
+/// the call expression's source span.
+///
+/// Populated from `tco.call_type_args` in the Rust type checker and serialized
+/// alongside the AST. C++ codegen uses this side table to look up the resolved
+/// type arguments for generic free-function calls without re-running inference.
+/// Schema version 9+; older payloads omit the `method_call_type_args` key and
+/// the reader falls back to an empty vector.
+struct MethodCallTypeArgsEntry {
+  uint64_t start = 0;
+  uint64_t end = 0;
+  /// Resolved type arguments in parameter order. Each element is a
+  /// `Spanned<TypeExpr>` carrying the concrete type and a synthetic zero span.
+  std::vector<Spanned<TypeExpr>> type_args;
+};
+
 struct Program {
   /// Schema version of the msgpack AST payload.
   /// The reader requires an explicit exact match and rejects missing or
@@ -1116,6 +1132,9 @@ struct Program {
   std::vector<ExprTypeEntry> expr_types;
   /// Checker-resolved receiver classification for surviving method calls.
   std::vector<MethodCallReceiverKindEntry> method_call_receiver_kinds;
+  /// Inferred type arguments for generic free-function call sites (keyed by call span).
+  /// Populated from schema version 9+; empty for older payloads.
+  std::vector<MethodCallTypeArgsEntry> method_call_type_args;
   /// Checker-resolved assignment target classification (keyed by target span).
   /// Missing entry means checker rejected the target; MLIR lowering must fail closed.
   std::vector<AssignTargetKindEntry> assign_target_kinds;

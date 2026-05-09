@@ -2976,6 +2976,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   for (const auto &entry : program.method_call_receiver_kinds) {
     methodCallReceiverKindMap[{entry.start, entry.end}] = &entry;
   }
+  for (const auto &entry : program.method_call_type_args) {
+    methodCallTypeArgsMap[{entry.start, entry.end}] = &entry;
+  }
   for (const auto &entry : program.assign_target_kinds) {
     assignTargetKindMap[{entry.start, entry.end}] = &entry;
   }

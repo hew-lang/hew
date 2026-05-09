@@ -153,9 +153,21 @@ pub struct CheckOutput {
     /// escape-analysis pass. Surfaced behind `hew check --show-stack-hints`.
     /// Empty when type-checking failed before the walker ran.
     pub stack_hints: Vec<hew_types::check::StackHint>,
+    /// Alias-vs-copy decision per actor send site, keyed by source span.
+    ///
+    /// Populated when type-checking succeeds and the type-check output is
+    /// available. Empty when `FrontendOptions::no_typecheck` is set or when
+    /// type errors prevent the checker from completing.
+    ///
+    /// The entries are sorted by `(start, end)` for stable output rendering.
+    ///
+    /// Intended for `--explain-cow` diagnostic rendering in `hew check`.
+    pub actor_send_aliasing: Vec<ActorSendAliasingEntry>,
+    /// Source content of the checked file, used for line/column mapping in
+    /// `--explain-cow` output. Empty when type-checking is skipped.
     /// Source text of the checked file, retained so the CLI can render
-    /// `--show-stack-hints` lines with `file:line:col` attribution. Empty when
-    /// the input could not be loaded.
+    /// `--show-stack-hints` / `--explain-cow` lines with `file:line:col` attribution.
+    /// Empty when the input could not be loaded.
     pub source: String,
 }
 
@@ -598,9 +610,14 @@ pub fn check_program(
                 .as_ref()
                 .map(|tco| tco.stack_hints.clone())
                 .unwrap_or_default();
+            let actor_send_aliasing = tcr
+                .tco
+                .as_ref()
+                .map_or_else(Vec::new, build_actor_send_aliasing_entries);
             Ok(CheckOutput {
                 diagnostics,
                 stack_hints,
+                actor_send_aliasing,
                 source: source.to_string(),
             })
         }
@@ -1659,9 +1676,15 @@ pub fn check_file(input: &str, options: &FrontendOptions) -> Result<CheckOutput,
         .as_ref()
         .map(|tco| tco.stack_hints.clone())
         .unwrap_or_default();
+    let actor_send_aliasing = state
+        .typecheck_result
+        .tco
+        .as_ref()
+        .map_or_else(Vec::new, build_actor_send_aliasing_entries);
     Ok(CheckOutput {
         diagnostics,
         stack_hints,
+        actor_send_aliasing,
         source: state.source,
     })
 }

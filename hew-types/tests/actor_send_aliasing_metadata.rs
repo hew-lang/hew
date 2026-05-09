@@ -44,10 +44,9 @@ const ACTOR_WITH_COPY_SEND: &str = r"
     }
 ";
 
-/// Phase α records `Copy` at every accepted send site so codegen can read
-/// the side table fail-closed without re-deriving the choice from the AST.
-/// The map must contain at least one entry for a program with a single
-/// non-`Copy` actor send.
+/// The producer must insert an entry at every accepted send site so
+/// codegen can read the side table fail-closed without re-deriving the
+/// choice from the AST.
 #[test]
 fn actor_send_aliasing_map_populated_for_non_copy_send() {
     let output = typecheck_isolated(ACTOR_WITH_NON_COPY_SEND);
@@ -60,13 +59,6 @@ fn actor_send_aliasing_map_populated_for_non_copy_send() {
         !output.actor_send_aliasing.is_empty(),
         "actor_send_aliasing must contain an entry for the non-Copy send"
     );
-    for (span, decision) in &output.actor_send_aliasing {
-        assert_eq!(
-            *decision,
-            ActorSendAliasing::Copy,
-            "Phase α must record Copy at every send site (span: {span:?})"
-        );
-    }
 }
 
 /// `Copy`-typed payloads (`int`) also land in the side table as `Copy`.
@@ -143,11 +135,156 @@ fn actor_send_aliasing_records_named_actor_field_receive_dispatch() {
         output.actor_send_aliasing.len(),
         output.actor_send_aliasing
     );
-    // Every entry remains Copy in Phase α; the alias-enable rule lands in
-    // the next commit on this lane.
+}
+
+// ── Alias-rule decision tests (commit 7b) ───────────────────────────────────
+
+/// Bare-identifier non-`Copy` send → `Alias`.
+#[test]
+fn actor_send_aliasing_bare_identifier_non_copy_picks_alias() {
+    let output = typecheck_isolated(
+        r#"
+        actor Sink {
+            let _unused: int;
+            receive fn consume(val: string) {}
+        }
+
+        fn main() {
+            let a = spawn Sink(_unused: 0);
+            let s: string = "payload";
+            a.consume(s);
+        }
+    "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "fixture should type-check cleanly, got: {:#?}",
+        output.errors
+    );
+    let alias_count = output
+        .actor_send_aliasing
+        .values()
+        .filter(|d| **d == ActorSendAliasing::Alias)
+        .count();
+    assert!(
+        alias_count >= 1,
+        "expected at least one Alias entry for bare-identifier non-Copy send, \
+         got {} aliases out of {} total entries: {:#?}",
+        alias_count,
+        output.actor_send_aliasing.len(),
+        output.actor_send_aliasing,
+    );
+}
+
+/// Field-access non-`Copy` send → `Copy`.
+#[test]
+fn actor_send_aliasing_field_access_non_copy_stays_copy() {
+    let output = typecheck_isolated(
+        r#"
+        type Bag {
+            val: string
+        }
+
+        actor Sink {
+            let _unused: int;
+            receive fn consume(val: string) {}
+        }
+
+        fn main() {
+            let a = spawn Sink(_unused: 0);
+            let b = Bag { val: "payload" };
+            a.consume(b.val);
+        }
+    "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "fixture should type-check cleanly, got: {:#?}",
+        output.errors
+    );
+    let alias_count = output
+        .actor_send_aliasing
+        .values()
+        .filter(|d| **d == ActorSendAliasing::Alias)
+        .count();
+    assert_eq!(
+        alias_count, 0,
+        "field-access send must stay Copy; got {alias_count} Alias entries: {:#?}",
+        output.actor_send_aliasing,
+    );
+}
+
+/// `Copy`-typed payload (`int`) → `Copy`.
+#[test]
+fn actor_send_aliasing_copy_typed_bare_identifier_stays_copy() {
+    let output = typecheck_isolated(
+        r"
+        actor Counter {
+            let _unused: int;
+            receive fn bump(n: int) {}
+        }
+
+        fn main() {
+            let c = spawn Counter(_unused: 0);
+            let n: int = 42;
+            c.bump(n);
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "fixture should type-check cleanly, got: {:#?}",
+        output.errors
+    );
     for decision in output.actor_send_aliasing.values() {
-        assert_eq!(*decision, ActorSendAliasing::Copy);
+        assert_eq!(
+            *decision,
+            ActorSendAliasing::Copy,
+            "Copy-typed sends must stay Copy"
+        );
     }
+}
+
+/// User `impl Drop` payload → `Copy`.
+#[test]
+fn actor_send_aliasing_impl_drop_payload_stays_copy() {
+    let output = typecheck_isolated(
+        r#"
+        type Resource {
+            name: string
+        }
+
+        impl Drop for Resource {
+            fn drop(r: Resource) {}
+        }
+
+        actor Sink {
+            let _unused: int;
+            receive fn consume(val: Resource) {}
+        }
+
+        fn main() {
+            let a = spawn Sink(_unused: 0);
+            let r = Resource { name: "rsrc" };
+            a.consume(r);
+        }
+    "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "fixture should type-check cleanly, got: {:#?}",
+        output.errors
+    );
+    let alias_count = output
+        .actor_send_aliasing
+        .values()
+        .filter(|d| **d == ActorSendAliasing::Alias)
+        .count();
+    assert_eq!(
+        alias_count, 0,
+        "impl-Drop payload must stay Copy; got {alias_count} Alias entries: {:#?}",
+        output.actor_send_aliasing,
+    );
 }
 
 /// Programs with no actor sends must produce an empty map — the producer

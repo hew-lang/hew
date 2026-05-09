@@ -44,6 +44,7 @@ mod compile;
 mod diagnostic;
 mod doc;
 mod eval;
+mod explain_cow;
 mod host_death;
 mod jit;
 mod link;
@@ -366,6 +367,7 @@ fn exit_after_wasi_run(
 fn cmd_check(a: &args::CheckArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
+
     if a.show_stack_hints {
         // Re-run the frontend through `check_file` so we can surface the
         // typechecker's stack-allocation hints. The plain `compile::compile`
@@ -391,6 +393,29 @@ fn cmd_check(a: &args::CheckArgs) {
         }
         return;
     }
+
+    if a.explain_cow {
+        // Use check_file_with_explain_cow so we can access actor_send_aliasing.
+        match compile::check_explain_cow(&input, &options) {
+            Ok(result) => {
+                compile::render_frontend_diagnostics_pub(&result.diagnostics);
+                explain_cow::render_explain_cow(
+                    &result.actor_send_aliasing,
+                    &result.source,
+                    &input,
+                    &mut std::io::stdout(),
+                );
+                eprintln!("{input}: OK");
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+
     match compile::compile(&input, None, true, &options) {
         Ok(_) => {
             eprintln!("{input}: OK");

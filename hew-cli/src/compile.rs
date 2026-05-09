@@ -356,6 +356,33 @@ fn default_output_name(input: &str, suffix: &str, fallback: &str) -> String {
     }
 }
 
+/// Public wrapper for rendering frontend diagnostics; used by `cmd_check`
+/// when `--explain-cow` is set (which calls `check_file` directly instead of
+/// going through the normal `compile` path).
+pub(crate) fn render_frontend_diagnostics_pub(diagnostics: &[FrontendDiagnostic]) {
+    render_frontend_diagnostics(diagnostics);
+}
+
+/// Run `check_file` and return the full [`hew_compile::CheckOutput`] so the
+/// caller can consume `actor_send_aliasing` for `--explain-cow` rendering.
+///
+/// Renders diagnostics via [`render_frontend_diagnostics`] on failure.
+pub(crate) fn check_explain_cow(
+    input: &str,
+    options: &CompileOptions,
+) -> Result<hew_compile::CheckOutput, String> {
+    let target =
+        TargetSpec::from_requested(options.target.as_deref()).map_err(|e| format!("Error: {e}"))?;
+    let fopts = frontend_options(&target, options);
+    match hew_compile::check_file(input, &fopts) {
+        Ok(result) => Ok(result),
+        Err(failure) => {
+            render_frontend_diagnostics(&failure.diagnostics);
+            Err(failure.message)
+        }
+    }
+}
+
 fn write_output(output: Option<&str>, data: &[u8]) -> Result<String, String> {
     if let Some(output_path) = output {
         fs::write(output_path, data)

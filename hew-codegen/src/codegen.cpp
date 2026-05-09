@@ -1081,6 +1081,8 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
     }
 
     // Register terminate function if the actor has one.
+    // Guard: only call hew_actor_set_terminate when spawn succeeded (result != null).
+    // Spawn failure returns null by contract; calling set_terminate on null would SIGSEGV.
     {
       std::string terminateName = op.getActorName().str() + "_terminate";
       if (module.lookupSymbol<mlir::func::FuncOp>(terminateName)) {
@@ -1095,8 +1097,17 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
 
         auto setTerminateFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
         getOrInsertFuncDecl(module, rewriter, "hew_actor_set_terminate", setTerminateFuncType);
+
+        // Emit: if (result != null) { hew_actor_set_terminate(result, terminatePtr); }
+        auto nullResult = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+        auto spawnSucceeded = mlir::LLVM::ICmpOp::create(
+            rewriter, loc, mlir::LLVM::ICmpPredicate::ne, result, nullResult);
+        auto guardIfOp =
+            mlir::scf::IfOp::create(rewriter, loc, spawnSucceeded, /*withElseRegion=*/false);
+        rewriter.setInsertionPointToStart(&guardIfOp.getThenRegion().front());
         mlir::func::CallOp::create(rewriter, loc, "hew_actor_set_terminate", mlir::TypeRange{},
                                    mlir::ValueRange{result, terminatePtr});
+        rewriter.setInsertionPointAfter(guardIfOp);
       }
     }
 

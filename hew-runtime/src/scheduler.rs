@@ -1010,9 +1010,17 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
     a.reductions
         .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
 
-    // Check if the current task scope is cancelled. This is a read-only
-    // observation; the actor/task will handle cancellation on its next
-    // explicit check.  Foundation for future auto-cancellation.
+    // SHIM: scaffold for cooperative auto-cancellation — not yet wired up.
+    //
+    // WHY: proves the cancellation signal is readable at yield points before
+    //   the full cancellation protocol exists. The load is intentionally
+    //   discarded so the scheduler does not act on it prematurely.
+    //
+    // WHEN OBSOLETE: when the γ-scheduler ships and can route this result into
+    //   a yield-or-cancel decision at every budget-exhaustion point.
+    //
+    // REAL SOLUTION: feed the loaded bool into a cancel-check helper; if true,
+    //   unwind the current task cooperatively instead of calling yield_now().
     let scope = crate::task_scope::current_task_scope();
     if !scope.is_null() {
         // SAFETY: scope is valid per hew_task_scope_set_current contract.

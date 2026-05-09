@@ -1120,8 +1120,23 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
 
         auto setStateDropFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
         getOrInsertFuncDecl(module, rewriter, "hew_actor_set_state_drop", setStateDropFuncType);
+
+        // Spawn paths return null on allocation failure. Skip the setter
+        // call when `result` is null so we don't reach the runtime FFI on
+        // an OOM. The runtime guard in `hew_actor_set_state_drop` is the
+        // primary defence; this codegen guard avoids the FFI hop entirely
+        // and matches the `if let Some(state_drop_fn)` shape used in the
+        // free path. The terminate setter above is left unguarded — that
+        // is a pre-existing parity gap tracked separately.
+        auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+        auto nonNull = mlir::LLVM::ICmpOp::create(rewriter, loc, rewriter.getI1Type(),
+                                                  mlir::LLVM::ICmpPredicate::ne, result, nullPtr);
+        auto guardOp = mlir::scf::IfOp::create(rewriter, loc, nonNull, /*withElseRegion=*/false);
+        auto savedIP = rewriter.saveInsertionPoint();
+        rewriter.setInsertionPointToStart(&guardOp.getThenRegion().front());
         mlir::func::CallOp::create(rewriter, loc, "hew_actor_set_state_drop", mlir::TypeRange{},
                                    mlir::ValueRange{result, stateDropPtr});
+        rewriter.restoreInsertionPoint(savedIP);
       }
     }
 

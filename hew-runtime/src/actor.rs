@@ -2113,6 +2113,11 @@ pub unsafe extern "C" fn hew_actor_set_state_drop(
     actor: *mut HewActor,
     state_drop_fn: unsafe extern "C" fn(*mut c_void),
 ) {
+    // Spawn paths return null on allocation failure (see hew_actor_spawn /
+    // hew_actor_spawn_opts). Codegen still emits the unconditional setter
+    // call, so guard here as a defence-in-depth measure that mirrors every
+    // other public setter in this module.
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &mut *actor };
     a.state_drop_fn = Some(state_drop_fn);
@@ -5477,6 +5482,17 @@ mod tests {
             drop(Box::from_raw(actor));
             mailbox::hew_mailbox_free(mailbox);
         }
+    }
+
+    #[test]
+    fn hew_actor_set_state_drop_null_actor_is_noop() {
+        // Spawn returns null on allocation failure; codegen unconditionally
+        // calls this setter, so it must tolerate a null receiver without
+        // dereferencing. Verifies the cabi_guard short-circuit.
+        unsafe extern "C" fn dummy_state_drop(_state: *mut c_void) {}
+        // SAFETY: passing null is exactly what we are guarding against; the
+        // function must return without touching the pointer.
+        unsafe { hew_actor_set_state_drop(std::ptr::null_mut(), dummy_state_drop) };
     }
 
     #[test]

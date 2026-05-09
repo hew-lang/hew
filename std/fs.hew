@@ -3,8 +3,8 @@
 //! Read, write, and query files on the local file system.
 //!
 //! For path-only helpers prefer `std::path`, and for stdin/stdout prefer
-//! `std::io`. This module keeps `fs.exists` and `fs.read_line` as
-//! compatibility surfaces for existing code.
+//! `std::io`. This module keeps `fs.exists` as a compatibility surface
+//! for existing code.
 //!
 //! # Error Handling
 //!
@@ -328,24 +328,6 @@ pub fn size(path: String) -> int {
     unsafe {
         hew_file_size(path)
     }
-}
-
-/// Read a single line from standard input.
-///
-/// Blocks until the user presses Enter.
-/// Prefer `io.read_line()` in new code; `fs.read_line()` remains as a
-/// compatibility alias.
-///
-/// # Examples
-///
-/// ```
-/// import std::io;
-///
-/// print("Name: ");
-/// let name = io.read_line();
-/// ```
-pub fn read_line() -> String {
-    io.read_line()
 }
 
 /// Read the raw bytes of a file into a `bytes` value.

@@ -826,77 +826,23 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
     auto selfPtr = entryBlock->getArgument(0);
 
-    // Walk only the user-declared fields of the actor state struct
-    // (`fieldHewTypes[0..numUserFields]`).  We work directly off
-    // `actorInfo` rather than the shared `emitFieldDropsForUserStruct`
-    // helper because that helper keys lookups by the MLIR struct name
-    // (`<actor>_state`) while `structTypes` registers actors under their
-    // bare name; reusing the helper would silently drop nothing.
+    // Route through the shared per-actor helper so the __auto_field_drop
+    // sentinel (MLIRGen.cpp:6585-6630), nested user-Drop recursion
+    // (MLIRGen.cpp:6814-6815), and closure env null-guard all match the
+    // canonical struct-drop path. The helper walks only the first
+    // `numUserFields` entries of the state struct; hidden init-param
+    // slots and generator-frame ptrs are intentionally skipped.
     //
-    // Hidden init-param slots (`numUserFields..numUserFields+numInitParams`)
-    // are intentionally skipped: their bytes remain byte-identical to
-    // whatever the init body moved out of them (typically `field = arg`),
-    // so dropping them in addition to the user field would be a
-    // double-drop. The Hew move-checker is responsible for ensuring init
-    // bodies consume owned init arguments rather than leaving them
-    // unmoved in the hidden slot. Trailing generator-frame `ptr` slots
-    // resolve to empty drops via `dropFuncForMLIRType` and would be
-    // no-ops anyway.
+    // BLOCKER 2 (init-param leak when an init body never consumes the
+    // param) is preserved as a known gap rather than fixed at codegen:
+    // dropping the hidden slot would double-drop on the normal
+    // `field = arg` path because the init body does not null the source
+    // slot after the move. The correct fix lives at typecheck time
+    // (move-checker) or in init-body lowering (null-the-slot after the
+    // assignment), both tracked separately.
     if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(actorInfo.stateType)) {
-      auto i1Type = builder.getI1Type();
-      for (size_t i = 0; i < actorInfo.numUserFields; ++i) {
-        auto fieldType = actorInfo.fieldHewTypes[i];
-        auto dropFn = dropFuncForMLIRType(fieldType, /*includeStructTypes=*/true);
-        if (dropFn.empty())
-          continue;
-        // GEP into the state struct, load the field's storage value.
-        auto storageType = toLLVMStorageType(fieldType);
-        auto fieldPtr = mlir::LLVM::GEPOp::create(
-            builder, location, ptrType, structTy, selfPtr,
-            llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(i)});
-        mlir::Value fieldVal =
-            mlir::LLVM::LoadOp::create(builder, location, storageType, fieldPtr).getResult();
-
-        // Closures are stored as `!llvm.struct<(ptr, ptr)>`; the env
-        // pointer (slot 1) is the rc-managed allocation.  Null-guard the
-        // env ptr so unused closure slots stay safe.
-        if (mlir::isa<hew::ClosureType>(fieldType)) {
-          if (auto closureSt = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType())) {
-            if (!closureSt.isIdentified() && closureSt.getBody().size() == 2) {
-              auto envPtr = mlir::LLVM::ExtractValueOp::create(builder, location, fieldVal,
-                                                               llvm::ArrayRef<int64_t>{1});
-              auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-              auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location, i1Type,
-                                                          mlir::LLVM::ICmpPredicate::ne,
-                                                          envPtr.getResult(), nullPtr);
-              auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, isNotNull,
-                                                   /*withElseRegion=*/false);
-              builder.setInsertionPointToStart(&guard.getThenRegion().front());
-              hew::DropOp::create(builder, location, envPtr.getResult(), dropFn,
-                                  /*isUserDrop=*/false);
-              builder.setInsertionPointAfter(guard);
-              continue;
-            }
-          }
-        }
-
-        // For nested user-Drop struct fields, the drop function expects
-        // the struct value directly (matches emitFieldDropsForUserStruct).
-        bool isUserDrop = false;
-        if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldType)) {
-          if (fst.isIdentified() && userDropFuncs.count(fst.getName().str()))
-            isUserDrop = true;
-        }
-
-        // Field-level drop callees (hew_string_drop, hew_vec_free,
-        // hew_hashmap_free_impl, hew_rc_drop, stdlib handle closers) all
-        // tolerate null per LESSONS row `raii-null-after-move`, so no
-        // top-level null guard is needed for plain pointer-shaped fields.
-        mlir::Value dropVal = fieldVal;
-        if (!isUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
-          dropVal = hew::BitcastOp::create(builder, location, ptrType, dropVal);
-        hew::DropOp::create(builder, location, dropVal, dropFn, isUserDrop);
-      }
+      emitFieldDropsForActorState(selfPtr, structTy, actorInfo.fieldHewTypes,
+                                  actorInfo.numUserFields, location);
     }
 
     if (!hasRealTerminator(builder.getInsertionBlock()))
@@ -1576,51 +1522,18 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 
     FunctionGenerationScope funcScope(*this, stateDropFuncOp);
     auto selfPtr = entryBlock->getArgument(0);
-    auto i1Type = builder.getI1Type();
 
-    for (size_t i = 0; i < capturedVars.size(); ++i) {
-      auto fieldSemType = capturedVars[i].value.getType();
-      auto dropFn = dropFuncForMLIRType(fieldSemType, /*includeStructTypes=*/true);
-      if (dropFn.empty())
-        continue;
-
-      auto storageType = toLLVMStorageType(fieldSemType);
-      auto fieldPtr =
-          mlir::LLVM::GEPOp::create(builder, location, ptrType, stateType, selfPtr,
-                                    llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(i)});
-      mlir::Value fieldVal =
-          mlir::LLVM::LoadOp::create(builder, location, storageType, fieldPtr).getResult();
-
-      if (mlir::isa<hew::ClosureType>(fieldSemType)) {
-        if (auto closureSt = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType())) {
-          if (!closureSt.isIdentified() && closureSt.getBody().size() == 2) {
-            auto envPtr = mlir::LLVM::ExtractValueOp::create(builder, location, fieldVal,
-                                                             llvm::ArrayRef<int64_t>{1});
-            auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-            auto isNotNull =
-                mlir::LLVM::ICmpOp::create(builder, location, i1Type, mlir::LLVM::ICmpPredicate::ne,
-                                           envPtr.getResult(), nullPtr);
-            auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, isNotNull,
-                                                 /*withElseRegion=*/false);
-            builder.setInsertionPointToStart(&guard.getThenRegion().front());
-            hew::DropOp::create(builder, location, envPtr.getResult(), dropFn,
-                                /*isUserDrop=*/false);
-            builder.setInsertionPointAfter(guard);
-            continue;
-          }
-        }
-      }
-
-      bool isUserDrop = false;
-      if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldSemType)) {
-        if (fst.isIdentified() && userDropFuncs.count(fst.getName().str()))
-          isUserDrop = true;
-      }
-      mlir::Value dropVal = fieldVal;
-      if (!isUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
-        dropVal = hew::BitcastOp::create(builder, location, ptrType, dropVal);
-      hew::DropOp::create(builder, location, dropVal, dropFn, isUserDrop);
-    }
+    // Lambda actors have no init-param hidden slots; every captured
+    // variable is a user field, so route through the shared helper with
+    // `numUserFields = capturedVars.size()`. This collapses the
+    // duplicated open-coded loop and inherits the __auto_field_drop
+    // sentinel handling, nested user-Drop recursion, and closure env
+    // null-guard the canonical struct-drop path provides.
+    std::vector<mlir::Type> capturedTypes;
+    capturedTypes.reserve(capturedVars.size());
+    for (const auto &cv : capturedVars)
+      capturedTypes.push_back(cv.value.getType());
+    emitFieldDropsForActorState(selfPtr, stateType, capturedTypes, capturedTypes.size(), location);
 
     if (!hasRealTerminator(builder.getInsertionBlock()))
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});

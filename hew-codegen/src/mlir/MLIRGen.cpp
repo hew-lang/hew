@@ -6764,6 +6764,73 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
     emitFieldDropsForUserStruct(val, loc);
 }
 
+void MLIRGen::emitFieldDropsForActorState(mlir::Value statePtr, mlir::LLVM::LLVMStructType stateTy,
+                                          llvm::ArrayRef<mlir::Type> fieldHewTypes,
+                                          size_t numUserFields, mlir::Location loc) {
+  if (!stateTy)
+    return;
+  // Defensive: numUserFields must not exceed the registered field list.
+  size_t end = std::min(numUserFields, fieldHewTypes.size());
+  if (end == 0)
+    return;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  for (size_t i = 0; i < end; ++i) {
+    auto fieldType = fieldHewTypes[i];
+    auto drop = dropFuncForMLIRType(fieldType, /*includeStructTypes=*/true);
+    if (drop.empty())
+      continue;
+    // GEP into the state struct, load the field's storage value.
+    auto storageType = toLLVMStorageType(fieldType);
+    auto fieldPtr =
+        mlir::LLVM::GEPOp::create(builder, loc, ptrType, stateTy, statePtr,
+                                  llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(i)});
+    mlir::Value fieldVal =
+        mlir::LLVM::LoadOp::create(builder, loc, storageType, fieldPtr).getResult();
+
+    // __auto_field_drop sentinel: recurse into the nested user struct
+    // instead of emitting a DropOp for the non-existent function. Mirrors
+    // the user-struct path in emitFieldDropsForUserStruct.
+    if (drop == "__auto_field_drop") {
+      emitFieldDropsForUserStruct(fieldVal, loc);
+      continue;
+    }
+
+    // Closure fields: extract env pointer (slot 1) and null-guard.
+    if (mlir::isa<hew::ClosureType>(fieldType)) {
+      if (auto closureSt = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldVal.getType())) {
+        if (!closureSt.isIdentified() && closureSt.getBody().size() == 2) {
+          auto envPtr = mlir::LLVM::ExtractValueOp::create(builder, loc, fieldVal,
+                                                           llvm::ArrayRef<int64_t>{1});
+          auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+          auto isNotNull = mlir::LLVM::ICmpOp::create(builder, loc, builder.getI1Type(),
+                                                      mlir::LLVM::ICmpPredicate::ne,
+                                                      envPtr.getResult(), nullPtr);
+          auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                               /*withElseRegion=*/false);
+          builder.setInsertionPointToStart(&guard.getThenRegion().front());
+          hew::DropOp::create(builder, loc, envPtr.getResult(), drop, /*isUserDrop=*/false);
+          builder.setInsertionPointAfter(guard);
+          continue;
+        }
+      }
+    }
+
+    // Nested user-Drop struct: emit the user's drop op then recurse so
+    // owned subfields of the nested struct are also released.
+    bool fieldIsUserDrop = false;
+    if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(fieldType)) {
+      if (fst.isIdentified() && userDropFuncs.count(fst.getName().str()))
+        fieldIsUserDrop = true;
+    }
+    mlir::Value dropVal = fieldVal;
+    if (!fieldIsUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
+      dropVal = hew::BitcastOp::create(builder, loc, ptrType, dropVal);
+    hew::DropOp::create(builder, loc, dropVal, drop, fieldIsUserDrop);
+    if (fieldIsUserDrop)
+      emitFieldDropsForUserStruct(fieldVal, loc);
+  }
+}
+
 void MLIRGen::emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location loc) {
   auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(structVal.getType());
   if (!structTy || !structTy.isIdentified())

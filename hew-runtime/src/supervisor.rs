@@ -2262,6 +2262,27 @@ pub unsafe extern "C" fn hew_supervisor_get_child_circuit_state(
 ///
 /// Returns the child index (≥ 0) on success, -1 on error.
 ///
+/// **State-drop registration**: this function does not accept a `state_drop_fn`
+/// parameter. If the child actor type has owned heap fields, the caller must
+/// invoke [`hew_supervisor_set_child_state_drop`] immediately after this
+/// call returns — before any other thread can crash and restart the child:
+///
+/// ```text
+/// let idx = hew_supervisor_add_child_dynamic(sup, spec);
+/// if idx >= 0 {
+///     hew_supervisor_set_child_state_drop(sup, idx, my_state_drop);
+/// }
+/// ```
+///
+/// If the supervisor is already running (`hew_supervisor_start` has been
+/// called), the child is spawned immediately inside this call.  A crash
+/// between the return of this function and the `set_child_state_drop` call
+/// will restart the child without the drop callback, leaking any owned fields
+/// in the original actor's state.  For most use-cases this window is
+/// acceptable; the restart callback is wired before the child processes its
+/// first message.  Callers that cannot tolerate any window should stop the
+/// supervisor, add the child, register the drop, then restart.
+///
 /// # Safety
 ///
 /// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
@@ -2321,7 +2342,9 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
-        // Registered by hew_supervisor_set_child_state_drop after this call.
+        // Registered by the caller via hew_supervisor_set_child_state_drop
+        // immediately after this call returns. See the function doc comment
+        // for the race-window analysis and calling contract.
         state_drop_fn: None,
     });
 

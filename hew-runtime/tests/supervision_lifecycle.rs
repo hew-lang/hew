@@ -28,7 +28,7 @@ use hew_runtime::internal::types::HewActorState;
 use hew_runtime::link::hew_actor_link;
 use hew_runtime::monitor::{hew_actor_demonitor, hew_actor_monitor};
 use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_child_count,
+    hew_supervisor_add_child_dynamic, hew_supervisor_add_child_spec, hew_supervisor_child_count,
     hew_supervisor_get_child_circuit_state, hew_supervisor_get_child_wait, hew_supervisor_new,
     hew_supervisor_set_child_state_drop, hew_supervisor_set_circuit_breaker,
     hew_supervisor_set_restart_notify, hew_supervisor_start, hew_supervisor_stop,
@@ -866,6 +866,100 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
         assert_eq!(
             drops, 1,
             "state_drop_fn must fire for the restarted actor's teardown (got {drops})"
+        );
+    }
+}
+
+/// Verify `state_drop_fn` registered via `hew_supervisor_set_child_state_drop`
+/// fires on the restarted actor for a **dynamically-added** child.
+///
+/// Scenario:
+/// 1. Start the supervisor; add a child via `hew_supervisor_add_child_dynamic`.
+/// 2. Register `state_drop_fn` via `hew_supervisor_set_child_state_drop` (the
+///    two-step contract required by the dynamic path).
+/// 3. Crash the child; wait for a restart.
+/// 4. Stop the supervisor; wait for teardown.
+/// 5. Assert the drop callback ran exactly once — for the restarted actor's
+///    final teardown. This mirrors `supervisor_restart_runs_state_drop_on_new_actor`
+///    for the dynamic registration path.
+#[test]
+fn dynamic_child_restart_runs_state_drop() {
+    const STRATEGY_ONE_FOR_ONE: i32 = 0;
+    const RESTART_PERMANENT: i32 = 0;
+    const OVERFLOW_DROP_NEW: i32 = 1;
+
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    DISPATCH_SIGNAL.reset();
+    SUPERVISOR_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+    unsafe {
+        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
+        assert!(!sup.is_null(), "supervisor must be created");
+        hew_supervisor_set_restart_notify(sup);
+        assert_eq!(hew_supervisor_start(sup), 0, "supervisor must start");
+
+        let mut state: u64 = 0xCAFE_BABE;
+        let name = std::ffi::CString::new("dyn-drop-child").unwrap();
+        let spec = HewChildSpec {
+            name: name.as_ptr(),
+            init_state: (&raw mut state).cast::<c_void>(),
+            init_state_size: std::mem::size_of::<u64>(),
+            dispatch: Some(counting_dispatch),
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+        };
+
+        // Two-step contract: add, then register state_drop.
+        let idx = hew_supervisor_add_child_dynamic(sup, &raw const spec);
+        assert!(idx >= 0, "add_child_dynamic must succeed");
+        hew_supervisor_set_child_state_drop(sup, idx, supervisor_child_state_drop);
+
+        // Wait for the child to appear.
+        let child = hew_supervisor_get_child_wait(sup, idx, 5_000);
+        assert!(!child.is_null(), "dynamically added child must be spawned");
+        let original_id = (*child).id;
+
+        // Confirm back-fill: state_drop_fn should be set on the live actor.
+        assert!(
+            (*child).state_drop_fn.is_some(),
+            "dynamic child must have state_drop_fn registered after set_child_state_drop"
+        );
+
+        // Crash and wait for a restart.
+        hew_fault_inject_crash(original_id, 1);
+        hew_actor_send(child, 1, std::ptr::null_mut(), 0);
+        let restart_count = hew_supervisor_wait_restart(sup, 1, 10_000);
+        assert!(
+            restart_count >= 1,
+            "supervisor must restart the dynamically added child"
+        );
+
+        // Confirm the restarted actor also has state_drop_fn.
+        let restarted = hew_supervisor_get_child_wait(sup, idx, 5_000);
+        assert!(!restarted.is_null(), "restarted dynamic child must appear");
+        assert_ne!(
+            (*restarted).id,
+            original_id,
+            "restarted actor must be a new instance"
+        );
+        assert!(
+            (*restarted).state_drop_fn.is_some(),
+            "restarted dynamic child must have state_drop_fn registered"
+        );
+
+        // Stop; drop must fire exactly once for the restarted actor's teardown.
+        hew_deterministic_reset();
+        hew_supervisor_stop(sup);
+
+        let drops = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
+        assert_eq!(
+            drops, 1,
+            "state_drop_fn must fire once for the restarted dynamic child (got {drops})"
         );
     }
 }

@@ -1080,9 +1080,25 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
       result = call.getResult(0);
     }
 
+    // Panic immediately on OOM: hew_actor_spawn* returns null when it cannot
+    // allocate the actor.  Propagating a null handle to callers produces silent
+    // "actor stopped" errors that misdiagnose the root cause.  Aborting here is
+    // fail-closed and gives the user an unambiguous runtime panic at spawn time.
+    {
+      auto nullResult = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+      auto spawnFailed = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
+                                                    result, nullResult);
+      auto panicIfOp =
+          mlir::scf::IfOp::create(rewriter, loc, spawnFailed, /*withElseRegion=*/false);
+      rewriter.setInsertionPointToStart(&panicIfOp.getThenRegion().front());
+      auto panicFuncType = rewriter.getFunctionType({}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
+      rewriter.setInsertionPointAfter(panicIfOp);
+    }
+
     // Register terminate function if the actor has one.
-    // Guard: only call hew_actor_set_terminate when spawn succeeded (result != null).
-    // Spawn failure returns null by contract; calling set_terminate on null would SIGSEGV.
+    // The panic above guarantees result is non-null here; set_terminate is safe.
     {
       std::string terminateName = op.getActorName().str() + "_terminate";
       if (module.lookupSymbol<mlir::func::FuncOp>(terminateName)) {
@@ -1097,17 +1113,8 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
 
         auto setTerminateFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
         getOrInsertFuncDecl(module, rewriter, "hew_actor_set_terminate", setTerminateFuncType);
-
-        // Emit: if (result != null) { hew_actor_set_terminate(result, terminatePtr); }
-        auto nullResult = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
-        auto spawnSucceeded = mlir::LLVM::ICmpOp::create(
-            rewriter, loc, mlir::LLVM::ICmpPredicate::ne, result, nullResult);
-        auto guardIfOp =
-            mlir::scf::IfOp::create(rewriter, loc, spawnSucceeded, /*withElseRegion=*/false);
-        rewriter.setInsertionPointToStart(&guardIfOp.getThenRegion().front());
         mlir::func::CallOp::create(rewriter, loc, "hew_actor_set_terminate", mlir::TypeRange{},
                                    mlir::ValueRange{result, terminatePtr});
-        rewriter.setInsertionPointAfter(guardIfOp);
       }
     }
 

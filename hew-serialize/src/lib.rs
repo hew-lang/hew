@@ -10,8 +10,10 @@ pub use enrich::{
 };
 pub use msgpack::{
     build_assign_target_kind_entries, build_assign_target_shape_entries,
-    build_lowering_fact_entries, build_method_call_receiver_kind_entries, serialize_to_json,
-    serialize_to_msgpack, AssignTargetKindData, AssignTargetKindEntry, AssignTargetShapeEntry,
-    ExprTypeEntry, LoweringFactEntry, MethodCallReceiverKindData, MethodCallReceiverKindEntry,
+    build_lowering_fact_entries, build_method_call_receiver_kind_entries,
+    build_method_call_type_args_entries, serialize_to_json, serialize_to_msgpack,
+    AssignTargetKindData, AssignTargetKindEntry, AssignTargetShapeEntry, ExprTypeEntry,
+    LoweringFactEntry, MethodCallReceiverKindData, MethodCallReceiverKindEntry,
+    MethodCallTypeArgsEntry,
 };
 pub use wire::serialize_wire_decl_via_plan;

@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// codegen cannot understand. The embedded reader requires an explicit
 /// `schema_version` field and rejects mismatches instead of carrying
 /// fallback decoding for pre-versioned payloads.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
 ///
@@ -123,6 +123,29 @@ pub struct LoweringFactEntry {
     pub fact: CheckedLoweringFact,
 }
 
+/// Inferred type arguments for a generic free-function call site, keyed by the
+/// call expression's source span.
+///
+/// Populated from [`hew_types::check::TypeCheckOutput::call_type_args`] for
+/// call sites where the caller omitted explicit type arguments and the checker
+/// resolved them through unification. C++ codegen uses this side table to
+/// monomorphize generic free-function calls without re-running inference.
+///
+/// `#[serde(default)]` ensures payloads predating schema version 9 (which
+/// lacked this key) are gracefully skipped at the Rust deserialization layer.
+/// The C++ reader mirrors this with `mapGet`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MethodCallTypeArgsEntry {
+    /// Byte offset of the call expression start.
+    pub start: usize,
+    /// Byte offset of the call expression end.
+    pub end: usize,
+    /// Resolved type arguments in parameter order, each represented as a
+    /// parser `TypeExpr` with a synthetic zero span.
+    #[serde(default)]
+    pub type_args: Vec<Spanned<TypeExpr>>,
+}
+
 /// Top-level serialization wrapper: the program AST plus type-checker and
 /// source metadata used by C++ codegen.
 ///
@@ -132,6 +155,7 @@ pub struct LoweringFactEntry {
 /// - `"module_doc"`
 /// - `"expr_types"`
 /// - `"method_call_receiver_kinds"`
+/// - `"method_call_type_args"`
 /// - `"assign_target_kinds"`
 /// - `"assign_target_shapes"`
 /// - `"lowering_facts"`
@@ -153,6 +177,10 @@ struct TypedProgram<'a, ModuleGraphRepr> {
     expr_types: &'a [ExprTypeEntry],
     /// Checker-resolved receiver classification for surviving method calls.
     method_call_receiver_kinds: &'a [MethodCallReceiverKindEntry],
+    /// Inferred type arguments for generic free-function call sites.
+    /// Populated from `tco.call_type_args`; empty for programs with no
+    /// module-qualified generic free-function calls.
+    method_call_type_args: &'a [MethodCallTypeArgsEntry],
     /// Checker-resolved assignment target classifications (keyed by target span).
     /// Missing entries indicate the checker rejected those targets.
     assign_target_kinds: &'a [AssignTargetKindEntry],
@@ -199,6 +227,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
         program: &'a hew_parser::ast::Program,
         expr_types: &'a [ExprTypeEntry],
         method_call_receiver_kinds: &'a [MethodCallReceiverKindEntry],
+        method_call_type_args: &'a [MethodCallTypeArgsEntry],
         assign_target_kinds: &'a [AssignTargetKindEntry],
         assign_target_shapes: &'a [AssignTargetShapeEntry],
         lowering_facts: &'a [LoweringFactEntry],
@@ -216,6 +245,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
             module_doc: &program.module_doc,
             expr_types,
             method_call_receiver_kinds,
+            method_call_type_args,
             assign_target_kinds,
             assign_target_shapes,
             lowering_facts,
@@ -250,6 +280,7 @@ pub fn serialize_to_msgpack(
     program: &hew_parser::ast::Program,
     expr_types: Vec<ExprTypeEntry>,
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
+    method_call_type_args: Vec<MethodCallTypeArgsEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
     lowering_facts: Vec<LoweringFactEntry>,
@@ -264,6 +295,7 @@ pub fn serialize_to_msgpack(
         program,
         &expr_types,
         &method_call_receiver_kinds,
+        &method_call_type_args,
         &assign_target_kinds,
         &assign_target_shapes,
         &lowering_facts,
@@ -308,6 +340,7 @@ pub fn serialize_to_json(
     program: &hew_parser::ast::Program,
     expr_types: Vec<ExprTypeEntry>,
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
+    method_call_type_args: Vec<MethodCallTypeArgsEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
     lowering_facts: Vec<LoweringFactEntry>,
@@ -327,6 +360,7 @@ pub fn serialize_to_json(
         program,
         &expr_types,
         &method_call_receiver_kinds,
+        &method_call_type_args,
         &assign_target_kinds,
         &assign_target_shapes,
         &lowering_facts,
@@ -1071,6 +1105,71 @@ pub fn build_method_call_receiver_kind_entries(
     walk_program(program, tco, &Visitor)
 }
 
+/// Build the `method_call_type_args` side-table entries from `tco.call_type_args`.
+///
+/// Walks the program AST using the shared [`SideTableVisitor`] to emit entries in
+/// source order, one per generic free-function call site where the checker inferred
+/// type arguments.  Entries whose type arguments cannot be converted to
+/// [`Spanned<TypeExpr>`] (e.g. unresolved type variables) are skipped rather than
+/// panicking — callers that need diagnostics should check the enriched type map
+/// instead.
+#[must_use]
+pub fn build_method_call_type_args_entries(
+    program: &hew_parser::ast::Program,
+    tco: &TypeCheckOutput,
+) -> Vec<MethodCallTypeArgsEntry> {
+    struct Visitor;
+    impl SideTableVisitor for Visitor {
+        type Entry = MethodCallTypeArgsEntry;
+        fn on_assign_stmt(
+            &self,
+            _target: &Spanned<Expr>,
+            _tco: &TypeCheckOutput,
+            _out: &mut Vec<Self::Entry>,
+        ) {
+        }
+        fn on_method_call_expr(
+            &self,
+            _expr: &Spanned<Expr>,
+            _tco: &TypeCheckOutput,
+            _out: &mut Vec<Self::Entry>,
+        ) {
+        }
+        fn on_call_expr(
+            &self,
+            expr: &Spanned<Expr>,
+            tco: &TypeCheckOutput,
+            out: &mut Vec<Self::Entry>,
+        ) {
+            let key = SpanKey::from(&expr.1);
+            let Some(type_args) = tco.call_type_args.get(&key) else {
+                return;
+            };
+            // Convert each Ty to Spanned<TypeExpr>; skip this call site if any
+            // type arg fails to convert (e.g. unresolved type variable).
+            let converted: Option<Vec<Spanned<TypeExpr>>> = type_args
+                .iter()
+                .map(|ty| crate::enrich::ty_to_type_expr(ty).ok())
+                .collect();
+            let Some(converted_args) = converted else {
+                return;
+            };
+            out.push(MethodCallTypeArgsEntry {
+                start: key.start,
+                end: key.end,
+                type_args: converted_args,
+            });
+        }
+        fn if_stmt_order(&self) -> IfStmtOrder {
+            IfStmtOrder::ElseBeforeThen
+        }
+        fn module_graph_mode(&self) -> ModuleGraphMode {
+            ModuleGraphMode::ModulesOrProgramItems
+        }
+    }
+    walk_program(program, tco, &Visitor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,6 +1184,7 @@ mod tests {
     fn round_trip_program(program: &Program) {
         let bytes = serialize_to_msgpack(
             program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1107,6 +1207,7 @@ mod tests {
         let bytes = serialize_to_msgpack(
             program,
             expr_types,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1291,6 +1392,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1362,6 +1464,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1384,6 +1487,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1467,6 +1571,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1485,6 +1590,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &parsed.program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1525,6 +1631,7 @@ mod tests {
                 },
                 consumes_receiver: false,
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1633,6 +1740,187 @@ mod tests {
         assert_eq!(restored.end, 5);
     }
 
+    /// Verify that a populated `MethodCallTypeArgsEntry` survives a
+    /// msgpack encode/decode round-trip with the `type_args` vector intact.
+    #[test]
+    fn method_call_type_args_entry_roundtrips() {
+        let entry = MethodCallTypeArgsEntry {
+            start: 5,
+            end: 18,
+            type_args: vec![
+                (
+                    TypeExpr::Named {
+                        name: "i32".to_string(),
+                        type_args: None,
+                    },
+                    0..0,
+                ),
+                (
+                    TypeExpr::Named {
+                        name: "String".to_string(),
+                        type_args: None,
+                    },
+                    0..0,
+                ),
+            ],
+        };
+        let bytes = rmp_serde::to_vec_named(&entry).expect("entry should serialize");
+        let restored: MethodCallTypeArgsEntry =
+            rmp_serde::from_slice(&bytes).expect("entry should deserialize");
+        assert_eq!(restored, entry);
+        assert_eq!(restored.start, 5);
+        assert_eq!(restored.end, 18);
+        assert_eq!(restored.type_args.len(), 2);
+    }
+
+    /// Verify the wire field `method_call_type_args` is present and populated
+    /// when entries are provided.
+    #[test]
+    fn method_call_type_args_serializes_to_wire_field() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![MethodCallTypeArgsEntry {
+                start: 10,
+                end: 25,
+                type_args: vec![(
+                    TypeExpr::Named {
+                        name: "Colour".to_string(),
+                        type_args: None,
+                    },
+                    0..0,
+                )],
+            }],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
+        let entries = value
+            .get("method_call_type_args")
+            .and_then(serde_json::Value::as_array)
+            .expect("method_call_type_args should be present on the wire");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["start"], 10u64);
+        assert_eq!(entries[0]["end"], 25u64);
+        let type_args = entries[0]
+            .get("type_args")
+            .and_then(serde_json::Value::as_array)
+            .expect("type_args should be present");
+        assert_eq!(type_args.len(), 1);
+    }
+
+    /// Forward compatibility: payloads lacking the `method_call_type_args` key
+    /// must deserialise with an empty `type_args` vec (the `#[serde(default)]`
+    /// annotation on the field handles this).
+    #[test]
+    fn method_call_type_args_entry_type_args_defaults_when_absent() {
+        // Mimic a payload that omits `type_args` entirely.
+        #[derive(Serialize)]
+        struct LegacyEntry {
+            start: usize,
+            end: usize,
+        }
+        let legacy = LegacyEntry { start: 3, end: 7 };
+        let bytes = rmp_serde::to_vec_named(&legacy).expect("legacy entry should serialize");
+        let restored: MethodCallTypeArgsEntry =
+            rmp_serde::from_slice(&bytes).expect("legacy entry should deserialize");
+        assert!(restored.type_args.is_empty());
+        assert_eq!(restored.start, 3);
+        assert_eq!(restored.end, 7);
+    }
+
+    /// Verify that `build_method_call_type_args_entries` emits one entry per
+    /// `Expr::Call` span that appears in `tco.call_type_args`, and that the
+    /// converted type args round-trip correctly.
+    #[test]
+    fn build_method_call_type_args_entries_emits_call_sites() {
+        use hew_types::check::{SpanKey, TypeCheckOutput};
+        use hew_types::Ty;
+        use std::collections::HashSet;
+
+        let call_span = 10usize..30usize;
+
+        let program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "caller".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((
+                            Expr::Call {
+                                function: Box::new((Expr::Identifier("identity".into()), 10..18)),
+                                type_args: None,
+                                args: vec![],
+                                is_tail_call: false,
+                            },
+                            call_span.clone(),
+                        ))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                    fn_span: 0..0,
+                }),
+                0..40,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let tco = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            handle_bearing_structs: HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::from([(
+                SpanKey {
+                    start: call_span.start,
+                    end: call_span.end,
+                },
+                vec![Ty::I32, Ty::String],
+            )]),
+        };
+
+        let entries = build_method_call_type_args_entries(&program, &tco);
+        assert_eq!(entries.len(), 1, "expected one type-args entry");
+        assert_eq!(entries[0].start, call_span.start);
+        assert_eq!(entries[0].end, call_span.end);
+        assert_eq!(entries[0].type_args.len(), 2, "expected two type arguments");
+    }
+
     #[test]
     fn lowering_facts_serialize_to_wire_field() {
         let program = Program {
@@ -1643,6 +1931,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1705,6 +1994,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![AssignTargetKindEntry {
@@ -2115,6 +2405,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -2159,6 +2450,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             vec!["PatternWrapper".to_string(), "regexwrap.Outer".to_string()],
             HashMap::new(),
             vec![],
@@ -2176,6 +2468,7 @@ mod tests {
 
         let json = serialize_to_json(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -2563,6 +2856,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             shapes.clone(),
             vec![],
             vec![],
@@ -2624,6 +2918,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -2671,6 +2966,7 @@ mod tests {
                 },
                 consumes_receiver: false,
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -2727,6 +3023,7 @@ mod tests {
                 },
                 consumes_receiver: false,
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -2790,6 +3087,7 @@ mod tests {
                 &program,
                 vec![],
                 vec![],
+                vec![],
                 vec![AssignTargetKindEntry {
                     start: 1,
                     end: 5,
@@ -2835,6 +3133,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -2891,6 +3190,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -2969,6 +3269,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -3022,6 +3323,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],

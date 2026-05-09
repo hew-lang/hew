@@ -102,6 +102,10 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
       hew::SupervisorNewOp::create(builder, location, ptrType, strategy, maxRestartsI32, windowVal)
           .getResult();
 
+  // actorChildIndex tracks only the actor-child count (not nested supervisors).
+  // This matches the zero-based index used by hew_supervisor_set_child_state_drop.
+  int actorChildIndex = 0;
+
   // Iterate over children and add each to the supervisor
   for (const auto &child : decl.children) {
     const auto &childName = child.name;
@@ -126,6 +130,7 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
       // Call hew_supervisor_add_child_supervisor_with_init(parent, child, init_fn)
       hew::SupervisorAddChildSupervisorOp::create(builder, location, i32Type, supervisorPtr,
                                                   childSupPtr, initFuncPtr);
+      // Supervisor children live in a separate list; do not bump actorChildIndex.
       continue;
     }
 
@@ -238,6 +243,30 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
 
     // 8. Call hew_supervisor_add_child_spec(supervisor, &spec)
     hew::SupervisorAddChildOp::create(builder, location, i32Type, supervisorPtr, specPtr);
+
+    // 9. Register state-drop callback on the supervisor spec so that every
+    //    restart path (not just the initial spawn) calls it on the new actor.
+    //    Mirrors the hew_actor_set_state_drop call emitted after a direct spawn.
+    {
+      std::string stateDropName = actorTypeName + "_state_drop";
+      if (module.lookupSymbol<mlir::func::FuncOp>(stateDropName)) {
+        auto stateDropFuncType = builder.getFunctionType({ptrType}, {});
+        getOrCreateExternFunc(stateDropName, stateDropFuncType);
+        auto stateDropPtr =
+            hew::FuncPtrOp::create(builder, location, ptrType,
+                                   mlir::SymbolRefAttr::get(&context, stateDropName))
+                .getResult();
+
+        auto setChildStateDropFuncType = builder.getFunctionType({ptrType, i32Type, ptrType}, {});
+        auto setChildStateDropFunc =
+            getOrCreateExternFunc("hew_supervisor_set_child_state_drop", setChildStateDropFuncType);
+        auto childIdxVal = createIntConstant(builder, location, i32Type, actorChildIndex);
+        mlir::func::CallOp::create(builder, location, setChildStateDropFunc,
+                                   mlir::ValueRange{supervisorPtr, childIdxVal, stateDropPtr});
+      }
+    }
+
+    ++actorChildIndex;
   }
 
   // Start the supervisor (begins watching for child crashes)

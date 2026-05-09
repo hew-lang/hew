@@ -6171,6 +6171,24 @@
           "returns": "i32"
         },
         {
+          "name": "hew_supervisor_set_child_state_drop",
+          "params": [
+            {
+              "name": "sup",
+              "type": "ptr"
+            },
+            {
+              "name": "child_index",
+              "type": "i32"
+            },
+            {
+              "name": "state_drop_fn",
+              "type": "ptr"
+            }
+          ],
+          "returns": "void"
+        },
+        {
           "name": "hew_supervisor_set_restart_notify",
           "params": [
             {

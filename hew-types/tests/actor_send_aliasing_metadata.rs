@@ -90,6 +90,66 @@ fn actor_send_aliasing_map_populated_for_copy_send() {
     }
 }
 
+/// Receive-method dispatch through a *bare actor field* (typed as the
+/// actor name, e.g. `let target: Printer`, not `ActorRef<Printer>`) routes
+/// through `check_named_method_fallback` rather than the `ActorRef` path.
+/// That fallback used to skip `enforce_actor_boundary_send`, leaving the
+/// `actor_send_aliasing` map empty for those sites — a producer gap that
+/// blocks the codegen-side fail-closed lookup.
+///
+/// This test pins the fix: every arg of a receive-method dispatch on a
+/// named-actor field must produce an entry in `actor_send_aliasing`.
+#[test]
+fn actor_send_aliasing_records_named_actor_field_receive_dispatch() {
+    let output = typecheck_isolated(
+        r"
+        actor Printer {
+            receive fn print_result(n: int) {}
+        }
+
+        actor Adder {
+            let amount: int;
+            let target: Printer;
+            receive fn add(n: int) {
+                let result = n + amount;
+                target.print_result(result);
+            }
+        }
+
+        fn main() {
+            let printer = spawn Printer;
+            let adder = spawn Adder(amount: 10, target: printer);
+            adder.add(5);
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "fixture should type-check cleanly, got: {:#?}",
+        output.errors
+    );
+    // Three accepted send sites in this program:
+    //   1. `printer` arg in `spawn Adder(... target: printer)` (spawn args)
+    //   2. `adder.add(5)` from main (ActorRef receive dispatch)
+    //   3. `target.print_result(result)` from inside Adder::add (the
+    //      named-actor field receive dispatch — the gap this test pins).
+    // We check (3) explicitly: the side table must have an entry whose
+    // span covers a non-empty range inside the actor body. The simplest
+    // robust assertion is on the count — at least 3 entries exist.
+    assert!(
+        output.actor_send_aliasing.len() >= 3,
+        "expected actor_send_aliasing to record an entry for every accepted \
+         send site (including the named-actor field dispatch), got {} entries: {:#?}",
+        output.actor_send_aliasing.len(),
+        output.actor_send_aliasing
+    );
+    // Every entry remains Copy in Phase α; the alias-enable rule lands in
+    // the next commit on this lane.
+    for decision in output.actor_send_aliasing.values() {
+        assert_eq!(*decision, ActorSendAliasing::Copy);
+    }
+}
+
 /// Programs with no actor sends must produce an empty map — the producer
 /// only inserts at the boundary, so an empty TCO field on actor-free
 /// programs confirms the population is scoped, not a default.

@@ -803,22 +803,21 @@ impl Checker {
                         type_name: name.clone(),
                     },
                 );
-                // If the receiver type is a registered actor declaration, this
-                // dispatch path is invoking a receive handler — every arg
-                // crosses the actor mailbox boundary. Record the per-arg
-                // alias-vs-copy decision so codegen does not have to guess.
-                //
-                // Today (Phase α) `register_receive_fn` is the only path that
-                // populates `fn_sigs` entries keyed `{Actor}::{name}`, so any
-                // method resolved on an actor TypeDef is necessarily a
-                // receive handler. If a future change registers non-receive
-                // methods on actors via impl blocks, this rule will need to
-                // narrow accordingly (e.g. consult an explicit
-                // `is_receive_method` set).
+                // If the receiver type is a registered actor declaration AND
+                // the resolved method is a receive handler (tracked in
+                // `actor_receive_methods`), this dispatch crosses the
+                // actor mailbox boundary. Record the per-arg alias-vs-copy
+                // decision so codegen does not have to guess. Non-receive
+                // `methods` declared on the same actor (also keyed
+                // `{Actor}::{name}` in `fn_sigs`) stay on the regular
+                // method-call path.
                 if self
                     .type_defs
                     .get(name)
                     .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                    && self
+                        .actor_receive_methods
+                        .contains(&format!("{name}::{method_name}"))
                 {
                     self.enforce_actor_method_send_args(args);
                 }
@@ -2539,6 +2538,24 @@ impl Checker {
                             type_name: name.clone(),
                         },
                     );
+                    // Actor receive-method dispatch on a bare actor-typed
+                    // receiver (e.g. `let target: Printer; target.foo(arg)`)
+                    // routes here: `lookup_named_method_sig` finds the
+                    // signature in `fn_sigs` keyed `{Actor}::{method}`.
+                    // Every arg crosses the mailbox boundary and must be
+                    // routed through `enforce_actor_boundary_send` so the
+                    // codegen consumer (fail-closed on missing entries)
+                    // sees an alias-vs-copy decision per arg.
+                    if self
+                        .type_defs
+                        .get(name)
+                        .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                        && self
+                            .actor_receive_methods
+                            .contains(&format!("{name}::{method}"))
+                    {
+                        self.enforce_actor_method_send_args(args);
+                    }
                     // #1295: stdlib `impl Closable for T { fn close }` flattens
                     // into the inherent-method table on T; honour any
                     // `consumes_receiver` declared on a trait whose impl

@@ -1614,29 +1614,28 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 // Shared helpers for actor send/ask
 // ============================================================================
 
-int32_t MLIRGen::aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans,
-                                      mlir::Location /*location*/) {
+int32_t MLIRGen::aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans, mlir::Location location) {
   // Aggregate: if any arg's checker decision is Alias, the op-level attr is
-  // Alias; otherwise Copy. Phase α records Copy at every site in the side
-  // table, so every program that compiles today resolves to Copy (0) here.
+  // Alias; otherwise Copy.
   //
-  // Soft fallback for missing entries: not every type-checker dispatch path
-  // currently calls `enforce_actor_boundary_send` (e.g. method dispatch on a
-  // named-type field whose type is an actor declaration goes through
-  // `check_named_method_fallback`, which records a `MethodCallReceiverKind`
-  // entry but does not yet record an `actor_send_aliasing` decision). The
-  // alias-enable commit later in this lane closes those gaps and tightens
-  // the lookup to fail-closed; until then a missing entry is treated as
-  // `Copy` (the legacy mailbox path), preserving today's runtime behaviour
-  // while keeping the wire-format and op-level seams in place.
+  // Fail-closed contract: every actor send/ask path the type-checker
+  // accepts must produce an `actor_send_aliasing` entry. The producer is
+  // `enforce_actor_boundary_send` and every dispatch path that reaches
+  // an actor mailbox boundary (spawn args, ActorRef receive dispatch,
+  // named-actor field receive dispatch in both `check_method_call`'s
+  // `Ty::Named` arm and `check_named_method_fallback`) routes through
+  // it. A missing entry means a dispatch path slipped past the producer;
+  // emit a hard error rather than silently defaulting to Copy, so the
+  // next gap surfaces as a build failure instead of degrading the alias
+  // decision.
   int32_t aggregated = 0; // Copy
   for (const auto &span : argSpans) {
     const auto *entry = actorSendAliasingOf(span);
     if (!entry) {
-      // Missing entry: producer-side dispatch path doesn't currently route
-      // through `enforce_actor_boundary_send`. Default to Copy and continue;
-      // the alias-enable commit will tighten this to fail-closed once every
-      // dispatch path produces a decision.
+      ++errorCount_;
+      emitError(location) << "missing actor_send_aliasing entry for actor send/ask arg at span ["
+                          << span.start << ", " << span.end
+                          << "); every accepted send site must record a decision";
       continue;
     }
     if (entry->kind == ast::ActorSendAliasingKind::Alias)

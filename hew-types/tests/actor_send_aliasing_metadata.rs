@@ -120,18 +120,20 @@ fn actor_send_aliasing_records_named_actor_field_receive_dispatch() {
         "fixture should type-check cleanly, got: {:#?}",
         output.errors
     );
-    // Three accepted send sites in this program:
-    //   1. `printer` arg in `spawn Adder(... target: printer)` (spawn args)
-    //   2. `adder.add(5)` from main (ActorRef receive dispatch)
-    //   3. `target.print_result(result)` from inside Adder::add (the
+    // Four accepted send sites in this program:
+    //   1. `amount: 10` arg in `spawn Adder(...)` (spawn args)
+    //   2. `target: printer` arg in `spawn Adder(...)` (spawn args)
+    //   3. `adder.add(5)` from main (ActorRef receive dispatch)
+    //   4. `target.print_result(result)` from inside Adder::add (the
     //      named-actor field receive dispatch — the gap this test pins).
-    // We check (3) explicitly: the side table must have an entry whose
-    // span covers a non-empty range inside the actor body. The simplest
-    // robust assertion is on the count — at least 3 entries exist.
+    //
+    // Without the producer fix at the named-actor field dispatch path,
+    // entry (4) is missing and the count is 3. Asserting `>= 4` ensures
+    // a regression here would make the test fail rather than slide past.
     assert!(
-        output.actor_send_aliasing.len() >= 3,
+        output.actor_send_aliasing.len() >= 4,
         "expected actor_send_aliasing to record an entry for every accepted \
-         send site (including the named-actor field dispatch), got {} entries: {:#?}",
+         send site including the named-actor field receive dispatch, got {} entries: {:#?}",
         output.actor_send_aliasing.len(),
         output.actor_send_aliasing
     );

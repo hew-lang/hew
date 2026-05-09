@@ -724,6 +724,12 @@ pub struct Checker {
     pub(super) refresh_call_count: usize,
     /// Qualified `Actor::method` names declared with `receive gen fn`.
     pub(super) receive_generator_methods: HashSet<String>,
+    /// Qualified `Actor::method` names declared with `receive fn` (including
+    /// generator receives). Used by the actor-mailbox boundary enforcement
+    /// to distinguish receive handlers from non-receive `methods` declared
+    /// on the same actor (which are also keyed `{Actor}::{name}` in
+    /// `fn_sigs` but must NOT cross the mailbox boundary).
+    pub(super) actor_receive_methods: HashSet<String>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
@@ -899,6 +905,7 @@ impl Checker {
             handle_bearing_dirty: false,
             refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),
+            actor_receive_methods: HashSet::new(),
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),

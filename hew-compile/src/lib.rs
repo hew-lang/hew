@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use hew_serialize::{
     build_assign_target_kind_entries, build_assign_target_shape_entries,
-    build_lowering_fact_entries, build_method_call_receiver_kind_entries,
-    build_method_call_type_args_entries, serialize_to_json, serialize_to_msgpack,
-    AssignTargetKindEntry, AssignTargetShapeEntry, ExprTypeEntry, LoweringFactEntry,
-    MethodCallReceiverKindEntry, MethodCallTypeArgsEntry, TypeExprConversionError,
+    build_call_type_args_entries, build_lowering_fact_entries,
+    build_method_call_receiver_kind_entries, serialize_to_json, serialize_to_msgpack,
+    AssignTargetKindEntry, AssignTargetShapeEntry, CallTypeArgsEntry, ExprTypeEntry,
+    LoweringFactEntry, MethodCallReceiverKindEntry, TypeExprConversionError,
     TypeExprConversionKind,
 };
 use serde::{de::DeserializeOwned, Deserialize};
@@ -159,7 +159,7 @@ pub struct FrontendArtifacts {
     pub program: Program,
     pub expr_type_entries: Vec<ExprTypeEntry>,
     pub method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
-    pub method_call_type_args: Vec<MethodCallTypeArgsEntry>,
+    pub call_type_args: Vec<CallTypeArgsEntry>,
     pub assign_target_kinds: Vec<AssignTargetKindEntry>,
     pub assign_target_shapes: Vec<AssignTargetShapeEntry>,
     pub lowering_facts: Vec<LoweringFactEntry>,
@@ -178,7 +178,7 @@ impl FrontendArtifacts {
             &self.program,
             self.expr_type_entries.clone(),
             self.method_call_receiver_kinds.clone(),
-            self.method_call_type_args.clone(),
+            self.call_type_args.clone(),
             self.assign_target_kinds.clone(),
             self.assign_target_shapes.clone(),
             self.lowering_facts.clone(),
@@ -197,7 +197,7 @@ impl FrontendArtifacts {
             &self.program,
             self.expr_type_entries.clone(),
             self.method_call_receiver_kinds.clone(),
-            self.method_call_type_args.clone(),
+            self.call_type_args.clone(),
             self.assign_target_kinds.clone(),
             self.assign_target_shapes.clone(),
             self.lowering_facts.clone(),
@@ -1579,9 +1579,10 @@ fn finish_compile(
         .tco
         .as_ref()
         .map_or_else(Vec::new, |tco| build_lowering_fact_entries(&program, tco));
-    let method_call_type_args = typecheck_result.tco.as_ref().map_or_else(Vec::new, |tco| {
-        build_method_call_type_args_entries(&program, tco)
-    });
+    let call_type_args = typecheck_result
+        .tco
+        .as_ref()
+        .map_or_else(Vec::new, |tco| build_call_type_args_entries(&program, tco));
     let metadata = build_codegen_metadata(
         &typecheck_result.module_registry,
         typecheck_result.tco.as_ref(),
@@ -1596,7 +1597,7 @@ fn finish_compile(
         program,
         expr_type_entries,
         method_call_receiver_kinds,
-        method_call_type_args,
+        call_type_args,
         assign_target_kinds,
         assign_target_shapes,
         lowering_facts,

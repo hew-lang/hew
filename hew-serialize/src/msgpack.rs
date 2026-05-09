@@ -135,7 +135,7 @@ pub struct LoweringFactEntry {
 /// lacked this key) are gracefully skipped at the Rust deserialization layer.
 /// The C++ reader mirrors this with `mapGet`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MethodCallTypeArgsEntry {
+pub struct CallTypeArgsEntry {
     /// Byte offset of the call expression start.
     pub start: usize,
     /// Byte offset of the call expression end.
@@ -155,7 +155,7 @@ pub struct MethodCallTypeArgsEntry {
 /// - `"module_doc"`
 /// - `"expr_types"`
 /// - `"method_call_receiver_kinds"`
-/// - `"method_call_type_args"`
+/// - `"call_type_args"`
 /// - `"assign_target_kinds"`
 /// - `"assign_target_shapes"`
 /// - `"lowering_facts"`
@@ -180,7 +180,7 @@ struct TypedProgram<'a, ModuleGraphRepr> {
     /// Inferred type arguments for generic free-function call sites.
     /// Populated from `tco.call_type_args`; empty for programs with no
     /// module-qualified generic free-function calls.
-    method_call_type_args: &'a [MethodCallTypeArgsEntry],
+    call_type_args: &'a [CallTypeArgsEntry],
     /// Checker-resolved assignment target classifications (keyed by target span).
     /// Missing entries indicate the checker rejected those targets.
     assign_target_kinds: &'a [AssignTargetKindEntry],
@@ -227,7 +227,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
         program: &'a hew_parser::ast::Program,
         expr_types: &'a [ExprTypeEntry],
         method_call_receiver_kinds: &'a [MethodCallReceiverKindEntry],
-        method_call_type_args: &'a [MethodCallTypeArgsEntry],
+        call_type_args: &'a [CallTypeArgsEntry],
         assign_target_kinds: &'a [AssignTargetKindEntry],
         assign_target_shapes: &'a [AssignTargetShapeEntry],
         lowering_facts: &'a [LoweringFactEntry],
@@ -245,7 +245,7 @@ impl<'a, ModuleGraphRepr> TypedProgram<'a, ModuleGraphRepr> {
             module_doc: &program.module_doc,
             expr_types,
             method_call_receiver_kinds,
-            method_call_type_args,
+            call_type_args,
             assign_target_kinds,
             assign_target_shapes,
             lowering_facts,
@@ -280,7 +280,7 @@ pub fn serialize_to_msgpack(
     program: &hew_parser::ast::Program,
     expr_types: Vec<ExprTypeEntry>,
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
-    method_call_type_args: Vec<MethodCallTypeArgsEntry>,
+    call_type_args: Vec<CallTypeArgsEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
     lowering_facts: Vec<LoweringFactEntry>,
@@ -295,7 +295,7 @@ pub fn serialize_to_msgpack(
         program,
         &expr_types,
         &method_call_receiver_kinds,
-        &method_call_type_args,
+        &call_type_args,
         &assign_target_kinds,
         &assign_target_shapes,
         &lowering_facts,
@@ -340,7 +340,7 @@ pub fn serialize_to_json(
     program: &hew_parser::ast::Program,
     expr_types: Vec<ExprTypeEntry>,
     method_call_receiver_kinds: Vec<MethodCallReceiverKindEntry>,
-    method_call_type_args: Vec<MethodCallTypeArgsEntry>,
+    call_type_args: Vec<CallTypeArgsEntry>,
     assign_target_kinds: Vec<AssignTargetKindEntry>,
     assign_target_shapes: Vec<AssignTargetShapeEntry>,
     lowering_facts: Vec<LoweringFactEntry>,
@@ -360,7 +360,7 @@ pub fn serialize_to_json(
         program,
         &expr_types,
         &method_call_receiver_kinds,
-        &method_call_type_args,
+        &call_type_args,
         &assign_target_kinds,
         &assign_target_shapes,
         &lowering_facts,
@@ -1105,7 +1105,7 @@ pub fn build_method_call_receiver_kind_entries(
     walk_program(program, tco, &Visitor)
 }
 
-/// Build the `method_call_type_args` side-table entries from `tco.call_type_args`.
+/// Build the `call_type_args` side-table entries from `tco.call_type_args`.
 ///
 /// Walks the program AST using the shared [`SideTableVisitor`] to emit entries in
 /// source order, one per generic free-function call site where the checker inferred
@@ -1114,13 +1114,13 @@ pub fn build_method_call_receiver_kind_entries(
 /// panicking — callers that need diagnostics should check the enriched type map
 /// instead.
 #[must_use]
-pub fn build_method_call_type_args_entries(
+pub fn build_call_type_args_entries(
     program: &hew_parser::ast::Program,
     tco: &TypeCheckOutput,
-) -> Vec<MethodCallTypeArgsEntry> {
+) -> Vec<CallTypeArgsEntry> {
     struct Visitor;
     impl SideTableVisitor for Visitor {
-        type Entry = MethodCallTypeArgsEntry;
+        type Entry = CallTypeArgsEntry;
         fn on_assign_stmt(
             &self,
             _target: &Spanned<Expr>,
@@ -1154,7 +1154,7 @@ pub fn build_method_call_type_args_entries(
             let Some(converted_args) = converted else {
                 return;
             };
-            out.push(MethodCallTypeArgsEntry {
+            out.push(CallTypeArgsEntry {
                 start: key.start,
                 end: key.end,
                 type_args: converted_args,
@@ -1740,11 +1740,11 @@ mod tests {
         assert_eq!(restored.end, 5);
     }
 
-    /// Verify that a populated `MethodCallTypeArgsEntry` survives a
+    /// Verify that a populated `CallTypeArgsEntry` survives a
     /// msgpack encode/decode round-trip with the `type_args` vector intact.
     #[test]
-    fn method_call_type_args_entry_roundtrips() {
-        let entry = MethodCallTypeArgsEntry {
+    fn call_type_args_entry_roundtrips() {
+        let entry = CallTypeArgsEntry {
             start: 5,
             end: 18,
             type_args: vec![
@@ -1765,7 +1765,7 @@ mod tests {
             ],
         };
         let bytes = rmp_serde::to_vec_named(&entry).expect("entry should serialize");
-        let restored: MethodCallTypeArgsEntry =
+        let restored: CallTypeArgsEntry =
             rmp_serde::from_slice(&bytes).expect("entry should deserialize");
         assert_eq!(restored, entry);
         assert_eq!(restored.start, 5);
@@ -1773,10 +1773,10 @@ mod tests {
         assert_eq!(restored.type_args.len(), 2);
     }
 
-    /// Verify the wire field `method_call_type_args` is present and populated
+    /// Verify the wire field `call_type_args` is present and populated
     /// when entries are provided.
     #[test]
-    fn method_call_type_args_serializes_to_wire_field() {
+    fn call_type_args_serializes_to_wire_field() {
         let program = Program {
             items: vec![],
             module_doc: None,
@@ -1787,7 +1787,7 @@ mod tests {
             &program,
             vec![],
             vec![],
-            vec![MethodCallTypeArgsEntry {
+            vec![CallTypeArgsEntry {
                 start: 10,
                 end: 25,
                 type_args: vec![(
@@ -1811,9 +1811,9 @@ mod tests {
         let value: serde_json::Value =
             rmp_serde::from_slice(&bytes).expect("should deserialize msgpack payload");
         let entries = value
-            .get("method_call_type_args")
+            .get("call_type_args")
             .and_then(serde_json::Value::as_array)
-            .expect("method_call_type_args should be present on the wire");
+            .expect("call_type_args should be present on the wire");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["start"], 10u64);
         assert_eq!(entries[0]["end"], 25u64);
@@ -1824,11 +1824,11 @@ mod tests {
         assert_eq!(type_args.len(), 1);
     }
 
-    /// Forward compatibility: payloads lacking the `method_call_type_args` key
+    /// Forward compatibility: payloads lacking the `call_type_args` key
     /// must deserialise with an empty `type_args` vec (the `#[serde(default)]`
     /// annotation on the field handles this).
     #[test]
-    fn method_call_type_args_entry_type_args_defaults_when_absent() {
+    fn call_type_args_entry_type_args_defaults_when_absent() {
         // Mimic a payload that omits `type_args` entirely.
         #[derive(Serialize)]
         struct LegacyEntry {
@@ -1837,18 +1837,18 @@ mod tests {
         }
         let legacy = LegacyEntry { start: 3, end: 7 };
         let bytes = rmp_serde::to_vec_named(&legacy).expect("legacy entry should serialize");
-        let restored: MethodCallTypeArgsEntry =
+        let restored: CallTypeArgsEntry =
             rmp_serde::from_slice(&bytes).expect("legacy entry should deserialize");
         assert!(restored.type_args.is_empty());
         assert_eq!(restored.start, 3);
         assert_eq!(restored.end, 7);
     }
 
-    /// Verify that `build_method_call_type_args_entries` emits one entry per
+    /// Verify that `build_call_type_args_entries` emits one entry per
     /// `Expr::Call` span that appears in `tco.call_type_args`, and that the
     /// converted type args round-trip correctly.
     #[test]
-    fn build_method_call_type_args_entries_emits_call_sites() {
+    fn build_call_type_args_entries_emits_call_sites() {
         use hew_types::check::{SpanKey, TypeCheckOutput};
         use hew_types::Ty;
         use std::collections::HashSet;
@@ -1914,7 +1914,7 @@ mod tests {
             )]),
         };
 
-        let entries = build_method_call_type_args_entries(&program, &tco);
+        let entries = build_call_type_args_entries(&program, &tco);
         assert_eq!(entries.len(), 1, "expected one type-args entry");
         assert_eq!(entries[0].start, call_span.start);
         assert_eq!(entries[0].end, call_span.end);

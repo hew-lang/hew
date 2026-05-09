@@ -1889,9 +1889,9 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
   fail("unknown method_call_receiver_kinds kind '" + kind + "'");
 }
 
-static ast::MethodCallTypeArgsEntry
-parseMethodCallTypeArgsEntry(const msgpack::object &obj) {
-  ast::MethodCallTypeArgsEntry entry;
+static ast::CallTypeArgsEntry
+parseCallTypeArgsEntry(const msgpack::object &obj) {
+  ast::CallTypeArgsEntry entry;
   entry.start = getUint(mapReq(obj, "start"));
   entry.end = getUint(mapReq(obj, "end"));
   if (const auto *ta = mapGet(obj, "type_args")) {
@@ -1925,8 +1925,8 @@ static ast::Program parseProgram(const msgpack::object &obj) {
   prog.expr_types = parseVec<ast::ExprTypeEntry>(mapReq(obj, "expr_types"), parseExprTypeEntry);
   prog.method_call_receiver_kinds = parseVec<ast::MethodCallReceiverKindEntry>(
       mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
-  prog.method_call_type_args = parseVec<ast::MethodCallTypeArgsEntry>(
-      mapReq(obj, "method_call_type_args"), parseMethodCallTypeArgsEntry);
+  prog.call_type_args = parseVec<ast::CallTypeArgsEntry>(
+      mapReq(obj, "call_type_args"), parseCallTypeArgsEntry);
   prog.assign_target_kinds = parseVec<ast::AssignTargetKindEntry>(
       mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
   prog.assign_target_shapes = parseVec<ast::AssignTargetShapeEntry>(

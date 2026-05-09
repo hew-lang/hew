@@ -630,9 +630,9 @@ private:
                      SpanHash>
       methodCallReceiverKindMap;
   /// Lookup map from call-site span → inferred type arguments for generic free-function calls.
-  /// Built once in `generate` from `Program::method_call_type_args`; empty for schema < 9.
-  std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::MethodCallTypeArgsEntry *, SpanHash>
-      methodCallTypeArgsMap;
+  /// Built once in `generate` from `Program::call_type_args`.
+  std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::CallTypeArgsEntry *, SpanHash>
+      callTypeArgsMap;
   /// Lookup map from assignment target span → assign-target-kind entry.
   /// Built once in `generate`; used by `assignTargetKindOf` /
   /// `requireAssignTargetKindOf`.
@@ -667,11 +667,10 @@ private:
     return nullptr;
   }
   /// Look up the inferred type arguments for a generic free-function call site by span.
-  /// Returns nullptr when the call site has no recorded type arguments (non-generic call,
-  /// or payload predates schema version 9).
-  const ast::MethodCallTypeArgsEntry *methodCallTypeArgsOf(const ast::Span &span) const {
-    auto it = methodCallTypeArgsMap.find({span.start, span.end});
-    if (it != methodCallTypeArgsMap.end())
+  /// Returns nullptr when the call site has no recorded type arguments (non-generic call).
+  const ast::CallTypeArgsEntry *callTypeArgsOf(const ast::Span &span) const {
+    auto it = callTypeArgsMap.find({span.start, span.end});
+    if (it != callTypeArgsMap.end())
       return it->second;
     return nullptr;
   }

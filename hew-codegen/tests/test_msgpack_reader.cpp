@@ -125,7 +125,7 @@ packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFie
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
   // Required top-level fields: schema_version, items, expr_types,
-  // method_call_receiver_kinds, method_call_type_args, assign_target_kinds,
+  // method_call_receiver_kinds, call_type_args, assign_target_kinds,
   // assign_target_shapes, lowering_facts, handle_types, handle_bearing_structs,
   // handle_type_repr (11 fields as of schema version 9)
   pk.pack_map(11 + extraCount);
@@ -137,7 +137,7 @@ packWithSchema(std::function<void(msgpack::packer<msgpack::sbuffer> &)> extraFie
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -257,7 +257,7 @@ static void test_drop_funcs_roundtrip() {
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -319,7 +319,7 @@ static void test_handle_bearing_structs_roundtrip() {
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -399,7 +399,7 @@ static void test_program_metadata_roundtrip() {
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -537,7 +537,7 @@ static void test_method_call_receiver_kinds_roundtrip() {
   pk.pack(std::string("element_kind"));
   pk.pack(std::string("bytes"));
 
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -612,7 +612,7 @@ static void test_lowering_facts_roundtrip() {
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -694,7 +694,7 @@ static void test_assign_target_shapes_roundtrip() {
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -775,7 +775,7 @@ static void test_assign_target_kinds_roundtrip() {
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   // Four assign_target_kinds entries — one per variant.
   pk.pack(std::string("assign_target_kinds"));
@@ -924,7 +924,7 @@ static void test_expr_types_named_roundtrip() {
 
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -1011,7 +1011,7 @@ static void test_type_infer_in_wire_rejects() {
 
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -1086,7 +1086,7 @@ static void test_wire_unknown_decl_kind_rejects() {
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
-  pk.pack(std::string("method_call_type_args"));
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
@@ -1108,17 +1108,17 @@ static void test_wire_unknown_decl_kind_rejects() {
   PASS();
 }
 
-// ─── method_call_type_args parsing ──────────────────────────────────────────
+// ─── call_type_args parsing ──────────────────────────────────────────────────
 
-static void test_method_call_type_args_roundtrip() {
-  TEST(method_call_type_args_roundtrip);
+static void test_call_type_args_roundtrip() {
+  TEST(call_type_args_roundtrip);
 
-  // Pack a v9 payload with two method_call_type_args entries:
+  // Pack a v9 payload with two call_type_args entries:
   //   entry 0: call site [10..25], one type arg "Bool"
   //   entry 1: call site [40..60], two type args "Int" and "String"
   // Verifies that:
-  //   - prog.method_call_type_args is populated correctly
-  //   - methodCallTypeArgsMap is populated (via MLIRGen helper wiring)
+  //   - prog.call_type_args is populated correctly
+  //   - callTypeArgsMap is populated (via MLIRGen helper wiring)
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
 
@@ -1132,8 +1132,8 @@ static void test_method_call_type_args_roundtrip() {
   pk.pack(std::string("method_call_receiver_kinds"));
   pk.pack_array(0);
 
-  // method_call_type_args: two entries
-  pk.pack(std::string("method_call_type_args"));
+  // call_type_args: two entries
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(2);
 
   // Entry 0: [10..25], one type arg "Bool"
@@ -1215,12 +1215,12 @@ static void test_method_call_type_args_roundtrip() {
                                    reinterpret_cast<const uint8_t *>(buf.data()) + buf.size());
   try {
     auto prog = hew::parseMsgpackAST(data.data(), data.size());
-    if (prog.method_call_type_args.size() != 2) {
-      FAIL("expected 2 method_call_type_args entries");
+    if (prog.call_type_args.size() != 2) {
+      FAIL("expected 2 call_type_args entries");
       return;
     }
     // Entry 0: span [10..25], one type arg "Bool"
-    const auto &e0 = prog.method_call_type_args[0];
+    const auto &e0 = prog.call_type_args[0];
     if (e0.start != 10 || e0.end != 25) {
       FAIL("entry 0 span wrong");
       return;
@@ -1235,7 +1235,7 @@ static void test_method_call_type_args_roundtrip() {
       return;
     }
     // Entry 1: span [40..60], two type args "Int" and "String"
-    const auto &e1 = prog.method_call_type_args[1];
+    const auto &e1 = prog.call_type_args[1];
     if (e1.start != 40 || e1.end != 60) {
       FAIL("entry 1 span wrong");
       return;
@@ -1302,8 +1302,8 @@ int main() {
   // Wire declaration with unknown kind must be rejected
   test_wire_unknown_decl_kind_rejects();
 
-  // method_call_type_args: non-empty roundtrip with typed type-arg entries
-  test_method_call_type_args_roundtrip();
+  // call_type_args: non-empty roundtrip with typed type-arg entries
+  test_call_type_args_roundtrip();
 
   printf("\n%d/%d tests passed\n", tests_passed, tests_run);
   return tests_passed == tests_run ? 0 : 1;

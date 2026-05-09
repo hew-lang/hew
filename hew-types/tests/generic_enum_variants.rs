@@ -195,8 +195,8 @@ fn variant_constructors_preserve_type_args() {
 // Pattern-matching a generic enum tuple-variant should bind the payload with
 // the concrete scrutinee type args substituted in, so a downstream call that
 // requires a trait bound (e.g. `Display`) on the payload resolves against the
-// concrete type rather than the enum's free type parameter. Regression for the
-// generic-enum bound-inference gap (Section D.2 of the language-feature audit).
+// concrete type rather than the enum's free type parameter. Regression guard
+// for the generic-enum tuple-variant substitution fix in patterns.rs.
 #[test]
 fn tuple_variant_pattern_binds_concrete_payload_for_bound_resolution() {
     let output = typecheck(

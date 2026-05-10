@@ -191,3 +191,146 @@ fn variant_constructors_preserve_type_args() {
         output.errors
     );
 }
+
+// Pattern-matching a generic enum tuple-variant should bind the payload with
+// the concrete scrutinee type args substituted in, so a downstream call that
+// requires a trait bound (e.g. `Display`) on the payload resolves against the
+// concrete type rather than the enum's free type parameter. Regression guard
+// for the generic-enum tuple-variant substitution fix in patterns.rs.
+#[test]
+fn tuple_variant_pattern_binds_concrete_payload_for_bound_resolution() {
+    let output = typecheck(
+        r"
+        pub enum Either<A, B> {
+            Left(A);
+            Right(B);
+        }
+
+        fn main() -> int {
+            let e: Either<int, String> = Either::Left(42);
+            match e {
+                Either::Left(n) => println(n),
+                Either::Right(s) => println(s),
+            }
+            0
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+}
+
+// A generic function with a `T: Display` where-clause bound should be able to
+// pass a value of type `T` to a builtin (`println`) that itself requires
+// `Display`, even when `T` is destructured from a generic enum payload. The
+// abstract type parameter satisfies the bound by carrying it on the function
+// signature.
+#[test]
+fn generic_fn_type_param_bound_satisfies_display_via_enum_payload() {
+    let output = typecheck(
+        r#"
+        pub enum Foo<T: Display> {
+            Item(T);
+            Nothing;
+        }
+
+        fn show<T: Display>(f: Foo<T>) {
+            match f {
+                Foo::Item(x) => println(x),
+                Foo::Nothing => println("nothing"),
+            }
+        }
+
+        fn main() -> int {
+            show(Foo::Item(42));
+            show(Foo::Item("hello"));
+            0
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+}
+
+// An impl-scoped inline bound (`impl<T: Display> Holder<T>`) should allow a
+// method body to pass the field of type T to println, which requires Display.
+#[test]
+fn impl_inline_bound_satisfies_display_in_method_body() {
+    let output = typecheck(
+        r"
+        type Holder<T> { value: T }
+
+        impl<T: Display> Holder<T> {
+            fn show(h: Holder<T>) {
+                println(h.value)
+            }
+        }
+
+        fn main() -> int {
+            let h = Holder { value: 42 };
+            h.show();
+            0
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+}
+
+// An impl-scoped where-clause bound (`impl<T> Holder<T> where T: Display`)
+// should behave identically to the inline form.
+#[test]
+fn impl_where_clause_bound_satisfies_display_in_method_body() {
+    let output = typecheck(
+        r"
+        type Holder<T> { value: T }
+
+        impl<T> Holder<T> where T: Display {
+            fn show(h: Holder<T>) {
+                println(h.value)
+            }
+        }
+
+        fn main() -> int {
+            let h = Holder { value: 42 };
+            h.show();
+            0
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unexpected errors: {:?}",
+        output.errors
+    );
+}
+
+// Without any bound the method body should still fail: `T` alone does not
+// satisfy the `Display` requirement of println.
+#[test]
+fn impl_without_bound_rejects_display_call_in_method_body() {
+    let output = typecheck(
+        r"
+        type Holder<T> { value: T }
+
+        impl<T> Holder<T> {
+            fn show(h: Holder<T>) {
+                println(h.value)
+            }
+        }
+        ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected a type error for missing Display bound, but got none"
+    );
+}

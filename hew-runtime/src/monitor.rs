@@ -202,6 +202,24 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
 }
 
 /// Remove a monitor by its reference ID.
+///
+/// **Silent-Ok contract** — this function is idempotent and never panics:
+///
+/// - `ref_id == 0`: early-returns immediately (no-op).
+/// - Unknown `ref_id` (already removed, or never registered): scans all shards,
+///   finds nothing, and returns silently.
+/// - Valid live `ref_id`: removes the entry from both `ref_to_monitor` and the
+///   target's `monitors` list, then returns.
+///
+/// This invariant is relied upon by `MonitorRef::close()` and `MonitorRef`'s
+/// `Drop` implementation: calling `hew_actor_demonitor` twice with the same
+/// `ref_id` (explicit `close()` followed by scope-exit drop) is always safe.
+/// The second call finds no entry and returns silently — no double-free, no crash.
+///
+/// When a target actor is freed, `remove_all_monitors_for_actor` sweeps its
+/// `ref_to_monitor` entries first. A subsequent `hew_actor_demonitor` call for
+/// any of those stale `ref_id` values falls through the unknown-id path above
+/// and returns silently (`Ok(())` at the Hew level — Option A behaviour).
 #[no_mangle]
 pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
     if ref_id == 0 {
@@ -685,5 +703,87 @@ mod tests {
 
             assert_eq!(crate::actor::hew_actor_free(target), 0);
         }
+    }
+
+    // --- hew_actor_demonitor silent-Ok contract discriminators ---
+    //
+    // These four tests pin the idempotence invariant that MonitorRef::close()
+    // and its Drop impl rely on.  See the doc-comment on hew_actor_demonitor.
+
+    /// (a) Demonitor a live monitor — removes the entry successfully.
+    #[test]
+    fn demonitor_live_monitor_removes_entry() {
+        let mut watcher = create_test_actor(50_100);
+        let mut target = create_test_actor(50_200);
+        let watcher_ptr = &raw mut watcher;
+        let target_ptr = &raw mut target;
+
+        // SAFETY: Valid stack-allocated test actors.
+        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        assert_ne!(ref_id, 0, "monitor creation must succeed");
+
+        // Act — should succeed silently.
+        hew_actor_demonitor(ref_id);
+
+        // Verify: entry is gone from both maps.
+        let shard = get_shard_index(50_200);
+        MONITOR_TABLE[shard].read_access(|table| {
+            assert!(
+                !table.ref_to_monitor.contains_key(&ref_id),
+                "ref_to_monitor must not contain the removed ref_id"
+            );
+            let monitors = table.monitors.get(&50_200);
+            assert!(
+                monitors.is_none_or(std::vec::Vec::is_empty),
+                "target's monitor list must be empty after demonitor"
+            );
+        });
+    }
+
+    /// (b) Demonitor the same `ref_id` twice — second call is a silent no-op.
+    #[test]
+    fn demonitor_already_demonitored_is_silent_noop() {
+        let mut watcher = create_test_actor(51_100);
+        let mut target = create_test_actor(51_200);
+        let watcher_ptr = &raw mut watcher;
+        let target_ptr = &raw mut target;
+
+        // SAFETY: Valid stack-allocated test actors.
+        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        assert_ne!(ref_id, 0);
+
+        hew_actor_demonitor(ref_id); // first call — removes entry
+        hew_actor_demonitor(ref_id); // second call — must not panic or crash
+    }
+
+    /// (c) Demonitor after the target actor's monitor entries were swept
+    ///     (simulating actor-free path) — must be a silent no-op.
+    #[test]
+    fn demonitor_after_target_freed_is_silent_noop() {
+        let mut watcher = create_test_actor(52_100);
+        let mut target = create_test_actor(52_200);
+        let watcher_ptr = &raw mut watcher;
+        let target_ptr = &raw mut target;
+
+        // SAFETY: Valid stack-allocated test actors.
+        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        assert_ne!(ref_id, 0);
+
+        // Simulate actor-free: sweep all monitor entries for the target.
+        remove_all_monitors_for_actor(52_200, target_ptr);
+
+        // The ref_id is now stale — demonitor must not panic.
+        hew_actor_demonitor(ref_id);
+    }
+
+    /// (d) Demonitor with zero or arbitrary invalid `ref_id` values — must be silent no-ops.
+    #[test]
+    fn demonitor_invalid_ref_id_is_silent_noop() {
+        // ref_id == 0: early-return guard.
+        hew_actor_demonitor(0);
+
+        // ref_id that was never registered: unknown-id scan path.
+        hew_actor_demonitor(u64::MAX);
+        hew_actor_demonitor(99_999_999);
     }
 }

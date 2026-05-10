@@ -594,6 +594,10 @@ jobs:
           command -v wasm-ld
           wasm-ld --version
 
+      - name: Build hew-runtime for wasm32-wasip1
+        if: env.RUN_CODE_PATH == 'true'
+        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
         # hew-wasm stays excluded in this macOS PR gate, but hew-cli's WASI

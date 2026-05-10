@@ -631,6 +631,9 @@ private:
       methodCallReceiverKindMap;
   /// Lookup map from call-site span → inferred type arguments for generic free-function calls.
   /// Built once in `generate` from `Program::call_type_args`.
+  ///
+  /// Populated during AST ingestion; consumer (call-site type-arg lookup during MLIR lowering)
+  /// lands in a follow-up. Empty map is well-formed and safe.
   std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::CallTypeArgsEntry *, SpanHash>
       callTypeArgsMap;
   /// Lookup map from assignment target span → assign-target-kind entry.

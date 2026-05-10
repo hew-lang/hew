@@ -219,9 +219,10 @@ parseMethodCallReceiverKindEntry(const msgpack::object &obj) {
 /// Hard-coded parser for `CallTypeArgsEntry` (schema version 9+).
 ///
 /// Deserializes a single entry from the `call_type_args` side table.
-/// The `type_args` field is optional here for forward compatibility: entries
-/// emitted before the field stabilised will lack it and are treated as having
-/// zero type arguments.
+/// The `type_args` field is read with `mapGet` (optional) rather than `mapReq`
+/// as a defensive measure: a missing key is treated as zero type arguments
+/// rather than a hard parse failure, which avoids crashing on structurally
+/// valid but incomplete entries (e.g., from a serializer bug or truncated payload).
 pub fn call_type_args_entry_parser() -> &'static str {
     r#"static ast::CallTypeArgsEntry
 parseCallTypeArgsEntry(const msgpack::object &obj) {

@@ -1134,6 +1134,12 @@ struct Program {
   std::vector<MethodCallReceiverKindEntry> method_call_receiver_kinds;
   /// Inferred type arguments for generic free-function call sites (keyed by call span).
   /// Populated from schema version 9+; fail-closed for mismatched schema versions.
+  ///
+  /// WASM-TODO: call_type_args is carried through the msgpack wire format and deserialized on
+  /// all targets. The WASM codegen path does not yet exercise generic free-function lowering,
+  /// so no WASM-specific fixture exists for this field; covered by the existing native roundtrip
+  /// test in test_msgpack_reader.cpp. Add a WASM fixture when WASM lowering of generic calls
+  /// is implemented.
   std::vector<CallTypeArgsEntry> call_type_args;
   /// Checker-resolved assignment target classification (keyed by target span).
   /// Missing entry means checker rejected the target; MLIR lowering must fail closed.

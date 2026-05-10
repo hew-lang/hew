@@ -211,15 +211,16 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
 /// - Valid live `ref_id`: removes the entry from both `ref_to_monitor` and the
 ///   target's `monitors` list, then returns.
 ///
-/// This invariant is relied upon by `MonitorRef::close()` and `MonitorRef`'s
-/// `Drop` implementation: calling `hew_actor_demonitor` twice with the same
-/// `ref_id` (explicit `close()` followed by scope-exit drop) is always safe.
-/// The second call finds no entry and returns silently — no double-free, no crash.
+/// This invariant will be relied upon by the upcoming `MonitorRef::close()` and
+/// `MonitorRef`'s `Drop` implementation (landing in M.1): calling
+/// `hew_actor_demonitor` twice with the same `ref_id` (explicit `close()`
+/// followed by scope-exit drop) will always be safe.  The second call finds no
+/// entry and returns silently — no double-free, no crash.
 ///
 /// When a target actor is freed, `remove_all_monitors_for_actor` sweeps its
 /// `ref_to_monitor` entries first. A subsequent `hew_actor_demonitor` call for
 /// any of those stale `ref_id` values falls through the unknown-id path above
-/// and returns silently (`Ok(())` at the Hew level — Option A behaviour).
+/// and returns silently.
 #[no_mangle]
 pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
     if ref_id == 0 {
@@ -754,6 +755,20 @@ mod tests {
 
         hew_actor_demonitor(ref_id); // first call — removes entry
         hew_actor_demonitor(ref_id); // second call — must not panic or crash
+
+        // Confirm idempotence: the table is clean after both calls.
+        let shard = get_shard_index(51_200);
+        MONITOR_TABLE[shard].read_access(|table| {
+            assert!(
+                !table.ref_to_monitor.contains_key(&ref_id),
+                "ref_to_monitor must not contain the ref_id after double-demonitor"
+            );
+            let monitors = table.monitors.get(&51_200);
+            assert!(
+                monitors.is_none_or(std::vec::Vec::is_empty),
+                "target's monitor list must be empty after double-demonitor"
+            );
+        });
     }
 
     /// (c) Demonitor after the target actor's monitor entries were swept

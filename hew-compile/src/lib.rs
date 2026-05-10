@@ -177,10 +177,6 @@ pub struct FrontendArtifacts {
     pub drop_funcs: Vec<(String, String)>,
     pub abs_source_path: Option<String>,
     pub line_map: Option<Vec<usize>>,
-    /// Diagnostic-only stack-allocation hints emitted by the checker's
-    /// escape-analysis pass. Empty when the walker found no heap allocations
-    /// or when type-checking failed before the walker ran.
-    pub stack_hints: Vec<hew_types::check::StackHint>,
 }
 
 impl FrontendArtifacts {
@@ -1620,11 +1616,6 @@ fn finish_compile(
         &source,
     );
 
-    let stack_hints = typecheck_result
-        .tco
-        .as_ref()
-        .map(|tco| tco.stack_hints.clone())
-        .unwrap_or_default();
     Ok(FrontendArtifacts {
         diagnostics,
         source,
@@ -1642,7 +1633,6 @@ fn finish_compile(
         drop_funcs: metadata.drop_funcs,
         abs_source_path: metadata.abs_source_path,
         line_map: metadata.line_map,
-        stack_hints,
     })
 }
 

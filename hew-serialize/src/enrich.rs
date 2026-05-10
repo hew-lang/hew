@@ -422,7 +422,7 @@ fn primitive_name(ty: &Ty) -> Option<&'static str> {
     clippy::too_many_lines,
     reason = "type mapping covers many Ty variants"
 )]
-fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError> {
+pub(crate) fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError> {
     let span: Span = 0..0; // synthetic span for inferred types
 
     let te = if let Some(name) = primitive_name(ty) {

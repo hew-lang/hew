@@ -186,6 +186,8 @@ pub fn generate(types: &[TypeDef], type_map: &TypeMap) -> String {
     out.push_str("\n\n");
     out.push_str(special_cases::method_call_receiver_kind_entry_parser());
     out.push_str("\n\n");
+    out.push_str(special_cases::call_type_args_entry_parser());
+    out.push_str("\n\n");
     out.push_str(special_cases::program_parser());
     out.push_str("\n\n");
 

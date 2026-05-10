@@ -1105,6 +1105,28 @@ struct LoweringFactEntry {
   DropKind drop_kind = DropKind::HashSetFree;
 };
 
+/// Inferred type arguments for a generic free-function call site, keyed by
+/// the call expression's source span.
+///
+/// Populated from `tco.call_type_args` in the Rust type checker and serialized
+/// alongside the AST. C++ codegen uses this side table to look up the resolved
+/// type arguments for generic free-function calls without re-running inference.
+///
+/// The program-level `call_type_args` key is read with `mapReq` (required,
+/// fail-closed on missing key). Payload compatibility is enforced by the
+/// schema version exact-match check that runs before any field is read, so
+/// mismatched payloads are rejected before reaching this reader.
+/// Within each entry, the `type_args` array is read with `mapGet` (optional,
+/// defaults to empty); the Rust side mirrors this with `#[serde(default)]`
+/// on the `type_args` field.
+struct CallTypeArgsEntry {
+  uint64_t start = 0;
+  uint64_t end = 0;
+  /// Resolved type arguments in parameter order. Each element is a
+  /// `Spanned<TypeExpr>` carrying the concrete type and a synthetic zero span.
+  std::vector<Spanned<TypeExpr>> type_args;
+};
+
 struct Program {
   /// Schema version of the msgpack AST payload.
   /// The reader requires an explicit exact match and rejects missing or
@@ -1116,6 +1138,15 @@ struct Program {
   std::vector<ExprTypeEntry> expr_types;
   /// Checker-resolved receiver classification for surviving method calls.
   std::vector<MethodCallReceiverKindEntry> method_call_receiver_kinds;
+  /// Inferred type arguments for generic free-function call sites (keyed by call span).
+  /// Populated from schema version 9+; fail-closed for mismatched schema versions.
+  ///
+  /// WASM-TODO(#1451): call_type_args is carried through the msgpack wire format and deserialized
+  /// on all targets. The WASM codegen path does not yet exercise generic free-function lowering,
+  /// so no WASM-specific fixture exists for this field; covered by the existing native roundtrip
+  /// test in test_msgpack_reader.cpp. Add a WASM fixture when WASM lowering of generic calls
+  /// is implemented.
+  std::vector<CallTypeArgsEntry> call_type_args;
   /// Checker-resolved assignment target classification (keyed by target span).
   /// Missing entry means checker rejected the target; MLIR lowering must fail closed.
   std::vector<AssignTargetKindEntry> assign_target_kinds;

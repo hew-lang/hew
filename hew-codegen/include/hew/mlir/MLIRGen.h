@@ -629,6 +629,13 @@ private:
   std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::MethodCallReceiverKindEntry *,
                      SpanHash>
       methodCallReceiverKindMap;
+  /// Lookup map from call-site span → inferred type arguments for generic free-function calls.
+  /// Built once in `generate` from `Program::call_type_args`.
+  ///
+  /// Populated during AST ingestion; consumer (call-site type-arg lookup during MLIR lowering)
+  /// lands in a follow-up. Empty map is well-formed and safe.
+  std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::CallTypeArgsEntry *, SpanHash>
+      callTypeArgsMap;
   /// Lookup map from assignment target span → assign-target-kind entry.
   /// Built once in `generate`; used by `assignTargetKindOf` /
   /// `requireAssignTargetKindOf`.
@@ -659,6 +666,18 @@ private:
   const ast::MethodCallReceiverKindEntry *methodCallReceiverKindOf(const ast::Span &span) const {
     auto it = methodCallReceiverKindMap.find({span.start, span.end});
     if (it != methodCallReceiverKindMap.end())
+      return it->second;
+    return nullptr;
+  }
+  /// Look up the inferred type arguments for a generic free-function call site
+  /// by its source span. Returns nullptr when no entry is present (i.e. the
+  /// call is not generic or the checker did not resolve type arguments for it).
+  ///
+  /// The call-site consumer for MLIR lowering of generic free-function calls
+  /// follows in a subsequent change.
+  const ast::CallTypeArgsEntry *callTypeArgsOf(const ast::Span &span) const {
+    auto it = callTypeArgsMap.find({span.start, span.end});
+    if (it != callTypeArgsMap.end())
       return it->second;
     return nullptr;
   }

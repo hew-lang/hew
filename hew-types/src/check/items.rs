@@ -129,6 +129,17 @@ impl Checker {
         // Diagnostic-only stack-allocation hint pass — runs unconditionally on
         // every function/actor body. Output is consumed by the CLI's
         // `--show-stack-hints` printer; never affects exit code or codegen.
+        //
+        // The walk is kept always-on rather than gated on a flag because its
+        // cost is O(bindings): a recursive AST walk with one HashMap lookup and
+        // one enum match per binding, pushing to a Vec only for heap-class
+        // matches. The results are stored in `TypeCheckOutput::stack_hints` and
+        // discarded by the caller when `--show-stack-hints` is not set. At the
+        // scale of real Hew programs (< 10k bindings) this is unmeasurable
+        // noise compared to unification and constraint solving. If a future
+        // large-scale benchmark shows otherwise, gate it via a flag threaded
+        // through `FrontendOptions`.
+        //
         // See `classify_stack_hints` in expressions.rs for the slice plan.
         self.classify_stack_hints(fd);
 

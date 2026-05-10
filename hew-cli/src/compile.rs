@@ -129,7 +129,7 @@ fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOp
 /// match the default check-mode behaviour. Exposed for the
 /// `--show-stack-hints` path in `cmd_check` which calls `hew_compile::check_file`
 /// directly to retain access to the source string and stack-hint side table.
-pub fn frontend_options_for_check(options: &CompileOptions) -> FrontendOptions {
+pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOptions {
     FrontendOptions {
         no_typecheck: options.no_typecheck,
         warnings_as_errors: options.werror,

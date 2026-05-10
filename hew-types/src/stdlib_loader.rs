@@ -1271,4 +1271,41 @@ mod tests {
             "from_path must be identity-mapped (not forwarded to from_ext)"
         );
     }
+
+    /// Pins the namespace-directory fix from `d0db9ada`.
+    ///
+    /// A directory that has no same-name entry file (e.g. `std/actor/` with no
+    /// `std/actor/actor.hew` and no `std/actor.hew`) is a namespace directory.
+    /// Each `.hew` file inside it must be discovered as its own module:
+    /// `fake::ns::alpha` and `fake::ns::beta`, not `fake::ns`.
+    #[test]
+    fn namespace_directory_enumerates_each_hew_file_as_own_module() {
+        let dir = TestDir::new("ns-discovery");
+        let root = &dir.root;
+
+        // Build a layout that matches std/actor/:
+        //   <root>/fake/ns/alpha.hew
+        //   <root>/fake/ns/beta.hew
+        // No <root>/fake/ns/ns.hew, no <root>/fake/ns.hew.
+        let ns_dir = root.join("fake").join("ns");
+        fs::create_dir_all(&ns_dir).unwrap();
+        fs::write(ns_dir.join("alpha.hew"), "pub fn alpha() {}\n").unwrap();
+        fs::write(ns_dir.join("beta.hew"), "pub fn beta() {}\n").unwrap();
+
+        let mut paths = Vec::new();
+        discover_modules(&root.join("fake"), root, &mut paths);
+
+        assert!(
+            paths.contains(&"fake::ns::alpha".to_string()),
+            "namespace dir: alpha.hew must become fake::ns::alpha, got: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"fake::ns::beta".to_string()),
+            "namespace dir: beta.hew must become fake::ns::beta, got: {paths:?}"
+        );
+        assert!(
+            !paths.contains(&"fake::ns".to_string()),
+            "namespace dir must NOT produce fake::ns (no entry file), got: {paths:?}"
+        );
+    }
 }

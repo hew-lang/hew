@@ -5,8 +5,8 @@
 ### Removed
 
 - **`fs.read_line` compatibility alias removed:** The `fs.read_line` function,
-  which was a deprecated alias for `fs.read_bytes_as_string`, has been removed
-  from the standard library. Callers must use `fs.read_bytes_as_string`
+  which was a deprecated alias for `io.read_line()`, has been removed
+  from the standard library. Callers must use `io.read_line()`
   directly.
 - **`ActorStream<Y>` type alias removed:** The deprecated `ActorStream<Y>` alias
   has been removed from all public surfaces. Use `Stream<Y>` instead.

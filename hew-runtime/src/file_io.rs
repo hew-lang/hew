@@ -246,7 +246,11 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
     };
     match std::fs::read(rust_path) {
         Ok(data) => {
-            crate::hew_clear_error();
+            // Clear both the error message and the associated errno so that a
+            // stale errno from a prior failed call cannot be mistaken for an
+            // error by callers that inspect `hew_stream_last_errno()` after a
+            // successful read (e.g. `try_read_bytes` in std/fs.hew).
+            set_last_error_with_errno(String::new(), 0);
             // SAFETY: data slice is valid.
             unsafe { crate::vec::u8_to_hwvec(&data) }
         }
@@ -916,6 +920,54 @@ mod tests {
             assert!(!error.is_empty());
             assert!(error.contains("hew_file_read_bytes"));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_bytes_success_clears_errno_after_prior_failure() {
+        // Regression: hew_file_read_bytes must clear LAST_ERRNO on its success
+        // path so that a stale errno from a prior failed read cannot be mistaken
+        // for an error by callers that inspect hew_stream_last_errno() after a
+        // successful read (e.g. try_read_bytes in std/fs.hew).
+        use hew_cabi::sink::hew_stream_last_errno;
+
+        let dir = test_dir("bytes_errno_clear");
+
+        // Step 1: trigger a failure so LAST_ERRNO is set to a non-zero value.
+        let ghost_path = dir.join("does_not_exist.bin");
+        let ghost = cpath(&ghost_path);
+        // SAFETY: ghost is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
+        unsafe {
+            let v = hew_file_read_bytes(ghost.as_ptr());
+            crate::vec::hew_vec_free(v);
+        }
+        // LAST_ERRNO should now be non-zero (ENOENT / 2 on POSIX systems).
+        // We deliberately do NOT read it here — reading would clear it via
+        // take_last_errno(), defeating the regression test.
+
+        // Step 2: write a real file and read it successfully.
+        let real_path = dir.join("real.bin");
+        let content: &[u8] = &[1, 2, 3];
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        std::fs::write(&real_path, content).expect("write test file");
+        let real = cpath(&real_path);
+        // SAFETY: real is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
+        unsafe {
+            let v = hew_file_read_bytes(real.as_ptr());
+            assert!(!v.is_null());
+            assert_eq!(crate::vec::hew_vec_len(v), 3);
+            crate::vec::hew_vec_free(v);
+        }
+
+        // Step 3: LAST_ERRNO must be 0 — the success path cleared it.
+        // If the fix is missing, this will be non-zero (ENOENT from step 1).
+        let errno_after_success = hew_stream_last_errno();
+        assert_eq!(
+            errno_after_success, 0,
+            "errno must be cleared on successful hew_file_read_bytes; \
+             stale non-zero errno would cause try_read_bytes to return a false Err"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

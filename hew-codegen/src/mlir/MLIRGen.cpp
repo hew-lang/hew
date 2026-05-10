@@ -3560,7 +3560,11 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     if (!fn)
       return;
     if (fn->type_params && !fn->type_params->empty()) {
-      genericFunctions[fn->name] = fn;
+      // Qualify by the defining module so two imported modules with same
+      // generic name do not collide.  `currentModulePath` is set by
+      // `forEachItem` to each module group's path before its items are
+      // visited.
+      genericFunctions[genericFnKey(currentModulePath, fn->name)] = fn;
     } else if (fn->is_generator) {
       generateGeneratorFunction(*fn);
     } else {
@@ -3678,8 +3682,9 @@ void MLIRGen::generateItem(const ast::Item &item, std::optional<mlir::Location> 
 
   if (auto *fn = std::get_if<ast::FnDecl>(&item.kind)) {
     if (fn->type_params && !fn->type_params->empty()) {
-      // Generic function: store for later specialization, don't generate yet
-      genericFunctions[fn->name] = fn;
+      // Generic function: store for later specialization, don't generate yet.
+      // Key by defining module to avoid bare-name collisions across modules.
+      genericFunctions[genericFnKey(currentModulePath, fn->name)] = fn;
     } else if (fn->is_generator) {
       generateGeneratorFunction(*fn);
     } else {
@@ -5544,15 +5549,34 @@ std::string MLIRGen::mangleGenericName(const std::string &baseName,
   return mangled;
 }
 
+std::string MLIRGen::genericFnKey(const std::vector<std::string> &modulePath,
+                                  const std::string &baseName) {
+  std::string key;
+  for (const auto &seg : modulePath)
+    key += seg + "::";
+  key += baseName;
+  return key;
+}
+
 mlir::func::FuncOp MLIRGen::specializeGenericFunction(const std::string &baseName,
                                                       const std::vector<std::string> &typeArgs) {
+  // Qualify the mangled symbol with the defining module path.  Without the
+  // module prefix, two imported modules each defining e.g. `fn identity<T>`
+  // both specialise to `identity$int`, colliding on the FuncOp symbol and on
+  // the `specializedFunctions` cache (so the second call site silently
+  // resolves to the first module's body).  The cross-module call site sets
+  // `currentModulePath` to the defining module before invoking us.
   auto mangled = mangleGenericName(baseName, typeArgs);
+  std::string moduleQualified;
+  for (const auto &seg : currentModulePath)
+    moduleQualified += seg + "::";
+  moduleQualified += mangled;
 
   // Already specialized?
-  if (specializedFunctions.count(mangled))
-    return module.lookupSymbol<mlir::func::FuncOp>(mangled);
+  if (specializedFunctions.count(moduleQualified))
+    return module.lookupSymbol<mlir::func::FuncOp>(moduleQualified);
 
-  auto it = genericFunctions.find(baseName);
+  auto it = genericFunctions.find(genericFnKey(currentModulePath, baseName));
   if (it == genericFunctions.end()) {
     ++errorCount_;
     emitError(builder.getUnknownLoc()) << "unknown generic function '" << baseName << "'";
@@ -5582,12 +5606,12 @@ mlir::func::FuncOp MLIRGen::specializeGenericFunction(const std::string &baseNam
   for (size_t i = 0; i < params.size(); ++i)
     typeParamSubstitutions[params[i].name] = typeArgs[i];
 
-  // Generate the specialized function with the mangled name
-  auto funcOp = generateFunction(*fn, mangled);
+  // Generate the specialized function with the module-qualified mangled name
+  auto funcOp = generateFunction(*fn, moduleQualified);
 
   // Restore previous substitutions
   typeParamSubstitutions = std::move(prevSubstitutions);
-  specializedFunctions.insert(mangled);
+  specializedFunctions.insert(moduleQualified);
   return funcOp;
 }
 

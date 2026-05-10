@@ -976,9 +976,34 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     }
 
     // Named generic function (fn<T>(...) { ... }) path.
-    auto genIt = genericFunctions.find(calleeName);
+    // Look up by `(currentModulePath, calleeName)` first.  If the call site
+    // is inside module M and M defines the generic, this hits.  If not, walk
+    // M's imports and try each as the defining module — preserves the
+    // pre-fix behaviour of resolving generics imported by bare name (e.g.
+    // `import lib::{identity}; identity(x)`) while still keying by the
+    // *defining* module so two libs can share a generic name.
+    std::vector<std::string> definingModule = currentModulePath;
+    auto genIt = genericFunctions.find(genericFnKey(definingModule, calleeName));
+    if (genIt == genericFunctions.end()) {
+      auto impIt = moduleImports.find(currentModuleKey());
+      if (impIt != moduleImports.end()) {
+        for (const auto &impPath : impIt->second) {
+          auto tryIt = genericFunctions.find(genericFnKey(impPath, calleeName));
+          if (tryIt != genericFunctions.end()) {
+            genIt = tryIt;
+            definingModule = impPath;
+            break;
+          }
+        }
+      }
+    }
     if (genIt != genericFunctions.end()) {
+      // Specialise in the defining module's namespace so the symbol matches
+      // every other call site to the same generic.
+      auto savedModPath = currentModulePath;
+      currentModulePath = definingModule;
       auto specializedFunc = specializeGenericFunction(calleeName, typeArgNames);
+      currentModulePath = savedModPath;
       if (!specializedFunc)
         return nullptr;
       llvm::SmallVector<mlir::Value, 4> args;
@@ -4306,7 +4331,14 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
       // function" error for what is in fact a missing checker side-table
       // entry — exactly the kind of contract violation
       // `checker-codegen-pattern-contract` warns against.
-      if (auto genIt = genericFunctions.find(methodName); genIt != genericFunctions.end()) {
+      //
+      // The registry is keyed by `(definingModulePath, baseName)` — for the
+      // qualified call `liba.identity(...)` the defining module is `modulePath`
+      // (resolved above from `moduleNameToPath`).  This keeps two libraries
+      // with same-named generics (e.g. `liba.identity` vs `libb.identity`)
+      // distinct.
+      if (auto genIt = genericFunctions.find(genericFnKey(modulePath, methodName));
+          genIt != genericFunctions.end()) {
         const auto *tysEntry = callTypeArgsOf(exprSpan);
         if (!tysEntry) {
           ++errorCount_;

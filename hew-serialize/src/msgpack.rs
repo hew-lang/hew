@@ -1954,6 +1954,7 @@ mod tests {
                 },
                 vec![Ty::I32, Ty::String],
             )]),
+            stack_hints: Vec::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2036,6 +2037,7 @@ mod tests {
                 },
                 vec![Ty::Error],
             )]),
+            stack_hints: Vec::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);

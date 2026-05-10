@@ -669,6 +669,18 @@ private:
       return it->second;
     return nullptr;
   }
+  /// Look up the inferred type arguments for a generic free-function call site
+  /// by its source span. Returns nullptr when no entry is present (i.e. the
+  /// call is not generic or the checker did not resolve type arguments for it).
+  ///
+  /// The call-site consumer for MLIR lowering of generic free-function calls
+  /// follows in a subsequent change.
+  const ast::CallTypeArgsEntry *callTypeArgsOf(const ast::Span &span) const {
+    auto it = callTypeArgsMap.find({span.start, span.end});
+    if (it != callTypeArgsMap.end())
+      return it->second;
+    return nullptr;
+  }
   const ast::AssignTargetKindEntry *assignTargetKindOf(const ast::Span &span) const {
     auto it = assignTargetKindMap.find({span.start, span.end});
     if (it != assignTargetKindMap.end())

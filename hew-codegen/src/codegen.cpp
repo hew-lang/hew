@@ -2120,6 +2120,63 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         auto replyIfOp = mlir::scf::IfOp::create(rewriter, loc, hasReply, /*withElseRegion=*/false);
         rewriter.setInsertionPointToStart(&replyIfOp.getThenRegion().front());
 
+        // Deep-copy owned-heap return values before publishing them to the
+        // caller.  hew_reply only memcpy's `sizeof(result)` bytes (i.e. the
+        // bare pointer for String/Vec/HashMap/Closure), so without an
+        // explicit clone the caller and the actor would share the same
+        // heap allocation.  When the handler returns a state-owned value
+        // (e.g. `receive fn get() -> String { data }`), the caller's
+        // scope-exit drop and the actor's state-drop both call free on
+        // the same address — a double free that Linux glibc detects and
+        // macOS silently tolerates.  Cloning here mirrors the
+        // deepCopyOwnedArgs policy at the send/spawn boundary so the
+        // actor reply seam transfers ownership symmetrically.
+        auto origReturnType = handlerType.getResult(0);
+        if (mlir::isa<hew::StringRefType>(origReturnType)) {
+          auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+          getOrInsertFuncDecl(module, rewriter, "strdup", ft);
+          resultVal = mlir::func::CallOp::create(rewriter, loc, "strdup", mlir::TypeRange{ptrType},
+                                                 mlir::ValueRange{resultVal})
+                          .getResult(0);
+        } else if (mlir::isa<hew::VecType>(origReturnType)) {
+          auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+          getOrInsertFuncDecl(module, rewriter, "hew_vec_clone", ft);
+          resultVal =
+              mlir::func::CallOp::create(rewriter, loc, "hew_vec_clone", mlir::TypeRange{ptrType},
+                                         mlir::ValueRange{resultVal})
+                  .getResult(0);
+        } else if (mlir::isa<hew::HashMapType>(origReturnType)) {
+          auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+          getOrInsertFuncDecl(module, rewriter, "hew_hashmap_clone_impl", ft);
+          resultVal =
+              mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_clone_impl",
+                                         mlir::TypeRange{ptrType}, mlir::ValueRange{resultVal})
+                  .getResult(0);
+        } else if (mlir::isa<hew::ClosureType>(origReturnType)) {
+          auto closureType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(resultType);
+          if (closureType && closureType.getBody().size() == 2) {
+            auto fnPtr =
+                mlir::LLVM::ExtractValueOp::create(rewriter, loc, resultVal,
+                                                   llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)})
+                    .getResult();
+            auto envPtr =
+                mlir::LLVM::ExtractValueOp::create(rewriter, loc, resultVal,
+                                                   llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)})
+                    .getResult();
+            auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+            getOrInsertFuncDecl(module, rewriter, "hew_rc_clone", ft);
+            auto clonedEnv = mlir::func::CallOp::create(
+                rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType}, mlir::ValueRange{envPtr});
+            mlir::Value rebuilt = mlir::LLVM::UndefOp::create(rewriter, loc, closureType);
+            rebuilt = mlir::LLVM::InsertValueOp::create(
+                rewriter, loc, rebuilt, fnPtr, llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)});
+            rebuilt =
+                mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, clonedEnv.getResult(0),
+                                                  llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
+            resultVal = rebuilt;
+          }
+        }
+
         // Store result value to a temp alloca so we can pass its address
         auto one = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 1);
         auto resultAlloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, resultType, one);

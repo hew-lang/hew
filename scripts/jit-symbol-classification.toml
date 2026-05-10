@@ -169,7 +169,6 @@ stable = [
   "hew_file_append",
   "hew_file_delete",
   "hew_file_exists",
-  "hew_file_last_error",
   "hew_file_read",
   "hew_file_read_bytes",
   "hew_file_size",

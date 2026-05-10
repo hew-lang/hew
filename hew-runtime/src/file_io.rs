@@ -264,21 +264,6 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
     }
 }
 
-/// Return a malloc-owned copy of the current thread's last file I/O error.
-// WASM-TODO(#1451): confirm whether file-I/O error reporting needs a dedicated wasm-visible contract.
-#[no_mangle]
-pub extern "C" fn hew_file_last_error() -> *mut c_char {
-    let ptr = crate::hew_last_error();
-    if ptr.is_null() {
-        return str_to_malloc("");
-    }
-    // SAFETY: `ptr` comes from thread-local last-error storage and remains valid for this read.
-    let Some(text) = (unsafe { crate::util::cstr_to_str(&ptr, "hew_file_last_error") }) else {
-        return str_to_malloc("");
-    };
-    str_to_malloc(text)
-}
-
 /// Write a `bytes` `HewVec` to a file, overwriting any existing content.
 ///
 /// Returns 0 on success, -1 on error.
@@ -916,7 +901,11 @@ mod tests {
             assert_eq!(crate::vec::hew_vec_len(v), 0);
             crate::vec::hew_vec_free(v);
 
-            let error = read_and_free(hew_file_last_error());
+            // hew_last_error() returns a thread-local pointer; copy it before
+            // any subsequent call could overwrite it.
+            let err_ptr = crate::hew_last_error();
+            assert!(!err_ptr.is_null());
+            let error = CStr::from_ptr(err_ptr).to_str().unwrap_or("").to_owned();
             assert!(!error.is_empty());
             assert!(error.contains("hew_file_read_bytes"));
         }

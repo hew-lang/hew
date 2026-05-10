@@ -3367,20 +3367,6 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     }
   });
 
-  // Pass 1e3: Build actor-only child index maps after supervisorChildren is
-  // fully populated (so we can distinguish actor children from nested-supervisor
-  // children). supervisor_child(sup, N) at runtime uses actor-only indexing
-  // (supervisor children live in a separate list and don't bump the index),
-  // so the type-checker must use the same actor-only ordering.
-  for (const auto &[supName, allChildren] : supervisorChildren) {
-    std::vector<std::string> actorOnlyTypes;
-    for (const auto &childType : allChildren) {
-      if (!supervisorChildren.count(childType))
-        actorOnlyTypes.push_back(childType);
-    }
-    supervisorActorOnlyChildren[supName] = std::move(actorOnlyTypes);
-  }
-
   // Pass 1f: Pre-register Drop impl mappings so that function bodies can
   // register droppable struct variables. ImplDecl bodies are generated
   // later in Pass 2, but we need the type→drop_func mapping NOW.

@@ -963,3 +963,138 @@ fn dynamic_child_restart_runs_state_drop() {
         );
     }
 }
+
+/// Verify that `hew_actor_free_for_restart` suppresses `state_drop_fn` for
+/// siblings stopped during a `ONE_FOR_ALL` restart.
+///
+/// Under `ONE_FOR_ALL`, when one child crashes every sibling is stopped and freed
+/// (via `hew_actor_free_for_restart`) before all children are restarted.
+/// `hew_actor_free_for_restart` must NOT invoke `state_drop_fn` because the
+/// sibling's heap-owned state is byte-aliased by `spec.init_state` and is
+/// about to be reused for the restarted actor — calling `impl Drop` on it
+/// would corrupt the upcoming init or double-free the heap allocation.
+///
+/// Sequence:
+/// 1. `ONE_FOR_ALL` supervisor; two children, both with `state_drop_fn` registered.
+/// 2. Crash child 0.  Supervisor stops child 1 via `hew_actor_free_for_restart`
+///    (suppress) and restarts both.
+/// 3. Immediately after the restart completes, `SUPERVISOR_STATE_DROP_COUNT`
+///    must still be 0 — neither the crashed actor nor the stopped sibling ran
+///    their `state_drop` during the restart.
+/// 4. Stop the supervisor; both restarted actors are freed normally.
+///    `SUPERVISOR_STATE_DROP_COUNT` must now be 2.
+#[test]
+fn one_for_all_suppresses_state_drop_on_sibling_restart() {
+    const STRATEGY_ONE_FOR_ALL: i32 = 1;
+    const RESTART_PERMANENT: i32 = 0;
+    const OVERFLOW_DROP_NEW: i32 = 1;
+
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    DISPATCH_SIGNAL.reset();
+    SUPERVISOR_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+    unsafe {
+        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ALL, 5, 60);
+        assert!(!sup.is_null(), "supervisor must be created");
+        hew_supervisor_set_restart_notify(sup);
+
+        // Child 0: the one we will crash.
+        let mut state0: u64 = 0xAAAA_0000;
+        let name0 = CString::new("ofs-child-0").unwrap();
+        let spec0 = HewChildSpec {
+            name: name0.as_ptr(),
+            init_state: (&raw mut state0).cast::<c_void>(),
+            init_state_size: std::mem::size_of::<u64>(),
+            dispatch: Some(counting_dispatch),
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+        };
+        assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec0), 0);
+
+        // Child 1: the innocent sibling that must NOT have state_drop called on
+        // its pre-restart instance.
+        let mut state1: u64 = 0xBBBB_0000;
+        let name1 = CString::new("ofs-child-1").unwrap();
+        let spec1 = HewChildSpec {
+            name: name1.as_ptr(),
+            init_state: (&raw mut state1).cast::<c_void>(),
+            init_state_size: std::mem::size_of::<u64>(),
+            dispatch: Some(counting_dispatch),
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+        };
+        assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec1), 0);
+
+        assert_eq!(hew_supervisor_start(sup), 0, "supervisor must start");
+
+        // Register state_drop on both children BEFORE getting the actor
+        // pointers so the back-fill path is exercised.
+        hew_supervisor_set_child_state_drop(sup, 0, supervisor_child_state_drop);
+        hew_supervisor_set_child_state_drop(sup, 1, supervisor_child_state_drop);
+
+        let child0 = hew_supervisor_get_child_wait(sup, 0, 5_000);
+        assert!(!child0.is_null(), "child 0 must be spawned");
+        assert!(
+            (*child0).state_drop_fn.is_some(),
+            "child 0 must have state_drop_fn registered"
+        );
+
+        let child1 = hew_supervisor_get_child_wait(sup, 1, 5_000);
+        assert!(!child1.is_null(), "child 1 must be spawned");
+        assert!(
+            (*child1).state_drop_fn.is_some(),
+            "child 1 must have state_drop_fn registered"
+        );
+
+        // Crash child 0 and wait for the full ONE_FOR_ALL restart cycle.
+        let id0 = (*child0).id;
+        hew_fault_inject_crash(id0, 1);
+        hew_actor_send(child0, 1, std::ptr::null_mut(), 0);
+        let restart_count = hew_supervisor_wait_restart(sup, 1, 10_000);
+        assert!(
+            restart_count >= 1,
+            "ONE_FOR_ALL supervisor must complete a restart cycle"
+        );
+
+        // Immediately after restart: state_drop must NOT have fired on either
+        // the crashed actor or the stopped sibling — both were freed via the
+        // suppress path.
+        let drops_after_restart = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
+        assert_eq!(
+            drops_after_restart, 0,
+            "state_drop must be suppressed during ONE_FOR_ALL restart (got {drops_after_restart})"
+        );
+
+        // Both restarted actors must have state_drop_fn re-registered.
+        let restarted0 = hew_supervisor_get_child_wait(sup, 0, 5_000);
+        assert!(!restarted0.is_null(), "restarted child 0 must appear");
+        assert!(
+            (*restarted0).state_drop_fn.is_some(),
+            "restarted child 0 must have state_drop_fn registered"
+        );
+
+        let restarted1 = hew_supervisor_get_child_wait(sup, 1, 5_000);
+        assert!(!restarted1.is_null(), "restarted child 1 must appear");
+        assert!(
+            (*restarted1).state_drop_fn.is_some(),
+            "restarted child 1 must have state_drop_fn registered"
+        );
+
+        // Stop the supervisor; both restarted actors are freed normally with
+        // state_drop_fn invoked.
+        hew_deterministic_reset();
+        hew_supervisor_stop(sup);
+
+        let drops_after_stop = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
+        assert_eq!(
+            drops_after_stop, 2,
+            "state_drop_fn must fire for each restarted actor on supervisor stop (got {drops_after_stop})"
+        );
+    }
+}

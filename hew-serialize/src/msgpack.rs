@@ -138,6 +138,9 @@ pub struct LoweringFactEntry {
 /// The `#[serde(default)]` below is on the `type_args` *field* within each
 /// entry (protecting against entries serialized without that field), not on the
 /// struct or the program-level key.
+// `Eq` is intentionally absent: `type_args` is `Vec<Spanned<TypeExpr>>`, and
+// `TypeExpr` (hew-parser) only derives `PartialEq`, not `Eq`. Adding `Eq` here
+// would require first propagating `Eq` to `TypeExpr` and `TraitBound` upstream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallTypeArgsEntry {
     /// Byte offset of the call expression start.
@@ -1160,18 +1163,25 @@ pub fn build_call_type_args_entries(
             };
             let mut errors = Vec::new();
             let mut converted_args = Vec::new();
-            let mut any_failed = false;
             for ty in type_args {
                 match crate::enrich::ty_to_type_expr(ty) {
                     Ok(te) => converted_args.push(te),
-                    Err(e) => {
-                        errors.push(e);
-                        any_failed = true;
-                    }
+                    Err(e) => errors.push(e),
                 }
             }
-            if any_failed {
-                // Emit errors but do not emit an entry for this call site — a
+            if errors.is_empty() {
+                out.push((
+                    CallTypeArgsEntry {
+                        start: key.start,
+                        end: key.end,
+                        type_args: converted_args,
+                    },
+                    Vec::new(),
+                ));
+            } else {
+                // Push the errors paired with a sentinel entry so the caller
+                // can drain them via `errors.extend(errs)`. The entry itself is
+                // discarded by the `if errs.is_empty()` filter below — a
                 // partial entry would be worse than none.
                 out.push((
                     CallTypeArgsEntry {
@@ -1180,15 +1190,6 @@ pub fn build_call_type_args_entries(
                         type_args: Vec::new(),
                     },
                     errors,
-                ));
-            } else {
-                out.push((
-                    CallTypeArgsEntry {
-                        start: key.start,
-                        end: key.end,
-                        type_args: converted_args,
-                    },
-                    Vec::new(),
                 ));
             }
         }

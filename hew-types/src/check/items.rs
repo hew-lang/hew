@@ -126,6 +126,12 @@ impl Checker {
         }
         self.reject_owned_handle_field_accessors(fd);
 
+        // Diagnostic-only stack-allocation hint pass — runs unconditionally on
+        // every function/actor body. Output is consumed by the CLI's
+        // `--show-stack-hints` printer; never affects exit code or codegen.
+        // See `classify_stack_hints` in expressions.rs for the slice plan.
+        self.classify_stack_hints(fd);
+
         self.in_generator = prev_in_generator;
         self.in_pure_function = prev_in_pure;
         self.current_return_type = None;

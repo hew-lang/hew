@@ -2235,6 +2235,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2318,6 +2319,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
         };
 
         let entries = build_assign_target_kind_entries(&program, &tco);
@@ -2396,6 +2398,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
         };
 
         let entries = build_lowering_fact_entries(&program, &tco);
@@ -2500,6 +2503,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2701,6 +2705,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2789,6 +2794,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2870,6 +2876,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);
@@ -2950,6 +2957,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);

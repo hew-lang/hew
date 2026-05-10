@@ -1862,11 +1862,16 @@ fn enrich_method_call(
                 return;
             }
         }
-        // Rewrite user module calls: e.g. utils.helper(args) → helper(args)
-        // User module functions compile under their own name, not a C symbol.
+        // User-module method calls (e.g. `utils.helper(args)`) are intentionally
+        // left as `MethodCall` nodes here. Codegen's module-qualified dispatch
+        // path (`generateModuleMethodCall` in `MLIRGenExpr.cpp`, around the
+        // `moduleNameToPath` lookup) resolves them by mangling
+        // `(modulePath, methodName)` and, for generic free functions, consults
+        // the `(definingModulePath, baseName)` registry key. Dropping the
+        // module receiver here would erase that defining-module identity and
+        // route both `liba.identity(...)` and `libb.identity(...)` to whichever
+        // body the codegen import-walk fallback hit first.
         if tco.user_modules.contains(module_name) {
-            let old_args = std::mem::take(args);
-            expr.0 = make_direct_call_expr(receiver.1.clone(), method.clone(), old_args);
             return;
         }
         // Rewrite cross-module enum variant construction: e.g. fs.IoError::TimedOut(0)
@@ -3960,7 +3965,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enrich_user_module_call_rewritten() {
+    fn test_enrich_user_module_call_preserves_method_call_shape() {
         use hew_parser::ast::CallArg;
 
         let tco = make_tco_with_user_modules(vec!["utils"]);
@@ -3983,18 +3988,25 @@ mod tests {
 
         enrich_expr(&mut expr, &tco).unwrap();
 
-        // Should be rewritten to: helper(42)
+        // User-module method calls must remain `MethodCall` so codegen's
+        // module-qualified dispatch path can route them by the *defining*
+        // module — collapsing to a bare-name `Call` would erase that
+        // identity and route two libraries that share a generic name to
+        // whichever body the codegen import-walk hit first.
         match &expr.0 {
-            Expr::Call { function, args, .. } => {
-                match &function.0 {
-                    Expr::Identifier(name) => {
-                        assert_eq!(name, "helper", "should rewrite to bare function name");
-                    }
-                    other => panic!("expected Identifier, got {other:?}"),
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                match &receiver.0 {
+                    Expr::Identifier(name) => assert_eq!(name, "utils"),
+                    other => panic!("expected receiver identifier, got {other:?}"),
                 }
+                assert_eq!(method, "helper");
                 assert_eq!(args.len(), 1, "should preserve args");
             }
-            other => panic!("expected Call expr, got {other:?}"),
+            other => panic!("expected MethodCall expr, got {other:?}"),
         }
     }
 
@@ -4582,23 +4594,28 @@ mod tests {
 
         enrich_expr(&mut expr, &tco).unwrap();
 
+        // Same rationale as `test_enrich_user_module_call_preserves_method_call_shape`:
+        // the receiver must survive enrichment so codegen knows which module
+        // owns `add`.
         match &expr.0 {
-            Expr::Call { function, args, .. } => {
-                assert_eq!(
-                    match &function.0 {
-                        Expr::Identifier(n) => n.as_str(),
-                        _ => panic!("expected identifier"),
-                    },
-                    "add"
-                );
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                match &receiver.0 {
+                    Expr::Identifier(name) => assert_eq!(name, "math"),
+                    other => panic!("expected receiver identifier, got {other:?}"),
+                }
+                assert_eq!(method, "add");
                 assert_eq!(args.len(), 2, "should preserve both args");
             }
-            other => panic!("expected Call, got {other:?}"),
+            other => panic!("expected MethodCall, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_enrich_user_module_generic_call_hydrates_inferred_type_args_after_rewrite() {
+    fn test_enrich_user_module_generic_method_call_preserves_shape() {
         use hew_parser::ast::CallArg;
 
         let mut expr: Spanned<Expr> = (
@@ -4631,34 +4648,31 @@ mod tests {
 
         assert!(
             diagnostics.is_empty(),
-            "unexpected diagnostics while hydrating rewritten module call: {diagnostics:?}"
+            "unexpected diagnostics while enriching user-module method call: {diagnostics:?}"
         );
+        // The MethodCall shape is preserved; the inferred type arguments are
+        // surfaced through the `call_type_args` side table (looked up by the
+        // outer call span in codegen) rather than hydrated onto the AST node.
         match &expr.0 {
-            Expr::Call {
-                function,
-                type_args,
+            Expr::MethodCall {
+                receiver,
+                method,
                 args,
-                ..
             } => {
-                assert_eq!(
-                    match &function.0 {
-                        Expr::Identifier(name) => name.as_str(),
-                        other => panic!("expected identifier callee, got {other:?}"),
-                    },
-                    "id"
-                );
+                match &receiver.0 {
+                    Expr::Identifier(name) => assert_eq!(name, "widgets"),
+                    other => panic!("expected receiver identifier, got {other:?}"),
+                }
+                assert_eq!(method, "id");
                 assert_eq!(args.len(), 1);
-                let type_args = type_args
-                    .as_ref()
-                    .expect("rewritten call should have type args");
-                assert_eq!(type_args.len(), 1);
-                assert!(matches!(
-                    &type_args[0].0,
-                    TypeExpr::Named { name, type_args: None } if name == "i64"
-                ));
             }
-            other => panic!("expected rewritten Call, got {other:?}"),
+            other => panic!("expected MethodCall, got {other:?}"),
         }
+        // The side-table entry survives enrichment unchanged.
+        assert_eq!(
+            tco.call_type_args.get(&SpanKey::from(&expr.1)),
+            Some(&vec![Ty::I64])
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -202,6 +202,15 @@ pub struct RunArgs {
     pub timeout: Option<String>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
+    /// Surface diagnostic-only stack-allocation hints from the type checker.
+    ///
+    /// When set, the checker's escape-analysis pass prints
+    /// `info[HEW-PERF-001]` lines on stderr for each binding whose right-hand
+    /// side resolves to a heap allocation class (`Vec`, `String`, `HashMap`,
+    /// `HashSet`, `Rc`, closure environment). Hint accuracy is approximate in
+    /// early phases; never affects exit code or program output.
+    #[arg(long = "show-stack-hints")]
+    pub show_stack_hints: bool,
     /// Arguments to pass to the compiled program (after --).
     #[arg(last = true)]
     pub program_args: Vec<String>,
@@ -263,6 +272,13 @@ pub struct CheckArgs {
     pub input: PathBuf,
     #[command(flatten)]
     pub common: CommonBuildArgs,
+    /// Surface diagnostic-only stack-allocation hints from the type checker.
+    ///
+    /// When set, the checker's escape-analysis pass prints
+    /// `info[HEW-PERF-001]` lines on stderr for each binding whose right-hand
+    /// side resolves to a heap allocation class. Never affects exit code.
+    #[arg(long = "show-stack-hints")]
+    pub show_stack_hints: bool,
 }
 
 impl CheckArgs {

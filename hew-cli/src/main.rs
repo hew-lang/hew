@@ -110,6 +110,17 @@ fn cmd_run(a: &args::RunArgs) {
     let timeout = resolve_optional_timeout(a.timeout.as_deref());
     let options = a.to_compile_options();
     let target = resolve_run_target(options.target.as_deref(), a.profile);
+    if a.show_stack_hints {
+        // Print stack hints before invoking codegen so the user sees them in
+        // the same stderr stream regardless of whether compile/run later
+        // exits non-zero. Failures here are best-effort: if the frontend
+        // rejects the program we let the subsequent `compile_temp_run_artifact`
+        // call surface the canonical diagnostics.
+        let frontend_options = compile::frontend_options_for_check(&options);
+        if let Ok(out) = hew_compile::check_file(&input, &frontend_options) {
+            diagnostic::print_stack_hints(&out.source, &input, &out.stack_hints);
+        }
+    }
     let artifact = compile_temp_run_artifact(&input, &options, &target);
 
     if target.is_wasi() {
@@ -355,6 +366,31 @@ fn exit_after_wasi_run(
 fn cmd_check(a: &args::CheckArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
+    if a.show_stack_hints {
+        // Re-run the frontend through `check_file` so we can surface the
+        // typechecker's stack-allocation hints. The plain `compile::compile`
+        // path discards the source string and TCO, both of which the printer
+        // needs for file:line:col attribution. The hints render on stderr
+        // before the OK/error verdict so the user sees them in declaration
+        // order independent of the verdict's exit-code outcome.
+        let frontend_options = compile::frontend_options_for_check(&options);
+        match hew_compile::check_file(&input, &frontend_options) {
+            Ok(out) => {
+                diagnostic::print_stack_hints(&out.source, &input, &out.stack_hints);
+                eprintln!("{input}: OK");
+            }
+            Err(failure) => {
+                // On failure print whatever hints the checker produced before
+                // bailing, then surface the diagnostics + error message in the
+                // shape `compile::compile` would have produced. The existing
+                // `render_frontend_diagnostics` rendering path is reused so
+                // the user sees identical output to the no-flag path.
+                eprintln!("{}", failure.message);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     match compile::compile(&input, None, true, &options) {
         Ok(_) => {
             eprintln!("{input}: OK");

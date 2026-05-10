@@ -973,6 +973,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     } else {
       // No wire handlers: use standard hew.receive op
       llvm::SmallVector<mlir::Attribute, 4> handlerRefs;
+      llvm::SmallVector<mlir::Attribute, 4> handlerReturnTypeAttrs;
       for (size_t i = 0; i < actorInfo.receiveFns.size(); ++i) {
         const auto &recvFn = actorInfo.receiveFns[i];
         std::string recvHandlerName = actorName + "_" + recvFn.name;
@@ -988,10 +989,17 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         getOrCreateExternFunc(recvHandlerName, recvFuncType);
 
         handlerRefs.push_back(mlir::FlatSymbolRefAttr::get(&context, recvHandlerName));
+        // Pin the original Hew-level return type so the lowering pass can
+        // make ownership-transfer decisions independent of any later
+        // function-signature type conversion. Void handlers carry NoneType.
+        mlir::Type origRetType =
+            recvFn.returnType.has_value() ? *recvFn.returnType : mlir::NoneType::get(&context);
+        handlerReturnTypeAttrs.push_back(mlir::TypeAttr::get(origRetType));
       }
 
       hew::ReceiveOp::create(builder, location, stateArg, msgTypeArg, dataArg, dataSizeArg,
-                             builder.getArrayAttr(handlerRefs));
+                             builder.getArrayAttr(handlerRefs),
+                             builder.getArrayAttr(handlerReturnTypeAttrs));
     }
 
     // Return void from dispatch
@@ -1494,9 +1502,15 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 
     llvm::SmallVector<mlir::Attribute, 1> handlerRefs;
     handlerRefs.push_back(mlir::FlatSymbolRefAttr::get(&context, receiveName));
+    // Lambda actors have a single void receive handler — pin NoneType so
+    // ReceiveOpLowering's ownership-transfer logic sees the void return
+    // explicitly and skips any owned-payload cloning.
+    llvm::SmallVector<mlir::Attribute, 1> handlerReturnTypeAttrs;
+    handlerReturnTypeAttrs.push_back(mlir::TypeAttr::get(mlir::NoneType::get(&context)));
 
     hew::ReceiveOp::create(builder, location, stateArg, msgTypeArg, dataArg, dataSizeArg,
-                           builder.getArrayAttr(handlerRefs));
+                           builder.getArrayAttr(handlerRefs),
+                           builder.getArrayAttr(handlerReturnTypeAttrs));
     mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
   }
 

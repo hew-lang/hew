@@ -2016,6 +2016,20 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
     auto dataSizeVal = adaptor.getDataSize();
 
     auto handlers = op.getHandlers();
+    auto handlerReturnTypeAttrs = op.getHandlerReturnTypes();
+
+    // Fail-closed: the handler_return_types attribute is the source of
+    // truth for ownership decisions on reply payloads (see HewOps.td and
+    // the ownership-transfer block below). Reading the return type from
+    // the handler `func.func` signature here is unsafe because function
+    // signature conversion runs in the same applyPartialConversion call
+    // and may have already rewritten `!hew.string_ref` to `!llvm.ptr`,
+    // making the original ownership intent unrecoverable.
+    if (handlerReturnTypeAttrs.size() != handlers.size()) {
+      return op.emitOpError("handler_return_types attribute size (")
+             << handlerReturnTypeAttrs.size() << ") does not match handlers size ("
+             << handlers.size() << ")";
+    }
 
     // Handler parameter types are derived from the module symbol table.
     // This is idiomatic MLIR — symbol resolution is O(1) and avoids
@@ -2142,7 +2156,29 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         // `hew-runtime/src/reply_channel.rs` for the ownership contract:
         // `hew_reply` returns `true` iff it took ownership of the
         // payload, `false` otherwise.
-        auto origReturnType = handlerType.getResult(0);
+        // Resolve the original Hew-level return type from the
+        // hew.receive op's `handler_return_types` attribute. Reading
+        // `handlerType.getResult(0)` here is unsafe — by the time this
+        // pattern fires the handler `func.func` may already have been
+        // signature-converted by
+        // `populateFunctionOpInterfaceTypeConversionPattern` running in
+        // the same `applyPartialConversion` call, which would lower
+        // `!hew.string_ref` to `!llvm.ptr` and silently drop the
+        // ownership-transfer cloning below (the bug behind PR #1717's
+        // double-free regression on Linux: e2e_coverage_actor_multi_handler,
+        // e2e_memory_actor_field_string_ownership).
+        auto origRetTypeAttr = mlir::dyn_cast<mlir::TypeAttr>(handlerReturnTypeAttrs[idx]);
+        if (!origRetTypeAttr) {
+          return op.emitOpError("handler_return_types[") << idx << "] is not a TypeAttr";
+        }
+        auto origReturnType = origRetTypeAttr.getValue();
+        if (mlir::isa<mlir::NoneType>(origReturnType)) {
+          // NoneType marks a void handler; this branch is gated on
+          // hasReturnType so it should be unreachable. Fail-closed
+          // rather than silently skipping the ownership-transfer logic.
+          return op.emitOpError("handler_return_types[")
+                 << idx << "] is NoneType but handler has a non-void result";
+        }
         mlir::Value cloneHeapPtr;        // heap pointer that must be freed on !delivered
         llvm::StringRef cloneDestructor; // destructor symbol name
         if (mlir::isa<hew::StringRefType>(origReturnType)) {

@@ -702,10 +702,24 @@ def Hew_ReceiveOp : Hew_Op<"receive"> {
     extracts args from the data pointer based on each handler's function
     signature (looked up from the module symbol table during lowering).
 
+    The `handler_return_types` attribute parallels `handlers` and pins each
+    handler's *original Hew-level* return type at MLIRGen time.  This is the
+    source of truth for ownership-transfer decisions (e.g. deciding whether a
+    `String` reply payload must be deep-copied before `hew_reply` so that
+    caller-side scope-exit drop and actor-side state-drop do not double-free
+    the same allocation).  Looking the type up from the handler `func.func`'s
+    signature at lowering time is not safe: the receive lowering and the
+    function-signature type-conversion pattern run in the same
+    `applyPartialConversion` call, and the function may have been signature-
+    converted (turning `!hew.string_ref` into `!llvm.ptr`) before this op
+    fires — at which point the ownership intent is unrecoverable.  Void
+    handlers store `none` in the corresponding slot.
+
     Example:
     ```mlir
     hew.receive(%state, %msg_type, %data, %data_size)
-        {handlers = [@Counter_increment, @Counter_get_value]}
+        {handlers = [@Counter_increment, @Counter_get_value],
+         handler_return_types = [none, !hew.string_ref]}
         : (!llvm.ptr, !llvm.ptr)
     ```
   }];
@@ -715,7 +729,8 @@ def Hew_ReceiveOp : Hew_Op<"receive"> {
     I32:$msg_type,
     AnyType:$data,
     AnySignlessInteger:$data_size,
-    ArrayAttr:$handlers
+    ArrayAttr:$handlers,
+    TypeArrayAttr:$handler_return_types
   );
 
   let assemblyFormat = [{

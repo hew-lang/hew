@@ -2503,6 +2503,12 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_drop(
 
     s.child_specs[idx].state_drop_fn = Some(state_drop_fn);
 
+    // Guard the children-slot read so a concurrent supervisor restart on
+    // another thread cannot replace s.children[idx] between the load and
+    // the hew_actor_set_state_drop call (which would leave the new actor
+    // without a state-drop registration).
+    let _guard = s.children_lock.lock_or_recover();
+
     // Register on the already-spawned actor for its first run (the initial
     // spawn happens inside add_child_spec before this setter is called).
     let child = s.children[idx];

@@ -928,7 +928,37 @@ mod tests {
 
             if segments.len() >= 2 {
                 // Subdirectory module: std/encoding/json → std::encoding::json
-                paths.push(segments.join("::"));
+                // Only push the directory as a module when the conventional
+                // package-entry file exists (e.g. std/encoding/json/json.hew),
+                // or when the flat form exists (e.g. std/io.hew alongside std/io/).
+                // If neither exists, treat the individual .hew files inside the
+                // directory as their own modules (namespace directory pattern):
+                // e.g. std/actor/monitor.hew → std::actor::monitor.
+                let last = *segments.last().unwrap();
+                let dir_entry = dir.join(format!("{last}.hew"));
+                let flat_entry = {
+                    // repo_root/std/actor.hew
+                    let mut p = repo_root.to_path_buf();
+                    for seg in &segments {
+                        p = p.join(seg);
+                    }
+                    p.with_extension("hew")
+                };
+                if dir_entry.exists() || flat_entry.exists() {
+                    paths.push(segments.join("::"));
+                } else {
+                    // Namespace directory: discover each .hew file as its own module.
+                    let prefix = segments.join("::");
+                    for entry in &sorted {
+                        let path = entry.path();
+                        if path.extension().is_some_and(|e| e == "hew")
+                            && path.file_name().is_none_or(|f| f != "builtins.hew")
+                        {
+                            let stem = path.file_stem().unwrap().to_str().unwrap();
+                            paths.push(format!("{prefix}::{stem}"));
+                        }
+                    }
+                }
             } else if segments.len() == 1 {
                 // Root-level files: std/fs.hew → std::fs — each file is its own module
                 for entry in &sorted {

@@ -3931,6 +3931,28 @@ static void test_receive_verifier_non_void_handler_with_none_metadata() {
   PASS();
 }
 
+// Non-void handler whose metadata Hew-type disagrees with the handler's
+// signature result must fail verification. Without this check, a
+// malformed slot like `i64` on a `!hew.string_ref` handler would slip
+// past the None/non-None gate above, miss the lowering's owned-pointer
+// dispatch, and reintroduce the same double-free hazard the metadata
+// attribute was added to prevent (PR #1717 regression).
+static void test_receive_verifier_metadata_handler_type_mismatch() {
+  TEST(receive_verifier_metadata_handler_type_mismatch);
+  ReceiveHarness h;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&h.ctx);
+  auto stringRef = hew::StringRefType::get(&h.ctx);
+  auto vecI64 = hew::VecType::get(&h.ctx, mlir::IntegerType::get(&h.ctx, 64));
+  // handler: (ptr) -> !hew.string_ref ; metadata: !hew.vec<i64> -> reject
+  auto handler = mlir::FunctionType::get(&h.ctx, {ptrType}, {stringRef});
+  h.build(handler, vecI64);
+  if (!h.verifyFailed()) {
+    FAIL("Should reject hew.receive whose handler_return_types disagrees with handler signature");
+    return;
+  }
+  PASS();
+}
+
 // Size mismatch between handlers[] and handler_return_types[] must fail.
 static void test_receive_verifier_size_mismatch() {
   TEST(receive_verifier_size_mismatch);
@@ -4009,6 +4031,7 @@ int main() {
   // Verifier negative tests — ReceiveOp handler_return_types metadata
   test_receive_verifier_void_handler_with_non_none_metadata();
   test_receive_verifier_non_void_handler_with_none_metadata();
+  test_receive_verifier_metadata_handler_type_mismatch();
   test_receive_verifier_size_mismatch();
 
   // Folder tests

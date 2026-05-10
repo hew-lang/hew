@@ -2160,6 +2160,32 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
                << "] is NoneType; cannot determine ownership-transfer "
                   "policy for reply payload";
       }
+      // Cross-check metadata against the handler's actual result shape.
+      // Without this, a malformed slot like `i64` on a `String`-returning
+      // handler would slip past the None/non-None gate above, miss the
+      // pointer-shaped clone branch below, and reintroduce the same
+      // double-free hazard the metadata was added to prevent.
+      // Compute the lowered shape implied by the metadata and compare to
+      // the handler's actual lowered result. If they disagree, the metadata
+      // is corrupt and lowering must abort rather than guess an ownership
+      // policy from a stale signature.
+      if (!handlerIsVoid) {
+        auto metadataLowered = lowerType(origReturnType);
+        if (!metadataLowered) {
+          return op.emitOpError("handler_return_types[")
+                 << idx << "] type " << origReturnType
+                 << " has no LLVM lowering; cannot validate against handler '" << handlerName
+                 << "' result shape";
+        }
+        if (metadataLowered != loweredResults[0]) {
+          return op.emitOpError("handler_return_types[")
+                 << idx << "] = " << origReturnType << " (lowers to " << metadataLowered
+                 << ") disagrees with handler '" << handlerName << "' lowered result "
+                 << loweredResults[0]
+                 << "; metadata/signature mismatch — refusing to guess "
+                    "ownership-transfer policy";
+        }
+      }
 
       bool hasReturnType = !loweredResults.empty();
       if (hasReturnType) {
@@ -2238,30 +2264,42 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
           cloneHeapPtr = clonedHm;
           cloneDestructor = "hew_hashmap_free_impl";
         } else if (mlir::isa<hew::ClosureType>(origReturnType)) {
+          // Closures lower to a `{fn-ptr, env-ptr}` two-field LLVM struct;
+          // the env-ptr is the Rc that must be cloned for the caller.
+          // If the lowered shape disagrees (e.g. closure ABI changes or
+          // the type converter is misconfigured) we cannot safely clone
+          // the env without risk of mis-indexing or skipping the clone
+          // entirely — the latter would reintroduce double-drop on the
+          // env Rc when both caller and actor state hold the same
+          // refcount slot. Fail closed rather than silently no-op.
           auto closureType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(resultType);
-          if (closureType && closureType.getBody().size() == 2) {
-            auto fnPtr =
-                mlir::LLVM::ExtractValueOp::create(rewriter, loc, resultVal,
-                                                   llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)})
-                    .getResult();
-            auto envPtr =
-                mlir::LLVM::ExtractValueOp::create(rewriter, loc, resultVal,
-                                                   llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)})
-                    .getResult();
-            auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
-            getOrInsertFuncDecl(module, rewriter, "hew_rc_clone", ft);
-            auto clonedEnv = mlir::func::CallOp::create(
-                rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType}, mlir::ValueRange{envPtr});
-            mlir::Value rebuilt = mlir::LLVM::UndefOp::create(rewriter, loc, closureType);
-            rebuilt = mlir::LLVM::InsertValueOp::create(
-                rewriter, loc, rebuilt, fnPtr, llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)});
-            rebuilt =
-                mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, clonedEnv.getResult(0),
-                                                  llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
-            resultVal = rebuilt;
-            cloneHeapPtr = clonedEnv.getResult(0);
-            cloneDestructor = "hew_rc_drop";
+          if (!closureType || closureType.getBody().size() != 2) {
+            return op.emitOpError("handler '")
+                   << handlerName << "' returns ClosureType but lowered result " << resultType
+                   << " is not the expected 2-field {fn,env} struct; "
+                      "cannot emit safe ownership-transfer clone";
           }
+          auto fnPtr =
+              mlir::LLVM::ExtractValueOp::create(rewriter, loc, resultVal,
+                                                 llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)})
+                  .getResult();
+          auto envPtr =
+              mlir::LLVM::ExtractValueOp::create(rewriter, loc, resultVal,
+                                                 llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)})
+                  .getResult();
+          auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+          getOrInsertFuncDecl(module, rewriter, "hew_rc_clone", ft);
+          auto clonedEnv = mlir::func::CallOp::create(
+              rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType}, mlir::ValueRange{envPtr});
+          mlir::Value rebuilt = mlir::LLVM::UndefOp::create(rewriter, loc, closureType);
+          rebuilt = mlir::LLVM::InsertValueOp::create(
+              rewriter, loc, rebuilt, fnPtr, llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)});
+          rebuilt =
+              mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, clonedEnv.getResult(0),
+                                                llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
+          resultVal = rebuilt;
+          cloneHeapPtr = clonedEnv.getResult(0);
+          cloneDestructor = "hew_rc_drop";
         }
 
         // Store result value to a temp alloca so we can pass its address

@@ -201,6 +201,23 @@ mlir::LogicalResult hew::ReceiveOp::verify() {
              << "] is NoneType; cannot determine ownership-transfer policy "
                 "for reply payload";
     }
+    // When both sides are non-void, the metadata must agree with the
+    // handler's Hew-level signature exactly. Without this, a malformed
+    // slot (e.g. metadata `i64` on a `!hew.string_ref` handler) would
+    // pass the None/non-None gate above, slip through the lowering's
+    // ownership-transfer dispatch (which only matches owned-pointer
+    // types), and reintroduce the same double-free hazard the metadata
+    // attribute was added to prevent. The lowering pattern enforces the
+    // same agreement on lowered shapes; this verifier check rejects
+    // disagreement at IR-construction time before any conversion runs.
+    if (!isVoid && !isNone && typeAttr.getValue() != handlerFunc.getFunctionType().getResult(0)) {
+      return emitOpError("handler_return_types[")
+             << idx << "] = " << typeAttr.getValue() << " disagrees with handler '"
+             << handlerRef.getValue() << "' signature result "
+             << handlerFunc.getFunctionType().getResult(0)
+             << "; metadata/signature mismatch — refusing to guess "
+                "ownership-transfer policy";
+    }
   }
   return success();
 }

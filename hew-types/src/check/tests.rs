@@ -1167,11 +1167,17 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
-    // The alias is removed: the resolved return type must not be Ty::stream(Ty::I32).
-    assert_ne!(
+    // The alias is removed: ActorStream<i32> must resolve to an unknown Named
+    // type, not the built-in stream alias.  Pinning the exact form means a
+    // regression that re-introduces the alias will produce a type mismatch
+    // rather than a vacuously passing assert_ne.
+    assert_eq!(
         output.fn_sigs["bar"].return_type,
-        Ty::stream(Ty::I32),
-        "ActorStream<i32> must not alias Stream<i32> after alias removal"
+        Ty::Named {
+            name: "ActorStream".to_string(),
+            args: vec![Ty::I32],
+        },
+        "ActorStream<i32> must resolve to an unknown Named type, not the Stream alias"
     );
 }
 

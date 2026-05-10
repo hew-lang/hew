@@ -3274,7 +3274,7 @@ mod tests {
         }
         // SAFETY: ch is the current thread-local reply channel; reply_value is valid.
         unsafe {
-            crate::reply_channel::hew_reply(
+            let _ = crate::reply_channel::hew_reply(
                 ch.cast(),
                 (&raw mut reply_value).cast::<c_void>(),
                 std::mem::size_of::<u32>(),
@@ -3293,7 +3293,9 @@ mod tests {
             return;
         }
         // SAFETY: the reply channel comes from the scheduler and is valid for a void reply here.
-        unsafe { crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0) };
+        unsafe {
+            let _ = crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0);
+        }
     }
 
     unsafe extern "C" fn orphaned_void_ask_dispatch(

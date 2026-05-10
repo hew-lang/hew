@@ -408,7 +408,7 @@ unsafe extern "C" fn echo_double_dispatch(
 
         // Reply with payload * 2.
         let mut doubled = payload * 2;
-        reply_channel::hew_reply(ch.cast(), (&raw mut doubled).cast(), size_of::<i32>());
+        let _ = reply_channel::hew_reply(ch.cast(), (&raw mut doubled).cast(), size_of::<i32>());
     }
 }
 
@@ -632,7 +632,7 @@ unsafe extern "C" fn slow_dispatch(
         if !ch.is_null() && !data.is_null() && data_size >= size_of::<i32>() {
             let payload = *(data.cast::<i32>());
             let mut result = payload;
-            reply_channel::hew_reply(ch.cast(), (&raw mut result).cast(), size_of::<i32>());
+            let _ = reply_channel::hew_reply(ch.cast(), (&raw mut result).cast(), size_of::<i32>());
         }
     }
 }

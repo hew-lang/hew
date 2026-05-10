@@ -2131,27 +2131,50 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         // macOS silently tolerates.  Cloning here mirrors the
         // deepCopyOwnedArgs policy at the send/spawn boundary so the
         // actor reply seam transfers ownership symmetrically.
+        //
+        // When we emit a deep clone, we also capture the cloned heap
+        // pointer and the matching destructor so we can free the clone
+        // on the `delivered=false` legs of `hew_reply` (ask cancelled,
+        // ask timed out, or per-reply allocation OOM).  Without this
+        // cleanup the clone leaks — the caller's stack-local clone
+        // pointer goes out of scope and no one ever frees the backing
+        // String/Vec/HashMap/Closure-env.  See
+        // `hew-runtime/src/reply_channel.rs` for the ownership contract:
+        // `hew_reply` returns `true` iff it took ownership of the
+        // payload, `false` otherwise.
         auto origReturnType = handlerType.getResult(0);
+        mlir::Value cloneHeapPtr;        // heap pointer that must be freed on !delivered
+        llvm::StringRef cloneDestructor; // destructor symbol name
         if (mlir::isa<hew::StringRefType>(origReturnType)) {
           auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
           getOrInsertFuncDecl(module, rewriter, "strdup", ft);
-          resultVal = mlir::func::CallOp::create(rewriter, loc, "strdup", mlir::TypeRange{ptrType},
-                                                 mlir::ValueRange{resultVal})
-                          .getResult(0);
+          auto clonedStr =
+              mlir::func::CallOp::create(rewriter, loc, "strdup", mlir::TypeRange{ptrType},
+                                         mlir::ValueRange{resultVal})
+                  .getResult(0);
+          resultVal = clonedStr;
+          cloneHeapPtr = clonedStr;
+          cloneDestructor = "free"; // libc free; symmetric with strdup
         } else if (mlir::isa<hew::VecType>(origReturnType)) {
           auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
           getOrInsertFuncDecl(module, rewriter, "hew_vec_clone", ft);
-          resultVal =
+          auto clonedVec =
               mlir::func::CallOp::create(rewriter, loc, "hew_vec_clone", mlir::TypeRange{ptrType},
                                          mlir::ValueRange{resultVal})
                   .getResult(0);
+          resultVal = clonedVec;
+          cloneHeapPtr = clonedVec;
+          cloneDestructor = "hew_vec_free";
         } else if (mlir::isa<hew::HashMapType>(origReturnType)) {
           auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
           getOrInsertFuncDecl(module, rewriter, "hew_hashmap_clone_impl", ft);
-          resultVal =
+          auto clonedHm =
               mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_clone_impl",
                                          mlir::TypeRange{ptrType}, mlir::ValueRange{resultVal})
                   .getResult(0);
+          resultVal = clonedHm;
+          cloneHeapPtr = clonedHm;
+          cloneDestructor = "hew_hashmap_free_impl";
         } else if (mlir::isa<hew::ClosureType>(origReturnType)) {
           auto closureType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(resultType);
           if (closureType && closureType.getBody().size() == 2) {
@@ -2174,6 +2197,8 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
                 mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, clonedEnv.getResult(0),
                                                   llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
             resultVal = rebuilt;
+            cloneHeapPtr = clonedEnv.getResult(0);
+            cloneDestructor = "hew_rc_drop";
           }
         }
 
@@ -2182,12 +2207,34 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         auto resultAlloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, resultType, one);
         mlir::LLVM::StoreOp::create(rewriter, loc, resultVal, resultAlloca);
 
-        // Call hew_reply(ch, &result, sizeof(result))
+        // Call hew_reply(ch, &result, sizeof(result)) — returns i1 indicating
+        // whether the channel took ownership of the payload bytes.
         auto resultSize = emitSizeOf(rewriter, loc, resultType);
-        auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {});
+        auto i1Type = rewriter.getI1Type();
+        auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {i1Type});
         getOrInsertFuncDecl(module, rewriter, "hew_reply", replyFuncType);
-        mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{},
-                                   mlir::ValueRange{replyChan, resultAlloca, resultSize});
+        auto replyCallOp =
+            mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{i1Type},
+                                       mlir::ValueRange{replyChan, resultAlloca, resultSize});
+        auto delivered = replyCallOp.getResult(0);
+
+        // On the !delivered leg (cancelled / OOM), free the deep clone
+        // with its matching destructor. This is the Drop Safety cleanup
+        // for the ask-cancel and ask-timeout paths — otherwise the
+        // strdup'd / cloned heap object leaks. The void hew_reply legs
+        // (size=0) do not run this cleanup because there is no clone.
+        if (cloneHeapPtr && !cloneDestructor.empty()) {
+          auto trueVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i1Type, 1);
+          auto notDelivered = mlir::arith::XOrIOp::create(rewriter, loc, delivered, trueVal);
+          auto cleanupIfOp =
+              mlir::scf::IfOp::create(rewriter, loc, notDelivered, /*withElseRegion=*/false);
+          rewriter.setInsertionPointToStart(&cleanupIfOp.getThenRegion().front());
+          auto dtorType = rewriter.getFunctionType({ptrType}, {});
+          getOrInsertFuncDecl(module, rewriter, cloneDestructor, dtorType);
+          mlir::func::CallOp::create(rewriter, loc, cloneDestructor, mlir::TypeRange{},
+                                     mlir::ValueRange{cloneHeapPtr});
+          rewriter.setInsertionPointAfter(cleanupIfOp);
+        }
 
         rewriter.setInsertionPointAfter(replyIfOp);
       } else {
@@ -2205,12 +2252,15 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         auto replyIfOp = mlir::scf::IfOp::create(rewriter, loc, hasReply, /*withElseRegion=*/false);
         rewriter.setInsertionPointToStart(&replyIfOp.getThenRegion().front());
 
-        // Call hew_reply(ch, null, 0) — signal completion with no value
-        auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {});
+        // Call hew_reply(ch, null, 0) — signal completion with no value.
+        // The i1 return value is intentionally ignored: there is no
+        // payload to reclaim on the !delivered leg.
+        auto i1Type = rewriter.getI1Type();
+        auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {i1Type});
         getOrInsertFuncDecl(module, rewriter, "hew_reply", replyFuncType);
         auto voidNullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
         auto voidZeroSize = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 0);
-        mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{},
+        mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{i1Type},
                                    mlir::ValueRange{replyChan, voidNullPtr, voidZeroSize});
 
         rewriter.setInsertionPointAfter(replyIfOp);

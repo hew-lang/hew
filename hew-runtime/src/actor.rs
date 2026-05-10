@@ -3843,7 +3843,7 @@ mod tests {
         // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
         // and `value` lives for the duration of the call.
         unsafe {
-            crate::reply_channel::hew_reply(
+            let _ = crate::reply_channel::hew_reply(
                 ch.cast(),
                 (&raw mut value).cast(),
                 std::mem::size_of::<i32>(),
@@ -3952,7 +3952,7 @@ mod tests {
         // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
         // and `value` lives for the duration of the call.
         unsafe {
-            crate::reply_channel::hew_reply(
+            let _ = crate::reply_channel::hew_reply(
                 ch.cast(),
                 (&raw mut value).cast(),
                 std::mem::size_of::<i32>(),
@@ -3975,7 +3975,7 @@ mod tests {
         // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
         // and `value` lives for the duration of the call.
         unsafe {
-            crate::reply_channel::hew_reply(
+            let _ = crate::reply_channel::hew_reply(
                 ch.cast(),
                 (&raw mut value).cast(),
                 std::mem::size_of::<i32>(),
@@ -3997,7 +3997,7 @@ mod tests {
         // SAFETY: `ch` is the scheduler-installed reply channel for this dispatch
         // and `value` lives for the duration of the call.
         unsafe {
-            crate::reply_channel::hew_reply(
+            let _ = crate::reply_channel::hew_reply(
                 ch.cast(),
                 (&raw mut value).cast(),
                 std::mem::size_of::<i32>(),
@@ -4353,7 +4353,9 @@ mod tests {
                 let ch = LAST_NATIVE_ASK_REPLY_CHANNEL.swap(ptr::null_mut(), Ordering::AcqRel);
                 if !ch.is_null() {
                     // SAFETY: this is the captured in-flight reply channel from the stalled ask.
-                    unsafe { crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0) };
+                    unsafe {
+                        let _ = crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0);
+                    }
                 }
                 let recovered = rx
                     .recv_timeout(std::time::Duration::from_secs(1))
@@ -4698,7 +4700,9 @@ mod tests {
             let ch = LAST_NATIVE_ASK_REPLY_CHANNEL.swap(ptr::null_mut(), Ordering::AcqRel);
             if !ch.is_null() {
                 // SAFETY: ch was retrieved from the atomic; hew_reply takes ownership.
-                unsafe { crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0) };
+                unsafe {
+                    let _ = crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0);
+                }
             }
             rx.recv_timeout(std::time::Duration::from_secs(1))
                 .expect("fallback reply should unblock ask")
@@ -4875,7 +4879,9 @@ mod tests {
             let ch = LAST_NATIVE_ASK_REPLY_CHANNEL.swap(ptr::null_mut(), Ordering::AcqRel);
             if !ch.is_null() {
                 // SAFETY: ch was retrieved from the atomic; hew_reply takes ownership.
-                unsafe { crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0) };
+                unsafe {
+                    let _ = crate::reply_channel::hew_reply(ch, ptr::null_mut(), 0);
+                }
             }
             rx.recv_timeout(std::time::Duration::from_secs(1))
                 .expect("fallback reply should unblock ask")
@@ -6163,7 +6169,7 @@ mod wasm_tests {
         let ch = crate::scheduler_wasm::hew_get_reply_channel();
         let mut value: i32 = 21;
         unsafe {
-            crate::reply_channel_wasm::hew_reply(
+            let _ = crate::reply_channel_wasm::hew_reply(
                 ch.cast(),
                 (&raw mut value).cast(),
                 size_of::<i32>(),
@@ -6181,7 +6187,7 @@ mod wasm_tests {
         let ch = crate::scheduler_wasm::hew_get_reply_channel();
         let mut value: i32 = 99;
         unsafe {
-            crate::reply_channel_wasm::hew_reply(
+            let _ = crate::reply_channel_wasm::hew_reply(
                 ch.cast(),
                 (&raw mut value).cast(),
                 size_of::<i32>(),
@@ -6203,7 +6209,7 @@ mod wasm_tests {
             // SAFETY: ch is the scheduler-installed reply channel; depositing
             // a null payload is a legitimate zero-size reply.
             unsafe {
-                crate::reply_channel_wasm::hew_reply(ch.cast(), ptr::null_mut(), 0);
+                let _ = crate::reply_channel_wasm::hew_reply(ch.cast(), ptr::null_mut(), 0);
             }
         }
         // Self-stop AFTER the explicit null reply — must NOT set orphaned.

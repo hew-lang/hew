@@ -377,7 +377,7 @@ unsafe fn retire_reply_channel(reply_channel: *mut c_void) {
     // replied=true) → waiter sees replied=true → waiter reads orphaned=true.
     unsafe {
         (*reply_channel.cast::<crate::reply_channel_wasm::WasmReplyChannel>()).orphaned = true;
-        crate::reply_channel_wasm::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
+        let _ = crate::reply_channel_wasm::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
     }
 }
 

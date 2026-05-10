@@ -1470,7 +1470,7 @@ mod tests {
             let mut reply_value = state.value * 2;
             // SAFETY: reply channel comes from the in-flight message.
             unsafe {
-                crate::reply_channel_wasm::hew_reply(
+                let _ = crate::reply_channel_wasm::hew_reply(
                     state.channel.cast(),
                     (&raw mut reply_value).cast(),
                     std::mem::size_of::<i32>(),
@@ -1515,7 +1515,7 @@ mod tests {
 
         // SAFETY: ch is the active ask reply channel for this dispatch.
         unsafe {
-            crate::reply_channel_wasm::hew_reply(
+            let _ = crate::reply_channel_wasm::hew_reply(
                 ch.cast(),
                 (&raw mut reply_value).cast(),
                 std::mem::size_of::<i32>(),
@@ -1551,7 +1551,7 @@ mod tests {
 
         // SAFETY: ch is the active ask reply channel for this dispatch.
         unsafe {
-            crate::reply_channel_wasm::hew_reply(
+            let _ = crate::reply_channel_wasm::hew_reply(
                 ch.cast(),
                 (&raw mut reply_value).cast(),
                 std::mem::size_of::<i32>(),
@@ -5134,7 +5134,7 @@ mod tests {
                     // SAFETY: ch was retained in phase 1; the caller's ref
                     // keeps it alive.  hew_reply will release our extra retain.
                     unsafe {
-                        crate::reply_channel_wasm::hew_reply(
+                        let _ = crate::reply_channel_wasm::hew_reply(
                             ch,
                             (&raw mut v).cast(),
                             std::mem::size_of::<i32>(),

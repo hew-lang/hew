@@ -807,7 +807,7 @@ fn activate_actor(actor: *mut HewActor) {
                     if !reply_consumed && !crash_reply.is_null() {
                         // SAFETY: crash_reply is a valid HewReplyChannel pointer.
                         unsafe {
-                            crate::reply_channel::hew_reply(
+                            let _ = crate::reply_channel::hew_reply(
                                 crash_reply.cast(),
                                 std::ptr::null_mut(),
                                 0,

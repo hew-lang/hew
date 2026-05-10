@@ -101,15 +101,30 @@ pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut WasmReplyChannel) {
 ///
 /// The payload is deep-copied so the caller retains ownership of `value`.
 ///
+/// Returns `true` if the channel took ownership of the `size` bytes at
+/// `value` (the waiter will receive them and own any heap pointers
+/// referenced). Returns `false` if the reply was not delivered (channel
+/// cancelled or per-reply allocation failed) — in that case the caller
+/// still owns any heap-allocated payload and must free it.
+///
 /// # Safety
 ///
 /// - `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
 /// - `value` must point to at least `size` readable bytes (or be null
 ///   when `size` is 0).
 /// - Must be called at most once per channel.
+#[must_use = "hew_reply returns false when the channel did not take \
+              ownership of the payload (cancelled or OOM); the caller \
+              must free any deep-cloned heap payload in that case"]
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
-pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void, size: usize) {
-    cabi_guard!(ch.is_null());
+pub unsafe extern "C" fn hew_reply(
+    ch: *mut WasmReplyChannel,
+    value: *mut c_void,
+    size: usize,
+) -> bool {
+    if ch.is_null() {
+        return false;
+    }
 
     // SAFETY: Caller guarantees `ch` is valid and single-writer.
     unsafe {
@@ -120,12 +135,14 @@ pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void
         );
         if (*ch).cancelled {
             hew_reply_channel_free(ch);
-            return;
+            return false;
         }
+        let mut delivered = true;
         if size > 0 && !value.is_null() {
             let buf = alloc_reply_buffer(size);
             if buf.is_null() {
                 (*ch).allocation_failed = true;
+                delivered = false;
             } else {
                 ptr::copy_nonoverlapping(value.cast::<u8>(), buf.cast::<u8>(), size);
                 (*ch).value = buf;
@@ -134,6 +151,7 @@ pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void
         }
         (*ch).replied = true;
         hew_reply_channel_free(ch);
+        delivered
     }
 }
 
@@ -453,10 +471,15 @@ mod tests {
             assert!(!test_replied(ch));
             assert!(!reply_ready(ch));
 
-            hew_reply(
+            let delivered = hew_reply(
                 ch,
                 (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
+            );
+            assert!(
+                !delivered,
+                "WASM hew_reply must report not-delivered after the channel is cancelled \
+                 so the caller can free any deep-cloned owned payload"
             );
 
             assert_eq!(test_ref_count(ch), 1);
@@ -480,7 +503,7 @@ mod tests {
         // SAFETY: `ch` remains live until the final owner release below.
         unsafe {
             hew_reply_channel_retain(ch);
-            hew_reply(
+            let _ = hew_reply(
                 ch,
                 (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
@@ -524,7 +547,7 @@ mod tests {
         // SAFETY: ch is valid; retain + reply mimics the ask/reply pattern.
         unsafe {
             hew_reply_channel_retain(ch);
-            hew_reply(
+            let _ = hew_reply(
                 ch,
                 (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
@@ -548,7 +571,7 @@ mod tests {
         unsafe {
             hew_reply_channel_retain(ch);
             FORCE_REPLY_ALLOC_FAILURE.store(1, Ordering::Release);
-            hew_reply(
+            let _ = hew_reply(
                 ch,
                 (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
@@ -580,7 +603,7 @@ mod tests {
         // SAFETY: ch is valid; retain + reply mimics the ask/reply pattern.
         unsafe {
             hew_reply_channel_retain(ch);
-            hew_reply(
+            let _ = hew_reply(
                 ch,
                 (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
@@ -618,7 +641,7 @@ mod tests {
         // SAFETY: ch is valid; deposit reply before calling wait_timeout.
         unsafe {
             hew_reply_channel_retain(ch);
-            hew_reply(
+            let _ = hew_reply(
                 ch,
                 (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
@@ -658,7 +681,7 @@ mod tests {
         // SAFETY: ch is valid; retain so it won't be freed by hew_reply.
         unsafe {
             hew_reply_channel_retain(ch);
-            hew_reply(
+            let _ = hew_reply(
                 ch,
                 (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
@@ -714,7 +737,7 @@ mod tests {
         // SAFETY: ch is valid; retain + reply mimics the ask/reply flow.
         unsafe {
             hew_reply_channel_retain(ch);
-            hew_reply(
+            let _ = hew_reply(
                 ch,
                 (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
@@ -744,13 +767,13 @@ mod tests {
         // SAFETY: channels are valid; retain to balance hew_reply's release.
         unsafe {
             hew_reply_channel_retain(ch0);
-            hew_reply(
+            let _ = hew_reply(
                 ch0,
                 (&raw const value0).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
             );
             hew_reply_channel_retain(ch2);
-            hew_reply(
+            let _ = hew_reply(
                 ch2,
                 (&raw const value2).cast_mut().cast(),
                 std::mem::size_of::<i32>(),

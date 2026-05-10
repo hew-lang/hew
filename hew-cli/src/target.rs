@@ -315,7 +315,7 @@ impl TargetSpec {
         format!(
             "Error: target {} can emit objects, but native executable linking is only supported \
              for the host target right now. Use `hew build --target {} --emit-obj` for this \
-             prototype lane.",
+             target.",
             self.normalized_triple(),
             self.normalized_triple(),
         )
@@ -587,8 +587,8 @@ mod tests {
 
     #[test]
     fn windows_gnu_uses_windows_suffixes() {
-        // The prototype lane uses the GNU Windows ABI for cross-target object
-        // emission coverage before widening to additional Windows link modes.
+        // This test uses the GNU Windows ABI for cross-target object emission
+        // coverage before widening to additional Windows link modes.
         let spec = TargetSpec::from_requested(Some("x86_64-pc-windows-gnu")).expect("target");
         assert_eq!(spec.executable_suffix(), ".exe");
         assert_eq!(spec.object_suffix(), ".obj");

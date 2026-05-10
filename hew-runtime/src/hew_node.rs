@@ -3096,7 +3096,7 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
-    // ── Distributed proof-lane integration tests ──────────────────────────
+    // ── Distributed multi-node integration tests ──────────────────────────
     //
     // These tests exercise the real TCP transport path end-to-end in a
     // single process using two HewNode instances:
@@ -3112,7 +3112,7 @@ mod tests {
 
     use std::sync::atomic::AtomicU32;
 
-    // ── Shared helpers for proof-lane tests ───────────────────────────────
+    // ── Shared helpers for distributed node tests ─────────────────────────
 
     /// Connect `initiator` to `responder_addr` with retry back-off.
     unsafe fn connect_with_retry(initiator: *mut HewNode, responder_addr: &CString) {

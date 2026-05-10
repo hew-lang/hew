@@ -100,8 +100,7 @@ impl Display for char {
 /// println("hello");
 /// println(true);
 /// ```
-pub fn println(value: dyn Display) {
-}
+pub fn println(value: dyn Display) {}
 
 /// Print a value without a trailing newline.
 ///
@@ -110,8 +109,7 @@ pub fn println(value: dyn Display) {
 /// ```
 /// print("Enter name: ");
 /// ```
-pub fn print(value: dyn Display) {
-}
+pub fn print(value: dyn Display) {}
 
 // ---------------------------------------------------------------------------
 // Assertions
@@ -123,8 +121,7 @@ pub fn print(value: dyn Display) {
 /// ```
 /// assert(x > 0);
 /// ```
-pub fn assert(condition: bool) {
-}
+pub fn assert(condition: bool) {}
 
 /// Assert that two values are equal. Panics with a diff if they differ.
 ///
@@ -135,8 +132,7 @@ pub fn assert(condition: bool) {
 /// ```
 /// assert_eq(add(1, 2), 3);
 /// ```
-pub fn assert_eq(left: dyn Display, right: dyn Display) {
-}
+pub fn assert_eq(left: dyn Display, right: dyn Display) {}
 
 /// Assert that two values are not equal. Panics if they are the same.
 ///
@@ -147,8 +143,7 @@ pub fn assert_eq(left: dyn Display, right: dyn Display) {
 /// ```
 /// assert_ne(a, b);
 /// ```
-pub fn assert_ne(left: dyn Display, right: dyn Display) {
-}
+pub fn assert_ne(left: dyn Display, right: dyn Display) {}
 
 // ---------------------------------------------------------------------------
 // Math
@@ -299,29 +294,24 @@ pub fn read_file(path: String) -> String {
 }
 
 /// Write a string to a file, creating or overwriting it.
-pub fn write_file(path: String, content: String) {
-}
+pub fn write_file(path: String, content: String) {}
 
 // ---------------------------------------------------------------------------
 // Program control
 // ---------------------------------------------------------------------------
 /// Pause execution for the given number of milliseconds.
-pub fn sleep_ms(ms: i32) {
-}
+pub fn sleep_ms(ms: i32) {}
 
 /// Pause execution for the given number of seconds.
-pub fn sleep(seconds: i32) {
-}
+pub fn sleep(seconds: i32) {}
 
 /// Stop an actor gracefully.
-pub fn stop(target: dyn Display) {
-}
+pub fn stop(target: dyn Display) {}
 
 /// Terminate the program with the given exit code.
 ///
 /// This function never returns.
-pub fn exit(code: i32) {
-}
+pub fn exit(code: i32) {}
 
 /// Terminate the program with an error message.
 ///
@@ -332,5 +322,4 @@ pub fn exit(code: i32) {
 /// ```
 /// panic("something went wrong");
 /// ```
-pub fn panic(message: String) {
-}
+pub fn panic(message: String) {}

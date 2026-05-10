@@ -238,8 +238,7 @@ actor ClientHandler {
                         connected = false;
                         println(f"[mqtt] DISCONNECT {client_id}");
                     },
-                    _ => {
-                    },
+                    _ => {},
                 }
                 if connected {
                     buf = bytes_slice(buf, total, buf_len as i32);

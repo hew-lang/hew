@@ -229,7 +229,7 @@ are in the
 **One-line installer (macOS and Linux):**
 
 ```bash
-curl -fsSL https://hew.sh/install.sh | bash
+curl -fsSL https://hew.sh/install | bash
 ```
 
 **Homebrew (macOS):**

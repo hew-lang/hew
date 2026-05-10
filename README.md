@@ -7,7 +7,7 @@ A statically-typed, actor-oriented programming language for concurrent and distr
 ## Install
 
 ```bash
-curl -fsSL https://hew.sh/install.sh | bash
+curl -fsSL https://hew.sh/install | bash
 ```
 
 Pre-built binaries for Linux (x86_64) and macOS (x86_64, ARM) are available on the [Releases](https://github.com/hew-lang/hew/releases) page. Also available via [Homebrew, Docker, and system packages](https://hew.sh/docs/install).

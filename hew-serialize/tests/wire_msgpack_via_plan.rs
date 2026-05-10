@@ -11,10 +11,7 @@
 //! a deterministic function of the parsed `WireDecl`. We assert this by
 //! (a) running two independent encode passes on the same declaration and
 //! comparing bytes, and (b) round-tripping through `rmp-serde` to prove
-//! the descriptor decodes to itself. Lane 7b Stage 7 extends this with
-//! the 10,000-iteration random-corpus comparison against the legacy
-//! WireDecl→rmp-serde path (enabled via the `legacy-wire-msgpack`
-//! feature).
+//! the descriptor decodes to itself.
 
 use std::fs;
 use std::path::{Path, PathBuf};

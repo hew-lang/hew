@@ -123,6 +123,22 @@ fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOp
     }
 }
 
+/// Build frontend options for a check-only invocation that does not need to
+/// resolve a `TargetSpec`. The check pipeline never reaches codegen, so it
+/// does not care about the target — pass `false` for `enable_wasm_target` to
+/// match the default check-mode behaviour. Exposed for the
+/// `--show-stack-hints` path in `cmd_check` which calls `hew_compile::check_file`
+/// directly to retain access to the source string and stack-hint side table.
+pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOptions {
+    FrontendOptions {
+        no_typecheck: options.no_typecheck,
+        warnings_as_errors: options.werror,
+        enable_wasm_target: false,
+        pkg_path: options.pkg_path.clone(),
+        project_dir: options.project_dir.clone(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CompileFromSourceError {
     DiagnosticsRendered,
@@ -138,7 +154,7 @@ impl fmt::Display for CompileFromSourceError {
     }
 }
 
-fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
+pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
     for diagnostic in diagnostics {
         match &diagnostic.kind {
             FrontendDiagnosticKind::Message(message) => {
@@ -781,6 +797,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_rewrites: HashMap::new(),
         }

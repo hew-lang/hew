@@ -149,6 +149,14 @@ fn fail_on_warning_diagnostics(
 #[derive(Debug, Clone, Default)]
 pub struct CheckOutput {
     pub diagnostics: Vec<FrontendDiagnostic>,
+    /// Diagnostic-only stack-allocation hints emitted by the checker's
+    /// escape-analysis pass. Surfaced behind `hew check --show-stack-hints`.
+    /// Empty when type-checking failed before the walker ran.
+    pub stack_hints: Vec<hew_types::check::StackHint>,
+    /// Source text of the checked file, retained so the CLI can render
+    /// `--show-stack-hints` lines with `file:line:col` attribution. Empty when
+    /// the input could not be loaded.
+    pub source: String,
 }
 
 #[derive(Debug)]
@@ -579,10 +587,19 @@ pub fn check_program(
     }
 
     match typecheck_program_with_diagnostics(&program, source, source_label, options) {
-        Ok((_, type_diagnostics)) => {
+        Ok((tcr, type_diagnostics)) => {
             diagnostics.extend(type_diagnostics);
             let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
-            Ok(CheckOutput { diagnostics })
+            let stack_hints = tcr
+                .tco
+                .as_ref()
+                .map(|tco| tco.stack_hints.clone())
+                .unwrap_or_default();
+            Ok(CheckOutput {
+                diagnostics,
+                stack_hints,
+                source: source.to_string(),
+            })
         }
         Err(failure) => Err(merge_prior_diagnostics(diagnostics, failure)),
     }
@@ -1628,7 +1645,17 @@ fn finish_compile(
 pub fn check_file(input: &str, options: &FrontendOptions) -> Result<CheckOutput, FrontendFailure> {
     let state = run_file_frontend_to_typecheck(input, options)?;
     let diagnostics = fail_on_warning_diagnostics(state.diagnostics, options)?;
-    Ok(CheckOutput { diagnostics })
+    let stack_hints = state
+        .typecheck_result
+        .tco
+        .as_ref()
+        .map(|tco| tco.stack_hints.clone())
+        .unwrap_or_default();
+    Ok(CheckOutput {
+        diagnostics,
+        stack_hints,
+        source: state.source,
+    })
 }
 
 /// Run the full frontend pipeline for an on-disk source file.
@@ -2212,6 +2239,7 @@ mod tests {
             cycle_capable_actors: std::collections::HashSet::new(),
             user_modules: std::collections::HashSet::new(),
             call_type_args: std::collections::HashMap::new(),
+            stack_hints: Vec::new(),
         };
 
         let err = enrich_program_ast(

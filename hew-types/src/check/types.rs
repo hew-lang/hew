@@ -85,6 +85,68 @@ pub struct TypeCheckOutput {
     /// Inferred type arguments for generic function calls that lack explicit
     /// type annotations.  Keyed by the call expression's span.
     pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Diagnostic-only escape-analysis hints produced by the stack-hint walker.
+    ///
+    /// One entry per `let` / `var` binding whose right-hand side resolves to a
+    /// known heap allocation class (`Vec`, `String`, `HashMap`, `HashSet`,
+    /// `Rc`, closure environment). The CLI surfaces these behind `--show-stack-hints` as
+    /// `info[HEW-PERF-001]` lines; missing or empty means the walker found no
+    /// heap allocations to consider.
+    ///
+    /// Phase A.0 is intentionally noisy: the walker emits a hint for every
+    /// non-`Stack` allocation class without escape filtering. Subsequent
+    /// slices (A.1/A.2/A.3) progressively suppress false positives by adding
+    /// escape predicates. Hint accuracy is not a stable contract until A.4.
+    pub stack_hints: Vec<StackHint>,
+}
+
+/// Classification of a binding's right-hand-side allocation shape.
+///
+/// Drives the `HEW-PERF-001` diagnostic. Variants cover the genuine heap
+/// categories visible in the codegen layer (closure envs, Vec/HashMap/HashSet
+/// bodies, Rc, String). `Stack` is the no-hint fallthrough — bindings whose
+/// RHS is already stack-shaped (primitives, by-value structs) are not
+/// surfaced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AllocationClass {
+    /// RHS resolves to `Vec<T>`.
+    Vec,
+    /// RHS resolves to `String`.
+    String,
+    /// RHS resolves to `HashMap<K, V>`.
+    HashMap,
+    /// RHS resolves to `HashSet<T>`.
+    HashSet,
+    /// RHS resolves to `Rc<T>`.
+    Rc,
+    /// RHS is a closure literal whose environment is heap-allocated today
+    /// (`MLIRGenExpr.cpp:6009`).
+    ClosureEnv,
+    /// Already stack-shaped — no hint should be emitted.
+    Stack,
+    /// Walker could not classify the RHS expression form. Conservative
+    /// silence: no hint emitted.
+    Indeterminate,
+}
+
+/// One diagnostic-only stack-allocation hint.
+///
+/// Produced by the stack-hint walker for every binding whose RHS classifies as
+/// a heap allocation. The CLI consumes these via `--show-stack-hints`.
+///
+/// `span_key` is byte-position-keyed (matches `SpanKey`'s contract) so future
+/// phases can correlate hints back to the originating expression even after
+/// AST-level rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackHint {
+    /// Source span of the binding's defining `let` / `var` statement.
+    pub span_key: SpanKey,
+    /// Identifier the user wrote (`let f = ...` → `"f"`). For tuple / struct
+    /// destructuring patterns where no single name applies, this is empty;
+    /// callers may still render the hint at the span location.
+    pub binding_name: String,
+    /// Allocation class assigned to the binding's RHS.
+    pub alloc_class: AllocationClass,
 }
 
 /// Checker-owned classification of an assignment target.
@@ -609,6 +671,10 @@ pub struct Checker {
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
+    /// Diagnostic-only stack-allocation hints accumulated by `classify_stack_hints`.
+    /// Surfaced through `TypeCheckOutput::stack_hints` and consumed by the CLI's
+    /// `--show-stack-hints` printer. See [`StackHint`].
+    pub(super) stack_hints: Vec<StackHint>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
     pub(super) handle_bearing_structs: HashSet<String>,
@@ -789,6 +855,7 @@ impl Checker {
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
+            stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: HashSet::new(),

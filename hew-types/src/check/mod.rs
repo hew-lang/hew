@@ -34,8 +34,8 @@ mod types;
 mod util;
 
 pub use self::types::{
-    AssignTargetKind, AssignTargetShape, Checker, FnSig, MethodCallReceiverKind, MethodCallRewrite,
-    SpanKey, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    AllocationClass, AssignTargetKind, AssignTargetShape, Checker, FnSig, MethodCallReceiverKind,
+    MethodCallRewrite, SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -337,6 +337,7 @@ impl Checker {
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
             call_type_args: resolved_call_type_args,
+            stack_hints: std::mem::take(&mut self.stack_hints),
         };
 
         // Detect actor reference cycles and emit warnings.

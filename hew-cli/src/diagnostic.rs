@@ -223,6 +223,58 @@ pub fn render_warning(
     }
 }
 
+/// Print diagnostic-only `info[HEW-PERF-001]` stack-allocation hints to stderr.
+///
+/// One line per [`hew_types::check::StackHint`], formatted as:
+///
+/// ```text
+/// <file>:<line>:<col>: info[HEW-PERF-001]: binding `<name>` (<class>) could be stack-allocated
+/// ```
+///
+/// Severity is `info`. This function never affects exit code or stdout. It is
+/// invoked only when the user passes `--show-stack-hints` to `hew check` or
+/// `hew run`. The diagnostic code (`HEW-PERF-001`) and the `file:line:col`
+/// prefix are stable UX surface; the trailing message text is best-effort.
+pub fn print_stack_hints(source: &str, filename: &str, hints: &[hew_types::check::StackHint]) {
+    let palette = diagnostic_palette();
+    for hint in hints {
+        let (line, col) = offset_to_line_col(source, hint.span_key.start);
+        let class_label = stack_hint_alloc_class_label(&hint.alloc_class);
+        let name = if hint.binding_name.is_empty() {
+            // Bindings produced by destructuring patterns have no single name;
+            // render a placeholder so the line stays well-formed.
+            "<destructured>"
+        } else {
+            hint.binding_name.as_str()
+        };
+        diag_println(&format!(
+            "{bold}{filename}:{line}:{col}:{reset} {blue}info[HEW-PERF-001]{reset}{bold}: \
+             binding `{name}` ({class_label}) could be stack-allocated{reset}",
+            bold = palette.bold,
+            blue = palette.blue,
+            reset = palette.reset,
+        ));
+    }
+}
+
+fn stack_hint_alloc_class_label(class: &hew_types::check::AllocationClass) -> &'static str {
+    use hew_types::check::AllocationClass;
+    // Stable display labels matching the AllocationClass discriminant names
+    // documented on the type. `Stack` and `Indeterminate` should never reach
+    // this function (the walker filters them out before recording a hint),
+    // but we render them defensively rather than panicking.
+    match class {
+        AllocationClass::Vec => "Vec",
+        AllocationClass::String => "String",
+        AllocationClass::HashMap => "HashMap",
+        AllocationClass::HashSet => "HashSet",
+        AllocationClass::Rc => "Rc",
+        AllocationClass::ClosureEnv => "ClosureEnv",
+        AllocationClass::Stack => "Stack",
+        AllocationClass::Indeterminate => "Indeterminate",
+    }
+}
+
 /// Render an error diagnostic where notes are provided as `(span, message)` pairs.
 ///
 /// Convenience wrapper around [`render_diagnostic`] for callers that hold notes as

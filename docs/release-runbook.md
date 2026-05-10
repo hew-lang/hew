@@ -10,6 +10,7 @@ This is the concrete expansion of the `ci-full-run-pre-tag` todo.
 - [ ] Nightly sanitizers are clean (check [Actions → Nightly Sanitizers](../../actions/workflows/nightly-sanitizers.yml)) — TSan is advisory, see Known gaps
 - [ ] FreeBSD nightly is green or has a known-issue note (check [Actions → FreeBSD CI](../../actions/workflows/freebsd.yml))
 - [ ] CHANGELOG.md `[Unreleased]` section is populated
+- [ ] Curated GitHub release notes are drafted at `docs/releases/vX.Y.Z.md`
 - [ ] Version in workspace `Cargo.toml` is still the *previous* release (bump happens below)
 
 ## Phase 1 — Assemble the candidate
@@ -183,7 +184,8 @@ This triggers `.github/workflows/release.yml`, which:
 - Runs Ubuntu clean-room tarball smoke for linux-x86_64 and linux-aarch64
 - Builds Linux distro packages and smoke-tests the installable `.deb` / `.rpm` / `.pkg.tar.zst` outputs in Docker (Arch remains x86_64-only)
 - Signs and notarizes macOS binaries on tag releases
-- Creates a GitHub Release with checksums
+- Creates a GitHub Release with checksums and the curated notes from
+  `docs/releases/<tag>.md`
 - Updates the Homebrew tap (if HOMEBREW_TAP_TOKEN is configured)
 - Publishes the VS Code extension (if VSCE_PAT is configured)
 

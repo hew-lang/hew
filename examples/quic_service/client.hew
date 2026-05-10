@@ -1,4 +1,4 @@
-// service_client.hew — Minimal QUIC remote service client
+// client.hew — Minimal QUIC remote service client
 //
 // Demonstrates:
 //   - Using std::net::quic public API to create a QUIC client endpoint
@@ -8,10 +8,10 @@
 //   - Clean shutdown
 //
 // Run after server is listening:
-//   hew run service_client.hew
+//   hew run examples/quic_service/client.hew
 //
 // Optional:
-//   HEW_QUIC_SERVICE_PORT=4545 hew run service_client.hew
+//   HEW_QUIC_SERVICE_PORT=4545 hew run examples/quic_service/client.hew
 
 import std::net::quic;
 import std::fs;

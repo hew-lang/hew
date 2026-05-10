@@ -10,17 +10,17 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(10);
-const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+const EXAMPLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn hew_std() -> PathBuf {
     repo_root().join("std")
 }
 
-fn probe_dir() -> PathBuf {
-    repo_root().join("docs/probes/quic-remote-service")
+fn example_dir() -> PathBuf {
+    repo_root().join("examples/quic_service")
 }
 
-fn build_probe_binary(source: &Path, output_path: &Path) {
+fn build_example_binary(source: &Path, output_path: &Path) {
     let build_output = Command::new(hew_binary())
         .arg("build")
         .arg(source)
@@ -185,10 +185,10 @@ impl Drop for RunningChild {
 }
 
 #[test]
-fn quic_remote_service_probe_round_trip_succeeds() {
+fn quic_service_example_round_trip_succeeds() {
     require_codegen();
 
-    let probe_dir = probe_dir();
+    let example_dir = example_dir();
     let workspace = tempfile::Builder::new()
         .prefix("quic-service-smoke-")
         .tempdir_in(repo_root())
@@ -200,8 +200,8 @@ fn quic_remote_service_probe_round_trip_succeeds() {
         .path()
         .join(format!("service_client{}", std::env::consts::EXE_SUFFIX));
 
-    build_probe_binary(&probe_dir.join("service_server.hew"), &server_binary);
-    build_probe_binary(&probe_dir.join("service_client.hew"), &client_binary);
+    build_example_binary(&example_dir.join("server.hew"), &server_binary);
+    build_example_binary(&example_dir.join("client.hew"), &client_binary);
 
     let port = pick_free_udp_port();
     let port_str = port.to_string();
@@ -210,7 +210,7 @@ fn quic_remote_service_probe_round_trip_succeeds() {
         let mut command = Command::new(&server_binary);
         command
             .env("HEW_QUIC_SERVICE_PORT", &port_str)
-            .current_dir(&probe_dir);
+            .current_dir(&example_dir);
         command
     });
 
@@ -218,23 +218,23 @@ fn quic_remote_service_probe_round_trip_succeeds() {
 
     let mut client = Command::new(&client_binary)
         .env("HEW_QUIC_SERVICE_PORT", &port_str)
-        .current_dir(&probe_dir)
+        .current_dir(&example_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn client process");
     let client_output =
-        wait_for_child(&mut client, PROBE_TIMEOUT).unwrap_or_else(|error| panic!("{error}"));
+        wait_for_child(&mut client, EXAMPLE_TIMEOUT).unwrap_or_else(|error| panic!("{error}"));
     assert!(
         client_output.status.success(),
-        "client probe failed\n{}",
+        "client example failed\n{}",
         describe_output(&client_output),
     );
 
-    let server_output = server.wait_with_timeout(PROBE_TIMEOUT);
+    let server_output = server.wait_with_timeout(EXAMPLE_TIMEOUT);
     assert!(
         server_output.status.success(),
-        "server probe failed\n{}",
+        "server example failed\n{}",
         describe_output(&server_output),
     );
 

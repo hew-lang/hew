@@ -4940,7 +4940,7 @@ mod tests {
         hew_sched_shutdown();
     }
 
-    // ── Sonnet 4.6 repair regressions ────────────────────────────────────
+    // ── Nested activation regressions ────────────────────────────────────
 
     /// Regression: a nested `activate_actor_wasm` call (e.g. from ask/await
     /// inside a dispatch handler) must NOT erase the outer actor's pending

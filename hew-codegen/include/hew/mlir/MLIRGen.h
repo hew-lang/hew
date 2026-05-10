@@ -794,8 +794,13 @@ private:
   std::unordered_set<std::string> generatedActorBodies;
 
   // ── Supervisor names → child actor types ─────────────────────
-  // Maps supervisor name → ordered list of child actor type names
+  // Maps supervisor name → ordered list of child type names (ALL children,
+  // including nested supervisors). Used for "is this a supervisor?" checks.
   std::unordered_map<std::string, std::vector<std::string>> supervisorChildren;
+  // Maps supervisor name → ordered list of (child_name, child_actor_type),
+  // actor-children ONLY (nested supervisors excluded). Index N here corresponds
+  // to the actor-only index used by hew_supervisor_get_child_wait / supervisor_child.
+  std::unordered_map<std::string, std::vector<std::string>> supervisorActorOnlyChildren;
   // Maps supervisor name → ordered list of (child_name, child_actor_type)
   std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>>
       supervisorChildNames;

@@ -382,13 +382,20 @@ mlir::Value MLIRGen::generateFieldAccessExpr(const ast::ExprFieldAccess &fa) {
         auto scnIt = supervisorChildNames.find(avIt->second);
         if (scnIt != supervisorChildNames.end()) {
           const auto &childNameTypes = scnIt->second;
+          // Track separate indices: actor-only (for get_child_wait) and
+          // supervisor-only (for get_child_supervisor). The runtime stores
+          // actor children and supervisor children in separate lists, so each
+          // must be addressed by its own zero-based position in its list.
+          size_t actorIdx = 0;
+          size_t supervisorIdx = 0;
           for (size_t i = 0; i < childNameTypes.size(); ++i) {
+            bool isSupervisorChild = supervisorChildren.count(childNameTypes[i].second) > 0;
             if (childNameTypes[i].first == fieldName) {
               auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
               auto i32Type = builder.getI32Type();
-              auto idxVal = createIntConstant(builder, location, i32Type, static_cast<int64_t>(i));
-              bool childIsSupervisor = supervisorChildren.count(childNameTypes[i].second) > 0;
-              if (childIsSupervisor) {
+              if (isSupervisorChild) {
+                auto idxVal = createIntConstant(builder, location, i32Type,
+                                                static_cast<int64_t>(supervisorIdx));
                 return hew::RuntimeCallOp::create(
                            builder, location, mlir::TypeRange{ptrType},
                            mlir::SymbolRefAttr::get(&context,
@@ -396,6 +403,8 @@ mlir::Value MLIRGen::generateFieldAccessExpr(const ast::ExprFieldAccess &fa) {
                            mlir::ValueRange{operandVal, idxVal})
                     .getResult();
               }
+              auto idxVal =
+                  createIntConstant(builder, location, i32Type, static_cast<int64_t>(actorIdx));
               auto timeoutVal =
                   mlir::arith::ConstantIntOp::create(builder, location, builder.getI32Type(), 5000);
               return hew::RuntimeCallOp::create(
@@ -404,6 +413,10 @@ mlir::Value MLIRGen::generateFieldAccessExpr(const ast::ExprFieldAccess &fa) {
                          mlir::ValueRange{operandVal, idxVal, timeoutVal})
                   .getResult();
             }
+            if (isSupervisorChild)
+              ++supervisorIdx;
+            else
+              ++actorIdx;
           }
         }
       }

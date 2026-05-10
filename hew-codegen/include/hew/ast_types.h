@@ -1111,8 +1111,14 @@ struct LoweringFactEntry {
 /// Populated from `tco.call_type_args` in the Rust type checker and serialized
 /// alongside the AST. C++ codegen uses this side table to look up the resolved
 /// type arguments for generic free-function calls without re-running inference.
-/// Schema version 9+; older payloads omit the `call_type_args` key and
-/// the reader throws (fail-closed via `mapReq`), since schema version is exact-matched.
+///
+/// The program-level `call_type_args` key is read with `mapReq` (required,
+/// fail-closed on missing key). Payload compatibility is enforced by the
+/// schema version exact-match check that runs before any field is read, so
+/// mismatched payloads are rejected before reaching this reader.
+/// Within each entry, the `type_args` array is read with `mapGet` (optional,
+/// defaults to empty); the Rust side mirrors this with `#[serde(default)]`
+/// on the `type_args` field.
 struct CallTypeArgsEntry {
   uint64_t start = 0;
   uint64_t end = 0;

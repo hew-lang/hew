@@ -131,9 +131,13 @@ pub struct LoweringFactEntry {
 /// resolved them through unification. C++ codegen uses this side table to
 /// monomorphize generic free-function calls without re-running inference.
 ///
-/// `#[serde(default)]` ensures payloads predating schema version 9 (which
-/// lacked this key) are gracefully skipped at the Rust deserialization layer.
-/// The C++ reader mirrors this with `mapGet`.
+/// The program-level `call_type_args` key is required in both the Rust and C++
+/// readers: the C++ reader uses `mapReq`, which throws on a missing key, and
+/// schema version is exact-matched before any field is read, so mismatched
+/// payloads are rejected by the version check before reaching this field.
+/// The `#[serde(default)]` below is on the `type_args` *field* within each
+/// entry (protecting against entries serialized without that field), not on the
+/// struct or the program-level key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallTypeArgsEntry {
     /// Byte offset of the call expression start.

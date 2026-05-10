@@ -4006,6 +4006,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 /// the receiver is not a known module/struct name.
 std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMethodCall &mc,
                                                              const ast::ExprIdentifier &ident,
+                                                             const ast::Span &exprSpan,
                                                              mlir::Location location) {
   const auto &methodName = mc.method;
 
@@ -4292,6 +4293,41 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
     std::string mangledFunc = mangleName(modulePath, "", methodName);
     auto callee = module.lookupSymbol<mlir::func::FuncOp>(mangledFunc);
     if (!callee) {
+      // Cross-module generic free-function call: when the lookup misses but
+      // the called name is a known generic, consult the checker-built side
+      // table (`callTypeArgsMap`) for the inferred type arguments and
+      // monomorphize on demand. The lookup-miss above is expected for
+      // generics because Pass 1k records generic templates in
+      // `genericFunctions` (keyed by bare name) without emitting a FuncOp;
+      // monomorphized symbols only materialize via `specializeGenericFunction`.
+      //
+      // Fail closed when the side table has no entry for this call site.
+      // Silent fall-through here would surface as a misleading "undefined
+      // function" error for what is in fact a missing checker side-table
+      // entry — exactly the kind of contract violation
+      // `checker-codegen-pattern-contract` warns against.
+      if (auto genIt = genericFunctions.find(methodName); genIt != genericFunctions.end()) {
+        const auto *tysEntry = callTypeArgsOf(exprSpan);
+        if (!tysEntry) {
+          ++errorCount_;
+          emitError(location)
+              << "cross-module generic call '" << ident.name << "." << methodName
+              << "' has no recorded type arguments (checker side-table missing entry "
+                 "for span ["
+              << exprSpan.start << ".." << exprSpan.end << "]); cannot monomorphize";
+          return nullptr;
+        }
+        // Slice 1b.0 contract assertion: side-table entry was located but the
+        // monomorphization wiring is intentionally not yet emitted; the
+        // follow-up commit replaces this branch with the real
+        // `specializeGenericFunction` call.
+        ++errorCount_;
+        emitError(location) << "cross-module generic monomorphization not yet implemented for '"
+                            << ident.name << "." << methodName
+                            << "' (side-table entry present with " << tysEntry->type_args.size()
+                            << " type args)";
+        return nullptr;
+      }
       ++errorCount_;
       emitError(location) << "undefined function '" << ident.name << "." << methodName
                           << "' (mangled: " << mangledFunc << ")";
@@ -4719,7 +4755,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
 
   // Module-qualified calls (math.exp, random.seed, log.info, etc.)
   if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-    if (auto result = generateModuleMethodCall(mc, *ident, location))
+    if (auto result = generateModuleMethodCall(mc, *ident, exprSpan, location))
       return *result;
   }
 

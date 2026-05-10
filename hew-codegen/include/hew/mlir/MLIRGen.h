@@ -280,6 +280,7 @@ private:
   mlir::Value generateMethodCall(const ast::ExprMethodCall &expr, const ast::Span &exprSpan);
   std::optional<mlir::Value> generateModuleMethodCall(const ast::ExprMethodCall &mc,
                                                       const ast::ExprIdentifier &ident,
+                                                      const ast::Span &exprSpan,
                                                       mlir::Location location);
   std::optional<mlir::Value> generateHandleMethodCall(const ast::ExprMethodCall &mc,
                                                       const ast::Span &exprSpan,

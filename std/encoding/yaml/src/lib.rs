@@ -20,8 +20,14 @@ use std::os::raw::c_char;
 
 /// Reject YAML inputs larger than 1 MiB before parsing to avoid memory abuse.
 const YAML_PARSE_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
-/// Reject YAML inputs declaring more than 32 anchors before parsing.
-const YAML_PARSE_ANCHOR_LIMIT: usize = 32;
+/// Reject YAML inputs declaring more than 200 anchors before parsing.
+///
+/// 32 was too low: a YAML config with 33+ URL values containing `&param=val`
+/// query-string fragments, or plain scalars like `AT&T`, triggered false
+/// positives. The alias guard (`YAML_PARSE_ALIAS_LIMIT` = 1024) is the
+/// primary billion-laughs defence; this constant guards the anchor fan-out
+/// surface only.
+const YAML_PARSE_ANCHOR_LIMIT: usize = 200;
 /// Reject YAML inputs referencing more than 1024 aliases before parsing.
 const YAML_PARSE_ALIAS_LIMIT: usize = 1024;
 
@@ -79,17 +85,31 @@ fn validate_yaml_input_limits(input: &str) -> Result<(), String> {
     let mut idx = 0usize;
     let mut in_single_quote = false;
     let mut in_double_quote = false;
+    // Set when the scanner is inside a YAML line comment (`# …`). Reset on
+    // every `\n`. Note: `\r` before `\n` on CRLF inputs leaves `in_comment`
+    // true for one extra byte, but `\r` is not a name byte so the `b'&'` arm
+    // cannot fire on it — no action needed.
+    let mut in_comment = false;
 
     while idx < bytes.len() {
         match bytes[idx] {
-            b'\'' if !in_double_quote => {
+            b'\n' => {
+                // End of line resets comment state.
+                in_comment = false;
+            }
+            b'#' if !in_single_quote && !in_double_quote && !in_comment => {
+                // Start of a YAML line comment. Anchor/alias tokens in
+                // comments are semantically inert; skip them.
+                in_comment = true;
+            }
+            b'\'' if !in_double_quote && !in_comment => {
                 if in_single_quote && bytes.get(idx + 1) == Some(&b'\'') {
                     idx += 2;
                     continue;
                 }
                 in_single_quote = !in_single_quote;
             }
-            b'"' if !in_single_quote => {
+            b'"' if !in_single_quote && !in_comment => {
                 in_double_quote = !in_double_quote;
             }
             b'\\' if in_double_quote => {
@@ -99,6 +119,7 @@ fn validate_yaml_input_limits(input: &str) -> Result<(), String> {
             b'&' | b'*'
                 if !in_single_quote
                     && !in_double_quote
+                    && !in_comment
                     && bytes
                         .get(idx + 1)
                         .is_some_and(|next| is_yaml_anchor_alias_name_byte(*next)) =>

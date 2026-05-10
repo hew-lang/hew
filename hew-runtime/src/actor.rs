@@ -2156,21 +2156,24 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
 ///   must remain valid for the entire lifetime of the actor — it is stored
 ///   in the actor struct and invoked during teardown without further
 ///   lifetime checks.
-/// - This setter has a null guard (unlike [`hew_actor_set_terminate`]) because
-///   codegen emits an unconditional call immediately after spawn, and spawn
-///   returns null on allocation failure. The guard prevents an FFI call on a
-///   null pointer in that error path.
+/// - This setter has a null guard (unlike [`hew_actor_set_terminate`]).
+///   Codegen wraps the `hew_actor_set_state_drop` call in an explicit null
+///   check (`scf::IfOp` in `ActorSpawnOpLowering`, `codegen.cpp`) so that an
+///   OOM spawn (which returns null) skips the FFI call entirely. This runtime
+///   guard is a second layer of defence-in-depth for the same OOM path.
+///   `hew_actor_set_terminate` has no equivalent at either layer — its codegen
+///   emit site is unconditional and this function has no runtime null check.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_state_drop(
     actor: *mut HewActor,
     state_drop_fn: unsafe extern "C" fn(*mut c_void),
 ) {
     // Spawn paths return null on allocation failure (see hew_actor_spawn /
-    // hew_actor_spawn_opts). Codegen emits an unconditional setter call
-    // immediately after spawn. The null guard here is the defence-in-depth
-    // that covers this OOM path; hew_actor_set_terminate has no equivalent
-    // guard because its codegen emit site wraps the call in an explicit
-    // `if (result != null)` check instead.
+    // hew_actor_spawn_opts). The codegen null-guard in ActorSpawnOpLowering
+    // (scf::IfOp before the hew_actor_set_state_drop call) already skips this
+    // function on OOM. This cabi_guard is defence-in-depth. The terminate path
+    // has neither guard: its codegen call is unconditional and
+    // hew_actor_set_terminate has no runtime null check.
     cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &mut *actor };

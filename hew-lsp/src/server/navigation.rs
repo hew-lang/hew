@@ -622,10 +622,26 @@ pub(super) fn build_reference_locations(
     } else {
         // The name is not a top-level definition in this file.  It may be a
         // stdlib builtin (e.g. `println`) that is always in scope without an
-        // explicit import.  Walk the whole workspace to collect occurrences.
-        let workspace_locs =
-            collect_workspace_references(uri, &name, include_declaration, documents);
-        locations.extend(workspace_locs);
+        // explicit import.  Walk the whole workspace to collect occurrences —
+        // but only when the name is not locally bound or parameter-scoped.
+        // Locals and params are fully handled by collect_local_reference_locations
+        // above; workspace scan must not contaminate them with same-named tokens
+        // from other files.
+        let is_local_or_param = hew_analysis::definition::find_local_binding_definition(
+            &doc.source,
+            &doc.parse_result,
+            &name,
+            offset,
+        )
+        .is_some()
+            || hew_analysis::definition::find_param_definition(&doc.parse_result, &name, offset)
+                .is_some();
+
+        if !is_local_or_param {
+            let workspace_locs =
+                collect_workspace_references(uri, &name, include_declaration, documents);
+            locations.extend(workspace_locs);
+        }
     }
 
     sort_and_dedup_locations(&mut locations);
@@ -1861,6 +1877,95 @@ mod tests {
         assert!(
             has_cross_file,
             "expected at least one cross-file location, got: {uris_found:?}"
+        );
+    }
+
+    // ── local/param isolation tests (real workspace, not fake URI) ────────────
+
+    #[test]
+    fn references_local_variable_not_contaminated_by_workspace() {
+        // Two files each define a local `x`.  References on `x` in a.hew must
+        // return only locations inside a.hew — the workspace scan must not
+        // bleed into b.hew.
+        let a_src = "fn a() -> i32 { let x = 1; x }\n";
+        let b_src = "fn b() -> i32 { let x = 2; x }\n";
+        let builtins_src = "pub fn println(value: dyn Display) {}\n";
+
+        let (root, uris) = make_temp_workspace(&[
+            ("std/builtins.hew", builtins_src),
+            ("a.hew", a_src),
+            ("b.hew", b_src),
+        ]);
+        let a_uri = &uris[1];
+        let b_uri = &uris[2];
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(a_uri.clone(), make_doc(a_src));
+        documents.insert(b_uri.clone(), make_doc(b_src));
+
+        // offset of the `x` usage (after the binding) in a_src
+        let offset = a_src.rfind('x').expect("x usage in a_src");
+        let a_doc = documents.get(a_uri).expect("a doc");
+
+        let locations = build_reference_locations(a_uri, &a_doc, offset, true, &documents);
+
+        drop(a_doc);
+        std::fs::remove_dir_all(&root).ok();
+
+        // Every returned location must be inside a.hew — none in b.hew.
+        for loc in &locations {
+            assert!(
+                loc.uri == *a_uri,
+                "expected only a.hew locations, got: {}",
+                loc.uri
+            );
+        }
+        assert!(
+            !locations.is_empty(),
+            "expected at least the declaration + usage of x in a.hew"
+        );
+    }
+
+    #[test]
+    fn references_param_not_contaminated_by_workspace() {
+        // Two files each have a parameter named `x`.  References on the param
+        // usage in a.hew must not include b.hew locations.
+        let a_src = "fn a(x: i32) -> i32 { x }\n";
+        let b_src = "fn b(x: i32) -> i32 { x }\n";
+        let builtins_src = "pub fn println(value: dyn Display) {}\n";
+
+        let (root, uris) = make_temp_workspace(&[
+            ("std/builtins.hew", builtins_src),
+            ("a.hew", a_src),
+            ("b.hew", b_src),
+        ]);
+        let a_uri = &uris[1];
+        let b_uri = &uris[2];
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(a_uri.clone(), make_doc(a_src));
+        documents.insert(b_uri.clone(), make_doc(b_src));
+
+        // offset of the `x` usage (body) in a_src
+        let offset = a_src.rfind('x').expect("x usage in a_src");
+        let a_doc = documents.get(a_uri).expect("a doc");
+
+        let locations = build_reference_locations(a_uri, &a_doc, offset, true, &documents);
+
+        drop(a_doc);
+        std::fs::remove_dir_all(&root).ok();
+
+        // Every returned location must be inside a.hew — none in b.hew.
+        for loc in &locations {
+            assert!(
+                loc.uri == *a_uri,
+                "expected only a.hew locations, got: {}",
+                loc.uri
+            );
+        }
+        assert!(
+            !locations.is_empty(),
+            "expected at least the param declaration + usage of x in a.hew"
         );
     }
 

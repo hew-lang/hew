@@ -203,8 +203,11 @@ impl ModuleGraph {
                         .map(|(m, _)| m.clone())
                         .chain(std::iter::once(id.clone()))
                         .collect();
-                    let import_spans: Vec<Span> =
-                        stack[start..].iter().map(|(_, sp)| sp.clone()).collect();
+                    let import_spans: Vec<Span> = stack[start + 1..]
+                        .iter()
+                        .map(|(_, sp)| sp.clone())
+                        .chain(std::iter::once(entry_span.clone()))
+                        .collect();
                     return Err(CycleError {
                         cycle,
                         import_spans,
@@ -420,6 +423,24 @@ mod tests {
         assert!(
             has_real_span,
             "cycle error should carry import spans: {err}"
+        );
+        // The dummy root-entry span (0..0) must never appear in import_spans.
+        assert!(
+            !err.import_spans.iter().any(|s| s.start == 0 && s.end == 0),
+            "dummy 0..0 span must not appear in import_spans: {:?}",
+            err.import_spans
+        );
+        // Both fixture edge spans must be present. Order is DFS-dependent
+        // (HashMap iteration is non-deterministic), so use contains, not index.
+        assert!(
+            err.import_spans.contains(&(10..20)),
+            "a→b import span 10..20 must appear in import_spans: {:?}",
+            err.import_spans
+        );
+        assert!(
+            err.import_spans.contains(&(30..40)),
+            "b→a import span 30..40 must appear in import_spans: {:?}",
+            err.import_spans
         );
     }
 

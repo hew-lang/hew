@@ -4317,21 +4317,47 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
               << exprSpan.start << ".." << exprSpan.end << "]); cannot monomorphize";
           return nullptr;
         }
-        // Slice 1b.0 contract assertion: side-table entry was located but the
-        // monomorphization wiring is intentionally not yet emitted; the
-        // follow-up commit replaces this branch with the real
-        // `specializeGenericFunction` call.
+        // Resolve each side-table type argument to its mangled name. The
+        // checker hands these to us as Spanned<TypeExpr> with synthetic zero
+        // spans; resolveTypeArgMangledName is span-independent and reused
+        // verbatim. Composite type arguments (Option<T>, Result<T,E>, …)
+        // cannot be mangled to a plain string and are rejected the same way
+        // the intra-module path at MLIRGenExpr.cpp:963 rejects them.
+        std::vector<std::string> typeArgNames;
+        typeArgNames.reserve(tysEntry->type_args.size());
+        for (const auto &ta : tysEntry->type_args) {
+          auto resolved = resolveTypeArgMangledName(ta.value);
+          if (!resolved) {
+            ++errorCount_;
+            emitError(location) << "cross-module generic call '" << ident.name << "." << methodName
+                                << "': composite type arguments (Option<T>, Result<T,E>, tuples, "
+                                   "slices, …) are not supported as type parameters";
+            return nullptr;
+          }
+          typeArgNames.push_back(std::move(*resolved));
+        }
+        // Switch currentModulePath to the defining module so the specialised
+        // symbol mangles into the *defining* module's namespace (matching the
+        // lookup key used at every cross-module call site) and any nested
+        // calls in the body resolve relative to that module. The save/restore
+        // mirror at MLIRGen.cpp:3287-3289 + 3336 is the established pattern;
+        // every early return below restores currentModulePath before
+        // returning so it is never left mutated. (LESSONS row
+        // `cleanup-all-exits`.)
+        auto savedModPath = currentModulePath;
+        currentModulePath = modulePath;
+        auto specialized = specializeGenericFunction(methodName, typeArgNames);
+        currentModulePath = savedModPath;
+        if (!specialized)
+          return nullptr; // specializeGenericFunction has already bumped errorCount_
+        callee = specialized;
+        // Fall through to the existing CallOp emission below.
+      } else {
         ++errorCount_;
-        emitError(location) << "cross-module generic monomorphization not yet implemented for '"
-                            << ident.name << "." << methodName
-                            << "' (side-table entry present with " << tysEntry->type_args.size()
-                            << " type args)";
+        emitError(location) << "undefined function '" << ident.name << "." << methodName
+                            << "' (mangled: " << mangledFunc << ")";
         return nullptr;
       }
-      ++errorCount_;
-      emitError(location) << "undefined function '" << ident.name << "." << methodName
-                          << "' (mangled: " << mangledFunc << ")";
-      return nullptr;
     }
 
     llvm::SmallVector<mlir::Value, 4> args;

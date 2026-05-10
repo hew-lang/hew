@@ -546,13 +546,33 @@ unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
 ///
 /// `actor` must be valid, quiescent, and no longer tracked in `LIVE_ACTORS`.
 unsafe fn finalize_quiescent_actor_cleanup(actor: *mut HewActor, state: i32) {
+    // SAFETY: caller guarantees `actor` is quiescent and not dispatching.
+    unsafe { finalize_quiescent_actor_cleanup_with_options(actor, state, false) };
+}
+
+/// Same as [`finalize_quiescent_actor_cleanup`], but the caller may suppress
+/// the codegen-emitted `state_drop_fn` invocation.
+///
+/// `suppress_state_drop = true` is used by supervisor restart paths
+/// (`ONE_FOR_ALL` / `REST_FOR_ONE`) when freeing a non-crashed sibling whose
+/// state is about to be reused by the next spawn. See the rationale in
+/// [`free_actor_resources_with_options`].
+///
+/// # Safety
+///
+/// `actor` must be valid, quiescent, and no longer tracked in `LIVE_ACTORS`.
+unsafe fn finalize_quiescent_actor_cleanup_with_options(
+    actor: *mut HewActor,
+    state: i32,
+    suppress_state_drop: bool,
+) {
     if state != HewActorState::Crashed as i32 {
         // SAFETY: caller guarantees the actor is quiescent and not dispatching.
         unsafe { call_terminate_fn(actor) };
     }
 
     // SAFETY: caller guarantees the actor remains valid and is no longer dispatching.
-    unsafe { free_actor_resources(actor) };
+    unsafe { free_actor_resources_with_options(actor, suppress_state_drop) };
 }
 
 /// Free all remaining tracked actors. Called during scheduler shutdown
@@ -604,17 +624,39 @@ pub(crate) unsafe fn cleanup_all_actors() {
     }
 }
 
-/// Free an actor's resources without untracking.
+/// Free an actor's resources without untracking, optionally suppressing the
+/// codegen-emitted `state_drop_fn` invocation.
 ///
-/// This is the internal implementation shared by [`hew_actor_free`] and
-/// [`cleanup_all_actors`].
+/// `suppress_state_drop = true` is the supervisor-restart path. The runtime
+/// byte-copies `spec.init_state` into every spawned actor's `state` /
+/// `init_state` slots, which means owned-field pointers (Vec.ptr, String.ptr,
+/// IO handles) are aliased between the supervisor's `spec.init_state` and
+/// every actor instance ever spawned from that spec. Running `state_drop_fn`
+/// on a non-crashed sibling that is about to be replaced via
+/// `restart_child_from_spec` would free those field pointers, leaving the
+/// supervisor's `spec.init_state` byte-aliasing dangling pointers. The next
+/// restart byte-copies that dangling spec into a fresh actor and dereferences
+/// it on the next teardown — a use-after-free.
+///
+/// State-drop must not regress the existing leak-not-UAF invariant: prior to
+/// the state-drop slot landing, non-crashed teardowns leaked the field
+/// allocations rather than freeing them, so the supervisor's spec aliases
+/// stayed valid (just leaked) until final teardown. The supervisor still
+/// frees `spec.init_state` exactly once during `hew_supervisor_stop`, where
+/// no further restart can observe the dangling bytes.
+///
+/// This narrows the regression window to non-crashed restarts. The deeper
+/// latent issue — user mutation `self.x = newHeap` already leaves a dangling
+/// pointer in `spec.init_state` via drop-on-assign — predates state-drop and
+/// requires a semantic clone of `init_state` to fix; that is out of scope
+/// here.
 ///
 /// # Safety
 ///
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn free_actor_resources(actor: *mut HewActor) {
+unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state_drop: bool) {
     #[cfg(feature = "profiler")]
     // SAFETY: `actor` is valid.
     unsafe {
@@ -693,7 +735,7 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     //    by independent `libc::malloc` + `ptr::copy_nonoverlapping` from
     //    the caller's spec bytes at registration time.
     let actor_is_crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
-    if !actor_is_crashed {
+    if !actor_is_crashed && !suppress_state_drop {
         if let Some(state_drop_fn) = a.state_drop_fn {
             if !a.state.is_null() {
                 // SAFETY: `a.state` is the live state allocation;
@@ -733,12 +775,14 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
 #[cfg(target_arch = "wasm32")]
-unsafe fn free_actor_resources(actor: *mut HewActor) {
+unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state_drop: bool) {
     // SAFETY: target_arch = wasm32 shares the same invariants as the test helper.
-    unsafe { free_actor_resources_wasm(actor) };
+    unsafe { free_actor_resources_wasm_with_options(actor, suppress_state_drop) };
 }
 
-/// Free an actor's resources using the WASM cleanup path.
+/// Free an actor's resources using the WASM cleanup path.  Always runs
+/// `state_drop_fn` on non-crashed actors (the standard teardown path).
+/// Test-only entry point preserved for unit tests under `cfg(test)`.
 ///
 /// # Safety
 ///
@@ -746,6 +790,25 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 /// currently being dispatched.
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
+    // SAFETY: caller forwards the same invariants the inner requires.
+    unsafe { free_actor_resources_wasm_with_options(actor, false) };
+}
+
+/// Free an actor's resources using the WASM cleanup path, with the option to
+/// suppress `state_drop_fn` (supervisor-restart paths).  See
+/// [`free_actor_resources_with_options`] (native) for the alias-chain
+/// rationale; the WASM and native `HewActor` layouts are byte-identical
+/// (offset assertions in `scheduler_wasm.rs`).
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer to a live `HewActor` that is not
+/// currently being dispatched.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) unsafe fn free_actor_resources_wasm_with_options(
+    actor: *mut HewActor,
+    suppress_state_drop: bool,
+) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -756,13 +819,15 @@ pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
     // `scheduler_wasm.rs`) and the same `a.init_state` aliasing as the
     // native path, so state-drop runs on `a.state` only — running it on
     // `a.init_state` would double-free every owned field. See the SAFETY
-    // block in the native `free_actor_resources` for the full rationale.
+    // block in the native `free_actor_resources_with_options` for the full
+    // rationale, including why `suppress_state_drop` is required on
+    // supervisor-restart paths.
     //
     // Crashed actors are skipped here too: same rationale as the native
     // path. Structural cleanup below still runs unconditionally so the
     // allocation, arena, mailbox, and HewActor box are always released.
     let actor_is_crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
-    if !actor_is_crashed {
+    if !actor_is_crashed && !suppress_state_drop {
         if let Some(state_drop_fn) = a.state_drop_fn {
             if !a.state.is_null() {
                 // SAFETY: `a.state` is the live state allocation;
@@ -1611,6 +1676,32 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
+    // SAFETY: caller forwards the same invariants the inner requires.
+    unsafe { hew_actor_free_inner(actor, false) }
+}
+
+/// Free an actor and all associated resources, suppressing the codegen-emitted
+/// `state_drop_fn` invocation on the live state.
+///
+/// Used by supervisor restart paths (`ONE_FOR_ALL` / `REST_FOR_ONE`) for
+/// non-crashed siblings whose state is about to be reused by the next spawn.
+/// See [`free_actor_resources_with_options`] for the alias-chain rationale.
+///
+/// # Safety
+///
+/// - `actor` must have been returned by a spawn function.
+/// - The actor must not be used after this call.
+/// - Caller (the supervisor) guarantees the actor's `state` field allocations
+///   are still owned by the supervisor's `spec.init_state` byte-aliasing and
+///   will be freed exactly once during `hew_supervisor_stop`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn hew_actor_free_for_restart(actor: *mut HewActor) -> c_int {
+    // SAFETY: caller forwards the same invariants the inner requires.
+    unsafe { hew_actor_free_inner(actor, true) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) -> c_int {
     if actor.is_null() {
         crate::set_last_error("hew_actor_free: null actor pointer");
         return -1;
@@ -1662,7 +1753,7 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     }
 
     // SAFETY: actor is quiescent, no longer tracked, and not being dispatched.
-    unsafe { finalize_quiescent_actor_cleanup(actor, state) };
+    unsafe { finalize_quiescent_actor_cleanup_with_options(actor, state, suppress_state_drop) };
     0
 }
 
@@ -5630,6 +5721,61 @@ mod tests {
             CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
             1,
             "state-drop callback must fire exactly once on a Stopped actor"
+        );
+    }
+
+    #[test]
+    fn hew_actor_free_for_restart_skips_state_drop_on_stopped_sibling() {
+        // Supervisor restart paths (ONE_FOR_ALL / REST_FOR_ONE) free
+        // non-crashed siblings before re-spawning them from
+        // `spec.init_state`. The runtime byte-copies `spec.init_state` into
+        // every actor's `state` and `init_state` slots, so the field
+        // pointers (Vec.ptr, String.ptr, IO handles) inside `spec.init_state`
+        // are byte-aliased by every spawned actor. Running `state_drop_fn`
+        // on a stopped sibling would free those field pointers, leaving
+        // `spec.init_state` byte-aliasing dangling pointers; the next
+        // restart byte-copies that dangling spec into the new actor and
+        // dereferences it on the next teardown — a use-after-free.
+        //
+        // This test pins the contract: `hew_actor_free_for_restart` MUST
+        // NOT invoke the codegen-emitted `state_drop_fn` on a non-crashed
+        // (Stopped/Idle) actor, even when that callback is registered.
+        //
+        // Companion to `free_actor_resources_runs_state_drop_on_stopped_actor`,
+        // which pins the inverse: the regular `hew_actor_free` entry point
+        // MUST run the callback on a Stopped actor.
+        let _guard = crate::runtime_test_guard();
+        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+        // SAFETY: malloc returns a valid 8-byte allocation or null.
+        let src = unsafe { libc::malloc(8) };
+        assert!(!src.is_null());
+        // SAFETY: spawn deep-copies the bytes; src is freed below.
+        let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn copied the bytes; release the source allocation.
+        unsafe { libc::free(src) };
+
+        // SAFETY: actor is valid and not being dispatched.
+        unsafe {
+            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            let a = &*actor;
+            assert!(!a.state.is_null(), "spawn must produce a non-null state");
+            a.actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+
+            // Drive the supervisor-restart-aware free path. Even though the
+            // actor is Stopped (not Crashed), the state-drop callback must
+            // be suppressed because the supervisor's `spec.init_state`
+            // still byte-aliases this actor's field pointers.
+            let rc = hew_actor_free_for_restart(actor);
+            assert_eq!(rc, 0);
+        }
+
+        assert_eq!(
+            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            0,
+            "state-drop callback must NOT run on a Stopped sibling freed via the restart-aware path"
         );
     }
 

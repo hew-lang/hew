@@ -1052,7 +1052,12 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                     .spawn(move || {
                         for d in deferred {
                             // SAFETY: actor was stopped; supervisor no longer references it.
-                            unsafe { actor::hew_actor_free(d.0) };
+                            // Use the restart-aware free path so the codegen
+                            // state-drop does NOT run on field pointers that
+                            // are still byte-aliased by `spec.init_state` and
+                            // about to be reused by `restart_child_from_spec`.
+                            // See `actor::free_actor_resources_with_options`.
+                            unsafe { actor::hew_actor_free_for_restart(d.0) };
                         }
                     })
                     .is_err()
@@ -1082,7 +1087,12 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                     .spawn(move || {
                         for d in deferred {
                             // SAFETY: actor was stopped; supervisor no longer references it.
-                            unsafe { actor::hew_actor_free(d.0) };
+                            // Use the restart-aware free path so the codegen
+                            // state-drop does NOT run on field pointers that
+                            // are still byte-aliased by `spec.init_state` and
+                            // about to be reused by `restart_child_from_spec`.
+                            // See `actor::free_actor_resources_with_options`.
+                            unsafe { actor::hew_actor_free_for_restart(d.0) };
                         }
                     })
                     .is_err()

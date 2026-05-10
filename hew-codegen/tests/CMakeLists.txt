@@ -674,6 +674,12 @@ add_e2e_reject_test(generator_yield_field_of_drop     e2e_generators  reject_yie
 # must be rejected at codegen to prevent a double-drop (callee drops the field,
 # then caller's scope-exit drops the owning struct).
 add_e2e_reject_test(print_field_display_reject        e2e_negative    print_field_display_reject                "print of field-aliased Display value is not yet supported")
+# Wrapper-expression shapes: if, block, and match expressions whose value
+# position is a field access must also be rejected — they route through the
+# same exprYieldsFieldAccess scanner used by the generic call-path guard.
+add_e2e_reject_test(print_if_field_display_reject     e2e_negative    print_if_field_display_reject             "print of field-aliased Display value is not yet supported")
+add_e2e_reject_test(print_block_field_display_reject  e2e_negative    print_block_field_display_reject          "print of field-aliased Display value is not yet supported")
+add_e2e_reject_test(print_match_field_display_reject  e2e_negative    print_match_field_display_reject          "print of field-aliased Display value is not yet supported")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

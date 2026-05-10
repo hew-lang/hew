@@ -91,6 +91,19 @@ pub(crate) fn goto_definition(
         .into_iter()
         .map(|(import, _)| import)
         .collect();
+
+    // Compute before dropping doc: locals and params are fully resolved in the
+    // current file; the stdlib workspace fallback must not redirect goto-def on
+    // them to an unrelated top-level definition in another file.
+    let is_local_or_param = hew_analysis::definition::find_local_binding_definition(
+        &doc.source,
+        &doc.parse_result,
+        &word,
+        offset,
+    )
+    .is_some()
+        || hew_analysis::definition::find_param_definition(&doc.parse_result, &word, offset)
+            .is_some();
     drop(doc);
 
     if let Some((target_uri, range)) =
@@ -118,13 +131,17 @@ pub(crate) fn goto_definition(
     // Fallback: search the whole workspace for a definition.  This catches
     // stdlib builtins (e.g. `println`) that are always in scope but never
     // explicitly imported, so the import-gated paths above will not find them.
-    if let Some((target_uri, range)) =
-        find_stdlib_definition(uri, &imports, &word, &server.documents)
-    {
-        return Some(GotoDefinitionResponse::Scalar(Location {
-            uri: target_uri,
-            range,
-        }));
+    // Skip for locally-bound names and params: those are resolved in-file and
+    // must not jump to an unrelated top-level definition in another file.
+    if !is_local_or_param {
+        if let Some((target_uri, range)) =
+            find_stdlib_definition(uri, &imports, &word, &server.documents)
+        {
+            return Some(GotoDefinitionResponse::Scalar(Location {
+                uri: target_uri,
+                range,
+            }));
+        }
     }
 
     None

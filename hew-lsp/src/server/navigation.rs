@@ -1999,4 +1999,72 @@ mod tests {
             .iter()
             .any(|conflict| { conflict.kind == hew_analysis::RenameConflictKind::ShadowsImport }));
     }
+
+    // ── goto-def guard test (real workspace) ──────────────────────────────────
+
+    #[test]
+    fn goto_def_local_not_jumping_to_unrelated_top_level() {
+        // main.hew has a local `x`; other.hew has a top-level `pub fn x()`.
+        // Without the guard, find_stdlib_definition returns the other.hew
+        // location.  The goto_definition handler must suppress that via the
+        // is_local_or_param check before calling find_stdlib_definition.
+        //
+        // This test verifies both legs of the guard:
+        //   (a) find_local_binding_definition returns Some for `x` → guard fires.
+        //   (b) find_stdlib_definition *would* find `x` in other.hew → confirming
+        //       the contamination is real and the guard is necessary.
+        let main_src = "fn main() { let x = 1; x }\n";
+        let other_src = "pub fn x() -> i32 { 99 }\n";
+        let builtins_src = "pub fn println(value: dyn Display) {}\n";
+
+        let (root, uris) = make_temp_workspace(&[
+            ("std/builtins.hew", builtins_src),
+            ("main.hew", main_src),
+            ("other.hew", other_src),
+        ]);
+        let main_uri = &uris[1];
+        let other_uri = &uris[2];
+
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(main_uri.clone(), make_doc(main_src));
+        documents.insert(other_uri.clone(), make_doc(other_src));
+
+        // offset of the `x` usage (after `let x = 1;`) in main_src
+        let offset = main_src.rfind('x').expect("x usage in main_src");
+        let main_doc = documents.get(main_uri).expect("main doc");
+
+        // (a) Guard fires: x is locally bound at this offset.
+        let local_def = hew_analysis::definition::find_local_binding_definition(
+            &main_doc.source,
+            &main_doc.parse_result,
+            "x",
+            offset,
+        );
+        let param_def =
+            hew_analysis::definition::find_param_definition(&main_doc.parse_result, "x", offset);
+        let is_local_or_param = local_def.is_some() || param_def.is_some();
+        drop(main_doc);
+
+        // (b) Contamination is real: without the guard, find_stdlib_definition
+        //     would resolve `x` to other.hew.
+        let imports: Vec<hew_parser::ast::ImportDecl> = Vec::new();
+        let stdlib_result = find_stdlib_definition(main_uri, &imports, "x", &documents);
+
+        std::fs::remove_dir_all(&root).ok();
+
+        assert!(
+            is_local_or_param,
+            "expected x to be recognised as a local binding at its usage offset"
+        );
+        let (contamination_uri, _) = stdlib_result
+            .expect("find_stdlib_definition should find pub fn x() in other.hew without the guard");
+        assert!(
+            contamination_uri.path().contains("other"),
+            "expected contamination target to be other.hew, got: {contamination_uri}"
+        );
+        // The goto_definition handler's guard (is_local_or_param == true) would
+        // skip calling find_stdlib_definition, so no location in other.hew
+        // is returned.  This test documents that both the guard and the
+        // contamination path are real.
+    }
 }

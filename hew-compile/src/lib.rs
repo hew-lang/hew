@@ -1579,10 +1579,19 @@ fn finish_compile(
         .tco
         .as_ref()
         .map_or_else(Vec::new, |tco| build_lowering_fact_entries(&program, tco));
-    let call_type_args = typecheck_result
-        .tco
-        .as_ref()
-        .map_or_else(Vec::new, |tco| build_call_type_args_entries(&program, tco));
+    let (call_type_args, call_type_args_errors) = typecheck_result.tco.as_ref().map_or_else(
+        || (Vec::new(), Vec::new()),
+        |tco| build_call_type_args_entries(&program, tco),
+    );
+    for error in &call_type_args_errors {
+        let fatal = inferred_type_serialization_diagnostic_is_fatal(error);
+        diagnostics.push(FrontendDiagnostic::inferred(
+            Some(source.clone()),
+            Some(source_label.clone()),
+            error.clone(),
+            fatal,
+        ));
+    }
     let metadata = build_codegen_metadata(
         &typecheck_result.module_registry,
         typecheck_result.tco.as_ref(),

@@ -1113,18 +1113,27 @@ pub fn build_method_call_receiver_kind_entries(
 ///
 /// Walks the program AST using the shared [`SideTableVisitor`] to emit entries in
 /// source order, one per generic free-function call site where the checker inferred
-/// type arguments.  Entries whose type arguments cannot be converted to
-/// [`Spanned<TypeExpr>`] (e.g. unresolved type variables) are skipped rather than
-/// panicking — callers that need diagnostics should check the enriched type map
-/// instead.
+/// type arguments.
+///
+/// Returns a pair `(entries, errors)`.  Call sites where any type argument fails to
+/// convert to [`Spanned<TypeExpr>`] (e.g. unresolved type variables, error-sentinel
+/// types) produce no entry and instead append a [`TypeExprConversionError`] to the
+/// errors vec.  Callers **must** treat these errors as diagnostics — silently
+/// ignoring them loses information about unconvertible type arguments.
 #[must_use]
 pub fn build_call_type_args_entries(
     program: &hew_parser::ast::Program,
     tco: &TypeCheckOutput,
-) -> Vec<CallTypeArgsEntry> {
+) -> (
+    Vec<CallTypeArgsEntry>,
+    Vec<crate::enrich::TypeExprConversionError>,
+) {
     struct Visitor;
     impl SideTableVisitor for Visitor {
-        type Entry = CallTypeArgsEntry;
+        type Entry = (
+            CallTypeArgsEntry,
+            Vec<crate::enrich::TypeExprConversionError>,
+        );
         fn on_assign_stmt(
             &self,
             _target: &Spanned<Expr>,
@@ -1149,20 +1158,39 @@ pub fn build_call_type_args_entries(
             let Some(type_args) = tco.call_type_args.get(&key) else {
                 return;
             };
-            // Convert each Ty to Spanned<TypeExpr>; skip this call site if any
-            // type arg fails to convert (e.g. unresolved type variable).
-            let converted: Option<Vec<Spanned<TypeExpr>>> = type_args
-                .iter()
-                .map(|ty| crate::enrich::ty_to_type_expr(ty).ok())
-                .collect();
-            let Some(converted_args) = converted else {
-                return;
-            };
-            out.push(CallTypeArgsEntry {
-                start: key.start,
-                end: key.end,
-                type_args: converted_args,
-            });
+            let mut errors = Vec::new();
+            let mut converted_args = Vec::new();
+            let mut any_failed = false;
+            for ty in type_args {
+                match crate::enrich::ty_to_type_expr(ty) {
+                    Ok(te) => converted_args.push(te),
+                    Err(e) => {
+                        errors.push(e);
+                        any_failed = true;
+                    }
+                }
+            }
+            if any_failed {
+                // Emit errors but do not emit an entry for this call site — a
+                // partial entry would be worse than none.
+                out.push((
+                    CallTypeArgsEntry {
+                        start: key.start,
+                        end: key.end,
+                        type_args: Vec::new(),
+                    },
+                    errors,
+                ));
+            } else {
+                out.push((
+                    CallTypeArgsEntry {
+                        start: key.start,
+                        end: key.end,
+                        type_args: converted_args,
+                    },
+                    Vec::new(),
+                ));
+            }
         }
         fn if_stmt_order(&self) -> IfStmtOrder {
             IfStmtOrder::ElseBeforeThen
@@ -1171,7 +1199,16 @@ pub fn build_call_type_args_entries(
             ModuleGraphMode::ModulesOrProgramItems
         }
     }
-    walk_program(program, tco, &Visitor)
+    let combined = walk_program(program, tco, &Visitor);
+    let mut entries = Vec::with_capacity(combined.len());
+    let mut errors = Vec::new();
+    for (entry, errs) in combined {
+        if errs.is_empty() {
+            entries.push(entry);
+        }
+        errors.extend(errs);
+    }
+    (entries, errors)
 }
 
 #[cfg(test)]
@@ -1918,11 +1955,98 @@ mod tests {
             )]),
         };
 
-        let entries = build_call_type_args_entries(&program, &tco);
+        let (entries, errors) = build_call_type_args_entries(&program, &tco);
         assert_eq!(entries.len(), 1, "expected one type-args entry");
         assert_eq!(entries[0].start, call_span.start);
         assert_eq!(entries[0].end, call_span.end);
         assert_eq!(entries[0].type_args.len(), 2, "expected two type arguments");
+        assert!(
+            errors.is_empty(),
+            "expected no conversion errors for convertible types"
+        );
+    }
+
+    /// Verify that `build_call_type_args_entries` fails closed when a type argument
+    /// cannot be converted: the call site is excluded from `entries` and a
+    /// [`TypeExprConversionError`] is present in the errors vec.
+    #[test]
+    fn build_call_type_args_entries_fails_closed_on_conversion_error() {
+        use hew_types::check::{SpanKey, TypeCheckOutput};
+        use hew_types::Ty;
+        use std::collections::HashSet;
+
+        let call_span = 10usize..30usize;
+
+        let program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "caller".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((
+                            Expr::Call {
+                                function: Box::new((Expr::Identifier("identity".into()), 10..18)),
+                                type_args: None,
+                                args: vec![],
+                                is_tail_call: false,
+                            },
+                            call_span.clone(),
+                        ))),
+                    },
+                    doc_comment: None,
+                    decl_span: 0..0,
+                    fn_span: 0..0,
+                }),
+                0..40,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let tco = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            handle_bearing_structs: HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            // Ty::Error is an error-sentinel type that cannot be converted.
+            call_type_args: HashMap::from([(
+                SpanKey {
+                    start: call_span.start,
+                    end: call_span.end,
+                },
+                vec![Ty::Error],
+            )]),
+        };
+
+        let (entries, errors) = build_call_type_args_entries(&program, &tco);
+        assert!(
+            entries.is_empty(),
+            "call site with unconvertible type arg must not produce an entry"
+        );
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one conversion error for Ty::Error"
+        );
     }
 
     #[test]

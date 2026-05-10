@@ -69,9 +69,12 @@ fn main() {
     let b = root.w2;
     await a.ping();
     await b.ping();
+    // Crash workers one at a time and wait for each restart before proceeding.
+    // This keeps crash-message ordering deterministic for the expected output.
     a.crash_now();
+    sleep_ms(300);
     b.crash_now();
-    sleep_ms(500);
+    sleep_ms(300);
     let a2 = root.w1;
     let b2 = root.w2;
     await a2.ping();

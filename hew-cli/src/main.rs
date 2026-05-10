@@ -380,11 +380,11 @@ fn cmd_check(a: &args::CheckArgs) {
                 eprintln!("{input}: OK");
             }
             Err(failure) => {
-                // On failure print whatever hints the checker produced before
-                // bailing, then surface the diagnostics + error message in the
-                // shape `compile::compile` would have produced. The existing
-                // `render_frontend_diagnostics` rendering path is reused so
-                // the user sees identical output to the no-flag path.
+                // Surface the source-span diagnostics and error message in the
+                // same shape as the no-flag path: span-attributed lines first,
+                // then the failure summary. `render_frontend_diagnostics` is
+                // reused so the user sees identical output to the no-flag path.
+                compile::render_frontend_diagnostics(&failure.diagnostics);
                 eprintln!("{}", failure.message);
                 std::process::exit(1);
             }

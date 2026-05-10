@@ -154,7 +154,7 @@ impl fmt::Display for CompileFromSourceError {
     }
 }
 
-fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
+pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
     for diagnostic in diagnostics {
         match &diagnostic.kind {
             FrontendDiagnosticKind::Message(message) => {

@@ -246,7 +246,12 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
     };
     match std::fs::read(rust_path) {
         Ok(data) => {
+            // Clear both the runtime LAST_ERROR and the cabi LAST_ERROR/LAST_ERRNO
+            // so that stale messages and errno from a prior failed call are not
+            // visible to callers that inspect hew_last_error() or
+            // hew_stream_last_error() after a successful read.
             crate::hew_clear_error();
+            let _ = hew_cabi::sink::take_last_error();
             // SAFETY: data slice is valid.
             unsafe { crate::vec::u8_to_hwvec(&data) }
         }
@@ -258,21 +263,6 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
             unsafe { crate::vec::hew_vec_new() }
         }
     }
-}
-
-/// Return a malloc-owned copy of the current thread's last file I/O error.
-// WASM-TODO(#1451): confirm whether file-I/O error reporting needs a dedicated wasm-visible contract.
-#[no_mangle]
-pub extern "C" fn hew_file_last_error() -> *mut c_char {
-    let ptr = crate::hew_last_error();
-    if ptr.is_null() {
-        return str_to_malloc("");
-    }
-    // SAFETY: `ptr` comes from thread-local last-error storage and remains valid for this read.
-    let Some(text) = (unsafe { crate::util::cstr_to_str(&ptr, "hew_file_last_error") }) else {
-        return str_to_malloc("");
-    };
-    str_to_malloc(text)
 }
 
 /// Write a `bytes` `HewVec` to a file, overwriting any existing content.
@@ -912,10 +902,119 @@ mod tests {
             assert_eq!(crate::vec::hew_vec_len(v), 0);
             crate::vec::hew_vec_free(v);
 
-            let error = read_and_free(hew_file_last_error());
+            // hew_last_error() returns a thread-local pointer; copy it before
+            // any subsequent call could overwrite it.
+            let err_ptr = crate::hew_last_error();
+            assert!(!err_ptr.is_null());
+            let error = CStr::from_ptr(err_ptr).to_str().unwrap_or("").to_owned();
             assert!(!error.is_empty());
             assert!(error.contains("hew_file_read_bytes"));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_bytes_success_clears_errno_after_prior_failure() {
+        // Regression: hew_file_read_bytes must clear LAST_ERRNO on its success
+        // path so that a stale errno from a prior failed read cannot be mistaken
+        // for an error by callers that inspect hew_stream_last_errno() after a
+        // successful read (e.g. try_read_bytes in std/fs.hew).
+        use hew_cabi::sink::hew_stream_last_errno;
+
+        let dir = test_dir("bytes_errno_clear");
+
+        // Step 1: trigger a failure so LAST_ERRNO is set to a non-zero value.
+        let ghost_path = dir.join("does_not_exist.bin");
+        let ghost = cpath(&ghost_path);
+        // SAFETY: ghost is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
+        unsafe {
+            let v = hew_file_read_bytes(ghost.as_ptr());
+            crate::vec::hew_vec_free(v);
+        }
+        // LAST_ERRNO should now be non-zero (ENOENT / 2 on POSIX systems).
+        // We deliberately do NOT read it here — reading would clear it via
+        // take_last_errno(), defeating the regression test.
+
+        // Step 2: write a real file and read it successfully.
+        let real_path = dir.join("real.bin");
+        let content: &[u8] = &[1, 2, 3];
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        std::fs::write(&real_path, content).expect("write test file");
+        let real = cpath(&real_path);
+        // SAFETY: real is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
+        unsafe {
+            let v = hew_file_read_bytes(real.as_ptr());
+            assert!(!v.is_null());
+            assert_eq!(crate::vec::hew_vec_len(v), 3);
+            crate::vec::hew_vec_free(v);
+        }
+
+        // Step 3: LAST_ERRNO must be 0 — the success path cleared it.
+        // If the fix is missing, this will be non-zero (ENOENT from step 1).
+        let errno_after_success = hew_stream_last_errno();
+        assert_eq!(
+            errno_after_success, 0,
+            "errno must be cleared on successful hew_file_read_bytes; \
+             stale non-zero errno would cause try_read_bytes to return a false Err"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_bytes_success_clears_both_last_errors_after_prior_failure() {
+        // Regression: hew_file_read_bytes on its success path must clear both
+        // the runtime LAST_ERROR (hew_last_error) and the cabi LAST_ERROR
+        // (hew_stream_last_error). Previously, set_last_error_with_errno("", 0)
+        // left the cabi LAST_ERROR as Some("") — causing hew_stream_last_error()
+        // to return a malloc'd empty string instead of NULL, violating the
+        // "NULL if none" contract. And hew_last_error() retained the stale
+        // message because the runtime LAST_ERROR was not cleared at all.
+        use hew_cabi::sink::hew_stream_last_error;
+
+        let dir = test_dir("bytes_both_errors_clear");
+
+        // Step 1: trigger a failure so both LAST_ERROR stores are populated.
+        let ghost_path = dir.join("does_not_exist.bin");
+        let ghost = cpath(&ghost_path);
+        // SAFETY: ghost is a valid NUL-terminated C string.
+        unsafe {
+            let v = hew_file_read_bytes(ghost.as_ptr());
+            crate::vec::hew_vec_free(v);
+        }
+
+        // Step 2: write a real file and read it successfully.
+        let real_path = dir.join("real.bin");
+        let content: &[u8] = &[7, 8, 9];
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        std::fs::write(&real_path, content).expect("write test file");
+        let real = cpath(&real_path);
+        // SAFETY: real is a valid NUL-terminated C string.
+        unsafe {
+            let v = hew_file_read_bytes(real.as_ptr());
+            assert!(!v.is_null());
+            assert_eq!(crate::vec::hew_vec_len(v), 3);
+            crate::vec::hew_vec_free(v);
+        }
+
+        // Step 3a: hew_stream_last_error() must return NULL (cabi LAST_ERROR
+        // must be None, not Some("")).
+        let stream_err_ptr = hew_stream_last_error();
+        assert!(
+            stream_err_ptr.is_null(),
+            "hew_stream_last_error() must return NULL after successful read; \
+             got non-null pointer (cabi LAST_ERROR was Some(\"\") instead of None)"
+        );
+        // No free needed — we asserted it is null.
+
+        // Step 3b: hew_last_error() must return null (runtime LAST_ERROR cleared).
+        let runtime_err_ptr = crate::hew_last_error();
+        assert!(
+            runtime_err_ptr.is_null(),
+            "hew_last_error() must return null after successful read; \
+             stale runtime LAST_ERROR was not cleared on the success path"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

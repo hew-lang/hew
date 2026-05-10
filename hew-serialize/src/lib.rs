@@ -15,6 +15,3 @@ pub use msgpack::{
     ExprTypeEntry, LoweringFactEntry, MethodCallReceiverKindData, MethodCallReceiverKindEntry,
 };
 pub use wire::serialize_wire_decl_via_plan;
-
-#[cfg(feature = "legacy-wire-msgpack")]
-pub use wire::serialize_wire_decl_legacy;

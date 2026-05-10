@@ -3,8 +3,8 @@
 //! Read, write, and query files on the local file system.
 //!
 //! For path-only helpers prefer `std::path`, and for stdin/stdout prefer
-//! `std::io`. This module keeps `fs.exists` and `fs.read_line` as
-//! compatibility surfaces for existing code.
+//! `std::io`. This module keeps `fs.exists` as a compatibility surface
+//! for existing code.
 //!
 //! # Error Handling
 //!
@@ -169,23 +169,6 @@ fn missing_path_error(target: String) -> IoError {
     }
 }
 
-/// Classify a raw error message string from hew_file_read_bytes into an IoError.
-///
-/// `hew_file_read_bytes` sets the error as `"hew_file_read_bytes: <OS message>"`.
-/// The OS message for permission denied always contains "permission denied" (Rust
-/// formats std::io::Error this way on Linux and macOS).  When no message keyword
-/// matches, fall back to a stat-based path-existence check so NotFound is still
-/// preferred over Other for missing files.
-fn classify_file_error(error: String, file_path: String) -> IoError {
-    if error.contains("permission denied") {
-        IoError::PermissionDenied(0)
-    } else if error.contains("already exists") {
-        IoError::AlreadyExists(0)
-    } else {
-        missing_path_error(file_path)
-    }
-}
-
 fn mkdir_error(target: String) -> IoError {
     if exists(target) {
         IoError::AlreadyExists(0)
@@ -330,24 +313,6 @@ pub fn size(path: String) -> int {
     }
 }
 
-/// Read a single line from standard input.
-///
-/// Blocks until the user presses Enter.
-/// Prefer `io.read_line()` in new code; `fs.read_line()` remains as a
-/// compatibility alias.
-///
-/// # Examples
-///
-/// ```
-/// import std::io;
-///
-/// print("Name: ");
-/// let name = io.read_line();
-/// ```
-pub fn read_line() -> String {
-    io.read_line()
-}
-
 /// Read the raw bytes of a file into a `bytes` value.
 ///
 /// Returns an empty `bytes` buffer on error.
@@ -371,17 +336,9 @@ pub fn read_bytes(path: String) -> bytes {
 pub fn try_read_bytes(file_path: String) -> Result<bytes, IoError> {
     unsafe {
         let data = hew_file_read_bytes(file_path);
-        let error = hew_file_last_error();
-        if error != "" {
-            // SHIM: WHY — hew_file_read_bytes has no errno channel (uses set_last_error,
-            //   not set_last_error_with_errno), so io_error_from_errno cannot be used.
-            //   classify_file_error inspects the OS message string to recover PermissionDenied
-            //   and AlreadyExists; for other failures it falls back to path-existence stat.
-            // WHEN — remove when hew-runtime wires errno through hew_file_read_bytes
-            //   via set_last_error_with_errno (tracked in issue #1241-follow-up).
-            // WHAT — switch to: let errno = hew_stream_last_errno(); Err(io_error_from_errno(errno))
-            //   once the runtime-side counterpart lands.
-            Err(classify_file_error(error, file_path))
+        let errno = hew_stream_last_errno();
+        if errno != 0 {
+            Err(io_error_from_errno(errno))
         } else {
             Ok(clone_bytes(data))
         }
@@ -553,7 +510,6 @@ extern "C" {
     fn hew_file_delete(path: String) -> i32;
     fn hew_file_size(path: String) -> i64;
     fn hew_file_read_bytes(path: String) -> bytes;
-    fn hew_file_last_error() -> String;
     fn hew_file_write_bytes(path: String, data: bytes) -> i32;
     fn hew_fs_mkdir(path: String) -> i32;
     fn hew_fs_mkdir_all(path: String) -> i32;

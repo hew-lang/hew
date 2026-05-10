@@ -650,75 +650,65 @@ impl Checker {
                 if let Some(aliased) = self.type_aliases.get(name) {
                     return aliased.clone();
                 }
-                // Handle special named types
-                match name.as_str() {
-                    // Deprecated alias: ActorStream<Y> is now Stream<Y>
-                    "ActorStream" if args.len() == 1 => Ty::stream(args[0].clone()),
-                    _ => {
-                        // Qualify unqualified handle types only when imported and unambiguous.
-                        let handle_matches: Vec<&String> = self
-                            .known_types
-                            .iter()
-                            .filter(|qualified| {
-                                qualified
-                                    .rsplit_once('.')
-                                    .is_some_and(|(_, short)| short == name)
-                            })
-                            .collect();
-                        let resolved_name = if self.type_defs.contains_key(name) {
-                            name.clone()
-                        } else {
-                            match handle_matches.as_slice() {
-                                [qualified] => (*qualified).clone(),
-                                _ => name.clone(),
-                            }
-                        };
-                        // Mark module as used when type name is module-qualified
-                        if let Some((module, _)) = resolved_name.split_once('.') {
-                            self.used_modules.borrow_mut().insert(ImportKey::new(
-                                self.current_module.clone(),
-                                module.to_string(),
-                            ));
+                // Qualify unqualified handle types only when imported and unambiguous.
+                let handle_matches: Vec<&String> = self
+                    .known_types
+                    .iter()
+                    .filter(|qualified| {
+                        qualified
+                            .rsplit_once('.')
+                            .is_some_and(|(_, short)| short == name)
+                    })
+                    .collect();
+                let resolved_name = if self.type_defs.contains_key(name) {
+                    name.clone()
+                } else {
+                    match handle_matches.as_slice() {
+                        [qualified] => (*qualified).clone(),
+                        _ => name.clone(),
+                    }
+                };
+                // Mark module as used when type name is module-qualified
+                if let Some((module, _)) = resolved_name.split_once('.') {
+                    self.used_modules.borrow_mut().insert(ImportKey::new(
+                        self.current_module.clone(),
+                        module.to_string(),
+                    ));
+                }
+                // Auto-parameterise channel handle types: bare `Sender`
+                // becomes `Sender<T>` with a fresh type variable so that
+                // function parameters accept any channel element type.
+                // Skip when the unqualified name is locally defined as
+                // non-generic — standalone `hew check` on channel.hew
+                // defines `type Sender {}` with zero type params, and
+                // injecting fresh vars causes unification failures between
+                // extern decls and impl bodies.  Only bare (unqualified)
+                // names can match `local_type_defs`, so qualified imports
+                // like `channel.Sender` are still auto-parameterised.
+                let locally_non_generic = self.local_type_defs.contains(resolved_name.as_str())
+                    && self
+                        .type_defs
+                        .get(resolved_name.as_str())
+                        .is_some_and(|td| td.type_params.is_empty());
+                let builtin_type = builtin_named_type(resolved_name.as_str());
+                let args = match builtin_type {
+                    Some(kind)
+                        if kind.is_channel_handle() && args.is_empty() && !locally_non_generic =>
+                    {
+                        vec![Ty::Var(TypeVar::fresh())]
+                    }
+                    _ => args,
+                };
+                if resolved_name == "Rc" {
+                    if let Some(type_args) = type_args.as_ref() {
+                        if let (Some(payload_ty), Some((_, payload_span))) =
+                            (args.first(), type_args.first())
+                        {
+                            self.validate_rc_payload_type(payload_ty, payload_span);
                         }
-                        // Auto-parameterise channel handle types: bare `Sender`
-                        // becomes `Sender<T>` with a fresh type variable so that
-                        // function parameters accept any channel element type.
-                        // Skip when the unqualified name is locally defined as
-                        // non-generic — standalone `hew check` on channel.hew
-                        // defines `type Sender {}` with zero type params, and
-                        // injecting fresh vars causes unification failures between
-                        // extern decls and impl bodies.  Only bare (unqualified)
-                        // names can match `local_type_defs`, so qualified imports
-                        // like `channel.Sender` are still auto-parameterised.
-                        let locally_non_generic =
-                            self.local_type_defs.contains(resolved_name.as_str())
-                                && self
-                                    .type_defs
-                                    .get(resolved_name.as_str())
-                                    .is_some_and(|td| td.type_params.is_empty());
-                        let builtin_type = builtin_named_type(resolved_name.as_str());
-                        let args = match builtin_type {
-                            Some(kind)
-                                if kind.is_channel_handle()
-                                    && args.is_empty()
-                                    && !locally_non_generic =>
-                            {
-                                vec![Ty::Var(TypeVar::fresh())]
-                            }
-                            _ => args,
-                        };
-                        if resolved_name == "Rc" {
-                            if let Some(type_args) = type_args.as_ref() {
-                                if let (Some(payload_ty), Some((_, payload_span))) =
-                                    (args.first(), type_args.first())
-                                {
-                                    self.validate_rc_payload_type(payload_ty, payload_span);
-                                }
-                            }
-                        }
-                        Ty::normalize_named(resolved_name, args)
                     }
                 }
+                Ty::normalize_named(resolved_name, args)
             }
             TypeExpr::Result { ok, err } => Ty::result(
                 self.resolve_type_expr_tracking_holes(ok, hole_vars),

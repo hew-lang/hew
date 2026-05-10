@@ -553,7 +553,6 @@ impl Ty {
                     | "Send"
                     | "Frozen"
                     | "Copy"
-                    | "ActorStream"
             )
     }
 

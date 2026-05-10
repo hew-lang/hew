@@ -131,8 +131,6 @@ inline std::string normalizeElemTypeName(const std::string &name) {
 using ResolveTypeAliasExprFn = llvm::function_ref<const ast::TypeExpr *(llvm::StringRef)>;
 
 inline llvm::StringRef canonicalResolvedTypeName(llvm::StringRef name) {
-  if (name == "ActorStream")
-    return "Stream";
   if (name == "stream.Stream")
     return "Stream";
   if (name == "stream.Sink")

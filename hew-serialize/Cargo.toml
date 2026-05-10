@@ -20,10 +20,3 @@ stacker.workspace = true
 rmp-serde.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-
-[features]
-# Keep the legacy hand-written WireDecl msgpack path compiled only when
-# explicitly requested. Default builds expose only
-# `serialize_wire_decl_via_plan`. Lane 7b stage 7 re-enables the legacy
-# path to run the 10,000-iteration random-corpus comparator against it.
-legacy-wire-msgpack = []

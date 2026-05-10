@@ -70,7 +70,7 @@ color brightblue "\<(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize|f32|f64)\>"
 color brightblue "\<(bool|char|string|bytes|void|never|duration)\>"
 
 # Types — generic / collection / concurrency
-color brightblue "\<(HashMap|HashSet|Vec|Option|Result|Ok|Err|Some|Box|Arc|Rc|Weak|Range|ActorStream)\>"
+color brightblue "\<(HashMap|HashSet|Vec|Option|Result|Ok|Err|Some|Box|Arc|Rc|Weak|Range)\>"
 color brightblue "\<(ActorRef|Stream|Sink|Task|Scope|Generator|AsyncGenerator)\>"
 
 # Traits

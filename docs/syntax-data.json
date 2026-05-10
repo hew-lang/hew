@@ -225,7 +225,7 @@
       "AsyncGenerator"
     ],
     "marker_traits": ["Send", "Frozen", "Copy", "Arc", "Rc", "Weak"],
-    "other": ["Range", "ActorStream"]
+    "other": ["Range"]
   },
   "string_prefixes": ["f", "r", "re", "b"],
   "comment_styles": {

@@ -1688,6 +1688,133 @@ copy_three: *release
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Anchor-limit false-positive regression tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_accepts_url_heavy_config_with_many_ampersands() {
+        // 40 mapping entries each with a URL containing `&param=val`.
+        // Each `&p` is counted as an anchor-like token by the pre-parser.
+        // With the old limit of 32 this would be rejected; with 200 it passes.
+        let mut yaml = String::new();
+        for i in 0..40 {
+            writeln!(
+                yaml,
+                "endpoint_{i}: https://api.example.com/v1?page={i}&limit=50"
+            )
+            .unwrap();
+        }
+        let val = parse(&yaml);
+        assert!(
+            !val.is_null(),
+            "valid URL-heavy YAML with 40 ampersands should not be rejected"
+        );
+
+        // SAFETY: val is a valid HewYamlValue pointer.
+        unsafe { hew_yaml_free(val) };
+
+        let err = get_parse_last_error();
+        assert!(err.is_empty(), "expected no error, got: {err}");
+    }
+
+    #[test]
+    fn parse_accepts_yaml_comment_with_ampersands() {
+        // Comment lines contain `&anchor_name` and `*alias_name` tokens.
+        // The pre-parser must not count tokens inside YAML comments.
+        let yaml = "\
+# &promo_code *discount_ref — marketing YAML, not a real anchor
+# company: AT&T # &partner *reseller_ref
+name: hew
+version: 1
+# Another comment: &foo *bar &baz *qux
+description: a language runtime
+";
+        let val = parse(yaml);
+        assert!(
+            !val.is_null(),
+            "YAML with anchor-like tokens only in comments should be accepted"
+        );
+
+        // SAFETY: val is a valid HewYamlValue pointer.
+        unsafe { hew_yaml_free(val) };
+
+        let err = get_parse_last_error();
+        assert!(err.is_empty(), "expected no error, got: {err}");
+    }
+
+    #[test]
+    fn parse_accepts_block_scalar_with_ampersands() {
+        // A literal block scalar (`|`) whose lines contain `&token`.
+        // The scanner does not yet skip block-scalar context structurally;
+        // these are counted. With 40 such tokens they stay under the new
+        // limit of 200 and the document is accepted.
+        //
+        // NOTE: a future `yaml-tokenizer-context-rewrite` lane can add true
+        // block-scalar skipping. For now this test documents that practical
+        // inputs (< 200 tokens) are accepted even without structural skipping.
+        let mut content = String::from("prose: |\n");
+        for i in 0..40 {
+            writeln!(content, "  line {i} has &token_here and some text").unwrap();
+        }
+        let val = parse(&content);
+        assert!(
+            !val.is_null(),
+            "YAML block scalar with 40 ampersand tokens (< 200 limit) should be accepted"
+        );
+
+        // SAFETY: val is a valid HewYamlValue pointer.
+        unsafe { hew_yaml_free(val) };
+
+        let err = get_parse_last_error();
+        assert!(err.is_empty(), "expected no error, got: {err}");
+    }
+
+    #[test]
+    fn parse_accepts_unquoted_att_style_scalar_repeats() {
+        // 60 mapping entries of the form `company_N: AT&T`.
+        // The `&T` byte pair satisfies the name-byte check so each is counted.
+        // 60 < 200 so the new limit accepts all of them.
+        let mut yaml = String::new();
+        for i in 0..60 {
+            writeln!(yaml, "company_{i}: AT&T").unwrap();
+        }
+        let val = parse(&yaml);
+        assert!(
+            !val.is_null(),
+            "60 unquoted AT&T entries should be accepted (60 < 200)"
+        );
+
+        // SAFETY: val is a valid HewYamlValue pointer.
+        unsafe { hew_yaml_free(val) };
+
+        let err = get_parse_last_error();
+        assert!(err.is_empty(), "expected no error, got: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_real_anchor_bomb_still_blocked() {
+        // Build a YAML document with 201 distinct anchors — one more than the
+        // revised YAML_PARSE_ANCHOR_LIMIT of 200. The pre-parse guard must
+        // still reject this before serde_yaml ever sees the input.
+        let mut yaml = String::new();
+        for i in 0..=200usize {
+            // Each entry is a valid YAML mapping key with an anchor.
+            writeln!(yaml, "key_{i}: &anchor_{i} value_{i}").unwrap();
+        }
+        let val = parse(&yaml);
+        assert!(
+            val.is_null(),
+            "YAML with 201 anchors must be rejected by the anchor-limit guard"
+        );
+
+        let err = get_parse_last_error();
+        assert!(
+            err.contains("anchor limit"),
+            "expected 'anchor limit' in error, got: {err}"
+        );
+    }
+
     #[test]
     fn get_bytes_invalid_base64_returns_null_and_sets_last_error() {
         clear_parse_last_error();

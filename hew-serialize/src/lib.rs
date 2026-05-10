@@ -14,7 +14,6 @@ pub use msgpack::{
     build_method_call_receiver_kind_entries, serialize_to_json, serialize_to_msgpack,
     ActorSendAliasingData, ActorSendAliasingEntry, ActorSendCopyReasonData, AssignTargetKindData,
     AssignTargetKindEntry, AssignTargetShapeEntry, CallTypeArgsEntry, ExprTypeEntry,
-    LoweringFactEntry,
-    MethodCallReceiverKindData, MethodCallReceiverKindEntry,
+    LoweringFactEntry, MethodCallReceiverKindData, MethodCallReceiverKindEntry,
 };
 pub use wire::serialize_wire_decl_via_plan;

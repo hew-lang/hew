@@ -35,8 +35,8 @@ mod util;
 
 pub use self::types::{
     ActorSendAliasing, ActorSendCopyReason, AllocationClass, AssignTargetKind, AssignTargetShape,
-    Checker, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint,
-    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    Checker, FnSig, MethodCallReceiverKind, MethodCallRewrite, SpanKey, StackHint, TypeCheckOutput,
+    TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,

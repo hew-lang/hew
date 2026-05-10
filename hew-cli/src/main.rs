@@ -415,7 +415,6 @@ fn cmd_check(a: &args::CheckArgs) {
         return;
     }
 
-
     match compile::compile(&input, None, true, &options) {
         Ok(_) => {
             eprintln!("{input}: OK");

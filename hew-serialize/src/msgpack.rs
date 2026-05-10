@@ -1294,6 +1294,8 @@ pub fn build_call_type_args_entries(
         errors.extend(errs);
     }
     (entries, errors)
+}
+
 /// Build the actor-send aliasing side table from the type-checker output.
 ///
 /// The producer ([`Checker::enforce_actor_boundary_send`]) records every
@@ -1358,6 +1360,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1373,6 +1376,7 @@ mod tests {
         let bytes = serialize_to_msgpack(
             program,
             expr_types,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1559,6 +1563,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1631,6 +1636,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1653,6 +1659,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1738,6 +1745,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -1756,6 +1764,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &parsed.program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1797,6 +1806,7 @@ mod tests {
                 },
                 consumes_receiver: false,
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -1969,6 +1979,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -2079,6 +2090,7 @@ mod tests {
                 vec![Ty::I32, Ty::String],
             )]),
             stack_hints: Vec::new(),
+            actor_send_aliasing: HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2162,6 +2174,7 @@ mod tests {
                 vec![Ty::Error],
             )]),
             stack_hints: Vec::new(),
+            actor_send_aliasing: HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2186,6 +2199,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -2249,6 +2263,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -2669,6 +2684,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -2718,6 +2734,7 @@ mod tests {
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
             actor_send_aliasing: HashMap::new(),
+            stack_hints: Vec::new(),
         }
     }
 
@@ -2756,6 +2773,7 @@ mod tests {
         };
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             entries.clone(),
@@ -2853,6 +2871,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             vec!["PatternWrapper".to_string(), "regexwrap.Outer".to_string()],
             HashMap::new(),
             vec![],
@@ -2870,6 +2889,7 @@ mod tests {
 
         let json = serialize_to_json(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -3267,6 +3287,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             shapes.clone(),
             vec![],
             vec![],
@@ -3329,6 +3350,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -3376,6 +3398,7 @@ mod tests {
                 },
                 consumes_receiver: false,
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -3433,6 +3456,7 @@ mod tests {
                 },
                 consumes_receiver: false,
             }],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -3498,6 +3522,7 @@ mod tests {
                 vec![],
                 vec![],
                 vec![],
+                vec![],
                 vec![AssignTargetKindEntry {
                     start: 1,
                     end: 5,
@@ -3543,6 +3568,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -3600,6 +3626,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -3680,6 +3707,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             HashMap::new(),
             vec![],
             None,
@@ -3733,6 +3761,7 @@ mod tests {
 
         let bytes = serialize_to_msgpack(
             &program,
+            vec![],
             vec![],
             vec![],
             vec![],

@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use rcgen::generate_simple_self_signed;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::runtime::Runtime;
 
 use crate::set_last_error;
@@ -196,7 +196,8 @@ pub(crate) fn load_pem_creds() -> Result<Option<TlsCreds>, String> {
     let cert_pem = std::fs::read(&cert_path).map_err(|e| format!("reading {cert_path}: {e}"))?;
     let key_pem = std::fs::read(&key_path).map_err(|e| format!("reading {key_path}: {e}"))?;
 
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &cert_pem[..])
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_pem)
+        .map(|cert| cert.map_err(|e| e.to_string()))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("parsing cert PEM: {e}"))?;
 
@@ -204,9 +205,8 @@ pub(crate) fn load_pem_creds() -> Result<Option<TlsCreds>, String> {
         return Err("no certificates found in PEM file".into());
     }
 
-    let key = rustls_pemfile::private_key(&mut &key_pem[..])
-        .map_err(|e| format!("parsing key PEM: {e}"))?
-        .ok_or("no private key found in PEM file")?;
+    let key =
+        PrivateKeyDer::from_pem_slice(&key_pem).map_err(|e| format!("parsing key PEM: {e}"))?;
 
     let cert_der = certs[0].to_vec();
 

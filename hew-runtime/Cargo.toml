@@ -26,7 +26,7 @@ quic = [
   "dep:rustls-webpki",
   "dep:rcgen",
   "dep:tokio",
-  "dep:rustls-pemfile",
+  "dep:rustls-pki-types",
 ]
 
 # Built-in profiler (dashboard, pprof export)
@@ -90,7 +90,7 @@ tokio = { version = "1", optional = true, default-features = false, features = [
   "sync",
   "macros",
 ] }
-rustls-pemfile = { version = "2", optional = true }
+rustls-pki-types = { version = "1", optional = true, features = ["std"] }
 
 [dev-dependencies]
 # For unit tests

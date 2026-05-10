@@ -15,7 +15,7 @@ crate-type = ["staticlib", "lib"]
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
 hew-runtime = { path = "../../../hew-runtime" }
-cron = "0.15"
+cron = "0.16"
 chrono = { version = "0.4", default-features = false, features = [
   "clock",
   "std",

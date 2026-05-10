@@ -15,7 +15,9 @@ crate-type = ["staticlib", "lib"]
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
 hew-runtime = { path = "../../../hew-runtime" }
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+jsonwebtoken = { version = "10", default-features = false, features = [
+  "aws_lc_rs",
+] }
 serde_json.workspace = true
 libc.workspace = true
 

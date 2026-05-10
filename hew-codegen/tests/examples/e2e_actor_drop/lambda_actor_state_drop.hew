@@ -32,7 +32,6 @@ fn main() {
         println(f"pong:{tok.id}");
     };
     a.send(Ping {  });
-    sleep_ms(50);
     await close(a);
     println("done");
 }

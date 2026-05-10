@@ -20,8 +20,14 @@ use std::os::raw::c_char;
 
 /// Reject YAML inputs larger than 1 MiB before parsing to avoid memory abuse.
 const YAML_PARSE_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
-/// Reject YAML inputs declaring more than 32 anchors before parsing.
-const YAML_PARSE_ANCHOR_LIMIT: usize = 32;
+/// Reject YAML inputs declaring more than 200 anchors before parsing.
+///
+/// 32 was too low: a YAML config with 33+ URL values containing `&param=val`
+/// query-string fragments, or plain scalars like `AT&T`, triggered false
+/// positives. The alias guard (`YAML_PARSE_ALIAS_LIMIT` = 1024) is the
+/// primary billion-laughs defence; this constant guards the anchor fan-out
+/// surface only.
+const YAML_PARSE_ANCHOR_LIMIT: usize = 200;
 /// Reject YAML inputs referencing more than 1024 aliases before parsing.
 const YAML_PARSE_ALIAS_LIMIT: usize = 1024;
 
@@ -79,17 +85,34 @@ fn validate_yaml_input_limits(input: &str) -> Result<(), String> {
     let mut idx = 0usize;
     let mut in_single_quote = false;
     let mut in_double_quote = false;
+    // Set when the scanner is inside a YAML line comment (`# …`). Reset on
+    // both LF (`\n`) and bare CR (`\r`). Bare CR is the line terminator for
+    // CR-only (old Mac) line endings. Without the CR reset, a `#` on a
+    // CR-terminated comment line leaves `in_comment` set for the remainder of
+    // the document, hiding all subsequent anchors and aliases from the guard.
+    // The `\r` byte of a CRLF pair is also harmless to reset on early — the
+    // following `\n` resets again, which is idempotent.
+    let mut in_comment = false;
 
     while idx < bytes.len() {
         match bytes[idx] {
-            b'\'' if !in_double_quote => {
+            b'\n' | b'\r' => {
+                // End of line (LF, bare CR, or CRLF CR byte) resets comment state.
+                in_comment = false;
+            }
+            b'#' if !in_single_quote && !in_double_quote && !in_comment => {
+                // Start of a YAML line comment. Anchor/alias tokens in
+                // comments are semantically inert; skip them.
+                in_comment = true;
+            }
+            b'\'' if !in_double_quote && !in_comment => {
                 if in_single_quote && bytes.get(idx + 1) == Some(&b'\'') {
                     idx += 2;
                     continue;
                 }
                 in_single_quote = !in_single_quote;
             }
-            b'"' if !in_single_quote => {
+            b'"' if !in_single_quote && !in_comment => {
                 in_double_quote = !in_double_quote;
             }
             b'\\' if in_double_quote => {
@@ -99,6 +122,7 @@ fn validate_yaml_input_limits(input: &str) -> Result<(), String> {
             b'&' | b'*'
                 if !in_single_quote
                     && !in_double_quote
+                    && !in_comment
                     && bytes
                         .get(idx + 1)
                         .is_some_and(|next| is_yaml_anchor_alias_name_byte(*next)) =>
@@ -1665,6 +1689,188 @@ copy_three: *release
             assert_eq!(s, "&not_anchor *not_alias");
             hew_yaml_free(val);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Anchor-limit false-positive regression tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_accepts_url_heavy_config_with_many_ampersands() {
+        // 40 mapping entries each with a URL containing `&param=val`.
+        // Each `&p` is counted as an anchor-like token by the pre-parser.
+        // With the old limit of 32 this would be rejected; with 200 it passes.
+        let mut yaml = String::new();
+        for i in 0..40 {
+            writeln!(
+                yaml,
+                "endpoint_{i}: https://api.example.com/v1?page={i}&limit=50"
+            )
+            .unwrap();
+        }
+        let val = parse(&yaml);
+        assert!(
+            !val.is_null(),
+            "valid URL-heavy YAML with 40 ampersands should not be rejected"
+        );
+
+        // SAFETY: val is a valid HewYamlValue pointer.
+        unsafe { hew_yaml_free(val) };
+
+        let err = get_parse_last_error();
+        assert!(err.is_empty(), "expected no error, got: {err}");
+    }
+
+    #[test]
+    fn parse_accepts_yaml_comment_with_ampersands() {
+        // Comment lines contain `&anchor_name` and `*alias_name` tokens.
+        // The pre-parser must not count tokens inside YAML comments.
+        let yaml = "\
+# &promo_code *discount_ref — marketing YAML, not a real anchor
+# company: AT&T # &partner *reseller_ref
+name: hew
+version: 1
+# Another comment: &foo *bar &baz *qux
+description: a language runtime
+";
+        let val = parse(yaml);
+        assert!(
+            !val.is_null(),
+            "YAML with anchor-like tokens only in comments should be accepted"
+        );
+
+        // SAFETY: val is a valid HewYamlValue pointer.
+        unsafe { hew_yaml_free(val) };
+
+        let err = get_parse_last_error();
+        assert!(err.is_empty(), "expected no error, got: {err}");
+    }
+
+    #[test]
+    fn parse_accepts_block_scalar_with_ampersands() {
+        // A literal block scalar (`|`) whose lines contain `&token`.
+        // The scanner does not yet skip block-scalar context structurally;
+        // these are counted. With 40 such tokens they stay under the new
+        // limit of 200 and the document is accepted.
+        //
+        // NOTE: a future `yaml-tokenizer-context-rewrite` lane can add true
+        // block-scalar skipping. For now this test documents that practical
+        // inputs (< 200 tokens) are accepted even without structural skipping.
+        let mut content = String::from("prose: |\n");
+        for i in 0..40 {
+            writeln!(content, "  line {i} has &token_here and some text").unwrap();
+        }
+        let val = parse(&content);
+        assert!(
+            !val.is_null(),
+            "YAML block scalar with 40 ampersand tokens (< 200 limit) should be accepted"
+        );
+
+        // SAFETY: val is a valid HewYamlValue pointer.
+        unsafe { hew_yaml_free(val) };
+
+        let err = get_parse_last_error();
+        assert!(err.is_empty(), "expected no error, got: {err}");
+    }
+
+    #[test]
+    fn parse_accepts_unquoted_att_style_scalar_repeats() {
+        // 60 mapping entries of the form `company_N: AT&T`.
+        // The `&T` byte pair satisfies the name-byte check so each is counted.
+        // 60 < 200 so the new limit accepts all of them.
+        let mut yaml = String::new();
+        for i in 0..60 {
+            writeln!(yaml, "company_{i}: AT&T").unwrap();
+        }
+        let val = parse(&yaml);
+        assert!(
+            !val.is_null(),
+            "60 unquoted AT&T entries should be accepted (60 < 200)"
+        );
+
+        // SAFETY: val is a valid HewYamlValue pointer.
+        unsafe { hew_yaml_free(val) };
+
+        let err = get_parse_last_error();
+        assert!(err.is_empty(), "expected no error, got: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_real_anchor_bomb_still_blocked() {
+        // Build a YAML document with 201 distinct anchors — one more than the
+        // revised YAML_PARSE_ANCHOR_LIMIT of 200. The pre-parse guard must
+        // still reject this before serde_yaml ever sees the input.
+        let mut yaml = String::new();
+        for i in 0..=200usize {
+            // Each entry is a valid YAML mapping key with an anchor.
+            writeln!(yaml, "key_{i}: &anchor_{i} value_{i}").unwrap();
+        }
+        let val = parse(&yaml);
+        assert!(
+            val.is_null(),
+            "YAML with 201 anchors must be rejected by the anchor-limit guard"
+        );
+
+        let err = get_parse_last_error();
+        assert!(
+            err.contains("anchor limit"),
+            "expected 'anchor limit' in error, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CR-only line-ending regression tests (security fix)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_cr_only_comment_cannot_hide_over_limit_anchors() {
+        // With CR-only line endings (`\r` without `\n`), a YAML comment `#…\r`
+        // must reset `in_comment` on the `\r` so that subsequent lines are
+        // scanned normally. Before the fix, `in_comment` was only reset on `\n`,
+        // leaving the scanner "inside a comment" for the rest of the document,
+        // which allowed any number of real `&anchor` tokens to bypass the guard.
+        //
+        // This test calls `validate_yaml_input_limits` directly to verify the
+        // byte-scanner behaviour regardless of how serde_yaml handles CR line
+        // endings.
+        let mut doc = String::from("# comment line\r");
+        for i in 0..=200usize {
+            // 201 real anchor tokens — one beyond YAML_PARSE_ANCHOR_LIMIT.
+            write!(doc, "key_{i}: &anchor_{i} value_{i}\r").unwrap();
+        }
+        let result = validate_yaml_input_limits(&doc);
+        assert!(
+            result.is_err(),
+            "CR-only comment line must not hide over-limit anchors from the guard"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("anchor limit"),
+            "expected 'anchor limit' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_cr_only_comment_cannot_hide_over_limit_aliases() {
+        // Mirrors the anchor test above for alias tokens (`*alias`). With the
+        // pre-fix scanner, a `#` comment on a CR-terminated line disables
+        // alias counting for the whole document — YAML_PARSE_ALIAS_LIMIT (1024)
+        // becomes bypassable with CR-only input.
+        let mut doc = String::from("# comment line\r");
+        for i in 0..=1024usize {
+            // 1025 alias tokens — one beyond YAML_PARSE_ALIAS_LIMIT.
+            write!(doc, "key_{i}: *alias_{i}\r").unwrap();
+        }
+        let result = validate_yaml_input_limits(&doc);
+        assert!(
+            result.is_err(),
+            "CR-only comment line must not hide over-limit aliases from the guard"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("alias limit"),
+            "expected 'alias limit' in error, got: {msg}"
+        );
     }
 
     #[test]

@@ -236,6 +236,7 @@ pub fn render_warning(
 /// `hew run`. The diagnostic code (`HEW-PERF-001`) and the `file:line:col`
 /// prefix are stable UX surface; the trailing message text is best-effort.
 pub fn print_stack_hints(source: &str, filename: &str, hints: &[hew_types::check::StackHint]) {
+    let palette = diagnostic_palette();
     for hint in hints {
         let (line, col) = offset_to_line_col(source, hint.span_key.start);
         let class_label = stack_hint_alloc_class_label(&hint.alloc_class);
@@ -247,7 +248,11 @@ pub fn print_stack_hints(source: &str, filename: &str, hints: &[hew_types::check
             hint.binding_name.as_str()
         };
         diag_println(&format!(
-            "{filename}:{line}:{col}: info[HEW-PERF-001]: binding `{name}` ({class_label}) could be stack-allocated"
+            "{bold}{filename}:{line}:{col}:{reset} {blue}info[HEW-PERF-001]{reset}{bold}: \
+             binding `{name}` ({class_label}) could be stack-allocated{reset}",
+            bold = palette.bold,
+            blue = palette.blue,
+            reset = palette.reset,
         ));
     }
 }

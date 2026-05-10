@@ -1615,7 +1615,6 @@ bool MLIRGen::actorBoundarySenderRetainsOwnership(mlir::Type valueType) const {
 std::optional<llvm::SmallVector<mlir::Value, 4>>
 MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location,
                                bool retainAllTemporaries) {
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   llvm::SmallVector<mlir::Value, 4> argVals;
   for (const auto &arg : args) {
     const auto &argSpanned = ast::callArgExpr(arg);

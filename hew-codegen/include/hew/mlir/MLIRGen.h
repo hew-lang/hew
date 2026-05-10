@@ -280,6 +280,7 @@ private:
   mlir::Value generateMethodCall(const ast::ExprMethodCall &expr, const ast::Span &exprSpan);
   std::optional<mlir::Value> generateModuleMethodCall(const ast::ExprMethodCall &mc,
                                                       const ast::ExprIdentifier &ident,
+                                                      const ast::Span &exprSpan,
                                                       mlir::Location location);
   std::optional<mlir::Value> generateHandleMethodCall(const ast::ExprMethodCall &mc,
                                                       const ast::Span &exprSpan,
@@ -1294,7 +1295,18 @@ private:
 
   // ── Generics monomorphization ──────────────────────────────────
   // Registry of generic (unspecialized) function declarations.
+  // Keyed by `genericFnKey(definingModulePath, fn->name)` so that two
+  // imported modules that each declare e.g. `fn identity<T>(x: T) -> T`
+  // do not collide on the bare name.  Lookups must use the same helper
+  // with the appropriate module path (typically `currentModulePath`,
+  // which the cross-module call site at `generateModuleMethodCall`
+  // sets to the *defining* module before calling
+  // `specializeGenericFunction`).
   std::unordered_map<std::string, const ast::FnDecl *> genericFunctions;
+  // Build a module-qualified key for the genericFunctions registry.
+  // Format: `seg1::seg2::baseName` (`::baseName` for top-level/no module).
+  static std::string genericFnKey(const std::vector<std::string> &modulePath,
+                                  const std::string &baseName);
   // Registry of let-bound generic lambda expressions keyed by binding name.
   // Populated when a let statement binds an ExprLambda with non-empty
   // type_params.  The lambda is specialized lazily when a call site with

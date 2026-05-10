@@ -1123,6 +1123,57 @@ pub fn build_method_call_receiver_kind_entries(
 /// types) produce no entry and instead append a [`TypeExprConversionError`] to the
 /// errors vec.  Callers **must** treat these errors as diagnostics — silently
 /// ignoring them loses information about unconvertible type arguments.
+/// Shared emitter for [`build_call_type_args_entries`].  Looks up the outer
+/// call span in `tco.call_type_args`, converts each inferred [`Ty`] to a
+/// parser [`TypeExpr`], and pushes either a populated entry or a sentinel
+/// entry paired with diagnostics when conversion fails.  The caller filters
+/// sentinel entries via the `errs.is_empty()` guard.
+fn emit_call_type_args_entry(
+    expr: &Spanned<Expr>,
+    tco: &TypeCheckOutput,
+    out: &mut Vec<(
+        CallTypeArgsEntry,
+        Vec<crate::enrich::TypeExprConversionError>,
+    )>,
+) {
+    let key = SpanKey::from(&expr.1);
+    let Some(type_args) = tco.call_type_args.get(&key) else {
+        return;
+    };
+    let mut errors = Vec::new();
+    let mut converted_args = Vec::new();
+    for ty in type_args {
+        match crate::enrich::ty_to_type_expr(ty) {
+            Ok(te) => converted_args.push(te),
+            Err(e) => errors.push(e),
+        }
+    }
+    if errors.is_empty() {
+        out.push((
+            CallTypeArgsEntry {
+                start: key.start,
+                end: key.end,
+                type_args: converted_args,
+            },
+            Vec::new(),
+        ));
+    } else {
+        // Push the errors paired with a sentinel entry so the caller can
+        // drain them via `errors.extend(errs)`.  The entry itself is
+        // discarded by the `if errs.is_empty()` filter in
+        // `build_call_type_args_entries` — a partial entry would be worse
+        // than none.
+        out.push((
+            CallTypeArgsEntry {
+                start: key.start,
+                end: key.end,
+                type_args: Vec::new(),
+            },
+            errors,
+        ));
+    }
+}
+
 #[must_use]
 pub fn build_call_type_args_entries(
     program: &hew_parser::ast::Program,
@@ -1146,10 +1197,17 @@ pub fn build_call_type_args_entries(
         }
         fn on_method_call_expr(
             &self,
-            _expr: &Spanned<Expr>,
-            _tco: &TypeCheckOutput,
-            _out: &mut Vec<Self::Entry>,
+            expr: &Spanned<Expr>,
+            tco: &TypeCheckOutput,
+            out: &mut Vec<Self::Entry>,
         ) {
+            // Module-qualified generic free-function calls reach codegen as
+            // `MethodCall` (e.g. `genericlib.identity(1)`), so the side table
+            // must surface their inferred type arguments under the same outer
+            // call span the codegen will look up. The checker keys
+            // `record_concrete_call_type_args` by that outer span for both
+            // `Call` and `MethodCall` paths.
+            emit_call_type_args_entry(expr, tco, out);
         }
         fn on_call_expr(
             &self,
@@ -1157,41 +1215,7 @@ pub fn build_call_type_args_entries(
             tco: &TypeCheckOutput,
             out: &mut Vec<Self::Entry>,
         ) {
-            let key = SpanKey::from(&expr.1);
-            let Some(type_args) = tco.call_type_args.get(&key) else {
-                return;
-            };
-            let mut errors = Vec::new();
-            let mut converted_args = Vec::new();
-            for ty in type_args {
-                match crate::enrich::ty_to_type_expr(ty) {
-                    Ok(te) => converted_args.push(te),
-                    Err(e) => errors.push(e),
-                }
-            }
-            if errors.is_empty() {
-                out.push((
-                    CallTypeArgsEntry {
-                        start: key.start,
-                        end: key.end,
-                        type_args: converted_args,
-                    },
-                    Vec::new(),
-                ));
-            } else {
-                // Push the errors paired with a sentinel entry so the caller
-                // can drain them via `errors.extend(errs)`. The entry itself is
-                // discarded by the `if errs.is_empty()` filter below — a
-                // partial entry would be worse than none.
-                out.push((
-                    CallTypeArgsEntry {
-                        start: key.start,
-                        end: key.end,
-                        type_args: Vec::new(),
-                    },
-                    errors,
-                ));
-            }
+            emit_call_type_args_entry(expr, tco, out);
         }
         fn if_stmt_order(&self) -> IfStmtOrder {
             IfStmtOrder::ElseBeforeThen

@@ -976,9 +976,34 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     }
 
     // Named generic function (fn<T>(...) { ... }) path.
-    auto genIt = genericFunctions.find(calleeName);
+    // Look up by `(currentModulePath, calleeName)` first.  If the call site
+    // is inside module M and M defines the generic, this hits.  If not, walk
+    // M's imports and try each as the defining module — preserves the
+    // pre-fix behaviour of resolving generics imported by bare name (e.g.
+    // `import lib::{identity}; identity(x)`) while still keying by the
+    // *defining* module so two libs can share a generic name.
+    std::vector<std::string> definingModule = currentModulePath;
+    auto genIt = genericFunctions.find(genericFnKey(definingModule, calleeName));
+    if (genIt == genericFunctions.end()) {
+      auto impIt = moduleImports.find(currentModuleKey());
+      if (impIt != moduleImports.end()) {
+        for (const auto &impPath : impIt->second) {
+          auto tryIt = genericFunctions.find(genericFnKey(impPath, calleeName));
+          if (tryIt != genericFunctions.end()) {
+            genIt = tryIt;
+            definingModule = impPath;
+            break;
+          }
+        }
+      }
+    }
     if (genIt != genericFunctions.end()) {
+      // Specialise in the defining module's namespace so the symbol matches
+      // every other call site to the same generic.
+      auto savedModPath = currentModulePath;
+      currentModulePath = definingModule;
       auto specializedFunc = specializeGenericFunction(calleeName, typeArgNames);
+      currentModulePath = savedModPath;
       if (!specializedFunc)
         return nullptr;
       llvm::SmallVector<mlir::Value, 4> args;
@@ -4006,6 +4031,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 /// the receiver is not a known module/struct name.
 std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMethodCall &mc,
                                                              const ast::ExprIdentifier &ident,
+                                                             const ast::Span &exprSpan,
                                                              mlir::Location location) {
   const auto &methodName = mc.method;
 
@@ -4292,10 +4318,78 @@ std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(const ast::ExprMeth
     std::string mangledFunc = mangleName(modulePath, "", methodName);
     auto callee = module.lookupSymbol<mlir::func::FuncOp>(mangledFunc);
     if (!callee) {
-      ++errorCount_;
-      emitError(location) << "undefined function '" << ident.name << "." << methodName
-                          << "' (mangled: " << mangledFunc << ")";
-      return nullptr;
+      // Cross-module generic free-function call: when the lookup misses but
+      // the called name is a known generic, consult the checker-built side
+      // table (`callTypeArgsMap`) for the inferred type arguments and
+      // monomorphize on demand. The lookup-miss above is expected for
+      // generics because Pass 1k records generic templates in
+      // `genericFunctions` (keyed by bare name) without emitting a FuncOp;
+      // monomorphized symbols only materialize via `specializeGenericFunction`.
+      //
+      // Fail closed when the side table has no entry for this call site.
+      // Silent fall-through here would surface as a misleading "undefined
+      // function" error for what is in fact a missing checker side-table
+      // entry — exactly the kind of contract violation
+      // `checker-codegen-pattern-contract` warns against.
+      //
+      // The registry is keyed by `(definingModulePath, baseName)` — for the
+      // qualified call `liba.identity(...)` the defining module is `modulePath`
+      // (resolved above from `moduleNameToPath`).  This keeps two libraries
+      // with same-named generics (e.g. `liba.identity` vs `libb.identity`)
+      // distinct.
+      if (auto genIt = genericFunctions.find(genericFnKey(modulePath, methodName));
+          genIt != genericFunctions.end()) {
+        const auto *tysEntry = callTypeArgsOf(exprSpan);
+        if (!tysEntry) {
+          ++errorCount_;
+          emitError(location)
+              << "cross-module generic call '" << ident.name << "." << methodName
+              << "' has no recorded type arguments (checker side-table missing entry "
+                 "for span ["
+              << exprSpan.start << ".." << exprSpan.end << "]); cannot monomorphize";
+          return nullptr;
+        }
+        // Resolve each side-table type argument to its mangled name. The
+        // checker hands these to us as Spanned<TypeExpr> with synthetic zero
+        // spans; resolveTypeArgMangledName is span-independent and reused
+        // verbatim. Composite type arguments (Option<T>, Result<T,E>, …)
+        // cannot be mangled to a plain string and are rejected the same way
+        // the intra-module path at MLIRGenExpr.cpp:963 rejects them.
+        std::vector<std::string> typeArgNames;
+        typeArgNames.reserve(tysEntry->type_args.size());
+        for (const auto &ta : tysEntry->type_args) {
+          auto resolved = resolveTypeArgMangledName(ta.value);
+          if (!resolved) {
+            ++errorCount_;
+            emitError(location) << "cross-module generic call '" << ident.name << "." << methodName
+                                << "': composite type arguments (Option<T>, Result<T,E>, tuples, "
+                                   "slices, …) are not supported as type parameters";
+            return nullptr;
+          }
+          typeArgNames.push_back(std::move(*resolved));
+        }
+        // Switch currentModulePath to the defining module so the specialised
+        // symbol mangles into the *defining* module's namespace (matching the
+        // lookup key used at every cross-module call site) and any nested
+        // calls in the body resolve relative to that module. The save/restore
+        // mirror at MLIRGen.cpp:3287-3289 + 3336 is the established pattern;
+        // every early return below restores currentModulePath before
+        // returning so it is never left mutated. (LESSONS row
+        // `cleanup-all-exits`.)
+        auto savedModPath = currentModulePath;
+        currentModulePath = modulePath;
+        auto specialized = specializeGenericFunction(methodName, typeArgNames);
+        currentModulePath = savedModPath;
+        if (!specialized)
+          return nullptr; // specializeGenericFunction has already bumped errorCount_
+        callee = specialized;
+        // Fall through to the existing CallOp emission below.
+      } else {
+        ++errorCount_;
+        emitError(location) << "undefined function '" << ident.name << "." << methodName
+                            << "' (mangled: " << mangledFunc << ")";
+        return nullptr;
+      }
     }
 
     llvm::SmallVector<mlir::Value, 4> args;
@@ -4719,7 +4813,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc, const ast
 
   // Module-qualified calls (math.exp, random.seed, log.info, etc.)
   if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-    if (auto result = generateModuleMethodCall(mc, *ident, location))
+    if (auto result = generateModuleMethodCall(mc, *ident, exprSpan, location))
       return *result;
   }
 

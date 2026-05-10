@@ -1330,6 +1330,10 @@ add_wasm_file_test(module_trait_inherit   e2e_modules          module_trait_inhe
 add_wasm_file_test(module_transitive      e2e_modules          module_transitive)
 add_wasm_file_test(module_types           e2e_modules          module_types)
 
+# Generic cross-module: free-function call with checker-inferred type args
+add_wasm_file_test(cross_module_generic   e2e_generic_cross_module  cross_module_generic)
+add_wasm_file_test(cross_module_generic_collision e2e_generic_cross_module cross_module_generic_collision)
+
 # Control flow: while-let, if-let, for-labels, ranges
 add_wasm_file_test(while_let_basic        e2e_while_let        while_let_basic)
 add_wasm_file_test(if_let_basic           e2e_if_let           if_let_basic)

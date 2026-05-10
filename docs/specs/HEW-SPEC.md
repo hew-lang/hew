@@ -766,9 +766,6 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 
 Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
 
-`fs.read_line()` remains available as a compatibility alias, but `io.read_line()`
-is the canonical stdin helper on current main.
-
 **Visibility modifiers:**
 
 - `pub` - public to all modules

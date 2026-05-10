@@ -114,7 +114,12 @@ RE_ACTOR_MONITOR = re.compile(r"hew\.actor_monitor\s+(?P<target>%\S+)")
 RE_ACTOR_DEMONITOR = re.compile(r"hew\.actor_demonitor\s+(?P<target>%\S+)")
 
 RE_RECEIVE = re.compile(
-    r"hew\.receive\([^)]*\)\s*\{handlers\s*=\s*\[(?P<handlers>[^\]]+)\]\}"
+    # Match `hew.receive(...)` followed by an MLIR attr dict and find the
+    # `handlers = [...]` entry anywhere inside it.  Prior versions required
+    # `handlers` to be the only/last attribute (matching `{handlers=[...]}`
+    # immediately before `}`); the op now carries `handler_return_types` as
+    # well, so anchoring to `}` would silently match nothing.
+    r"hew\.receive\([^)]*\)\s*\{[^}]*?\bhandlers\s*=\s*\[(?P<handlers>[^\]]+)\]"
 )
 
 # SSA flow tracking: bitcast propagates actor identity, memref.store/load

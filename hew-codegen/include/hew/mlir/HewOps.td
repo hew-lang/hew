@@ -698,9 +698,12 @@ def Hew_ReceiveOp : Hew_Op<"receive"> {
     The `handlers` array attribute lists handler function symbols in message-
     type order: `handlers[0]` is called when `msg_type == 0`, etc.
 
-    Each handler has signature `(ptr state, args...) -> void`.  The receive op
-    extracts args from the data pointer based on each handler's function
-    signature (looked up from the module symbol table during lowering).
+    Each handler has signature `(ptr state, args...) -> result?` where the
+    result is either absent (void / fire-and-forget) or a single value (ask
+    reply payload).  Multi-result handlers are not supported by the dispatch
+    ABI.  The receive op extracts args from the data pointer based on each
+    handler's function signature (looked up from the module symbol table
+    during lowering).
 
     The `handler_return_types` attribute parallels `handlers` and pins each
     handler's *original Hew-level* return type at MLIRGen time.  This is the
@@ -737,6 +740,7 @@ def Hew_ReceiveOp : Hew_Op<"receive"> {
     `(` $state `,` $msg_type `,` $data `,` $data_size `)`
       attr-dict `:` `(` type($state) `,` type($data) `,` type($data_size) `)`
   }];
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

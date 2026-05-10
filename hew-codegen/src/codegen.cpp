@@ -2114,6 +2114,53 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       auto getReplyFuncType = rewriter.getFunctionType({}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_get_reply_channel", getReplyFuncType);
 
+      // Resolve and validate the original Hew-level return type from the
+      // hew.receive op's `handler_return_types` attribute *before* branching
+      // on whether the handler has a result.  Reading
+      // `handlerType.getResult(0)` later is unsafe — by the time this
+      // pattern fires the handler `func.func` may already have been
+      // signature-converted by
+      // `populateFunctionOpInterfaceTypeConversionPattern` running in the
+      // same `applyPartialConversion` call, which would lower
+      // `!hew.string_ref` to `!llvm.ptr` and silently drop the ownership-
+      // transfer cloning below (the bug behind PR #1717's double-free
+      // regression on Linux: e2e_coverage_actor_multi_handler,
+      // e2e_memory_actor_field_string_ownership).
+      //
+      // Fail-closed metadata invariants (see HewOps.td for the contract):
+      //   - each slot must be a TypeAttr;
+      //   - handlers must be single-result or void; multi-result is not
+      //     supported by the dispatch ABI;
+      //   - `NoneType` iff `handlerType.getNumResults() == 0`.
+      // Violations emit `emitOpError` and abort lowering rather than
+      // silently lowering the wrong ownership policy. This matches the
+      // checker-output boundary invariant for codegen metadata.
+      auto origRetTypeAttr = mlir::dyn_cast<mlir::TypeAttr>(handlerReturnTypeAttrs[idx]);
+      if (!origRetTypeAttr) {
+        return op.emitOpError("handler_return_types[")
+               << idx << "] is not a TypeAttr (got " << handlerReturnTypeAttrs[idx] << ")";
+      }
+      auto origReturnType = origRetTypeAttr.getValue();
+      auto numHandlerResults = handlerType.getNumResults();
+      if (numHandlerResults > 1) {
+        return op.emitOpError("handler '")
+               << handlerName << "' has " << numHandlerResults
+               << " results; receive dispatch only supports zero or one";
+      }
+      bool metadataIsNone = mlir::isa<mlir::NoneType>(origReturnType);
+      bool handlerIsVoid = (numHandlerResults == 0);
+      if (handlerIsVoid && !metadataIsNone) {
+        return op.emitOpError("handler '")
+               << handlerName << "' is void but handler_return_types[" << idx << "] is "
+               << origReturnType << " (expected NoneType); metadata/signature mismatch";
+      }
+      if (!handlerIsVoid && metadataIsNone) {
+        return op.emitOpError("handler '")
+               << handlerName << "' has a result but handler_return_types[" << idx
+               << "] is NoneType; cannot determine ownership-transfer "
+                  "policy for reply payload";
+      }
+
       bool hasReturnType = !loweredResults.empty();
       if (hasReturnType) {
         // Call handler and capture return value (use lowered result types
@@ -2156,31 +2203,10 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         // `hew-runtime/src/reply_channel.rs` for the ownership contract:
         // `hew_reply` returns `true` iff it took ownership of the
         // payload, `false` otherwise.
-        // Resolve the original Hew-level return type from the
-        // hew.receive op's `handler_return_types` attribute. Reading
-        // `handlerType.getResult(0)` here is unsafe — by the time this
-        // pattern fires the handler `func.func` may already have been
-        // signature-converted by
-        // `populateFunctionOpInterfaceTypeConversionPattern` running in
-        // the same `applyPartialConversion` call, which would lower
-        // `!hew.string_ref` to `!llvm.ptr` and silently drop the
-        // ownership-transfer cloning below (the bug behind PR #1717's
-        // double-free regression on Linux: e2e_coverage_actor_multi_handler,
-        // e2e_memory_actor_field_string_ownership).
-        auto origRetTypeAttr = mlir::dyn_cast<mlir::TypeAttr>(handlerReturnTypeAttrs[idx]);
-        if (!origRetTypeAttr) {
-          return op.emitOpError("handler_return_types[") << idx << "] is not a TypeAttr";
-        }
-        auto origReturnType = origRetTypeAttr.getValue();
-        if (mlir::isa<mlir::NoneType>(origReturnType)) {
-          // NoneType marks a void handler; this branch is gated on
-          // hasReturnType so it should be unreachable. Fail-closed
-          // rather than silently skipping the ownership-transfer logic.
-          return op.emitOpError("handler_return_types[")
-                 << idx << "] is NoneType but handler has a non-void result";
-        }
+        // (origReturnType resolved + validated above.)
         mlir::Value cloneHeapPtr;        // heap pointer that must be freed on !delivered
         llvm::StringRef cloneDestructor; // destructor symbol name
+
         if (mlir::isa<hew::StringRefType>(origReturnType)) {
           auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
           getOrInsertFuncDecl(module, rewriter, "strdup", ft);

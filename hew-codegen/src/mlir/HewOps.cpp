@@ -7,9 +7,11 @@
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/HewTypes.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/SymbolTable.h"
 
 using namespace mlir;
 
@@ -127,6 +129,78 @@ mlir::LogicalResult hew::ActorSendOp::verify() {
 mlir::LogicalResult hew::ActorAskOp::verify() {
   if (getMsgType() < 0) {
     return emitOpError("msg_type must be non-negative, got ") << getMsgType();
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// ReceiveOp — verifier
+//===----------------------------------------------------------------------===//
+//
+// Structural invariants on the receive op's metadata:
+//
+//   1. `handler_return_types.size() == handlers.size()` — one return-type
+//      slot per handler.
+//   2. Each `handler_return_types[i]` is a `TypeAttr`.
+//   3. `NoneType` iff the resolved `func.func` handler has zero results.
+//      A void handler with non-`NoneType` metadata, or a non-void handler
+//      with `NoneType` metadata, indicates a checker/codegen boundary bug:
+//      the receive lowering's ownership-transfer policy would silently
+//      take the wrong branch (the regression behind PR #1717's Linux
+//      double-free in `e2e_coverage_actor_multi_handler` and
+//      `e2e_memory_actor_field_string_ownership`).
+//   4. Multi-result handlers are not supported by the dispatch ABI; the
+//      reply seam only ever publishes a single payload.
+//
+// Symbol lookup is best-effort: if a handler symbol is not yet in the
+// module's symbol table (e.g. during a partial build of the IR), the
+// signature-derived checks (3+4) are deferred to the lowering pattern,
+// which performs the same checks fail-closed before emitting any
+// ownership-transfer code.
+
+mlir::LogicalResult hew::ReceiveOp::verify() {
+  auto handlers = getHandlers();
+  auto returnTypes = getHandlerReturnTypes();
+  if (handlers.size() != returnTypes.size()) {
+    return emitOpError("handler_return_types size (")
+           << returnTypes.size() << ") does not match handlers size (" << handlers.size() << ")";
+  }
+  for (auto [idx, attr] : llvm::enumerate(returnTypes)) {
+    auto typeAttr = mlir::dyn_cast<mlir::TypeAttr>(attr);
+    if (!typeAttr) {
+      return emitOpError("handler_return_types[")
+             << idx << "] is not a TypeAttr (got " << attr << ")";
+    }
+    // Cross-check against the handler signature when the symbol is
+    // resolvable. Lookup failure is tolerated here so that op
+    // construction order does not gate verification; the lowering
+    // pattern repeats this check fail-closed.
+    auto handlerRef = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(handlers[idx]);
+    if (!handlerRef) {
+      return emitOpError("handlers[") << idx << "] is not a FlatSymbolRefAttr";
+    }
+    auto handlerFunc =
+        mlir::SymbolTable::lookupNearestSymbolFrom<mlir::func::FuncOp>(getOperation(), handlerRef);
+    if (!handlerFunc)
+      continue; // deferred to lowering
+    auto numResults = handlerFunc.getFunctionType().getNumResults();
+    if (numResults > 1) {
+      return emitOpError("handler '") << handlerRef.getValue() << "' has " << numResults
+                                      << " results; receive dispatch supports zero or one";
+    }
+    bool isNone = mlir::isa<mlir::NoneType>(typeAttr.getValue());
+    bool isVoid = (numResults == 0);
+    if (isVoid && !isNone) {
+      return emitOpError("handler '")
+             << handlerRef.getValue() << "' is void but handler_return_types[" << idx << "] is "
+             << typeAttr.getValue() << " (expected NoneType); metadata/signature mismatch";
+    }
+    if (!isVoid && isNone) {
+      return emitOpError("handler '")
+             << handlerRef.getValue() << "' has a result but handler_return_types[" << idx
+             << "] is NoneType; cannot determine ownership-transfer policy "
+                "for reply payload";
+    }
   }
   return success();
 }

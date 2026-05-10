@@ -10,6 +10,7 @@
 #include "hew/mlir/HewTypes.h"
 #include "test_utils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
@@ -3805,6 +3806,183 @@ static void test_vec_free_verifier_wrong_vec_type() {
 }
 
 //===----------------------------------------------------------------------===//
+// ReceiveOp verifier — handler_return_types metadata invariants
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+// Build a minimal module containing one func.func handler and a hew.receive
+// op that calls it. The handler's signature and the metadata slot are
+// supplied by the caller so each negative case can target a specific
+// invariant.
+struct ReceiveHarness {
+  mlir::MLIRContext ctx;
+  mlir::ModuleOp module;
+
+  ReceiveHarness() {
+    ctx.loadDialect<hew::HewDialect>();
+    ctx.loadDialect<mlir::func::FuncDialect>();
+    ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+    ctx.loadDialect<mlir::arith::ArithDialect>();
+  }
+
+  // Build module with a single handler `handler_fn` of the given function
+  // type, and a `hew.receive` op (inside a void dispatch func) whose
+  // handler_return_types attribute is the supplied type (NoneType encodes
+  // a void slot).
+  void build(mlir::FunctionType handlerType, mlir::Type metadataType) {
+    mlir::OpBuilder b(&ctx);
+    auto loc = b.getUnknownLoc();
+    module = mlir::ModuleOp::create(loc);
+    b.setInsertionPointToStart(module.getBody());
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&ctx);
+    auto i32 = b.getI32Type();
+    auto i64 = b.getI64Type();
+
+    auto handler = mlir::func::FuncOp::create(b, loc, "handler_fn", handlerType);
+    auto *entry = handler.addEntryBlock();
+    b.setInsertionPointToStart(entry);
+    if (handlerType.getNumResults() == 0) {
+      mlir::func::ReturnOp::create(b, loc);
+    } else {
+      // Synthesize a zero value for the result. Works for ptr-shaped and
+      // integer-shaped results, which is all the negative tests need.
+      auto rt = handlerType.getResult(0);
+      mlir::Value zero;
+      if (mlir::isa<mlir::LLVM::LLVMPointerType>(rt)) {
+        zero = mlir::LLVM::ZeroOp::create(b, loc, rt);
+      } else if (auto it = mlir::dyn_cast<mlir::IntegerType>(rt)) {
+        zero = mlir::arith::ConstantIntOp::create(b, loc, it, 0);
+      } else {
+        // Fall back to a UndefOp; not strictly correct types but the
+        // verifier only inspects op-level invariants here, not bodies.
+        zero = mlir::LLVM::UndefOp::create(b, loc, rt);
+      }
+      mlir::func::ReturnOp::create(b, loc, mlir::ValueRange{zero});
+    }
+
+    b.setInsertionPointToEnd(module.getBody());
+    auto dispatchType = b.getFunctionType({ptrType, i32, ptrType, i64}, {});
+    auto dispatch = mlir::func::FuncOp::create(b, loc, "dispatch_fn", dispatchType);
+    auto *dEntry = dispatch.addEntryBlock();
+    b.setInsertionPointToStart(dEntry);
+
+    auto state = dEntry->getArgument(0);
+    auto msgTy = dEntry->getArgument(1);
+    auto data = dEntry->getArgument(2);
+    auto dsize = dEntry->getArgument(3);
+
+    llvm::SmallVector<mlir::Attribute, 1> handlerRefs{
+        mlir::FlatSymbolRefAttr::get(&ctx, "handler_fn")};
+    llvm::SmallVector<mlir::Attribute, 1> retTypes{mlir::TypeAttr::get(metadataType)};
+
+    hew::ReceiveOp::create(b, loc, state, msgTy, data, dsize, b.getArrayAttr(handlerRefs),
+                           b.getArrayAttr(retTypes));
+    mlir::func::ReturnOp::create(b, loc);
+  }
+
+  bool verifyFailed() {
+    mlir::ScopedDiagnosticHandler suppress(&ctx,
+                                           [](mlir::Diagnostic &) { return mlir::success(); });
+    return mlir::failed(mlir::verify(module));
+  }
+
+  ~ReceiveHarness() {
+    if (module)
+      module->destroy();
+  }
+};
+
+} // namespace
+
+// Void handler + non-None metadata must fail verification — the lowering's
+// ownership-transfer policy would silently take the wrong branch otherwise.
+static void test_receive_verifier_void_handler_with_non_none_metadata() {
+  TEST(receive_verifier_void_handler_with_non_none_metadata);
+  ReceiveHarness h;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&h.ctx);
+  // handler: (ptr) -> () ; metadata: !hew.string_ref (non-None) -> reject
+  auto voidHandler = mlir::FunctionType::get(&h.ctx, {ptrType}, {});
+  auto stringRef = hew::StringRefType::get(&h.ctx);
+  h.build(voidHandler, stringRef);
+  if (!h.verifyFailed()) {
+    FAIL("Should reject void handler with non-NoneType handler_return_types slot");
+    return;
+  }
+  PASS();
+}
+
+// Non-void handler + None metadata must fail verification — without the
+// Hew-level type, the lowering cannot pick the correct clone/destructor.
+static void test_receive_verifier_non_void_handler_with_none_metadata() {
+  TEST(receive_verifier_non_void_handler_with_none_metadata);
+  ReceiveHarness h;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&h.ctx);
+  auto stringRef = hew::StringRefType::get(&h.ctx);
+  // handler: (ptr) -> !hew.string_ref ; metadata: NoneType -> reject
+  auto nonVoidHandler = mlir::FunctionType::get(&h.ctx, {ptrType}, {stringRef});
+  auto noneTy = mlir::NoneType::get(&h.ctx);
+  h.build(nonVoidHandler, noneTy);
+  if (!h.verifyFailed()) {
+    FAIL("Should reject non-void handler with NoneType handler_return_types slot");
+    return;
+  }
+  PASS();
+}
+
+// Size mismatch between handlers[] and handler_return_types[] must fail.
+static void test_receive_verifier_size_mismatch() {
+  TEST(receive_verifier_size_mismatch);
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder b(&ctx);
+  auto loc = b.getUnknownLoc();
+  auto module = mlir::ModuleOp::create(loc);
+  b.setInsertionPointToStart(module.getBody());
+
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&ctx);
+  auto i32 = b.getI32Type();
+  auto i64 = b.getI64Type();
+  auto voidHandler = b.getFunctionType({ptrType}, {});
+  auto h0 = mlir::func::FuncOp::create(b, loc, "h0", voidHandler);
+  b.setInsertionPointToStart(h0.addEntryBlock());
+  mlir::func::ReturnOp::create(b, loc);
+  b.setInsertionPointToEnd(module.getBody());
+  auto h1 = mlir::func::FuncOp::create(b, loc, "h1", voidHandler);
+  b.setInsertionPointToStart(h1.addEntryBlock());
+  mlir::func::ReturnOp::create(b, loc);
+  b.setInsertionPointToEnd(module.getBody());
+
+  auto dispatchType = b.getFunctionType({ptrType, i32, ptrType, i64}, {});
+  auto dispatch = mlir::func::FuncOp::create(b, loc, "dispatch_fn", dispatchType);
+  auto *dEntry = dispatch.addEntryBlock();
+  b.setInsertionPointToStart(dEntry);
+
+  llvm::SmallVector<mlir::Attribute, 2> handlerRefs{mlir::FlatSymbolRefAttr::get(&ctx, "h0"),
+                                                    mlir::FlatSymbolRefAttr::get(&ctx, "h1")};
+  // Only ONE entry in handler_return_types — mismatch.
+  llvm::SmallVector<mlir::Attribute, 1> retTypes{mlir::TypeAttr::get(mlir::NoneType::get(&ctx))};
+
+  hew::ReceiveOp::create(b, loc, dEntry->getArgument(0), dEntry->getArgument(1),
+                         dEntry->getArgument(2), dEntry->getArgument(3),
+                         b.getArrayAttr(handlerRefs), b.getArrayAttr(retTypes));
+  mlir::func::ReturnOp::create(b, loc);
+
+  mlir::ScopedDiagnosticHandler suppress(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("Should reject hew.receive with size(handlers) != size(handler_return_types)");
+    module->destroy();
+    return;
+  }
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
 // Main
 //===----------------------------------------------------------------------===//
 
@@ -3827,6 +4005,11 @@ int main() {
   test_struct_init_verifier_field_count();
   test_field_get_verifier_bounds();
   test_struct_init_verifier_field_type();
+
+  // Verifier negative tests — ReceiveOp handler_return_types metadata
+  test_receive_verifier_void_handler_with_non_none_metadata();
+  test_receive_verifier_non_void_handler_with_none_metadata();
+  test_receive_verifier_size_mismatch();
 
   // Folder tests
   test_tuple_extract_fold();

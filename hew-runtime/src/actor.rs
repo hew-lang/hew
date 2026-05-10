@@ -1415,10 +1415,12 @@ pub unsafe extern "C" fn hew_actor_send(
 /// The caller transfers one refcount on `envelope` to the runtime.
 /// On success the envelope reaches the receiver via the COW path
 /// (`hew_msg_node_free` releases the envelope refcount when the node
-/// is consumed).  On failure (closed mailbox, bounded mailbox, OOM,
-/// null pointers, drop-fault injection) the transferred refcount is
-/// released back to the caller's accounting; the caller treats the
-/// envelope as consumed in all cases.
+/// is consumed).  On non-fatal failure (closed mailbox, bounded
+/// mailbox, OOM, null actor, drop-fault injection) the transferred
+/// refcount is released back to the caller's accounting; the caller
+/// treats the envelope as consumed in all cases.  A null `envelope`
+/// is **not** a non-fatal failure: it is a contract violation that
+/// aborts via [`hew_panic`] (see Safety below).
 ///
 /// **Phase α gate** (mirrored at the codegen lowering):
 ///
@@ -1437,7 +1439,12 @@ pub unsafe extern "C" fn hew_actor_send(
 /// - `actor` must be a valid pointer returned by a spawn function (or
 ///   null; null actor is a no-op that releases the envelope).
 /// - `envelope` must be a live envelope obtained from
-///   [`hew_msg_envelope_new`].
+///   [`hew_msg_envelope_new`].  Passing a null envelope is a contract
+///   violation and aborts via [`hew_panic`]: the codegen alias path is
+///   fail-closed on `malloc` / `hew_msg_envelope_new` failure, so a
+///   null envelope here can only indicate a generated-code bug or a
+///   misuse of the unsafe FFI, both of which must surface immediately
+///   rather than silently dropping the message.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send_aliased(
@@ -1446,7 +1453,15 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
     envelope: *mut crate::mailbox::HewMsgEnvelope,
 ) {
     if envelope.is_null() {
-        return;
+        // Fail-closed: a null envelope means the alias-send contract
+        // was violated upstream.  The codegen lowering panics on
+        // `malloc` / `hew_msg_envelope_new` failure before reaching
+        // this FFI, so reaching here implies a real bug.  Silently
+        // returning would mask the bug and leak any partially-built
+        // payload the caller still owns; abort instead.
+        hew_panic();
+        return; // hew_panic never returns; defensive in case of a
+                // missing recovery context that lets it fall through.
     }
     if actor.is_null() {
         // SAFETY: caller transferred this refcount; release it on the
@@ -1536,7 +1551,12 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
     envelope: *mut crate::mailbox_wasm::HewMsgEnvelope,
 ) {
     if envelope.is_null() {
-        return;
+        // Fail-closed: mirrors the native stub above.  Null envelope
+        // means the codegen-side fail-closed path was bypassed; abort
+        // rather than silently dropping the message.
+        hew_panic();
+        return; // hew_panic never returns; defensive in case of a
+                // missing recovery context that lets it fall through.
     }
     // SAFETY: envelope is live; payload pointer is stable for the
     // envelope's lifetime.

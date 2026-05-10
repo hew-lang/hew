@@ -2839,6 +2839,43 @@ mod tests {
         }
     }
 
+    /// Regression: the alias-send fail-closed cleanup path must release
+    /// the envelope when the target actor is null.
+    ///
+    /// The codegen alias lowering panics on `malloc` /
+    /// `hew_msg_envelope_new` failure before reaching the FFI, and the
+    /// runtime FFI panics on a null envelope (a contract violation).
+    /// The remaining non-fatal fail-closed branch is the null-actor
+    /// early exit: the runtime must release the transferred refcount
+    /// so the payload is not leaked.  This test pins that invariant
+    /// because it is the only post-revision branch where the runtime
+    /// is responsible for cleanup rather than the caller.
+    #[test]
+    fn actor_send_aliased_null_actor_releases_envelope() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: standard envelope-new contract; payload allocated
+        // by `alloc_test_payload`; envelope ownership transfers into
+        // `hew_actor_send_aliased`, which releases it on the null-
+        // actor branch.
+        unsafe {
+            let payload = alloc_test_payload(b"null-actor");
+            let env = hew_msg_envelope_new(payload, 10, Some(envelope_test_drop_glue));
+            assert!(!env.is_null());
+            assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
+
+            // Null actor + valid envelope: runtime must release the
+            // transferred refcount.  Drop glue must fire exactly once
+            // (payload freed by the envelope).
+            crate::actor::hew_actor_send_aliased(std::ptr::null_mut(), 0, env);
+            assert_eq!(
+                ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
+                1,
+                "null-actor alias-send must release the envelope refcount"
+            );
+        }
+    }
+
     #[test]
     fn envelope_fork_for_write_makes_distinct_payload_with_forked_bit() {
         let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();

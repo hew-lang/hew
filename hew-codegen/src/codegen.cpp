@@ -1212,7 +1212,29 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
       auto heapBuf = mlir::func::CallOp::create(rewriter, loc, "malloc", mlir::TypeRange{ptrType},
                                                 mlir::ValueRange{dataSize})
                          .getResult(0);
-      // memcpy(heap, stack, size).
+
+      // Fail-closed on `malloc` failure: panic immediately rather than
+      // dereferencing a null `heapBuf` in the following `memcpy`.  This
+      // mirrors the spawn-OOM handling above (`hew_actor_spawn` null →
+      // `hew_panic`) so allocation failures surface as an unambiguous
+      // runtime panic instead of UB.  Nothing else has been allocated
+      // yet, so there is no payload to free on this branch.
+      {
+        auto nullBuf = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+        auto mallocFailed = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
+                                                       heapBuf, nullBuf);
+        auto panicIfOp =
+            mlir::scf::IfOp::create(rewriter, loc, mallocFailed, /*withElseRegion=*/false);
+        rewriter.setInsertionPointToStart(&panicIfOp.getThenRegion().front());
+        auto panicFuncType = rewriter.getFunctionType({}, {});
+        getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{},
+                                   mlir::ValueRange{});
+        rewriter.setInsertionPointAfter(panicIfOp);
+      }
+
+      // memcpy(heap, stack, size).  Safe: `heapBuf` is guaranteed
+      // non-null by the panic above.
       auto memcpyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "memcpy", memcpyFuncType);
       mlir::func::CallOp::create(rewriter, loc, "memcpy", mlir::TypeRange{ptrType},
@@ -1231,6 +1253,30 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
                                                  mlir::TypeRange{ptrType},
                                                  mlir::ValueRange{heapBuf, dataSize, nullDropGlue})
                           .getResult(0);
+
+      // Fail-closed on envelope allocation failure: free the heap
+      // payload buffer we just memcpy'd into (ownership has not
+      // transferred yet because the envelope was never constructed),
+      // then panic.  Passing a null envelope to
+      // `hew_actor_send_aliased` would otherwise be a silent message
+      // drop and a payload leak.
+      {
+        auto nullEnv = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+        auto envelopeFailed = mlir::LLVM::ICmpOp::create(
+            rewriter, loc, mlir::LLVM::ICmpPredicate::eq, envelope, nullEnv);
+        auto panicIfOp =
+            mlir::scf::IfOp::create(rewriter, loc, envelopeFailed, /*withElseRegion=*/false);
+        rewriter.setInsertionPointToStart(&panicIfOp.getThenRegion().front());
+        auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
+        getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},
+                                   mlir::ValueRange{heapBuf});
+        auto panicFuncType = rewriter.getFunctionType({}, {});
+        getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{},
+                                   mlir::ValueRange{});
+        rewriter.setInsertionPointAfter(panicIfOp);
+      }
 
       // Hand the envelope to the runtime; it gates on mailbox
       // capacity and either takes the alias fast path or falls back

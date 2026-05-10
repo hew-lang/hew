@@ -1141,8 +1141,8 @@ struct Program {
   /// Inferred type arguments for generic free-function call sites (keyed by call span).
   /// Populated from schema version 9+; fail-closed for mismatched schema versions.
   ///
-  /// WASM-TODO: call_type_args is carried through the msgpack wire format and deserialized on
-  /// all targets. The WASM codegen path does not yet exercise generic free-function lowering,
+  /// WASM-TODO(#1451): call_type_args is carried through the msgpack wire format and deserialized
+  /// on all targets. The WASM codegen path does not yet exercise generic free-function lowering,
   /// so no WASM-specific fixture exists for this field; covered by the existing native roundtrip
   /// test in test_msgpack_reader.cpp. Add a WASM fixture when WASM lowering of generic calls
   /// is implemented.

@@ -1556,6 +1556,30 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
       /*coalesce_key_fn=*/mlir::FlatSymbolRefAttr{},
       /*coalesce_fallback=*/mlir::IntegerAttr{});
 
+  // Ownership transfer for captured variables.  The lambda actor's state-drop
+  // function (emitted above) owns each captured value and will drop it on
+  // actor close.  Mirror the send/ask boundary policy:
+  //   - String/Vec/HashMap/Closure are deep-copied by ActorSpawnOpLowering
+  //     (strdup/hew_vec_clone/hew_hashmap_clone_impl/hew_rc_clone), so the
+  //     sender retains an independent copy and keeps its drop registration.
+  //   - Auto-field-drop structs are deep-copied field-by-field; the sender
+  //     keeps its copy but any handle fields transfer (null out the source).
+  //   - Everything else (plain structs, user-Drop structs, scalars) is
+  //     passed by value with no clone — the receiver becomes the sole owner
+  //     and the sender must unregister to avoid a double drop.
+  for (const auto &cv : capturedVars) {
+    auto cvType = cv.value.getType();
+    if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::ClosureType>(cvType))
+      continue;
+    if (actorBoundarySenderRetainsOwnership(cvType)) {
+      if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(cvType);
+          structTy && structTy.isIdentified())
+        nullOutTransferredHandleFields(cv.name, location);
+      continue;
+    }
+    unregisterDroppable(cv.name);
+  }
+
   hasActors = true;
   auto result = spawnOp.getResult();
 

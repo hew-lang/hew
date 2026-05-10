@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **`fs.read_line` compatibility alias removed:** The `fs.read_line` function,
+  which was a deprecated alias for `fs.read_bytes_as_string`, has been removed
+  from the standard library. Callers must use `fs.read_bytes_as_string`
+  directly.
+- **`ActorStream<Y>` type alias removed:** The deprecated `ActorStream<Y>` alias
+  has been removed from all public surfaces. Use `Stream<Y>` instead.
+- **`legacy-wire-msgpack` Cargo feature removed:** The `hew-serialize` crate no
+  longer exposes the `legacy-wire-msgpack` feature flag or its associated
+  `serialize_wire_decl_legacy` function. Callers using the legacy msgpack wire
+  path must migrate to the standard wire serializer.
+- **`hew_file_last_error` C ABI export removed:** The `hew_file_last_error`
+  symbol has been removed from the runtime. The errno value is now surfaced
+  through the standard LAST_ERRNO path and does not require a separate query.
+
 ## [0.4.0] - 2026-05-03
 
 See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.

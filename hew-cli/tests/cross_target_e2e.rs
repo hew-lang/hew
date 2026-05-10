@@ -180,8 +180,8 @@ fn emit_obj_reports_expected_metadata_for_cross_target_matrix() {
             arch: Architecture::X86_64,
         },
         Case {
-            // The first Windows prototype lane uses the GNU ABI rather than
-            // widening this coverage to both GNU and MSVC at once.
+            // Windows GNU ABI coverage is scoped to x86_64-pc-windows-gnu rather
+            // than widening to both GNU and MSVC at once.
             triple: "x86_64-pc-windows-gnu",
             output_suffix: ".obj",
             format: BinaryFormat::Coff,

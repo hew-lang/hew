@@ -34,7 +34,7 @@ use hew_wirecodec::{
     VariantPlan, WireCodecPlan, WireShape, YamlCodecDesc,
 };
 
-/// Default iteration budget. Set to 10,000 to match the lane contract.
+/// Default iteration budget for corpus fuzz runs.
 const DEFAULT_ITERATIONS: u32 = 10_000;
 
 /// Minimum surface coverage required by the corpus. If `assert_kind_coverage`

@@ -5131,12 +5131,12 @@ Benefits:
 
 If you want this to be directly executable as an engineering project, the next most useful artifact is a “Hew Core IR” spec (the lowered form the compiler targets before LLVM), because it locks the semantics of actors, mailboxes, supervision, and cancellation independent of syntax.
 
-[1]: https://tutorial.ponylang.io/index.html?utm_source=chatgpt.com "Pony Tutorial"
-[2]: https://www.erlang.org/docs/17/design_principles/sup_princ?utm_source=chatgpt.com "Supervisor Behaviour - Restart Strategy"
-[3]: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/?utm_source=chatgpt.com "Concurrency - Documentation | Swift.org"
-[4]: https://protobuf.dev/programming-guides/proto3/?utm_source=chatgpt.com "Language Guide (proto 3) | Protocol Buffers Documentation"
-[5]: https://protobuf.dev/best-practices/dos-donts/?utm_source=chatgpt.com "Proto Best Practices"
-[6]: https://www.erlang.org/doc/apps/stdlib/supervisor.html?utm_source=chatgpt.com "supervisor — stdlib v7.2"
+[1]: https://tutorial.ponylang.io/index.html "Pony Tutorial"
+[2]: https://www.erlang.org/docs/17/design_principles/sup_princ "Supervisor Behaviour - Restart Strategy"
+[3]: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/ "Concurrency - Documentation | Swift.org"
+[4]: https://protobuf.dev/programming-guides/proto3/ "Language Guide (proto 3) | Protocol Buffers Documentation"
+[5]: https://protobuf.dev/best-practices/dos-donts/ "Proto Best Practices"
+[6]: https://www.erlang.org/doc/apps/stdlib/supervisor.html "supervisor — stdlib v7.2"
 
 ---
 

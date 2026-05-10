@@ -972,6 +972,8 @@ set_tests_properties(
   e2e_supervisor_supervisor_restart
   e2e_supervisor_supervisor_nested
   e2e_supervisor_supervisor_named_child
+  e2e_supervisor_supervisor_mixed_children
+  e2e_supervisor_supervisor_restart_heap_state
   PROPERTIES
     RESOURCE_LOCK actor_crash_tests
     PROCESSORS   2

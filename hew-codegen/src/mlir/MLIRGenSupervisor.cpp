@@ -102,8 +102,18 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
       hew::SupervisorNewOp::create(builder, location, ptrType, strategy, maxRestartsI32, windowVal)
           .getResult();
 
-  // actorChildIndex tracks only the actor-child count (not nested supervisors).
-  // This matches the zero-based index used by hew_supervisor_set_child_state_drop.
+  // actorChildIndex counts only actor children, not nested-supervisor children.
+  // It must stay in lock-step with the runtime's `child_specs` array, which is
+  // also populated only for actor children (via hew_supervisor_add_child_spec,
+  // called in the actor-child branch below).  `hew_supervisor_set_child_state_drop`
+  // uses this index to tie a state-drop callback to a specific child_specs slot.
+  //
+  // Invariant: for every actor child processed in order, actorChildIndex equals
+  // that child's zero-based position in child_specs[].  Nested-supervisor children
+  // are added to a separate child_supervisors[] list and must NOT bump this counter
+  // (see `continue` in the nested-supervisor branch below).  A wrong index causes
+  // the state-drop callback to be stored at the wrong child_specs slot, which
+  // silently leaks the actor's heap-owned state on restart.
   int actorChildIndex = 0;
 
   // Iterate over children and add each to the supervisor

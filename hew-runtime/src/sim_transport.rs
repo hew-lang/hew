@@ -21,7 +21,7 @@
 //! 2. live-session FIFO inside one negotiated session (`HEW-DIST-SPEC` §14.3)
 //!
 //! Invariants 2 / 4 / 5 / 6 / 7 are explicitly out of scope for this slice
-//! and tracked as follow-on lanes (see `.tmp/plans/lane-sim-transport-distributed-property-tests.md`).
+//! and remain tracked as follow-up distributed-runtime property tests.
 //!
 //! ## Surface contract
 //!

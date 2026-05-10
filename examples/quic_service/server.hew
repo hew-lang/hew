@@ -1,4 +1,4 @@
-// service_server.hew — Minimal QUIC-based remote service
+// server.hew — Minimal QUIC-based remote service
 //
 // Demonstrates:
 //   - Using std::net::quic public API to bind a QUIC server endpoint
@@ -8,13 +8,13 @@
 //   - Clean bounded shutdown
 //
 // Run in one terminal:
-//   hew run service_server.hew
+//   hew run examples/quic_service/server.hew
 //
 // Then in another:
-//   hew run service_client.hew
+//   hew run examples/quic_service/client.hew
 //
 // Optional:
-//   HEW_QUIC_SERVICE_PORT=4545 hew run service_server.hew
+//   HEW_QUIC_SERVICE_PORT=4545 hew run examples/quic_service/server.hew
 
 import std::net::quic;
 import std::fs;

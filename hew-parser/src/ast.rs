@@ -189,6 +189,13 @@ pub enum Expr {
         binding: Option<String>,
         body: Block,
     },
+    Fork {
+        body: Block,
+    },
+    ForkChild {
+        binding: Option<String>,
+        expr: Box<Spanned<Expr>>,
+    },
     InterpolatedString(Vec<StringPart>),
     Call {
         function: Box<Spanned<Expr>>,

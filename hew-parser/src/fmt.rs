@@ -2009,6 +2009,18 @@ impl<'a> Formatter<'a> {
                 self.format_block(body, self.source.len());
                 self.scope_binding = prev_binding;
             }
+            Expr::Fork { body } => {
+                self.write("fork ");
+                self.format_block(body, self.source.len());
+            }
+            Expr::ForkChild { binding, expr } => {
+                self.write("fork ");
+                if let Some(name) = binding {
+                    self.write(name);
+                    self.write(" = ");
+                }
+                self.format_expr(&expr.0);
+            }
             Expr::InterpolatedString(parts) => {
                 self.write("f\"");
                 for part in parts {
@@ -3163,5 +3175,42 @@ extern \"C\" {
         );
         let twice = roundtrip_source(&once);
         assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    #[test]
+    fn fork_block_roundtrips() {
+        let src = "\
+fn main() {
+    let value = fork {
+        1
+    };
+}
+";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn fork_child_forms_roundtrip() {
+        let src = "\
+fn main() {
+    fork child = run();
+    fork run_other();
+}
+";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn nested_fork_roundtrips() {
+        let src = "\
+fn main() {
+    let value = fork {
+        fork worker = run();
+        fork audit();
+        worker
+    };
+}
+";
+        assert_eq!(roundtrip(src), src);
     }
 }

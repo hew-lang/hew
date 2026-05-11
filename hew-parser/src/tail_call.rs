@@ -156,7 +156,8 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::Yield(None)
         | Expr::ScopeCancel
         | Expr::ScopeLaunch(_)
-        | Expr::ScopeSpawn(_) => false,
+        | Expr::ScopeSpawn(_)
+        | Expr::ForkChild { .. } => false,
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             items.iter().any(|(expr, _)| expr_contains_defer(expr))
         }
@@ -166,9 +167,10 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::MapLiteral { entries } => entries
             .iter()
             .any(|(key, value)| expr_contains_defer(&key.0) || expr_contains_defer(&value.0)),
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block, .. } => {
-            block_contains_defer(block)
-        }
+        Expr::Block(block)
+        | Expr::Unsafe(block)
+        | Expr::Scope { body: block, .. }
+        | Expr::Fork { body: block } => block_contains_defer(block),
         Expr::If {
             condition,
             then_block,
@@ -342,7 +344,8 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         | Expr::Yield(None)
         | Expr::ScopeCancel
         | Expr::ScopeLaunch(_)
-        | Expr::ScopeSpawn(_) => {}
+        | Expr::ScopeSpawn(_)
+        | Expr::ForkChild { .. } => {}
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             for (expr, _) in items {
                 mark_expr(expr, false);
@@ -358,7 +361,10 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut value.0, false);
             }
         }
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block, .. } => {
+        Expr::Block(block)
+        | Expr::Unsafe(block)
+        | Expr::Scope { body: block, .. }
+        | Expr::Fork { body: block } => {
             mark_block(block, is_tail_position);
         }
         Expr::If {

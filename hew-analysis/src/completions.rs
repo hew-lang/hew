@@ -529,7 +529,8 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         Expr::Block(block)
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block) => {
+        | Expr::ScopeSpawn(block)
+        | Expr::Fork { body: block } => {
             collect_locals_from_block(block, offset, locals);
         }
         Expr::Scope { binding, body } => {
@@ -538,6 +539,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
             }
             collect_locals_from_block(body, offset, locals);
         }
+        Expr::ForkChild { expr, .. } => collect_locals_from_expr(&expr.0, offset, locals),
         Expr::If {
             then_block,
             else_block,

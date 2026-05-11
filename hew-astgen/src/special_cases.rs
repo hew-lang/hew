@@ -614,10 +614,6 @@ pub fn select_arm_parser() -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VariantDisposition {
     Parsed,
-    #[expect(
-        dead_code,
-        reason = "coverage tables reserve explicit rejection slots for future parser gaps"
-    )]
     Rejected,
 }
 
@@ -639,6 +635,8 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("Spawn", VariantDisposition::Parsed),
     ("SpawnLambdaActor", VariantDisposition::Parsed),
     ("Scope", VariantDisposition::Parsed),
+    ("Fork", VariantDisposition::Rejected),
+    ("ForkChild", VariantDisposition::Rejected),
     ("InterpolatedString", VariantDisposition::Parsed),
     ("Call", VariantDisposition::Parsed),
     ("MethodCall", VariantDisposition::Parsed),

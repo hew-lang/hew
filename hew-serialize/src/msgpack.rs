@@ -671,7 +671,8 @@ fn walk_program<V: SideTableVisitor>(
             Expr::Block(block)
             | Expr::Unsafe(block)
             | Expr::ScopeLaunch(block)
-            | Expr::ScopeSpawn(block) => {
+            | Expr::ScopeSpawn(block)
+            | Expr::Fork { body: block } => {
                 collect_block(block, tco, visitor, out);
             }
             Expr::If {
@@ -716,6 +717,7 @@ fn walk_program<V: SideTableVisitor>(
                 }
             }
             Expr::Scope { body, .. } => collect_block(body, tco, visitor, out),
+            Expr::ForkChild { expr, .. } => collect_expr(expr, tco, visitor, out),
             Expr::InterpolatedString(parts) => {
                 for part in parts {
                     if let StringPart::Expr(expr) = part {

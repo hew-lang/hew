@@ -3221,6 +3221,24 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   auto nextCall =
       mlir::func::CallOp::create(builder, location, nextFuncOp, mlir::ValueRange{genPtr});
   auto nextVal = nextCall.getResult(0);
+  // __next returns the LLVM storage type (e.g. !llvm.ptr for String/Vec/HashMap
+  // generators).  Reconstruct the original semantic yield type so the loop body
+  // sees !hew.string_ref (or the appropriate Hew type) when it uses the variable.
+  // Primitive generators (int, bool, float) are unchanged: toLLVMStorageType is
+  // a no-op and no BitcastOp is emitted.  The semantic type is looked up from
+  // generatorYieldTypes, which is keyed by generator function name at codegen
+  // time — do not re-derive from the AST to respect checker authority.
+  {
+    auto yit = generatorYieldTypes.find(genFuncName);
+    if (yit == generatorYieldTypes.end()) {
+      ++errorCount_;
+      emitError(location) << "missing yield-type metadata for generator '" << genFuncName << "'";
+      return;
+    }
+    auto semanticYieldType = yit->second;
+    if (toLLVMStorageType(semanticYieldType) != semanticYieldType)
+      nextVal = hew::BitcastOp::create(builder, location, semanticYieldType, nextVal);
+  }
 
   SymbolTableScopeT loopScope(symbolTable);
   MutableTableScopeT loopMutScope(mutableVars);

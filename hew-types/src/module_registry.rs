@@ -149,6 +149,10 @@ impl ModuleRegistry {
         }
     }
 
+    pub(crate) fn has_search_paths(&self) -> bool {
+        !self.search_paths.is_empty()
+    }
+
     /// Load a module by its full path (e.g. `std::encoding::json`).
     ///
     /// If the module is already cached, returns the cached version.

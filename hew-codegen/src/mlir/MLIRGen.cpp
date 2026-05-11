@@ -2470,8 +2470,21 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!targetVal)
       return nullptr;
     auto selfRef = hew::ActorSelfOp::create(builder, location, ptrType);
-    return hew::ActorMonitorOp::create(builder, location, builder.getI64Type(), selfRef, targetVal)
-        .getResult();
+    auto rawRef =
+        hew::ActorMonitorOp::create(builder, location, builder.getI64Type(), selfRef, targetVal)
+            .getResult();
+    auto monitorRefType = resolveBuiltinTypeHint([&](mlir::Type ty) {
+      auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(ty);
+      return structTy && structTy.isIdentified() && structTy.getBody().size() == 1 &&
+             structTy.getBody().front() == builder.getI64Type() &&
+             structTy.getName().ends_with("MonitorRef");
+    });
+    if (auto structTy = mlir::dyn_cast_if_present<mlir::LLVM::LLVMStructType>(monitorRefType)) {
+      mlir::Value wrapped = mlir::LLVM::UndefOp::create(builder, location, structTy);
+      return mlir::LLVM::InsertValueOp::create(builder, location, wrapped, rawRef,
+                                               llvm::ArrayRef<int64_t>{0});
+    }
+    return rawRef;
   }
 
   // demonitor(ref_id) — cancel a monitor by reference id

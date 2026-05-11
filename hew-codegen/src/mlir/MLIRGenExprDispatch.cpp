@@ -286,6 +286,15 @@ mlir::Value MLIRGen::generateYieldExpr(const ast::ExprYield &expr) {
       insideGeneratorYieldValue = prevInsideGeneratorYieldValue;
       if (yieldVal) {
         auto yieldLocation = currentLoc;
+        // Lower the yield value to its LLVM storage type before storing into
+        // the coroutine promise.  Hew pointer-like types (StringRef, VecRef,
+        // HashMapRef, HandleRef, ActorRef) are not accepted by llvm.store
+        // directly — they must be bitcast to !llvm.ptr first.  For LLVM
+        // primitives (int, float, bool, struct) toLLVMStorageType is a no-op
+        // and the store is unchanged.
+        auto storageType = toLLVMStorageType(yieldVal.getType());
+        if (storageType != yieldVal.getType())
+          yieldVal = hew::BitcastOp::create(builder, yieldLocation, storageType, yieldVal);
         mlir::LLVM::StoreOp::create(builder, yieldLocation, yieldVal, currentCoroPromisePtr);
         auto suspendMarker = module.lookupSymbol<mlir::func::FuncOp>("__hew_coro_suspend");
         if (suspendMarker) {

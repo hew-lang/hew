@@ -349,6 +349,7 @@ function(add_e2e_file_test_sorted TEST_NAME CATEGORY HEW_NAME)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_sorted.cmake
   )
+  set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES TIMEOUT 90)
 endfunction()
 
 # Helper: verify a .hew file compiles but panics at runtime with expected stderr
@@ -416,6 +417,7 @@ function(add_e2e_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/warn_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_warn_test.cmake
   )
+  set_tests_properties(warn_${CATEGORY}_${HEW_NAME} PROPERTIES TIMEOUT 90)
 endfunction()
 
 function(add_wasm_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
@@ -433,6 +435,7 @@ function(add_wasm_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wasm_warn_test.cmake
   )
   set_tests_properties(wasm_warn_${TEST_NAME} PROPERTIES
+    TIMEOUT 90
     LABELS "wasm"
   )
 endfunction()

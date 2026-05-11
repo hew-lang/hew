@@ -8,6 +8,7 @@ execute_process(
   RESULT_VARIABLE compile_result
   OUTPUT_VARIABLE compile_out
   ERROR_VARIABLE compile_err
+  TIMEOUT 60
 )
 if(NOT compile_result EQUAL 0)
   message(FATAL_ERROR

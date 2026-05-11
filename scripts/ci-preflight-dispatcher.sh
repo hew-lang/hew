@@ -202,7 +202,7 @@ is_wasm_path() {
 
 is_scripts_config_path() {
     case "$1" in
-        Makefile|.gitignore|scripts/*|.config/nextest.toml|.github/workflows/*)
+        Makefile|.gitignore|scripts/*|.config/nextest.toml|.github/workflows/*|Cargo.toml|Cargo.lock|.cargo/*|rust-toolchain*)
             return 0
             ;;
     esac

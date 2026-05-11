@@ -1,0 +1,12 @@
+//! Structured concurrency support types.
+//!
+//! `ScopeError<E>` is the stdlib failure-aggregation shape used by structured
+//! concurrency surfaces to report a primary child error, any additional child
+//! failures, and how many siblings were cancelled.
+
+/// Aggregated failure details for a structured concurrency scope.
+pub type ScopeError<E> {
+    primary: E;
+    also_failed: Vec<E>;
+    cancelled_count: int;
+}

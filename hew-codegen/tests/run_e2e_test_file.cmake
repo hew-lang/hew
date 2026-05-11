@@ -8,5 +8,6 @@ hew_run_e2e_test(
   RUN_COMMAND ${OUT_BIN}
   COMPILE_FAILURE_MESSAGE "Compilation failed"
   RUN_FAILURE_MESSAGE "Execution failed"
+  COMPILE_TIMEOUT 60
   RUN_TIMEOUT 60
 )

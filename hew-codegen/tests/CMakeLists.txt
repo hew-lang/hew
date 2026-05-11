@@ -264,6 +264,7 @@ function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/e2e_${TEST_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test.cmake
   )
+  set_tests_properties(e2e_${TEST_NAME} PROPERTIES TIMEOUT 90)
 endfunction()
 
 add_e2e_test(struct test_struct.hew "30\n")
@@ -332,6 +333,7 @@ function(add_e2e_file_test TEST_NAME CATEGORY HEW_NAME)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_file.cmake
   )
+  set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES TIMEOUT 90)
 endfunction()
 
 # Sorted variant for tests with non-deterministic output ordering
@@ -361,6 +363,7 @@ function(add_e2e_panic_test TEST_NAME CATEGORY HEW_NAME EXPECTED_STDERR)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/panic_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_panic_test.cmake
   )
+  set_tests_properties(panic_${CATEGORY}_${HEW_NAME} PROPERTIES TIMEOUT 90)
 endfunction()
 
 function(add_wasm_panic_test TEST_NAME CATEGORY HEW_NAME EXPECTED_STDERR)
@@ -379,6 +382,7 @@ function(add_wasm_panic_test TEST_NAME CATEGORY HEW_NAME EXPECTED_STDERR)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_panic_test_wasm.cmake
   )
   set_tests_properties(wasm_panic_${CATEGORY}_${HEW_NAME} PROPERTIES
+    TIMEOUT 90
     LABELS "wasm"
   )
 endfunction()
@@ -725,6 +729,7 @@ function(add_wasm_file_test TEST_NAME CATEGORY HEW_NAME)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_wasm.cmake
   )
   set_tests_properties(wasm_${CATEGORY}_${HEW_NAME} PROPERTIES
+    TIMEOUT 90
     LABELS "wasm"
   )
 endfunction()
@@ -745,6 +750,7 @@ function(add_wasm_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_wasm_inline.cmake
   )
   set_tests_properties(wasm_e2e_${TEST_NAME} PROPERTIES
+    TIMEOUT 90
     LABELS "wasm"
   )
 endfunction()
@@ -1005,6 +1011,7 @@ function(add_example_test TEST_NAME HEW_FILE_ABS EXPECTED_FILE_ABS)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_file.cmake
   )
+  set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 90)
 endfunction()
 
 # Playground examples (subcategories: basics, concurrency, types)

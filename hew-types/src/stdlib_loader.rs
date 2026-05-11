@@ -928,7 +928,37 @@ mod tests {
 
             if segments.len() >= 2 {
                 // Subdirectory module: std/encoding/json → std::encoding::json
-                paths.push(segments.join("::"));
+                // Only push the directory as a module when the conventional
+                // package-entry file exists (e.g. std/encoding/json/json.hew),
+                // or when the flat form exists (e.g. std/io.hew alongside std/io/).
+                // If neither exists, treat the individual .hew files inside the
+                // directory as their own modules (namespace directory pattern):
+                // e.g. std/actor/monitor.hew → std::actor::monitor.
+                let last = *segments.last().unwrap();
+                let dir_entry = dir.join(format!("{last}.hew"));
+                let flat_entry = {
+                    // repo_root/std/actor.hew
+                    let mut p = repo_root.to_path_buf();
+                    for seg in &segments {
+                        p = p.join(seg);
+                    }
+                    p.with_extension("hew")
+                };
+                if dir_entry.exists() || flat_entry.exists() {
+                    paths.push(segments.join("::"));
+                } else {
+                    // Namespace directory: discover each .hew file as its own module.
+                    let prefix = segments.join("::");
+                    for entry in &sorted {
+                        let path = entry.path();
+                        if path.extension().is_some_and(|e| e == "hew")
+                            && path.file_name().is_none_or(|f| f != "builtins.hew")
+                        {
+                            let stem = path.file_stem().unwrap().to_str().unwrap();
+                            paths.push(format!("{prefix}::{stem}"));
+                        }
+                    }
+                }
             } else if segments.len() == 1 {
                 // Root-level files: std/fs.hew → std::fs — each file is its own module
                 for entry in &sorted {
@@ -1239,6 +1269,43 @@ mod tests {
         assert_eq!(
             c_target, "from_path",
             "from_path must be identity-mapped (not forwarded to from_ext)"
+        );
+    }
+
+    /// Pins the namespace-directory fix from `d0db9ada`.
+    ///
+    /// A directory that has no same-name entry file (e.g. `std/actor/` with no
+    /// `std/actor/actor.hew` and no `std/actor.hew`) is a namespace directory.
+    /// Each `.hew` file inside it must be discovered as its own module:
+    /// `fake::ns::alpha` and `fake::ns::beta`, not `fake::ns`.
+    #[test]
+    fn namespace_directory_enumerates_each_hew_file_as_own_module() {
+        let dir = TestDir::new("ns-discovery");
+        let root = &dir.root;
+
+        // Build a layout that matches std/actor/:
+        //   <root>/fake/ns/alpha.hew
+        //   <root>/fake/ns/beta.hew
+        // No <root>/fake/ns/ns.hew, no <root>/fake/ns.hew.
+        let ns_dir = root.join("fake").join("ns");
+        fs::create_dir_all(&ns_dir).unwrap();
+        fs::write(ns_dir.join("alpha.hew"), "pub fn alpha() {}\n").unwrap();
+        fs::write(ns_dir.join("beta.hew"), "pub fn beta() {}\n").unwrap();
+
+        let mut paths = Vec::new();
+        discover_modules(&root.join("fake"), root, &mut paths);
+
+        assert!(
+            paths.contains(&"fake::ns::alpha".to_string()),
+            "namespace dir: alpha.hew must become fake::ns::alpha, got: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"fake::ns::beta".to_string()),
+            "namespace dir: beta.hew must become fake::ns::beta, got: {paths:?}"
+        );
+        assert!(
+            !paths.contains(&"fake::ns".to_string()),
+            "namespace dir must NOT produce fake::ns (no entry file), got: {paths:?}"
         );
     }
 }

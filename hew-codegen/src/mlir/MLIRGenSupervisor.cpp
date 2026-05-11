@@ -102,6 +102,20 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
       hew::SupervisorNewOp::create(builder, location, ptrType, strategy, maxRestartsI32, windowVal)
           .getResult();
 
+  // actorChildIndex counts only actor children, not nested-supervisor children.
+  // It must stay in lock-step with the runtime's `child_specs` array, which is
+  // also populated only for actor children (via hew_supervisor_add_child_spec,
+  // called in the actor-child branch below).  `hew_supervisor_set_child_state_drop`
+  // uses this index to tie a state-drop callback to a specific child_specs slot.
+  //
+  // Invariant: for every actor child processed in order, actorChildIndex equals
+  // that child's zero-based position in child_specs[].  Nested-supervisor children
+  // are added to a separate child_supervisors[] list and must NOT bump this counter
+  // (see `continue` in the nested-supervisor branch below).  A wrong index causes
+  // the state-drop callback to be stored at the wrong child_specs slot, which
+  // silently leaks the actor's heap-owned state on restart.
+  int actorChildIndex = 0;
+
   // Iterate over children and add each to the supervisor
   for (const auto &child : decl.children) {
     const auto &childName = child.name;
@@ -126,6 +140,7 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
       // Call hew_supervisor_add_child_supervisor_with_init(parent, child, init_fn)
       hew::SupervisorAddChildSupervisorOp::create(builder, location, i32Type, supervisorPtr,
                                                   childSupPtr, initFuncPtr);
+      // Supervisor children live in a separate list; do not bump actorChildIndex.
       continue;
     }
 
@@ -238,6 +253,37 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
 
     // 8. Call hew_supervisor_add_child_spec(supervisor, &spec)
     hew::SupervisorAddChildOp::create(builder, location, i32Type, supervisorPtr, specPtr);
+
+    // 9. Register state-drop callback on the supervisor spec so that every
+    //    restart path (not just the initial spawn) calls it on the new actor.
+    //    Mirrors the hew_actor_set_state_drop call emitted after a direct spawn.
+    //
+    //    No null-guard on supervisorPtr here: hew_supervisor_new allocates via
+    //    Box::new which aborts on OOM rather than returning null, so supervisorPtr
+    //    is always non-null at this point. This differs from the direct-spawn path
+    //    in ActorSpawnOpLowering (codegen.cpp) where the spawn result can be null
+    //    on allocation failure and is guarded by an explicit ICmpOp != 0 check
+    //    before calling hew_actor_set_state_drop.
+    {
+      std::string stateDropName = actorTypeName + "_state_drop";
+      if (module.lookupSymbol<mlir::func::FuncOp>(stateDropName)) {
+        auto stateDropFuncType = builder.getFunctionType({ptrType}, {});
+        getOrCreateExternFunc(stateDropName, stateDropFuncType);
+        auto stateDropPtr =
+            hew::FuncPtrOp::create(builder, location, ptrType,
+                                   mlir::SymbolRefAttr::get(&context, stateDropName))
+                .getResult();
+
+        auto setChildStateDropFuncType = builder.getFunctionType({ptrType, i32Type, ptrType}, {});
+        auto setChildStateDropFunc =
+            getOrCreateExternFunc("hew_supervisor_set_child_state_drop", setChildStateDropFuncType);
+        auto childIdxVal = createIntConstant(builder, location, i32Type, actorChildIndex);
+        mlir::func::CallOp::create(builder, location, setChildStateDropFunc,
+                                   mlir::ValueRange{supervisorPtr, childIdxVal, stateDropPtr});
+      }
+    }
+
+    ++actorChildIndex;
   }
 
   // Start the supervisor (begins watching for child crashes)

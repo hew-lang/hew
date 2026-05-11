@@ -795,7 +795,8 @@ private:
   std::unordered_set<std::string> generatedActorBodies;
 
   // ── Supervisor names → child actor types ─────────────────────
-  // Maps supervisor name → ordered list of child actor type names
+  // Maps supervisor name → ordered list of child type names (ALL children,
+  // including nested supervisors). Used for "is this a supervisor?" checks.
   std::unordered_map<std::string, std::vector<std::string>> supervisorChildren;
   // Maps supervisor name → ordered list of (child_name, child_actor_type)
   std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>>
@@ -1052,6 +1053,17 @@ private:
   /// field of the struct (String, Vec, HashMap, etc.).  The user's Drop body
   /// runs first (can read field values), then we free the heap allocations.
   void emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location loc);
+  /// Emit drops for an actor's user-declared state fields, given a pointer to
+  /// the actor state allocation and the identified state struct type. Walks
+  /// only the first `numUserFields` entries — hidden init-param slots are
+  /// intentionally skipped because the init body has already moved their
+  /// contents into the user fields (see MLIRGenActor section 2d). Reuses the
+  /// __auto_field_drop / nested-user-Drop / closure null-guard logic shared
+  /// with emitFieldDropsForUserStruct so the codegen-emitted state-drop
+  /// matches the canonical struct-drop path.
+  void emitFieldDropsForActorState(mlir::Value statePtr, mlir::LLVM::LLVMStructType stateTy,
+                                   llvm::ArrayRef<mlir::Type> fieldHewTypes, size_t numUserFields,
+                                   mlir::Location loc);
   /// Rebuild a struct value with all transferred handle fields nulled.
   mlir::Value nullTransferredHandlesInStructValue(mlir::Value structVal, mlir::Location loc);
   /// Store a handle-zeroed version of a retained struct back into its drop slot.

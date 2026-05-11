@@ -793,6 +793,59 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     builder.restoreInsertionPoint(savedIP);
   }
 
+  // 2d. Generate state-drop function:
+  //     void ActorName_state_drop(ptr state)
+  //
+  // Walks every owned field of the actor's state struct (user-declared
+  // fields + init-param hidden fields) and invokes its Drop callback so
+  // that types like Vec, String, HashMap, closures, and user `impl Drop`
+  // handles release their resources before `libc::free(a.state)` runs in
+  // the runtime free path.  Emitted unconditionally for every actor: when
+  // the state has no owned fields the body is empty and the call is a
+  // cheap no-op the optimizer can inline away.
+  //
+  // The state-drop runs AFTER the user's `terminate { }` block and BEFORE
+  // the trailing `libc::free(a.state)` (see free_actor_resources in
+  // hew-runtime/src/actor.rs).  It mirrors the four-touch pattern used for
+  // terminate_fn: codegen emits the symbol here, hew.actor_spawn lowering
+  // wires it via hew_actor_set_state_drop, and the runtime invokes the
+  // pointer through the HewActor::state_drop_fn slot.
+  {
+    auto location = actorLoc;
+    std::string stateDropName = actorName + "_state_drop";
+    auto stateDropFuncType = builder.getFunctionType({ptrType}, {});
+
+    auto savedIP = builder.saveInsertionPoint();
+    builder.setInsertionPointToEnd(module.getBody());
+    auto stateDropFuncOp =
+        mlir::func::FuncOp::create(builder, location, stateDropName, stateDropFuncType);
+    auto *entryBlock = stateDropFuncOp.addEntryBlock();
+    builder.setInsertionPointToStart(entryBlock);
+
+    FunctionGenerationScope funcScope(*this, stateDropFuncOp);
+
+    auto selfPtr = entryBlock->getArgument(0);
+
+    // Route through the shared per-actor helper so the __auto_field_drop
+    // sentinel (MLIRGen.cpp:6585-6630), nested user-Drop recursion
+    // (MLIRGen.cpp:6814-6815), and closure env null-guard all match the
+    // canonical struct-drop path. The helper walks only the first
+    // `numUserFields` entries of the state struct; hidden init-param
+    // slots and generator-frame ptrs are intentionally skipped — dropping
+    // the hidden init-param slot would double-drop on the normal
+    // `field = arg` path, since the init body does not null the source
+    // slot after the move.
+    if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(actorInfo.stateType)) {
+      emitFieldDropsForActorState(selfPtr, structTy, actorInfo.fieldHewTypes,
+                                  actorInfo.numUserFields, location);
+    }
+
+    if (!hasRealTerminator(builder.getInsertionBlock()))
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
+
+    builder.restoreInsertionPoint(savedIP);
+  }
+
   // 3. Generate dispatch function:
   //    void ActorName_dispatch(ptr state, i32 msg_type, ptr data, size_t data_size)
   {
@@ -920,6 +973,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     } else {
       // No wire handlers: use standard hew.receive op
       llvm::SmallVector<mlir::Attribute, 4> handlerRefs;
+      llvm::SmallVector<mlir::Attribute, 4> handlerReturnTypeAttrs;
       for (size_t i = 0; i < actorInfo.receiveFns.size(); ++i) {
         const auto &recvFn = actorInfo.receiveFns[i];
         std::string recvHandlerName = actorName + "_" + recvFn.name;
@@ -935,10 +989,17 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         getOrCreateExternFunc(recvHandlerName, recvFuncType);
 
         handlerRefs.push_back(mlir::FlatSymbolRefAttr::get(&context, recvHandlerName));
+        // Pin the original Hew-level return type so the lowering pass can
+        // make ownership-transfer decisions independent of any later
+        // function-signature type conversion. Void handlers carry NoneType.
+        mlir::Type origRetType =
+            recvFn.returnType.has_value() ? *recvFn.returnType : mlir::NoneType::get(&context);
+        handlerReturnTypeAttrs.push_back(mlir::TypeAttr::get(origRetType));
       }
 
       hew::ReceiveOp::create(builder, location, stateArg, msgTypeArg, dataArg, dataSizeArg,
-                             builder.getArrayAttr(handlerRefs));
+                             builder.getArrayAttr(handlerRefs),
+                             builder.getArrayAttr(handlerReturnTypeAttrs));
     }
 
     // Return void from dispatch
@@ -1441,10 +1502,50 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 
     llvm::SmallVector<mlir::Attribute, 1> handlerRefs;
     handlerRefs.push_back(mlir::FlatSymbolRefAttr::get(&context, receiveName));
+    // Lambda actors have a single void receive handler — pin NoneType so
+    // ReceiveOpLowering's ownership-transfer logic sees the void return
+    // explicitly and skips any owned-payload cloning.
+    llvm::SmallVector<mlir::Attribute, 1> handlerReturnTypeAttrs;
+    handlerReturnTypeAttrs.push_back(mlir::TypeAttr::get(mlir::NoneType::get(&context)));
 
     hew::ReceiveOp::create(builder, location, stateArg, msgTypeArg, dataArg, dataSizeArg,
-                           builder.getArrayAttr(handlerRefs));
+                           builder.getArrayAttr(handlerRefs),
+                           builder.getArrayAttr(handlerReturnTypeAttrs));
     mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
+  }
+
+  // Generate state-drop for the lambda actor.  Captured variables that
+  // are owned types (Vec, String, HashMap, closures, user-Drop structs)
+  // are deep-copied into the lambda actor's state at spawn time, so the
+  // lambda actor owns those copies for its lifetime and must drop them
+  // before the runtime free path raw-frees the state allocation. Mirror
+  // the four-touch pattern from `generateActorDecl` section 2d.
+  {
+    std::string stateDropName = actorName + "_state_drop";
+    auto stateDropFuncType = builder.getFunctionType({ptrType}, {});
+    builder.setInsertionPointToEnd(module.getBody());
+    auto stateDropFuncOp =
+        mlir::func::FuncOp::create(builder, location, stateDropName, stateDropFuncType);
+    auto *entryBlock = stateDropFuncOp.addEntryBlock();
+    builder.setInsertionPointToStart(entryBlock);
+
+    FunctionGenerationScope funcScope(*this, stateDropFuncOp);
+    auto selfPtr = entryBlock->getArgument(0);
+
+    // Lambda actors have no init-param hidden slots; every captured
+    // variable is a user field, so route through the shared helper with
+    // `numUserFields = capturedVars.size()`. This collapses the
+    // duplicated open-coded loop and inherits the __auto_field_drop
+    // sentinel handling, nested user-Drop recursion, and closure env
+    // null-guard the canonical struct-drop path provides.
+    std::vector<mlir::Type> capturedTypes;
+    capturedTypes.reserve(capturedVars.size());
+    for (const auto &cv : capturedVars)
+      capturedTypes.push_back(cv.value.getType());
+    emitFieldDropsForActorState(selfPtr, stateType, capturedTypes, capturedTypes.size(), location);
+
+    if (!hasRealTerminator(builder.getInsertionBlock()))
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
   }
 
   builder.restoreInsertionPoint(savedIP);
@@ -1468,6 +1569,30 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
       /*overflow_policy=*/mlir::IntegerAttr{},
       /*coalesce_key_fn=*/mlir::FlatSymbolRefAttr{},
       /*coalesce_fallback=*/mlir::IntegerAttr{});
+
+  // Ownership transfer for captured variables.  The lambda actor's state-drop
+  // function (emitted above) owns each captured value and will drop it on
+  // actor close.  Mirror the send/ask boundary policy:
+  //   - String/Vec/HashMap/Closure are deep-copied by ActorSpawnOpLowering
+  //     (strdup/hew_vec_clone/hew_hashmap_clone_impl/hew_rc_clone), so the
+  //     sender retains an independent copy and keeps its drop registration.
+  //   - Auto-field-drop structs are deep-copied field-by-field; the sender
+  //     keeps its copy but any handle fields transfer (null out the source).
+  //   - Everything else (plain structs, user-Drop structs, scalars) is
+  //     passed by value with no clone — the receiver becomes the sole owner
+  //     and the sender must unregister to avoid a double drop.
+  for (const auto &cv : capturedVars) {
+    auto cvType = cv.value.getType();
+    if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::ClosureType>(cvType))
+      continue;
+    if (actorBoundarySenderRetainsOwnership(cvType)) {
+      if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(cvType);
+          structTy && structTy.isIdentified())
+        nullOutTransferredHandleFields(cv.name, location);
+      continue;
+    }
+    unregisterDroppable(cv.name);
+  }
 
   hasActors = true;
   auto result = spawnOp.getResult();
@@ -1504,7 +1629,6 @@ bool MLIRGen::actorBoundarySenderRetainsOwnership(mlir::Type valueType) const {
 std::optional<llvm::SmallVector<mlir::Value, 4>>
 MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location,
                                bool retainAllTemporaries) {
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   llvm::SmallVector<mlir::Value, 4> argVals;
   for (const auto &arg : args) {
     const auto &argSpanned = ast::callArgExpr(arg);

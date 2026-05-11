@@ -330,6 +330,11 @@ struct InternalChildSpec {
     next_restart_time_ns: u64,
     /// Circuit breaker state for this child.
     circuit_breaker: CircuitBreakerState,
+    /// Codegen-emitted drop callback for owned state fields (e.g. `Vec`, `String`).
+    /// Registered via [`hew_supervisor_set_child_state_drop`] after the child spec
+    /// is added. Every restart path calls this on the newly spawned actor so that
+    /// restarted actors free their heap-allocated state fields on teardown.
+    state_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 impl Drop for InternalChildSpec {
@@ -363,6 +368,7 @@ impl Default for InternalChildSpec {
             max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
             next_restart_time_ns: 0,
             circuit_breaker: CircuitBreakerState::default(),
+            state_drop_fn: None,
         }
     }
 }
@@ -907,17 +913,20 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
 /// restarts) or equal to `child_count` (for initial spawns, where the
 /// caller is responsible for pushing the result onto the `children` vec).
 unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
-    let spec = &sup.child_specs[index];
-
-    let opts = HewActorOpts {
-        init_state: spec.init_state,
-        state_size: spec.init_state_size,
-        dispatch: spec.dispatch,
-        mailbox_capacity: spec.mailbox_capacity,
-        overflow: spec.overflow,
-        coalesce_key_fn: None,
-        coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
-        budget: 0,
+    // Copy scalar fields out before any mutable borrow of child_specs.
+    let (opts, state_drop_fn) = {
+        let spec = &sup.child_specs[index];
+        let opts = HewActorOpts {
+            init_state: spec.init_state,
+            state_size: spec.init_state_size,
+            dispatch: spec.dispatch,
+            mailbox_capacity: spec.mailbox_capacity,
+            overflow: spec.overflow,
+            coalesce_key_fn: None,
+            coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
+            budget: 0,
+        };
+        (opts, spec.state_drop_fn)
     };
 
     // SAFETY: opts is valid.
@@ -938,7 +947,15 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             }
         }
 
-        // Record successful restart for circuit breaker
+        // Register the state-drop callback so restarted actors free their
+        // heap-allocated fields (e.g. Vec, String) on teardown.
+        if let Some(drop_fn) = state_drop_fn {
+            // SAFETY: new_child is valid; drop_fn is a codegen-emitted
+            // function with the correct signature.
+            unsafe { actor::hew_actor_set_state_drop(new_child, drop_fn) };
+        }
+
+        // Record successful restart for circuit breaker.
         circuit_breaker_record_success(&mut sup.child_specs[index]);
     }
 
@@ -1035,7 +1052,12 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                     .spawn(move || {
                         for d in deferred {
                             // SAFETY: actor was stopped; supervisor no longer references it.
-                            unsafe { actor::hew_actor_free(d.0) };
+                            // Use the restart-aware free path so the codegen
+                            // state-drop does NOT run on field pointers that
+                            // are still byte-aliased by `spec.init_state` and
+                            // about to be reused by `restart_child_from_spec`.
+                            // See `actor::free_actor_resources_with_options`.
+                            unsafe { actor::hew_actor_free_for_restart(d.0) };
                         }
                     })
                     .is_err()
@@ -1065,7 +1087,12 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                     .spawn(move || {
                         for d in deferred {
                             // SAFETY: actor was stopped; supervisor no longer references it.
-                            unsafe { actor::hew_actor_free(d.0) };
+                            // Use the restart-aware free path so the codegen
+                            // state-drop does NOT run on field pointers that
+                            // are still byte-aliased by `spec.init_state` and
+                            // about to be reused by `restart_child_from_spec`.
+                            // See `actor::free_actor_resources_with_options`.
+                            unsafe { actor::hew_actor_free_for_restart(d.0) };
                         }
                     })
                     .is_err()
@@ -1415,6 +1442,8 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
+        // Registered by hew_supervisor_set_child_state_drop after this call.
+        state_drop_fn: None,
     });
 
     // Spawn the child actor.
@@ -2243,6 +2272,27 @@ pub unsafe extern "C" fn hew_supervisor_get_child_circuit_state(
 ///
 /// Returns the child index (≥ 0) on success, -1 on error.
 ///
+/// **State-drop registration**: this function does not accept a `state_drop_fn`
+/// parameter. If the child actor type has owned heap fields, the caller must
+/// invoke [`hew_supervisor_set_child_state_drop`] immediately after this
+/// call returns — before any other thread can crash and restart the child:
+///
+/// ```text
+/// let idx = hew_supervisor_add_child_dynamic(sup, spec);
+/// if idx >= 0 {
+///     hew_supervisor_set_child_state_drop(sup, idx, my_state_drop);
+/// }
+/// ```
+///
+/// If the supervisor is already running (`hew_supervisor_start` has been
+/// called), the child is spawned immediately inside this call.  A crash
+/// between the return of this function and the `set_child_state_drop` call
+/// will restart the child without the drop callback, leaking any owned fields
+/// in the original actor's state.  For most use-cases this window is
+/// acceptable; the restart callback is wired before the child processes its
+/// first message.  Callers that cannot tolerate any window should stop the
+/// supervisor, add the child, register the drop, then restart.
+///
 /// # Safety
 ///
 /// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
@@ -2302,6 +2352,10 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
+        // Registered by the caller via hew_supervisor_set_child_state_drop
+        // immediately after this call returns. See the function doc comment
+        // for the race-window analysis and calling contract.
+        state_drop_fn: None,
     });
 
     // Spawn the child if the supervisor is running.
@@ -2405,6 +2459,64 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
     s.child_specs.pop();
     s.child_count -= 1;
     0
+}
+
+/// Register a state-drop callback for a child actor spec.
+///
+/// Called by codegen immediately after [`hew_supervisor_add_child_spec`] to
+/// attach the actor-type's drop function to the internal spec. Every restart
+/// path (initial spawn and all subsequent restarts) calls the registered
+/// function on the newly spawned actor so that heap-allocated state fields
+/// (e.g. `Vec`, `String`) are freed on teardown.
+///
+/// `child_index` is the zero-based index of the child whose spec should be
+/// updated. Indices are stable until [`hew_supervisor_remove_child`] is called.
+///
+/// # Safety
+///
+/// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+/// - `child_index` must be a valid index (0 ≤ index < `child_count`).
+/// - `state_drop_fn` must be a valid function pointer with C ABI that accepts
+///   a `*mut c_void` pointing to the actor's state struct and frees every
+///   heap-allocated field inside it without freeing the struct itself.
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_set_child_state_drop(
+    sup: *mut HewSupervisor,
+    child_index: c_int,
+    state_drop_fn: unsafe extern "C" fn(*mut c_void),
+) {
+    if sup.is_null() || child_index < 0 {
+        return;
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &mut *sup };
+
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "child_index is checked to be non-negative"
+    )]
+    let idx = child_index as usize;
+
+    if idx >= s.child_count {
+        return;
+    }
+
+    s.child_specs[idx].state_drop_fn = Some(state_drop_fn);
+
+    // Guard the children-slot read so a concurrent supervisor restart on
+    // another thread cannot replace s.children[idx] between the load and
+    // the hew_actor_set_state_drop call (which would leave the new actor
+    // without a state-drop registration).
+    let _guard = s.children_lock.lock_or_recover();
+
+    // Register on the already-spawned actor for its first run (the initial
+    // spawn happens inside add_child_spec before this setter is called).
+    let child = s.children[idx];
+    if !child.is_null() {
+        // SAFETY: child is a valid actor pointer; state_drop_fn has the
+        // correct signature.
+        unsafe { actor::hew_actor_set_state_drop(child, state_drop_fn) };
+    }
 }
 
 // ── Circuit breaker constants for C ABI ────────────────────────────────────────

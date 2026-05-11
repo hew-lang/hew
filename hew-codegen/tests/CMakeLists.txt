@@ -978,6 +978,8 @@ set_tests_properties(
   e2e_supervisor_supervisor_restart
   e2e_supervisor_supervisor_nested
   e2e_supervisor_supervisor_named_child
+  e2e_supervisor_supervisor_mixed_children
+  e2e_supervisor_supervisor_restart_heap_state
   PROPERTIES
     RESOURCE_LOCK actor_crash_tests
     PROCESSORS   2
@@ -1629,6 +1631,10 @@ add_wasm_file_test(actor_receive_compound_return   e2e_actor_drop   actor_receiv
 add_wasm_file_test(actor_receive_hashset_drop      e2e_actor_drop   actor_receive_hashset_drop)
 add_wasm_file_test(actor_send_named_drop           e2e_actor_drop   actor_send_named_drop)
 add_wasm_file_test(actor_send_vec_drop             e2e_actor_drop   actor_send_vec_drop)
+add_wasm_file_test(actor_state_drop_on_kill        e2e_actor_drop   actor_state_drop_on_kill)
+add_wasm_file_test(lambda_actor_state_drop         e2e_actor_drop   lambda_actor_state_drop)
+add_wasm_file_test(actor_auto_field_drop           e2e_actor_drop   actor_auto_field_drop)
+add_wasm_file_test(actor_nested_user_drop          e2e_actor_drop   actor_nested_user_drop)
 add_wasm_file_test(ex_actor_lifecycle         e2e_examples     test_actor_lifecycle)
 add_wasm_file_test(ex_struct_spawn            e2e_examples     struct_spawn_test)
 add_wasm_file_test(ex_lambda_capture          e2e_examples     lambda_capture_basic)

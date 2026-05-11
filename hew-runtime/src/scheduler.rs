@@ -807,7 +807,7 @@ fn activate_actor(actor: *mut HewActor) {
                     if !reply_consumed && !crash_reply.is_null() {
                         // SAFETY: crash_reply is a valid HewReplyChannel pointer.
                         unsafe {
-                            crate::reply_channel::hew_reply(
+                            let _ = crate::reply_channel::hew_reply(
                                 crash_reply.cast(),
                                 std::ptr::null_mut(),
                                 0,
@@ -1191,6 +1191,7 @@ mod tests {
             init_state_size: 0,
             coalesce_key_fn: None,
             terminate_fn: None,
+            state_drop_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
@@ -1308,6 +1309,7 @@ mod tests {
             init_state_size: 0,
             coalesce_key_fn: None,
             terminate_fn: None,
+            state_drop_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
@@ -1820,6 +1822,7 @@ mod tests {
             init_state_size: 0,
             coalesce_key_fn: None,
             terminate_fn: None,
+            state_drop_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),

@@ -59,6 +59,7 @@ pub struct HewActor {
     pub init_state_size: usize,
     pub coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
     pub terminate_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub state_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
     pub terminate_called: AtomicBool,
     pub terminate_finished: AtomicBool,
     pub error_code: AtomicI32,
@@ -112,6 +113,7 @@ const _: () = {
     assert!(offset_of!(W, init_state_size) == offset_of!(N, init_state_size));
     assert!(offset_of!(W, coalesce_key_fn) == offset_of!(N, coalesce_key_fn));
     assert!(offset_of!(W, terminate_fn) == offset_of!(N, terminate_fn));
+    assert!(offset_of!(W, state_drop_fn) == offset_of!(N, state_drop_fn));
     assert!(offset_of!(W, terminate_called) == offset_of!(N, terminate_called));
     assert!(offset_of!(W, terminate_finished) == offset_of!(N, terminate_finished));
     assert!(offset_of!(W, error_code) == offset_of!(N, error_code));
@@ -1425,6 +1427,7 @@ mod tests {
             init_state_size: 0,
             coalesce_key_fn: None,
             terminate_fn: None,
+            state_drop_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
@@ -1467,7 +1470,7 @@ mod tests {
             let mut reply_value = state.value * 2;
             // SAFETY: reply channel comes from the in-flight message.
             unsafe {
-                crate::reply_channel_wasm::hew_reply(
+                let _ = crate::reply_channel_wasm::hew_reply(
                     state.channel.cast(),
                     (&raw mut reply_value).cast(),
                     std::mem::size_of::<i32>(),
@@ -1512,7 +1515,7 @@ mod tests {
 
         // SAFETY: ch is the active ask reply channel for this dispatch.
         unsafe {
-            crate::reply_channel_wasm::hew_reply(
+            let _ = crate::reply_channel_wasm::hew_reply(
                 ch.cast(),
                 (&raw mut reply_value).cast(),
                 std::mem::size_of::<i32>(),
@@ -1548,7 +1551,7 @@ mod tests {
 
         // SAFETY: ch is the active ask reply channel for this dispatch.
         unsafe {
-            crate::reply_channel_wasm::hew_reply(
+            let _ = crate::reply_channel_wasm::hew_reply(
                 ch.cast(),
                 (&raw mut reply_value).cast(),
                 std::mem::size_of::<i32>(),
@@ -3862,6 +3865,7 @@ mod tests {
             init_state_size: 0,
             coalesce_key_fn: None,
             terminate_fn: None,
+            state_drop_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
@@ -5130,7 +5134,7 @@ mod tests {
                     // SAFETY: ch was retained in phase 1; the caller's ref
                     // keeps it alive.  hew_reply will release our extra retain.
                     unsafe {
-                        crate::reply_channel_wasm::hew_reply(
+                        let _ = crate::reply_channel_wasm::hew_reply(
                             ch,
                             (&raw mut v).cast(),
                             std::mem::size_of::<i32>(),

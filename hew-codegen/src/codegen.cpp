@@ -1118,6 +1118,45 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
       }
     }
 
+    // Register state-drop function. Codegen emits `<ActorName>_state_drop`
+    // for declared actors (MLIRGenActor.cpp section 2d) and for spawned
+    // lambda actors (`generateSpawnLambdaActorExpr`). The lookup guard
+    // mirrors `_terminate` above so that any future actor-emit path that
+    // skips state-drop generation degrades to a no-op rather than a link
+    // failure.
+    {
+      std::string stateDropName = op.getActorName().str() + "_state_drop";
+      if (module.lookupSymbol<mlir::func::FuncOp>(stateDropName)) {
+        auto stateDropFuncType = rewriter.getFunctionType({ptrType}, {});
+        getOrInsertFuncDecl(module, rewriter, stateDropName, stateDropFuncType);
+        auto stateDropFuncRef = mlir::func::ConstantOp::create(
+            rewriter, loc, stateDropFuncType,
+            mlir::SymbolRefAttr::get(rewriter.getContext(), stateDropName));
+        auto stateDropPtr = mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType,
+                                                                     stateDropFuncRef.getResult())
+                                .getResult(0);
+
+        auto setStateDropFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
+        getOrInsertFuncDecl(module, rewriter, "hew_actor_set_state_drop", setStateDropFuncType);
+
+        // Spawn paths return null on allocation failure. Skip the setter
+        // call when `result` is null so we don't reach the runtime FFI on
+        // an OOM. The runtime guard in `hew_actor_set_state_drop` is the
+        // primary defence; this codegen guard avoids the FFI hop entirely
+        // and matches the `if let Some(state_drop_fn)` shape used in the
+        // free path.
+        auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+        auto nonNull = mlir::LLVM::ICmpOp::create(rewriter, loc, rewriter.getI1Type(),
+                                                  mlir::LLVM::ICmpPredicate::ne, result, nullPtr);
+        auto guardOp = mlir::scf::IfOp::create(rewriter, loc, nonNull, /*withElseRegion=*/false);
+        auto savedIP = rewriter.saveInsertionPoint();
+        rewriter.setInsertionPointToStart(&guardOp.getThenRegion().front());
+        mlir::func::CallOp::create(rewriter, loc, "hew_actor_set_state_drop", mlir::TypeRange{},
+                                   mlir::ValueRange{result, stateDropPtr});
+        rewriter.restoreInsertionPoint(savedIP);
+      }
+    }
+
     rewriter.replaceOp(op, result);
     return mlir::success();
   }
@@ -1995,6 +2034,20 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
     auto dataSizeVal = adaptor.getDataSize();
 
     auto handlers = op.getHandlers();
+    auto handlerReturnTypeAttrs = op.getHandlerReturnTypes();
+
+    // Fail-closed: the handler_return_types attribute is the source of
+    // truth for ownership decisions on reply payloads (see HewOps.td and
+    // the ownership-transfer block below). Reading the return type from
+    // the handler `func.func` signature here is unsafe because function
+    // signature conversion runs in the same applyPartialConversion call
+    // and may have already rewritten `!hew.string_ref` to `!llvm.ptr`,
+    // making the original ownership intent unrecoverable.
+    if (handlerReturnTypeAttrs.size() != handlers.size()) {
+      return op.emitOpError("handler_return_types attribute size (")
+             << handlerReturnTypeAttrs.size() << ") does not match handlers size ("
+             << handlers.size() << ")";
+    }
 
     // Handler parameter types are derived from the module symbol table.
     // This is idiomatic MLIR — symbol resolution is O(1) and avoids
@@ -2079,6 +2132,79 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       auto getReplyFuncType = rewriter.getFunctionType({}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_get_reply_channel", getReplyFuncType);
 
+      // Resolve and validate the original Hew-level return type from the
+      // hew.receive op's `handler_return_types` attribute *before* branching
+      // on whether the handler has a result.  Reading
+      // `handlerType.getResult(0)` later is unsafe — by the time this
+      // pattern fires the handler `func.func` may already have been
+      // signature-converted by
+      // `populateFunctionOpInterfaceTypeConversionPattern` running in the
+      // same `applyPartialConversion` call, which would lower
+      // `!hew.string_ref` to `!llvm.ptr` and silently drop the ownership-
+      // transfer cloning below (the bug behind PR #1717's double-free
+      // regression on Linux: e2e_coverage_actor_multi_handler,
+      // e2e_memory_actor_field_string_ownership).
+      //
+      // Fail-closed metadata invariants (see HewOps.td for the contract):
+      //   - each slot must be a TypeAttr;
+      //   - handlers must be single-result or void; multi-result is not
+      //     supported by the dispatch ABI;
+      //   - `NoneType` iff `handlerType.getNumResults() == 0`.
+      // Violations emit `emitOpError` and abort lowering rather than
+      // silently lowering the wrong ownership policy. This matches the
+      // checker-output boundary invariant for codegen metadata.
+      auto origRetTypeAttr = mlir::dyn_cast<mlir::TypeAttr>(handlerReturnTypeAttrs[idx]);
+      if (!origRetTypeAttr) {
+        return op.emitOpError("handler_return_types[")
+               << idx << "] is not a TypeAttr (got " << handlerReturnTypeAttrs[idx] << ")";
+      }
+      auto origReturnType = origRetTypeAttr.getValue();
+      auto numHandlerResults = handlerType.getNumResults();
+      if (numHandlerResults > 1) {
+        return op.emitOpError("handler '")
+               << handlerName << "' has " << numHandlerResults
+               << " results; receive dispatch only supports zero or one";
+      }
+      bool metadataIsNone = mlir::isa<mlir::NoneType>(origReturnType);
+      bool handlerIsVoid = (numHandlerResults == 0);
+      if (handlerIsVoid && !metadataIsNone) {
+        return op.emitOpError("handler '")
+               << handlerName << "' is void but handler_return_types[" << idx << "] is "
+               << origReturnType << " (expected NoneType); metadata/signature mismatch";
+      }
+      if (!handlerIsVoid && metadataIsNone) {
+        return op.emitOpError("handler '")
+               << handlerName << "' has a result but handler_return_types[" << idx
+               << "] is NoneType; cannot determine ownership-transfer "
+                  "policy for reply payload";
+      }
+      // Cross-check metadata against the handler's actual result shape.
+      // Without this, a malformed slot like `i64` on a `String`-returning
+      // handler would slip past the None/non-None gate above, miss the
+      // pointer-shaped clone branch below, and reintroduce the same
+      // double-free hazard the metadata was added to prevent.
+      // Compute the lowered shape implied by the metadata and compare to
+      // the handler's actual lowered result. If they disagree, the metadata
+      // is corrupt and lowering must abort rather than guess an ownership
+      // policy from a stale signature.
+      if (!handlerIsVoid) {
+        auto metadataLowered = lowerType(origReturnType);
+        if (!metadataLowered) {
+          return op.emitOpError("handler_return_types[")
+                 << idx << "] type " << origReturnType
+                 << " has no LLVM lowering; cannot validate against handler '" << handlerName
+                 << "' result shape";
+        }
+        if (metadataLowered != loweredResults[0]) {
+          return op.emitOpError("handler_return_types[")
+                 << idx << "] = " << origReturnType << " (lowers to " << metadataLowered
+                 << ") disagrees with handler '" << handlerName << "' lowered result "
+                 << loweredResults[0]
+                 << "; metadata/signature mismatch — refusing to guess "
+                    "ownership-transfer policy";
+        }
+      }
+
       bool hasReturnType = !loweredResults.empty();
       if (hasReturnType) {
         // Call handler and capture return value (use lowered result types
@@ -2099,17 +2225,134 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         auto replyIfOp = mlir::scf::IfOp::create(rewriter, loc, hasReply, /*withElseRegion=*/false);
         rewriter.setInsertionPointToStart(&replyIfOp.getThenRegion().front());
 
+        // Deep-copy owned-heap return values before publishing them to the
+        // caller.  hew_reply only memcpy's `sizeof(result)` bytes (i.e. the
+        // bare pointer for String/Vec/HashMap/Closure), so without an
+        // explicit clone the caller and the actor would share the same
+        // heap allocation.  When the handler returns a state-owned value
+        // (e.g. `receive fn get() -> String { data }`), the caller's
+        // scope-exit drop and the actor's state-drop both call free on
+        // the same address — a double free that Linux glibc detects and
+        // macOS silently tolerates.  Cloning here mirrors the
+        // deepCopyOwnedArgs policy at the send/spawn boundary so the
+        // actor reply seam transfers ownership symmetrically.
+        //
+        // When we emit a deep clone, we also capture the cloned heap
+        // pointer and the matching destructor so we can free the clone
+        // on the `delivered=false` legs of `hew_reply` (ask cancelled,
+        // ask timed out, or per-reply allocation OOM).  Without this
+        // cleanup the clone leaks — the caller's stack-local clone
+        // pointer goes out of scope and no one ever frees the backing
+        // String/Vec/HashMap/Closure-env.  See
+        // `hew-runtime/src/reply_channel.rs` for the ownership contract:
+        // `hew_reply` returns `true` iff it took ownership of the
+        // payload, `false` otherwise.
+        // (origReturnType resolved + validated above.)
+        mlir::Value cloneHeapPtr;        // heap pointer that must be freed on !delivered
+        llvm::StringRef cloneDestructor; // destructor symbol name
+
+        if (mlir::isa<hew::StringRefType>(origReturnType)) {
+          auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+          getOrInsertFuncDecl(module, rewriter, "strdup", ft);
+          auto clonedStr =
+              mlir::func::CallOp::create(rewriter, loc, "strdup", mlir::TypeRange{ptrType},
+                                         mlir::ValueRange{resultVal})
+                  .getResult(0);
+          resultVal = clonedStr;
+          cloneHeapPtr = clonedStr;
+          cloneDestructor = "free"; // libc free; symmetric with strdup
+        } else if (mlir::isa<hew::VecType>(origReturnType)) {
+          auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+          getOrInsertFuncDecl(module, rewriter, "hew_vec_clone", ft);
+          auto clonedVec =
+              mlir::func::CallOp::create(rewriter, loc, "hew_vec_clone", mlir::TypeRange{ptrType},
+                                         mlir::ValueRange{resultVal})
+                  .getResult(0);
+          resultVal = clonedVec;
+          cloneHeapPtr = clonedVec;
+          cloneDestructor = "hew_vec_free";
+        } else if (mlir::isa<hew::HashMapType>(origReturnType)) {
+          auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+          getOrInsertFuncDecl(module, rewriter, "hew_hashmap_clone_impl", ft);
+          auto clonedHm =
+              mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_clone_impl",
+                                         mlir::TypeRange{ptrType}, mlir::ValueRange{resultVal})
+                  .getResult(0);
+          resultVal = clonedHm;
+          cloneHeapPtr = clonedHm;
+          cloneDestructor = "hew_hashmap_free_impl";
+        } else if (mlir::isa<hew::ClosureType>(origReturnType)) {
+          // Closures lower to a `{fn-ptr, env-ptr}` two-field LLVM struct;
+          // the env-ptr is the Rc that must be cloned for the caller.
+          // If the lowered shape disagrees (e.g. closure ABI changes or
+          // the type converter is misconfigured) we cannot safely clone
+          // the env without risk of mis-indexing or skipping the clone
+          // entirely — the latter would reintroduce double-drop on the
+          // env Rc when both caller and actor state hold the same
+          // refcount slot. Fail closed rather than silently no-op.
+          auto closureType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(resultType);
+          if (!closureType || closureType.getBody().size() != 2) {
+            return op.emitOpError("handler '")
+                   << handlerName << "' returns ClosureType but lowered result " << resultType
+                   << " is not the expected 2-field {fn,env} struct; "
+                      "cannot emit safe ownership-transfer clone";
+          }
+          auto fnPtr =
+              mlir::LLVM::ExtractValueOp::create(rewriter, loc, resultVal,
+                                                 llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)})
+                  .getResult();
+          auto envPtr =
+              mlir::LLVM::ExtractValueOp::create(rewriter, loc, resultVal,
+                                                 llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)})
+                  .getResult();
+          auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
+          getOrInsertFuncDecl(module, rewriter, "hew_rc_clone", ft);
+          auto clonedEnv = mlir::func::CallOp::create(
+              rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType}, mlir::ValueRange{envPtr});
+          mlir::Value rebuilt = mlir::LLVM::UndefOp::create(rewriter, loc, closureType);
+          rebuilt = mlir::LLVM::InsertValueOp::create(
+              rewriter, loc, rebuilt, fnPtr, llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)});
+          rebuilt =
+              mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, clonedEnv.getResult(0),
+                                                llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
+          resultVal = rebuilt;
+          cloneHeapPtr = clonedEnv.getResult(0);
+          cloneDestructor = "hew_rc_drop";
+        }
+
         // Store result value to a temp alloca so we can pass its address
         auto one = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 1);
         auto resultAlloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, resultType, one);
         mlir::LLVM::StoreOp::create(rewriter, loc, resultVal, resultAlloca);
 
-        // Call hew_reply(ch, &result, sizeof(result))
+        // Call hew_reply(ch, &result, sizeof(result)) — returns i1 indicating
+        // whether the channel took ownership of the payload bytes.
         auto resultSize = emitSizeOf(rewriter, loc, resultType);
-        auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {});
+        auto i1Type = rewriter.getI1Type();
+        auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {i1Type});
         getOrInsertFuncDecl(module, rewriter, "hew_reply", replyFuncType);
-        mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{},
-                                   mlir::ValueRange{replyChan, resultAlloca, resultSize});
+        auto replyCallOp =
+            mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{i1Type},
+                                       mlir::ValueRange{replyChan, resultAlloca, resultSize});
+        auto delivered = replyCallOp.getResult(0);
+
+        // On the !delivered leg (cancelled / OOM), free the deep clone
+        // with its matching destructor. This is the Drop Safety cleanup
+        // for the ask-cancel and ask-timeout paths — otherwise the
+        // strdup'd / cloned heap object leaks. The void hew_reply legs
+        // (size=0) do not run this cleanup because there is no clone.
+        if (cloneHeapPtr && !cloneDestructor.empty()) {
+          auto trueVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i1Type, 1);
+          auto notDelivered = mlir::arith::XOrIOp::create(rewriter, loc, delivered, trueVal);
+          auto cleanupIfOp =
+              mlir::scf::IfOp::create(rewriter, loc, notDelivered, /*withElseRegion=*/false);
+          rewriter.setInsertionPointToStart(&cleanupIfOp.getThenRegion().front());
+          auto dtorType = rewriter.getFunctionType({ptrType}, {});
+          getOrInsertFuncDecl(module, rewriter, cloneDestructor, dtorType);
+          mlir::func::CallOp::create(rewriter, loc, cloneDestructor, mlir::TypeRange{},
+                                     mlir::ValueRange{cloneHeapPtr});
+          rewriter.setInsertionPointAfter(cleanupIfOp);
+        }
 
         rewriter.setInsertionPointAfter(replyIfOp);
       } else {
@@ -2127,12 +2370,15 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         auto replyIfOp = mlir::scf::IfOp::create(rewriter, loc, hasReply, /*withElseRegion=*/false);
         rewriter.setInsertionPointToStart(&replyIfOp.getThenRegion().front());
 
-        // Call hew_reply(ch, null, 0) — signal completion with no value
-        auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {});
+        // Call hew_reply(ch, null, 0) — signal completion with no value.
+        // The i1 return value is intentionally ignored: there is no
+        // payload to reclaim on the !delivered leg.
+        auto i1Type = rewriter.getI1Type();
+        auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {i1Type});
         getOrInsertFuncDecl(module, rewriter, "hew_reply", replyFuncType);
         auto voidNullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
         auto voidZeroSize = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 0);
-        mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{},
+        mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{i1Type},
                                    mlir::ValueRange{replyChan, voidNullPtr, voidZeroSize});
 
         rewriter.setInsertionPointAfter(replyIfOp);

@@ -211,32 +211,61 @@ pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask_sender_ref(ch: *mut H
 ///
 /// The payload is deep-copied so the caller retains ownership of `value`.
 ///
+/// Returns `true` if the channel took ownership of the `size` bytes at
+/// `value` (i.e., they were copied into the channel buffer and will be
+/// delivered to the waiter — any heap pointers embedded in those bytes
+/// transfer their ownership to the waiter). Returns `false` if the reply
+/// was not delivered: the channel was cancelled, or the per-reply
+/// allocation failed. In the `false` case the caller still owns any
+/// heap-allocated payload referenced by `value` and is responsible for
+/// freeing it with the matching type-specific destructor. This is the
+/// explicit ownership signal codegen relies on to clean up deep-cloned
+/// owned reply payloads (`String`/`Vec`/`HashMap`/`Closure`) on the
+/// cancel and OOM paths — without it, those clones leak.
+///
 /// # Safety
 ///
 /// - `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
 /// - `value` must point to at least `size` readable bytes (or be null
 ///   when `size` is 0).
 /// - Must be called at most once per channel.
+#[must_use = "hew_reply returns false when the channel did not take \
+              ownership of the payload (cancelled or OOM); the caller \
+              must free any deep-cloned heap payload in that case. \
+              Internal Rust call sites that pass stack values or null \
+              should bind the result to `_` to acknowledge the contract."]
 #[no_mangle]
-pub unsafe extern "C" fn hew_reply(ch: *mut HewReplyChannel, value: *mut c_void, size: usize) {
+pub unsafe extern "C" fn hew_reply(
+    ch: *mut HewReplyChannel,
+    value: *mut c_void,
+    size: usize,
+) -> bool {
     if ch.is_null() {
-        return;
+        return false;
     }
 
     // SAFETY: Caller guarantees `ch` is valid and single-writer.
     unsafe {
         crate::scheduler::mark_current_reply_channel_consumed(ch.cast());
         if release_sender_ref_if_cancelled(ch) {
-            return;
+            // Channel was cancelled before delivery: the caller still owns
+            // anything referenced by `value` and must free it.
+            return false;
         }
 
         let mut copied_value = ptr::null_mut();
         let mut copied_size = 0;
+        let mut delivered = true;
         if size > 0 && !value.is_null() {
             // SAFETY: malloc for deep copy of reply payload.
             let buf = alloc_reply_buffer(size);
             if buf.is_null() {
                 (*ch).allocation_failed.store(true, Ordering::Release);
+                // The reply buffer could not be allocated; the waiter will
+                // observe a null reply and the allocation-failed flag. The
+                // caller's payload is NOT taken — return false so the
+                // caller can free its deep clone.
+                delivered = false;
             } else {
                 ptr::copy_nonoverlapping(value.cast::<u8>(), buf.cast::<u8>(), size);
                 copied_value = buf;
@@ -244,6 +273,7 @@ pub unsafe extern "C" fn hew_reply(ch: *mut HewReplyChannel, value: *mut c_void,
             }
         }
         publish_reply_from_sender_ref(ch, copied_value, copied_size);
+        delivered
     }
 }
 
@@ -532,7 +562,7 @@ mod tests {
             hew_reply_channel_free(ch);
             assert_eq!((*ch).refs.load(Ordering::Acquire), 1);
 
-            hew_reply(ch, ptr::null_mut(), 0);
+            let _ = hew_reply(ch, ptr::null_mut(), 0);
         }
     }
 
@@ -544,7 +574,7 @@ mod tests {
         // SAFETY: ch is a valid channel pointer; value address is valid for the block scope.
         unsafe {
             hew_reply_channel_retain(ch);
-            hew_reply(
+            let _ = hew_reply(
                 ch,
                 (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
@@ -573,7 +603,7 @@ mod tests {
         unsafe {
             // Sender retains so the channel survives the reply call.
             hew_reply_channel_retain(ch);
-            hew_reply(
+            let _ = hew_reply(
                 ch,
                 (&raw const payload).cast_mut().cast(),
                 std::mem::size_of::<i64>(),
@@ -604,7 +634,7 @@ mod tests {
         // All functions should handle null gracefully.
         // SAFETY: All functions are documented to handle null pointers gracefully.
         unsafe {
-            hew_reply(ptr::null_mut(), ptr::null_mut(), 0);
+            let _ = hew_reply(ptr::null_mut(), ptr::null_mut(), 0);
             assert!(hew_reply_wait(ptr::null_mut()).is_null());
             assert!(hew_reply_wait_timeout(ptr::null_mut(), 100).is_null());
             hew_reply_channel_retain(ptr::null_mut());
@@ -627,7 +657,7 @@ mod tests {
                 let ch = ch_ptr as *mut HewReplyChannel;
                 std::thread::sleep(Duration::from_millis(10));
                 let v = 77_i32;
-                hew_reply(
+                let _ = hew_reply(
                     ch,
                     (&raw const v).cast_mut().cast(),
                     std::mem::size_of::<i32>(),
@@ -653,10 +683,14 @@ mod tests {
         unsafe {
             hew_reply_channel_retain(ch);
             FORCE_REPLY_ALLOC_FAILURE.store(true, Ordering::Release);
-            hew_reply(
+            let delivered = hew_reply(
                 ch,
                 (&raw const payload).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
+            );
+            assert!(
+                !delivered,
+                "hew_reply must report not-delivered when the channel buffer alloc fails"
             );
 
             let result = hew_reply_wait(ch);
@@ -665,6 +699,146 @@ mod tests {
                 .to_str()
                 .unwrap();
             assert!(err.contains("allocation failed"));
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    /// Regression: `hew_reply` must report `false` when the channel has
+    /// already been cancelled, so codegen can free deep-cloned owned
+    /// payloads (e.g. `strdup`'d Strings, `hew_vec_clone`'d Vecs) on the
+    /// ask-cancel and ask-timeout paths instead of leaking them. This is
+    /// the contract `ReceiveOpLowering` relies on to keep Drop Safety on
+    /// the cancel/timeout legs of the ask seam.
+    #[test]
+    fn hew_reply_returns_false_when_channel_was_cancelled() {
+        let ch = hew_reply_channel_new();
+        let payload = 42_i32;
+
+        // SAFETY: `ch` is a live reply channel reference; we retain so the
+        // sender-side call sees the cancellation rather than freeing the
+        // channel out from under the waiter.
+        unsafe {
+            hew_reply_channel_retain(ch); // sender's reference
+            hew_reply_channel_cancel(ch);
+
+            let delivered = hew_reply(
+                ch,
+                (&raw const payload).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            );
+            assert!(
+                !delivered,
+                "hew_reply must report not-delivered after the channel is cancelled \
+                 so the caller can free any deep-cloned owned payload"
+            );
+
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    /// Regression: when delivery succeeds, `hew_reply` must report `true`
+    /// so codegen knows the waiter took ownership of the payload bytes
+    /// and the deep-cloned heap object lifetime transfers to the caller.
+    #[test]
+    fn hew_reply_returns_true_on_successful_delivery() {
+        let ch = hew_reply_channel_new();
+        let payload = 99_i32;
+
+        // SAFETY: `ch` is a live reply channel; retain for the sender side.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            let delivered = hew_reply(
+                ch,
+                (&raw const payload).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            );
+            assert!(delivered, "successful reply must report delivered=true");
+
+            let result = hew_reply_wait(ch).cast::<i32>();
+            assert!(!result.is_null());
+            assert_eq!(*result, 99);
+            libc::free(result.cast());
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    /// Regression: a deep-cloned owned reply (modelling codegen's
+    /// `strdup(state_string)` clone) must not leak when the waiter has
+    /// already cancelled. The contract is: `hew_reply` returns `false`,
+    /// the caller (here standing in for the receive lowering) frees the
+    /// clone with the matching destructor, and no leak remains.
+    #[test]
+    fn cancelled_channel_lets_caller_reclaim_deep_cloned_string_payload() {
+        let ch = hew_reply_channel_new();
+        // Allocate a heap "state-owned" string and the cloned reply, the
+        // way codegen does immediately before invoking hew_reply.
+        let original = std::ffi::CString::new("owned-state").unwrap();
+
+        // SAFETY: cloned points at a libc-allocated buffer that we own and
+        // either pass to hew_reply (success → waiter frees) or free on the
+        // `delivered=false` cancel path.
+        unsafe {
+            let cloned: *mut libc::c_char = libc::strdup(original.as_ptr());
+            assert!(!cloned.is_null(), "strdup must succeed");
+
+            hew_reply_channel_retain(ch); // sender's reference
+            hew_reply_channel_cancel(ch); // waiter cancels before the handler replies
+
+            let mut cloned_ptr: *mut libc::c_char = cloned;
+            let delivered = hew_reply(
+                ch,
+                (&raw mut cloned_ptr).cast(),
+                std::mem::size_of::<*mut libc::c_char>(),
+            );
+            assert!(
+                !delivered,
+                "cancelled channel must report not-delivered so caller can reclaim its clone"
+            );
+
+            // This is exactly what `ReceiveOpLowering` emits on the
+            // `delivered=false` leg: free the deep clone with the
+            // matching destructor. ASan/leak-checkers will flag a leak
+            // if the contract is wrong.
+            libc::free(cloned_ptr.cast());
+
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    /// Regression: matching the cancel path, OOM in the channel buffer
+    /// alloc must report `false` so the caller can reclaim its clone.
+    #[test]
+    fn alloc_failure_lets_caller_reclaim_deep_cloned_payload() {
+        crate::hew_clear_error();
+        let ch = hew_reply_channel_new();
+        let original = std::ffi::CString::new("owned-state").unwrap();
+
+        // SAFETY: cloned is libc-allocated; we either hand it off via
+        // hew_reply (success path) or free it on the alloc-fail path.
+        unsafe {
+            let cloned: *mut libc::c_char = libc::strdup(original.as_ptr());
+            assert!(!cloned.is_null(), "strdup must succeed");
+
+            hew_reply_channel_retain(ch);
+            FORCE_REPLY_ALLOC_FAILURE.store(true, Ordering::Release);
+
+            let mut cloned_ptr: *mut libc::c_char = cloned;
+            let delivered = hew_reply(
+                ch,
+                (&raw mut cloned_ptr).cast(),
+                std::mem::size_of::<*mut libc::c_char>(),
+            );
+            assert!(
+                !delivered,
+                "alloc-fail must report not-delivered so caller can reclaim its clone"
+            );
+
+            libc::free(cloned_ptr.cast());
+
+            // Drain the alloc-fail flag via reply_wait so other tests see a
+            // clean error slot.
+            let result = hew_reply_wait(ch);
+            assert!(result.is_null());
             hew_reply_channel_free(ch);
         }
     }
@@ -703,7 +877,7 @@ mod tests {
                     let ch = ch_usize as *mut HewReplyChannel;
                     let v = 42_i32;
                     // SAFETY: ch is valid until hew_reply drops the sender ref.
-                    hew_reply(
+                    let _ = hew_reply(
                         ch,
                         (&raw const v).cast_mut().cast(),
                         std::mem::size_of::<i32>(),
@@ -747,7 +921,7 @@ mod tests {
                         let ch = ch_usize as *mut HewReplyChannel;
                         let v = i32::try_from(i).expect("ARMS fits in i32");
                         // SAFETY: ch valid until hew_reply frees the sender ref.
-                        hew_reply(
+                        let _ = hew_reply(
                             ch,
                             (&raw const v).cast_mut().cast(),
                             std::mem::size_of::<i32>(),
@@ -813,7 +987,7 @@ mod tests {
                             let sender = std::thread::spawn(move || {
                                 let ch = ch_usize as *mut HewReplyChannel;
                                 // SAFETY: ch valid until hew_reply frees sender ref.
-                                hew_reply(
+                                let _ = hew_reply(
                                     ch,
                                     (&raw const expected).cast_mut().cast(),
                                     std::mem::size_of::<i32>(),

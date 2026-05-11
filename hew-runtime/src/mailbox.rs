@@ -169,7 +169,7 @@ unsafe fn retire_orphaned_ask_sender_ref(reply_channel: *mut c_void) {
     #[cfg(target_arch = "wasm32")]
     // SAFETY: WASM keeps the existing empty-reply teardown behaviour for parity.
     unsafe {
-        crate::reply_channel_wasm::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
+        let _ = crate::reply_channel_wasm::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
     }
 }
 

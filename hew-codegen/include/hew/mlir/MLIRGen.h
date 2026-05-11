@@ -243,7 +243,8 @@ private:
                          const std::string &collType);
   void generateForHashMap(const ast::StmtFor &stmt, mlir::Value collection,
                           const std::string &collType);
-  void generateForGeneratorStmt(const ast::StmtFor &stmt, const std::string &genFuncName);
+  void generateForGeneratorStmt(const ast::StmtFor &stmt, const std::string &genFuncName,
+                                bool iterableOwnsFrame);
   void generateReturnStmt(const ast::StmtReturn &stmt);
   void generateExprStmt(const ast::StmtExpression &stmt);
   mlir::Value generateDiscardedExpr(const ast::Spanned<ast::Expr> &expr);

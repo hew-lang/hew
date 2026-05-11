@@ -1304,6 +1304,12 @@ add_wasm_file_test(for_over_generator     e2e_generators       for_over_generato
 add_wasm_file_test(gen_drop_yield         e2e_generators       gen_drop_yield)
 add_wasm_file_test(gen_drop_else_if       e2e_generators       gen_drop_else_if)
 add_wasm_file_test(gen_drop_wrapped_yield e2e_generators       gen_drop_wrapped_yield)
+# Regression for let-bound generator double-free: `let g = gen_fn(); for x in g { ... }`.
+# The let-binding registers exactly one "free" droppable for the coroutine frame; the
+# for-loop's synthetic temp must NOT register a second one.  Paired with for_over_generator
+# which covers the direct-call form (`for x in gen_fn() { ... }`) where the synthetic temp
+# IS the sole owner and must free the frame.
+add_wasm_file_test(gen_letbound_for       e2e_generators       gen_letbound_for)
 add_wasm_file_test(async_gen              e2e_async_gen        async_gen)
 add_wasm_file_test(golden_generator       e2e_golden           golden_generator)
 

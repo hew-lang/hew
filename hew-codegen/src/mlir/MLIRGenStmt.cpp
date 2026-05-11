@@ -3125,7 +3125,8 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
   popLoopControl(lc, whileOp);
 }
 
-void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::string &genFuncName) {
+void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::string &genFuncName,
+                                       bool iterableOwnsFrame) {
   auto location = currentLoc;
   auto i1Type = builder.getI1Type();
 
@@ -3134,12 +3135,31 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   if (!genPtr)
     return;
 
-  // Generator handle is a malloc'd coroutine frame; free at scope exit.
+  // Register the synthetic frame slot so the loop body can reference the live pointer.
+  // Ownership rule: only ONE droppable may call free() on this coroutine frame.
+  //
+  //   Direct-call form  `for x in gen_fn() { ... }`:
+  //     iterableOwnsFrame == false → no let-binding registered a droppable yet →
+  //     this synthetic temp is the sole owner and MUST register "free".
+  //
+  //   Let-bound form  `let g = gen_fn(); for x in g { ... }`:
+  //     iterableOwnsFrame == true → the let-binding site (MLIRGenStmt.cpp ~858)
+  //     already called registerDroppable(varName, "free") for the same heap pointer →
+  //     registering a second "free" here would double-free the coroutine frame (UB).
+  //     The named variable remains the canonical owner; skip the drop registration.
+  //
+  // Authority: generatorVarTypes is written only at let-binding sites, so a name
+  // present in that map is a sufficient-and-necessary signal for iterableOwnsFrame.
   {
     std::string tmpName =
         std::string("\0__gen_frame_", 13) + std::to_string(tempMaterializationCounter++);
     declareVariable(tmpName, genPtr);
-    registerDroppable(tmpName, "free");
+    if (!iterableOwnsFrame) {
+      // Synthetic temp is the sole owner of the malloc'd coroutine frame; free at scope exit.
+      registerDroppable(tmpName, "free");
+    }
+    // iterableOwnsFrame == true: let-bound variable already registered the free;
+    // do NOT add a second droppable for this pointer.
   }
 
   std::string nextName = genFuncName + "__next";
@@ -3223,17 +3243,26 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
 void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   // Check if the iterable is a generator call or variable
   std::string genFuncName;
+  // When the iterable is a let-bound generator handle (`for x in g`), the let-binding site has
+  // already registered a "free" droppable for the coroutine frame (MLIRGenStmt.cpp ~858).
+  // Propagate that ownership signal so generateForGeneratorStmt does not register a second free.
+  bool iterableOwnsFrame = false;
   if (auto *callExpr = std::get_if<ast::ExprCall>(&stmt.iterable.value.kind)) {
     if (callExpr->function) {
       if (auto *funcIdent = std::get_if<ast::ExprIdentifier>(&callExpr->function->value.kind)) {
         if (generatorFunctions.count(funcIdent->name))
           genFuncName = funcIdent->name;
+        // iterableOwnsFrame stays false: no let-binding, synthetic temp must own the frame.
       }
     }
   } else if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {
     auto git = generatorVarTypes.find(identExpr->name);
-    if (git != generatorVarTypes.end())
+    if (git != generatorVarTypes.end()) {
       genFuncName = git->second;
+      // Let-bound generator variable: the let-binding site already registered the "free"
+      // droppable; the synthetic loop temp must NOT register a second one.
+      iterableOwnsFrame = true;
+    }
   }
 
   // Create a helper method for range loop generation
@@ -3242,7 +3271,7 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   // inline the logic but try to be concise.
 
   if (!genFuncName.empty()) {
-    generateForGeneratorStmt(stmt, genFuncName);
+    generateForGeneratorStmt(stmt, genFuncName, iterableOwnsFrame);
     return;
   }
 

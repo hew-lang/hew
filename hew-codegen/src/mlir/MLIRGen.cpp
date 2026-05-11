@@ -5529,19 +5529,27 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     builder.restoreInsertionPoint(savedIP);
   }
 
-  // ── Generate next function: <name>__next(!llvm.ptr) -> <yieldType> ─
+  // ── Generate next function: <name>__next(!llvm.ptr) -> <llvmYieldType> ─
   // Stub — replaced at LLVM IR level with coro.resume + promise read.
+  // The return type is the LLVM storage type of the yield value (toLLVMStorageType
+  // maps Hew dialect pointer-like types such as !hew.string_ref to !llvm.ptr so
+  // that the MLIR verifier accepts the function signature and the ZeroOp stub).
+  // Callers that need the original semantic type must reconstruct it via BitcastOp.
   {
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
 
+    auto llvmYieldType = toLLVMStorageType(yieldType);
+
     std::string nextName = fnName + "__next";
-    auto nextFuncType = builder.getFunctionType({ptrType}, {yieldType});
+    auto nextFuncType = builder.getFunctionType({ptrType}, {llvmYieldType});
     auto nextFunc = mlir::func::FuncOp::create(builder, location, nextName, nextFuncType);
     auto *entryBlock = nextFunc.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
 
-    // Stub return — will be replaced at LLVM IR level
+    // Stub return — will be replaced at LLVM IR level.
+    // Use the LLVM storage type so LLVM dialect ops (ZeroOp, etc.) are happy.
+    // For primitives llvmYieldType == yieldType, so behaviour is unchanged.
     mlir::Value defaultVal;
     if (llvm::isa<mlir::IntegerType>(yieldType)) {
       defaultVal = mlir::arith::ConstantIntOp::create(builder, location, yieldType, 0);
@@ -5549,7 +5557,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
       defaultVal =
           mlir::arith::ConstantOp::create(builder, location, builder.getFloatAttr(yieldType, 0.0));
     } else {
-      defaultVal = mlir::LLVM::ZeroOp::create(builder, location, yieldType);
+      defaultVal = createDefaultValue(builder, location, llvmYieldType);
     }
     mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{defaultVal});
 

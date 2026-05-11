@@ -358,7 +358,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     // value.
     //
     // Mirror Path B's fix (#1700): when a prior statement might contain a
-    // return AND we are in a non-void function with returnFlag, wrap the
+    // return AND returnFlag is allocated for this function, wrap the
     // remaining *statements* in an `scf.if(notReturned)` guard. The
     // trailing expression itself is evaluated unconditionally afterwards.
     // Its value is bogus on the soft-returned path, but harmless: it flows

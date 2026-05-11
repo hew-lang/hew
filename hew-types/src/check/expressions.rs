@@ -99,10 +99,10 @@ impl Checker {
             return;
         }
         match expr {
-            Expr::Scope { .. } | Expr::Join(_) => {
+            Expr::Scope { .. } | Expr::Fork { .. } | Expr::Join(_) => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
-            Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
+            Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) | Expr::ForkChild { .. } => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Tasks);
             }
             _ => {}
@@ -925,6 +925,13 @@ impl Checker {
                         "cannot use `scope` in a pure function".to_string(),
                     );
                 }
+                Expr::Fork { .. } | Expr::ForkChild { .. } => {
+                    self.report_error(
+                        TypeErrorKind::PurityViolation,
+                        span,
+                        "cannot use `fork` in a pure function".to_string(),
+                    );
+                }
                 Expr::Select { .. } => {
                     self.report_error(
                         TypeErrorKind::PurityViolation,
@@ -950,6 +957,15 @@ impl Checker {
             }
         }
         match expr {
+            Expr::Fork { .. } | Expr::ForkChild { .. } => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`fork` is parser-only in this build; type checking lands in a follow-up change"
+                        .to_string(),
+                );
+                Ty::Error
+            }
             Expr::SpawnLambdaActor {
                 params,
                 return_type,
@@ -2680,6 +2696,8 @@ impl Checker {
             | Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
             | Expr::Scope { .. }
+            | Expr::Fork { .. }
+            | Expr::ForkChild { .. }
             | Expr::InterpolatedString(_)
             | Expr::Call { .. }
             | Expr::MethodCall { .. }

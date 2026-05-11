@@ -695,7 +695,8 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             Expr::Block(block)
             | Expr::Unsafe(block)
             | Expr::ScopeLaunch(block)
-            | Expr::ScopeSpawn(block) => {
+            | Expr::ScopeSpawn(block)
+            | Expr::Fork { body: block } => {
                 self.walk_block(block, body);
             }
             Expr::If {
@@ -760,6 +761,9 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_block(inner_body, body);
                 self.pop_scope();
             }
+            Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
+                self.walk_expr(&expr.0, &expr.1, body);
+            }
             Expr::InterpolatedString(parts) => {
                 for part in parts {
                     if let StringPart::Expr(expr) = part {
@@ -809,9 +813,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             Expr::Index { object, index } => {
                 self.walk_expr(&object.0, &object.1, body);
                 self.walk_expr(&index.0, &index.1, body);
-            }
-            Expr::Cast { expr, .. } => {
-                self.walk_expr(&expr.0, &expr.1, body);
             }
             Expr::Range { start, end, .. } => {
                 if let Some(start) = start {

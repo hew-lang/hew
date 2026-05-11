@@ -1011,9 +1011,11 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
         | Expr::ScopeSpawn(block)
-        | Expr::Scope { body: block, .. } => {
+        | Expr::Scope { body: block, .. }
+        | Expr::Fork { body: block } => {
             v.visit_block(block);
         }
+        Expr::ForkChild { expr, .. } => v.visit_expr(expr),
         Expr::Array(elems) | Expr::Tuple(elems) => {
             for e in elems {
                 v.visit_expr(e);

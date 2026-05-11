@@ -369,11 +369,15 @@ fn collect_inlay_hints_from_expr(
         Expr::Block(block)
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block) => {
+        | Expr::ScopeSpawn(block)
+        | Expr::Fork { body: block } => {
             collect_inlay_hints_from_block(source, block, tc, hints);
         }
         Expr::Scope { body, .. } => {
             collect_inlay_hints_from_block(source, body, tc, hints);
+        }
+        Expr::ForkChild { expr, .. } => {
+            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
         }
         Expr::If {
             condition,

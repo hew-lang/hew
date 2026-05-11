@@ -165,6 +165,7 @@ impl<'ast> AstVisitor<'ast> for FoldingVisitor<'_> {
                 | Expr::Lambda { .. }
                 | Expr::SpawnLambdaActor { .. }
                 | Expr::Scope { .. }
+                | Expr::Fork { .. }
                 | Expr::Unsafe(_)
                 | Expr::ScopeLaunch(_)
                 | Expr::ScopeSpawn(_)

@@ -3428,11 +3428,17 @@ impl<'src> Parser<'src> {
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
                 | Expr::Scope { .. }
+                | Expr::Fork { .. }
                 | Expr::ScopeLaunch(_)
                 | Expr::ScopeSpawn(_)
                 | Expr::Unsafe(_)
                 | Expr::Select { .. }
         )
+    }
+
+    fn fork_starts_child_binding(&self) -> bool {
+        self.peek().is_some_and(Self::is_ident_token)
+            && self.peek_at(self.pos + 1) == Some(&Token::Equal)
     }
 
     // ── Statements ──
@@ -4595,6 +4601,29 @@ impl<'src> Parser<'src> {
                 let body = self.parse_block()?;
                 self.scope_binding = prev_binding;
                 Expr::Scope { binding, body }
+            }
+            Token::Fork => {
+                self.advance();
+                // Disambiguation: `fork { ... }` is always the block form.
+                // Child form cannot treat `{` as its first expression token.
+                if self.peek() == Some(&Token::LeftBrace) {
+                    Expr::Fork {
+                        body: self.parse_block()?,
+                    }
+                } else {
+                    let binding = if self.fork_starts_child_binding() {
+                        let name = self.expect_ident()?;
+                        self.expect(&Token::Equal)?;
+                        Some(name)
+                    } else {
+                        None
+                    };
+                    let expr = self.parse_expr()?;
+                    Expr::ForkChild {
+                        binding,
+                        expr: Box::new(expr),
+                    }
+                }
             }
             Token::Try => {
                 self.error(
@@ -6607,6 +6636,16 @@ wire type Msg {
         expr.clone()
     }
 
+    fn parse_main_body(source: &str) -> Block {
+        let full = format!("fn main() {{ {source} }}");
+        let result = parse(&full);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        f.body.clone()
+    }
+
     #[test]
     fn parse_empty_braces_is_block() {
         // {} is always a block — empty HashMap coercion happens in the type checker
@@ -6651,6 +6690,89 @@ wire type Msg {
             matches!(expr, Expr::Block(_)),
             "expected Block, got {expr:?}"
         );
+    }
+
+    #[test]
+    fn fork_keyword_emits_distinct_ast_variant() {
+        let expr = parse_let_expr("fork { 1 }");
+        assert!(
+            matches!(expr, Expr::Fork { .. }),
+            "expected Fork, got {expr:?}"
+        );
+    }
+
+    #[test]
+    fn parser_fork_block_disambiguates_from_child() {
+        let body = parse_main_body("let block = fork { 1 };\nfork child = run();\n");
+        let Stmt::Let {
+            value: Some((Expr::Fork { .. }, _)),
+            ..
+        } = &body.stmts[0].0
+        else {
+            panic!(
+                "expected let binding to use fork block: {:?}",
+                body.stmts[0]
+            );
+        };
+        let Stmt::Expression((Expr::ForkChild { binding, .. }, _)) = &body.stmts[1].0 else {
+            panic!("expected child fork expression: {:?}", body.stmts[1]);
+        };
+        assert_eq!(binding.as_deref(), Some("child"));
+    }
+
+    #[test]
+    fn parse_fork_child_with_binding() {
+        let body = parse_main_body("fork child = run();");
+        let Stmt::Expression((Expr::ForkChild { binding, expr }, _)) = &body.stmts[0].0 else {
+            panic!("expected fork child expression: {:?}", body.stmts[0]);
+        };
+        assert_eq!(binding.as_deref(), Some("child"));
+        assert!(
+            matches!(&expr.0, Expr::Call { .. }),
+            "expected child expression call, got {:?}",
+            expr.0
+        );
+    }
+
+    #[test]
+    fn parse_fork_child_bare() {
+        let body = parse_main_body("fork run();");
+        let Stmt::Expression((Expr::ForkChild { binding, expr }, _)) = &body.stmts[0].0 else {
+            panic!("expected bare fork child expression: {:?}", body.stmts[0]);
+        };
+        assert!(binding.is_none(), "expected bare fork child binding");
+        assert!(
+            matches!(&expr.0, Expr::Call { .. }),
+            "expected bare child expression call, got {:?}",
+            expr.0
+        );
+    }
+
+    #[test]
+    fn parse_nested_fork_block_and_child() {
+        let expr = parse_let_expr("fork { fork run(); fork child = work(); child }");
+        let Expr::Fork { body } = expr else {
+            panic!("expected fork block");
+        };
+        assert_eq!(body.stmts.len(), 2, "expected two child statements");
+        assert!(matches!(
+            &body.stmts[0].0,
+            Stmt::Expression((Expr::ForkChild { binding: None, .. }, _))
+        ));
+        assert!(matches!(
+            &body.stmts[1].0,
+            Stmt::Expression((
+                Expr::ForkChild {
+                    binding: Some(name),
+                    ..
+                },
+                _
+            )) if name == "child"
+        ));
+        assert!(matches!(
+            body.trailing_expr.as_deref(),
+            Some((Expr::Identifier(name), _)) if name == "child"
+        ));
     }
 
     #[test]

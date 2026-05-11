@@ -734,10 +734,29 @@ fn activate_actor(actor: *mut HewActor) {
                     // via hew_get_reply_channel().
                     set_current_reply_channel(msg_ref.reply_channel);
 
+                    // Phase α COW: envelope-aware dispatch.  Legacy
+                    // (copy-mode) nodes carry payload bytes in
+                    // `data`/`data_size`; envelope-mode nodes hold a
+                    // refcounted `HewMsgEnvelope` and the payload
+                    // pointer + size live on the envelope.  Branch on
+                    // the discriminator so the dispatch function
+                    // receives a non-null payload pointer in either
+                    // mode.
+                    let (dispatch_data, dispatch_size) = if msg_ref.envelope.is_null() {
+                        (msg_ref.data, msg_ref.data_size)
+                    } else {
+                        let env = msg_ref.envelope;
+                        // SAFETY: envelope is live for the lifetime of
+                        // the node (`hew_msg_node_free` releases the
+                        // refcount AFTER dispatch returns); payload +
+                        // size are stable.
+                        unsafe { ((*env).payload, (*env).payload_size) }
+                    };
+
                     // SAFETY: `dispatch` and `a.state` are valid; message fields
                     // come from a well-formed `HewMsgNode`.
                     unsafe {
-                        dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
+                        dispatch(a.state, msg_ref.msg_type, dispatch_data, dispatch_size);
                     }
 
                     let reply_consumed = current_reply_channel_consumed();

@@ -1047,6 +1047,48 @@ struct MethodCallReceiverKindEntry {
   bool consumes_receiver = false;
 };
 
+// ── Actor-send aliasing side table ────────────────────────────────────────
+
+/// Codegen choice between aliasing the sender's payload buffer (refcount
+/// bump on a `HewMsgEnvelope`) and the legacy deep-copy mailbox path. The
+/// type checker records one of these for every accepted actor send; codegen
+/// reads the side table fail-closed at every actor-send lowering site.
+enum class ActorSendAliasingKind {
+  /// Sender retains the payload independently; runtime deep-copies into
+  /// the mailbox. The legacy mailbox path; safe everywhere.
+  Copy,
+  /// Sender and receiver share a refcounted `HewMsgEnvelope` payload.
+  /// Requires the move-checker to have invalidated the sender's binding.
+  Alias,
+};
+
+/// Why the type-checker classified an actor-send arg as `Copy` instead
+/// of `Alias`.  Mirrors `hew_types::check::ActorSendCopyReason`.  Only
+/// meaningful when `kind == Copy`.
+enum class ActorSendCopyReason {
+  /// Arg expression was not a bare identifier — move-checker would not
+  /// invalidate the parent binding.
+  NotIdentifier,
+  /// Arg's resolved type implements the `Copy` marker.
+  CopyType,
+  /// Arg's resolved type implements the stdlib-registered `Drop`
+  /// marker.
+  StdlibDrop,
+  /// Arg's resolved type carries a user `impl Drop for T` (recorded
+  /// in `trait_impls_set` rather than the marker).
+  UserDrop,
+};
+
+struct ActorSendAliasingEntry {
+  uint64_t start = 0;
+  uint64_t end = 0;
+  ActorSendAliasingKind kind = ActorSendAliasingKind::Copy;
+  /// Populated when `kind == Copy`; meaningless otherwise.  Defaults to
+  /// `CopyType` so a stale build that didn't read the wire field still
+  /// produces a sensible fallback for diagnostic rendering.
+  ActorSendCopyReason copy_reason = ActorSendCopyReason::CopyType;
+};
+
 // ── Assign-target authority side table ────────────────────────────────────
 
 struct AssignTargetKindLocalVar {};
@@ -1147,6 +1189,11 @@ struct Program {
   /// test in test_msgpack_reader.cpp. Add a WASM fixture when WASM lowering of generic calls
   /// is implemented.
   std::vector<CallTypeArgsEntry> call_type_args;
+  /// Checker-resolved alias-vs-copy decision for every accepted actor send.
+  /// Keyed by the message expression's span. Codegen reads this fail-closed
+  /// at every actor-send lowering site (see `actorSendAliasingOf` in
+  /// `MLIRGen.h`); a missing entry for a known send is a hard error.
+  std::vector<ActorSendAliasingEntry> actor_send_aliasing;
   /// Checker-resolved assignment target classification (keyed by target span).
   /// Missing entry means checker rejected the target; MLIR lowering must fail closed.
   std::vector<AssignTargetKindEntry> assign_target_kinds;

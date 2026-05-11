@@ -759,6 +759,34 @@ impl Checker {
         )
     }
 
+    /// Enforce the actor mailbox boundary on every arg of an actor receive
+    /// method dispatch. Called after [`Self::try_resolve_named_method`] has
+    /// already type-checked the args (so `self.expr_types` is populated), to
+    /// avoid double synthesis.
+    ///
+    /// Each arg's type is looked up from `expr_types`; on a miss (e.g. the
+    /// program already has an error at that arg) we skip the boundary record
+    /// for that arg rather than re-synthesize. Codegen's fail-closed lookup
+    /// is gated to non-error programs.
+    fn enforce_actor_method_send_args(&mut self, args: &[CallArg]) {
+        // Snapshot per-arg types from `expr_types` first; calling
+        // `enforce_actor_boundary_send` mutates `self`, so we cannot hold a
+        // borrow into `self.expr_types` across the call.
+        let arg_types: Vec<Option<Ty>> = args
+            .iter()
+            .map(|arg| {
+                let (_expr, sp) = arg.expr();
+                self.expr_types.get(&SpanKey::from(sp)).cloned()
+            })
+            .collect();
+        for (arg, ty_opt) in args.iter().zip(arg_types) {
+            let (expr, sp) = arg.expr();
+            if let Some(ty) = ty_opt {
+                self.enforce_actor_boundary_send(expr, sp, sp, &ty);
+            }
+        }
+    }
+
     pub(super) fn check_named_method_fallback(
         &mut self,
         receiver_ty: &Ty,
@@ -775,6 +803,24 @@ impl Checker {
                         type_name: name.clone(),
                     },
                 );
+                // If the receiver type is a registered actor declaration AND
+                // the resolved method is a receive handler (tracked in
+                // `actor_receive_methods`), this dispatch crosses the
+                // actor mailbox boundary. Record the per-arg alias-vs-copy
+                // decision so codegen does not have to guess. Non-receive
+                // `methods` declared on the same actor (also keyed
+                // `{Actor}::{name}` in `fn_sigs`) stay on the regular
+                // method-call path.
+                if self
+                    .type_defs
+                    .get(name)
+                    .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                    && self
+                        .actor_receive_methods
+                        .contains(&format!("{name}::{method_name}"))
+                {
+                    self.enforce_actor_method_send_args(args);
+                }
             }
             self.record_handle_method_call_rewrite_if_any(receiver_ty, method_name, span);
             return ty;
@@ -2492,6 +2538,24 @@ impl Checker {
                             type_name: name.clone(),
                         },
                     );
+                    // Actor receive-method dispatch on a bare actor-typed
+                    // receiver (e.g. `let target: Printer; target.foo(arg)`)
+                    // routes here: `lookup_named_method_sig` finds the
+                    // signature in `fn_sigs` keyed `{Actor}::{method}`.
+                    // Every arg crosses the mailbox boundary and must be
+                    // routed through `enforce_actor_boundary_send` so the
+                    // codegen consumer (fail-closed on missing entries)
+                    // sees an alias-vs-copy decision per arg.
+                    if self
+                        .type_defs
+                        .get(name)
+                        .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                        && self
+                            .actor_receive_methods
+                            .contains(&format!("{name}::{method}"))
+                    {
+                        self.enforce_actor_method_send_args(args);
+                    }
                     // #1295: stdlib `impl Closable for T { fn close }` flattens
                     // into the inherent-method table on T; honour any
                     // `consumes_receiver` declared on a trait whose impl

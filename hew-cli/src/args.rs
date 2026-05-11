@@ -270,6 +270,13 @@ impl DebugArgs {
 pub struct CheckArgs {
     /// Input .hew file.
     pub input: PathBuf,
+    /// Print alias-vs-copy decision for every actor send site.
+    ///
+    /// Shows whether each `actor.method(arg)` call crossed the mailbox
+    /// boundary via a refcount-bumped alias (no copy) or a deep-copy
+    /// (the legacy path). Default off; opt-in for Phase α.
+    #[arg(long)]
+    pub explain_cow: bool,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Surface diagnostic-only stack-allocation hints from the type checker.

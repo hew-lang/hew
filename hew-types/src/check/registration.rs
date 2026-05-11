@@ -2541,6 +2541,7 @@ impl Checker {
         if rf.is_generator {
             self.receive_generator_methods.insert(method_name.clone());
         }
+        self.actor_receive_methods.insert(method_name.clone());
         self.record_fn_sig_inference_holes(&method_name, hole_vars);
         self.fn_sigs.insert(method_name, sig);
     }

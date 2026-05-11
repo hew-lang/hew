@@ -1614,6 +1614,41 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 // Shared helpers for actor send/ask
 // ============================================================================
 
+mlir::ArrayAttr MLIRGen::aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans,
+                                              mlir::Location location) {
+  // Build a per-arg array preserving each checker decision (`0` Copy,
+  // `1` Alias).  The op-level lowering decides which arms to emit; this
+  // helper does not collapse the per-arg detail.
+  //
+  // Fail-closed contract: every actor send/ask path the type-checker
+  // accepts must produce an `actor_send_aliasing` entry. The producer is
+  // `enforce_actor_boundary_send` and every dispatch path that reaches
+  // an actor mailbox boundary (spawn args, ActorRef receive dispatch,
+  // named-actor field receive dispatch in both `check_method_call`'s
+  // `Ty::Named` arm and `check_named_method_fallback`) routes through
+  // it. A missing entry means a dispatch path slipped past the producer;
+  // emit a hard error rather than silently defaulting to Copy, so the
+  // next gap surfaces as a build failure instead of degrading the alias
+  // decision.
+  llvm::SmallVector<int32_t, 4> per_arg;
+  per_arg.reserve(argSpans.size());
+  for (const auto &span : argSpans) {
+    const auto *entry = actorSendAliasingOf(span);
+    if (!entry) {
+      ++errorCount_;
+      emitError(location) << "missing actor_send_aliasing entry for actor send/ask arg at span ["
+                          << span.start << ", " << span.end
+                          << "); every accepted send site must record a decision";
+      // Conservatively record Copy for the missing slot so the lowering
+      // can still emit a (legacy) op without a length mismatch.
+      per_arg.push_back(0);
+      continue;
+    }
+    per_arg.push_back(entry->kind == ast::ActorSendAliasingKind::Alias ? 1 : 0);
+  }
+  return builder.getI32ArrayAttr(per_arg);
+}
+
 bool MLIRGen::actorBoundarySenderRetainsOwnership(mlir::Type valueType) const {
   if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::ClosureType>(valueType))
     return true;
@@ -1766,12 +1801,22 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
     // Remote dispatch: target is a PID (i64 from Node::lookup).
     // Route through hew_actor_send_by_id which handles both local and
     // remote delivery transparently via the node mesh.
+    llvm::SmallVector<ast::Span, 4> argSpans;
+    for (const auto &arg : args)
+      argSpans.push_back(ast::callArgExpr(arg).span);
+    auto aliasingAttr = aliasingAttrForSpans(argSpans, location);
     hew::ActorSendOp::create(builder, location, actorPtr,
-                             builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals);
+                             builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), aliasingAttr,
+                             *argVals);
   } else {
     // Standard path: hew.actor_send — the lowering pass handles arg packing
+    llvm::SmallVector<ast::Span, 4> argSpans;
+    for (const auto &arg : args)
+      argSpans.push_back(ast::callArgExpr(arg).span);
+    auto aliasingAttr = aliasingAttrForSpans(argSpans, location);
     hew::ActorSendOp::create(builder, location, actorPtr,
-                             builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals);
+                             builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), aliasingAttr,
+                             *argVals);
   }
 
   // Ownership at the actor boundary depends on the transport:
@@ -1855,9 +1900,13 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
     resultType = hew::OptionEnumType::get(&context, *recvInfo->returnType);
     timeoutAttr = builder.getI64IntegerAttr(*timeoutMs);
   }
+  llvm::SmallVector<ast::Span, 4> askArgSpans;
+  for (const auto &arg : args)
+    askArgSpans.push_back(ast::callArgExpr(arg).span);
+  auto askAliasingAttr = aliasingAttrForSpans(askArgSpans, location);
   auto askOp = hew::ActorAskOp::create(builder, location, resultType, actorPtr,
                                        builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)),
-                                       *argVals, timeoutAttr);
+                                       askAliasingAttr, *argVals, timeoutAttr);
 
   // Ownership parity with the non-wire send path: String, Vec, HashMap,
   // Closure, and struct fields thereof are deep-copied at the actor boundary
@@ -1940,9 +1989,15 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
     mlir::func::CallOp::create(builder, location, "hew_actor_send_wire", mlir::TypeRange{},
                                mlir::ValueRange{actorPtrCast, msgTypeVal, bytesVec});
   } else {
-    // Standard path: hew.actor_send with msg_type = 0
+    // Standard path: hew.actor_send with msg_type = 0. The aliasing attr is
+    // looked up by the message expression's span — the same span the
+    // type-checker passed to `mark_expr_moved_if_non_copy` on the sender's
+    // binding (see `enforce_actor_boundary_send` for the BinaryOp::Send
+    // arm).
+    ast::Span msgSpan = expr.message->span;
+    auto sendAliasingAttr = aliasingAttrForSpans({msgSpan}, location);
     hew::ActorSendOp::create(builder, location, actorVal, builder.getI32IntegerAttr(0),
-                             mlir::ValueRange{msgVal});
+                             sendAliasingAttr, mlir::ValueRange{msgVal});
   }
 
   // Wire sends serialize the value into independent bytes — no sharing.

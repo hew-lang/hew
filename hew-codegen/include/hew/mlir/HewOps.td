@@ -439,17 +439,36 @@ def Hew_ActorSendOp : Hew_Op<"actor_send"> {
   let description = [{
     Sends a message to the target actor.  `msg_type` is an integer index
     selecting the receive handler.  The variadic `args` are packed into a
-    temporary struct, deep-copied by the runtime.
+    temporary struct.  The `aliasing` attribute is a per-arg array
+    (length must equal `args` length when present): each element is `0`
+    for `Copy` (runtime deep-copies that arg's heap reachables into a
+    fresh mailbox buffer) or `1` for `Alias` (the type checker proved
+    the sender's binding is invalidated post-send and the heap pointers
+    can ride into a refcounted `HewMsgEnvelope` without a copy).
+
+    The `aliasing` attribute is preserved and verified as metadata
+    only.  The current lowering always emits the legacy copy send
+    (the runtime deep-copies every owned field into a fresh mailbox
+    buffer); the alias-envelope path is gated off in codegen and the
+    corresponding runtime entry points are fail-closed.  A future
+    change can re-enable alias-envelope lowering once the runtime
+    gains delivery tracking and per-shape drop-glue semantics that
+    let `hew_msg_envelope_release` distinguish a receiver-consumed
+    envelope from a discarded one.
+
+    Defaulting to `[]` keeps existing emitters unchanged: an empty
+    array is treated as all-`Copy`.
 
     Example:
     ```mlir
-    hew.actor_send %actor {msg_type = 0 : i32} (%n) : (i32)
+    hew.actor_send %actor {msg_type = 0 : i32, aliasing = [1, 1]} (%a, %b) : (i32, i32)
     ```
   }];
 
   let arguments = (ins
     AnyType:$target,
     I32Attr:$msg_type,
+    DefaultValuedAttr<I32ArrayAttr, "{}">:$aliasing,
     Variadic<AnyType>:$args
   );
 
@@ -471,9 +490,17 @@ def Hew_ActorAskOp : Hew_Op<"actor_ask"> {
     a reply arrives.  In a future coroutine-based Phase 2 this will suspend
     the current task instead.
 
+    The `aliasing` attribute is the per-arg array form documented on
+    `hew.actor_send`.  Defaults to `[]` (treated as all-`Copy`).
+
+    Phase α leaves Ask on the always-copy path even when every arg is
+    `Alias`, because the reply-buffer cleanup contract has not been
+    audited under the envelope path yet — see issue tracking the Phase
+    α follow-up Ask aliasing.
+
     Example:
     ```mlir
-    %val = hew.actor_ask %actor {msg_type = 1 : i32} (%key)
+    %val = hew.actor_ask %actor {msg_type = 1 : i32, aliasing = [0]} (%key)
              : (i32) -> i64
     ```
   }];
@@ -481,6 +508,7 @@ def Hew_ActorAskOp : Hew_Op<"actor_ask"> {
   let arguments = (ins
     AnyType:$target,
     I32Attr:$msg_type,
+    DefaultValuedAttr<I32ArrayAttr, "{}">:$aliasing,
     Variadic<AnyType>:$args,
     OptionalAttr<I64Attr>:$timeout_ms
   );

@@ -740,6 +740,157 @@ static void test_struct_init_verifier_field_type() {
 }
 
 //===----------------------------------------------------------------------===//
+// Test: ActorSendOp verifier rejects aliasing-array length != args length
+//===----------------------------------------------------------------------===//
+//
+// The `aliasing` per-arg classification array (Copy=0 / Alias=1) drives
+// whether `ActorSendOpLowering` takes the alias path (which transfers
+// raw heap pointers into a refcounted envelope and move-invalidates the
+// sender's backing storage).  HewOps.td documents that, when present,
+// its length must equal `args.size()`.  A mismatch would either skip
+// invalidation for an aliased arg → double-free, or invalidate a Copy
+// arg the sender still observes → use-after-null.  This test guards
+// against silent-default lowering when an emitter mis-sizes the array.
+// (The empty-array case remains valid: documented as "treated as
+// all-Copy" — kept so existing emitters that opt out stay legal.)
+
+static void test_actor_send_verifier_aliasing_length_mismatch() {
+  TEST(actor_send_verifier_aliasing_length_mismatch);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&ctx);
+  // Function takes (target: ptr, a: i32, b: i64) — two send args.
+  auto funcType = builder.getFunctionType({ptrType, i32Type, i64Type}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *entryBlock = func.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  auto target = entryBlock->getArgument(0);
+  auto a = entryBlock->getArgument(1);
+  auto b = entryBlock->getArgument(2);
+
+  // Two args but a three-element aliasing array — must fail verify.
+  hew::ActorSendOp::create(builder, loc, target, builder.getI32IntegerAttr(0),
+                           builder.getI32ArrayAttr({0, 0, 0}), mlir::ValueRange{a, b});
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("ActorSendOp should reject aliasing length != args length");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
+// Test: ActorSendOp verifier accepts empty aliasing (default all-Copy form)
+//===----------------------------------------------------------------------===//
+//
+// HewOps.td documents `aliasing = []` as the no-opt-in default and
+// every legacy emitter relies on that being valid.  Guard against an
+// over-eager verifier rejecting the empty case.
+
+static void test_actor_send_verifier_empty_aliasing_ok() {
+  TEST(actor_send_verifier_empty_aliasing_ok);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&ctx);
+  auto funcType = builder.getFunctionType({ptrType, i32Type, i32Type}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *entryBlock = func.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  auto target = entryBlock->getArgument(0);
+  auto a = entryBlock->getArgument(1);
+  auto b = entryBlock->getArgument(2);
+
+  hew::ActorSendOp::create(builder, loc, target, builder.getI32IntegerAttr(0),
+                           builder.getI32ArrayAttr({}), mlir::ValueRange{a, b});
+  mlir::func::ReturnOp::create(builder, loc);
+
+  if (mlir::failed(mlir::verify(module))) {
+    FAIL("ActorSendOp must accept empty aliasing array as default all-Copy");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
+// Test: ActorAskOp verifier rejects aliasing-array length != args length
+//===----------------------------------------------------------------------===//
+
+static void test_actor_ask_verifier_aliasing_length_mismatch() {
+  TEST(actor_ask_verifier_aliasing_length_mismatch);
+
+  mlir::MLIRContext ctx;
+  ctx.loadDialect<hew::HewDialect>();
+  ctx.loadDialect<mlir::func::FuncDialect>();
+  ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+
+  mlir::OpBuilder builder(&ctx);
+  auto loc = builder.getUnknownLoc();
+
+  auto module = mlir::ModuleOp::create(loc);
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&ctx);
+  auto funcType = builder.getFunctionType({ptrType, i32Type}, {});
+  auto func = mlir::func::FuncOp::create(builder, loc, "test_fn", funcType);
+  auto *entryBlock = func.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  auto target = entryBlock->getArgument(0);
+  auto a = entryBlock->getArgument(1);
+
+  // One arg but two-element aliasing — must fail verify.
+  hew::ActorAskOp::create(builder, loc, i64Type, target, builder.getI32IntegerAttr(0),
+                          builder.getI32ArrayAttr({0, 0}), mlir::ValueRange{a},
+                          mlir::IntegerAttr{});
+  mlir::func::ReturnOp::create(builder, loc);
+
+  mlir::ScopedDiagnosticHandler handler(&ctx, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::succeeded(mlir::verify(module))) {
+    FAIL("ActorAskOp should reject aliasing length != args length");
+    module->destroy();
+    return;
+  }
+
+  module->destroy();
+  PASS();
+}
+
+//===----------------------------------------------------------------------===//
 // Test: TupleExtractOp folds through tuple.create
 //===----------------------------------------------------------------------===//
 
@@ -4027,6 +4178,9 @@ int main() {
   test_struct_init_verifier_field_count();
   test_field_get_verifier_bounds();
   test_struct_init_verifier_field_type();
+  test_actor_send_verifier_aliasing_length_mismatch();
+  test_actor_send_verifier_empty_aliasing_ok();
+  test_actor_ask_verifier_aliasing_length_mismatch();
 
   // Verifier negative tests — ReceiveOp handler_return_types metadata
   test_receive_verifier_void_handler_with_non_none_metadata();

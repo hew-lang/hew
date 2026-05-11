@@ -1409,6 +1409,93 @@ pub unsafe extern "C" fn hew_actor_send(
     unsafe { actor_send_internal(actor, msg_type, data, size) };
 }
 
+/// Send an envelope-aliased message to an actor — **fail-closed in
+/// Phase α**.
+///
+/// # Phase α status — DO NOT CALL
+///
+/// This entry point is **disabled** in Phase α and aborts via
+/// [`hew_panic`] on every invocation (after releasing the
+/// caller-transferred envelope refcount, if non-null, so the buffer
+/// container does not leak).  The codegen alias lowering is gated off
+/// in `ActorSendOpLowering` and routes every `actor_send` through the
+/// legacy copy path; this FFI body is the runtime-side mirror of that
+/// gate so external JIT / dlopen / C consumers cannot reach the same
+/// ownership hole the codegen branch was disabled for.
+///
+/// The JIT host symbol classification (`scripts/jit-symbol-classification.toml`)
+/// also lists this symbol under `internal`, not `stable`, so JIT
+/// session dylibs cannot link it; the panic here is the second layer
+/// of the same capability boundary for non-JIT FFI consumers.
+///
+/// ## Why fail-closed
+///
+/// `hew_msg_envelope_release` calls `drop_glue` on every final
+/// release, with no "consumed" flag distinguishing:
+///   - Discard paths (closed mailbox, OOM, null actor, drop-fault
+///     injection, shutdown drain) where the receiver never consumed
+///     the moved fields and a `drop_glue` is REQUIRED to free them.
+///   - Success paths where the receiver dispatched the message and
+///     moved owned fields out of the payload bytes; here a
+///     `drop_glue` would DOUBLE-FREE against the receiver's
+///     scope-exit drops.
+///
+/// A correct fix is Phase β work: envelope `header_bits` gain a
+/// CONSUMED bit set by `hew_msg_node_free` after dispatch returns,
+/// and release skips `drop_glue` when CONSUMED is set.  Until then
+/// this entry point cannot deliver a message safely under either
+/// branch, so we refuse to enqueue.
+///
+/// # Safety
+///
+/// - All parameters may be any value.  The function never dereferences
+///   `actor` or `msg_type`; it releases `envelope` (if non-null) via
+///   [`hew_msg_envelope_release`] and panics.  The caller's refcount
+///   transfer contract is honoured even on this fail-closed path so
+///   external code that already constructed an envelope does not leak
+///   the buffer container.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_aliased(
+    _actor: *mut HewActor,
+    _msg_type: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+) {
+    if !envelope.is_null() {
+        // SAFETY: caller transferred one refcount on `envelope` per
+        // the alias-send contract.  Releasing it here drops the
+        // buffer container (and invokes any caller-supplied
+        // `drop_glue`) so the partial allocation does not leak when
+        // we abort below.  Release happens BEFORE the panic so the
+        // refcount accounting is clean even if `hew_panic` recovers
+        // via longjmp into a supervisor.
+        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+    }
+    // Phase α capability boundary: the alias send path cannot deliver
+    // a message safely under the current envelope/release contract
+    // (see doc-comment).  Abort rather than silently dropping or
+    // enqueueing into a known-broken path.
+    hew_panic();
+}
+
+/// WASM stub for [`hew_actor_send_aliased`] — **fail-closed in
+/// Phase α** (same rationale as the native entry above).
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_aliased(
+    _actor: *mut HewActor,
+    _msg_type: i32,
+    envelope: *mut crate::mailbox_wasm::HewMsgEnvelope,
+) {
+    if !envelope.is_null() {
+        // SAFETY: caller transferred one refcount on `envelope`;
+        // release it so the buffer container does not leak when we
+        // abort below.
+        unsafe { crate::mailbox_wasm::hew_msg_envelope_release(envelope) };
+    }
+    hew_panic();
+}
+
 /// Send a wire-encoded message to an actor.
 ///
 /// Extracts raw bytes from the `HewVec` (bytes type), deep-copies them

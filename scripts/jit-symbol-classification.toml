@@ -270,6 +270,11 @@ stable = [
   "hew_memory_dealloc_count",
   "hew_memory_peak_bytes",
   "hew_milliseconds",
+  "hew_msg_envelope_clone_alias",
+  "hew_msg_envelope_fork_for_write",
+  "hew_msg_envelope_new",
+  "hew_msg_envelope_payload_ptr",
+  "hew_msg_envelope_release",
   "hew_msg_node_free",
   "hew_node_ask_take_last_error",
   "hew_node_connect",
@@ -666,12 +671,27 @@ stable = [
 # jit: internal — lifecycle, session/global-state, scheduler bootstrap,
 # reset/drain, and conservative runtime-control hooks that must stay out
 # of JIT session dylibs.
+#
+# Phase α capability boundary:
+#   `hew_actor_send_aliased` and `hew_mailbox_send_aliased` are listed
+#   here, NOT in `stable`, because the alias-send envelope contract is
+#   not yet sound — `hew_msg_envelope_release` calls `drop_glue` on
+#   every final release with no "consumed" flag, so a post-dispatch
+#   release double-frees fields the receiver moved out, while a
+#   discard-path release with `drop_glue=null` leaks them.  The
+#   codegen alias lowering is fail-closed (gated off in
+#   `ActorSendOpLowering`) and the FFI bodies themselves panic via
+#   `hew_panic` to keep external JIT/dlopen consumers from reaching
+#   the same ownership hole.  Re-promote to `stable` only after the
+#   runtime gains a delivery/consumed flag and the codegen gate flips
+#   back on (Phase β re-enablement).
 internal = [
   "_start",
   "hew_actor_cooperate",
   "hew_actor_drain_outcome_free",
   "hew_actor_drain_set",
   "hew_actor_register_type",
+  "hew_actor_send_aliased",
   "hew_deterministic_get_seed",
   "hew_deterministic_reset",
   "hew_deterministic_set_seed",
@@ -683,6 +703,7 @@ internal = [
   "hew_fault_inject_drop",
   "hew_get_reply_channel",
   "hew_is_shutting_down",
+  "hew_mailbox_send_aliased",
   "hew_node_api_ask",
   "hew_node_api_connect",
   "hew_node_api_lookup",

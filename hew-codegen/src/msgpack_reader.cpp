@@ -157,7 +157,7 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
 /// boundary is internal to the current `hew` binary, so missing or
 /// mismatched versions are rejected rather than carrying compatibility
 /// fallbacks for older payloads.
-constexpr uint32_t CURRENT_SCHEMA_VERSION = 9;
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 10;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 
@@ -1903,6 +1903,36 @@ parseCallTypeArgsEntry(const msgpack::object &obj) {
   return entry;
 }
 
+static ast::ActorSendAliasingEntry parseActorSendAliasingEntry(const msgpack::object &obj) {
+  ast::ActorSendAliasingEntry entry;
+  entry.start = getUint(mapReq(obj, "start"));
+  entry.end = getUint(mapReq(obj, "end"));
+  auto kind = getString(mapReq(obj, "kind"));
+  if (kind == "copy") {
+    entry.kind = ast::ActorSendAliasingKind::Copy;
+    // `Copy` variants carry a `reason` field; fail-closed: missing
+    // reason on a Copy entry is a producer/consumer drift.
+    auto reason = getString(mapReq(obj, "reason"));
+    if (reason == "not_identifier") {
+      entry.copy_reason = ast::ActorSendCopyReason::NotIdentifier;
+    } else if (reason == "copy_type") {
+      entry.copy_reason = ast::ActorSendCopyReason::CopyType;
+    } else if (reason == "stdlib_drop") {
+      entry.copy_reason = ast::ActorSendCopyReason::StdlibDrop;
+    } else if (reason == "user_drop") {
+      entry.copy_reason = ast::ActorSendCopyReason::UserDrop;
+    } else {
+      fail("unknown actor_send_aliasing copy reason '" + reason + "'");
+    }
+    return entry;
+  }
+  if (kind == "alias") {
+    entry.kind = ast::ActorSendAliasingKind::Alias;
+    return entry;
+  }
+  fail("unknown actor_send_aliasing kind '" + kind + "'");
+}
+
 static ast::Program parseProgram(const msgpack::object &obj) {
   ast::Program prog;
 
@@ -1927,6 +1957,8 @@ static ast::Program parseProgram(const msgpack::object &obj) {
       mapReq(obj, "method_call_receiver_kinds"), parseMethodCallReceiverKindEntry);
   prog.call_type_args = parseVec<ast::CallTypeArgsEntry>(
       mapReq(obj, "call_type_args"), parseCallTypeArgsEntry);
+  prog.actor_send_aliasing = parseVec<ast::ActorSendAliasingEntry>(
+      mapReq(obj, "actor_send_aliasing"), parseActorSendAliasingEntry);
   prog.assign_target_kinds = parseVec<ast::AssignTargetKindEntry>(
       mapReq(obj, "assign_target_kinds"), parseAssignTargetKindEntry);
   prog.assign_target_shapes = parseVec<ast::AssignTargetShapeEntry>(

@@ -43,8 +43,7 @@ fn main() {
     let connect_timeout_usec: i32 = 0;
     let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
     match conn.set_read_timeout(-1) {
-        Ok(_) => {
-        },
+        Ok(_) => {},
         Err(_) => {
             let err = f"[client] failed to set read timeout on connection to {addr}";
             panic(err);

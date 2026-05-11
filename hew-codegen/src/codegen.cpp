@@ -707,6 +707,228 @@ deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
   return result;
 }
 
+/// Locate the storage slot backing `value` and emit a zero store of
+/// `nullOfType` into it.  Walks defining ops to find an `llvm.load`,
+/// `memref.load`, or passthrough/identity cast (`hew.bitcast`,
+/// `llvm.bitcast`, `builtin.unrealized_conversion_cast`) so callers
+/// can reach the originating alloca regardless of which conversion
+/// pass has run.  When `value` is itself an aggregate produced by a
+/// constructor (e.g. `hew.struct_init`, `llvm.insertvalue`,
+/// `llvm.mlir.undef` rebuilt-into) MLIRGen routes the binding via
+/// `memref.store %value, %alloca` rather than a re-load round-trip;
+/// that store-user is treated as the backing slot.
+///
+/// `nullOfType` is the SSA type that will be stored back —
+/// `!llvm.ptr` for raw pointer bindings, an aggregate type
+/// (e.g. `!llvm.struct<(ptr, ptr)>` for closures, identified structs
+/// for user-defined types) when the caller wants to wipe the entire
+/// slot.  In the alias-send path the move-checker has invalidated the
+/// sender's view of the binding, so wholesale zeroing is safe and
+/// guarantees every owned field's drop sees a null pointer.
+///
+/// Returns `success()` when a store was emitted, `failure()` when no
+/// recognised backing slot could be located within the hop budget.
+/// Callers in fail-closed contexts must propagate failure as an
+/// `op.emitOpError` so a missed invalidation never compiles silently
+/// (LESSONS: codegen must fail closed, not degrade silently).
+[[maybe_unused]] static mlir::LogicalResult
+emitZeroStoreToBackingSlot(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
+                           mlir::Value value, mlir::Type nullOfType) {
+  mlir::Value cursor = value;
+  for (int hops = 0; hops < 8 && cursor; ++hops) {
+    auto *defOp = cursor.getDefiningOp();
+    if (!defOp)
+      return mlir::failure();
+    if (auto llvmLoad = mlir::dyn_cast<mlir::LLVM::LoadOp>(defOp)) {
+      auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, nullOfType);
+      mlir::LLVM::StoreOp::create(rewriter, loc, nullVal, llvmLoad.getAddr());
+      return mlir::success();
+    }
+    if (auto memrefLoad = mlir::dyn_cast<mlir::memref::LoadOp>(defOp)) {
+      // memref.alloca() backed slot — emit memref.store of the zeroed
+      // value into the same memref/indices the load drew from.  Works
+      // for both pointer-element memrefs (the `lowerHewDialect`
+      // pre-memref-lowering case for handle / String / Vec / HashMap
+      // bindings) and aggregate-element memrefs.
+      auto memref = memrefLoad.getMemref();
+      auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, nullOfType);
+      mlir::memref::StoreOp::create(rewriter, loc, nullVal, memref, memrefLoad.getIndices());
+      return mlir::success();
+    }
+    if (mlir::isa<hew::BitcastOp, mlir::LLVM::BitcastOp, mlir::UnrealizedConversionCastOp>(defOp) &&
+        defOp->getNumOperands() == 1) {
+      // Pointer-to-pointer or type-converter identity cast.  Continue
+      // walking to the actual load behind the cast.
+      cursor = defOp->getOperand(0);
+      continue;
+    }
+    // Aggregate constructor (`hew.struct_init`, `llvm.insertvalue`,
+    // `hew.closure.create`, etc.) — the constructor's result is what
+    // the actor_send op sees, but the let-binding's backing storage
+    // is whichever `memref.store` / `llvm.store` consumes the same
+    // SSA value as `value` operand.  Scan users of the original
+    // `value` (not the cursor; we want the SSA value the alias path
+    // actually transferred) for that store and null its destination.
+    break;
+  }
+  // Fallback: walk users of `value` for a `memref.store %value, %slot`
+  // or `llvm.store %value, %slot` and treat that slot as the backing
+  // alloca for the let-binding.  This covers MLIRGen patterns where
+  // a constructed aggregate (struct_init / closure-create / inserted
+  // tuple) is forwarded directly to the consumer instead of being
+  // reloaded from its alloca — there is still a scope-exit drop
+  // registered against the alloca that must be silenced.
+  for (auto *user : value.getUsers()) {
+    if (auto memrefStore = mlir::dyn_cast<mlir::memref::StoreOp>(user)) {
+      if (memrefStore.getValue() != value)
+        continue;
+      auto memref = memrefStore.getMemref();
+      auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, nullOfType);
+      mlir::memref::StoreOp::create(rewriter, loc, nullVal, memref, memrefStore.getIndices());
+      return mlir::success();
+    }
+    if (auto llvmStore = mlir::dyn_cast<mlir::LLVM::StoreOp>(user)) {
+      if (llvmStore.getValue() != value)
+        continue;
+      auto nullVal = mlir::LLVM::ZeroOp::create(rewriter, loc, nullOfType);
+      mlir::LLVM::StoreOp::create(rewriter, loc, nullVal, llvmStore.getAddr());
+      return mlir::success();
+    }
+  }
+  return mlir::failure();
+}
+
+/// Null out the sender's backing storage for each argument that the
+/// Phase α COW alias-send path transferred to the envelope.
+///
+/// **Status (PR #1721 round 4)**: this helper is currently dead code.
+/// `useAliasPath` in `ActorSendOpLowering` is hard-disabled (`false &&`
+/// short-circuit) until the runtime gains a delivery-tracking flag in
+/// `HewMsgEnvelope::header_bits` that lets `hew_msg_envelope_release`
+/// distinguish "discarded without delivery" (must run drop_glue) from
+/// "delivered, receiver moved fields out" (must NOT run drop_glue).
+/// The helper is preserved verbatim because it remains correct for
+/// the move-invalidation half of the alias path; flipping the gate
+/// once Phase β lands runtime delivery tracking re-enables it
+/// automatically.  See PR #1721 round 4 security review (Sec1 + Sec2)
+/// and the gate-file narrative for the full design rationale.
+///
+/// The move-checker has already invalidated these bindings at the
+/// source level (the sender cannot observe them post-send), but the
+/// lowered IR still holds an alloca containing the owned
+/// pointer/aggregate.  Without explicit clearing, the sender's
+/// scope-exit RAII drop frees the same heap allocation the receiver
+/// now owns → double-free.
+///
+/// Owned shapes handled (covers Sec3 of the round-4 review — every
+/// transferred owned field is invalidated, not just handle fields):
+///   - Pointer-shaped owned bindings (String, Vec, HashMap, Handle,
+///     opaque actor handles, Sink/Stream/StreamPair raw `!llvm.ptr`):
+///     zero the slot so the registered scope-exit drop entry point
+///     (`hew_string_drop`, `hew_vec_free`, `hew_hashmap_free_impl`,
+///     `hew_sink_close`, `hew_stream_close`, `hew_stream_pair_free`,
+///     `hew_rc_drop`) sees a null pointer and short-circuits.  All
+///     entry points used here are documented null-safe (audited at
+///     PR #1721 round 2).
+///   - Closure (`{ptr fn, ptr env}`): zero the entire two-word slot.
+///     The fn ptr is never invoked from the sender because the
+///     binding is move-invalidated; zeroing it has no observable
+///     effect.  Zeroing the env ptr makes `hew_rc_drop` a no-op.
+///   - Identified struct: zero the **entire** struct slot — this is
+///     the Sec3 invariant.  Every owned field's drop
+///     (String/Vec/HashMap/handle/closure-env) is null-safe, so the
+///     rebuilt sender drop becomes a verified no-op for the whole
+///     aggregate, INCLUDING fields that are not just handle-transfer
+///     fields.  Whole-aggregate zero deliberately covers more ground
+///     than the copy-path counterpart `nullOutStructHandleFields`,
+///     which is correctly narrow (only nulls `__handle_transfer`
+///     fields because the copy path explicitly clones every other
+///     owned field via `deepCopyStructFields`).  In the alias path
+///     no clone happens — every owned field is move-transferred — so
+///     every owned field must be invalidated, hence the whole-slot
+///     wipe.  This also covers nested owned fields without re-walking
+///     `hew.struct_clone_fields`: the alias path already transferred
+///     the entire memory image to the envelope in one `memcpy`, and
+///     the move-checker has invalidated the binding, so no surviving
+///     load can observe a non-zero slot.
+///
+/// Fail-closed: returns `failure()` when an owned arg cannot be
+/// tracked back to a recognised backing slot
+/// (`emitZeroStoreToBackingSlot` exhausted its hop budget without
+/// finding a load or memref.load).  The caller in
+/// `ActorSendOpLowering` propagates this as `op.emitOpError(...)`
+/// rather than emitting an envelope without an invalidation — see
+/// `.github/copilot-instructions.md` §2 fail-closed contract and the
+/// round-1 regression where a silently-skipped invalidation
+/// re-introduced the double-free in `e2e_bytes_stream_actor_fileserver`.
+///
+/// `failedArgIndex` (out): when failure is returned, set to the index
+/// of the first arg that could not be invalidated, so the caller can
+/// produce a precise diagnostic.
+[[maybe_unused]] static mlir::LogicalResult
+nullOutAliasedSenderBindings(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
+                             mlir::ModuleOp module, mlir::ValueRange originalArgs,
+                             mlir::ValueRange convertedArgs, size_t &failedArgIndex) {
+  failedArgIndex = 0;
+  size_t idx = 0;
+  for (auto [origArg, convArg] : llvm::zip(originalArgs, convertedArgs)) {
+    auto origType = origArg.getType();
+    auto convType = convArg.getType();
+
+    // Detect owned shapes by both the surface (origType) and the
+    // converted (convType) sides.  String/Vec/HashMap/Handle reach
+    // here as `!llvm.ptr` (origType still carries the surface tag);
+    // Closure as `!llvm.struct<(ptr,ptr)>`; identified user structs
+    // as named LLVM struct types with owned-field metadata.
+    bool isOwned = false;
+    if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType, hew::HandleType,
+                  hew::ClosureType>(origType)) {
+      isOwned = true;
+    } else if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(convType)) {
+      // Identified struct that MLIRGen registered owned-field metadata
+      // for is owned at the actor boundary.  Anonymous / literal struct
+      // types or identified structs without owned fields carry no heap
+      // ownership.
+      if (structTy.isIdentified()) {
+        auto cloneAttr = module->getAttrOfType<mlir::DictionaryAttr>("hew.struct_clone_fields");
+        if (cloneAttr && cloneAttr.getAs<mlir::ArrayAttr>(structTy.getName()))
+          isOwned = true;
+      }
+    } else if (mlir::isa<mlir::LLVM::LLVMPointerType>(convType)) {
+      // Bare `!llvm.ptr` carrier (Sink, Stream, StreamPair, opaque
+      // actor handles).  All registered drop entry points for these
+      // are null-safe (audited at PR #1721 round 2).
+      isOwned = true;
+    }
+
+    if (!isOwned) {
+      ++idx;
+      continue;
+    }
+
+    if (mlir::failed(emitZeroStoreToBackingSlot(rewriter, loc, convArg, convType))) {
+      // Fallback: try the original (pre-conversion) operand's user
+      // graph.  During dialect conversion the actor_send's args are
+      // replaced with type-converted values (often through an
+      // `unrealized_conversion_cast` materialization that has no
+      // memref.store user yet), but the original value's let-binding
+      // store is still in the IR.  This recovers the slot for
+      // aggregates produced by ops that have already been converted
+      // (struct_init → insertvalue chain) where only the original
+      // SSA value retains the binding-store user edge.
+      if (origArg != convArg &&
+          mlir::succeeded(emitZeroStoreToBackingSlot(rewriter, loc, origArg, convType))) {
+        ++idx;
+        continue;
+      }
+      failedArgIndex = idx;
+      return mlir::failure();
+    }
+    ++idx;
+  }
+  return mlir::success();
+}
+
 /// Helper: pack variadic args into a stack-allocated struct and return
 /// (data_ptr, data_size).  If args is empty, returns (null, 0).
 static std::pair<mlir::Value, mlir::Value> emitPackArgs(mlir::ConversionPatternRewriter &rewriter,
@@ -1162,6 +1384,20 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
   }
 };
 
+/// True when every entry of the per-arg `aliasing` array attribute is `1`
+/// (Alias).  An empty array is treated as all-Copy (the default for
+/// emitters that have not opted in).
+static bool actorSendAllAlias(mlir::ArrayAttr aliasing) {
+  if (!aliasing || aliasing.empty())
+    return false;
+  for (auto attr : aliasing) {
+    auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr);
+    if (!intAttr || intAttr.getInt() != 1)
+      return false;
+  }
+  return true;
+}
+
 /// Lower hew.actor_send -> pack args + func.call @hew_actor_send
 struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> {
   using OpConversionPattern<hew::ActorSendOp>::OpConversionPattern;
@@ -1180,8 +1416,206 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
     auto msgTypeVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type,
                                                          static_cast<int64_t>(op.getMsgType()));
 
-    // Deep-copy owned values (strings, vecs) so the receiver gets
-    // independent copies that survive the sender's scope-exit drops.
+    // Phase α COW envelope path: HARD-DISABLED in this PR.
+    //
+    // The alias path is structurally unsafe under the current runtime
+    // contract because envelope `drop_glue` fires on EVERY final
+    // release, with no way to distinguish:
+    //   (a) Discard paths — null actor, drop-fault, mailbox closed/oom,
+    //       and actor-shutdown drain — where the receiver never
+    //       consumed the moved fields.  Here a `drop_glue` is REQUIRED
+    //       to free the moved heap state (String backing, Vec backing,
+    //       HashMap, closure env, struct fields); without it those
+    //       resources leak.  Today `drop_glue=null` so they DO leak —
+    //       PR #1721 round 4 security finding Sec1 + Sec2.
+    //   (b) Success paths — `hew_actor_send_aliased` enqueues, the
+    //       scheduler dispatches, and the receiver's handler moves
+    //       owned fields out of the payload bytes into local bindings.
+    //       Here a `drop_glue` would DOUBLE-FREE against the receiver's
+    //       scope-exit drops.  The runtime has no "delivered" /
+    //       "consumed" flag the receiver can set to suppress drop_glue.
+    //
+    // A correct fix requires either runtime-side delivery tracking
+    // (envelope header_bits gain a CONSUMED bit set by
+    // `hew_msg_node_free` after dispatch returns; release skips
+    // drop_glue when CONSUMED is set) or a redesign of the discard
+    // paths to call a separate per-payload teardown that does NOT
+    // share the success-path release entry.  Both are out of scope
+    // for this PR — Phase β work.
+    //
+    // Until then the reviewer's explicit guidance applies (Sec4
+    // wording: "Prefer fail-closed explicit gate if beta cleanup is
+    // not implemented").  We disable the alias path UNCONDITIONALLY
+    // and route every `actor_send` through the legacy copy path,
+    // which deep-clones every owned field — no shared heap state, no
+    // drop_glue needed, no leaks on either success or failure paths.
+    //
+    // Sec4 (WASM parity) is also satisfied: with the path off
+    // everywhere, both native and WASM behave identically.
+    //
+    // The lowering block below is preserved verbatim so that flipping
+    // the gate when Phase β lands the runtime delivery flag is a
+    // ONE-LINE change.  All round-3 invalidation infrastructure
+    // (`emitZeroStoreToBackingSlot`, `nullOutAliasedSenderBindings`)
+    // remains in place for that re-enablement; the verifier-side
+    // aliasing-length check in `Hew_ActorSendOp` and the move-checker
+    // `aliasing` attribute remain live to keep the upstream contract
+    // well-tested for Phase β.
+    //
+    // The original full gate would have been:
+    //   bool useAliasPath = actorSendAllAlias(op.getAliasing()) &&
+    //                       targetVal.getType() != i64Type &&
+    //                       isNative64(module);
+    // Suppressed via a single `false &&` short-circuit so reviewers can
+    // diff the intended Phase β state easily.
+    bool useAliasPath = false && actorSendAllAlias(op.getAliasing()) &&
+                        targetVal.getType() != i64Type && isNative64(module);
+
+    if (useAliasPath) {
+      // Move-invalidate every sender binding whose owned pointer is
+      // about to be transferred into the packed buffer.  Without this,
+      // the sender's scope-exit RAII drop reads the same pointer the
+      // envelope now owns and double-frees on receiver-side drop (or
+      // corrupts the heap silently on Linux, aborts on macOS — see
+      // PR #1721 triage: e2e_actor_drop_actor_send_named_drop and
+      // e2e_bytes_stream_actor_fileserver).  The move-checker has
+      // already proven the sender cannot observe these bindings, so
+      // zeroing is semantically a no-op at the source level and only
+      // affects scope-exit cleanup.
+      //
+      // ORDERING: this runs *before* `emitPackArgs`.  The resolver
+      // walks both defining ops (load → backing alloca) and *users*
+      // of the SSA value (constructor → sibling
+      // `memref.store %val, %binding_alloca`) to reach the let-
+      // binding's storage slot.  Running before the pack avoids
+      // confusion with the `LLVM::StoreOp` that `emitPackArgs` emits
+      // into the packed-buffer alloca: that store's address is the
+      // packed buffer, not the binding, and zeroing it would corrupt
+      // the payload before `memcpy` ships it to the heap.  SSA
+      // values captured by `emitPackArgs` below are the original
+      // loaded values, not memory loads issued at pack time, so
+      // re-ordering does not affect their content.
+      //
+      // FAIL-CLOSED: if any owned arg cannot be tracked back to its
+      // backing slot (e.g. because a future MLIRGen change routes a
+      // binding through an op shape the resolver does not recognise),
+      // reject the lowering with `emitOpError` rather than emitting
+      // an envelope without invalidation.  Per
+      // `.github/copilot-instructions.md` §2 fail-closed codegen.
+      // We do this *before* any allocation so there is no payload to
+      // free on the diagnostic path.
+      size_t failedArgIdx = 0;
+      if (mlir::failed(nullOutAliasedSenderBindings(rewriter, loc, module, op.getArgs(),
+                                                    adaptor.getArgs(), failedArgIdx))) {
+        return op.emitOpError("actor_send alias path: cannot move-invalidate owned arg #")
+               << failedArgIdx
+               << " — backing alloca not reachable from the SSA value (no recognised "
+                  "load / memref.load / identity-cast chain or sibling store-user "
+                  "within hop budget). Refusing to emit an envelope without "
+                  "invalidation; ActorSendOpLowering would otherwise silently "
+                  "regress to a double-free.";
+      }
+
+      // Pack args into a stack alloca, then `malloc(size) + memcpy`
+      // into a heap buffer the envelope owns.  An alloca pointer
+      // handed to the envelope would dangle past the caller's scope.
+      auto [stackPtr, dataSize] = emitPackArgs(rewriter, loc, adaptor.getArgs());
+
+      auto mallocFuncType = rewriter.getFunctionType({sizeType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, "malloc", mallocFuncType);
+      auto heapBuf = mlir::func::CallOp::create(rewriter, loc, "malloc", mlir::TypeRange{ptrType},
+                                                mlir::ValueRange{dataSize})
+                         .getResult(0);
+
+      // Fail-closed on `malloc` failure: panic immediately rather than
+      // dereferencing a null `heapBuf` in the following `memcpy`.  This
+      // mirrors the spawn-OOM handling above (`hew_actor_spawn` null →
+      // `hew_panic`) so allocation failures surface as an unambiguous
+      // runtime panic instead of UB.  Nothing else has been allocated
+      // yet, so there is no payload to free on this branch.
+      {
+        auto nullBuf = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+        auto mallocFailed = mlir::LLVM::ICmpOp::create(rewriter, loc, mlir::LLVM::ICmpPredicate::eq,
+                                                       heapBuf, nullBuf);
+        auto panicIfOp =
+            mlir::scf::IfOp::create(rewriter, loc, mallocFailed, /*withElseRegion=*/false);
+        rewriter.setInsertionPointToStart(&panicIfOp.getThenRegion().front());
+        auto panicFuncType = rewriter.getFunctionType({}, {});
+        getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{},
+                                   mlir::ValueRange{});
+        rewriter.setInsertionPointAfter(panicIfOp);
+      }
+
+      // memcpy(heap, stack, size).  Safe: `heapBuf` is guaranteed
+      // non-null by the panic above.
+      auto memcpyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, "memcpy", memcpyFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "memcpy", mlir::TypeRange{ptrType},
+                                 mlir::ValueRange{heapBuf, stackPtr, dataSize});
+
+      // Wrap in an envelope.  drop_glue is null because the runtime
+      // currently has no "delivered" flag to distinguish:
+      //   - Discard paths (null actor, drop fault, mailbox closed/oom,
+      //     shutdown drain) where no receiver consumes the moved fields
+      //     and a drop_glue would correctly free them.
+      //   - Success paths where the receiver dispatches the message and
+      //     moves owned fields out into local bindings; here a drop_glue
+      //     would double-free against the receiver's scope-exit drops.
+      // Until that runtime hook lands (Phase β), the alias path itself
+      // is gated off above (`useAliasPath = false` unconditionally) so
+      // this `nullDropGlue` is unreachable in the lowered IR.  The
+      // construction is preserved verbatim so the Phase β re-enable is
+      // a single-line gate change once the runtime side is ready.  See
+      // PR #1721 round 4 security review (Sec1 + Sec2) and the
+      // gate-file narrative for the full design rationale.
+      auto nullDropGlue = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+      auto envelopeNewFuncType = rewriter.getFunctionType({ptrType, sizeType, ptrType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, "hew_msg_envelope_new", envelopeNewFuncType);
+      auto envelope = mlir::func::CallOp::create(rewriter, loc, "hew_msg_envelope_new",
+                                                 mlir::TypeRange{ptrType},
+                                                 mlir::ValueRange{heapBuf, dataSize, nullDropGlue})
+                          .getResult(0);
+
+      // Fail-closed on envelope allocation failure: free the heap
+      // payload buffer we just memcpy'd into (ownership has not
+      // transferred yet because the envelope was never constructed),
+      // then panic.  Passing a null envelope to
+      // `hew_actor_send_aliased` would otherwise be a silent message
+      // drop and a payload leak.
+      {
+        auto nullEnv = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+        auto envelopeFailed = mlir::LLVM::ICmpOp::create(
+            rewriter, loc, mlir::LLVM::ICmpPredicate::eq, envelope, nullEnv);
+        auto panicIfOp =
+            mlir::scf::IfOp::create(rewriter, loc, envelopeFailed, /*withElseRegion=*/false);
+        rewriter.setInsertionPointToStart(&panicIfOp.getThenRegion().front());
+        auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
+        getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},
+                                   mlir::ValueRange{heapBuf});
+        auto panicFuncType = rewriter.getFunctionType({}, {});
+        getOrInsertFuncDecl(module, rewriter, "hew_panic", panicFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{},
+                                   mlir::ValueRange{});
+        rewriter.setInsertionPointAfter(panicIfOp);
+      }
+
+      // Hand the envelope to the runtime; it gates on mailbox
+      // capacity and either takes the alias fast path or falls back
+      // to the legacy copy path with the envelope's payload.
+      auto sendFuncType = rewriter.getFunctionType({ptrType, i32Type, ptrType}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_actor_send_aliased", sendFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "hew_actor_send_aliased", mlir::TypeRange{},
+                                 mlir::ValueRange{targetVal, msgTypeVal, envelope});
+
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
+
+    // Legacy copy path: deep-copy owned values (strings, vecs) so the
+    // receiver gets independent copies that survive the sender's
+    // scope-exit drops.
     auto clonedArgs = deepCopyOwnedArgs(rewriter, loc, module, op.getArgs(), adaptor.getArgs());
     auto [dataPtr, dataSize] = emitPackArgs(rewriter, loc, clonedArgs);
 
@@ -1208,6 +1642,17 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
 };
 
 /// Lower hew.actor_ask -> pack args + func.call @hew_actor_ask (blocking)
+///
+/// **Phase α scope cut**: `hew.actor_ask` always takes the legacy
+/// deep-copy path even when every arg is checker-classified as
+/// `Alias`.  The Ask reply-buffer cleanup (panic-on-null sentinel,
+/// `free()` on success, timeout `Option<T>` wrapping) has not been
+/// audited under the envelope path yet.  Lighting the alias fast path
+/// here without that audit risks a use-after-free on the reply
+/// buffer's interaction with the request envelope's drop semantics.
+/// A follow-up lane wires aliased-Ask once the reply contract is
+/// covered; the per-arg `aliasing` array on `Hew_ActorAskOp` is
+/// preserved through codegen for that future commit.
 struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
   using OpConversionPattern<hew::ActorAskOp>::OpConversionPattern;
 

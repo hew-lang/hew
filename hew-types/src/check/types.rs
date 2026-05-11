@@ -98,6 +98,18 @@ pub struct TypeCheckOutput {
     /// slices (A.1/A.2/A.3) progressively suppress false positives by adding
     /// escape predicates. Hint accuracy is not a stable contract until A.4.
     pub stack_hints: Vec<StackHint>,
+    /// Checker-owned alias-vs-copy decision per actor send site.
+    ///
+    /// Populated during `enforce_actor_boundary_send` for every accepted
+    /// actor-send call. Codegen consumes this side table fail-closed: a
+    /// missing entry for a known send span is a hard error.
+    ///
+    /// `Copy` variants carry an [`ActorSendCopyReason`] describing why
+    /// the alias path was rejected (non-identifier expression, `Copy`
+    /// type, stdlib `Drop`, user `impl Drop`); `Alias` variants are a
+    /// unit. Codegen consumes the map fail-closed and propagates the
+    /// reason out to `--explain-cow`.
+    pub actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
 }
 
 /// Classification of a binding's right-hand-side allocation shape.
@@ -147,6 +159,47 @@ pub struct StackHint {
     pub binding_name: String,
     /// Allocation class assigned to the binding's RHS.
     pub alloc_class: AllocationClass,
+}
+
+/// Codegen choice between aliasing the sender's payload buffer (refcount
+/// bump on a [`HewMsgEnvelope`]) and the legacy deep-copy mailbox path.
+///
+/// `Copy` carries an [`ActorSendCopyReason`] so downstream tooling
+/// (notably `--explain-cow`) can render *why* an arg fell off the alias
+/// path rather than printing a single placeholder string for every
+/// `Copy` site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorSendAliasing {
+    /// Sender retains the payload independently; runtime deep-copies into
+    /// the mailbox.
+    Copy(ActorSendCopyReason),
+    /// Sender and receiver share a refcounted payload buffer. Requires the
+    /// move-checker to have invalidated the sender's binding so no
+    /// post-send observation is possible.
+    Alias,
+}
+
+/// Why the type-checker classified an actor-send arg as `Copy` instead
+/// of `Alias`.  Flows through the side table to codegen and the
+/// `--explain-cow` renderer so users see a precise reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorSendCopyReason {
+    /// Arg expression is not a bare identifier (e.g. a field access,
+    /// projection, or freshly constructed value). The move-checker
+    /// does not invalidate the parent binding, so aliasing would be
+    /// unsound.
+    NotIdentifier,
+    /// Arg's resolved type implements the `Copy` marker — cloning is
+    /// trivial and the alias bit would be ambiguous.
+    CopyType,
+    /// Arg's resolved type implements the stdlib-registered `Drop`
+    /// marker. Sender-side drop suppression has to be coordinated with
+    /// the receiver, which Phase α does not handle yet.
+    StdlibDrop,
+    /// Arg's resolved type carries a user `impl Drop for T` that the
+    /// `Drop` marker does not flag (registered only in
+    /// `trait_impls_set`). Same Phase α restriction as `StdlibDrop`.
+    UserDrop,
 }
 
 /// Checker-owned classification of an assignment target.
@@ -644,6 +697,11 @@ pub struct Checker {
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) method_call_consumes_receiver: HashSet<SpanKey>,
+    /// Codegen alias-vs-copy decision per actor send site.
+    /// Mirrors [`TypeCheckOutput::actor_send_aliasing`]; populated in
+    /// `enforce_actor_boundary_send` and moved out at the end of
+    /// `check_program`.
+    pub(super) actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
     /// Qualified method names (e.g. `"Closable::close"`) whose dispatch should
     /// mark the receiver moved and propagate `consumes_receiver` into the
     /// per-call-site side table. Empty in PR 1 (issue #1295); PR 2 populates
@@ -688,6 +746,12 @@ pub struct Checker {
     pub(super) refresh_call_count: usize,
     /// Qualified `Actor::method` names declared with `receive gen fn`.
     pub(super) receive_generator_methods: HashSet<String>,
+    /// Qualified `Actor::method` names declared with `receive fn` (including
+    /// generator receives). Used by the actor-mailbox boundary enforcement
+    /// to distinguish receive handlers from non-receive `methods` declared
+    /// on the same actor (which are also keyed `{Actor}::{name}` in
+    /// `fn_sigs` but must NOT cross the mailbox boundary).
+    pub(super) actor_receive_methods: HashSet<String>,
     pub(super) type_def_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
@@ -846,6 +910,7 @@ impl Checker {
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
+            actor_send_aliasing: HashMap::new(),
             consume_receiver_methods: HashSet::new(),
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
@@ -862,6 +927,7 @@ impl Checker {
             handle_bearing_dirty: false,
             refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),
+            actor_receive_methods: HashSet::new(),
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),

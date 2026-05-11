@@ -1400,6 +1400,62 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     fn format_block(&mut self, block: &Block, scope_end: usize) {
+        // Empty-block fast path: render `{}` on a single line when the block
+        // has no statements, no trailing expression, and no comments fall
+        // inside the block's source range. Multi-line `{\n}` is semantically
+        // identical but stretches absolute byte offsets of every later
+        // expression; that has surfaced a latent cross-module span-collision
+        // bug in the type-checker → codegen `(start, end)` lookup tables
+        // (see PR feat/actor-edges-phase-alpha-cow-envelopes / quic_service
+        // smoke regression). Keeping empty blocks single-line also matches
+        // common formatter conventions (rustfmt, gofmt) and is round-trip
+        // stable.
+        if block.stmts.is_empty() && block.trailing_expr.is_none() {
+            let bytes = self.source.as_bytes();
+            let from = self.prev_source_pos.min(bytes.len());
+            // Some callers pass `self.source.len()` (no tighter bound), and
+            // the parser has been observed to produce inverted spans for
+            // empty function bodies (item.span.end < item.span.start). Be
+            // defensive: clamp to source length and fall back to source end
+            // when the supplied scope is degenerate.
+            let to_raw = scope_end.min(bytes.len());
+            let to = if to_raw > from { to_raw } else { bytes.len() };
+            if from < to {
+                // Locate this block's opening `{` and matching `}` in source.
+                let open = self.source[from..to].find('{').map(|o| from + o);
+                if let Some(open_idx) = open {
+                    let close_idx = find_block_close(self.source, open_idx + 1, to);
+                    // find_block_close returns `to` when no `}` was found in
+                    // range; only collapse when we actually located the brace.
+                    if close_idx < to {
+                        // Check whether ANY comment falls inside the block's
+                        // source range. We must scan forward from
+                        // `next_comment` because some comments may have been
+                        // logically classified earlier even though they sit
+                        // inside this block in source (e.g. doc comments
+                        // attached to earlier siblings can land here).
+                        let mut comment_inside = false;
+                        let mut i = self.next_comment;
+                        while i < self.comments.len() {
+                            let cs = self.comments[i].span.start;
+                            if cs >= close_idx {
+                                break;
+                            }
+                            if cs >= open_idx {
+                                comment_inside = true;
+                                break;
+                            }
+                            i += 1;
+                        }
+                        if !comment_inside {
+                            self.write("{}");
+                            self.prev_source_pos = close_idx + 1;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         self.write("{\n");
         self.indent += 1;
         self.enter_block_scope(scope_end);
@@ -2896,6 +2952,40 @@ fn main() -> string {
 }
 ";
         assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn empty_block_collapses_to_single_line() {
+        // Regression: multi-line empty blocks (e.g. `Ok(_) => {\n        },`)
+        // shift absolute byte offsets of every later expression and have
+        // surfaced cross-module span-collision crashes in codegen. Empty
+        // blocks must be rendered as `{}` on one line, matching the rustfmt
+        // / gofmt convention.
+        let src = "\
+fn assert_ok(result: Result<(), int>) {
+    match result {
+        Ok(_) => {
+        },
+        Err(e) => panic(\"op failed\"),
+    }
+}
+
+fn empty_fn() {
+}
+";
+        let expected = "\
+fn assert_ok(result: Result<(), int>) {
+    match result {
+        Ok(_) => {},
+        Err(e) => panic(\"op failed\"),
+    }
+}
+
+fn empty_fn() {}
+";
+        assert_eq!(roundtrip_source(src), expected);
+        // Idempotence on the collapsed form.
+        assert_eq!(roundtrip_source(expected), expected);
     }
 
     #[test]

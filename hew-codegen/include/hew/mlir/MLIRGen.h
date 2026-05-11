@@ -637,6 +637,13 @@ private:
   /// lands in a follow-up. Empty map is well-formed and safe.
   std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::CallTypeArgsEntry *, SpanHash>
       callTypeArgsMap;
+  /// Lookup map from actor-send message expression span → alias-vs-copy
+  /// decision. Built once in `generate`; consumed at every actor-send
+  /// lowering site so the legacy deep-copy mailbox path or the COW envelope
+  /// alias path can be selected per-site fail-closed (see
+  /// `actorSendAliasingOf`).
+  std::unordered_map<std::pair<uint64_t, uint64_t>, const ast::ActorSendAliasingEntry *, SpanHash>
+      actorSendAliasingMap;
   /// Lookup map from assignment target span → assign-target-kind entry.
   /// Built once in `generate`; used by `assignTargetKindOf` /
   /// `requireAssignTargetKindOf`.
@@ -682,6 +689,38 @@ private:
       return it->second;
     return nullptr;
   }
+  /// Look up the checker's alias-vs-copy decision for an actor-send site.
+  ///
+  /// Keyed by the message expression's source span — the same span the
+  /// type-checker passes to `mark_expr_moved_if_non_copy` for the sender's
+  /// binding. Returns nullptr when no entry exists; codegen treats the
+  /// absence as fail-closed at every site that knows it is an actor send.
+  const ast::ActorSendAliasingEntry *actorSendAliasingOf(const ast::Span &span) const {
+    auto it = actorSendAliasingMap.find({span.start, span.end});
+    if (it != actorSendAliasingMap.end())
+      return it->second;
+    return nullptr;
+  }
+  /// Build the per-arg `aliasing` MLIR array attribute for an actor send
+  /// op.  The returned array has one entry per arg span (`0` Copy,
+  /// `1` Alias), preserving the type checker's per-arg classification
+  /// so the lowering can branch independently for each arg.
+  ///
+  /// The producer (`enforce_actor_boundary_send`) populates an entry
+  /// for every accepted actor send; a missing entry triggers a
+  /// fail-closed compile error rather than a silent degradation.
+  ///
+  /// The `aliasing` array attr is preserved and verified as metadata
+  /// only.  The current lowering always emits the legacy copy send;
+  /// the alias-envelope path is gated off in codegen and the
+  /// corresponding runtime entry points are fail-closed.  A future
+  /// change can re-enable alias-envelope lowering once the runtime
+  /// gains delivery tracking and per-shape drop-glue semantics that
+  /// let `hew_msg_envelope_release` distinguish a receiver-consumed
+  /// envelope from a discarded one.  The array attr is recorded
+  /// regardless so the re-enable does not require a wire-format
+  /// change.
+  mlir::ArrayAttr aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans, mlir::Location location);
   const ast::AssignTargetKindEntry *assignTargetKindOf(const ast::Span &span) const {
     auto it = assignTargetKindMap.find({span.start, span.end});
     if (it != assignTargetKindMap.end())

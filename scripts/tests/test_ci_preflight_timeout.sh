@@ -7,7 +7,7 @@
 # Test 4:    dispatcher dry-run output shape (budget annotation).
 # Test 5:    regression for orphaned-grandchild bug — proves that the
 #            dispatcher's perl-setpgid + Perl-watchdog pattern kills the
-#            entire process tree (bash -lc → grandchild), not only the
+#            entire process tree (bash -c → grandchild), not only the
 #            direct child.  Standard system timeout binaries do not provide
 #            this guarantee; the Perl approach does.
 #
@@ -113,9 +113,9 @@ fi
 #
 # Uses a FIFO handshake so the pgid probe is deterministic and mandatory:
 #   1. The test creates a FIFO before starting the helper.
-#   2. The command string written to bash -lc begins with
+#   2. The command string written to bash -c begins with
 #          printf '%s\n' "$$" > FIFO
-#      where $$ inside bash -lc equals the pgid leader's PID (because the
+#      where $$ inside bash -c equals the pgid leader's PID (because the
 #      Perl child called setpgid(0,0) then exec'd bash; same PID, new pgid).
 #   3. The test reads from the FIFO while the helper runs in the background.
 #      FIFO semantics block the writer until the reader opens the read end,
@@ -123,7 +123,7 @@ fi
 #   4. If the FIFO read times out the test fails hard (no silent skip).
 #   5. After the helper completes, kill -0 -$pgid must fail (grandchild dead).
 #
-# The bash -lc (non-interactive, no job control / set -m) leaves background
+# The bash -c (non-interactive, no job control / set -m) leaves background
 # jobs in the same process group, so kill(-pgid) reaches both bash and the
 # grandchild sleep 30 simultaneously.
 # ---------------------------------------------------------------------------
@@ -133,14 +133,14 @@ mkfifo "$_T5_FIFO"
 _t5_cleanup() { rm -f "$_T5_FIFO"; }
 trap _t5_cleanup EXIT
 
-# Command string: bash -lc writes its own PID (= pgid leader) to the FIFO,
-# then starts the grandchild scenario.  $$ inside bash -lc is that bash's
+# Command string: bash -c writes its own PID (= pgid leader) to the FIFO,
+# then starts the grandchild scenario.  $$ inside bash -c is that bash's
 # own PID (not a subshell $$), which equals the pgid after exec.
 run_in_pgroup_with_timeout 1 \
     "printf '%s\n' \"\$\$\" > '$_T5_FIFO'; bash -c 'sleep 30' & sleep 9999" &
 _T5_HELPER_PID=$!
 
-# Read the pgid from the FIFO.  bash -lc writes before sleeping, so the
+# Read the pgid from the FIFO.  bash -c writes before sleeping, so the
 # read returns almost instantly.  -t 2 guards against a setup failure.
 _PGROUP_ID=""
 read -r -t 2 _PGROUP_ID < "$_T5_FIFO" 2>/dev/null || true
@@ -151,7 +151,7 @@ trap - EXIT  # FIFO cleaned up
 
 # Fail hard if the pgid was not captured — the handshake is mandatory.
 if [[ -z "$_PGROUP_ID" ]]; then
-    fail "Test 5: pgid handshake failed — bash -lc did not write its PID within 2s"
+    fail "Test 5: pgid handshake failed — bash -c did not write its PID within 2s"
     wait "$_T5_HELPER_PID" 2>/dev/null || true
 else
     _T5_STATUS=0
@@ -173,7 +173,7 @@ else
     if kill -0 -"$_PGROUP_ID" 2>/dev/null; then
         fail "run_in_pgroup_with_timeout: processes still alive in group ${_PGROUP_ID} — grandchild NOT terminated"
     else
-        pass "run_in_pgroup_with_timeout: entire process tree terminated (bash -lc grandchild also dead)"
+        pass "run_in_pgroup_with_timeout: entire process tree terminated (bash -c grandchild also dead)"
     fi
 fi
 

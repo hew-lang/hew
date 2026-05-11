@@ -9,5 +9,6 @@ hew_run_panic_test(
   COMPILE_FAILURE_MESSAGE "WASM compilation failed"
   SUCCESS_MESSAGE "Expected WASM non-zero exit but got 0."
   EXPECTED_STDERR "${EXPECTED_STDERR}"
+  COMPILE_TIMEOUT 60
   RUN_TIMEOUT 60
 )

@@ -72,6 +72,22 @@ def test_workflow_routes_to_scripts_config_profile() -> None:
     assert_scripts_config_profile(run_dispatcher(".github/workflows/ci.yml"))
 
 
+def test_cargo_toml_routes_to_scripts_config_profile() -> None:
+    assert_scripts_config_profile(run_dispatcher("Cargo.toml"))
+
+
+def test_cargo_lock_routes_to_scripts_config_profile() -> None:
+    assert_scripts_config_profile(run_dispatcher("Cargo.lock"))
+
+
+def test_dot_cargo_config_routes_to_scripts_config_profile() -> None:
+    assert_scripts_config_profile(run_dispatcher(".cargo/config.toml"))
+
+
+def test_rust_toolchain_routes_to_scripts_config_profile() -> None:
+    assert_scripts_config_profile(run_dispatcher("rust-toolchain.toml"))
+
+
 # ---------------------------------------------------------------------------
 # Slice 1: Instrumentation & hang-bound tests
 # ---------------------------------------------------------------------------
@@ -345,6 +361,10 @@ _TESTS = [
     test_scripts_path_routes_to_scripts_config_profile,
     test_nextest_config_routes_to_scripts_config_profile,
     test_workflow_routes_to_scripts_config_profile,
+    test_cargo_toml_routes_to_scripts_config_profile,
+    test_cargo_lock_routes_to_scripts_config_profile,
+    test_dot_cargo_config_routes_to_scripts_config_profile,
+    test_rust_toolchain_routes_to_scripts_config_profile,
     # Slice 1 instrumentation tests
     test_dry_run_shows_budget_annotation_narrow_lane,
     test_dry_run_shows_budget_annotation_fallback_lane,

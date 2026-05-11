@@ -150,7 +150,7 @@ run_in_pgroup_with_timeout() {
 
         if ($pid == 0) {
             setpgid(0, 0) or die "setpgid: $!\n";
-            exec "bash", "-lc", $cmd_string;
+            exec "bash", "-c", $cmd_string;
             die "exec failed: $!\n";
         }
         setpgid($pid, $pid);

@@ -125,7 +125,7 @@ SANITIZER_CXX ?= $(or $(shell command -v clang++-$(SANITIZER_LLVM_VERSION) 2>/de
 CODEGEN_SANITIZER_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
 CODEGEN_SANITIZER_LINK_FLAGS := -fsanitize=address,undefined
 CODEGEN_SANITIZER_UNIT_REGEX := ^(mlir_dialect|translate|coro_generator|coro_fib_generator)$$
-CODEGEN_SANITIZER_E2E_REGEX := ^(mlirgen|e2e_actor_basic|e2e_vec_basic|e2e_hashmap_basic|e2e_concurrency_concurrent_counter|e2e_concurrency_message_ordering|e2e_memory_.*|e2e_concurrency_.*|coro_generator|coro_fib_generator)$$
+CODEGEN_SANITIZER_E2E_REGEX := ^(mlirgen|e2e_actor_basic|e2e_vec_basic|e2e_hashmap_basic|e2e_concurrency_concurrent_counter|e2e_concurrency_message_ordering|e2e_memory_.*|e2e_concurrency_.*|coro_generator|coro_fib_generator|e2e_generators_gen_letbound_for|e2e_generators_for_over_generator)$$
 CODEGEN_SANITIZER_ASAN_OPTIONS := detect_leaks=1:strict_string_checks=1
 CODEGEN_SANITIZER_LSAN_OPTIONS := suppressions=$(CURDIR)/hew-codegen/lsan.supp
 CODEGEN_SANITIZER_UBSAN_OPTIONS := print_stacktrace=1:halt_on_error=1

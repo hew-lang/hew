@@ -1309,6 +1309,8 @@ add_wasm_file_test(gen_drop_wrapped_yield e2e_generators       gen_drop_wrapped_
 # for-loop's synthetic temp must NOT register a second one.  Paired with for_over_generator
 # which covers the direct-call form (`for x in gen_fn() { ... }`) where the synthetic temp
 # IS the sole owner and must free the frame.
+# Both tests are included in CODEGEN_SANITIZER_E2E_REGEX (Makefile) and the
+# nightly-sanitizers.yml ctest selector so ASan/UBSan covers the ownership contract.
 add_wasm_file_test(gen_letbound_for       e2e_generators       gen_letbound_for)
 add_wasm_file_test(async_gen              e2e_async_gen        async_gen)
 add_wasm_file_test(golden_generator       e2e_golden           golden_generator)

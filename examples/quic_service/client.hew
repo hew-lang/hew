@@ -12,14 +12,15 @@
 //
 // Optional:
 //   HEW_QUIC_SERVICE_PORT=4545 hew run examples/quic_service/client.hew
-
 import std::net::quic;
+
 import std::fs;
+
 import std::os;
 
 fn assert_ok(result: Result<(), fs.IoError>) {
     match result {
-        Ok(_) => {},
+        Ok(_) => assert(true),
         Err(e) => panic("quic operation failed: " + fs.io_error_message(e)),
     }
 }
@@ -34,14 +35,12 @@ fn service_port() -> String {
 
 fn main() {
     println("[client] starting minimal QUIC service client...");
-
     let port = service_port();
     let server_addr = f"127.0.0.1:{port}";
-    
     // Create a QUIC client endpoint (ephemeral local port).
     let ep = quic.new_client();
     println("[client] created client endpoint");
-    
+
     // Connect to the remote QUIC server.
     // server_name is the TLS SNI field; localhost is used for permissive dev verification.
     let conn = ep.connect(server_addr, "localhost");
@@ -49,22 +48,22 @@ fn main() {
     assert_eq(connected.kind(), 0);
     connected.free();
     println("[client] connected to server");
-    
+
     // Open a new stream on the connection.
     let stream = conn.open_stream();
     let opened = conn.on_event();
     assert_eq(opened.kind(), 2);
     opened.free();
     println("[client] opened stream");
-    
+
     // Send a message to the server.
     let msg = "Hello from client";
     assert_ok(stream.send_string(msg));
     println("[client] sent message");
-    
+
     // Signal end of send (but we can still receive).
     assert_ok(stream.finish());
-    
+
     // Receive response from server, then drain to EOF before close.
     let resp_msg = stream.recv_string();
     println(f"[client] received: {resp_msg}");
@@ -76,10 +75,10 @@ fn main() {
     let closed = conn.on_event();
     assert_eq(closed.kind(), 3);
     closed.free();
-    
+
     // Clean shutdown of connection.
     assert_ok(conn.disconnect());
-    
+
     // Clean shutdown of endpoint.
     ep.close();
     println("[client] shutdown complete");

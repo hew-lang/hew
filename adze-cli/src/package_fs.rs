@@ -49,6 +49,12 @@ fn collect_package_files_inner(
 /// Compute a `sha256:{hex}` digest string for raw bytes.
 #[must_use]
 pub fn sha256_prefixed(data: &[u8]) -> String {
+    use std::fmt::Write as _;
+
     let hash = Sha256::digest(data);
-    format!("sha256:{hash:x}")
+    let mut hex = String::with_capacity(hash.len() * 2);
+    for byte in hash {
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    format!("sha256:{hex}")
 }

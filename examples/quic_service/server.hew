@@ -15,14 +15,15 @@
 //
 // Optional:
 //   HEW_QUIC_SERVICE_PORT=4545 hew run examples/quic_service/server.hew
-
 import std::net::quic;
+
 import std::fs;
+
 import std::os;
 
 fn assert_ok(result: Result<(), fs.IoError>) {
     match result {
-        Ok(_) => {},
+        Ok(_) => assert(true),
         Err(e) => panic("quic operation failed: " + fs.io_error_message(e)),
     }
 }
@@ -37,38 +38,36 @@ fn service_port() -> String {
 
 fn main() {
     println("[server] starting minimal QUIC service...");
-
     let port = service_port();
     let listen_addr = f":{port}";
-    
     // Create a QUIC server endpoint on a fixed address.
     // Self-signed certificate is auto-generated for development.
     let ep = quic.new_server(listen_addr);
     println(f"[server] listening on :{port}");
-    
+
     // Accept one incoming connection.
     let conn = ep.accept();
     let connected = ep.on_event();
     assert_eq(connected.kind(), 0);
     connected.free();
     println("[server] accepted connection");
-    
+
     // Accept a stream on that connection.
     let stream = conn.accept_stream();
     let opened = conn.on_event();
     assert_eq(opened.kind(), 2);
     opened.free();
     println("[server] accepted stream");
-    
+
     // Receive a UTF-8 message from the client.
     let msg = stream.recv_string();
     println(f"[server] received: {msg}");
-    
+
     // Echo back a response.
     let response = "Echo from server";
     assert_ok(stream.send_string(response));
     println("[server] sent response");
-    
+
     // Clean shutdown of stream.
     assert_ok(stream.finish());
     stream.close();
@@ -82,10 +81,10 @@ fn main() {
     let kind2 = ev2.kind();
     ev2.free();
     assert((kind1 == 3 || kind2 == 3) && (kind1 == 1 || kind2 == 1));
-    
+
     // Clean shutdown of connection.
     assert_ok(conn.disconnect());
-    
+
     // Clean shutdown of endpoint.
     ep.close();
     println("[server] shutdown complete");

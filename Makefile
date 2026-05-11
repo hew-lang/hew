@@ -554,10 +554,10 @@ test-runtime-unit:
 	cargo nextest run --profile ci -p hew-runtime --no-default-features
 
 test-codegen: hew codegen runtime stdlib
-	cd hew-codegen/build && ctest --output-on-failure -LE wasm -j"$(CTEST_JOBS)"
+	cd hew-codegen/build && ctest --output-on-failure -LE wasm --timeout 90 -j"$(CTEST_JOBS)"
 
 test-wasm: hew codegen wasm-runtime
-	cd hew-codegen/build && ctest --output-on-failure -L wasm -j"$(CTEST_JOBS)"
+	cd hew-codegen/build && ctest --output-on-failure -L wasm --timeout 90 -j"$(CTEST_JOBS)"
 
 test-stdlib: hew
 	@echo "==> Type-checking stdlib .hew files"

@@ -710,11 +710,15 @@ private:
   /// for every accepted actor send; a missing entry triggers a
   /// fail-closed compile error rather than a silent degradation.
   ///
-  /// Phase α only lights the all-`Alias` lowering path (the lowering
-  /// wraps the entire packed buffer in one envelope when every entry
-  /// is `Alias`); mixed arrays defer to the legacy copy path until a
-  /// follow-up lane wires per-arg cloning.  The array attr is recorded
-  /// regardless so a future lane can read it without a wire-format
+  /// The `aliasing` array attr is preserved and verified as metadata
+  /// only.  The current lowering always emits the legacy copy send;
+  /// the alias-envelope path is gated off in codegen and the
+  /// corresponding runtime entry points are fail-closed.  A future
+  /// change can re-enable alias-envelope lowering once the runtime
+  /// gains delivery tracking and per-shape drop-glue semantics that
+  /// let `hew_msg_envelope_release` distinguish a receiver-consumed
+  /// envelope from a discarded one.  The array attr is recorded
+  /// regardless so the re-enable does not require a wire-format
   /// change.
   mlir::ArrayAttr aliasingAttrForSpans(llvm::ArrayRef<ast::Span> argSpans, mlir::Location location);
   const ast::AssignTargetKindEntry *assignTargetKindOf(const ast::Span &span) const {

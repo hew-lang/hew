@@ -119,6 +119,22 @@ mlir::LogicalResult hew::ActorSendOp::verify() {
   if (getMsgType() < 0) {
     return emitOpError("msg_type must be non-negative, got ") << getMsgType();
   }
+  // The `aliasing` array attribute is per-arg: each element classifies one
+  // argument as Copy (0) or Alias (1).  HewOps.td documents that, when
+  // present, its length must equal the number of args.  An empty array is
+  // the documented default ("treated as all-Copy") and remains valid.
+  // Enforcing this here makes mis-emitted ops fail at MLIR verify time
+  // rather than silently misclassifying bindings during ActorSendOpLowering
+  // (the alias path elides per-arg deep-copies and move-invalidates the
+  // sender's backing storage; a mismatched array could either skip
+  // invalidation for an aliased arg → double-free, or invalidate a Copy
+  // arg the sender still observes → use-after-null).
+  auto aliasing = getAliasing();
+  if (aliasing && !aliasing.empty() && aliasing.size() != getArgs().size()) {
+    return emitOpError("aliasing attribute length (")
+           << aliasing.size() << ") must equal args length (" << getArgs().size()
+           << ") when present";
+  }
   return success();
 }
 
@@ -129,6 +145,15 @@ mlir::LogicalResult hew::ActorSendOp::verify() {
 mlir::LogicalResult hew::ActorAskOp::verify() {
   if (getMsgType() < 0) {
     return emitOpError("msg_type must be non-negative, got ") << getMsgType();
+  }
+  // Same per-arg alias classification contract as ActorSendOp.  Enforced
+  // here so any future Ask alias-path lowering inherits the same length
+  // invariant rather than discovering a mismatch at codegen time.
+  auto aliasing = getAliasing();
+  if (aliasing && !aliasing.empty() && aliasing.size() != getArgs().size()) {
+    return emitOpError("aliasing attribute length (")
+           << aliasing.size() << ") must equal args length (" << getArgs().size()
+           << ") when present";
   }
   return success();
 }

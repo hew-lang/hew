@@ -709,7 +709,10 @@ static void test_actor_send_aliasing_roundtrip() {
   TEST(actor_send_aliasing_roundtrip);
   msgpack::sbuffer buf;
   msgpack::packer<msgpack::sbuffer> pk(&buf);
-  pk.pack_map(11);
+  // 12 top-level fields as of schema version 10 — must include
+  // `call_type_args`, which the schema requires and the reader rejects
+  // when absent (see packWithSchema above).
+  pk.pack_map(12);
   pk.pack(std::string("schema_version"));
   pk.pack(static_cast<uint64_t>(10));
   pk.pack(std::string("items"));
@@ -717,6 +720,8 @@ static void test_actor_send_aliasing_roundtrip() {
   pk.pack(std::string("expr_types"));
   pk.pack_array(0);
   pk.pack(std::string("method_call_receiver_kinds"));
+  pk.pack_array(0);
+  pk.pack(std::string("call_type_args"));
   pk.pack_array(0);
 
   pk.pack(std::string("actor_send_aliasing"));
@@ -1366,6 +1371,8 @@ static void test_call_type_args_roundtrip() {
   pk.pack(std::string("end"));
   pk.pack(static_cast<uint64_t>(51));
 
+  pk.pack(std::string("actor_send_aliasing"));
+  pk.pack_array(0);
   pk.pack(std::string("assign_target_kinds"));
   pk.pack_array(0);
   pk.pack(std::string("assign_target_shapes"));

@@ -515,6 +515,15 @@ unsafe fn msg_node_alloc(
 /// via [`hew_msg_envelope_clone_alias`]). The caller must not release
 /// its own reference if it intends the new node to own it; this
 /// function consumes one refcount.
+///
+/// Phase α: unused in production paths because both
+/// `hew_actor_send_aliased` and `hew_mailbox_send_aliased` are
+/// fail-closed.  Preserved for Phase β re-enable and exercised by
+/// the in-tree test `aliased_node_alloc_consumes_envelope_refcount`.
+#[allow(
+    dead_code,
+    reason = "Phase α: alias send is fail-closed; preserved for Phase β re-enable"
+)]
 unsafe fn msg_node_alloc_aliased(
     msg_type: i32,
     envelope: *mut HewMsgEnvelope,
@@ -899,7 +908,12 @@ pub struct HewMailbox {
 impl HewMailbox {
     /// Read-only accessor: `true` when the mailbox uses the mutex
     /// slow-path queue for user messages (rather than the lock-free
-    /// MPSC queue).  Used by the Phase α aliased-send gate.
+    /// MPSC queue).  Used by the Phase α aliased-send gate (now
+    /// fail-closed; preserved for Phase β re-enable).
+    #[allow(
+        dead_code,
+        reason = "Phase α: alias send gate is fail-closed; preserved for Phase β"
+    )]
     #[inline]
     pub(crate) fn use_slow_path(&self) -> bool {
         self.use_slow_path
@@ -1410,82 +1424,70 @@ unsafe fn send_with_overflow(
     SendOutcome::Enqueued
 }
 
-/// Send an envelope-aliased message to the mailbox (user queue) on the
-/// **unbounded** fast path, without copying the payload.
+/// Send an envelope-aliased message to the mailbox — **fail-closed in
+/// Phase α**.
 ///
-/// The caller transfers one refcount on `envelope` to the mailbox node;
-/// `hew_msg_node_free` releases that reference once the receiver has
-/// finished with the message.  On any failure that prevents the
-/// envelope from reaching the queue, the function calls
-/// [`hew_msg_envelope_release`] to drop the caller-transferred
-/// reference.
+/// # Phase α status — DO NOT CALL
 ///
-/// Phase α restriction: this entry point only services unbounded
-/// mailboxes (`capacity <= 0`) and the lock-free `user_fast` queue.
-/// Bounded / slow-path mailboxes fall back to the legacy copy path at
-/// the runtime layer above (`hew_actor_send_aliased`); a future lane
-/// extends the alias path through the bounded policies.
+/// This entry point is **disabled** in Phase α and aborts via
+/// [`hew_panic`] on every invocation (after releasing the
+/// caller-transferred envelope refcount, if non-null, so the buffer
+/// container does not leak).  The codegen alias lowering is gated off
+/// in `ActorSendOpLowering` and the runtime entry point
+/// `hew_actor_send_aliased` (the only in-tree caller) is also
+/// fail-closed; this function exists solely as a `#[no_mangle]`
+/// symbol so external FFI / dlopen consumers that link the alias
+/// path get the same fail-closed treatment instead of reaching the
+/// underlying ownership hole.
 ///
-/// Returns `0` ([`HewError::Ok`]) on success, `-1`
-/// ([`HewError::ErrMailboxFull`]) if the mailbox is bounded (alias
-/// path not lit there yet), `-2` ([`HewError::ErrActorStopped`]) if
-/// the mailbox is closed, or `-5` ([`HewError::ErrOom`]) if the node
-/// allocation fails.
+/// The JIT host symbol classification (`scripts/jit-symbol-classification.toml`)
+/// also lists this symbol under `internal`, not `stable`, so JIT
+/// session dylibs cannot link it; this panic is the second layer of
+/// the same capability boundary for non-JIT FFI consumers.
+///
+/// ## Why fail-closed
+///
+/// `hew_msg_envelope_release` calls `drop_glue` on every final
+/// release with no "consumed" flag, so post-dispatch release would
+/// double-free fields the receiver moved out of the payload, while a
+/// discard-path release with `drop_glue=null` leaks them.  See the
+/// full rationale on [`crate::actor::hew_actor_send_aliased`].  A
+/// correct Phase β fix introduces a CONSUMED bit on
+/// `HewMsgEnvelope::header_bits` set by `hew_msg_node_free` after
+/// dispatch, with release skipping `drop_glue` when CONSUMED is set.
 ///
 /// # Safety
 ///
-/// - `mb` must be a valid mailbox pointer.
-/// - `envelope` must be a live envelope obtained from
-///   [`hew_msg_envelope_new`] (or already-cloned).  The caller
-///   transfers exactly one refcount into this call.
+/// - All parameters may be any value.  The function never dereferences
+///   `mb` or `msg_type`; it releases `envelope` (if non-null) via
+///   [`hew_msg_envelope_release`] and panics.  The caller's refcount
+///   transfer contract is honoured even on this fail-closed path.
+///
+/// Returns `i32` only for ABI compatibility with the (now disabled)
+/// pre-Phase-β shape; the function never actually returns because
+/// [`hew_panic`] aborts the calling actor (or exits the process if
+/// called outside an actor).
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_send_aliased(
-    mb: *mut HewMailbox,
-    msg_type: i32,
+    _mb: *mut HewMailbox,
+    _msg_type: i32,
     envelope: *mut HewMsgEnvelope,
 ) -> i32 {
-    if mb.is_null() || envelope.is_null() {
-        if !envelope.is_null() {
-            // SAFETY: envelope was caller-owned; release the
-            // transferred refcount on the early-exit error path.
-            unsafe { hew_msg_envelope_release(envelope) };
-        }
-        return HewError::ErrActorStopped as i32;
-    }
-    // SAFETY: caller guarantees `mb` is valid for the duration of the
-    // call; we hold no &mut so the field reads are sound.
-    let mb_ref = unsafe { &*mb };
-    if mb_ref.closed.load(Ordering::Acquire) {
-        // SAFETY: caller transferred this refcount; release it on
-        // failure so the envelope drops correctly.
+    if !envelope.is_null() {
+        // SAFETY: caller transferred one refcount on `envelope` per
+        // the alias-send contract.  Release it BEFORE the panic so
+        // the buffer container does not leak even if `hew_panic`
+        // recovers via longjmp into a supervisor.
         unsafe { hew_msg_envelope_release(envelope) };
-        return HewError::ErrActorStopped as i32;
     }
-    if mb_ref.capacity > 0 || mb_ref.use_slow_path {
-        // SAFETY: Phase α gate — bounded / slow-path mailboxes do not
-        // yet have alias lowering; release the transferred refcount
-        // and return so the runtime caller can fall back.
-        unsafe { hew_msg_envelope_release(envelope) };
-        return HewError::ErrMailboxFull as i32;
-    }
-    // SAFETY: msg_node_alloc_aliased consumes one refcount on
-    // `envelope`; its node frees the envelope via `hew_msg_node_free`.
-    let node = unsafe { msg_node_alloc_aliased(msg_type, envelope, ptr::null_mut()) };
-    if node.is_null() {
-        // SAFETY: node alloc failed; envelope has NOT been consumed
-        // (the alloc helper only attaches the envelope after
-        // successful node allocation).  Release the caller-transferred
-        // refcount.
-        unsafe { hew_msg_envelope_release(envelope) };
-        return HewError::ErrOom as i32;
-    }
-    // SAFETY: node was just allocated with next == null.
-    unsafe { mb_ref.user_fast.enqueue(node) };
-    mb_ref.count.fetch_add(1, Ordering::Release);
-    update_high_water_mark(mb_ref);
-    MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-    HewError::Ok as i32
+    // Phase α capability boundary: see the doc-comment above.  The
+    // alias send path cannot deliver a message safely under the
+    // current envelope/release contract, so we refuse to enqueue.
+    crate::actor::hew_panic();
+    // Unreachable — `hew_panic` either longjmps to the actor
+    // supervisor or exits the process.
+    HewError::ErrActorStopped as i32
 }
 
 /// Send a message to the mailbox (user queue), deep-copying `data`.
@@ -2839,39 +2841,61 @@ mod tests {
         }
     }
 
-    /// Regression: the alias-send fail-closed cleanup path must release
-    /// the envelope when the target actor is null.
+    /// Phase α: `hew_actor_send_aliased` is now fail-closed and
+    /// aborts via `hew_panic` on every invocation, after releasing
+    /// the caller-transferred envelope refcount.  The pre-revision
+    /// behaviour this test pinned (null-actor early release returns
+    /// to the caller) no longer exists; the function cannot be
+    /// invoked from a unit test without exiting the process.
     ///
-    /// The codegen alias lowering panics on `malloc` /
-    /// `hew_msg_envelope_new` failure before reaching the FFI, and the
-    /// runtime FFI panics on a null envelope (a contract violation).
-    /// The remaining non-fatal fail-closed branch is the null-actor
-    /// early exit: the runtime must release the transferred refcount
-    /// so the payload is not leaked.  This test pins that invariant
-    /// because it is the only post-revision branch where the runtime
-    /// is responsible for cleanup rather than the caller.
+    /// The underlying invariant — "the caller-transferred envelope
+    /// refcount is released so the payload buffer is not leaked when
+    /// the alias send cannot deliver" — is now covered by directly
+    /// exercising [`hew_msg_envelope_release`] below; that is the
+    /// release path the fail-closed FFI bodies invoke before
+    /// `hew_panic`.  Re-enable / replace this test in Phase β when
+    /// the alias send entry points come back online.
     #[test]
+    #[ignore = "Phase α: hew_actor_send_aliased is fail-closed (panics)"]
     fn actor_send_aliased_null_actor_releases_envelope() {
         let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
         ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
         // SAFETY: standard envelope-new contract; payload allocated
-        // by `alloc_test_payload`; envelope ownership transfers into
-        // `hew_actor_send_aliased`, which releases it on the null-
-        // actor branch.
+        // by `alloc_test_payload`; envelope ownership would transfer
+        // into `hew_actor_send_aliased` if the alias path were live.
         unsafe {
             let payload = alloc_test_payload(b"null-actor");
             let env = hew_msg_envelope_new(payload, 10, Some(envelope_test_drop_glue));
             assert!(!env.is_null());
             assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
-
-            // Null actor + valid envelope: runtime must release the
-            // transferred refcount.  Drop glue must fire exactly once
-            // (payload freed by the envelope).
             crate::actor::hew_actor_send_aliased(std::ptr::null_mut(), 0, env);
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    /// Pins the envelope-release invariant the fail-closed alias-send
+    /// FFI bodies rely on: releasing the caller's transferred refcount
+    /// (the only refcount on a freshly-`new`'d envelope) drops the
+    /// envelope, frees the buffer container, and fires `drop_glue`
+    /// exactly once.  This is the payload-leak-prevention guarantee
+    /// the Phase α `hew_actor_send_aliased` and `hew_mailbox_send_aliased`
+    /// fail-closed paths invoke before calling `hew_panic`.
+    #[test]
+    fn envelope_release_after_new_drops_payload_exactly_once() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: standard envelope-new contract; we hold the only
+        // refcount, so a single release is the final release.
+        unsafe {
+            let payload = alloc_test_payload(b"release-once");
+            let env = hew_msg_envelope_new(payload, 12, Some(envelope_test_drop_glue));
+            assert!(!env.is_null());
+            assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
+            hew_msg_envelope_release(env);
             assert_eq!(
                 ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
                 1,
-                "null-actor alias-send must release the envelope refcount"
+                "single-refcount release must fire drop_glue exactly once"
             );
         }
     }

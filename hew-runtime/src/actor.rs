@@ -1409,169 +1409,91 @@ pub unsafe extern "C" fn hew_actor_send(
     unsafe { actor_send_internal(actor, msg_type, data, size) };
 }
 
-/// Send an envelope-aliased message to an actor (fire-and-forget,
-/// **unbounded mailboxes only**).
+/// Send an envelope-aliased message to an actor — **fail-closed in
+/// Phase α**.
 ///
-/// The caller transfers one refcount on `envelope` to the runtime.
-/// On success the envelope reaches the receiver via the COW path
-/// (`hew_msg_node_free` releases the envelope refcount when the node
-/// is consumed).  On non-fatal failure (closed mailbox, bounded
-/// mailbox, OOM, null actor, drop-fault injection) the transferred
-/// refcount is released back to the caller's accounting; the caller
-/// treats the envelope as consumed in all cases.  A null `envelope`
-/// is **not** a non-fatal failure: it is a contract violation that
-/// aborts via [`hew_panic`] (see Safety below).
+/// # Phase α status — DO NOT CALL
 ///
-/// **Phase α gate** (mirrored at the codegen lowering):
+/// This entry point is **disabled** in Phase α and aborts via
+/// [`hew_panic`] on every invocation (after releasing the
+/// caller-transferred envelope refcount, if non-null, so the buffer
+/// container does not leak).  The codegen alias lowering is gated off
+/// in `ActorSendOpLowering` and routes every `actor_send` through the
+/// legacy copy path; this FFI body is the runtime-side mirror of that
+/// gate so external JIT / dlopen / C consumers cannot reach the same
+/// ownership hole the codegen branch was disabled for.
 ///
-/// - mailbox must be unbounded (`capacity <= 0`) and not slow-path.
-/// - target must be a local actor (remote-PID dispatch still goes
-///   through `hew_actor_send_by_id`'s wire-encoded copy path).
+/// The JIT host symbol classification (`scripts/jit-symbol-classification.toml`)
+/// also lists this symbol under `internal`, not `stable`, so JIT
+/// session dylibs cannot link it; the panic here is the second layer
+/// of the same capability boundary for non-JIT FFI consumers.
 ///
-/// Bounded / slow-path mailboxes silently fall back: the runtime
-/// extracts the envelope's payload, calls the legacy copy path, and
-/// then releases the envelope.  This keeps the invariants stable
-/// while a follow-up lane lights the alias path under the bounded
-/// policies.
+/// ## Why fail-closed
+///
+/// `hew_msg_envelope_release` calls `drop_glue` on every final
+/// release, with no "consumed" flag distinguishing:
+///   - Discard paths (closed mailbox, OOM, null actor, drop-fault
+///     injection, shutdown drain) where the receiver never consumed
+///     the moved fields and a `drop_glue` is REQUIRED to free them.
+///   - Success paths where the receiver dispatched the message and
+///     moved owned fields out of the payload bytes; here a
+///     `drop_glue` would DOUBLE-FREE against the receiver's
+///     scope-exit drops.
+///
+/// A correct fix is Phase β work: envelope `header_bits` gain a
+/// CONSUMED bit set by `hew_msg_node_free` after dispatch returns,
+/// and release skips `drop_glue` when CONSUMED is set.  Until then
+/// this entry point cannot deliver a message safely under either
+/// branch, so we refuse to enqueue.
 ///
 /// # Safety
 ///
-/// - `actor` must be a valid pointer returned by a spawn function (or
-///   null; null actor is a no-op that releases the envelope).
-/// - `envelope` must be a live envelope obtained from
-///   [`hew_msg_envelope_new`].  Passing a null envelope is a contract
-///   violation and aborts via [`hew_panic`]: the codegen alias path is
-///   fail-closed on `malloc` / `hew_msg_envelope_new` failure, so a
-///   null envelope here can only indicate a generated-code bug or a
-///   misuse of the unsafe FFI, both of which must surface immediately
-///   rather than silently dropping the message.
+/// - All parameters may be any value.  The function never dereferences
+///   `actor` or `msg_type`; it releases `envelope` (if non-null) via
+///   [`hew_msg_envelope_release`] and panics.  The caller's refcount
+///   transfer contract is honoured even on this fail-closed path so
+///   external code that already constructed an envelope does not leak
+///   the buffer container.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send_aliased(
-    actor: *mut HewActor,
-    msg_type: i32,
+    _actor: *mut HewActor,
+    _msg_type: i32,
     envelope: *mut crate::mailbox::HewMsgEnvelope,
 ) {
-    if envelope.is_null() {
-        // Fail-closed: a null envelope means the alias-send contract
-        // was violated upstream.  The codegen lowering panics on
-        // `malloc` / `hew_msg_envelope_new` failure before reaching
-        // this FFI, so reaching here implies a real bug.  Silently
-        // returning would mask the bug and leak any partially-built
-        // payload the caller still owns; abort instead.
-        hew_panic();
-        return; // hew_panic never returns; defensive in case of a
-                // missing recovery context that lets it fall through.
-    }
-    if actor.is_null() {
-        // SAFETY: caller transferred this refcount; release it on the
-        // null-actor early exit so the envelope drops correctly.
+    if !envelope.is_null() {
+        // SAFETY: caller transferred one refcount on `envelope` per
+        // the alias-send contract.  Releasing it here drops the
+        // buffer container (and invokes any caller-supplied
+        // `drop_glue`) so the partial allocation does not leak when
+        // we abort below.  Release happens BEFORE the panic so the
+        // refcount accounting is clean even if `hew_panic` recovers
+        // via longjmp into a supervisor.
         unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-        return;
     }
-    // SAFETY: caller guarantees `actor` is valid for the call; we read
-    // the mailbox pointer + drop-fault id without taking &mut.
-    let a = unsafe { &*actor };
-
-    if crate::deterministic::check_drop_fault(a.id) {
-        // Test-only fault injection: pretend success but discard.
-        // SAFETY: caller transferred this refcount; release it so the
-        // envelope drops without the receiver observing it.
-        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-        return;
-    }
-
-    let mb = a.mailbox.cast::<crate::mailbox::HewMailbox>();
-    // SAFETY: mb is valid for the actor's lifetime; field reads do not
-    // create &mut.
-    let mb_ref = unsafe { &*mb };
-
-    // Phase α: bounded / slow-path mailboxes fall back to the legacy
-    // copy path.  The receiver gets an independent buffer; the
-    // envelope releases its payload on the final `release` below.
-    if mb_ref.capacity > 0 || mb_ref.use_slow_path() {
-        // SAFETY: envelope is live; payload pointer is stable for
-        // the envelope's lifetime under the alias contract.
-        let payload = unsafe { (*envelope).payload };
-        // SAFETY: envelope is live; payload_size is stable for the
-        // envelope's lifetime under the alias contract.
-        let size = unsafe { (*envelope).payload_size };
-        // SAFETY: actor is valid; payload/size satisfy the legacy
-        // contract (deep-copy at the mailbox boundary).
-        unsafe { actor_send_internal(actor, msg_type, payload, size) };
-        // SAFETY: caller transferred this refcount; we release it now
-        // that the legacy path has its independent copy.
-        unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-        return;
-    }
-
-    // Unbounded fast path: enqueue the aliased node directly.
-    // SAFETY: mb pointer is valid; envelope refcount is transferred.
-    let result = unsafe { crate::mailbox::hew_mailbox_send_aliased(mb, msg_type, envelope) };
-    if result != 0 {
-        return;
-    }
-
-    let sender = hew_actor_self();
-    let trace_actor_id = if sender.is_null() {
-        a.id
-    } else {
-        // SAFETY: scheduler sets CURRENT_ACTOR to a live actor during dispatch.
-        unsafe { (*sender).id }
-    };
-    crate::tracing::record_send(trace_actor_id, msg_type);
-
-    // CAS IDLE → RUNNABLE; on success, schedule the actor.
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Runnable as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        a.idle_count.store(0, Ordering::Relaxed);
-        a.hibernating.store(0, Ordering::Relaxed);
-        scheduler::sched_enqueue(actor);
-    }
+    // Phase α capability boundary: the alias send path cannot deliver
+    // a message safely under the current envelope/release contract
+    // (see doc-comment).  Abort rather than silently dropping or
+    // enqueueing into a known-broken path.
+    hew_panic();
 }
 
-/// WASM stub for [`hew_actor_send_aliased`].
-///
-/// Phase α: WASM does not yet host the alias fast path; codegen gates
-/// the alias call site on the native target.  This stub exists so the
-/// symbol resolves under `wasm32`-targeted builds and falls back to
-/// the legacy copy path with the envelope's payload.
+/// WASM stub for [`hew_actor_send_aliased`] — **fail-closed in
+/// Phase α** (same rationale as the native entry above).
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send_aliased(
-    actor: *mut HewActor,
-    msg_type: i32,
+    _actor: *mut HewActor,
+    _msg_type: i32,
     envelope: *mut crate::mailbox_wasm::HewMsgEnvelope,
 ) {
-    if envelope.is_null() {
-        // Fail-closed: mirrors the native stub above.  Null envelope
-        // means the codegen-side fail-closed path was bypassed; abort
-        // rather than silently dropping the message.
-        hew_panic();
-        return; // hew_panic never returns; defensive in case of a
-                // missing recovery context that lets it fall through.
+    if !envelope.is_null() {
+        // SAFETY: caller transferred one refcount on `envelope`;
+        // release it so the buffer container does not leak when we
+        // abort below.
+        unsafe { crate::mailbox_wasm::hew_msg_envelope_release(envelope) };
     }
-    // SAFETY: envelope is live; payload pointer is stable for the
-    // envelope's lifetime.
-    let payload = unsafe { (*envelope).payload };
-    // SAFETY: envelope is live; payload_size is stable for the
-    // envelope's lifetime.
-    let size = unsafe { (*envelope).payload_size };
-    if !actor.is_null() {
-        // SAFETY: legacy WASM send path; payload/size are valid for
-        // `size` bytes under the alias contract.
-        unsafe { hew_actor_send(actor, msg_type, payload, size) };
-    }
-    // SAFETY: caller transferred this refcount; release it now that
-    // the legacy path has copied the payload.
-    unsafe { crate::mailbox_wasm::hew_msg_envelope_release(envelope) };
+    hew_panic();
 }
 
 /// Send a wire-encoded message to an actor.

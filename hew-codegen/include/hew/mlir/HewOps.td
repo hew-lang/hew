@@ -446,11 +446,15 @@ def Hew_ActorSendOp : Hew_Op<"actor_send"> {
     the sender's binding is invalidated post-send and the heap pointers
     can ride into a refcounted `HewMsgEnvelope` without a copy).
 
-    Phase α only lights the all-`Alias` path: the lowering wraps the
-    full packed buffer into one envelope when **every** entry of the
-    array is `Alias`, and otherwise takes the legacy copy path.  Mixed
-    arrays are reserved for a follow-up lane that splits per-arg
-    cloning.
+    The `aliasing` attribute is preserved and verified as metadata
+    only.  The current lowering always emits the legacy copy send
+    (the runtime deep-copies every owned field into a fresh mailbox
+    buffer); the alias-envelope path is gated off in codegen and the
+    corresponding runtime entry points are fail-closed.  A future
+    change can re-enable alias-envelope lowering once the runtime
+    gains delivery tracking and per-shape drop-glue semantics that
+    let `hew_msg_envelope_release` distinguish a receiver-consumed
+    envelope from a discarded one.
 
     Defaulting to `[]` keeps existing emitters unchanged: an empty
     array is treated as all-`Copy`.

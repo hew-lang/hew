@@ -7,7 +7,6 @@ import std::io::closable;
 
 // WASM-TODO(#1451): `MonitorRef` depends on the native actor monitor runtime.
 // The checker rejects `monitor()` on wasm32 via the existing Link/monitor gate.
-
 /// A handle to an active monitor registration.
 pub type MonitorRef {
     ref_id: int;

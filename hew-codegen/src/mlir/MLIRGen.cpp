@@ -2459,7 +2459,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     return nullptr;
   }
 
-  // monitor(actor_ref) -> i64 (ref_id)
+  // monitor(actor_ref) -> MonitorRef (LLVM struct wrapping i64 ref_id)
   if (name == "monitor") {
     if (args.empty()) {
       ++errorCount_;
@@ -2470,8 +2470,39 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!targetVal)
       return nullptr;
     auto selfRef = hew::ActorSelfOp::create(builder, location, ptrType);
-    return hew::ActorMonitorOp::create(builder, location, builder.getI64Type(), selfRef, targetVal)
-        .getResult();
+    auto isExpectedMonitorRefStructType = [&](mlir::Type ty) {
+      auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(ty);
+      return structTy && structTy.isIdentified() && structTy.getName() == "MonitorRef" &&
+             structTy.getBody().size() == 1 && structTy.getBody().front() == builder.getI64Type();
+    };
+    auto isExpectedMonitorRefTypeExpr = [&](const ast::TypeExpr &type) {
+      auto *named = std::get_if<ast::TypeNamed>(&type.kind);
+      if (!named || resolveTypeAlias(named->name) != "MonitorRef")
+        return false;
+      return !named->type_args || named->type_args->empty();
+    };
+    auto rawRef =
+        hew::ActorMonitorOp::create(builder, location, builder.getI64Type(), selfRef, targetVal)
+            .getResult();
+    mlir::Type monitorRefType;
+    if (typeHint && isExpectedMonitorRefStructType(typeHint))
+      monitorRefType = typeHint;
+    if (!monitorRefType) {
+      if (auto *resolvedType = resolvedTypeOf(exprSpan);
+          resolvedType && isExpectedMonitorRefTypeExpr(*resolvedType)) {
+        auto resolvedMlirType = convertType(*resolvedType);
+        if (resolvedMlirType && isExpectedMonitorRefStructType(resolvedMlirType))
+          monitorRefType = resolvedMlirType;
+      }
+    }
+    if (auto structTy = mlir::dyn_cast_if_present<mlir::LLVM::LLVMStructType>(monitorRefType)) {
+      mlir::Value wrapped = mlir::LLVM::UndefOp::create(builder, location, structTy);
+      return mlir::LLVM::InsertValueOp::create(builder, location, wrapped, rawRef,
+                                               llvm::ArrayRef<int64_t>{0});
+    }
+    ++errorCount_;
+    emitError(location) << "monitor() lowering: expected std::link_monitor::MonitorRef struct type";
+    return nullptr;
   }
 
   // demonitor(ref_id) — cancel a monitor by reference id

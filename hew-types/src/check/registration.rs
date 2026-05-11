@@ -12,6 +12,38 @@ use super::*;
 /// inline programs in tests).
 const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
 
+/// Embedded source for the built-in actor monitor handle wrapper.
+///
+/// This copy intentionally omits the `import std::io::closable;` line used by
+/// the on-disk stdlib module because inline checker tests register the
+/// `Closable` / `CloseError` surface directly before parsing this snippet.
+const MONITOR_REF_HEW: &str = r#"
+pub type MonitorRef {
+    ref_id: int;
+}
+
+impl Closable for MonitorRef {
+    fn close(monitor_ref: MonitorRef) -> Result<(), CloseError> {
+        unsafe {
+            hew_actor_demonitor(monitor_ref.ref_id)
+        };
+        Ok(())
+    }
+}
+
+impl Drop for MonitorRef {
+    fn drop(monitor_ref: MonitorRef) {
+        unsafe {
+            hew_actor_demonitor(monitor_ref.ref_id)
+        };
+    }
+}
+
+extern "C" {
+    fn hew_actor_demonitor(ref_id: int);
+}
+"#;
+
 impl Checker {
     fn refresh_handle_bearing_structs(&mut self) {
         // Tracked for testing: callers can assert this stays O(1) after the
@@ -225,8 +257,14 @@ impl Checker {
         let unlink_t = TypeVar::fresh();
         self.register_builtin_fn("unlink", vec![Ty::actor_ref(Ty::Var(unlink_t))], Ty::Unit);
         let monitor_t = TypeVar::fresh();
-        self.register_builtin_fn("monitor", vec![Ty::actor_ref(Ty::Var(monitor_t))], Ty::I64);
-        self.register_builtin_fn("demonitor", vec![Ty::I64], Ty::Unit);
+        self.register_builtin_fn(
+            "monitor",
+            vec![Ty::actor_ref(Ty::Var(monitor_t))],
+            Ty::Named {
+                name: "MonitorRef".to_string(),
+                args: vec![],
+            },
+        );
 
         // Supervisor child access
         let sup_child_t = TypeVar::fresh();
@@ -423,6 +461,10 @@ impl Checker {
         // bounds for `print` / `println`, but receiver-keyed method dispatch
         // (Stage A2 / A3) reads the impl table directly.  See #1669.
         self.register_builtins_hew_impls();
+        if !self.module_registry.has_search_paths() {
+            self.register_builtin_closable_surface();
+            self.register_builtin_monitor_ref_surface();
+        }
     }
 
     /// Parse the compiled-in `std/builtins.hew` source and feed only its
@@ -518,6 +560,50 @@ impl Checker {
         // (none of which fire for primitive targets that lack a
         // `type_defs` entry).
         self.register_stdlib_hew_items("builtins", &impl_items);
+    }
+
+    fn register_builtin_closable_surface(&mut self) {
+        let identity = "module:std::io::closable";
+        if self.registered_stdlib_hew_sources.contains(identity) {
+            return;
+        }
+        self.registered_stdlib_hew_sources
+            .insert(identity.to_string());
+        let parsed = hew_parser::parse(CLOSABLE_HEW);
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/io/closable.hew failed to parse: {:?}",
+            parsed.errors
+        );
+        if parsed.errors.is_empty() {
+            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            self.register_stdlib_hew_items("closable", &items);
+        }
+    }
+
+    /// Register the built-in `MonitorRef` surface so `monitor()` can return a
+    /// Hew value type with `close()` / `Drop` behaviour in inline tests that
+    /// do not have a stdlib search path.
+    fn register_builtin_monitor_ref_surface(&mut self) {
+        let identity = "module:std::link_monitor";
+        if self.registered_stdlib_hew_sources.contains(identity) {
+            return;
+        }
+        self.registered_stdlib_hew_sources
+            .insert(identity.to_string());
+        let parsed = hew_parser::parse(MONITOR_REF_HEW);
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/link_monitor.hew failed to parse: {:?}",
+            parsed.errors
+        );
+        if parsed.errors.is_empty() {
+            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            self.register_stdlib_hew_items("link_monitor", &items);
+            self.consume_receiver_methods
+                .insert("MonitorRef::close".to_string());
+            self.registry.register_drop_type("MonitorRef".to_string());
+        }
     }
 
     pub(super) fn register_builtin_fn(&mut self, name: &str, params: Vec<Ty>, return_type: Ty) {
@@ -2734,7 +2820,7 @@ impl Checker {
                     // in `type_defs`.  The `register_stdlib_hew_items` loop then
                     // fires the `tr.name == "Closable"` arm which wires
                     // `"Closable::close"` into `consume_receiver_methods`.
-                    if module_path == "std::io::closable" {
+                    if module_path == "std::io::closable" && decl.resolved_items.is_none() {
                         let identity = format!("module:{module_path}");
                         if !self
                             .registered_stdlib_hew_sources

@@ -1,5 +1,7 @@
 // Test: Actor link and monitor builtins
-// Exercises: link(), unlink(), monitor(), demonitor()
+// Exercises: link(), unlink(), monitor(), MonitorRef.close()
+import std::link_monitor;
+
 actor Worker {
     let id: int;
     receive fn ping() {
@@ -15,16 +17,16 @@ fn main() {
     link(w1);
     println("Linked to w1");
 
-    // Monitor w2 (unidirectional, returns ref_id)
-    let ref_id = monitor(w2);
-    println(f"Monitoring w2, ref_id = {ref_id}");
+    // Monitor w2 (unidirectional, returns a MonitorRef handle)
+    let m: link_monitor.MonitorRef = monitor(w2);
+    println("Monitoring w2");
 
     // Unlink w1
     unlink(w1);
     println("Unlinked from w1");
 
     // Demonitor w2
-    demonitor(ref_id);
+    let _ = m.close();
     println("Demonitored w2");
 
     // Send messages to verify actors still work

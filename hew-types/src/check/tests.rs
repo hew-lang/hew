@@ -13674,9 +13674,39 @@ mod wasm_rejects {
 
             fn main() {
                 let worker = spawn Worker;
-                let ref_id = monitor(worker);
+                let m: MonitorRef = monitor(worker);
                 link(worker);
-                demonitor(ref_id);
+                let _ = m.close();
+            }
+        "
+    }
+
+    fn monitor_result_is_not_int_source() -> &'static str {
+        r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            fn main() {
+                let worker = spawn Worker;
+                let _ok: MonitorRef = monitor(worker);
+                let x: int = monitor(worker);
+                println(x);
+            }
+        "
+    }
+
+    fn monitor_ref_use_after_close_source() -> &'static str {
+        r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            fn main() {
+                let worker = spawn Worker;
+                let m: MonitorRef = monitor(worker);
+                let _ = m.close();
+                let _ = m.close();
             }
         "
     }
@@ -13778,6 +13808,37 @@ mod wasm_rejects {
         assert!(
             !has_platform_limitation_error(&output),
             "link/monitor operations should not emit PlatformLimitation on native target; got: {:?}",
+            output.errors
+        );
+        assert!(
+            output.errors.is_empty(),
+            "link/monitor MonitorRef flow should typecheck cleanly on native target; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn monitor_result_is_not_int() {
+        let output = check_native(monitor_result_is_not_int_source());
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+            "monitor() should no longer typecheck as int; got errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn monitor_ref_use_after_close() {
+        let output = check_native(monitor_ref_use_after_close_source());
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::UseAfterMove),
+            "second close() should surface UseAfterMove; got errors: {:?}",
             output.errors
         );
     }

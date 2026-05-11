@@ -1,0 +1,40 @@
+//! Actor monitor handle helpers.
+//!
+//! Import `std::link_monitor` when you want to name `MonitorRef` explicitly.
+//! The `monitor(actor)` builtin returns this handle type.
+
+import std::io::closable;
+
+// WASM-TODO(#1451): `MonitorRef` depends on the native actor monitor runtime.
+// The checker rejects `monitor()` on wasm32 via the existing Link/monitor gate.
+
+/// A handle to an active monitor registration.
+pub type MonitorRef {
+    ref_id: int;
+}
+
+impl Closable for MonitorRef {
+    /// Explicitly remove the monitor registration.
+    ///
+    /// `hew_actor_demonitor` is idempotent for stale or already-swept ref_ids,
+    /// so actor-free close paths also resolve to `Ok(())`.
+    fn close(monitor_ref: MonitorRef) -> Result<(), closable.CloseError> {
+        unsafe {
+            hew_actor_demonitor(monitor_ref.ref_id)
+        };
+        Ok(())
+    }
+}
+
+impl Drop for MonitorRef {
+    /// Silently remove the monitor registration when the value leaves scope.
+    fn drop(monitor_ref: MonitorRef) {
+        unsafe {
+            hew_actor_demonitor(monitor_ref.ref_id)
+        };
+    }
+}
+
+extern "C" {
+    fn hew_actor_demonitor(ref_id: int);
+}

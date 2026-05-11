@@ -451,6 +451,31 @@ mod tests {
         }
     }
 
+    /// Tiny Rust-side model of the Hew `MonitorRef` wrapper.
+    ///
+    /// `close(self)` performs an explicit demonitor, then `Drop` runs on the
+    /// consumed value at scope-exit from `close()`, producing the second call
+    /// that the Hew lowering relies on being idempotent.
+    struct TestMonitorRef {
+        ref_id: u64,
+    }
+
+    impl TestMonitorRef {
+        fn new(ref_id: u64) -> Self {
+            Self { ref_id }
+        }
+
+        fn close(self) {
+            hew_actor_demonitor(self.ref_id);
+        }
+    }
+
+    impl Drop for TestMonitorRef {
+        fn drop(&mut self) {
+            hew_actor_demonitor(self.ref_id);
+        }
+    }
+
     #[test]
     fn test_monitor_creation_and_demonitor() {
         // Use unique IDs to avoid collisions with parallel tests.
@@ -712,9 +737,10 @@ mod tests {
     // These four tests pin the idempotence invariant that MonitorRef::close()
     // and its Drop impl rely on.  See the doc-comment on hew_actor_demonitor.
 
-    /// (a) Demonitor a live monitor — removes the entry successfully.
+    /// (a) Let a MonitorRef-like wrapper leave scope without an explicit close.
+    ///     Drop must clear the table entry.
     #[test]
-    fn demonitor_live_monitor_removes_entry() {
+    fn monitor_ref_drop_clears_table_entry() {
         let mut watcher = create_test_actor(50_100);
         let mut target = create_test_actor(50_200);
         let watcher_ptr = &raw mut watcher;
@@ -724,8 +750,9 @@ mod tests {
         let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
         assert_ne!(ref_id, 0, "monitor creation must succeed");
 
-        // Act — should succeed silently.
-        hew_actor_demonitor(ref_id);
+        {
+            let _monitor_ref = TestMonitorRef::new(ref_id);
+        }
 
         // Verify: entry is gone from both maps.
         let shard = get_shard_index(50_200);
@@ -742,9 +769,9 @@ mod tests {
         });
     }
 
-    /// (b) Demonitor the same `ref_id` twice — second call is a silent no-op.
+    /// (b) Explicit close followed by the consumed value's Drop must be safe.
     #[test]
-    fn demonitor_already_demonitored_is_silent_noop() {
+    fn monitor_ref_close_then_drop_is_safe() {
         let mut watcher = create_test_actor(51_100);
         let mut target = create_test_actor(51_200);
         let watcher_ptr = &raw mut watcher;
@@ -754,8 +781,7 @@ mod tests {
         let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
         assert_ne!(ref_id, 0);
 
-        hew_actor_demonitor(ref_id); // first call — removes entry
-        hew_actor_demonitor(ref_id); // second call — must not panic or crash
+        TestMonitorRef::new(ref_id).close();
 
         // Confirm idempotence: the table is clean after both calls.
         let shard = get_shard_index(51_200);
@@ -772,10 +798,10 @@ mod tests {
         });
     }
 
-    /// (c) Demonitor after the target actor's monitor entries were swept
-    ///     (simulating actor-free path) — must be a silent no-op.
+    /// (c) Close after the target actor's monitor entries were swept
+    ///     (simulating actor-free path) — still resolves silently.
     #[test]
-    fn demonitor_after_target_freed_is_silent_noop() {
+    fn monitor_ref_close_after_target_freed_ok() {
         let mut watcher = create_test_actor(52_100);
         let mut target = create_test_actor(52_200);
         let watcher_ptr = &raw mut watcher;
@@ -788,8 +814,22 @@ mod tests {
         // Simulate actor-free: sweep all monitor entries for the target.
         remove_all_monitors_for_actor(52_200, target_ptr);
 
-        // The ref_id is now stale — demonitor must not panic.
-        hew_actor_demonitor(ref_id);
+        // The ref_id is now stale — explicit close plus the consumed value's
+        // Drop must both remain silent no-ops.
+        TestMonitorRef::new(ref_id).close();
+
+        let shard = get_shard_index(52_200);
+        MONITOR_TABLE[shard].read_access(|table| {
+            assert!(
+                !table.ref_to_monitor.contains_key(&ref_id),
+                "stale ref_id must remain absent after actor-free close"
+            );
+            let monitors = table.monitors.get(&52_200);
+            assert!(
+                monitors.is_none_or(std::vec::Vec::is_empty),
+                "target's monitor list must stay empty after actor-free close"
+            );
+        });
     }
 
     /// (d) Demonitor with zero or arbitrary invalid `ref_id` values — must be silent no-ops.

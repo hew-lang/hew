@@ -949,6 +949,18 @@ static void appendExprTypeEntry(hew::ast::Program &program, const hew::ast::Span
   program.expr_types.push_back({span.start, span.end, {std::move(typeExpr), span}});
 }
 
+static bool replaceNamedExprTypeForSpan(hew::ast::Program &program, const hew::ast::Span &span,
+                                        llvm::StringRef typeName) {
+  bool replacedAny = false;
+  for (auto &entry : program.expr_types) {
+    if (entry.start != span.start || entry.end != span.end)
+      continue;
+    entry.ty.value.kind = hew::ast::TypeNamed{typeName.str(), std::nullopt};
+    replacedAny = true;
+  }
+  return replacedAny;
+}
+
 static bool hasTrueUnsignedAttr(mlir::Operation *op) {
   return op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
          op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
@@ -13943,6 +13955,162 @@ static void test_iflet_stmt_unknown_constructor_fails_closed() {
   PASS();
 }
 
+static void test_monitor_builtin_rejects_suffix_matched_wrapper_type() {
+  TEST(monitor_builtin_rejects_suffix_matched_wrapper_type);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::link_monitor;
+
+type MyMonitorRef {
+    ref_id: int;
+}
+
+actor Worker {
+    receive fn ping() {}
+}
+
+fn main() {
+    let worker = spawn Worker;
+    monitor(worker);
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed monitor suffix-match program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  if (!fn) {
+    FAIL("main function missing in monitor suffix-match test");
+    return;
+  }
+
+  auto findMonitorExprStmt = [](hew::ast::FnDecl &fn) -> hew::ast::StmtExpression * {
+    for (const auto &stmt : fn.body.stmts) {
+      auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt->value.kind);
+      if (!exprStmt)
+        continue;
+      auto *callExpr = std::get_if<hew::ast::ExprCall>(&exprStmt->expr.value.kind);
+      if (!callExpr || !callExpr->function)
+        continue;
+      auto *calleeIdent = std::get_if<hew::ast::ExprIdentifier>(&callExpr->function->value.kind);
+      if (calleeIdent && calleeIdent->name == "monitor")
+        return exprStmt;
+    }
+    return nullptr;
+  };
+
+  auto *monitorExprStmt = findMonitorExprStmt(*fn);
+  if (!monitorExprStmt) {
+    FAIL("monitor(worker) statement missing in monitor suffix-match test");
+    return;
+  }
+
+  if (!replaceNamedExprTypeForSpan(program, monitorExprStmt->expr.span, "MyMonitorRef")) {
+    FAIL("failed to replace monitor() expr_types entry with MyMonitorRef");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation to fail for suffix-matched monitor wrapper");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag =
+      "monitor() lowering: expected std::link_monitor::MonitorRef struct type";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL(("expected monitor wrapper type diagnostic; got: " + stderrText).c_str());
+    return;
+  }
+
+  PASS();
+}
+
+static void test_monitor_builtin_missing_monitorref_type_fails_closed() {
+  TEST(monitor_builtin_missing_monitorref_type_fails_closed);
+
+  hew::ast::Program program;
+  if (!loadProgramFromSource(R"(
+import std::link_monitor;
+
+actor Worker {
+    receive fn ping() {}
+}
+
+fn main() {
+    let worker = spawn Worker;
+    monitor(worker);
+}
+  )",
+                             program)) {
+    FAIL("failed to load typed monitor fail-closed program");
+    return;
+  }
+
+  auto *fn = findFunctionDecl(program, "main");
+  if (!fn) {
+    FAIL("main function missing in monitor fail-closed test");
+    return;
+  }
+
+  auto findMonitorExprStmt = [](hew::ast::FnDecl &fn) -> hew::ast::StmtExpression * {
+    for (const auto &stmt : fn.body.stmts) {
+      auto *exprStmt = std::get_if<hew::ast::StmtExpression>(&stmt->value.kind);
+      if (!exprStmt)
+        continue;
+      auto *callExpr = std::get_if<hew::ast::ExprCall>(&exprStmt->expr.value.kind);
+      if (!callExpr || !callExpr->function)
+        continue;
+      auto *calleeIdent = std::get_if<hew::ast::ExprIdentifier>(&callExpr->function->value.kind);
+      if (calleeIdent && calleeIdent->name == "monitor")
+        return exprStmt;
+    }
+    return nullptr;
+  };
+
+  auto *monitorExprStmt = findMonitorExprStmt(*fn);
+  if (!monitorExprStmt) {
+    FAIL("monitor(worker) statement missing in monitor fail-closed test");
+    return;
+  }
+
+  if (!eraseExprTypeEntryForSpan(program, monitorExprStmt->expr.span)) {
+    FAIL("failed to remove monitor() expr_types entry");
+    return;
+  }
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+
+  hew::MLIRGen mlirGen(ctx);
+  mlir::ModuleOp module;
+  auto stderrText = captureStderr([&] { module = mlirGen.generate(program); });
+
+  if (module) {
+    FAIL("expected MLIR generation to fail when monitor() loses its MonitorRef type");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  constexpr llvm::StringLiteral kDiag =
+      "monitor() lowering: expected std::link_monitor::MonitorRef struct type";
+  if (stderrText.find(kDiag.str()) == std::string::npos) {
+    FAIL(("expected missing MonitorRef diagnostic; got: " + stderrText).c_str());
+    return;
+  }
+
+  PASS();
+}
+
 // ============================================================================
 // Test: cross-module handle-bearing struct name collision does not emit
 //       spurious __auto_field_drop (regression for issue #1315 sub-1)
@@ -14352,6 +14520,8 @@ int main() {
   test_spawn_unknown_actor_type_fails_closed();
   test_supervisor_invalid_window_fails_closed();
   test_iflet_stmt_unknown_constructor_fails_closed();
+  test_monitor_builtin_rejects_suffix_matched_wrapper_type();
+  test_monitor_builtin_missing_monitorref_type_fails_closed();
   test_cross_module_handle_bearing_name_no_collision();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);

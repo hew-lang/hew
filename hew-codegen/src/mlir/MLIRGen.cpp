@@ -1713,10 +1713,9 @@ void MLIRGen::declareVariable(llvm::StringRef name, mlir::Value value) {
                       mlir::isa<mlir::IndexType>(storageType) || isPointerLikeType(semanticType);
     // ClosureType lowers to !llvm.struct<(ptr, ptr)> for slot storage; promote
     // it whenever return guards are active so SSA values defined inside a
-    // guard region (lane-return-if-fallthrough: void-function statement-skip
-    // guards now wrap subsequent let-bindings) can still be loaded by
-    // emitDropEntry / lookupVariable from a function-entry alloca that
-    // dominates the drop site.
+    // guard region (void-function statement-skip guards now wrap subsequent
+    // let-bindings) can still be loaded by emitDropEntry / lookupVariable
+    // from a function-entry alloca that dominates the drop site.
     if (mlir::isa<hew::ClosureType>(semanticType)) {
       storageType = toLLVMStorageType(semanticType);
       canPromote = true;

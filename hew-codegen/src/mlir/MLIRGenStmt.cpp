@@ -553,7 +553,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     // is non-empty. Same structural defect as Path A — a sibling statement
     // can soft-return via returnFlag, and subsequent statements (including
     // the value-producing last statement) must not run unconditionally.
-    // See #1692 (non-void original) and lane-return-if-fallthrough (void).
+    // See #1692 (non-void original); the void case shares the same defect.
     //
     // The guard fires for both value-returning and unit-returning functions.
     // Value-returning functions use returnSlot+returnFlag; unit-returning

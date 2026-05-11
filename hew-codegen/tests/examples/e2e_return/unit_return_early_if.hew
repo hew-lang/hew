@@ -1,6 +1,4 @@
-// Regression coverage for unit-returning function early-return fall-through
-// (private finding `private-return-if-fallthrough`, lane
-// `lane-return-if-fallthrough`).
+// Regression coverage for unit-returning function early-return fall-through.
 //
 // In a unit (`-> ()`) function, `return;` inside an `scf.if`-lowered
 // `if` becomes a "soft return" — it sets returnFlag but cannot emit

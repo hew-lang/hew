@@ -91,7 +91,7 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
           cd hew-codegen/build
-          ctest --output-on-failure -j"$(nproc)" -R "^(mlirgen|e2e_actor_basic|e2e_vec_basic|e2e_hashmap_basic|e2e_concurrency_concurrent_counter|e2e_concurrency_message_ordering|e2e_memory_.*|e2e_concurrency_.*|coro_generator|coro_fib_generator)$"
+          ctest --output-on-failure -j"$(nproc)" -R "^(mlirgen|e2e_actor_basic|e2e_vec_basic|e2e_hashmap_basic|e2e_concurrency_concurrent_counter|e2e_concurrency_message_ordering|e2e_memory_.*|e2e_concurrency_.*|coro_generator|coro_fib_generator|e2e_generators_gen_letbound_for|e2e_generators_for_over_generator)$"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime ASan — memory safety for the actor runtime

@@ -2308,6 +2308,7 @@ impl<'src> Parser<'src> {
                     let struct_init = Expr::StructInit {
                         name: target_state.clone(),
                         fields,
+                        type_args: None,
                     };
                     (struct_init, bs, be)
                 } else {
@@ -4224,21 +4225,51 @@ impl<'src> Parser<'src> {
                     }
                 }
 
-                // Check for struct initialization
-                if self.peek() == Some(&Token::LeftBrace) {
-                    // Look ahead to disambiguate struct init vs block
-                    let saved_pos = self.save_pos();
-                    self.advance(); // consume {
-                    let is_struct_init = if self.peek() == Some(&Token::RightBrace) {
-                        // Empty struct literal: Foo {}
-                        true
-                    } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
-                        self.advance();
-                        self.peek() == Some(&Token::Colon)
+                // Check for struct initialization — including the explicit-type-arg form
+                // `Name<T, ...> { field: expr, ... }`.  We need a speculative parse
+                // because `<` is also a comparison operator: only commit when we see
+                // a closing `>` **immediately** followed by `{`.
+                let explicit_type_args: Option<Vec<Spanned<TypeExpr>>> =
+                    if self.peek() == Some(&Token::Less) {
+                        let saved_pos = self.save_pos();
+                        self.advance(); // consume '<'
+                        if let Some(type_args) = self.parse_type_args() {
+                            // Accept only if `{` follows (this is a struct init, not a
+                            // comparison expression like `if x < y { ... }`).
+                            if self.peek() == Some(&Token::LeftBrace) {
+                                Some(type_args)
+                            } else {
+                                self.restore_pos(saved_pos);
+                                None
+                            }
+                        } else {
+                            self.restore_pos(saved_pos);
+                            None
+                        }
                     } else {
-                        false
+                        None
                     };
-                    self.restore_pos(saved_pos);
+
+                if explicit_type_args.is_some() || self.peek() == Some(&Token::LeftBrace) {
+                    // Look ahead to disambiguate struct init vs block (only when no
+                    // explicit type args; with type args we already know it's a struct).
+                    let is_struct_init = if explicit_type_args.is_some() {
+                        true
+                    } else {
+                        let saved_pos = self.save_pos();
+                        self.advance(); // consume {
+                        let probe = if self.peek() == Some(&Token::RightBrace) {
+                            // Empty struct literal: Foo {}
+                            true
+                        } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
+                            self.advance();
+                            self.peek() == Some(&Token::Colon)
+                        } else {
+                            false
+                        };
+                        self.restore_pos(saved_pos);
+                        probe
+                    };
 
                     if is_struct_init {
                         self.advance(); // consume {
@@ -4254,7 +4285,11 @@ impl<'src> Parser<'src> {
                             }
                         }
                         self.expect(&Token::RightBrace)?;
-                        Expr::StructInit { name, fields }
+                        Expr::StructInit {
+                            name,
+                            fields,
+                            type_args: explicit_type_args,
+                        }
                     } else {
                         Expr::Identifier(name)
                     }
@@ -6969,6 +7004,165 @@ wire type Msg {
         assert!(
             expr_err.is_some(),
             "expected MissingExpression or UnexpectedToken in errors, got: {:?}",
+            result.errors
+        );
+    }
+
+    // ── StructInit with explicit type arguments ────────────────────────────
+
+    #[test]
+    fn struct_init_explicit_single_type_arg_parses() {
+        let src = r#"
+            type Wrapper<T> { value: T }
+            fn main() { let w = Wrapper<String> { value: "hello" }; }
+        "#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        // Drill into the let initialiser and confirm type_args is Some([String]).
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit {
+            name, type_args, ..
+        } = expr
+        else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert_eq!(name, "Wrapper");
+        let args = type_args.as_ref().expect("type_args should be Some");
+        assert_eq!(args.len(), 1, "expected one type arg");
+        assert!(
+            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "String"),
+            "expected String type arg, got {:?}",
+            args[0].0
+        );
+    }
+
+    #[test]
+    fn struct_init_without_type_args_leaves_type_args_none() {
+        let src = r#"
+            type Wrapper<T> { value: T }
+            fn main() { let w = Wrapper { value: "hello" }; }
+        "#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { type_args, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert!(type_args.is_none(), "type_args should be None when omitted");
+    }
+
+    #[test]
+    fn struct_init_explicit_multi_type_arg_parses() {
+        let src = r#"
+            type Pair<A, B> { first: A, second: B }
+            fn main() { let p = Pair<int, String> { first: 1, second: "x" }; }
+        "#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { type_args, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        let args = type_args.as_ref().expect("type_args should be Some");
+        assert_eq!(args.len(), 2, "expected two type args");
+        assert!(
+            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "int"),
+            "first type arg should be int"
+        );
+        assert!(
+            matches!(&args[1].0, TypeExpr::Named { name, .. } if name == "String"),
+            "second type arg should be String"
+        );
+    }
+
+    #[test]
+    fn struct_init_explicit_type_arg_empty_struct_parses() {
+        // Edge case: struct with type param but no fields at the init site is
+        // not something the parser should crash on (it's a checker concern).
+        let src = r"
+            type Tag<T> {}
+            fn main() { let t = Tag<int> {}; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { type_args, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        let args = type_args.as_ref().expect("type_args should be Some");
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn struct_init_comparison_does_not_consume_lt_as_type_arg() {
+        // `if x < y { ... }` must NOT be parsed as a struct init with type arg y.
+        let src = r"
+            fn main() {
+                let x = 1;
+                let y = 2;
+                if x < y { let _ = x; }
+            }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors (regression: `<` in comparison swallowed): {:?}",
             result.errors
         );
     }

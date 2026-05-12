@@ -3184,6 +3184,17 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
     return;
   }
 
+  // Validate yield-type metadata before creating any IR control structures.
+  // Doing this after pushLoopControl / WhileOp::create would leave partially-
+  // constructed IR if the lookup fails, so we check here and bail early.
+  auto yit = generatorYieldTypes.find(genFuncName);
+  if (yit == generatorYieldTypes.end()) {
+    ++errorCount_;
+    emitError(location) << "missing yield-type metadata for generator '" << genFuncName << "'";
+    return;
+  }
+  auto semanticYieldType = yit->second;
+
   std::string loopVarName;
   if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind))
     loopVarName = identPat->name;
@@ -3225,20 +3236,10 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   // generators).  Reconstruct the original semantic yield type so the loop body
   // sees !hew.string_ref (or the appropriate Hew type) when it uses the variable.
   // Primitive generators (int, bool, float) are unchanged: toLLVMStorageType is
-  // a no-op and no BitcastOp is emitted.  The semantic type is looked up from
-  // generatorYieldTypes, which is keyed by generator function name at codegen
-  // time — do not re-derive from the AST to respect checker authority.
-  {
-    auto yit = generatorYieldTypes.find(genFuncName);
-    if (yit == generatorYieldTypes.end()) {
-      ++errorCount_;
-      emitError(location) << "missing yield-type metadata for generator '" << genFuncName << "'";
-      return;
-    }
-    auto semanticYieldType = yit->second;
-    if (toLLVMStorageType(semanticYieldType) != semanticYieldType)
-      nextVal = hew::BitcastOp::create(builder, location, semanticYieldType, nextVal);
-  }
+  // a no-op and no BitcastOp is emitted.  semanticYieldType was validated and
+  // captured above (before pushLoopControl) to avoid partial IR on failure.
+  if (toLLVMStorageType(semanticYieldType) != semanticYieldType)
+    nextVal = hew::BitcastOp::create(builder, location, semanticYieldType, nextVal);
 
   SymbolTableScopeT loopScope(symbolTable);
   MutableTableScopeT loopMutScope(mutableVars);

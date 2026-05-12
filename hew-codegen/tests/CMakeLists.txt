@@ -692,6 +692,12 @@ add_e2e_reject_test(print_match_field_display_reject  e2e_negative    print_matc
 # field-aliased Display value rejected at codegen (same double-drop guard as print).
 add_e2e_reject_test(to_string_diag_undisplayable  e2e_negative  to_string_diag_undisplayable  "does not implement trait")
 add_e2e_reject_test(to_string_diag_field_alias    e2e_negative  to_string_diag_field_alias    "to_string of field-aliased Display value is not yet supported")
+# Multi-branch owned Display identifier-yield shapes: if/match expressions that
+# select between owned Display values cannot be ownership-transferred after
+# Display::fmt (extractYieldedIdentifier returns nullptr for these shapes).
+# Both rejected at codegen before any IR is emitted.
+add_e2e_reject_test(to_string_diag_branch_display_if    e2e_negative  to_string_diag_branch_display_if    "if/match expression yielding an owned Display")
+add_e2e_reject_test(to_string_diag_branch_display_match e2e_negative  to_string_diag_branch_display_match "if/match expression yielding an owned Display")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

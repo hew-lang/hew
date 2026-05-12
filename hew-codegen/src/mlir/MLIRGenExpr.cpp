@@ -2201,8 +2201,10 @@ static const ast::ExprIdentifier *extractYieldedIdentifier(const ast::Expr &expr
     return blockExtractYieldedIdentifier(unsafeE->block);
   if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
     return blockExtractYieldedIdentifier(scopeE->block);
-  // Multi-branch shapes (ExprIf, ExprMatch) may yield different identifiers in
-  // different arms; fail open here — the alloca path handles the temp case.
+  // Multi-branch shapes (ExprIf, ExprIfLet, ExprMatch) may yield different
+  // identifiers in different arms.  Return nullptr; callers that need a
+  // single canonical owner for ownership-transfer must guard against these
+  // shapes separately (see generateToStringCall's pre-IR multi-branch check).
   return nullptr;
 }
 
@@ -2263,6 +2265,22 @@ mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
       ++errorCount_;
       emitError(location) << "to_string of field-aliased Display value is not yet supported; "
                           << "bind the field to a local variable or pass the whole struct";
+      return nullptr;
+    }
+    // Fail-closed: multi-branch shapes (if/if-let/match) cannot be safely
+    // ownership-transferred after Display::fmt consumes the receiver.
+    // extractYieldedIdentifier returns nullptr for these shapes: we cannot
+    // determine which branch owner was consumed, so the caller-side drop
+    // registration for the selected binding would remain active and fire again
+    // at scope exit.  Require the caller to bind the branch
+    // result to a local variable, from which the single-owner path works.
+    if (std::holds_alternative<ast::ExprIf>(argExpr.kind) ||
+        std::holds_alternative<ast::ExprIfLet>(argExpr.kind) ||
+        std::holds_alternative<ast::ExprMatch>(argExpr.kind)) {
+      ++errorCount_;
+      emitError(location) << "to_string with if/match expression yielding an owned Display "
+                          << "value is not yet supported; bind the branch result to a local "
+                          << "variable first";
       return nullptr;
     }
   }

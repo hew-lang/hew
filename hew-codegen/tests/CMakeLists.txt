@@ -688,6 +688,11 @@ add_e2e_reject_test(print_if_field_display_reject     e2e_negative    print_if_f
 add_e2e_reject_test(print_block_field_display_reject  e2e_negative    print_block_field_display_reject          "print of field-aliased Display value is not yet supported")
 add_e2e_reject_test(print_match_field_display_reject  e2e_negative    print_match_field_display_reject          "print of field-aliased Display value is not yet supported")
 
+# to_string diagnostics: undisplayable type rejected by the type checker;
+# field-aliased Display value rejected at codegen (same double-drop guard as print).
+add_e2e_reject_test(to_string_diag_undisplayable  e2e_negative  to_string_diag_undisplayable  "does not implement trait")
+add_e2e_reject_test(to_string_diag_field_alias    e2e_negative  to_string_diag_field_alias    "to_string of field-aliased Display value is not yet supported")
+
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
 add_e2e_panic_test(stmt_match_unmatched_traps e2e_panic stmt_match_unmatched_traps "")

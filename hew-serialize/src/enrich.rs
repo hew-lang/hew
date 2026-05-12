@@ -1423,6 +1423,22 @@ fn normalize_expr_types_inner(
             normalize_expr_types(inner, registry);
             normalize_type_expr(&mut ty.0, registry);
         }
+        Expr::StructInit {
+            type_args, fields, ..
+        } => {
+            // Normalize explicit type args (e.g. `Wrapper<Option<i32>> { .. }`
+            // must convert `Named("Option", [i32])` → `Option(i32)` just like any
+            // other TypeExpr in the tree).  walk_expr_children only visits field
+            // values and skips `type_args`, so we handle this variant explicitly.
+            if let Some(ref mut ta) = type_args {
+                for t in ta.iter_mut() {
+                    normalize_type_expr(&mut t.0, registry);
+                }
+            }
+            for (_, val) in fields.iter_mut() {
+                normalize_expr_types(val, registry);
+            }
+        }
         _ => walk_expr_children(expr, &mut NormalizeVisitor { registry }),
     }
 }
@@ -6285,6 +6301,125 @@ mod tests {
                 if let Expr::Call { type_args, .. } = &expr.0 {
                     let ta = type_args.as_ref().unwrap();
                     assert!(matches!(&ta[0].0, TypeExpr::Option(_)));
+                }
+            }
+        }
+    }
+
+    /// Regression: `StructInit.type_args` must be normalized by
+    /// `normalize_expr_types_inner`.  Before the fix the `StructInit` arm fell
+    /// through to `walk_expr_children`, which only visits field values; explicit
+    /// type args were silently skipped and arrived at the C++ wire boundary in
+    /// un-normalized form (e.g. `Named("Option", [i32])` instead of
+    /// `Option(i32)`).
+    #[test]
+    fn test_normalize_struct_init_explicit_type_args_are_normalized() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![(
+                    Stmt::Expression((
+                        Expr::StructInit {
+                            name: "Wrapper".into(),
+                            // Explicit type arg supplied as a raw Named("Option", [i32]);
+                            // normalize_type_expr must rewrite it to TypeExpr::Option(i32).
+                            type_args: Some(vec![make_option_type()]),
+                            fields: vec![("value".into(), make_int_lit(0))],
+                        },
+                        0..30,
+                    )),
+                    0..30,
+                )],
+                trailing_expr: None,
+            },
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Expression(expr) = &f.body.stmts[0].0 {
+                if let Expr::StructInit { type_args, .. } = &expr.0 {
+                    let ta = type_args.as_ref().expect("type_args should be present");
+                    assert_eq!(ta.len(), 1, "one type arg expected");
+                    assert!(
+                        matches!(&ta[0].0, TypeExpr::Option(_)),
+                        "StructInit explicit type arg must be normalized to Option variant, \
+                         got {:?}",
+                        ta[0].0
+                    );
+                } else {
+                    panic!("expected StructInit expr, got {:?}", expr.0);
+                }
+            }
+        }
+    }
+
+    /// Regression: when `StructInit.type_args` is `None` (no explicit type args),
+    /// `normalize_expr_types_inner` must not panic and must still visit the field
+    /// values so nested expressions are normalized.
+    #[test]
+    fn test_normalize_struct_init_no_type_args_visits_fields() {
+        let registry = test_registry();
+        // Field value is a Call whose type_args contain an Option<i32> — verifies
+        // that the field-value traversal in the new StructInit arm is intact.
+        let mut items: Vec<Spanned<Item>> = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![(
+                    Stmt::Expression((
+                        Expr::StructInit {
+                            name: "Point".into(),
+                            type_args: None,
+                            fields: vec![(
+                                "x".into(),
+                                (
+                                    Expr::Call {
+                                        function: Box::new(make_ident("id")),
+                                        args: vec![],
+                                        type_args: Some(vec![make_option_type()]),
+                                        is_tail_call: false,
+                                    },
+                                    0..10,
+                                ),
+                            )],
+                        },
+                        0..30,
+                    )),
+                    0..30,
+                )],
+                trailing_expr: None,
+            },
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Expression(expr) = &f.body.stmts[0].0 {
+                if let Expr::StructInit {
+                    type_args, fields, ..
+                } = &expr.0
+                {
+                    assert!(type_args.is_none(), "type_args should remain None");
+                    // The field value (a Call) must have its type_args normalized.
+                    if let (
+                        _,
+                        (
+                            Expr::Call {
+                                type_args: call_ta, ..
+                            },
+                            _,
+                        ),
+                    ) = &fields[0]
+                    {
+                        let ta = call_ta.as_ref().expect("call type_args should be present");
+                        assert!(
+                            matches!(&ta[0].0, TypeExpr::Option(_)),
+                            "nested call type arg inside StructInit field must be normalized"
+                        );
+                    } else {
+                        panic!("expected Call in struct field");
+                    }
+                } else {
+                    panic!("expected StructInit expr");
                 }
             }
         }

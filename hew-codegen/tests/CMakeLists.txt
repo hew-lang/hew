@@ -1482,6 +1482,7 @@ add_wasm_file_test(shadowed_binding_drop     e2e_param_drops      shadowed_bindi
 add_wasm_file_test(return_after_drop          e2e_return           return_after_drop)
 add_wasm_file_test(return_nested_if_early_return e2e_return        nested_if_early_return)
 add_wasm_file_test(return_trailing_expr_inline_subblock e2e_return  trailing_expr_inline_subblock_return)
+add_wasm_file_test(return_unit_return_early_if e2e_return            unit_return_early_if)
 add_wasm_file_test(string_lifecycle           e2e_memory           string_lifecycle)
 add_wasm_file_test(large_vec                  e2e_memory           large_vec_lifecycle)
 add_wasm_file_test(closure_capture            e2e_memory           closure_capture_safety)

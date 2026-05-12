@@ -1711,6 +1711,15 @@ void MLIRGen::declareVariable(llvm::StringRef name, mlir::Value value) {
                       mlir::isa<mlir::FloatType>(storageType) ||
                       mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) ||
                       mlir::isa<mlir::IndexType>(storageType) || isPointerLikeType(semanticType);
+    // ClosureType lowers to !llvm.struct<(ptr, ptr)> for slot storage; promote
+    // it whenever return guards are active so SSA values defined inside a
+    // guard region (void-function statement-skip guards now wrap subsequent
+    // let-bindings) can still be loaded by emitDropEntry / lookupVariable
+    // from a function-entry alloca that dominates the drop site.
+    if (mlir::isa<hew::ClosureType>(semanticType)) {
+      storageType = toLLVMStorageType(semanticType);
+      canPromote = true;
+    }
     // Struct types only need alloca promotion when return guards are active
     // (returnSlotIsLazy), to handle let-bindings inside guarded scf.if regions.
     if (returnSlotIsLazy && mlir::isa<mlir::LLVM::LLVMStructType>(storageType))
@@ -6731,10 +6740,12 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
     // Null out the promoted slot after dropping to prevent double-free
     // when the drop scope fires again (e.g. while loop body re-entry
     // where the alloca still holds the previous iteration's freed pointer).
-    if (entry.promotedSlot) {
-      auto zero = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
-      mlir::memref::StoreOp::create(builder, loc, zero, entry.promotedSlot);
-    }
+    // Use clearPromotedSlot so the stored zero matches the slot's element
+    // type — this matters for ClosureType-promoted slots whose element type
+    // is `!llvm.struct<(ptr, ptr)>`, not a bare pointer (a raw
+    // LLVM::ZeroOp::create(ptrType) here would mismatch the memref<struct>
+    // element type and fail MLIR verification).
+    clearPromotedSlot();
     builder.setInsertionPointAfter(guard);
     return;
   }

@@ -358,7 +358,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     // value.
     //
     // Mirror Path B's fix (#1700): when a prior statement might contain a
-    // return AND we are in a non-void function with returnFlag, wrap the
+    // return AND returnFlag is allocated for this function, wrap the
     // remaining *statements* in an `scf.if(notReturned)` guard. The
     // trailing expression itself is evaluated unconditionally afterwards.
     // Its value is bogus on the soft-returned path, but harmless: it flows
@@ -367,13 +367,19 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     // because returnFlag is true. Skipping the trailing expression here
     // would forfeit its value on the *no-return* runtime path (when
     // `notReturned=true`), where the value is needed by the caller.
-    bool nonVoidFunction = currentFunction && !currentFunction.getResultTypes().empty();
+    // Guard subsequent statements whenever a soft-return mechanism exists.
+    // returnFlag is allocated for both value-returning and unit-returning
+    // functions (see initReturnFlagAndSlot in MLIRGen.cpp), so this guard
+    // applies regardless of the function's result type. The emitted
+    // scf.if(!returnFlag) only wraps subsequent statement *generation* —
+    // it does NOT touch returnSlot, so void functions (which have no
+    // returnSlot) are safe.
     auto runGuardedRemainderA = [&](auto &self, size_t startIdx) -> void {
       for (size_t i = startIdx; i < stmts.size(); ++i) {
         generateStatement(stmts[i]->value);
         if (hasRealTerminator(builder.getInsertionBlock()))
           return;
-        if (nonVoidFunction && returnFlag && stmtMightContainReturn(stmts[i]->value)) {
+        if (returnFlag && stmtMightContainReturn(stmts[i]->value)) {
           auto guardLoc = loc(stmts[i]->value.span);
           auto flagVal =
               mlir::memref::LoadOp::create(builder, guardLoc, returnFlag, mlir::ValueRange{});
@@ -395,7 +401,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
       if (hasRealTerminator(builder.getInsertionBlock())) {
         return nullptr;
       }
-      if (nonVoidFunction && returnFlag && stmtMightContainReturn(stmts[i]->value)) {
+      if (returnFlag && stmtMightContainReturn(stmts[i]->value)) {
         auto guardLoc = loc(stmts[i]->value.span);
         auto flagVal =
             mlir::memref::LoadOp::create(builder, guardLoc, returnFlag, mlir::ValueRange{});
@@ -409,7 +415,8 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
         builder.setInsertionPointAfter(guard);
         // Fall through to trailing-expression evaluation below. On the
         // soft-returned path, the value is bogus but unused (function
-        // epilogue prefers returnSlot when returnFlag is set).
+        // epilogue prefers returnSlot when returnFlag is set, and void
+        // functions discard it).
         break;
       }
     }
@@ -546,19 +553,23 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
     // is non-empty. Same structural defect as Path A — a sibling statement
     // can soft-return via returnFlag, and subsequent statements (including
     // the value-producing last statement) must not run unconditionally.
-    // See #1692.
+    // See #1692 (non-void original); the void case shares the same defect.
     //
-    // The guard only fires for non-void functions. Void functions allocate
-    // a returnFlag (so nested `return` works inside SCF regions) but do not
-    // allocate a returnSlot, so there is no clobbering concern; introducing
-    // an scf.if(notReturned) wrapper there would create a new SSA region
-    // that crosses with the surrounding block-exit drops and produces
-    // dominance violations.
+    // The guard fires for both value-returning and unit-returning functions.
+    // Value-returning functions use returnSlot+returnFlag; unit-returning
+    // functions only have returnFlag (no slot — see initReturnFlagAndSlot in
+    // MLIRGen.cpp). The guard emitted here is *control-flow only*: it wraps
+    // subsequent statement generation in scf.if(!returnFlag) and never
+    // touches returnSlot, so the void-function case has no clobbering or
+    // dominance hazard. The drop-ordering concern flagged by the original
+    // comment applies to RAII drop registration crossing region
+    // boundaries, not to plain skip-guards: drops registered before the
+    // guard remain in the surrounding block's drop scope and still run at
+    // function-body exit on the soft-returned path.
     //
     // When the guard fires, the last statement runs in statement-position
     // form: its block-expression value is dead because returnFlag has
     // routed control to function exit.
-    bool nonVoidFunction = currentFunction && !currentFunction.getResultTypes().empty();
     auto lastStmtAsStatement = [&]() {
       const auto &lastInGuard = stmts.back()->value;
       if (auto *exprStmt = std::get_if<ast::StmtExpression>(&lastInGuard.kind)) {
@@ -572,7 +583,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
         generateStatement(stmts[i]->value);
         if (hasRealTerminator(builder.getInsertionBlock()))
           return;
-        if (nonVoidFunction && returnFlag && stmtMightContainReturn(stmts[i]->value)) {
+        if (returnFlag && stmtMightContainReturn(stmts[i]->value)) {
           auto guardLoc = loc(stmts[i]->value.span);
           auto flagVal =
               mlir::memref::LoadOp::create(builder, guardLoc, returnFlag, mlir::ValueRange{});
@@ -596,7 +607,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block, bool statementPositi
       if (hasRealTerminator(builder.getInsertionBlock())) {
         return nullptr;
       }
-      if (nonVoidFunction && returnFlag && stmtMightContainReturn(stmts[i]->value)) {
+      if (returnFlag && stmtMightContainReturn(stmts[i]->value)) {
         auto guardLoc = loc(stmts[i]->value.span);
         auto flagVal =
             mlir::memref::LoadOp::create(builder, guardLoc, returnFlag, mlir::ValueRange{});

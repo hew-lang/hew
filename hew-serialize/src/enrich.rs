@@ -6447,6 +6447,7 @@ mod tests {
                             Expr::StructInit {
                                 name: "Pt".into(),
                                 fields: vec![("x".into(), make_int_lit(0))],
+                                type_args: None,
                             },
                             70..80,
                         )),
@@ -7171,6 +7172,7 @@ mod tests {
                                     Expr::StructInit {
                                         name: "Pt".into(),
                                         fields: vec![("x".into(), make_int_lit(0))],
+                                        type_args: None,
                                     },
                                     95..105,
                                 )),

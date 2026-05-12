@@ -403,6 +403,10 @@ struct ExprMethodCall {
 struct ExprStructInit {
   std::string name;
   std::vector<std::pair<std::string, std::unique_ptr<Spanned<Expr>>>> fields;
+  /// Explicit type arguments from the struct literal, e.g. `Wrapper<String> { ... }`.
+  /// Absent when the user omits them (backward-compatible: old wire payloads have no
+  /// `type_args` key and deserialize to `std::nullopt`).
+  std::optional<std::vector<Spanned<TypeExpr>>> type_args;
 };
 struct ExprSend {
   std::unique_ptr<Spanned<Expr>> target;

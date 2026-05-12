@@ -1315,6 +1315,12 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
             fail("StructInit field tuple should have 2 elements");
           return std::make_pair(getString(arr[0]), parseSpannedPtr<ast::Expr>(arr[1], parseExpr));
         });
+    const auto *ta = mapGet(*payload, "type_args");
+    if (ta && !isNil(*ta)) {
+      e.type_args = parseVec<ast::Spanned<ast::TypeExpr>>(*ta, [](const msgpack::object &o) {
+        return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
+      });
+    }
     return ast::Expr{std::move(e), {}};
   }
   if (name == "Send") {

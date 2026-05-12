@@ -5958,13 +5958,13 @@ static void transformCoroutineGenerators(llvm::Module &M) {
     auto *Suspend = llvm::BasicBlock::Create(Ctx, "coro.suspend", CoroBodyFn);
     auto *FinalSuspend = llvm::BasicBlock::Create(Ctx, "coro.final", CoroBodyFn);
 
-    // The promise is an alloca in the new entry block
+    // The promise is an alloca in the new entry block.
+    // coro.id needs the promise alloca to infer the promise struct type and
+    // alignment; the alloca itself is replaced by the coroutine frame field
+    // after coro.split, so its initial contents do not matter.
     llvm::IRBuilder<> IRB(NewEntry);
     auto *PromiseAlloca = IRB.CreateAlloca(PromiseStructTy, nullptr, "promise");
     PromiseAlloca->setAlignment(llvm::Align(8));
-
-    // Get the promise value ptr (field 0)
-    auto *PromiseValPtr = IRB.CreateStructGEP(PromiseStructTy, PromiseAlloca, 0, "promise.val.ptr");
 
     // coro.id
     auto *NullPtr = llvm::ConstantPointerNull::get(PtrTy);
@@ -5988,10 +5988,19 @@ static void transformCoroutineGenerators(llvm::Module &M) {
     PhiMem->addIncoming(Alloc, DynAlloc);
     auto *Hdl = IRB.CreateCall(CoroBeginFn, {CoroId, PhiMem}, "coro.hdl");
 
-    // Replace the promise ptr argument with our actual promise value ptr.
-    // The last argument of the coro function was the promise pointer.
+    // Replace the promise ptr argument with the FRAME-BASED promise address
+    // obtained via coro.promise.  This ensures that yield stores in the coro
+    // body write directly into the coroutine frame's promise slot, even for
+    // straight-line bodies where LLVM coro-split does not redirect local-alloca
+    // writes to the frame.  Using a local alloca as the replacement causes the
+    // frame to be initialised from the alloca BEFORE the body runs; for
+    // non-loop bodies the subsequent write to the alloca is then never copied
+    // back to the frame, so __next reads uninitialised memory.
+    auto *FramePromise = IRB.CreateCall(
+        CoroPromiseFn, {Hdl, llvm::ConstantInt::get(I32Ty, 8), llvm::ConstantInt::get(I1Ty, 0)},
+        "frame.promise");
     auto *PromiseArg = CoroBodyFn->getArg(CoroBodyFn->arg_size() - 1);
-    PromiseArg->replaceAllUsesWith(PromiseValPtr);
+    PromiseArg->replaceAllUsesWith(FramePromise);
 
     // NO initial suspend — the ramp function runs the body until the first
     // yield, storing the first value in the promise.  __next() reads the

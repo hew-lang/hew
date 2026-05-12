@@ -4822,7 +4822,22 @@ std::optional<mlir::Value> MLIRGen::generateActorMethodCall(const ast::ExprMetho
           if (nextFuncOp) {
             auto callResult = mlir::func::CallOp::create(builder, location, nextFuncOp,
                                                          mlir::ValueRange{receiver});
-            return callResult.getResult(0);
+            mlir::Value result = callResult.getResult(0);
+            // __next now returns the LLVM storage type (e.g. !llvm.ptr for
+            // String/Vec/HashMap/Handle generators).  Reconstruct the original
+            // semantic yield type so the rest of codegen sees !hew.string_ref
+            // (or the appropriate Hew type) and can pass it to println, etc.
+            auto yit = generatorYieldTypes.find(git->second);
+            if (yit == generatorYieldTypes.end()) {
+              ++errorCount_;
+              emitError(location) << "missing yield-type metadata for generator '" << git->second
+                                  << "'";
+              return nullptr;
+            }
+            auto semanticYieldType = yit->second;
+            if (toLLVMStorageType(semanticYieldType) != semanticYieldType)
+              result = hew::BitcastOp::create(builder, location, semanticYieldType, result);
+            return result;
           }
         }
       }

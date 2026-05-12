@@ -1,0 +1,23 @@
+//! Lazy filter+map+sum: same closure-bench workload, fused into a
+//! single drain loop with zero intermediate Vec allocation.
+//!
+//! Uses `iter.lazy_from_vec_int` so the input shape exactly matches
+//! `bench_eager.hew`. The only thing that differs is the chain.
+
+import std::iter;
+import std::time::datetime;
+
+fn main() {
+    let t0 = datetime.now_nanos();
+
+    let xs: Vec<int> = Vec::new();
+    for i in 1 .. 100001 { xs.push(i); }
+
+    let src  = iter.lazy_from_vec_int(xs);
+    let even = iter.lazy_filter_pred_int((x: int) => x % 2 == 0);
+    let add5 = iter.lazy_map_fn_int((x: int) => x + 5);
+    let r    = iter.lazy_sum(src, even, add5, 100000);
+
+    let t1 = datetime.now_nanos();
+    println("variant=lazy result=" + string_from_int(r) + " elapsed_us=" + string_from_int((t1 - t0) / 1000));
+}

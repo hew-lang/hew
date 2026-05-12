@@ -2177,12 +2177,9 @@ mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
     return nullptr;
   }
 
-  // Generate the argument value.
-  auto val = generateExpression(ast::callArgExpr(call.args[0]).value);
-  if (!val)
-    return nullptr;
-
-  // Require the resolved type from the type checker (checker-output-boundary).
+  // ── Type classification (before IR emission) ─────────────────────────────
+  // requireResolvedTypeOf reads AST type-checker annotations keyed by span; it
+  // does not depend on the IR value and is safe to call before generateExpression.
   auto *argType = requireResolvedTypeOf(ast::callArgExpr(call.args[0]).span,
                                         "to_string argument type", location);
   if (!argType)
@@ -2198,14 +2195,55 @@ mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
 
   auto kind = primitiveTypeKind(classified.canonicalName);
 
-  // String → identity: argument is already a String; return it as-is.
-  if (kind == PrimitiveTypeKind::String)
-    return val;
+  // Compute typeName once; used by both the field-alias guard and the Display path.
+  std::string typeName = classified.named->name;
+  if (typeName.empty())
+    typeName = classified.canonicalName;
 
-  // Char → hew_char_to_string: the dedicated runtime function produces a
-  // single-character string (e.g. 'x' → "x").  We cannot use ToStringOp here
-  // because its i32 lowering calls hew_int_to_string, which would print the
-  // codepoint as a decimal integer instead.
+  bool hasDisplayImpl =
+      displayImplTypes.count(typeName) > 0 || displayImplTypes.count(classified.canonicalName) > 0;
+
+  // ── Field-alias guard (Display path only, BEFORE emitting any IR) ────────
+  // Fail-closed pre-check: reject to_string(holder.field) where the argument
+  // is (or wraps) a field access whose type has a Display impl.  Without
+  // field-alias / partial-move tracking, Display::fmt would consume the field
+  // value; the owning struct's scope-exit drop would then free it again →
+  // double-free.  Running the scan here — before generateExpression — means
+  // compilation genuinely fails without leaving partial IR on the reject path.
+  // The residual TODO is field-alias / partial-move tracking that would let
+  // these succeed.  The return-of-field-of-param scan inside Display::fmt itself
+  // is handled globally by MLIRGen.cpp's return-of-field-of-param scanner; this
+  // guard is specific to the call argument.
+  if (kind == PrimitiveTypeKind::Unknown && hasDisplayImpl) {
+    const auto &argExpr = ast::callArgExpr(call.args[0]).value;
+    if (exprYieldsFieldAccess(argExpr)) {
+      ++errorCount_;
+      emitError(location) << "to_string of field-aliased Display value is not yet supported; "
+                          << "bind the field to a local variable or pass the whole struct";
+      return nullptr;
+    }
+  }
+
+  // ── Generate IR for the argument (all pre-IR guards have passed) ─────────
+  auto val = generateExpression(ast::callArgExpr(call.args[0]).value);
+  if (!val)
+    return nullptr;
+
+  // ── String → fresh clone ─────────────────────────────────────────────────
+  // The argument is already a String.  Return a fresh owned clone so the
+  // caller gets an independent copy rather than an alias of the source heap
+  // buffer — aliasing causes a double-free when both sides drop the pointer.
+  if (kind == PrimitiveTypeKind::String) {
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("clone"), val, mlir::ValueRange{})
+        .getResult();
+  }
+
+  // ── Char → hew_char_to_string ────────────────────────────────────────────
+  // The dedicated runtime function produces a single-character string
+  // (e.g. 'x' → "x").  We cannot use ToStringOp here because its i32 lowering
+  // calls hew_int_to_string, which would print the codepoint as a decimal
+  // integer instead.
   if (kind == PrimitiveTypeKind::Char) {
     auto strType = hew::StringRefType::get(&context);
     auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_char_to_string");
@@ -2214,14 +2252,14 @@ mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
         .getResult();
   }
 
-  // Remaining primitives (bool, i8…i64, u8…u64, f32, f64): emit hew::ToStringOp.
-  // The is_unsigned attribute signals unsigned decimal conversion (hew_uint_to_string /
-  // hew_u64_to_string) for unsigned integer types.
+  // ── Remaining primitives → hew::ToStringOp ───────────────────────────────
+  // Covers bool, i8…i64, u8…u64, f32, f64.  The is_unsigned attribute signals
+  // unsigned decimal conversion (hew_uint_to_string / hew_u64_to_string).
   //
-  // Ordering invariant: primitive types are dispatched in this branch, never
-  // through the user-Display path below.  The std/builtins.hew primitive Display
-  // impls (impl Display for i32 { fn fmt(v) { to_string(v) } }) must not be
-  // reached here — doing so would infinitely recurse through Display::fmt.
+  // Ordering invariant: primitive types are dispatched here, never through the
+  // user-Display path below.  The std/builtins.hew primitive Display impls
+  // (impl Display for i32 { fn fmt(v) { to_string(v) } }) must not be reached
+  // here — doing so would infinitely recurse through Display::fmt.
   if (kind != PrimitiveTypeKind::Unknown) {
     auto toStr = hew::ToStringOp::create(builder, location, hew::StringRefType::get(&context), val);
     if (isUnsignedTypeExpr(*argType))
@@ -2229,31 +2267,8 @@ mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
     return toStr.getResult();
   }
 
-  // Non-primitive: look for a user Display impl and dispatch through Display::fmt.
-  std::string typeName = classified.named->name;
-  if (typeName.empty())
-    typeName = classified.canonicalName;
-
-  bool hasDisplayImpl =
-      displayImplTypes.count(typeName) > 0 || displayImplTypes.count(classified.canonicalName) > 0;
-
+  // ── Non-primitive: user Display::fmt ─────────────────────────────────────
   if (hasDisplayImpl) {
-    // Fail-closed pre-check: reject to_string(holder.field) where the argument
-    // is (or wraps) a field access whose type has a Display impl.  Without
-    // field-alias / partial-move tracking, Display::fmt would consume the field
-    // value; the owning struct's scope-exit drop would then free it again →
-    // double-free.  The residual TODO is field-alias / partial-move tracking
-    // that would let these succeed.  The return-of-field-of-param scan inside
-    // Display::fmt itself is handled globally by MLIRGen.cpp's
-    // return-of-field-of-param scanner; this guard is specific to the argument.
-    const auto &argExpr = ast::callArgExpr(call.args[0]).value;
-    if (exprYieldsFieldAccess(argExpr)) {
-      ++errorCount_;
-      emitError(location) << "to_string of field-aliased Display value is not yet supported; "
-                          << "bind the field to a local variable or pass the whole struct";
-      return nullptr;
-    }
-
     auto savedModulePath = currentModulePath;
     if (typeDefModulePath.count(typeName))
       currentModulePath = typeDefModulePath[typeName];
@@ -2290,13 +2305,43 @@ mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
         return nullptr;
     }
 
-    return mlir::func::CallOp::create(builder, location, callee, mlir::ValueRange{val})
-        .getResult(0);
+    // ── Ownership transfer ────────────────────────────────────────────────
+    // Display::fmt takes its receiver by value (fn fmt(val: Self) -> String),
+    // so it CONSUMES the argument.  Without explicit ownership transfer the
+    // caller's drop registration for the binding/temporary would still fire at
+    // scope exit, double-freeing the already-dropped value.
+    //
+    // Mirror the generic consuming-call path in generateExprCall (lines ~1793,
+    // 1938-1956):
+    //   • Heap-allocated temps: materialize into a tracked slot before the call,
+    //     then null the slot after so the callee's param drop is the sole owner.
+    //   • Named identifier bindings: unregister the caller-side drop after the
+    //     call (transfers ownership to the callee's param).
+    const auto &argExpr = ast::callArgExpr(call.args[0]).value;
+    mlir::Value argAlloca;
+    materializeTemporary(val, argExpr, &argAlloca);
+
+    auto result =
+        mlir::func::CallOp::create(builder, location, callee, mlir::ValueRange{val}).getResult(0);
+
+    // Null caller-side ownership now that the callee has consumed the value.
+    if (auto *ident = std::get_if<ast::ExprIdentifier>(&argExpr.kind)) {
+      auto regDrop = getRegisteredDropFunc(ident->name);
+      if (!regDrop.empty() && !isOwnershipExemptDropFunc(regDrop))
+        unregisterDroppable(ident->name);
+    } else if (argAlloca) {
+      auto info = inferDropFuncForTemporary(val, argExpr);
+      if (!info.dropFunc.empty() && !isOwnershipExemptDropFunc(info.dropFunc))
+        nullOutDropSlotByAlloca(argAlloca, location);
+    }
+
+    return result;
   }
 
-  // Fail-closed: argument type is not a primitive and has no Display impl.
-  // The type checker should have rejected this call already; this guard ensures
-  // codegen is closed on any type-checker gap (error-count-exit-code invariant).
+  // ── Fail-closed ───────────────────────────────────────────────────────────
+  // Argument type is not a primitive and has no Display impl.  The type checker
+  // should have rejected this call already; this guard ensures codegen is closed
+  // on any type-checker gap (error-count-exit-code invariant).
   ++errorCount_;
   emitError(location) << "to_string: argument type '" << typeName << "' has no Display lowering";
   return nullptr;

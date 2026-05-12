@@ -3244,7 +3244,8 @@ impl Checker {
                         let resolved = self.resolve_type_expr(te);
                         type_arg_map.insert(tp.clone(), resolved);
                     }
-                } else if !explicit_args.is_empty() {
+                } else {
+                    // Covers both `Foo<>` (zero explicit args) and wrong-count args.
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
                         span,
@@ -3362,7 +3363,8 @@ impl Checker {
                         let resolved = self.resolve_type_expr(te);
                         type_arg_map.insert(tp.clone(), resolved);
                     }
-                } else if !explicit_args.is_empty() {
+                } else {
+                    // Covers both `Variant<>` (zero explicit args) and wrong-count args.
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
                         span,

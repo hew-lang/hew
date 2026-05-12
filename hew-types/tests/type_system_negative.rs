@@ -1985,3 +1985,54 @@ fn string_chars_rejects_extra_args() {
         "String::chars(arg) should produce a typecheck error"
     );
 }
+
+// ── 24. ArityMismatch — empty `<>` on generic struct / enum-variant init ──────
+//
+// `Wrapper<> { … }` is arity-0 explicit notation on a 1-param struct.
+// The checker must not silently treat `Some([])` as "infer from fields".
+
+#[test]
+fn empty_type_args_on_generic_struct_init_is_arity_mismatch() {
+    // `Wrapper<T>` has one type parameter; `Wrapper<> { … }` supplies zero.
+    let output = typecheck(
+        r"
+        type Wrapper<T> { value: T; }
+
+        fn main() {
+            let _w = Wrapper<> { value: 42 };
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ArityMismatch),
+        "Expected ArityMismatch for `Wrapper<>`, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn empty_type_args_on_generic_enum_variant_init_is_arity_mismatch() {
+    // `Event<T>` has one type parameter; `Event::Move<> { … }` supplies zero.
+    let output = typecheck(
+        r"
+        enum Event<T> {
+            Move { x: T };
+        }
+
+        fn main() {
+            let _e = Event::Move<> { x: 10 };
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ArityMismatch),
+        "Expected ArityMismatch for `Event::Move<>`, got errors: {:?}",
+        output.errors
+    );
+}

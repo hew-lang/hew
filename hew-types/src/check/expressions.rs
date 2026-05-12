@@ -234,7 +234,11 @@ impl Checker {
             Expr::MapLiteral { entries } => self.synthesize_map_literal(entries, span),
 
             // Struct init
-            Expr::StructInit { name, fields } => self.check_struct_init(name, fields, span),
+            Expr::StructInit {
+                name,
+                fields,
+                type_args,
+            } => self.check_struct_init(name, fields, type_args.as_deref(), span),
 
             // Spawn
             Expr::Spawn { target, args } => {
@@ -1411,7 +1415,7 @@ impl Checker {
 
             // Struct init coercion: propagate expected type args into field checking
             (
-                Expr::StructInit { name, fields },
+                Expr::StructInit { name, fields, .. },
                 Ty::Named {
                     name: expected_name,
                     args: expected_args,
@@ -1500,7 +1504,7 @@ impl Checker {
             // correctly.  This mirrors the plain-struct coercion arm above but
             // matches when the init name is a variant, not the type itself.
             (
-                Expr::StructInit { name, fields },
+                Expr::StructInit { name, fields, .. },
                 Ty::Named {
                     name: expected_enum_name,
                     args: expected_args,
@@ -3164,11 +3168,33 @@ impl Checker {
         &mut self,
         name: &str,
         fields: &[(String, Spanned<Expr>)],
+        type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
     ) -> Ty {
         if let Some(td) = self.lookup_type_def(name) {
-            // Track inferred type arguments for generic structs
+            // Track inferred type arguments for generic structs.
+            // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
+            // pre-seed the map from them so field checking constrains against the
+            // declared types immediately rather than synthesizing unconstrained.
             let mut type_arg_map: HashMap<String, Ty> = HashMap::new();
+            if let Some(explicit_args) = type_args {
+                if explicit_args.len() == td.type_params.len() {
+                    for (tp, te) in td.type_params.iter().zip(explicit_args.iter()) {
+                        let resolved = self.resolve_type_expr(te);
+                        type_arg_map.insert(tp.clone(), resolved);
+                    }
+                } else if !explicit_args.is_empty() {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "struct `{name}` has {} type parameter(s) but {} were supplied",
+                            td.type_params.len(),
+                            explicit_args.len()
+                        ),
+                    );
+                }
+            }
 
             for (field_name, (expr, es)) in fields {
                 if let Some(declared_ty) = td.fields.get(field_name) {

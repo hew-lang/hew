@@ -2164,6 +2164,49 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
 }
 
 // ============================================================================
+// Identifier-yield extractor — used by generateToStringCall ownership transfer.
+//
+// Mirrors the exprYieldsFieldAccess family but returns a pointer to the
+// yielded ExprIdentifier rather than a bool.  Only handles single-path
+// wrappers (block/unsafe/scope) — multi-branch shapes (if/match) cannot be
+// unwrapped to a single canonical identifier and return nullptr.
+//
+// The intended use is ownership transfer after a consuming Display::fmt call:
+//   to_string(g)      — direct identifier, found immediately
+//   to_string({ g })  — block wrapper, unwrapped here to find g
+// In both cases the caller-side drop registration for the identifier must be
+// removed after Display::fmt consumes the value, even though the IR value
+// was produced by generating the wrapper expression, not g directly.
+// ============================================================================
+
+static const ast::ExprIdentifier *extractYieldedIdentifier(const ast::Expr &expr);
+
+static const ast::ExprIdentifier *blockExtractYieldedIdentifier(const ast::Block &blk) {
+  if (blk.trailing_expr)
+    return extractYieldedIdentifier(blk.trailing_expr->value);
+  if (!blk.stmts.empty()) {
+    const auto &last = blk.stmts.back()->value;
+    if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind))
+      return extractYieldedIdentifier(exprStmt->expr.value);
+  }
+  return nullptr;
+}
+
+static const ast::ExprIdentifier *extractYieldedIdentifier(const ast::Expr &expr) {
+  if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind))
+    return ident;
+  if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+    return blockExtractYieldedIdentifier(blockE->block);
+  if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+    return blockExtractYieldedIdentifier(unsafeE->block);
+  if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+    return blockExtractYieldedIdentifier(scopeE->block);
+  // Multi-branch shapes (ExprIf, ExprMatch) may yield different identifiers in
+  // different arms; fail open here — the alloca path handles the temp case.
+  return nullptr;
+}
+
+// ============================================================================
 // to_string built-in
 // ============================================================================
 
@@ -2233,7 +2276,15 @@ mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
   // The argument is already a String.  Return a fresh owned clone so the
   // caller gets an independent copy rather than an alias of the source heap
   // buffer — aliasing causes a double-free when both sides drop the pointer.
+  //
+  // The source may itself be a heap-allocated temporary (e.g. the result of
+  // a string concatenation "a" + "b" passed inline without binding it to a
+  // name).  Without registration such a temp would never be dropped —
+  // materializeTemporary inserts a tracked alloca so the drop system fires
+  // at scope exit.  For named-identifier sources the function is a no-op
+  // because the binding is already in the drop registry.
   if (kind == PrimitiveTypeKind::String) {
+    materializeTemporary(val, ast::callArgExpr(call.args[0]).value);
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
                                        builder.getStringAttr("clone"), val, mlir::ValueRange{})
         .getResult();
@@ -2325,7 +2376,11 @@ mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
         mlir::func::CallOp::create(builder, location, callee, mlir::ValueRange{val}).getResult(0);
 
     // Null caller-side ownership now that the callee has consumed the value.
-    if (auto *ident = std::get_if<ast::ExprIdentifier>(&argExpr.kind)) {
+    // extractYieldedIdentifier unwraps single-path block/unsafe/scope wrappers
+    // so that to_string({ g }) correctly transfers ownership of the `g` binding
+    // (not just the block-expression result).  Multi-branch shapes (if/match)
+    // return nullptr and fall through to the alloca-based temp path.
+    if (const auto *ident = extractYieldedIdentifier(argExpr)) {
       auto regDrop = getRegisteredDropFunc(ident->name);
       if (!regDrop.empty() && !isOwnershipExemptDropFunc(regDrop))
         unregisterDroppable(ident->name);

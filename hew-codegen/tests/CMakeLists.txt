@@ -1383,6 +1383,8 @@ add_wasm_file_test(generic_implicit_multi     e2e_generics  generic_implicit_mul
 add_wasm_file_test(generic_receiver_method    e2e_generics  generic_receiver_method)
 add_wasm_file_test(generic_struct_nongeneric_ctx e2e_generics generic_struct_nongeneric_ctx)
 add_wasm_file_test(generic_trait_bound_dispatch e2e_generics generic_trait_bound_dispatch)
+# F1: explicit type arguments on struct literal (`Wrapper<String> { ... }`)
+add_wasm_file_test(generic_struct_explicit_typearg e2e_generics generic_struct_explicit_typearg)
 add_wasm_file_test(generic_impl_method        e2e_impl      generic_impl_method)
 add_wasm_file_test(generic_impl_multi         e2e_impl      generic_impl_multi)
 add_wasm_file_test(per_method_type_param      e2e_impl      per_method_type_param)

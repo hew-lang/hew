@@ -610,3 +610,141 @@ fn test_take_f64_negative_n_returns_empty() {
     let result = iter.take_f64(v, -99);
     testing.assert_eq(result.len(), 0);
 }
+
+// ── lazy iterator chain ────────────────────────────────────────────────────
+//
+// Tests for the defunctionalized `lazy_*` family in std::iter. Each test
+// is its own function to keep closure-bearing bodies isolated — see the
+// "Compiler workarounds" note at the bottom of std/iter.hew.
+
+#[test]
+fn test_lazy_from_range_produces_consecutive() {
+    let src = iter.lazy_from_range(10);
+    let total = iter.lazy_sum_filter(src, (x: int) => true, 3);
+    testing.assert_eq(total, 33);  // 10+11+12
+}
+
+#[test]
+fn test_lazy_from_range_zero_steps() {
+    let src = iter.lazy_from_range(100);
+    let total = iter.lazy_sum_filter(src, (x: int) => true, 0);
+    testing.assert_eq(total, 0);
+}
+
+#[test]
+fn test_lazy_from_vec_int_basic() {
+    let v: Vec<int> = Vec::new();
+    v.push(10); v.push(20); v.push(30);
+    let src = iter.lazy_from_vec_int(v);
+    let total = iter.lazy_sum_filter(src, (x: int) => x > 10, 3);
+    testing.assert_eq(total, 50);
+}
+
+#[test]
+fn test_lazy_sum_closure_bench_workload() {
+    // sum(map(add5, filter(even, 1..=100_000))) — the canonical
+    // closure-bench workload. Expected: 2,500,300,000.
+    let src  = iter.lazy_from_range(1);
+    let even = iter.lazy_filter_pred_int((x: int) => x % 2 == 0);
+    let add5 = iter.lazy_map_fn_int((x: int) => x + 5);
+    let r    = iter.lazy_sum(src, even, add5, 100000);
+    testing.assert_eq(r, 2500300000);
+}
+
+#[test]
+fn test_lazy_sum_filter_all_out_returns_zero() {
+    let src = iter.lazy_from_range(1);
+    let r = iter.lazy_sum_filter(src, (x: int) => false, 10);
+    testing.assert_eq(r, 0);
+}
+
+#[test]
+fn test_lazy_sum_map_no_filter() {
+    let src = iter.lazy_from_range(1);
+    let r = iter.lazy_sum_map(src, (x: int) => x * 2, 5);
+    testing.assert_eq(r, 30);  // 2+4+6+8+10
+}
+
+#[test]
+fn test_lazy_collect_int_basic() {
+    let src = iter.lazy_from_range(1);
+    let v = iter.lazy_collect_int(
+        src,
+        (x: int) => x % 2 == 0,
+        (x: int) => x * 10,
+        5,
+    );
+    testing.assert_eq(v.len(), 2);
+    testing.assert_eq(v.get(0), 20);
+    testing.assert_eq(v.get(1), 40);
+}
+
+#[test]
+fn test_lazy_collect_int_empty_on_no_match() {
+    let src = iter.lazy_from_range(1);
+    let v = iter.lazy_collect_int(
+        src,
+        (x: int) => false,
+        (x: int) => x,
+        100,
+    );
+    testing.assert_eq(v.len(), 0);
+}
+
+#[test]
+fn test_lazy_collect_int_round_trip() {
+    // collect → eager sum should match the lazy_sum equivalent.
+    let src = iter.lazy_from_range(1);
+    let v = iter.lazy_collect_int(
+        src,
+        (x: int) => x % 2 == 0,
+        (x: int) => x,
+        10,
+    );
+    testing.assert_eq(iter.sum(v), 30);
+}
+
+#[test]
+fn test_lazy_take_int_stops_at_limit() {
+    let src = iter.lazy_from_range(1);
+    let v = iter.lazy_take_int(src, (x: int) => x % 3 == 0, 4, 100);
+    testing.assert_eq(v.len(), 4);
+    testing.assert_eq(v.get(0), 3);
+    testing.assert_eq(v.get(3), 12);
+}
+
+#[test]
+fn test_lazy_take_int_bounded_by_max_steps() {
+    // n=100 but max_steps=10 — the source cap wins.
+    let src = iter.lazy_from_range(1);
+    let v = iter.lazy_take_int(src, (x: int) => true, 100, 10);
+    testing.assert_eq(v.len(), 10);
+}
+
+#[test]
+fn test_lazy_fold_basic() {
+    let src = iter.lazy_from_range(1);
+    let r = iter.lazy_fold(
+        src,
+        (x: int) => x % 2 == 0,
+        (x: int) => x,
+        0,
+        (acc: int, v: int) => acc + v,
+        10,
+    );
+    testing.assert_eq(r, 30);  // 2+4+6+8+10
+}
+
+#[test]
+fn test_lazy_fold_init_returned_when_no_match() {
+    let src = iter.lazy_from_range(1);
+    let r = iter.lazy_fold(
+        src,
+        (x: int) => false,
+        (x: int) => x,
+        42,
+        (acc: int, v: int) => acc + v,
+        10,
+    );
+    testing.assert_eq(r, 42);
+}

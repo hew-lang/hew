@@ -1,0 +1,26 @@
+// Spike 19: struct holding closures?
+type Plan {
+    src: fn(int) -> int;
+    pred: fn(int) -> bool;
+    mapf: fn(int) -> int;
+    len: int;
+}
+
+fn run(p: Plan) -> int {
+    var total: int = 0;
+    for i in 0 .. p.len {
+        let v = p.src(i);
+        if p.pred(v) { total = total + p.mapf(v); }
+    }
+    total
+}
+
+fn main() {
+    let p = Plan {
+        src: (i: int) => 1 + i,
+        pred: (x: int) => x % 2 == 0,
+        mapf: (x: int) => x + 5,
+        len: 100000,
+    };
+    println("got=" + string_from_int(run(p)));
+}

@@ -733,3 +733,204 @@ pub fn lazy_map_fn_int(f: fn(int) -> int) -> fn(int) -> int {
     f
 }
 
+// ── Terminals: fused drains ─────────────────────────────────────────
+
+/// Drive the pipeline: for each index `i` in `0..n`, pull `src(i)`,
+/// keep it iff `pred` holds, then add `mapf(v)` to the running sum.
+///
+/// No intermediate `Vec` is allocated; this is the "monomorphized"
+/// inner loop. After LLVM inlining you get the same shape as Rust's
+/// `iter().filter(...).map(...).sum()`.
+///
+/// # Examples
+///
+/// ```
+/// let src   = iter.lazy_from_range(1);
+/// let even  = iter.lazy_filter_pred_int((x: int) => x % 2 == 0);
+/// let add5  = iter.lazy_map_fn_int((x: int) => x + 5);
+/// let r     = iter.lazy_sum(src, even, add5, 100000);
+/// // r == 2_500_300_000
+/// ```
+pub fn lazy_sum(
+    src: fn(int) -> int,
+    pred: fn(int) -> bool,
+    mapf: fn(int) -> int,
+    n: int,
+) -> int {
+    var total: int = 0;
+    for i in 0 .. n {
+        let v = src(i);
+        if pred(v) { total = total + mapf(v); }
+    }
+    total
+}
+
+/// Drain a filtered source into a sum (no map step).
+///
+/// # Examples
+///
+/// ```
+/// let src = iter.lazy_from_range(1);
+/// let r   = iter.lazy_sum_filter(src, (x: int) => x % 3 == 0, 10);
+/// // r == 3 + 6 + 9 == 18
+/// ```
+pub fn lazy_sum_filter(
+    src: fn(int) -> int,
+    pred: fn(int) -> bool,
+    n: int,
+) -> int {
+    var total: int = 0;
+    for i in 0 .. n {
+        let v = src(i);
+        if pred(v) { total = total + v; }
+    }
+    total
+}
+
+/// Drain a mapped source into a sum (no filter step).
+///
+/// # Examples
+///
+/// ```
+/// let src = iter.lazy_from_range(1);
+/// let r   = iter.lazy_sum_map(src, (x: int) => x * 2, 5);
+/// // r == 2 + 4 + 6 + 8 + 10 == 30
+/// ```
+pub fn lazy_sum_map(
+    src: fn(int) -> int,
+    mapf: fn(int) -> int,
+    n: int,
+) -> int {
+    var total: int = 0;
+    for i in 0 .. n {
+        total = total + mapf(src(i));
+    }
+    total
+}
+
+/// Left-fold the first `n` elements pulled from `src` (after filter
+/// and map). The accumulator type is `int`; for non-int accumulators
+/// use `lazy_collect_int` and then `iter.fold_int`.
+///
+/// # Examples
+///
+/// ```
+/// let src = iter.lazy_from_range(1);
+/// let r   = iter.lazy_fold(
+///     src,
+///     (x: int) => x % 2 == 0,
+///     (x: int) => x,
+///     0,
+///     (acc: int, v: int) => acc + v,
+///     10,
+/// );
+/// // r == 2 + 4 + 6 + 8 + 10 == 30
+/// ```
+pub fn lazy_fold(
+    src: fn(int) -> int,
+    pred: fn(int) -> bool,
+    mapf: fn(int) -> int,
+    init: int,
+    op: fn(int, int) -> int,
+    n: int,
+) -> int {
+    var acc = init;
+    for i in 0 .. n {
+        let v = src(i);
+        if pred(v) { acc = op(acc, mapf(v)); }
+    }
+    acc
+}
+
+/// Drain the pipeline into a fresh `Vec<int>`.
+///
+/// Allocates the result vector; intermediate stages do not.
+///
+/// # Examples
+///
+/// ```
+/// let src = iter.lazy_from_range(1);
+/// let v   = iter.lazy_collect_int(
+///     src,
+///     (x: int) => x % 2 == 0,
+///     (x: int) => x * 10,
+///     5,
+/// );
+/// // v == [20, 40]   (only 2 of the first 5 are even)
+/// ```
+pub fn lazy_collect_int(
+    src: fn(int) -> int,
+    pred: fn(int) -> bool,
+    mapf: fn(int) -> int,
+    n: int,
+) -> Vec<int> {
+    let out: Vec<int> = Vec::new();
+    for i in 0 .. n {
+        let v = src(i);
+        if pred(v) { out.push(mapf(v)); }
+    }
+    out
+}
+
+/// Pull the first `n` elements from `src` that satisfy `pred`,
+/// returning a fresh `Vec<int>`. The drain stops early once `n`
+/// elements have been collected.
+///
+/// Unlike `lazy_collect_int`, which drives the source for exactly
+/// `n` source indices, this variant drives the source for at most
+/// `max_steps` indices and stops once the take limit is hit.
+///
+/// # Examples
+///
+/// ```
+/// let src = iter.lazy_from_range(1);
+/// let v   = iter.lazy_take_int(
+///     src,
+///     (x: int) => x % 2 == 0,
+///     3,
+///     100,
+/// );
+/// // v == [2, 4, 6]
+/// ```
+pub fn lazy_take_int(
+    src: fn(int) -> int,
+    pred: fn(int) -> bool,
+    n: int,
+    max_steps: int,
+) -> Vec<int> {
+    let out: Vec<int> = Vec::new();
+    var taken: int = 0;
+    for i in 0 .. max_steps {
+        if taken >= n { return out; }
+        let v = src(i);
+        if pred(v) {
+            out.push(v);
+            taken = taken + 1;
+        }
+    }
+    out
+}
+
+// ── Compiler workarounds (v0.4.0) ────────────────────────────────────
+//
+// The defunctionalized shape above is necessary because v0.4.0 of the
+// Hew compiler hits four lowering bugs on the canonical
+// `Lazy<T> { next: () -> Option<T> }` design. Each one independently
+// blocks the ergonomic shape:
+//
+//   1. `Option<T>`-returning closures fail to lower
+//      ("failed to lower Hew dialect ops"). Blocks `next()`.
+//
+//   2. Conditional value-yield inside a captured-state closure breaks
+//      MLIR verification. Blocks stateful counters returning sentinels.
+//
+//   3. Nested closures-of-closures (a combinator capturing the previous
+//      iterator's closure) SIGSEGV at runtime. Blocks
+//      `filter(...).map(...)` chaining.
+//
+//   4. Closure-typed struct fields don't typecheck on access. Blocks
+//      `Lazy<T>` from being a real record.
+//
+// Minimised reproducers and a migration RFC live alongside this PR in
+// `docs/rfcs/0001-lazy-iter.md`. Once those bugs are fixed, this
+// section can be replaced by a `Lazy<T>` record with chained methods.

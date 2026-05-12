@@ -2164,6 +2164,61 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
 }
 
 // ============================================================================
+// Multi-branch yield detector — used by generateToStringCall's pre-IR reject.
+//
+// Returns true if expr is, or wraps via single-path block/unsafe/scope, a
+// multi-branch expression (ExprIf, ExprIfLet, ExprMatch) in its value
+// position.  Detects the wrapper-smuggling bypass:
+//
+//   to_string({ if c { g } else { h } })   — block wrapping an if
+//   to_string(unsafe { match x { … } })    — unsafe block wrapping a match
+//
+// In these cases the outer expr.kind is ExprBlock / ExprUnsafe, not ExprIf /
+// ExprMatch, so the prior direct holds_alternative check did not fire.
+// extractYieldedIdentifier already returns nullptr for these shapes (since
+// the block's trailing expr is a branch, not an identifier), but that
+// nullptr is reached only after generateExpression has already emitted IR
+// for the multi-branch, leaving partial IR when we then have to reject.
+// This helper lets the pre-IR reject cover both direct and wrapped forms.
+//
+// Only the value-position tail of a block is scanned (trailing_expr or the
+// last statement's StmtExpression), matching blockExtractYieldedIdentifier.
+// ============================================================================
+
+static bool exprYieldsMultiBranchExpr(const ast::Expr &expr);
+
+static bool blockYieldsMultiBranchExpr(const ast::Block &blk) {
+  if (blk.trailing_expr)
+    return exprYieldsMultiBranchExpr(blk.trailing_expr->value);
+  if (!blk.stmts.empty()) {
+    const auto &last = blk.stmts.back()->value;
+    if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind))
+      return exprYieldsMultiBranchExpr(exprStmt->expr.value);
+    if (std::holds_alternative<ast::StmtIf>(last.kind) ||
+        std::holds_alternative<ast::StmtIfLet>(last.kind) ||
+        std::holds_alternative<ast::StmtMatch>(last.kind))
+      return true;
+  }
+  return false;
+}
+
+static bool exprYieldsMultiBranchExpr(const ast::Expr &expr) {
+  // Direct multi-branch shapes.
+  if (std::holds_alternative<ast::ExprIf>(expr.kind) ||
+      std::holds_alternative<ast::ExprIfLet>(expr.kind) ||
+      std::holds_alternative<ast::ExprMatch>(expr.kind))
+    return true;
+  // Single-path wrappers: unwrap and check the yielded expression.
+  if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+    return blockYieldsMultiBranchExpr(blockE->block);
+  if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+    return blockYieldsMultiBranchExpr(unsafeE->block);
+  if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+    return blockYieldsMultiBranchExpr(scopeE->block);
+  return false;
+}
+
+// ============================================================================
 // Identifier-yield extractor — used by generateToStringCall ownership transfer.
 //
 // Mirrors the exprYieldsFieldAccess family but returns a pointer to the
@@ -2267,16 +2322,21 @@ mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
                           << "bind the field to a local variable or pass the whole struct";
       return nullptr;
     }
-    // Fail-closed: multi-branch shapes (if/if-let/match) cannot be safely
+    // Fail-closed: multi-branch shapes (if/if-let/match), including those
+    // wrapped inside block/unsafe/scope expressions, cannot be safely
     // ownership-transferred after Display::fmt consumes the receiver.
     // extractYieldedIdentifier returns nullptr for these shapes: we cannot
     // determine which branch owner was consumed, so the caller-side drop
     // registration for the selected binding would remain active and fire again
-    // at scope exit.  Require the caller to bind the branch
-    // result to a local variable, from which the single-owner path works.
-    if (std::holds_alternative<ast::ExprIf>(argExpr.kind) ||
-        std::holds_alternative<ast::ExprIfLet>(argExpr.kind) ||
-        std::holds_alternative<ast::ExprMatch>(argExpr.kind)) {
+    // at scope exit.  Require the caller to bind the branch result to a local
+    // variable, from which the single-owner path works.
+    //
+    // exprYieldsMultiBranchExpr covers both direct shapes (ExprIf, ExprIfLet,
+    // ExprMatch) and wrapped forms (block/unsafe/scope whose value-position
+    // tail is a multi-branch), closing the wrapper-smuggling bypass where
+    // to_string({ if … }) or to_string(unsafe { match … }) could bypass the
+    // prior direct holds_alternative check.
+    if (exprYieldsMultiBranchExpr(argExpr)) {
       ++errorCount_;
       emitError(location) << "to_string with if/match expression yielding an owned Display "
                           << "value is not yet supported; bind the branch result to a local "

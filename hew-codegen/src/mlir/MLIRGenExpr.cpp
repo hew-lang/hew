@@ -1239,6 +1239,9 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     return generatePrintCall(call, /*newline=*/true);
   if (calleeName == "print")
     return generatePrintCall(call, /*newline=*/false);
+  // to_string — routed to generateToStringCall().
+  if (calleeName == "to_string")
+    return generateToStringCall(call);
   // assert_eq / assert_ne — routed to generateBuiltinCall() which emits
   // AssertEqOp / AssertNeOp directly from the argument values; type_args unused.
   if (calleeName == "assert_eq" || calleeName == "assert_ne")
@@ -2161,8 +2164,143 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
 }
 
 // ============================================================================
-// If expression generation (expression form that yields a value)
+// to_string built-in
 // ============================================================================
+
+mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
+  auto location = currentLoc;
+
+  // Arity guard: to_string takes exactly one argument.
+  if (call.args.size() != 1) {
+    ++errorCount_;
+    emitError(location) << "to_string requires exactly one argument";
+    return nullptr;
+  }
+
+  // Generate the argument value.
+  auto val = generateExpression(ast::callArgExpr(call.args[0]).value);
+  if (!val)
+    return nullptr;
+
+  // Require the resolved type from the type checker (checker-output-boundary).
+  auto *argType = requireResolvedTypeOf(ast::callArgExpr(call.args[0]).span,
+                                        "to_string argument type", location);
+  if (!argType)
+    return nullptr;
+
+  auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+  auto classified = classifyResolvedType(*argType, resolveAliasExpr);
+  if (!classified.named) {
+    ++errorCount_;
+    emitError(location) << "to_string: cannot determine argument type";
+    return nullptr;
+  }
+
+  auto kind = primitiveTypeKind(classified.canonicalName);
+
+  // String → identity: argument is already a String; return it as-is.
+  if (kind == PrimitiveTypeKind::String)
+    return val;
+
+  // Char → hew_char_to_string: the dedicated runtime function produces a
+  // single-character string (e.g. 'x' → "x").  We cannot use ToStringOp here
+  // because its i32 lowering calls hew_int_to_string, which would print the
+  // codepoint as a decimal integer instead.
+  if (kind == PrimitiveTypeKind::Char) {
+    auto strType = hew::StringRefType::get(&context);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_char_to_string");
+    return hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{strType}, calleeAttr,
+                                      mlir::ValueRange{val})
+        .getResult();
+  }
+
+  // Remaining primitives (bool, i8…i64, u8…u64, f32, f64): emit hew::ToStringOp.
+  // The is_unsigned attribute signals unsigned decimal conversion (hew_uint_to_string /
+  // hew_u64_to_string) for unsigned integer types.
+  //
+  // Ordering invariant: primitive types are dispatched in this branch, never
+  // through the user-Display path below.  The std/builtins.hew primitive Display
+  // impls (impl Display for i32 { fn fmt(v) { to_string(v) } }) must not be
+  // reached here — doing so would infinitely recurse through Display::fmt.
+  if (kind != PrimitiveTypeKind::Unknown) {
+    auto toStr = hew::ToStringOp::create(builder, location, hew::StringRefType::get(&context), val);
+    if (isUnsignedTypeExpr(*argType))
+      toStr->setAttr("is_unsigned", builder.getBoolAttr(true));
+    return toStr.getResult();
+  }
+
+  // Non-primitive: look for a user Display impl and dispatch through Display::fmt.
+  std::string typeName = classified.named->name;
+  if (typeName.empty())
+    typeName = classified.canonicalName;
+
+  bool hasDisplayImpl =
+      displayImplTypes.count(typeName) > 0 || displayImplTypes.count(classified.canonicalName) > 0;
+
+  if (hasDisplayImpl) {
+    // Fail-closed pre-check: reject to_string(holder.field) where the argument
+    // is (or wraps) a field access whose type has a Display impl.  Without
+    // field-alias / partial-move tracking, Display::fmt would consume the field
+    // value; the owning struct's scope-exit drop would then free it again →
+    // double-free.  The residual TODO is field-alias / partial-move tracking
+    // that would let these succeed.  The return-of-field-of-param scan inside
+    // Display::fmt itself is handled globally by MLIRGen.cpp's
+    // return-of-field-of-param scanner; this guard is specific to the argument.
+    const auto &argExpr = ast::callArgExpr(call.args[0]).value;
+    if (exprYieldsFieldAccess(argExpr)) {
+      ++errorCount_;
+      emitError(location) << "to_string of field-aliased Display value is not yet supported; "
+                          << "bind the field to a local variable or pass the whole struct";
+      return nullptr;
+    }
+
+    auto savedModulePath = currentModulePath;
+    if (typeDefModulePath.count(typeName))
+      currentModulePath = typeDefModulePath[typeName];
+    std::string fmtName = resolveTraitImplBodyName(
+        typeName, "Display", "fmt", TraitImplBodyNameMode::PreferQualifiedIfGenerated);
+    currentModulePath = savedModulePath;
+
+    auto callee = module.lookupSymbol<mlir::func::FuncOp>(fmtName);
+    if (!callee)
+      callee = lookupImportedFunc(typeName, "fmt");
+    if (!callee) {
+      ++errorCount_;
+      emitError(location) << "to_string could not lower Display::fmt for type '" << typeName << "'";
+      return nullptr;
+    }
+
+    auto funcType = callee.getFunctionType();
+    if (funcType.getNumInputs() != 1) {
+      ++errorCount_;
+      emitError(location) << "Display::fmt for type '" << typeName
+                          << "' must take exactly one receiver argument";
+      return nullptr;
+    }
+    if (funcType.getNumResults() != 1 ||
+        !mlir::isa<mlir::LLVM::LLVMPointerType, hew::StringRefType>(funcType.getResult(0))) {
+      ++errorCount_;
+      emitError(location) << "Display::fmt for type '" << typeName << "' must return String";
+      return nullptr;
+    }
+
+    if (val.getType() != funcType.getInput(0)) {
+      val = coerceType(val, funcType.getInput(0), location);
+      if (!val)
+        return nullptr;
+    }
+
+    return mlir::func::CallOp::create(builder, location, callee, mlir::ValueRange{val})
+        .getResult(0);
+  }
+
+  // Fail-closed: argument type is not a primitive and has no Display impl.
+  // The type checker should have rejected this call already; this guard ensures
+  // codegen is closed on any type-checker gap (error-count-exit-code invariant).
+  ++errorCount_;
+  emitError(location) << "to_string: argument type '" << typeName << "' has no Display lowering";
+  return nullptr;
+}
 
 mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exprSpan,
                                     bool statementPosition) {

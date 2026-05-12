@@ -373,6 +373,9 @@ private:
   // ── Print/println built-in handling ──────────────────────────────
   mlir::Value generatePrintCall(const ast::ExprCall &expr, bool newline);
 
+  // ── to_string built-in handling ──────────────────────────────────
+  mlir::Value generateToStringCall(const ast::ExprCall &call);
+
   // ── Select/Join helpers ───────────────────────────────────────────
   /// Resolve actor type name from an expression (e.g., variable holding actor).
   /// Requires resolvedTypeOf (from type checker) for identifier dispatch; falls

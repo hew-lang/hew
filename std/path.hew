@@ -82,10 +82,14 @@ pub fn glob(pattern: String) -> GlobResult {
 /// ```
 pub fn combine(a: String, b: String) -> String {
     if b.starts_with("/") {
-        return b;
+        // Force a fresh heap allocation so the caller and this scope each own
+        // their own copy. Returning `b` directly would alias the caller's
+        // drop slot against ours and cause a double-free on heap inputs.
+        return "" + b;
     }
     if a == "" {
-        return b;
+        // Same: must not return the borrowed parameter directly.
+        return "" + b;
     }
     if a.ends_with("/") {
         return a + b;
@@ -179,12 +183,15 @@ pub fn absolute(p: String) -> String {
 /// Strip a single trailing slash from a path, preserving the root `/`.
 fn strip_trailing_slash(p: String) -> String {
     if p == "/" {
-        return p;
+        // Force a fresh heap allocation; returning `p` directly aliases the
+        // caller's drop slot and causes a double-free on heap-allocated inputs.
+        return "" + p;
     }
     if p.len() > 1 && p.ends_with("/") {
         return p.slice(0, p.len() - 1);
     }
-    p
+    // No-op path: must not return the borrowed parameter directly.
+    "" + p
 }
 
 /// Return the index of the last `/` in `s`, or `-1` if none.

@@ -95,3 +95,80 @@ fn test_extension_returns_empty_string_for_leading_dot_only() {
 fn test_extension_uses_basename_for_full_path() {
     testing.assert_eq_str(path.extension("/home/user/file.txt"), "txt");
 }
+
+// ── heap-string regression tests ────────────────────────────────────────
+//
+// The tests below construct their String inputs via concatenation so the
+// values are heap-allocated, NOT static literals.  Static literals are
+// skipped by hew_string_drop (runtime/src/string.rs:1095 — is_static_string
+// check), which means duplicate-drop bugs are invisible to literal-only tests.
+// These tests are intentionally written with heap inputs so the runtime free
+// path is actually walked.  Do NOT simplify them back to bare string literals.
+
+// combine — absolute right-hand side with heap input
+// Exercises the `if b.starts_with("/")` early-return branch in combine.
+// Pre-fix this branch returned the borrowed `b` parameter directly; the
+// caller and callee would both register a drop for the same heap pointer
+// and the second drop would corrupt the allocator.
+#[test]
+fn test_combine_absolute_right_hand_side_with_heap_inputs() {
+    let prefix = "/" + "home";
+    let result = path.combine("/left", prefix);
+    testing.assert_eq_str(result, "/home");
+    // Call twice in the same scope: if a duplicate drop were triggered on
+    // the first call, the allocator would abort before we reach this line.
+    let prefix2 = "/" + "usr";
+    let result2 = path.combine("/x", prefix2);
+    testing.assert_eq_str(result2, "/usr");
+}
+
+// combine — empty left-hand side with heap right
+// Exercises the `if a == ""` early-return branch in combine.
+#[test]
+fn test_combine_empty_left_hand_with_heap_right() {
+    let rhs = "rel" + "/path";
+    let result = path.combine("", rhs);
+    testing.assert_eq_str(result, "rel/path");
+    let rhs2 = "other" + "/dir";
+    let result2 = path.combine("", rhs2);
+    testing.assert_eq_str(result2, "other/dir");
+}
+
+// dirname — no trailing slash, exercising the strip_trailing_slash no-op path
+// The no-op trailing expression `p` in strip_trailing_slash was the most-walked
+// alias site; dirname, basename, and extension all pass through it.
+#[test]
+fn test_dirname_no_trailing_slash_with_heap_input() {
+    let p = "/home/" + "user/file.txt";
+    let result = path.dirname(p);
+    testing.assert_eq_str(result, "/home/user");
+    let p2 = "/var/" + "log/app.log";
+    let result2 = path.dirname(p2);
+    testing.assert_eq_str(result2, "/var/log");
+}
+
+// basename — no slash in input, exercising strip_trailing_slash no-op and
+// the `last_slash_pos < 0` branch in basename (returns `s` — the owned
+// result of strip_trailing_slash — not a borrowed parameter).
+#[test]
+fn test_basename_no_slash_with_heap_input() {
+    let p = "file" + ".txt";
+    let result = path.basename(p);
+    testing.assert_eq_str(result, "file.txt");
+    let p2 = "README" + ".md";
+    let result2 = path.basename(p2);
+    testing.assert_eq_str(result2, "README.md");
+}
+
+// extension — path with slash and dot, exercises basename → strip_trailing_slash
+// no-op transitively.
+#[test]
+fn test_extension_with_heap_input() {
+    let p = "/home/user/" + "photo.jpg";
+    let result = path.extension(p);
+    testing.assert_eq_str(result, "jpg");
+    let p2 = "/var/log/" + "app.log";
+    let result2 = path.extension(p2);
+    testing.assert_eq_str(result2, "log");
+}
+

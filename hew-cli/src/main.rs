@@ -557,6 +557,7 @@ fn cmd_check(a: &args::CheckArgs) {
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn cmd_debug(a: &args::DebugArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();

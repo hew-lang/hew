@@ -33,14 +33,18 @@ pub(crate) struct MainCommandDispatcher;
 /// presence in the binary link surface and the C++ codegen's `libMLIR`
 /// registration collide through `libLLVM` globals, corrupting LLVM
 /// `AnalysisManager` state and crashing the process. Until the C++ codegen
-/// subtree is removed, `run`, `build`, and the expression evaluator
-/// short-circuit here instead of reaching the codegen path.
+/// subtree is removed, every subcommand that reaches the C++ codegen
+/// (`run`, `build`, `eval`, `test`, `debug`) short-circuits here instead
+/// of producing a malformed artefact or a SIGSEGV.
 fn exit_with_cutover_error(subcommand: &str) -> ! {
     eprintln!(
         "error: `hew {subcommand}` is temporarily unavailable during the v0.5 compiler cutover.\n\
          \n\
          The C++ codegen path is unsafe to invoke while inkwell is in the binary's link\n\
          surface (libMLIR + libLLVM dual-load corrupts LLVM AnalysisManager state).\n\
+         The `run`, `build`, `eval`, `test`, and `debug` subcommands all reach that\n\
+         path and are short-circuited together until the C++ codegen subtree is\n\
+         removed.\n\
          \n\
          Use `hew compile-v05 <file>` for the integer-only spine subset on this branch,\n\
          or wait for the cutover to complete on `main`."
@@ -61,8 +65,8 @@ impl CommandDispatcher for MainCommandDispatcher {
         exit_with_cutover_error("run");
     }
 
-    fn debug(&mut self, args: &args::DebugArgs) {
-        crate::cmd_debug(args);
+    fn debug(&mut self, _args: &args::DebugArgs) {
+        exit_with_cutover_error("debug");
     }
 
     fn check(&mut self, args: &args::CheckArgs) {
@@ -77,8 +81,8 @@ impl CommandDispatcher for MainCommandDispatcher {
         exit_with_cutover_error("eval");
     }
 
-    fn test(&mut self, args: &args::TestArgs) {
-        crate::test_runner::cmd_test(args);
+    fn test(&mut self, _args: &args::TestArgs) {
+        exit_with_cutover_error("test");
     }
 
     fn watch(&mut self, args: &args::WatchArgs) {

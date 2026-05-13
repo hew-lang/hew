@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "adze-cli"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "base64",
  "clap",
@@ -319,6 +319,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 
 [[package]]
+name = "bit-vec"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -501,9 +510,9 @@ dependencies = [
 
 [[package]]
 name = "clap_complete"
-version = "4.6.4"
+version = "4.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3e962dae2b1e5007fe9e3db363ddc43a8bf25546d279f7a8a4401204690e80c"
+checksum = "e0a7a9bfdb35811f9e59832f0f05975114d2251b415fb534108e6f34060fd772"
 dependencies = [
  "clap",
 ]
@@ -1154,9 +1163,9 @@ dependencies = [
 
 [[package]]
 name = "filetime"
-version = "0.2.28"
+version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d5b2eef6fafbf69f877e55509ce5b11a760690ac9700a2921be067aa6afaef6"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
 dependencies = [
  "cfg-if",
  "libc",
@@ -1437,7 +1446,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hew-analysis"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1448,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "hew-astgen"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-parser",
  "hew-serialize",
@@ -1459,14 +1468,14 @@ dependencies = [
 
 [[package]]
 name = "hew-cabi"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hew-capability-gen"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "serde",
  "toml",
@@ -1474,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "hew-cli"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1499,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "hew-compile"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1512,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lexer"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "logos",
  "serde_json",
@@ -1520,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lib"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-runtime",
  "hew-std-crypto-crypto",
@@ -1557,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lsp"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "dashmap 6.1.0",
  "hew-analysis",
@@ -1573,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "clap",
  "crossterm",
@@ -1587,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "hew-parser"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-lexer",
  "serde",
@@ -1597,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
@@ -1627,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "hew-serialize"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-parser",
  "hew-types",
@@ -1640,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-crypto-crypto"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1650,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-crypto-encrypt"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1660,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-crypto-jwt"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1671,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-crypto-password"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "argon2",
  "hew-cabi",
@@ -1681,11 +1690,11 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-base64"
-version = "0.4.0"
+version = "0.5.0-pre"
 
 [[package]]
 name = "hew-std-encoding-compress"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "flate2",
  "hew-cabi",
@@ -1695,15 +1704,15 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-csv"
-version = "0.4.0"
+version = "0.5.0-pre"
 
 [[package]]
 name = "hew-std-encoding-hex"
-version = "0.4.0"
+version = "0.5.0-pre"
 
 [[package]]
 name = "hew-std-encoding-json"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "base64",
  "hew-cabi",
@@ -1714,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-markdown"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1724,7 +1733,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-msgpack"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1735,7 +1744,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-protobuf"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1744,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-toml"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1754,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-xml"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1764,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-yaml"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "base64",
  "hew-cabi",
@@ -1775,15 +1784,15 @@ dependencies = [
 
 [[package]]
 name = "hew-std-math"
-version = "0.4.0"
+version = "0.5.0-pre"
 
 [[package]]
 name = "hew-std-misc-log"
-version = "0.4.0"
+version = "0.5.0-pre"
 
 [[package]]
 name = "hew-std-misc-uuid"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1793,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-dns"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1802,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-http"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1813,7 +1822,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-ipnet"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1823,11 +1832,11 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-mime"
-version = "0.4.0"
+version = "0.5.0-pre"
 
 [[package]]
 name = "hew-std-net-quic"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1839,7 +1848,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-smtp"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1849,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-tls"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1860,7 +1869,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-url"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1870,7 +1879,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-websocket"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1881,7 +1890,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-sort"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1889,7 +1898,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-text-regex"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1899,11 +1908,11 @@ dependencies = [
 
 [[package]]
 name = "hew-std-text-semver"
-version = "0.4.0"
+version = "0.5.0-pre"
 
 [[package]]
 name = "hew-std-time-cron"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "chrono",
  "cron",
@@ -1914,7 +1923,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-time-datetime"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "chrono",
  "hew-cabi",
@@ -1924,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "hew-types"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-parser",
  "serde",
@@ -1933,7 +1942,7 @@ dependencies = [
 
 [[package]]
 name = "hew-wasm"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-analysis",
  "hew-lexer",
@@ -1946,7 +1955,7 @@ dependencies = [
 
 [[package]]
 name = "hew-wirecodec"
-version = "0.4.0"
+version = "0.5.0-pre"
 dependencies = [
  "hew-parser",
  "hew-types",
@@ -2413,9 +2422,9 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "10.3.0"
+version = "10.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
+checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
 dependencies = [
  "aws-lc-rs",
  "base64",
@@ -2424,6 +2433,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signature",
+ "zeroize",
 ]
 
 [[package]]
@@ -2449,9 +2459,9 @@ dependencies = [
 
 [[package]]
 name = "kqueue-sys"
-version = "1.1.0"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7b65860415f949f23fa882e669f2dbd4a0f0eeb1acdd56790b30494afd7da2f"
+checksum = "285efcf12ef41bec907b3000d5ffaeb54191d4d9d83c0d6157e6cbc2db255e64"
 dependencies = [
  "bitflags 2.11.1",
  "libc",
@@ -2710,9 +2720,9 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.31.2"
+version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
 dependencies = [
  "bitflags 2.11.1",
  "cfg-if",
@@ -3474,9 +3484,9 @@ dependencies = [
 
 [[package]]
 name = "rcgen"
-version = "0.14.7"
+version = "0.14.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10b99e0098aa4082912d4c649628623db6aba77335e4f4569ff5083a6448b32e"
+checksum = "57f6d249aad744e274e682777a50283a225a32705394ee6d5fcc01efa25e4055"
 dependencies = [
  "pem",
  "ring",
@@ -3776,7 +3786,7 @@ dependencies = [
  "libc",
  "log",
  "memchr",
- "nix 0.31.2",
+ "nix 0.31.3",
  "radix_trie",
  "unicode-segmentation",
  "unicode-width",
@@ -5600,10 +5610,11 @@ dependencies = [
 
 [[package]]
 name = "yasna"
-version = "0.5.2"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
 dependencies = [
+ "bit-vec 0.9.1",
  "time",
 ]
 
@@ -5652,9 +5663,9 @@ dependencies = [
 
 [[package]]
 name = "zerofrom"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69faa1f2a1ea75661980b013019ed6687ed0e83d069bc1114e2cc74c6c04c4df"
+checksum = "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272"
 dependencies = [
  "zerofrom-derive",
 ]

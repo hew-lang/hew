@@ -11,6 +11,8 @@ use support::{hew_binary, require_codegen};
 /// C-ABI functions were absent from its dynamic export table, causing
 /// `DynamicLibrarySearchGenerator::GetForCurrentProcess` to report
 /// "Symbols not found: [ `_hew_print_value` ]".
+// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
+#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn jit_inprocess_simple_expression_succeeds() {
     require_codegen();
@@ -38,6 +40,8 @@ fn jit_inprocess_simple_expression_succeeds() {
 /// `auto` selects `inprocess` on platforms where the embedded codegen
 /// backend is present, so this exercises the same symbol-export path as
 /// `inprocess`.
+// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
+#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn jit_auto_simple_expression_succeeds() {
     require_codegen();

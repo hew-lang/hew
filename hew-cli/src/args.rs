@@ -63,6 +63,19 @@ pub enum Command {
 pub struct CompileV05Args {
     /// Input .hew file.
     pub input: PathBuf,
+    /// Directory to write `<name>.ll`, `<name>.o`, `<name>.wasm.o`, and
+    /// `<name>.wasm` artefacts into. Default: `.tmp/compile-v05-out`.
+    #[arg(long = "emit-dir", value_name = "DIR")]
+    pub emit_dir: Option<PathBuf>,
+    /// Emit a textual MIR dump and exit (no LLVM emission).
+    /// Accepts `raw` (the lowered `RawMirFunction`) and `elab` (the
+    /// elaborated MIR with drop entries). Useful for spot-checking the
+    /// front-half lowering during development.
+    #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["raw", "elab"])]
+    pub dump_mir: Option<String>,
+    /// Skip the wasm emit + wasm-ld link step. Native object still emits.
+    #[arg(long = "no-wasm")]
+    pub no_wasm: bool,
 }
 
 // ---------------------------------------------------------------------------

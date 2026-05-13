@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! hew build file.hew [-o output]   # Compile to executable
-//! hew compile-v05 file.hew         # Run the v0.5 IR ladder and print Hew-IR proof text
+//! hew compile-v05 file.hew [--emit-dir DIR] [--dump-mir raw|elab] [--no-wasm]
+//!                                  # Run the v0.5 IR ladder and emit native + wasm binaries
 //! hew run file.hew [-- args...]    # Compile and run
 //! hew debug file.hew [-- args...]  # Build with debug info + launch gdb/lldb
 //! hew check file.hew               # Parse + typecheck only
@@ -122,9 +123,9 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         std::process::exit(1);
     }
 
-    let output = hew_hir::lower_program(&parsed.program, &hew_hir::ResolutionCtx);
-    let mut diagnostics = output.diagnostics;
-    diagnostics.extend(hew_hir::verify_hir(&output.module));
+    let lower_output = hew_hir::lower_program(&parsed.program, &hew_hir::ResolutionCtx);
+    let mut diagnostics = lower_output.diagnostics;
+    diagnostics.extend(hew_hir::verify_hir(&lower_output.module));
     if !diagnostics.is_empty() {
         for diagnostic in diagnostics {
             eprintln!("{diagnostic:?}");
@@ -132,14 +133,88 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         std::process::exit(1);
     }
 
-    let pipeline = hew_mir::lower_hir_module(&output.module);
+    let pipeline = hew_mir::lower_hir_module(&lower_output.module);
     if !pipeline.diagnostics.is_empty() {
-        for diagnostic in pipeline.diagnostics {
-            eprintln!("{diagnostic:?}");
+        for diagnostic in &pipeline.diagnostics {
+            eprintln!("E_CUTOVER_UNSUPPORTED {diagnostic:?}");
         }
         std::process::exit(1);
     }
-    print!("{}", hew_codegen_rs::emit_mlir(&pipeline.hew_mlir));
+
+    // Dump path: print the requested MIR stage and exit. Useful for
+    // spot-checking the lowering during development.
+    if let Some(stage) = a.dump_mir.as_deref() {
+        match stage {
+            "raw" => {
+                for func in &pipeline.raw_mir {
+                    println!("{func:#?}");
+                }
+            }
+            "elab" => {
+                for func in &pipeline.elaborated_mir {
+                    println!("{func:#?}");
+                }
+            }
+            other => {
+                eprintln!("Error: unknown --dump-mir stage `{other}`");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
+    // Default emit dir: `.tmp/compile-v05-out` under the cwd. `.tmp/` is
+    // gitignored across the workspace.
+    let default_dir = std::path::PathBuf::from(".tmp/compile-v05-out");
+    let emit_dir = a.emit_dir.as_ref().unwrap_or(&default_dir);
+    let module_name = a
+        .input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("module");
+
+    let options = hew_codegen_rs::EmitOptions {
+        module_name,
+        out_dir: emit_dir,
+        native: true,
+        wasm: !a.no_wasm,
+    };
+    let artefacts = match hew_codegen_rs::emit_module(&pipeline, &options) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("E_CUTOVER_UNSUPPORTED: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Link the native object into an executable using the system C
+    // compiler. Using cc keeps the link command portable across macOS and
+    // Linux and inherits whichever SDK the host has installed.
+    if let Some(obj) = &artefacts.native_obj_path {
+        let bin_path = emit_dir.join(module_name);
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+        let status = std::process::Command::new(&cc)
+            .arg(obj)
+            .arg("-o")
+            .arg(&bin_path)
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                println!("native: {}", bin_path.display());
+            }
+            Ok(s) => {
+                eprintln!("Error: `{cc}` link failed with status {s}");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Error: cannot invoke `{cc}`: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(wasm) = &artefacts.wasm_path {
+        println!("wasm:   {}", wasm.display());
+    }
 }
 
 fn cmd_run(a: &args::RunArgs) {

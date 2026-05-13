@@ -281,6 +281,9 @@ mod tests {
     fn dispatch_command_routes_compile_v05_to_dispatcher() {
         let command = crate::args::Command::CompileV05(CompileV05Args {
             input: PathBuf::from("sample.hew"),
+            emit_dir: None,
+            dump_mir: None,
+            no_wasm: false,
         });
         let mut dispatcher = RecordingDispatcher::default();
 

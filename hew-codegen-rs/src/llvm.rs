@@ -149,11 +149,17 @@ pub fn emit_module(
     std::fs::create_dir_all(options.out_dir)?;
     let mut artefacts = EmitArtefacts::default();
 
+    // Each emit creates its own `Context::create()` so the LLVM target
+    // machine state for one triple doesn't bleed into the next (the
+    // PassManager initialisation is per-context). This is the probe's
+    // pattern; mirroring it avoids an LLVM-internal `brk` trap when the
+    // wasm32 target machine reuses a context that already emitted host
+    // code.
+
     // Always emit the textual .ll first — it's the cheapest forensic
     // artefact and `opt -passes=verify` runs against it directly.
-    let ctx = Context::create();
     let ll_path = options.out_dir.join(format!("{}.ll", options.module_name));
-    emit_textual(&ctx, pipeline, options.module_name, &ll_path)?;
+    emit_textual(pipeline, options.module_name, &ll_path)?;
     artefacts.ll_path = Some(ll_path);
 
     if options.native {
@@ -161,7 +167,6 @@ pub fn emit_module(
         let host_triple = TargetMachine::get_default_triple();
         let triple_str = host_triple.as_str().to_string_lossy().into_owned();
         emit_for_triple(
-            &ctx,
             pipeline,
             options.module_name,
             &triple_str,
@@ -177,7 +182,6 @@ pub fn emit_module(
             .out_dir
             .join(format!("{}.wasm.o", options.module_name));
         emit_for_triple(
-            &ctx,
             pipeline,
             options.module_name,
             "wasm32-unknown-unknown",
@@ -651,8 +655,9 @@ fn build_module<'ctx>(
     Ok(llvm_mod)
 }
 
-fn emit_textual(ctx: &Context, pipeline: &IrPipeline, name: &str, out: &Path) -> CodegenResult<()> {
-    let llvm_mod = build_module(ctx, pipeline, name)?;
+fn emit_textual(pipeline: &IrPipeline, name: &str, out: &Path) -> CodegenResult<()> {
+    let ctx = Context::create();
+    let llvm_mod = build_module(&ctx, pipeline, name)?;
     llvm_mod
         .print_to_file(out)
         .map_err(|e| CodegenError::Llvm(format!("print_to_file {}: {e:?}", out.display())))?;
@@ -660,7 +665,6 @@ fn emit_textual(ctx: &Context, pipeline: &IrPipeline, name: &str, out: &Path) ->
 }
 
 fn emit_for_triple(
-    ctx: &Context,
     pipeline: &IrPipeline,
     name: &str,
     triple: &str,
@@ -668,6 +672,8 @@ fn emit_for_triple(
     features: &str,
     out: &Path,
 ) -> CodegenResult<()> {
+    let ctx = Context::create();
+
     Target::initialize_all(&InitializationConfig::default());
     let target_triple = TargetTriple::create(triple);
     let target = Target::from_triple(&target_triple)
@@ -683,9 +689,24 @@ fn emit_for_triple(
         )
         .ok_or_else(|| CodegenError::Llvm(format!("create_target_machine for {triple}")))?;
 
-    let llvm_mod = build_module(ctx, pipeline, name)?;
+    // Set triple + data layout BEFORE lowering so the IR is built with the
+    // correct target context from the start. The probe's accepted pattern
+    // is to create the module, attach the triple, then lower.
+    let llvm_mod = ctx.create_module(name);
     llvm_mod.set_triple(&target_triple);
     llvm_mod.set_data_layout(&machine.get_target_data().get_data_layout());
+
+    let mut fn_symbols: FnSymbolMap<'_> = HashMap::new();
+    for func in &pipeline.raw_mir {
+        let sym = declare_function(&ctx, &llvm_mod, func)?;
+        fn_symbols.insert(func.name.clone(), sym);
+    }
+    for func in &pipeline.raw_mir {
+        lower_function(&ctx, &llvm_mod, func, &fn_symbols)?;
+    }
+    llvm_mod
+        .verify()
+        .map_err(|e| CodegenError::LlvmVerify(e.to_string()))?;
 
     machine
         .write_to_file(&llvm_mod, FileType::Object, out)

@@ -425,8 +425,15 @@ impl LowerCtx {
                 match name.as_str() {
                     "i8" => ResolvedTy::I8,
                     "i16" => ResolvedTy::I16,
-                    "i32" | "int" => ResolvedTy::I32,
-                    "i64" => ResolvedTy::I64,
+                    "i32" => ResolvedTy::I32,
+                    // `int` is the user-facing alias for `i64` across the
+                    // type checker (hew-types::stdlib_loader maps `int` to
+                    // Ty::I64; ty.rs's alias table lists `int` as a synonym
+                    // for `i64`). The HIR lowering must match — otherwise
+                    // integer literals (which lower to I64) cannot be
+                    // returned through a function typed `int` without an
+                    // explicit cast. Aligns with hew-types ground truth.
+                    "i64" | "int" => ResolvedTy::I64,
                     "u8" => ResolvedTy::U8,
                     "u16" => ResolvedTy::U16,
                     "u32" => ResolvedTy::U32,

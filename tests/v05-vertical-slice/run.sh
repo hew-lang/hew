@@ -9,6 +9,9 @@ cargo build -q -p hew-cli
 "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/string_return.hew" \
   | grep -q 'hew.return : String'
 
+"${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/01-arith.hew" \
+  | grep -q 'hew.return : int'
+
 reject_output="$(mktemp)"
 trap 'rm -f "${reject_output}"' EXIT
 
@@ -23,3 +26,9 @@ if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/use_after_consu
   exit 1
 fi
 grep -q 'UseAfterConsume' "${reject_output}"
+
+if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unresolved_inference.hew" >"${reject_output}" 2>&1; then
+  echo "expected unresolved-inference fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UnresolvedInferenceVar' "${reject_output}"

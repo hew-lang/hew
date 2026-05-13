@@ -53,3 +53,32 @@ fn checked_mir_rejects_use_after_consume() {
         MirDiagnosticKind::UseAfterConsume { ref name, .. } if name == "s"
     )));
 }
+
+#[test]
+fn arithmetic_reaches_hew_mlir() {
+    let pipeline = pipeline("fn main() -> i64 { let a = 3; let b = 4; return a + b; }");
+    let mlir = pipeline.hew_mlir.dump();
+    assert!(mlir.contains("hew.func @main"));
+    assert!(mlir.contains("hew.return : int"));
+    assert!(mlir.contains("hew.site_id"));
+}
+
+#[test]
+fn cross_function_call_types_return_correctly() {
+    // With the function registry, calling add() returns i64, not Unit.
+    // Before the registry, this would produce ReturnTypeMismatch in HIR
+    // and the pipeline() helper would panic on diagnostics.
+    let pipeline = pipeline(
+        "fn add(a: i64, b: i64) -> i64 { return a + b; } \
+         fn main() -> i64 { return add(0, 1); }",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "{:?}",
+        pipeline.diagnostics
+    );
+    let mlir = pipeline.hew_mlir.dump();
+    assert!(mlir.contains("hew.func @add"));
+    assert!(mlir.contains("hew.func @main"));
+    assert!(mlir.contains("hew.return : int"));
+}

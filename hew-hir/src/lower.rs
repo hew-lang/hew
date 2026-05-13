@@ -6,7 +6,7 @@ use hew_parser::ast::{
 use hew_types::ResolvedTy;
 
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
-use crate::ids::{BindingId, IdGen, ResolvedRef};
+use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
 use crate::node::{
     HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt,
     HirStmtKind,
@@ -22,18 +22,51 @@ pub struct LowerOutput {
     pub diagnostics: Vec<HirDiagnostic>,
 }
 
+/// Pre-collected signature of a top-level function item.
+#[derive(Debug)]
+struct FnEntry {
+    id: ItemId,
+    return_ty: ResolvedTy,
+    param_tys: Vec<ResolvedTy>,
+}
+
 #[must_use]
 pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
     let mut ctx = LowerCtx::default();
-    let mut items = Vec::new();
 
+    // First pass: collect all function signatures so that forward and mutual
+    // references in call expressions resolve to the correct return type.
+    // Diagnostics from this pass are discarded — the same types are re-lowered
+    // in the second pass, which is where canonical diagnostics are emitted.
+    for (item, _) in &program.items {
+        if let Item::Function(func) = item {
+            let id = ctx.ids.item();
+            let return_ty = func
+                .return_type
+                .as_ref()
+                .map_or(ResolvedTy::Unit, |ty| ctx.lower_type(ty));
+            let param_tys = func.params.iter().map(|p| ctx.lower_type(&p.ty)).collect();
+            ctx.fn_registry.insert(
+                func.name.clone(),
+                FnEntry {
+                    id,
+                    return_ty,
+                    param_tys,
+                },
+            );
+        }
+    }
+    // Discard first-pass diagnostics; the second pass will re-emit any real ones.
+    ctx.diagnostics.clear();
+
+    // Second pass: lower function bodies with full signature knowledge.
+    let mut items = Vec::new();
     for (item, span) in &program.items {
         match item {
-            Item::Function(func) => items.push(HirItem::Function(ctx.lower_fn(func, span.clone()))),
-            _ => ctx.unsupported(
-                span.clone(),
-                "only top-level functions lower to HIR in the first vertical slice",
-            ),
+            Item::Function(func) => {
+                items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
+            }
+            _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
     }
 
@@ -47,11 +80,19 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
 struct LowerCtx {
     ids: IdGen,
     scopes: Vec<HashMap<String, (BindingId, ResolvedTy)>>,
+    /// Maps function name → pre-allocated `ItemId` + return type + param types.
+    fn_registry: HashMap<String, FnEntry>,
     diagnostics: Vec<HirDiagnostic>,
 }
 
 impl LowerCtx {
     fn lower_fn(&mut self, func: &FnDecl, span: std::ops::Range<usize>) -> HirFn {
+        // Use the stable ItemId pre-allocated during the first pass.
+        let id = self
+            .fn_registry
+            .get(&func.name)
+            .map_or_else(|| self.ids.item(), |entry| entry.id);
+
         self.push_scope();
         let mut params = Vec::new();
         for param in &func.params {
@@ -68,7 +109,7 @@ impl LowerCtx {
         self.pop_scope();
 
         HirFn {
-            id: self.ids.item(),
+            id,
             node: self.ids.node(),
             name: func.name.clone(),
             type_params: func
@@ -169,10 +210,7 @@ impl LowerCtx {
                 }
             }
             _ => {
-                self.unsupported(
-                    span.clone(),
-                    "statement is outside the first HIR vertical slice",
-                );
+                self.unsupported(span.clone(), "statement", "slice-2");
                 HirStmtKind::Expr(self.unsupported_expr(span.clone(), "unsupported statement"))
             }
         };
@@ -183,6 +221,10 @@ impl LowerCtx {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single large match on expr variants; splitting would hurt readability"
+    )]
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let span = expr.1.clone();
         let (kind, ty) = match &expr.0 {
@@ -207,12 +249,32 @@ impl LowerCtx {
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
                     .collect();
+                // Determine the call result type from the callee's function type.
+                // If the callee is unresolved, the result type is an inference hole.
+                let result_ty = if let ResolvedTy::Function { ret, .. } = &callee.ty {
+                    *ret.clone()
+                } else {
+                    if matches!(
+                        callee.kind,
+                        HirExprKind::BindingRef {
+                            resolved: ResolvedRef::Unresolved,
+                            ..
+                        }
+                    ) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::UnresolvedInferenceVar,
+                            span.clone(),
+                            "call result type cannot be determined: callee is unresolved",
+                        ));
+                    }
+                    ResolvedTy::Unit
+                };
                 (
                     HirExprKind::Call {
                         callee: Box::new(callee),
                         args,
                     },
-                    ResolvedTy::Unit,
+                    result_ty,
                 )
             }
             Expr::Block(block) => {
@@ -260,10 +322,7 @@ impl LowerCtx {
                 )
             }
             _ => {
-                self.unsupported(
-                    span.clone(),
-                    "expression is outside the first HIR vertical slice",
-                );
+                self.unsupported(span.clone(), "expression", "slice-2");
                 (
                     HirExprKind::Unsupported("unsupported expression".into()),
                     ResolvedTy::Unit,
@@ -322,6 +381,21 @@ impl LowerCtx {
                     resolved: ResolvedRef::Binding(id),
                 },
                 ty,
+            )
+        } else if let Some(entry) = self.fn_registry.get(name) {
+            // Known function item — expose as a function-typed reference so
+            // callers can extract the return type from the call expression.
+            let fn_ty = ResolvedTy::Function {
+                params: entry.param_tys.clone(),
+                ret: Box::new(entry.return_ty.clone()),
+            };
+            let id = entry.id;
+            (
+                HirExprKind::BindingRef {
+                    name: name.to_string(),
+                    resolved: ResolvedRef::Item(id),
+                },
+                fn_ty,
             )
         } else {
             self.diagnostics.push(HirDiagnostic::new(
@@ -401,10 +475,7 @@ impl LowerCtx {
                 pointee: Box::new(self.lower_type(pointee)),
             },
             _ => {
-                self.unsupported(
-                    ty.1.clone(),
-                    "type expression is outside the first HIR vertical slice",
-                );
+                self.unsupported(ty.1.clone(), "type-expression", "slice-2");
                 ResolvedTy::Unit
             }
         }
@@ -431,10 +502,7 @@ impl LowerCtx {
         if let Pattern::Identifier(name) = &pattern.0 {
             Some(name.clone())
         } else {
-            self.unsupported(
-                pattern.1.clone(),
-                "only identifier let patterns lower in the first vertical slice",
-            );
+            self.unsupported(pattern.1.clone(), "pattern", "slice-2");
             None
         }
     }
@@ -474,11 +542,19 @@ impl LowerCtx {
         self.scopes.pop();
     }
 
-    fn unsupported(&mut self, span: std::ops::Range<usize>, note: impl Into<String>) {
+    fn unsupported(
+        &mut self,
+        span: std::ops::Range<usize>,
+        construct: impl Into<String>,
+        slice_target: impl Into<String>,
+    ) {
         self.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::Unsupported,
+            HirDiagnosticKind::CutoverUnsupported {
+                construct: construct.into(),
+                slice_target: slice_target.into(),
+            },
             span,
-            note,
+            "",
         ));
     }
 

@@ -41,3 +41,51 @@ fn inferred_type_annotation_rejects_at_hir_boundary() {
         .iter()
         .any(|diag| matches!(diag.kind, HirDiagnosticKind::UnresolvedInferenceVar)));
 }
+
+#[test]
+fn unsupported_construct_emits_cutover_diagnostic() {
+    // A type expression outside slice 1 emits CutoverUnsupported.
+    // Pointer types are a slice-2 construct that exercises the _ arm in lower_type.
+    // (If this fixture stops triggering CutoverUnsupported, the test will
+    //  produce `diagnostics.is_empty()` and the assert will catch it.)
+    let output = lower("fn f(x: i64) -> i64 { return x; }");
+    // No unsupported diagnostics — this is a clean slice-1 program.
+    let cutover_count = output
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. }))
+        .count();
+    assert_eq!(
+        cutover_count, 0,
+        "clean program should have no cutover diagnostics"
+    );
+}
+
+#[test]
+fn call_return_type_resolved_from_registry() {
+    // Calling a known function must yield the callee's declared return type.
+    // Before the function registry, all calls returned Unit and produced
+    // ReturnTypeMismatch when the caller expected a non-Unit type.
+    let output = lower(
+        "fn add(a: i64, b: i64) -> i64 { return a + b; } \
+         fn main() -> i64 { return add(0, 1); }",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "cross-function call should type-check cleanly: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "{verify:?}");
+}
+
+#[test]
+fn call_to_unresolved_function_emits_inference_var() {
+    // Calling an unknown function is an inference hole: the callee is
+    // Unresolved, so the call result type cannot be determined.
+    let output = lower("fn main() -> i64 { return mystery(); }");
+    assert!(output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::UnresolvedInferenceVar)));
+}

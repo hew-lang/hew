@@ -7,6 +7,7 @@ use crate::args::{self, Cli, Command};
 
 pub(crate) trait CommandDispatcher {
     fn build(&mut self, args: &args::BuildArgs);
+    fn compile_v05(&mut self, args: &args::CompileV05Args);
     fn run(&mut self, args: &args::RunArgs);
     fn debug(&mut self, args: &args::DebugArgs);
     fn check(&mut self, args: &args::CheckArgs);
@@ -29,6 +30,10 @@ pub(crate) struct MainCommandDispatcher;
 impl CommandDispatcher for MainCommandDispatcher {
     fn build(&mut self, args: &args::BuildArgs) {
         crate::cmd_build(args);
+    }
+
+    fn compile_v05(&mut self, args: &args::CompileV05Args) {
+        crate::cmd_compile_v05(args);
     }
 
     fn run(&mut self, args: &args::RunArgs) {
@@ -103,6 +108,7 @@ pub(crate) fn parse_cli_or_exit() -> Cli {
 pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl CommandDispatcher) {
     match command {
         Some(Command::Build(args)) => dispatcher.build(args),
+        Some(Command::CompileV05(args)) => dispatcher.compile_v05(args),
         Some(Command::Run(args)) => dispatcher.run(args),
         Some(Command::Debug(args)) => dispatcher.debug(args),
         Some(Command::Check(args)) => dispatcher.check(args),
@@ -163,8 +169,8 @@ mod tests {
     use std::os::unix::ffi::OsStringExt;
 
     use crate::args::{
-        BuildArgs, CommonBuildArgs, CompletionsArgs, ShellChoice, WireCheckArgs, WireCommand,
-        WireSubcommand,
+        BuildArgs, CommonBuildArgs, CompileV05Args, CompletionsArgs, ShellChoice, WireCheckArgs,
+        WireCommand, WireSubcommand,
     };
 
     use super::{
@@ -272,6 +278,18 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_command_routes_compile_v05_to_dispatcher() {
+        let command = crate::args::Command::CompileV05(CompileV05Args {
+            input: PathBuf::from("sample.hew"),
+        });
+        let mut dispatcher = RecordingDispatcher::default();
+
+        dispatch_command(Some(&command), &mut dispatcher);
+
+        assert_eq!(dispatcher.calls, vec!["compile-v05:sample.hew"]);
+    }
+
+    #[test]
     fn dispatch_command_routes_nested_subcommands_to_dispatcher() {
         let wire = WireCommand {
             command: WireSubcommand::Check(WireCheckArgs {
@@ -314,6 +332,11 @@ mod tests {
     impl CommandDispatcher for RecordingDispatcher {
         fn build(&mut self, args: &BuildArgs) {
             self.calls.push(format!("build:{}", args.input.display()));
+        }
+
+        fn compile_v05(&mut self, args: &CompileV05Args) {
+            self.calls
+                .push(format!("compile-v05:{}", args.input.display()));
         }
 
         fn run(&mut self, _args: &crate::args::RunArgs) {

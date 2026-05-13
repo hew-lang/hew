@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HEW="${ROOT}/target/debug/hew"
+
+cargo build -q -p hew-cli
+
+"${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/string_return.hew" \
+  | grep -q 'hew.return : String'
+
+reject_output="$(mktemp)"
+trap 'rm -f "${reject_output}"' EXIT
+
+if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
+  echo "expected unresolved symbol fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UnresolvedSymbol' "${reject_output}"

@@ -27,6 +27,8 @@ pub struct Cli {
 pub enum Command {
     /// Compile a .hew file to an executable.
     Build(BuildArgs),
+    /// Run the local v0.5 IR ladder and print Hew MLIR.
+    CompileV05(CompileV05Args),
     /// Compile and run a .hew file.
     Run(RunArgs),
     /// Build with debug info and launch under gdb/lldb.
@@ -55,6 +57,12 @@ pub enum Command {
     Completions(CompletionsArgs),
     /// Print version info.
     Version,
+}
+
+#[derive(Debug, Args)]
+pub struct CompileV05Args {
+    /// Input .hew file.
+    pub input: PathBuf,
 }
 
 // ---------------------------------------------------------------------------

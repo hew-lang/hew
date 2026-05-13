@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! hew build file.hew [-o output]   # Compile to executable
+//! hew compile-v05 file.hew         # Run the v0.5 IR ladder and print Hew MLIR
 //! hew run file.hew [-- args...]    # Compile and run
 //! hew debug file.hew [-- args...]  # Build with debug info + launch gdb/lldb
 //! hew check file.hew               # Parse + typecheck only
@@ -104,6 +105,35 @@ fn cmd_build(a: &args::BuildArgs) {
             std::process::exit(1);
         }
     }
+}
+
+fn cmd_compile_v05(a: &args::CompileV05Args) {
+    let input = a.input.display().to_string();
+    let source = std::fs::read_to_string(&a.input).unwrap_or_else(|e| {
+        eprintln!("Error: cannot read {input}: {e}");
+        std::process::exit(1);
+    });
+
+    let parsed = hew_parser::parse(&source);
+    if !parsed.errors.is_empty() {
+        for error in parsed.errors {
+            eprintln!("{error:?}");
+        }
+        std::process::exit(1);
+    }
+
+    let output = hew_hir::lower_program(&parsed.program, &hew_hir::ResolutionCtx);
+    let mut diagnostics = output.diagnostics;
+    diagnostics.extend(hew_hir::verify_hir(&output.module));
+    if !diagnostics.is_empty() {
+        for diagnostic in diagnostics {
+            eprintln!("{diagnostic:?}");
+        }
+        std::process::exit(1);
+    }
+
+    let pipeline = hew_mir::lower_hir_module(&output.module);
+    print!("{}", pipeline.hew_mlir.dump());
 }
 
 fn cmd_run(a: &args::RunArgs) {

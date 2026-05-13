@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Notice
+
+- **v0.5 compiler-foundation cutover in progress:** The workspace version has
+  advanced to `0.5.0-pre`. The new typed HIR/MIR/value-model foundation is
+  under active development. Compiler internals (MLIRGen walker,
+  wrapper-shape registry, `expr_types`-keyed side tables) are frozen on
+  `main` pending cutover. See `BREAKING.md` for freeze rules and
+  bridge-fix admission criteria.
+
 ### Removed
 
 - **`fs.read_line` compatibility alias removed:** The `fs.read_line` function,

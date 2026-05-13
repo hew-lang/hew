@@ -1,6 +1,6 @@
 $ hew explain ownership tests/corpus/v05-value-model/04_persistent_share_placeholder.hew
 # NOTE: Expected report is a placeholder; will be finalised when PersistentMap
-# ships in B-PR9.  The expected strategy profile is:
+# ships as part of the v0.5 stdlib.  The expected strategy profile is:
 #   - All read sites on a Shareable → borrow_read, cost: Free
 #   - .insert() call → move on the *result* (new version); borrow_read on
 #     the input (old version is not consumed; structure is shared)

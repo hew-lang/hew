@@ -1,8 +1,7 @@
 // Corpus fixture: CowValue (Value) — mutation after share (ensure_unique).
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4/B-PR5: checker must produce a report matching the companion file.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
 //
 // When a Value is *shared* (alias created via cow_share) and then *mutated*
 // through one of the aliases, the mutation path must call ensure_unique before

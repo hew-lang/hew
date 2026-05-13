@@ -1,8 +1,7 @@
 // Corpus fixture: BitCopy (Copy) value class.
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4: checker must produce a report matching the companion file.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
 //
 // BitCopy (diagnostics: "Copy") values are strict bit-copies: integers, bools,
 // floats, chars, unit, and tuples/fixed-arrays whose element type is Copy.

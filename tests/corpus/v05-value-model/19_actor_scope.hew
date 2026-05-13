@@ -3,9 +3,8 @@
 // Status: future / corpus — not runnable under current compiler.
 //         actor_scope syntax is a v0.5 design candidate confirmed for inclusion
 //         as an opt-in primitive (§8 decision 3, user-confirmed).
-// Phase A1 target: documents expected surface syntax and expected report shape.
-// Phase B-PR6/B-PR8: actor_scope lowers to a `hew.scope` op with attached
-//   actor-cleanup edges in Elaborated MIR; WASM parity in B-PR8.
+// Value-model target: documents expected surface syntax and expected report shape; actor_scope
+//   lowers to a scoped op with attached actor-cleanup edges in Elaborated MIR.
 //
 // `actor_scope { … }` spawns child actors whose lifetimes are bounded by the
 // scope.  On scope exit (normal or panic), the runtime guarantees:

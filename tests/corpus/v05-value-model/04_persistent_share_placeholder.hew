@@ -3,9 +3,8 @@
 // Status: future / corpus — not runnable under current compiler.
 //         PersistentMap and PersistentVec are stdlib types planned for v0.5;
 //         this fixture is a placeholder for the corpus entry that will become
-//         a full worked example once the types ship in B-PR9.
-// Phase A1 target: documents expected surface and expected report shape.
-// Phase B-PR9: this fixture is ported to a passing test when the stdlib types land.
+//         a full worked example once the stdlib types land.
+// Value-model target: documents expected surface and expected report shape; the v0.5 checker must reproduce it once stdlib types land.
 //
 // PersistentShare (diagnostics: "Shareable") values are explicitly shared
 // persistent data structures (HAMT-backed maps/sets, RRB vectors).  Unlike
@@ -22,11 +21,11 @@
 //     the result binding
 //   - actor send of a Shareable → share mode (always safe)
 
-// Placeholder: these types arrive in B-PR9.
+// Placeholder: these types will be added when PersistentMap/PersistentVec ship.
 // import std::collections::persistent;
 
 fn persistent_map_example() {
-    // NOTE: PersistentMap syntax is illustrative; final API decided in B-PR9.
+    // NOTE: PersistentMap syntax is illustrative; final API to be decided.
     let m0: PersistentMap<String, int> = PersistentMap::empty();
     let m1 = m0.insert("alice", 10);   // produces new version; m0 is unchanged
     let m2 = m1.insert("bob", 20);     // produces new version; m1 is unchanged

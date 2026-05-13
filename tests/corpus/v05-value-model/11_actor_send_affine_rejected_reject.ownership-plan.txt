@@ -1,5 +1,5 @@
 # EXPECTED FAILURE — the v0.5 checker must reject this program.
-# B-PR4 validation: assert this diagnostic fires with the exact message class.
+# Future checker expectation: assert this diagnostic fires with the exact message class.
 
 error[E_RESOURCE_SEND_RETAINED]: the resource `f` cannot be shared across an actor send
   --> 11_actor_send_affine_rejected_reject.hew:37:5

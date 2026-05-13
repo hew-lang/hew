@@ -1,8 +1,7 @@
 // Corpus fixture: actor send — share mode (CowValue safe across send).
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4/B-PR6: checker + dialect must emit share mode at the send site.
+// Value-model target: hand-written companion report checked in; the v0.5 checker + dialect must emit share mode at the send site.
 //
 // Share mode: a CowValue (or PersistentShare) value is sent to an actor and
 // the sender retains access.  The receiver gets a refcount bump on the same

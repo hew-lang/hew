@@ -5,8 +5,8 @@ IR ladder and value model.  It describes the compilation pipeline from source
 to machine code, the contract each layer owns, and the user-visible value
 semantics the ladder is built to support.
 
-The verifier rules, deletion milestones, and Phase B implementation
-sequence are detailed in the separate implementation plan for this work.
+The verifier rules and deletion milestones are detailed in the separate
+implementation plan for this work.
 
 ---
 
@@ -436,7 +436,7 @@ Each function carries an implicit budget for `materialize` and
 materialize per function in non-test code (user-confirmed default; configurable
 per-crate).  Explicit `copy(x)` and `consume(x)` never count against the budget.
 
-### 4.4 LSP surfaces (land in B-PR5)
+### 4.4 LSP surfaces
 
 - **Inlay hints** at each classifiable site: `read` / `move` / `cow-share` /
   `ensure-unique → mutate` / `materialize` / `consume`.
@@ -452,8 +452,8 @@ per-crate).  Explicit `copy(x)` and `consume(x)` never count against the budget.
 
 `tests/corpus/v05-value-model/` contains hand-written fixture files and their
 companion `.ownership-plan.txt` expected reports.  These are **implementation
-targets** for Phase B: the Checked MIR (B-PR4) and Elaborated MIR (B-PR5)
-implementations must produce output matching the companion files byte-for-byte
+targets** for the v0.5 value-model checker and Elaborated MIR implementation:
+the checker must produce output matching the companion files byte-for-byte
 (modulo source locations).
 
 See `tests/corpus/v05-value-model/README.md` for the full index and naming
@@ -461,22 +461,14 @@ conventions.
 
 ---
 
-## 6. Phase B sub-PR sequence (reference)
+## 6. Checker and lowering work
 
-| PR    | Title                                      | Layer introduced |
-|-------|--------------------------------------------|-----------------|
-| B-PR1 | `hew-hir` scaffold + Resolved HIR          | Resolved HIR     |
-| B-PR2 | THIR + `Ty::Var` fail-closed gate          | THIR             |
-| B-PR3 | `hew-mir` crate + Raw MIR + verifier       | Raw MIR          |
-| B-PR4 | Checked MIR + value-model diagnostics + Ownership Plan Report MVP | Checked MIR |
-| B-PR5 | Elaborated MIR + DecisionMap + LSP surfaces | Elaborated MIR  |
-| B-PR6 | Hew MLIR dialect rewrite                   | Hew MLIR dialect |
-| B-PR7 | Mid MLIR progressive lowering + TypeConverter | Mid MLIR      |
-| B-PR8 | LLVM dialect lowering + WASM parity        | LLVM dialect     |
-| B-PR9 | Stdlib + examples port-forward to value semantics | —         |
-| B-PR10| C++ builtin intercept + enrich purge       | — (cleanup)     |
-
-Phase A (corpus + freeze) lands on `main` before Phase B branch creation.
+The checker and lowering work should be introduced as cohesive compiler changes
+against the v0.5 value model, progressing through each layer of the IR ladder
+(Resolved HIR → THIR → Raw MIR → Checked MIR → Elaborated MIR → Hew MLIR
+dialect → Mid MLIR → LLVM dialect → LLVM/WASM).  The corpus fixtures in
+`tests/corpus/v05-value-model/` serve as the byte-level acceptance targets for
+the Checked MIR and Elaborated MIR stages.
 
 ---
 

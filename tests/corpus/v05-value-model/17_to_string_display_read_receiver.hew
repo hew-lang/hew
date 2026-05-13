@@ -1,9 +1,8 @@
 // Corpus fixture: to_string / Display as immutable read receiver.
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4/B-PR6: checker + dialect must classify to_string, Display::fmt,
-//   and related stringification receivers as borrow_read (not consume_call).
+// Value-model target: hand-written companion report checked in; the v0.5 checker must classify
+//   to_string, Display::fmt, and related stringification receivers as borrow_read (not consume_call).
 //
 // Rule (from §5.2): receivers on stringification / display / formatting are
 // *immutable read*.  `to_string`, `Display::fmt`, hashing, equality, comparison,

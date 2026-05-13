@@ -3,8 +3,7 @@
 // Status: future / corpus — not runnable under current compiler.
 //         This fixture is an EXPECTED FAILURE: the v0.5 checker must reject
 //         this program with the diagnostic shown in the companion file.
-// Phase A1 target: documents the expected diagnostic shape.
-// Phase B-PR4: the Checked MIR analyser must emit the error shown below.
+// Value-model target: hand-written diagnostic companion checked in; the v0.5 value-model checker must emit it.
 //
 // Attempting to use a Resource after it has been consumed (passed to a
 // consuming callee) is a checker error.  The compiler identifies the

@@ -1,5 +1,5 @@
 # EXPECTED FAILURE — the v0.5 checker must reject this program.
-# B-PR4 validation: assert this diagnostic fires with the exact message class.
+# Future checker expectation: assert this diagnostic fires with the exact message class.
 
 error[E_VALUE_CONSUMED]: value `f` is consumed at line 34 but read at line 35
   --> 06_affine_resource_use_after_consume_reject.hew:35:20

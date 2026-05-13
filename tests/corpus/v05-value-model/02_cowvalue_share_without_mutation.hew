@@ -1,8 +1,7 @@
 // Corpus fixture: CowValue (Value) — share without mutation.
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4: checker must produce a report matching the companion file.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
 //
 // CowValue (diagnostics: "Value") values have value semantics with a COW
 // implementation.  String, Vec<T>, Map<K,V>, Set<T>, and user structs whose

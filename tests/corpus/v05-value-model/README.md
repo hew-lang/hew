@@ -3,15 +3,16 @@
 This directory contains worked examples for the Hew v0.5 value-model surface.
 Each `.hew` file is a hand-written corpus fixture.  Each `.ownership-plan.txt`
 file is the hand-written expected output of `hew explain ownership` for that
-fixture — checked in *before* the implementation exists so that B-PR4/B-PR5
-have a concrete, byte-level target to match.
+fixture — checked in *before* the implementation exists so that the v0.5
+value-model checker has a concrete, byte-level target to match.
 
 ## Status
 
 These fixtures are **corpus / future** items.  They are not wired into the
 current CTest suite and will not compile or run under the current compiler.
-They become runnable tests in Phase B of the v0.5 cutover (B-PR4 onwards);
-the CMakeLists entry and XFAIL→pass flips happen in those PRs.
+They become runnable tests once the v0.5 value-model checker/lowering
+implementation lands; the CMakeLists entry and XFAIL→pass flips happen at
+that point.
 
 Fixtures whose name includes `_reject_` document code that the v0.5 checker
 must *reject* — they are expected-failure cases.  The companion `.ownership-plan.txt`

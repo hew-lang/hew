@@ -1,8 +1,7 @@
 // Corpus fixture: actor send — materialize mode (deep copy on send).
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4/B-PR6: checker + dialect must emit materialize mode at the send site.
+// Value-model target: hand-written companion report checked in; the v0.5 checker + dialect must emit materialize mode at the send site.
 //
 // Materialize mode: the value is not CowValue/PersistentShare and cannot be
 // transferred (because the sender still holds a reference), so a deep copy
@@ -20,7 +19,7 @@
 //   - explicit copy(x) version shows report with UserRequestedCopy reason (no note)
 //
 // NOTE: This fixture uses a hypothetical type that is *not* COW-able to force
-//       materialize mode.  The exact typing rules are finalised in B-PR4.
+//       materialize mode.  The exact typing rules are finalised in the v0.5 checker implementation.
 
 // A type that opts out of COW sharing by declaring itself @linear (single-owner).
 // Sending it to an actor when the sender retains a reference requires materialize.

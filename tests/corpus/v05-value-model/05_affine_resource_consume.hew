@@ -1,8 +1,7 @@
 // Corpus fixture: AffineResource (Resource) — consume and valid use sequence.
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4: checker must produce a report matching the companion file.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
 //
 // AffineResource (diagnostics: "Resource") values carry the @linear or
 // @resource marker.  They have at-most-one owner; no refcount, no COW.

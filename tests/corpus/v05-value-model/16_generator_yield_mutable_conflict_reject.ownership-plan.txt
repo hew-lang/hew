@@ -1,5 +1,5 @@
 # EXPECTED FAILURE — the v0.5 checker must reject this program.
-# B-PR4 validation: assert this diagnostic fires with the exact message class.
+# Future checker expectation: assert this diagnostic fires with the exact message class.
 
 error[E_YIELD_READ_MUTATE_CONFLICT]: value `buffer` is read across a yield point but mutated in the same generator frame
   --> 16_generator_yield_mutable_conflict_reject.hew:27:9

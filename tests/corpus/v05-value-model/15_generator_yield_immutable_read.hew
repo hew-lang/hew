@@ -1,8 +1,7 @@
 // Corpus fixture: generator yield — immutable read across yield (allowed).
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4: Checked MIR must accept this program and produce the report below.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must accept this program and reproduce it.
 //
 // A generator may hold an immutable read across a `yield` if and only if
 // Checked MIR proves the underlying value cannot be mutated through any other

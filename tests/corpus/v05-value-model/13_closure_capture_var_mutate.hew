@@ -1,8 +1,7 @@
 // Corpus fixture: closure capture — var binding captured as mutate.
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4: checker must produce a report matching the companion file.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
 //
 // When a closure *mutates* a captured `var` binding, the capture mode is
 // mutate (ensure_unique may be triggered inside the closure body on COW types).

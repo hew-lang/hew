@@ -1,8 +1,7 @@
 // Corpus fixture: actor send — transfer mode (last-use move).
 //
 // Status: future / corpus — not runnable under current compiler.
-// Phase A1 target: hand-written expected ownership-plan companion checked in.
-// Phase B-PR4/B-PR6: checker + dialect must emit transfer mode at the send site.
+// Value-model target: hand-written companion report checked in; the v0.5 checker + dialect must emit transfer mode at the send site.
 //
 // Transfer mode: the sent value is at its last use in the sender; the sender
 // loses access and the receiver gains ownership.  No copy, no refcount bump.

@@ -1,5 +1,5 @@
 $ hew explain ownership tests/corpus/v05-value-model/19_actor_scope.hew
-# NOTE: actor_scope ownership report is a design target; finalised in B-PR6/B-PR8.
+# NOTE: actor_scope ownership report is a design target; finalised in the v0.5 checker/lowering implementation.
 # The expected strategy profile is:
 #
 #   fn process_batch:

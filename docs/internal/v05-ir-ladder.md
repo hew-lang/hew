@@ -5,8 +5,8 @@ IR ladder and value model.  It describes the compilation pipeline from source
 to machine code, the contract each layer owns, and the user-visible value
 semantics the ladder is built to support.
 
-For the full specification with verifier rules, deletion milestones, and
-Phase B sub-PR sequence, see `.tmp/plans/lane-v05-ir-cutover.md`.
+The verifier rules, deletion milestones, and Phase B implementation
+sequence are detailed in the separate implementation plan for this work.
 
 ---
 

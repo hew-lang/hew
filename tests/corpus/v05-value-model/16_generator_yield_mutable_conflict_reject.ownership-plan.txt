@@ -15,5 +15,5 @@ error[E_YIELD_BORROW_CONFLICT]: value `buffer` is read across a yield point but 
            mutating `buffer` after the yield.  One approach: snapshot the length
            before yielding:
                let len = buffer.len();
-               yield len;           // no borrow held across yield
+               yield len;           // no read held across the yield point
                buffer.push(i);      // mutation is now safe

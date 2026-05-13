@@ -1,6 +1,6 @@
 $ hew explain ownership tests/corpus/v05-value-model/01_bitcopy_simple.hew
 
-fn distance_sq (01_bitcopy_simple.hew:25:1)
+fn distance_sq (01_bitcopy_simple.hew:24:1)
   site #1  Binding        a           : Copy<Point>
                           strategy: move              cost: Free
                           why:      BitCopyPassByValue
@@ -21,7 +21,7 @@ fn distance_sq (01_bitcopy_simple.hew:25:1)
                           why:      BitCopyRead
   budget:  0 materialize · 0 ensure_unique  (within per-function budget)
 
-fn main (01_bitcopy_simple.hew:31:1)
+fn main (01_bitcopy_simple.hew:30:1)
   site #1  Binding        origin      : Copy<Point>
                           strategy: borrow_read       cost: Free
                           why:      BitCopyRead (read at call + copy)

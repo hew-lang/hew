@@ -1,15 +1,16 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use hew_hir::{
-    named_type_names, BindingId, HirExpr, HirExprKind, HirFn, HirItem, HirModule, HirStmtKind,
-    IntentKind, ResolvedRef, SiteId, ValueClass,
+    named_type_names, BindingId, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
+    HirStmtKind, IntentKind, ResolvedRef, SiteId, ValueClass,
 };
+use hew_parser::ast::BinaryOp;
 use hew_types::ResolvedTy;
 
 use crate::model::{
     BasicBlock, CheckedMirFunction, DecisionFact, ElaboratedMirFunction, HewMlirFunction,
-    HewMlirModule, HewMlirOp, IrPipeline, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    RawMirFunction, Strategy, Terminator, ThirFunction,
+    HewMlirModule, HewMlirOp, Instr, IrPipeline, MirCheck, MirDiagnostic, MirDiagnosticKind,
+    MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
 };
 
 #[must_use]
@@ -74,11 +75,13 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
     let raw_block = BasicBlock {
         id: 0,
         statements: builder.statements.clone(),
+        instructions: builder.instructions.clone(),
         terminator: Terminator::Return,
     };
     let raw = RawMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
+        locals: builder.locals.clone(),
         blocks: vec![raw_block.clone()],
         decisions: builder.decisions.clone(),
     };
@@ -196,7 +199,22 @@ fn push_unknown_type_diagnostic(
 
 #[derive(Debug, Default)]
 struct Builder {
+    /// Checker-authority stream: one `MirStatement` per Hew-level site
+    /// (`Bind`, `Use`, `Evaluate`, `Return`, `Drop`). Consumed by
+    /// `check_raw_mir` and the D10 / use-after-consume passes.
     statements: Vec<MirStatement>,
+    /// Backend-authority stream: one `Instr` per machine-level value
+    /// movement. Consumed by `hew-codegen-rs::llvm`. Populated in lock-step
+    /// with `statements` by `lower_value` so the checker and the emitter
+    /// agree on what each `SiteId` resolves to.
+    instructions: Vec<Instr>,
+    /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
+    /// `Place::Local(i as u32)`.
+    locals: Vec<ResolvedTy>,
+    /// Maps `BindingId` to the `Local(N)` slot that holds the binding's
+    /// initialiser. Cluster 1 reads the slot directly; later clusters add
+    /// drop-cleanup and rebinding semantics.
+    binding_locals: HashMap<BindingId, Place>,
     decisions: Vec<DecisionFact>,
     owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
@@ -204,25 +222,45 @@ struct Builder {
 }
 
 impl Builder {
+    fn alloc_local(&mut self, ty: ResolvedTy) -> Place {
+        // u32::MAX locals per function is well beyond any realistic Hew
+        // function size; the cast is bounded by `locals.len()` growing one
+        // entry at a time within a single function-body walk.
+        let id = u32::try_from(self.locals.len())
+            .expect("function exceeds u32::MAX locals — impossible in Hew");
+        self.locals.push(ty);
+        Place::Local(id)
+    }
+
     fn function_body(&mut self, func: &HirFn) {
         for stmt in &func.body.statements {
             self.stmt(stmt);
         }
         if let Some(tail) = &func.body.tail {
-            self.expr(tail);
+            let value_place = self.lower_value(tail);
             self.decide(tail);
             self.mark_returned_binding_moved(tail);
             self.statements.push(MirStatement::Return {
                 site: Some(tail.site),
                 ty: tail.ty.clone(),
             });
+            // Backend stream: write the tail's value into the return slot.
+            // If `lower_value` declined to produce a Place (an unsupported
+            // construct in the spine subset), skip the move; the
+            // `Unsupported` diagnostic already short-circuits the pipeline.
+            if let Some(src) = value_place {
+                self.instructions.push(Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src,
+                });
+            }
         }
     }
 
     fn stmt(&mut self, stmt: &hew_hir::HirStmt) {
         match &stmt.kind {
             HirStmtKind::Let(binding, Some(value)) => {
-                self.expr(value);
+                let value_place = self.lower_value(value);
                 self.decide(value);
                 self.statements.push(MirStatement::Bind {
                     binding: binding.id,
@@ -234,23 +272,36 @@ impl Builder {
                     self.owned_locals
                         .push((binding.id, binding.name.clone(), binding.ty.clone()));
                 }
+                // Backend stream: the binding owns a fresh local that the
+                // initialiser's value is moved into.
+                if let Some(src) = value_place {
+                    let slot = self.alloc_local(binding.ty.clone());
+                    self.instructions.push(Instr::Move { dest: slot, src });
+                    self.binding_locals.insert(binding.id, slot);
+                }
             }
             HirStmtKind::Let(_, None) => {}
             HirStmtKind::Expr(expr) => {
-                self.expr(expr);
+                let _ = self.lower_value(expr);
                 self.statements.push(MirStatement::Evaluate {
                     site: expr.site,
                     ty: expr.ty.clone(),
                 });
             }
             HirStmtKind::Return(Some(expr)) => {
-                self.expr(expr);
+                let value_place = self.lower_value(expr);
                 self.decide(expr);
                 self.mark_returned_binding_moved(expr);
                 self.statements.push(MirStatement::Return {
                     site: Some(expr.site),
                     ty: expr.ty.clone(),
                 });
+                if let Some(src) = value_place {
+                    self.instructions.push(Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src,
+                    });
+                }
             }
             HirStmtKind::Return(None) => {
                 self.statements.push(MirStatement::Return {
@@ -261,45 +312,14 @@ impl Builder {
         }
     }
 
-    fn expr(&mut self, expr: &HirExpr) {
+    /// Walk an expression, emit checker-stream `MirStatement`s plus
+    /// backend-stream `Instr`s, and return the `Place` that holds the
+    /// expression's value (or `None` if the construct is outside the
+    /// spine subset — a `MirDiagnostic` is recorded in that case).
+    fn lower_value(&mut self, expr: &HirExpr) -> Option<Place> {
         self.decide(expr);
         match &expr.kind {
-            HirExprKind::Binary { left, right, .. } => {
-                self.expr(left);
-                self.expr(right);
-            }
-            HirExprKind::Call { callee, args } => {
-                self.expr(callee);
-                for arg in args {
-                    self.expr(arg);
-                }
-            }
-            HirExprKind::Block(block) => {
-                for stmt in &block.statements {
-                    if let HirStmtKind::Expr(expr) = &stmt.kind {
-                        self.expr(expr);
-                    }
-                }
-                if let Some(tail) = &block.tail {
-                    self.expr(tail);
-                }
-            }
-            HirExprKind::If {
-                condition,
-                then_expr,
-                else_expr,
-            } => {
-                self.expr(condition);
-                self.expr(then_expr);
-                if let Some(else_expr) = else_expr {
-                    self.expr(else_expr);
-                }
-            }
-            HirExprKind::StructInit { fields, .. } => {
-                for (_, field) in fields {
-                    self.expr(field);
-                }
-            }
+            HirExprKind::Literal(lit) => self.lower_literal(lit, &expr.ty),
             HirExprKind::BindingRef {
                 name,
                 resolved: ResolvedRef::Binding(id),
@@ -316,13 +336,59 @@ impl Builder {
                 {
                     self.mark_binding_moved(*id);
                 }
+                self.binding_locals.get(id).copied()
             }
-            HirExprKind::Literal(_) | HirExprKind::BindingRef { .. } => {}
+            HirExprKind::BindingRef { .. } => None,
+            HirExprKind::Binary { op, left, right } => {
+                let lhs = self.lower_value(left);
+                let rhs = self.lower_value(right);
+                match (lhs, rhs) {
+                    (Some(lhs), Some(rhs)) => self.lower_binary(*op, lhs, rhs, &expr.ty),
+                    _ => None,
+                }
+            }
+            HirExprKind::Call { callee, args } => {
+                // Cluster 1 does not lower Call to backend instructions yet
+                // (Terminator::Call is wired but the spine subset accepts
+                // only literal/binary/return). Walk the children so any
+                // Unsupported inside an argument still surfaces.
+                let _ = self.lower_value(callee);
+                for arg in args {
+                    let _ = self.lower_value(arg);
+                }
+                None
+            }
+            HirExprKind::Block(block) => {
+                for stmt in &block.statements {
+                    if let HirStmtKind::Expr(inner) = &stmt.kind {
+                        let _ = self.lower_value(inner);
+                    }
+                }
+                block.tail.as_ref().and_then(|tail| self.lower_value(tail))
+            }
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                let _ = self.lower_value(condition);
+                let _ = self.lower_value(then_expr);
+                if let Some(else_expr) = else_expr {
+                    let _ = self.lower_value(else_expr);
+                }
+                None
+            }
+            HirExprKind::StructInit { fields, .. } => {
+                for (_, field) in fields {
+                    let _ = self.lower_value(field);
+                }
+                None
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
-                // CutoverUnsupported and the driver should have stopped before
-                // reaching MIR.  Emit a MirDiagnostic so the pipeline is
-                // still rejected if somehow the gate was bypassed.
+                // CutoverUnsupported and the driver should have stopped
+                // before reaching MIR. Emit a MirDiagnostic so the pipeline
+                // is still rejected if somehow the gate was bypassed.
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::UnsupportedNode {
                         reason: reason.clone(),
@@ -331,8 +397,55 @@ impl Builder {
                            CutoverUnsupported should have been caught earlier"
                         .to_string(),
                 });
+                None
             }
         }
+    }
+
+    fn lower_literal(&mut self, lit: &HirLiteral, ty: &ResolvedTy) -> Option<Place> {
+        match lit {
+            HirLiteral::Integer(value) => {
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::ConstI64 {
+                    dest,
+                    value: *value,
+                });
+                Some(dest)
+            }
+            // Spine subset: only integer literals reach the backend in
+            // Cluster 1. Float/String/Bool/Char/Duration/Unit literals are
+            // out of scope (Cluster 2 takes String; Cluster 4 takes the
+            // rest). They still produce a Bind/Evaluate checker statement
+            // via the caller; the backend stream simply has no value.
+            _ => None,
+        }
+    }
+
+    fn lower_binary(
+        &mut self,
+        op: BinaryOp,
+        lhs: Place,
+        rhs: Place,
+        ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let dest = self.alloc_local(ty.clone());
+        let instr = match op {
+            BinaryOp::Add => Instr::IntAdd { dest, lhs, rhs },
+            BinaryOp::Subtract => Instr::IntSub { dest, lhs, rhs },
+            BinaryOp::Multiply => Instr::IntMul { dest, lhs, rhs },
+            // Cluster 1 only supports +/-/* on integers. Anything else
+            // (Divide, Modulo, comparisons, logical ops, range, send,
+            // regex) falls outside the spine subset and the backend
+            // pipeline rejects it at the driver level via the
+            // `E_CUTOVER_UNSUPPORTED` reject path. Drop the dest local
+            // and return None so the caller propagates the absence.
+            _ => {
+                self.locals.pop();
+                return None;
+            }
+        };
+        self.instructions.push(instr);
+        Some(dest)
     }
 
     fn decide(&mut self, expr: &HirExpr) {

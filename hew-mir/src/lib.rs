@@ -10,6 +10,7 @@ pub mod model;
 
 pub use lower::lower_hir_module;
 pub use model::{
-    DecisionFact, ElaboratedMirFunction, HewMlirFunction, HewMlirModule, IrPipeline, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, RawMirFunction, Strategy, ThirFunction,
+    BasicBlock, DecisionFact, ElaboratedMirFunction, HewMlirFunction, HewMlirModule, Instr,
+    IrPipeline, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy,
+    Terminator, ThirFunction,
 };

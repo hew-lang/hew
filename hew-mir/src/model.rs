@@ -22,6 +22,11 @@ pub struct ThirFunction {
 pub struct RawMirFunction {
     pub name: String,
     pub return_ty: ResolvedTy,
+    /// Type-indexed local registers consumed by the backend-authority `Instr`
+    /// stream. `locals[i]` is the `ResolvedTy` of `Place::Local(i as u32)`.
+    /// The lowering pass allocates one local per value-producing HIR
+    /// expression and per `Let`-introduced binding.
+    pub locals: Vec<ResolvedTy>,
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
 }
@@ -29,13 +34,79 @@ pub struct RawMirFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BasicBlock {
     pub id: u32,
+    /// Checker-authority stream consumed by `check_raw_mir` and the
+    /// use-after-consume / D10 passes. Carries every Hew-level statement and
+    /// expression site with its `SiteId`, `BindingId`, and `ResolvedTy`.
     pub statements: Vec<MirStatement>,
+    /// Backend-authority stream consumed by `hew-codegen-rs::llvm`. One
+    /// `Instr` per machine-level value movement. Both streams are populated
+    /// by the same `lower::Builder` pass so the checker and the emitter
+    /// agree on what each `SiteId` resolves to.
+    pub instructions: Vec<Instr>,
     pub terminator: Terminator,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
+    /// Return whatever has been written into `Place::ReturnSlot`. The
+    /// emitter loads the slot and emits `ret`.
     Return,
+    /// Unconditional branch to another block in the same function.
+    Goto { target: u32 },
+    /// Two-way branch on an i1/i8/i32/i64 local treated as a boolean.
+    Branch {
+        cond: Place,
+        then_target: u32,
+        else_target: u32,
+    },
+    /// Call into a sibling function by name; store its return value into
+    /// `dest`, then branch to `next`. Cluster 1 doesn't construct this; it
+    /// exists so the emitter match is exhaustive.
+    Call {
+        callee: String,
+        args: Vec<Place>,
+        dest: Place,
+        next: u32,
+    },
+    /// Hard abort: emit a trap or `unreachable`. Used by future panic
+    /// lowering; Cluster 1 doesn't construct this.
+    Panic,
+}
+
+/// An addressable target for a load or store in the backend-authority
+/// instruction stream. Cluster 1 needs only `Local(N)` and `ReturnSlot`;
+/// later clusters add `YieldSlot`, enum-payload projection, field
+/// projection, deref, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Place {
+    Local(u32),
+    ReturnSlot,
+}
+
+/// Minimal machine-level instruction set for the spine subset (integer
+/// literals, integer add, value moves). Each variant maps to a single
+/// inkwell builder call in `hew-codegen-rs::llvm`.
+///
+/// Variants the emitter cannot lower (Drop on a live heap value, anything
+/// coroutine-shaped) emit a hard error rather than silently no-op; the
+/// per-variant rejection happens at lowering time, not here.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Instr {
+    /// `dest = const <value>` as i64.
+    ConstI64 { dest: Place, value: i64 },
+    /// `dest = lhs + rhs` on i64.
+    IntAdd { dest: Place, lhs: Place, rhs: Place },
+    /// `dest = lhs - rhs` on i64.
+    IntSub { dest: Place, lhs: Place, rhs: Place },
+    /// `dest = lhs * rhs` on i64.
+    IntMul { dest: Place, lhs: Place, rhs: Place },
+    /// `dest = <src>` — load `src`, store into `dest`.
+    Move { dest: Place, src: Place },
+    /// Run the drop ritual for `place`. Cluster 1 emits this for every
+    /// `AffineResource` local at function exit; the inkwell backend treats
+    /// it as a no-op for now (real Drop emission is Cluster 3). The shape
+    /// exists so the emitter's `match` is exhaustive without a wildcard.
+    Drop { place: Place, ty: ResolvedTy },
 }
 
 #[derive(Debug, Clone, PartialEq)]

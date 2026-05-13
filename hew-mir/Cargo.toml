@@ -12,11 +12,11 @@ categories = ["compilers"]
 
 [dependencies]
 hew-hir = { path = "../hew-hir" }
+hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
 
 [dev-dependencies]
-hew-parser = { path = "../hew-parser" }
 
 [lints]
 workspace = true

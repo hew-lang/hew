@@ -304,7 +304,15 @@ impl LowerCtx {
                     ty,
                 )
             }
-            Expr::StructInit { name, fields } => {
+            Expr::StructInit {
+                name,
+                fields,
+                // The v0.5 vertical-slice HIR lowering does not yet honour
+                // explicit type arguments at struct literal sites; the
+                // slice rejects user types at the MIR boundary anyway, so
+                // dropping the args here cannot widen an accepted program.
+                type_args: _,
+            } => {
                 let fields = fields
                     .iter()
                     .map(|(name, expr)| (name.clone(), self.lower_expr(expr, IntentKind::Read)))

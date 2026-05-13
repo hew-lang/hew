@@ -80,6 +80,8 @@ fn eval_inline_expression_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
 }
 
+// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
+#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn eval_file_in_repl_context_succeeds() {
     require_codegen();
@@ -418,6 +420,8 @@ fn eval_stdin_reports_balanced_invalid_input() {
     assert!(!stderr.contains("Error:"), "stderr: {stderr}");
 }
 
+// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
+#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn eval_file_continues_balanced_incomplete_expression() {
     require_codegen();

@@ -1,0 +1,58 @@
+// Corpus fixture: to_string / Display as immutable read receiver.
+//
+// Status: future / corpus — not runnable under current compiler.
+// Phase A1 target: hand-written expected ownership-plan companion checked in.
+// Phase B-PR4/B-PR6: checker + dialect must classify to_string, Display::fmt,
+//   and related stringification receivers as borrow_read (not consume_call).
+//
+// Rule (from §5.2): receivers on stringification / display / formatting are
+// *immutable read*.  `to_string`, `Display::fmt`, hashing, equality, comparison,
+// and iteration setup are all read-only.  The caller keeps the value after the
+// call.  This is a hard rule — the implementation does not write `consuming`
+// on these receivers.
+//
+// This fixture is also a regression anchor for the to_string(String) clone
+// special-case that exists in the current MLIRGen.cpp.  The v0.5 IR ladder
+// replaces that special-case with a `hew.read` against an immutable
+// `!hew.string_ref` / `!hew.cow<String>` view.  The caller's value is
+// unaffected; no clone, no consume.
+//
+// Value-model rules exercised:
+//   - to_string on a CowValue<String> → borrow_read (not consume_call)
+//   - to_string on a Copy<int> → borrow_read (trivial)
+//   - Display::fmt equivalent (format string) → borrow_read
+//   - caller's value is still valid after the call
+//   - no hidden materialize at stringification sites
+
+struct User {
+    name: String,
+    score: int,
+}
+
+impl Display for User {
+    fn fmt(self, f: Formatter) -> String {
+        // self is an immutable read receiver here (not consuming).
+        "User(" + self.name + ", " + self.score.to_string() + ")"
+    }
+}
+
+fn demonstrate_read_receiver() {
+    let name = "Alice";
+    let as_str = name.to_string();   // read-only; name is still valid
+    let _ = name;                    // valid: name was not consumed
+
+    let n: int = 42;
+    let n_str = n.to_string();       // Copy type; borrow_read, cost: Free
+    let _ = n;
+
+    let user = User { name: "Bob", score: 99 };
+    let display_str = user.to_string();  // Display::fmt; borrow_read; user still valid
+    let _ = user;                        // valid: user was not consumed
+    let _ = as_str;
+    let _ = n_str;
+    let _ = display_str;
+}
+
+fn main() {
+    demonstrate_read_receiver();
+}

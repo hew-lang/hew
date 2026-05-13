@@ -1,0 +1,22 @@
+$ hew explain ownership tests/corpus/v05-value-model/13_closure_capture_var_mutate.hew
+
+fn main (13_closure_capture_var_mutate.hew:18:1)
+  site #1  Binding        counter     : Value<Vec<int>>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (captured mutably by closure + read after)
+  site #2  CaptureIntoClosure  counter → adder
+                          strategy: ensure_unique     cost: OAlloc (if refcount > 1 on first push)
+                          why:      VarCaptureMutate (closure mutates the binding)
+  site #3  Call           counter.push(n) [inside adder body]
+                          strategy: ensure_unique     cost: OAlloc
+                          why:      MutationRequiresUniqueness
+  site #4  Call           adder(1)
+                          strategy: borrow_read       cost: Free
+                          why:      ClosureCall (adder holds the mutation capability)
+  site #5  Call           adder(2)
+                          strategy: borrow_read       cost: Free
+                          why:      ClosureCall
+  site #6  Call           adder(3)
+                          strategy: borrow_read       cost: Free
+                          why:      ClosureCall
+  budget:  0 materialize · 1 ensure_unique  (within per-function budget)

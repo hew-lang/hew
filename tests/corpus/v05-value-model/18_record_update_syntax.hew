@@ -1,0 +1,56 @@
+// Corpus fixture: record update syntax { ..record, field: value }.
+//
+// Status: future / corpus — not runnable under current compiler.
+// Phase A1 target: hand-written expected ownership-plan companion checked in.
+// Phase B-PR4: checker must produce a report matching the companion file.
+//
+// Record update syntax `{ ..user, name: "Grace" }` produces a new value.
+// The source record (`user`) is not consumed; it is read via cow_share.
+// The resulting record is a fresh CowValue that shares backing structure
+// with the source record where fields are unchanged, with the updated field
+// substituted.
+//
+// For a CowValue record this lowers to:
+//   1. cow_share the source record
+//   2. ensure_unique on the new copy (to prepare for field overwrite)
+//   3. overwrite the updated field
+//
+// For a BitCopy record (all-Copy fields) this is a literal bit-copy with
+// one field replaced — no ensure_unique, no cow_share, cost: Free.
+//
+// Value-model rules exercised:
+//   - record update on a CowValue record → cow_share + ensure_unique
+//   - record update on a BitCopy record → move (free)
+//   - source record is valid after the update
+//   - chained record updates (two updates from the same source)
+
+struct User {
+    name: String,
+    score: int,
+}
+
+struct Point {
+    x: float,
+    y: float,
+}
+
+fn cowvalue_record_update() {
+    let user = User { name: "Alice", score: 10 };
+    let promoted = User { ..user, score: 20 };   // user is still valid
+    let renamed  = User { ..user, name: "Grace" }; // another update from same source
+    let _ = user;     // valid: cow_share, not consumed
+    let _ = promoted;
+    let _ = renamed;
+}
+
+fn bitcopy_record_update() {
+    let p = Point { x: 1.0, y: 2.0 };
+    let shifted = Point { ..p, x: 5.0 };  // BitCopy: free bit-copy with field replace
+    let _ = p;       // still valid
+    let _ = shifted;
+}
+
+fn main() {
+    cowvalue_record_update();
+    bitcopy_record_update();
+}

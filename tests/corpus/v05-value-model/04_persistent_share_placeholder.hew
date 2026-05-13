@@ -1,0 +1,42 @@
+// Corpus fixture: PersistentShare (Shareable) — persistent collection placeholder.
+//
+// Status: future / corpus — not runnable under current compiler.
+//         PersistentMap and PersistentVec are stdlib types planned for v0.5;
+//         this fixture is a placeholder for the corpus entry that will become
+//         a full worked example once the types ship in B-PR9.
+// Phase A1 target: documents expected surface and expected report shape.
+// Phase B-PR9: this fixture is ported to a passing test when the stdlib types land.
+//
+// PersistentShare (diagnostics: "Shareable") values are explicitly shared
+// persistent data structures (HAMT-backed maps/sets, RRB vectors).  Unlike
+// CowValue, multiple versions share structure across writes; a "mutation"
+// produces a new version without copying the entire backing store.
+//
+// Sharing is always safe: all versions are immutable once created.  Reads
+// are cheap (no refcount); writes produce a new Shareable value sharing
+// structure with the old.  No ensure_unique, no COW.
+//
+// Value-model rules exercised:
+//   - Shareable bindings have strategy: borrow_read at read sites
+//   - "Write" produces a new value (not a mutation); strategy: move on
+//     the result binding
+//   - actor send of a Shareable → share mode (always safe)
+
+// Placeholder: these types arrive in B-PR9.
+// import std::collections::persistent;
+
+fn persistent_map_example() {
+    // NOTE: PersistentMap syntax is illustrative; final API decided in B-PR9.
+    let m0: PersistentMap<String, int> = PersistentMap::empty();
+    let m1 = m0.insert("alice", 10);   // produces new version; m0 is unchanged
+    let m2 = m1.insert("bob", 20);     // produces new version; m1 is unchanged
+
+    // All three versions are independently valid and share structure.
+    let _ = m0.get("alice");  // returns None
+    let _ = m1.get("alice");  // returns Some(10)
+    let _ = m2.get("bob");    // returns Some(20)
+}
+
+fn main() {
+    persistent_map_example();
+}

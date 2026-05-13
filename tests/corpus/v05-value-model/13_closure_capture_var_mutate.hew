@@ -1,0 +1,31 @@
+// Corpus fixture: closure capture — var binding captured as mutate.
+//
+// Status: future / corpus — not runnable under current compiler.
+// Phase A1 target: hand-written expected ownership-plan companion checked in.
+// Phase B-PR4: checker must produce a report matching the companion file.
+//
+// When a closure *mutates* a captured `var` binding, the capture mode is
+// mutate (ensure_unique may be triggered inside the closure body on COW types).
+// The outer `var` binding must not be used concurrently; the compiler proves
+// this in Checked MIR.
+//
+// Value-model rules exercised:
+//   - var binding captured by a closure that mutates it → capture mode: mutate
+//   - mutation inside the closure triggers ensure_unique on the CowValue
+//   - the outer binding sees the mutation when the closure runs in the same scope
+//   - report shows CaptureIntoClosure: mutate
+
+fn main() {
+    var counter: Vec<int> = [];
+
+    // The closure mutates `counter`; capture mode is mutate.
+    let adder = fn(n: int) {
+        counter.push(n);  // mutation: ensure_unique may fire
+    };
+
+    adder(1);
+    adder(2);
+    adder(3);
+    // counter is now [1, 2, 3] (the closure mutated the outer var).
+    let _ = counter;
+}

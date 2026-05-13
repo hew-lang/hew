@@ -1,0 +1,31 @@
+$ hew explain ownership tests/corpus/v05-value-model/18_record_update_syntax.hew
+
+fn cowvalue_record_update (18_record_update_syntax.hew:36:1)
+  site #1  Binding        user        : Value<User>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (read by two record-updates + subsequent read)
+  site #2  RecordUpdate   {..user, score: 20}  : Value<User>
+                          strategy: ensure_unique     cost: OAlloc
+                          why:      MutationRequiresUniqueness (field overwrite on fresh copy)
+  site #3  Binding        promoted    : Value<User>
+                          strategy: move              cost: Free
+                          why:      LastUse
+  site #4  RecordUpdate   {..user, name: "Grace"}  : Value<User>
+                          strategy: ensure_unique     cost: OAlloc
+                          why:      MutationRequiresUniqueness (field overwrite on fresh copy)
+  site #5  Binding        renamed     : Value<User>
+                          strategy: move              cost: Free
+                          why:      LastUse
+  budget:  0 materialize · 2 ensure_unique  (within per-function budget)
+
+fn bitcopy_record_update (18_record_update_syntax.hew:45:1)
+  site #1  Binding        p           : Copy<Point>
+                          strategy: borrow_read       cost: Free
+                          why:      BitCopyRead
+  site #2  RecordUpdate   {..p, x: 5.0}  : Copy<Point>
+                          strategy: move              cost: Free
+                          why:      BitCopyPassByValue (bit-copy with field replace; free)
+  site #3  Binding        shifted     : Copy<Point>
+                          strategy: move              cost: Free
+                          why:      LastUse
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

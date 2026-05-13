@@ -1,0 +1,23 @@
+$ hew explain ownership tests/corpus/v05-value-model/15_generator_yield_immutable_read.hew
+
+fn generate_greetings (15_generator_yield_immutable_read.hew:23:1)
+  site #1  Binding        names       : Value<Vec<String>>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver (iterator loop)
+  site #2  Binding        prefix      : Value<String>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (held across yield; frame-safety proven)
+  site #3  YieldUse       prefix [across yield in loop body]
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadAcrossYield (frame-safety: no alias, no actor path)
+  site #4  Binding        name        : View<String>
+                          strategy: borrow_read       cost: Free
+                          why:      ViewIteratorElement
+  site #5  Call           prefix + name
+                          strategy: materialize       cost: OCopyN
+                          why:      StringConcatMaterialize (produces fresh Value<String>)
+  budget:  1 materialize · 0 ensure_unique
+  note: site #5 inserted a hidden copy for string concatenation — expected and idiomatic
+
+fn main (15_generator_yield_immutable_read.hew:32:1)
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

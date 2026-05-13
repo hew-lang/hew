@@ -1,0 +1,48 @@
+// Corpus fixture: View — field/slice alias, compiler-only borrow.
+//
+// Status: future / corpus — not runnable under current compiler.
+// Phase A1 target: hand-written expected ownership-plan companion checked in.
+// Phase B-PR4: checker must produce a report matching the companion file.
+//
+// View (diagnostics: "View") is a compiler-internal borrowed read-only window
+// into another value.  Users do not name Views in v0.5 surface syntax; they
+// appear as:
+//   - method receivers (immutable self) — the compiler infers the borrow
+//   - iterator yields — the yielded element may be a View into the container
+//   - string slices as return values of parsing / substring methods
+//
+// Checked MIR proves the View does not outlive its producer.  Users only see
+// the "View" name in the Ownership Plan Report; they never write `&` or lifetime
+// annotations.
+//
+// Value-model rules exercised:
+//   - string slice (View into a String) via a method call
+//   - View is read-only; the compiler rejects mutation through a View
+//   - the underlying String is still valid while the View exists
+//   - iterator element as View (Map::keys() returns a View iterator)
+//   - View's lifetime is proven bounded: it cannot escape its producer's scope
+
+fn first_word(s: String) -> String {
+    // The compiler treats the return of split() elements as Views into s.
+    // For return purposes the View is materialized into a new CowValue String
+    // (a substring copy) — the report shows materialize at the return site.
+    let parts = s.split(" ");
+    parts.first().unwrap_or("")
+}
+
+fn iterate_keys() {
+    let map: Map<String, int> = {"alice": 1, "bob": 2};
+    // map.keys() yields View<String> elements.  Each key is a read-only
+    // window; no cow_share, no ensure_unique.
+    for key in map.keys() {
+        let _ = key;  // key is a View; borrow_read only
+    }
+}
+
+fn main() {
+    let sentence = "hello world";
+    let word = first_word(sentence);
+    let _ = sentence;  // still valid: first_word received a cow_share
+    let _ = word;
+    iterate_keys();
+}

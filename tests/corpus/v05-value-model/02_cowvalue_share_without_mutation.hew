@@ -1,0 +1,45 @@
+// Corpus fixture: CowValue (Value) — share without mutation.
+//
+// Status: future / corpus — not runnable under current compiler.
+// Phase A1 target: hand-written expected ownership-plan companion checked in.
+// Phase B-PR4: checker must produce a report matching the companion file.
+//
+// CowValue (diagnostics: "Value") values have value semantics with a COW
+// implementation.  String, Vec<T>, Map<K,V>, Set<T>, and user structs whose
+// fields are all Copy or Value default to this class.
+//
+// When a Value is *read* at multiple sites without mutation, the compiler
+// uses cow_share (refcount bump) — never a deep copy.  This fixture
+// documents that case: a String is passed to two read-only callees and
+// then sent to an actor, all without mutation.  The chosen strategy at
+// every site must be cow_share or borrow_read; no ensure_unique or
+// materialize should appear.
+//
+// Value-model rules exercised:
+//   - let binding of Value type
+//   - passing a Value to an immutable-read callee → borrow_read (no refcount)
+//   - cow_share when the value survives past the call
+//   - actor send of a CowValue → share mode (safe: COW guarantees isolation)
+
+actor Logger {
+    receive fn log(msg: String) {
+    }
+}
+
+fn print_greeting(s: String) {
+    // Immutable read receiver; s is not consumed.
+    let _ = s;
+}
+
+fn measure_len(s: String) -> int {
+    s.len()
+}
+
+fn main() {
+    let greeting = "hello, world";   // String is CowValue
+    print_greeting(greeting);        // read-only callee; cow_share
+    let n = measure_len(greeting);   // read-only callee; borrow_read (len)
+    let logger = spawn Logger;
+    logger.log(greeting);            // actor send; share mode (CowValue safe)
+    let _ = n;
+}

@@ -1,0 +1,43 @@
+// Corpus fixture: actor send — AffineResource send without transfer (REJECT).
+//
+// Status: future / corpus — not runnable under current compiler.
+//         This fixture is an EXPECTED FAILURE: the v0.5 checker must reject
+//         this program with the diagnostic shown in the companion file.
+// Phase A1 target: documents the expected diagnostic shape.
+// Phase B-PR4: Checked MIR escape analysis must emit the error shown below.
+//
+// An AffineResource cannot be shared (no refcount) and cannot be materialized
+// by default (deep-copying a resource is semantically incorrect — you'd have
+// two "owners" of the same OS resource).  If the sender still holds a reference
+// after the send, the only valid option is transfer (last-use).  Any other
+// configuration is a checker error.
+//
+// The fix is to restructure: either consume the resource at the send site
+// (use consume(f) or ensure f is last-used there), or pass a read-only
+// view to the actor (if the actor only needs to read an int, extract the
+// field before sending — which is Copy and can be shared freely).
+//
+// Value-model rules exercised:
+//   - AffineResource send while sender retains access → error
+//   - diagnostic names the consume-or-restructure options
+
+@resource
+struct FileHandle {
+    fd: int,
+}
+
+actor Reader {
+    receive fn read_fd(h: FileHandle) {
+    }
+}
+
+fn affine_send_while_retained_is_error() {
+    let f = FileHandle { fd: 99 };
+    let reader = spawn Reader;
+    reader.read_fd(f);    // ERROR: f is still reachable after this send
+    let _ = f.fd;         // sender re-uses f here — this makes the send ambiguous
+}
+
+fn main() {
+    affine_send_while_retained_is_error();
+}

@@ -1,0 +1,50 @@
+// Corpus fixture: CowValue (Value) — mutation after share (ensure_unique).
+//
+// Status: future / corpus — not runnable under current compiler.
+// Phase A1 target: hand-written expected ownership-plan companion checked in.
+// Phase B-PR4/B-PR5: checker must produce a report matching the companion file.
+//
+// When a Value is *shared* (alias created via cow_share) and then *mutated*
+// through one of the aliases, the mutation path must call ensure_unique before
+// the mutation.  ensure_unique checks the refcount: if > 1, it clones the
+// backing store (deep copy of the CowValue payload); if == 1, the mutation
+// is in-place (free).  This is the core of COW semantics.
+//
+// This fixture creates a shared Vec<int>, aliases it, then mutates the alias.
+// The expected report shows ensure_unique at the mutation site and cow_share
+// at the aliasing site.
+//
+// Value-model rules exercised:
+//   - cow_share at alias creation
+//   - ensure_unique at mutation-after-share
+//   - the original binding is unaffected by the mutation (value independence)
+//   - record update `{ ..rec, field: v }` on a CowValue record (same pattern)
+
+fn alias_then_mutate() {
+    var original: Vec<int> = [1, 2, 3];
+    var alias = original;           // cow_share: both point at same backing
+    alias.push(4);                  // mutation: ensure_unique fires here
+    // original is still [1, 2, 3]; alias is [1, 2, 3, 4]
+    let _ = original;
+    let _ = alias;
+}
+
+struct User {
+    name: String,
+    score: int,
+}
+
+fn record_update_cow() {
+    let user = User { name: "Alice", score: 10 };
+    // Record update: produces a new Value sharing structure where possible.
+    // For a CowValue record this lowers to cow_share + field overwrite on
+    // the updated copy; user is unaffected.
+    let updated = User { ..user, score: 20 };
+    let _ = user;
+    let _ = updated;
+}
+
+fn main() {
+    alias_then_mutate();
+    record_update_cow();
+}

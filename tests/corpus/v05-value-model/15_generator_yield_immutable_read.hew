@@ -1,0 +1,37 @@
+// Corpus fixture: generator yield — immutable read across yield (allowed).
+//
+// Status: future / corpus — not runnable under current compiler.
+// Phase A1 target: hand-written expected ownership-plan companion checked in.
+// Phase B-PR4: Checked MIR must accept this program and produce the report below.
+//
+// A generator may hold an immutable read across a `yield` if and only if
+// Checked MIR proves the underlying value cannot be mutated through any other
+// path during the suspension:
+//   - no `var` aliasing of the captured value
+//   - no actor message can reach the captured value
+//
+// This fixture shows the safe case: a generator yields values derived from a
+// captured String; the String is read-only across every yield point.
+//
+// Value-model rules exercised:
+//   - CowValue (String) captured by a generator → borrow_read across yield
+//   - yield suspends the generator; the read is held across suspension
+//   - Checked MIR proves frame safety: no alias, no actor path → accepted
+//   - report shows YieldUse: borrow_read
+
+fn generate_greetings(names: Vec<String>) -> generator String {
+    let prefix = "hello, ";
+    for name in names {
+        // prefix is held across yield: immutable read across suspend.
+        // Checked MIR must prove prefix is not aliased or mutated elsewhere.
+        yield prefix + name;
+    }
+}
+
+fn main() {
+    let names = ["Alice", "Bob", "Carol"];
+    let gen = generate_greetings(names);
+    for greeting in gen {
+        let _ = greeting;
+    }
+}

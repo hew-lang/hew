@@ -1,0 +1,19 @@
+$ hew explain ownership tests/corpus/v05-value-model/12_closure_capture_let_read.hew
+
+fn main (12_closure_capture_let_read.hew:24:1)
+  site #1  Binding        prefix      : Value<String>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (captured by closure + read after)
+  site #2  Binding        sep         : Value<String>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (captured by closure + read after)
+  site #3  CaptureIntoClosure  prefix → greeter
+                          strategy: borrow_read       cost: Free
+                          why:      LetCaptureReadOnly (closure only reads prefix)
+  site #4  CaptureIntoClosure  sep → greeter
+                          strategy: borrow_read       cost: Free
+                          why:      LetCaptureReadOnly (closure only reads sep)
+  site #5  Call           apply_to_greeting(greeter)
+                          strategy: move              cost: Free
+                          why:      LastUse (closure consumed by call)
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

@@ -1,0 +1,17 @@
+$ hew explain ownership tests/corpus/v05-value-model/10_actor_send_materialize.hew
+
+fn materialize_on_send (10_actor_send_materialize.hew:40:1)
+  site #1  Binding        snapshot    : Resource<SnapshotBuffer>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver (live after send)
+  site #2  Call           copy(snapshot)
+                          strategy: materialize       cost: OCopyN
+                          why:      UserRequestedCopy (explicit copy(x); no hidden-copy note)
+  site #3  ActorSend      archiver.archive(copy(snapshot)) : Resource<SnapshotBuffer>
+                          strategy: materialize       cost: OCopyN
+                          why:      MaterializeMode (UserRequestedCopy; AffineResource cannot share)
+  site #4  Call           snapshot.data.push(4)
+                          strategy: ensure_unique     cost: OAlloc (clone data if shared)
+                          why:      MutationRequiresUniqueness
+  budget:  1 materialize · 1 ensure_unique
+  note: explicit copy(x) at site #2 — user acknowledged hidden copy cost

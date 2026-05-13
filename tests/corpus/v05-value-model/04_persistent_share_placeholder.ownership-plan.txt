@@ -1,0 +1,26 @@
+$ hew explain ownership tests/corpus/v05-value-model/04_persistent_share_placeholder.hew
+# NOTE: Expected report is a placeholder; will be finalised when PersistentMap
+# ships in B-PR9.  The expected strategy profile is:
+#   - All read sites on a Shareable → borrow_read, cost: Free
+#   - .insert() call → move on the *result* (new version); borrow_read on
+#     the input (old version is not consumed; structure is shared)
+#   - actor send of a Shareable → share mode (structurally safe; no COW needed)
+#   - No ensure_unique, no materialize, no cow_share at any site
+
+fn persistent_map_example (04_persistent_share_placeholder.hew:31:1)
+  site #1  Binding        m0          : Shareable<PersistentMap<String,int>>
+                          strategy: borrow_read       cost: Free
+                          why:      ShareableRead (persistent; structurally shared)
+  site #2  Call           m0.insert("alice", 10)
+                          strategy: borrow_read       cost: Free
+                          why:      ShareableRead (insert does not consume m0)
+  site #3  Binding        m1          : Shareable<PersistentMap<String,int>>
+                          strategy: move              cost: Free
+                          why:      LastUse (fresh version; no aliases yet)
+  site #4  Call           m1.insert("bob", 20)
+                          strategy: borrow_read       cost: Free
+                          why:      ShareableRead
+  site #5  Binding        m2          : Shareable<PersistentMap<String,int>>
+                          strategy: move              cost: Free
+                          why:      LastUse
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

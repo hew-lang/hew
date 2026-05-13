@@ -1480,6 +1480,7 @@ dependencies = [
  "clap_complete",
  "dirs",
  "fd-lock",
+ "hew-codegen-rs",
  "hew-compile",
  "hew-hir",
  "hew-lexer",
@@ -1497,6 +1498,14 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "hew-codegen-rs"
+version = "0.4.0"
+dependencies = [
+ "hew-mir",
+ "hew-types",
 ]
 
 [[package]]

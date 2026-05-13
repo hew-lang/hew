@@ -22,6 +22,11 @@ fn char_value_returns_char_kind() {
 }
 
 #[test]
+fn unit_value_returns_unit_kind() {
+    assert_eq!(WireValue::Unit.kind(), PrimitiveWireKind::Unit);
+}
+
+#[test]
 fn struct_value_returns_nested_kind_with_type_name() {
     let v = WireValue::Struct {
         type_name: "Point".to_string(),

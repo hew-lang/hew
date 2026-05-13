@@ -152,6 +152,7 @@ mod tests {
             PrimitiveWireKind::Bytes,
             PrimitiveWireKind::Duration,
             PrimitiveWireKind::Char,
+            PrimitiveWireKind::Unit,
             PrimitiveWireKind::Nested("Foo".to_string()),
         ]
         .into_iter()

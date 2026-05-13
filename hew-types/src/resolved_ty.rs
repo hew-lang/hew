@@ -141,6 +141,14 @@ pub enum BoundaryError {
         /// Whether the literal was an integer (`true`) or float (`false`).
         is_integer: bool,
     },
+    /// A [`Ty::Named`] reached `from_ty_strict_generic_args` with a type
+    /// argument count that differs from the expected arity.
+    GenericArityMismatch {
+        /// Number of type arguments that were expected.
+        expected: usize,
+        /// Number of type arguments that were actually present.
+        got: usize,
+    },
 }
 
 impl fmt::Display for BoundaryError {
@@ -157,6 +165,12 @@ impl fmt::Display for BoundaryError {
             }
             BoundaryError::UnmaterializedLiteral { is_integer: false } => {
                 write!(f, "float literal not defaulted before boundary")
+            }
+            BoundaryError::GenericArityMismatch { expected, got } => {
+                write!(
+                    f,
+                    "generic arity mismatch: expected {expected} type argument(s), got {got}"
+                )
             }
         }
     }

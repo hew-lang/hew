@@ -60,6 +60,24 @@ fn build_plan_assigns_narrowing_bounds_on_integer_fields() {
 }
 
 #[test]
+fn build_plan_maps_unit_field_to_unit_kind() {
+    let decl = WireDecl {
+        visibility: Visibility::Pub,
+        kind: WireDeclKind::Struct,
+        name: "Ack".into(),
+        fields: vec![field("done", "unit", 1), field("also_done", "()", 2)],
+        variants: vec![],
+        json_case: None,
+        yaml_case: None,
+    };
+    let plan = WireCodecPlan::build(&decl).expect("plan");
+    let fields = plan.fields().expect("struct shape");
+    assert_eq!(fields[0].kind, PrimitiveWireKind::Unit);
+    assert_eq!(fields[1].kind, PrimitiveWireKind::Unit);
+    assert!(fields.iter().all(|f| f.narrowing.is_none()));
+}
+
+#[test]
 fn build_plan_propagates_field_modifiers_verbatim() {
     let mut decl = point_decl();
     decl.fields[0].is_optional = true;

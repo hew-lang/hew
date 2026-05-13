@@ -51,6 +51,8 @@ pub enum PrimitiveWireKind {
     Bytes,
     /// Duration in nanoseconds (`duration` / `Duration`).
     Duration,
+    /// Unit value encoded as msgpack nil (`unit` / `()`).
+    Unit,
     /// User-defined wire-type reference; the string is the canonical wire-type
     /// name (as it appears in `WireDecl::name`).
     Nested(String),
@@ -162,6 +164,18 @@ mod tests {
     }
 
     #[test]
+    fn from_type_name_maps_unit_aliases() {
+        assert_eq!(
+            PrimitiveWireKind::from_type_name("unit").unwrap(),
+            PrimitiveWireKind::Unit
+        );
+        assert_eq!(
+            PrimitiveWireKind::from_type_name("()").unwrap(),
+            PrimitiveWireKind::Unit
+        );
+    }
+
+    #[test]
     fn unknown_name_becomes_nested_reference() {
         let k = PrimitiveWireKind::from_type_name("MyWireStruct").unwrap();
         assert_eq!(k, PrimitiveWireKind::Nested("MyWireStruct".to_string()));
@@ -186,6 +200,7 @@ mod tests {
             PrimitiveWireKind::F64,
             PrimitiveWireKind::String,
             PrimitiveWireKind::Bytes,
+            PrimitiveWireKind::Unit,
         ] {
             assert!(!k.is_varint(), "{k:?} should not be varint");
         }

@@ -61,6 +61,8 @@ pub enum WireValue {
     Bytes(Vec<u8>),
     /// Duration in nanoseconds (negative = past; matches msgpack encoding).
     Duration(i64),
+    /// Unit value encoded as nil/null.
+    Unit,
     /// A struct-typed value. `fields` is ordered by declaration, not by name.
     Struct {
         /// The canonical wire-type name (matches `WireCodecPlan::name`).
@@ -99,6 +101,7 @@ impl WireValue {
             Self::String(_) => PrimitiveWireKind::String,
             Self::Bytes(_) => PrimitiveWireKind::Bytes,
             Self::Duration(_) => PrimitiveWireKind::Duration,
+            Self::Unit => PrimitiveWireKind::Unit,
             Self::Struct { type_name, .. } | Self::Enum { type_name, .. } => {
                 PrimitiveWireKind::Nested(type_name.clone())
             }

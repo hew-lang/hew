@@ -40,7 +40,7 @@ const DEFAULT_ITERATIONS: u32 = 10_000;
 /// Minimum surface coverage required by the corpus. If `assert_kind_coverage`
 /// finds fewer than this many distinct `PrimitiveWireKind` discriminants were
 /// exercised, the generator is biased and the test fails.
-const REQUIRED_KIND_VARIANTS: usize = 16;
+const REQUIRED_KIND_VARIANTS: usize = 17;
 
 /// xorshift64 pseudo-random generator — deterministic, no dependencies.
 ///
@@ -75,7 +75,7 @@ impl Rng {
     }
 
     fn pick_kind(&mut self) -> PrimitiveWireKind {
-        match self.range(0, 16) {
+        match self.range(0, 17) {
             0 => PrimitiveWireKind::Bool,
             1 => PrimitiveWireKind::I8,
             2 => PrimitiveWireKind::I16,
@@ -91,6 +91,7 @@ impl Rng {
             12 => PrimitiveWireKind::Bytes,
             13 => PrimitiveWireKind::Duration,
             14 => PrimitiveWireKind::Char,
+            15 => PrimitiveWireKind::Unit,
             _ => PrimitiveWireKind::Nested(format!("Nested{}", self.next_u32() % 32)),
         }
     }
@@ -187,7 +188,8 @@ fn kind_discriminant(k: &PrimitiveWireKind) -> u8 {
         PrimitiveWireKind::Bytes => 12,
         PrimitiveWireKind::Duration => 13,
         PrimitiveWireKind::Char => 14,
-        PrimitiveWireKind::Nested(_) => 15,
+        PrimitiveWireKind::Unit => 15,
+        PrimitiveWireKind::Nested(_) => 16,
     }
 }
 
@@ -201,7 +203,7 @@ fn corpus_descriptor_emitters_are_deterministic_and_round_trip() {
     let iters = iterations_from_env();
     let mut rng = Rng::new(seed);
 
-    let mut seen_kinds = [false; 16];
+    let mut seen_kinds = [false; REQUIRED_KIND_VARIANTS];
     let mut enum_count = 0usize;
     let mut total_fields = 0usize;
 

@@ -46,6 +46,8 @@ pub enum MsgpackOp {
     String,
     /// Length-delimited byte string.
     Bytes,
+    /// Msgpack nil payload for `unit`.
+    Nil,
     /// Nested wire-type reference; `type_name` is the canonical nested type
     /// name (as it appears in `WireDecl::name`).
     Nested {
@@ -157,6 +159,7 @@ fn field_op_for_kind(kind: &PrimitiveWireKind) -> MsgpackOp {
         PrimitiveClass::F64 => MsgpackOp::Fixed64,
         PrimitiveClass::Str => MsgpackOp::String,
         PrimitiveClass::Bytes => MsgpackOp::Bytes,
+        PrimitiveClass::Unit => MsgpackOp::Nil,
     }
 }
 
@@ -199,6 +202,14 @@ mod tests {
         let plan = plan_with_fields("A", vec![simple_field("s", 1, PrimitiveWireKind::String)]);
         let desc = MsgpackCodecDesc::from_plan(&plan);
         assert_eq!(desc.fields[0].op, MsgpackOp::String);
+        assert!(desc.fields[0].bounds.is_none());
+    }
+
+    #[test]
+    fn unit_field_uses_nil_op_with_no_bounds() {
+        let plan = plan_with_fields("A", vec![simple_field("done", 1, PrimitiveWireKind::Unit)]);
+        let desc = MsgpackCodecDesc::from_plan(&plan);
+        assert_eq!(desc.fields[0].op, MsgpackOp::Nil);
         assert!(desc.fields[0].bounds.is_none());
     }
 

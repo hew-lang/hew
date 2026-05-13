@@ -26,6 +26,7 @@ pub(crate) mod primitives;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 pub mod value;
+pub mod wire_boundary;
 pub mod yaml_desc;
 
 pub use crate::json_desc::{JsonCodecDesc, JsonFieldOp, JsonOp};
@@ -35,4 +36,5 @@ pub use crate::plan::{
     FieldModifiers, FieldPlan, IntegerBounds, VariantPlan, WireCodecError, WireCodecPlan, WireShape,
 };
 pub use crate::value::WireValue;
+pub use crate::wire_boundary::{TypeDescriptorWireExt, WireBoundaryError};
 pub use crate::yaml_desc::{YamlCodecDesc, YamlFieldOp, YamlOp};

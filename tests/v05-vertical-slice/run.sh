@@ -12,7 +12,8 @@ cargo build -q -p hew-cli
 "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/01-arith.hew" \
   | grep -q 'hew.return : i64'
 
-reject_output="$(mktemp)"
+mkdir -p "${ROOT}/.tmp"
+reject_output="${ROOT}/.tmp/v05-vertical-slice-reject-output.txt"
 trap 'rm -f "${reject_output}"' EXIT
 
 if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
@@ -38,3 +39,23 @@ if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_t
   exit 1
 fi
 grep -q 'UnknownType' "${reject_output}"
+
+if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_tuple_type.hew" >"${reject_output}" 2>&1; then
+  echo "expected unknown-named-tuple-type fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UnknownType' "${reject_output}"
+if grep -q 'panicked at' "${reject_output}"; then
+  echo "unknown-named-tuple-type fixture panicked instead of reporting a diagnostic" >&2
+  exit 1
+fi
+
+if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_array_type.hew" >"${reject_output}" 2>&1; then
+  echo "expected unknown-named-array-type fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UnknownType' "${reject_output}"
+if grep -q 'panicked at' "${reject_output}"; then
+  echo "unknown-named-array-type fixture panicked instead of reporting a diagnostic" >&2
+  exit 1
+fi

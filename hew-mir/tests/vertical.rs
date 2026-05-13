@@ -113,3 +113,47 @@ fn unknown_user_type_rejected_before_mlir() {
         "MLIR must not be emitted when UnknownType diagnostics are present"
     );
 }
+
+#[test]
+fn nested_tuple_user_type_rejected_before_mlir() {
+    let parsed = hew_parser::parse("fn f(x: (Foo, i64)) -> (Foo, i64) { return x; }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let pipeline = lower_hir_module(&output.module);
+
+    assert!(
+        pipeline.diagnostics.iter().any(|d| {
+            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Foo")
+        }),
+        "nested tuple Foo must produce UnknownType at MIR boundary: {:?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        pipeline.hew_mlir.dump().is_empty(),
+        "MLIR must not be emitted when nested UnknownType diagnostics are present"
+    );
+}
+
+#[test]
+fn nested_array_user_type_rejected_before_mlir() {
+    let parsed = hew_parser::parse("fn f(x: [Foo; 2]) -> [Foo; 2] { return x; }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let pipeline = lower_hir_module(&output.module);
+
+    assert!(
+        pipeline.diagnostics.iter().any(|d| {
+            matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Foo")
+        }),
+        "nested array Foo must produce UnknownType at MIR boundary: {:?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        pipeline.hew_mlir.dump().is_empty(),
+        "MLIR must not be emitted when nested UnknownType diagnostics are present"
+    );
+}

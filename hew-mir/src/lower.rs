@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use hew_hir::{
-    BindingId, HirExpr, HirExprKind, HirFn, HirItem, HirModule, HirStmtKind, IntentKind,
-    ResolvedRef, SiteId, ValueClass,
+    named_type_names, BindingId, HirExpr, HirExprKind, HirFn, HirItem, HirModule, HirStmtKind,
+    IntentKind, ResolvedRef, SiteId, ValueClass,
 };
 use hew_types::ResolvedTy;
 
@@ -87,23 +87,7 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
     // Collect diagnostics emitted by the builder (e.g., Unsupported HIR nodes).
     diagnostics.append(&mut builder.diagnostics);
 
-    // D10: Named user types with ValueClass::Unknown must not reach MLIR.
-    // Emit a diagnostic for every UnknownBlocked decision site so the
-    // pipeline is rejected before lower_elaborated_to_mlir is called.
-    for decision in &builder.decisions {
-        if decision.strategy == Strategy::UnknownBlocked {
-            let name = match &decision.ty {
-                ResolvedTy::Named { name, .. } => name.clone(),
-                other => format!("{other:?}"),
-            };
-            diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::UnknownType { name },
-                note: "named user type has no known ValueClass at the MIR boundary; \
-                       only builtin types are supported in slice 1"
-                    .to_string(),
-            });
-        }
-    }
+    collect_unknown_type_diagnostics(func, &builder, &mut diagnostics);
 
     let checked = CheckedMirFunction {
         name: func.name.clone(),
@@ -148,6 +132,65 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         elaborated,
         mlir,
         diagnostics,
+    }
+}
+
+fn collect_unknown_type_diagnostics(
+    func: &HirFn,
+    builder: &Builder,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) {
+    let mut reported = HashSet::new();
+
+    for param in &func.params {
+        push_unknown_type_diagnostics(&param.ty, &mut reported, diagnostics);
+    }
+    push_unknown_type_diagnostics(&func.return_ty, &mut reported, diagnostics);
+
+    for decision in &builder.decisions {
+        push_unknown_type_diagnostics(&decision.ty, &mut reported, diagnostics);
+        if decision.strategy == Strategy::UnknownBlocked
+            && named_type_names(&decision.ty).is_empty()
+        {
+            push_unknown_type_diagnostic(format!("{:?}", decision.ty), &mut reported, diagnostics);
+        }
+    }
+
+    for statement in &builder.statements {
+        match statement {
+            MirStatement::Bind { ty, .. }
+            | MirStatement::Evaluate { ty, .. }
+            | MirStatement::Use { ty, .. }
+            | MirStatement::Return { ty, .. }
+            | MirStatement::Drop { ty, .. } => {
+                push_unknown_type_diagnostics(ty, &mut reported, diagnostics);
+            }
+        }
+    }
+}
+
+fn push_unknown_type_diagnostics(
+    ty: &ResolvedTy,
+    reported: &mut HashSet<String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) {
+    for name in named_type_names(ty) {
+        push_unknown_type_diagnostic(name, reported, diagnostics);
+    }
+}
+
+fn push_unknown_type_diagnostic(
+    name: String,
+    reported: &mut HashSet<String>,
+    diagnostics: &mut Vec<MirDiagnostic>,
+) {
+    if reported.insert(name.clone()) {
+        diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::UnknownType { name },
+            note: "named user type has no known ValueClass at the MIR boundary; \
+                   only builtin types are supported in slice 1"
+                .to_string(),
+        });
     }
 }
 

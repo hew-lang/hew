@@ -1,0 +1,19 @@
+[package]
+name = "hew-hir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Resolved HIR for the Hew v0.5 compiler pipeline"
+repository = "https://github.com/hew-lang/hew"
+readme = "../README.md"
+keywords = ["hew", "compiler", "hir"]
+categories = ["compilers"]
+
+[dependencies]
+hew-parser = { path = "../hew-parser" }
+hew-types = { path = "../hew-types" }
+serde.workspace = true
+
+[lints]
+workspace = true

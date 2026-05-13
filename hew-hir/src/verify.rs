@@ -1,0 +1,130 @@
+use std::collections::HashSet;
+
+use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
+use crate::ids::{BindingId, HirNodeId, ResolvedRef, SiteId};
+use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
+
+#[must_use]
+pub fn verify_hir(module: &HirModule) -> Vec<HirDiagnostic> {
+    let mut verifier = Verifier::default();
+    verifier.module(module);
+    verifier.diagnostics
+}
+
+#[derive(Debug, Default)]
+struct Verifier {
+    bindings: HashSet<BindingId>,
+    sites: HashSet<SiteId>,
+    nodes: HashSet<HirNodeId>,
+    diagnostics: Vec<HirDiagnostic>,
+}
+
+impl Verifier {
+    fn module(&mut self, module: &HirModule) {
+        for item in &module.items {
+            match item {
+                HirItem::Function(func) => {
+                    self.node(func.node, func.span.clone());
+                    for param in &func.params {
+                        self.binding(param.id, param.span.clone());
+                    }
+                    self.block(&func.body);
+                }
+            }
+        }
+    }
+
+    fn block(&mut self, block: &HirBlock) {
+        self.node(block.node, 0..0);
+        for stmt in &block.statements {
+            self.node(stmt.node, stmt.span.clone());
+            match &stmt.kind {
+                HirStmtKind::Let(binding, value) => {
+                    self.binding(binding.id, binding.span.clone());
+                    if let Some(value) = value {
+                        self.expr(value);
+                    }
+                }
+                HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => self.expr(expr),
+                HirStmtKind::Return(None) => {}
+            }
+        }
+        if let Some(tail) = &block.tail {
+            self.expr(tail);
+        }
+    }
+
+    fn expr(&mut self, expr: &HirExpr) {
+        self.node(expr.node, expr.span.clone());
+        self.site(expr.site, expr.span.clone());
+        match &expr.kind {
+            HirExprKind::BindingRef { resolved, name } => {
+                if *resolved == ResolvedRef::Unresolved {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::UnresolvedSymbol { name: name.clone() },
+                        expr.span.clone(),
+                        "resolved HIR contains an unresolved binding reference",
+                    ));
+                }
+            }
+            HirExprKind::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            HirExprKind::Call { callee, args } => {
+                self.expr(callee);
+                for arg in args {
+                    self.expr(arg);
+                }
+            }
+            HirExprKind::Block(block) => self.block(block),
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.expr(condition);
+                self.expr(then_expr);
+                if let Some(else_expr) = else_expr {
+                    self.expr(else_expr);
+                }
+            }
+            HirExprKind::StructInit { fields, .. } => {
+                for (_, field) in fields {
+                    self.expr(field);
+                }
+            }
+            HirExprKind::Literal(_) | HirExprKind::Unsupported(_) => {}
+        }
+    }
+
+    fn binding(&mut self, id: BindingId, span: std::ops::Range<usize>) {
+        if !self.bindings.insert(id) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::DuplicateBindingId { id },
+                span,
+                "binding id reused inside resolved HIR",
+            ));
+        }
+    }
+
+    fn site(&mut self, id: SiteId, span: std::ops::Range<usize>) {
+        if !self.sites.insert(id) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::DuplicateSiteId { id },
+                span,
+                "site id reused inside resolved HIR",
+            ));
+        }
+    }
+
+    fn node(&mut self, id: HirNodeId, span: std::ops::Range<usize>) {
+        if !self.nodes.insert(id) {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::DuplicateNodeId { id },
+                span,
+                "HIR node id reused inside resolved HIR",
+            ));
+        }
+    }
+}

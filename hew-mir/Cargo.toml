@@ -1,0 +1,22 @@
+[package]
+name = "hew-mir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "THIR/MIR ladder for the Hew v0.5 compiler pipeline"
+repository = "https://github.com/hew-lang/hew"
+readme = "../README.md"
+keywords = ["hew", "compiler", "mir"]
+categories = ["compilers"]
+
+[dependencies]
+hew-hir = { path = "../hew-hir" }
+hew-types = { path = "../hew-types" }
+serde.workspace = true
+
+[dev-dependencies]
+hew-parser = { path = "../hew-parser" }
+
+[lints]
+workspace = true

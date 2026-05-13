@@ -119,7 +119,7 @@ impl LowerCtx {
             Stmt::Let { pattern, ty, value } => {
                 let value = value
                     .as_ref()
-                    .map(|expr| self.lower_expr(expr, IntentKind::Read));
+                    .map(|expr| self.lower_expr(expr, IntentKind::Consume));
                 let binding_ty = ty.as_ref().map_or_else(
                     || {
                         value
@@ -137,7 +137,7 @@ impl LowerCtx {
             Stmt::Var { name, ty, value } => {
                 let value = value
                     .as_ref()
-                    .map(|expr| self.lower_expr(expr, IntentKind::Read));
+                    .map(|expr| self.lower_expr(expr, IntentKind::Consume));
                 let binding_ty = ty.as_ref().map_or_else(
                     || {
                         value

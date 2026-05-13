@@ -133,6 +133,12 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
     }
 
     let pipeline = hew_mir::lower_hir_module(&output.module);
+    if !pipeline.diagnostics.is_empty() {
+        for diagnostic in pipeline.diagnostics {
+            eprintln!("{diagnostic:?}");
+        }
+        std::process::exit(1);
+    }
     print!("{}", pipeline.hew_mlir.dump());
 }
 

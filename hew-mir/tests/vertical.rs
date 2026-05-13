@@ -1,5 +1,5 @@
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-use hew_mir::{lower_hir_module, MirStatement};
+use hew_mir::{lower_hir_module, MirDiagnosticKind, MirStatement};
 
 fn pipeline(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -42,4 +42,14 @@ fn bitcopy_arithmetic_has_no_drop() {
         .statements
         .iter()
         .any(|stmt| matches!(stmt, MirStatement::Drop { .. })));
+}
+
+#[test]
+fn checked_mir_rejects_use_after_consume() {
+    let pipeline = pipeline(r#"fn main() -> String { let s = "hello"; let t = s; return s; }"#);
+
+    assert!(pipeline.diagnostics.iter().any(|diagnostic| matches!(
+        diagnostic.kind,
+        MirDiagnosticKind::UseAfterConsume { ref name, .. } if name == "s"
+    )));
 }

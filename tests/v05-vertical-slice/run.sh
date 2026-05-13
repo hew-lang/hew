@@ -17,3 +17,9 @@ if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symb
   exit 1
 fi
 grep -q 'UnresolvedSymbol' "${reject_output}"
+
+if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
+  echo "expected use-after-consume fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UseAfterConsume' "${reject_output}"

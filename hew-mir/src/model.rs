@@ -8,6 +8,7 @@ pub struct IrPipeline {
     pub checked_mir: Vec<CheckedMirFunction>,
     pub elaborated_mir: Vec<ElaboratedMirFunction>,
     pub hew_mlir: HewMlirModule,
+    pub diagnostics: Vec<MirDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +51,7 @@ pub struct CheckedMirFunction {
 pub enum MirCheck {
     InitialisedBeforeUse,
     DecisionMapTotal,
+    UseAfterConsume,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +74,13 @@ pub enum MirStatement {
         site: SiteId,
         ty: ResolvedTy,
     },
+    Use {
+        binding: BindingId,
+        name: String,
+        site: SiteId,
+        ty: ResolvedTy,
+        intent: IntentKind,
+    },
     Return {
         site: Option<SiteId>,
         ty: ResolvedTy,
@@ -81,6 +90,17 @@ pub enum MirStatement {
         name: String,
         ty: ResolvedTy,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirDiagnostic {
+    pub kind: MirDiagnosticKind,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MirDiagnosticKind {
+    UseAfterConsume { binding: BindingId, name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

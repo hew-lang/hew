@@ -1,13 +1,15 @@
+use std::collections::HashSet;
+
 use hew_hir::{
-    HirExpr, HirExprKind, HirFn, HirItem, HirModule, HirStmtKind, IntentKind, ResolvedRef, SiteId,
-    ValueClass,
+    BindingId, HirExpr, HirExprKind, HirFn, HirItem, HirModule, HirStmtKind, IntentKind,
+    ResolvedRef, SiteId, ValueClass,
 };
 use hew_types::ResolvedTy;
 
 use crate::model::{
     BasicBlock, CheckedMirFunction, DecisionFact, ElaboratedMirFunction, HewMlirFunction,
-    HewMlirModule, HewMlirOp, IrPipeline, MirCheck, MirStatement, RawMirFunction, Strategy,
-    Terminator, ThirFunction,
+    HewMlirModule, HewMlirOp, IrPipeline, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    RawMirFunction, Strategy, Terminator, ThirFunction,
 };
 
 #[must_use]
@@ -17,6 +19,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut checked_mir = Vec::new();
     let mut elaborated_mir = Vec::new();
     let mut mlir_functions = Vec::new();
+    let mut diagnostics = Vec::new();
 
     for item in &module.items {
         match item {
@@ -27,6 +30,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 checked_mir.push(lowered.checked);
                 mlir_functions.push(lowered.mlir);
                 elaborated_mir.push(lowered.elaborated);
+                diagnostics.extend(lowered.diagnostics);
             }
         }
     }
@@ -39,6 +43,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         hew_mlir: HewMlirModule {
             functions: mlir_functions,
         },
+        diagnostics,
     }
 }
 
@@ -49,6 +54,7 @@ struct LoweredFunction {
     checked: CheckedMirFunction,
     elaborated: ElaboratedMirFunction,
     mlir: HewMlirFunction,
+    diagnostics: Vec<MirDiagnostic>,
 }
 
 fn lower_function(func: &HirFn) -> LoweredFunction {
@@ -71,12 +77,17 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         blocks: vec![raw_block.clone()],
         decisions: builder.decisions.clone(),
     };
+    let diagnostics = check_raw_mir(&raw_block);
     let checked = CheckedMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
         block: raw_block,
         decisions: builder.decisions.clone(),
-        checks: vec![MirCheck::InitialisedBeforeUse, MirCheck::DecisionMapTotal],
+        checks: vec![
+            MirCheck::InitialisedBeforeUse,
+            MirCheck::DecisionMapTotal,
+            MirCheck::UseAfterConsume,
+        ],
     };
     let mut elaborated_statements = builder.statements.clone();
     for (binding, name, ty) in builder.owned_locals.iter().rev() {
@@ -100,6 +111,7 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         checked,
         elaborated,
         mlir,
+        diagnostics,
     }
 }
 
@@ -207,6 +219,23 @@ impl Builder {
                     self.expr(field);
                 }
             }
+            HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Binding(id),
+            } => {
+                self.statements.push(MirStatement::Use {
+                    binding: *id,
+                    name: name.clone(),
+                    site: expr.site,
+                    ty: expr.ty.clone(),
+                    intent: expr.intent,
+                });
+                if expr.intent == IntentKind::Consume
+                    && ValueClass::of_ty(&expr.ty) != ValueClass::BitCopy
+                {
+                    self.mark_binding_moved(*id);
+                }
+            }
             HirExprKind::Literal(_)
             | HirExprKind::BindingRef { .. }
             | HirExprKind::Unsupported(_) => {}
@@ -257,8 +286,51 @@ impl Builder {
         else {
             return;
         };
+        self.mark_binding_moved(id);
+    }
+
+    fn mark_binding_moved(&mut self, id: BindingId) {
         self.owned_locals.retain(|(binding, _, _)| *binding != id);
     }
+}
+
+fn check_raw_mir(block: &BasicBlock) -> Vec<MirDiagnostic> {
+    let mut consumed = HashSet::new();
+    let mut diagnostics = Vec::new();
+
+    for statement in &block.statements {
+        match statement {
+            MirStatement::Bind { binding, .. } => {
+                consumed.remove(binding);
+            }
+            MirStatement::Use {
+                binding,
+                name,
+                ty,
+                intent,
+                ..
+            } => {
+                if consumed.contains(binding) {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UseAfterConsume {
+                            binding: *binding,
+                            name: name.clone(),
+                        },
+                        note: "binding is used after an owned value move in checked MIR"
+                            .to_string(),
+                    });
+                }
+                if *intent == IntentKind::Consume && ValueClass::of_ty(ty) != ValueClass::BitCopy {
+                    consumed.insert(*binding);
+                }
+            }
+            MirStatement::Evaluate { .. }
+            | MirStatement::Return { .. }
+            | MirStatement::Drop { .. } => {}
+        }
+    }
+
+    diagnostics
 }
 
 fn lower_elaborated_to_mlir(func: &ElaboratedMirFunction) -> HewMlirFunction {
@@ -271,11 +343,13 @@ fn lower_elaborated_to_mlir(func: &ElaboratedMirFunction) -> HewMlirFunction {
                 site: *site,
                 decision: decision_for(func, *site),
             }),
-            MirStatement::Evaluate { site, ty } => ops.push(HewMlirOp::Read {
-                ty: ty.clone(),
-                site: *site,
-                decision: decision_for(func, *site),
-            }),
+            MirStatement::Evaluate { site, ty } | MirStatement::Use { site, ty, .. } => {
+                ops.push(HewMlirOp::Read {
+                    ty: ty.clone(),
+                    site: *site,
+                    decision: decision_for(func, *site),
+                });
+            }
             MirStatement::Return {
                 site: Some(site),
                 ty,

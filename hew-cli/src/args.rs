@@ -27,7 +27,7 @@ pub struct Cli {
 pub enum Command {
     /// Compile a .hew file to an executable.
     Build(BuildArgs),
-    /// Run the local v0.5 IR ladder and print Hew MLIR.
+    /// Run the local v0.5 IR ladder and print a pre-MLIR Hew-IR textual proof.
     CompileV05(CompileV05Args),
     /// Compile and run a .hew file.
     Run(RunArgs),

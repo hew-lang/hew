@@ -1,16 +1,20 @@
 use hew_mir::model::{HewMlirFunction, HewMlirModule, HewMlirOp, Strategy};
 use hew_types::ResolvedTy;
 
-/// Emit a D2/D7-compliant textual MLIR representation of `module`.
+/// Emit a D2 textual / D7-style pre-MLIR proof of `module`.
 ///
-/// Type names follow the D7 storage-class convention:
-/// - `!hew.string` for owned UTF-8 strings
+/// This Stage 9 format is intentionally a Hew-IR trace, not a promise that the
+/// text can round-trip through MLIR tooling before the Stage 4 TypeDescriptor /
+/// THIR authority and dialect registration work is complete.
+///
+/// Type names follow the current D7-style canonical spelling convention:
+/// - `!hew.string` for Hew strings
 /// - `!hew.bytes` / `!hew.char` / `!hew.duration` for other Hew scalars
 /// - Standard MLIR integer/float types (`i64`, `f32`, `i1`, …) for primitives
 /// - `!hew.unit` for the unit type
 /// - `!hew.never` for the diverging type
 ///
-/// Value decision attributes use the MLIR string attribute form
+/// Value decision attributes use a string attribute-like form
 /// `"StrategyName"` which is sufficient for the D2 textual proof.
 #[must_use]
 pub fn emit_mlir(module: &HewMlirModule) -> String {
@@ -70,10 +74,10 @@ fn emit_op(op: &HewMlirOp) -> String {
     }
 }
 
-/// Map a [`ResolvedTy`] to a D7-compliant MLIR type string.
+/// Map a [`ResolvedTy`] to a D7-style pre-MLIR type string.
 ///
 /// Scalars use MLIR built-in integer/float types.  Hew-specific types use the
-/// `!hew.*` dialect namespace so storage class is visible in the type itself.
+/// `!hew.*` dialect-style namespace so the canonical spelling is explicit.
 fn emit_ty(ty: &ResolvedTy) -> String {
     match ty {
         ResolvedTy::I8 => "i8".to_string(),
@@ -87,7 +91,7 @@ fn emit_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::F32 => "f32".to_string(),
         ResolvedTy::F64 => "f64".to_string(),
         ResolvedTy::Bool => "i1".to_string(),
-        // Hew-specific types use the !hew.* namespace (D7).
+        // Hew-specific types use the !hew.* namespace for D7-style canonical spelling.
         ResolvedTy::Char => "!hew.char".to_string(),
         ResolvedTy::String => "!hew.string".to_string(),
         ResolvedTy::Bytes => "!hew.bytes".to_string(),
@@ -102,15 +106,11 @@ fn emit_ty(ty: &ResolvedTy) -> String {
             format!("!hew.array<{} x {}>", emit_ty(elem), len)
         }
         ResolvedTy::Slice(elem) => format!("!hew.slice<{}>", emit_ty(elem)),
-        ResolvedTy::Named { name, args } => {
-            // D10: Named user types must be caught before MLIR emission.
-            // This arm should not be reached in a D10-clean pipeline.
-            if args.is_empty() {
-                format!("!hew.named<\"{name}\">")
-            } else {
-                let args_str = args.iter().map(emit_ty).collect::<Vec<_>>().join(", ");
-                format!("!hew.named<\"{name}\", {args_str}>")
-            }
+        ResolvedTy::Named { name, .. } => {
+            unreachable!(
+                "D10 violation: Named/user type `{name}` reached Stage 9 textual emission; {}",
+                "reject or lower user types before Stage 9 until Stage 4 TypeDescriptor/THIR authority is complete"
+            )
         }
         ResolvedTy::Function { params, ret } => {
             let params_str = params.iter().map(emit_ty).collect::<Vec<_>>().join(", ");
@@ -138,11 +138,25 @@ fn emit_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::TraitObject { traits } => {
             let bounds = traits
                 .iter()
-                .map(|b| b.trait_name.as_str())
+                .map(emit_trait_bound)
                 .collect::<Vec<_>>()
                 .join(" + ");
-            format!("!hew.dyn<\"{bounds}\">")
+            format!("!hew.dyn<{bounds}>")
         }
+    }
+}
+
+fn emit_trait_bound(bound: &hew_types::ResolvedTraitBound) -> String {
+    if bound.args.is_empty() {
+        bound.trait_name.clone()
+    } else {
+        let args = bound
+            .args
+            .iter()
+            .map(emit_ty)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{}<{args}>", bound.trait_name)
     }
 }
 
@@ -160,7 +174,7 @@ fn emit_strategy(s: &Strategy) -> &'static str {
         // UnknownBlocked must never reach this point per D10.  If it does, the
         // assert_ne in lower_elaborated_to_mlir should have already panicked.
         Strategy::UnknownBlocked => {
-            unreachable!("D10 violation: UnknownBlocked strategy reached MLIR text emission")
+            unreachable!("D10 violation: UnknownBlocked strategy reached Stage 9 textual emission")
         }
     }
 }
@@ -169,7 +183,7 @@ fn emit_strategy(s: &Strategy) -> &'static str {
 mod tests {
     use super::*;
     use hew_mir::model::{HewMlirFunction, HewMlirModule, HewMlirOp};
-    use hew_types::ResolvedTy;
+    use hew_types::{ResolvedTraitBound, ResolvedTy};
 
     fn module_with_ops(name: &str, ops: Vec<HewMlirOp>) -> HewMlirModule {
         HewMlirModule {
@@ -213,6 +227,36 @@ mod tests {
 
         let slice = ResolvedTy::Slice(Box::new(ResolvedTy::U8));
         assert_eq!(emit_ty(&slice), "!hew.slice<ui8>");
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "D10 violation: Named/user type `Foo` reached Stage 9 textual emission"
+    )]
+    fn named_type_panics_in_textual_emitter() {
+        let module = module_with_ops(
+            "main",
+            vec![HewMlirOp::Return {
+                ty: ResolvedTy::Named {
+                    name: "Foo".to_string(),
+                    args: vec![ResolvedTy::I64],
+                },
+                site: None,
+                decision: None,
+            }],
+        );
+        let _ = emit_mlir(&module);
+    }
+
+    #[test]
+    fn trait_object_args_survive_textual_emission() {
+        let dyn_iterator = ResolvedTy::TraitObject {
+            traits: vec![ResolvedTraitBound {
+                trait_name: "Iterator".to_string(),
+                args: vec![ResolvedTy::I64],
+            }],
+        };
+        assert_eq!(emit_ty(&dyn_iterator), "!hew.dyn<Iterator<i64>>");
     }
 
     #[test]

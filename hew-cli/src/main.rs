@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! hew build file.hew [-o output]   # Compile to executable
-//! hew compile-v05 file.hew         # Run the v0.5 IR ladder and print Hew MLIR
+//! hew compile-v05 file.hew         # Run the v0.5 IR ladder and print Hew-IR proof text
 //! hew run file.hew [-- args...]    # Compile and run
 //! hew debug file.hew [-- args...]  # Build with debug info + launch gdb/lldb
 //! hew check file.hew               # Parse + typecheck only

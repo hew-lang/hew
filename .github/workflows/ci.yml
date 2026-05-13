@@ -397,8 +397,30 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: coverage-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: coverage-${{ runner.os }}-
+          key: coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+            coverage-${{ runner.os }}-
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        if: env.RUN_CODE_PATH == 'true'
+        # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
+        # script requires a system LLVM 22 install (or llvm-config on PATH).
+        # `cargo llvm-cov nextest --workspace` resolves and compiles the full
+        # workspace, including hew-codegen-rs, even though hew-cli is excluded.
+        # Mirrors the install used in build-and-test and lint.
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            libpolly-${{ env.LLVM_VERSION }}-dev \
+            libssl-dev pkg-config
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
 
       - name: Run tests with coverage
         if: env.RUN_CODE_PATH == 'true'

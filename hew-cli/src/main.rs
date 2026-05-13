@@ -95,6 +95,12 @@ fn hew_main() {
 // Sub-commands
 // ---------------------------------------------------------------------------
 
+// The dispatcher short-circuits `hew build` and `hew run` with a cutover
+// error before reaching the bodies below; each `#[allow(dead_code, ...)]`
+// keeps the body compiled while it is dormant. The attributes come off when
+// the C++ codegen subtree is removed in a later stage of the v0.5 cutover.
+
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn cmd_build(a: &args::BuildArgs) {
     let input = a.input.display().to_string();
     let output = a.output.as_ref().map(|p| p.display().to_string());
@@ -217,6 +223,7 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn cmd_run(a: &args::RunArgs) {
     let input = a.input.display().to_string();
     let timeout = resolve_optional_timeout(a.timeout.as_deref());
@@ -242,6 +249,7 @@ fn cmd_run(a: &args::RunArgs) {
     exit_after_native_run(artifact, &a.program_args, timeout, a.profile);
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn resolve_optional_timeout(raw: Option<&str>) -> Option<std::time::Duration> {
     raw.map(crate::util::parse_timeout)
         .transpose()
@@ -251,6 +259,7 @@ fn resolve_optional_timeout(raw: Option<&str>) -> Option<std::time::Duration> {
         })
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn resolve_run_target(requested: Option<&str>, profile: bool) -> target::ExecutionTarget {
     let target = target::ExecutionTarget::from_requested(requested).unwrap_or_else(|e| {
         eprintln!("{e}");
@@ -276,8 +285,13 @@ struct CompiledTempExecutable {
 }
 
 enum TempExecutableCleanup {
-    TempPath { _temp_path: tempfile::TempPath },
-    TempDir { _temp_dir: tempfile::TempDir },
+    #[allow(dead_code, reason = "dormant during v0.5 cutover")]
+    TempPath {
+        _temp_path: tempfile::TempPath,
+    },
+    TempDir {
+        _temp_dir: tempfile::TempDir,
+    },
 }
 
 impl CompiledTempExecutable {
@@ -290,6 +304,7 @@ impl CompiledTempExecutable {
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn compile_temp_run_artifact(
     input: &str,
     options: &compile::CompileOptions,
@@ -325,6 +340,7 @@ fn compile_temp_artifact(
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
     let temp_path = tempfile::Builder::new()
         .prefix("hew_run_")
@@ -360,6 +376,7 @@ fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempE
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn exit_after_native_run(
     artifact: CompiledTempExecutable,
     program_args: &[String],
@@ -394,6 +411,7 @@ fn exit_after_native_run(
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn run_native_binary(
     cmd: &mut std::process::Command,
     timeout: Option<std::time::Duration>,
@@ -424,6 +442,7 @@ fn run_native_binary(
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn configure_profiler_env(cmd: &mut std::process::Command, profile: bool) {
     if !profile || std::env::var_os("HEW_PPROF").is_some() {
         return;
@@ -446,6 +465,7 @@ fn configure_profiler_env(cmd: &mut std::process::Command, profile: bool) {
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn exit_after_wasi_run(
     artifact: CompiledTempExecutable,
     program_args: &[String],

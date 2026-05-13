@@ -27,17 +27,38 @@ pub(crate) trait CommandDispatcher {
 
 pub(crate) struct MainCommandDispatcher;
 
+/// Print the v0.5 cutover error and exit non-zero.
+///
+/// The C++ codegen path is unsafe to invoke on this branch: inkwell's
+/// presence in the binary link surface and the C++ codegen's `libMLIR`
+/// registration collide through `libLLVM` globals, corrupting LLVM
+/// `AnalysisManager` state and crashing the process. Until the C++ codegen
+/// subtree is removed, `run`, `build`, and the expression evaluator
+/// short-circuit here instead of reaching the codegen path.
+fn exit_with_cutover_error(subcommand: &str) -> ! {
+    eprintln!(
+        "error: `hew {subcommand}` is temporarily unavailable during the v0.5 compiler cutover.\n\
+         \n\
+         The C++ codegen path is unsafe to invoke while inkwell is in the binary's link\n\
+         surface (libMLIR + libLLVM dual-load corrupts LLVM AnalysisManager state).\n\
+         \n\
+         Use `hew compile-v05 <file>` for the integer-only spine subset on this branch,\n\
+         or wait for the cutover to complete on `main`."
+    );
+    std::process::exit(1);
+}
+
 impl CommandDispatcher for MainCommandDispatcher {
-    fn build(&mut self, args: &args::BuildArgs) {
-        crate::cmd_build(args);
+    fn build(&mut self, _args: &args::BuildArgs) {
+        exit_with_cutover_error("build");
     }
 
     fn compile_v05(&mut self, args: &args::CompileV05Args) {
         crate::cmd_compile_v05(args);
     }
 
-    fn run(&mut self, args: &args::RunArgs) {
-        crate::cmd_run(args);
+    fn run(&mut self, _args: &args::RunArgs) {
+        exit_with_cutover_error("run");
     }
 
     fn debug(&mut self, args: &args::DebugArgs) {
@@ -52,8 +73,8 @@ impl CommandDispatcher for MainCommandDispatcher {
         crate::doc::cmd_doc(args);
     }
 
-    fn eval(&mut self, args: &args::EvalArgs) {
-        crate::eval::cmd_eval(args);
+    fn eval(&mut self, _args: &args::EvalArgs) {
+        exit_with_cutover_error("eval");
     }
 
     fn test(&mut self, args: &args::TestArgs) {

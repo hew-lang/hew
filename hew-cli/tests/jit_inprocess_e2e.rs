@@ -86,6 +86,8 @@ fn jit_auto_simple_expression_succeeds() {
 ///    symbols via the dynamic linker rather than `__SYMTAB`.  A freshly-built
 ///    release binary (strip active, zero exported `T _hew_` symbols) passes
 ///    this test without any profile changes.
+// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
+#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn jit_inprocess_release_binary_does_not_abort() {
     require_codegen();

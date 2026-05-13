@@ -163,6 +163,7 @@ pub struct BuildArgs {
     pub common: CommonBuildArgs,
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 impl BuildArgs {
     pub fn codegen_mode(&self) -> crate::compile::CodegenMode {
         use crate::compile::CodegenMode;
@@ -237,6 +238,7 @@ pub struct RunArgs {
     pub program_args: Vec<String>,
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {

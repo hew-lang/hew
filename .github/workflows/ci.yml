@@ -202,6 +202,11 @@ jobs:
 
       - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
         if: env.RUN_CODE_PATH == 'true'
+        # libpolly-${LLVM_VERSION}-dev supplies libPolly.a, which
+        # llvm-sys-221's release static link path requires when
+        # hew-codegen-rs (via inkwell) is compiled. Without it the
+        # release build of hew-cli fails to link with
+        # "could not find native static library 'Polly'".
         run: |
           sudo mkdir -p /etc/apt/keyrings
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -212,11 +217,13 @@ jobs:
           sudo apt-get install -y -qq \
             cmake ninja-build \
             llvm-${{ env.LLVM_VERSION }}-dev \
+            libpolly-${{ env.LLVM_VERSION }}-dev \
             libmlir-${{ env.LLVM_VERSION }}-dev \
             mlir-${{ env.LLVM_VERSION }}-tools \
             clang-${{ env.LLVM_VERSION }} \
             lld-${{ env.LLVM_VERSION }} \
             libssl-dev pkg-config
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
 
       - name: Configure embedded codegen toolchain (Linux)
         if: env.RUN_CODE_PATH == 'true'
@@ -513,8 +520,9 @@ jobs:
         # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
         # that conflict with hew-runtime when both are linked into a
         # test binary (duplicate symbol errors).
-        # hew-cli is excluded because it requires LLVM/MLIR to link its
-        # embedded codegen; Windows LLVM provisioning is not yet set up.
+        # hew-cli and hew-codegen-rs are excluded because both pull
+        # inkwell -> llvm-sys-221, which requires a system LLVM 22
+        # install; Windows LLVM provisioning is not yet set up.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         run: >-
@@ -522,6 +530,7 @@ jobs:
           --exclude hew-wasm
           --exclude hew-cabi
           --exclude hew-cli
+          --exclude hew-codegen-rs
           --profile ci
 
       - name: Upload test reports

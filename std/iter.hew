@@ -671,7 +671,7 @@ pub fn product_f64(v: Vec<f64>) -> f64 {
 //
 // Same workload via the eager API allocates a temporary Vec at every
 // stage; the lazy version is ~2× faster on the same input shape
-// (see `examples/benchmarks/hew/bench_lazy_iter.hew`).
+// (see `examples/benchmarks/lazy_iter/`).
 //
 // ── Sources ──────────────────────────────────────────────────────────
 

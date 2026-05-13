@@ -130,7 +130,12 @@ pub fn basename(p: String) -> String {
     }
     let pos = last_slash_pos(s);
     if pos < 0 {
-        return s;
+        // Return a fresh allocation so the callee drops `s` (Q1) once here
+        // and the caller receives and drops its own copy (Q2) once at its scope
+        // exit.  Returning `s` directly aliases both drop slots against Q1 and
+        // causes a double-free when the caller also holds a `let`-bound result
+        // (e.g. `let base = basename(p)` in `extension`).
+        return "" + s;
     }
     s.slice(pos + 1, s.len())
 }

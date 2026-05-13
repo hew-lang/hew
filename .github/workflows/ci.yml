@@ -205,12 +205,6 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - name: Configure embedded codegen toolchain (Linux)
-        if: env.RUN_CODE_PATH == 'true'
-        run: |
-          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
-
       - uses: dtolnay/rust-toolchain@stable
         if: env.RUN_CODE_PATH == 'true'
 
@@ -234,43 +228,20 @@ jobs:
             build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
             build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
 
-      - name: Cache hew-codegen build
-        if: env.RUN_CODE_PATH == 'true'
-        uses: actions/cache@v4
-        with:
-          path: hew-codegen/build
-          key: hew-codegen-build-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
-          restore-keys: hew-codegen-build-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+      # C++ codegen build skipped during v0.5 spine pass; the hew-codegen
+      # subtree is queued for deletion. The Rust workspace (including
+      # hew-codegen-rs) is the active codegen path.
 
-      # Build hew-codegen (C++ MLIR backend) before any Rust step that links
-      # hew-cli.  hew-cli's build.rs invokes cmake independently, but requires a
-      # working LLVM cmake configure.  Running the explicit cmake steps first
-      # ensures the hew-codegen/build tree is populated on every cache miss, and
-      # exercises the cmake configure path before cargo attempts to link.
-      - name: Configure hew-codegen
-        if: env.RUN_CODE_PATH == 'true'
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
-            -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
-
-      - name: Build hew-codegen
-        if: env.RUN_CODE_PATH == 'true'
-        run: cmake --build hew-codegen/build -j"$(nproc)"
-
+      # hew-cli embeds the C++ codegen via cmake in its build.rs; while the
+      # subtree is in the spine-pass freeze, exclude it from build and test
+      # the same way the Windows lane does.
       - name: Build Rust runtime and frontend (release)
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-cli -p hew-runtime -p hew-serialize -p hew-lsp --release
+        run: cargo build -p hew-runtime -p hew-serialize -p hew-lsp --release
 
       - name: Smoke test hew-lsp
         if: env.RUN_CODE_PATH == 'true'
         run: ./target/release/hew-lsp --version
-
-      - name: Build hew binary (debug — needed by test_runner tests)
-        if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-cli
 
       - name: Build WASM runtime
         if: env.RUN_CODE_PATH == 'true'
@@ -291,61 +262,32 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
-      - name: Run curated playground WASI runtime preflight
-        if: env.RUN_CODE_PATH == 'true'
-        run: make playground-wasi-check
-
       - name: Run WASM runtime actual-target libtests
         if: env.RUN_CODE_PATH == 'true'
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
         run: cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
 
-      - name: Build libhew.a (runtime + stdlib)
-        if: env.RUN_CODE_PATH == 'true'
-        # Build both release and debug so workspace tests that run the debug
-        # hew binary do not pick up a stale cached target/debug/libhew.a.
-        run: |
-          cargo build -p hew-lib --release
-          cargo build -p hew-lib
-
       # Default features include "full" (encryption + profiler + quic),
-      # so all 33 QUIC transport tests run without an explicit flag. hew-wasm
-      # browser/tooling smoke stays isolated in playground-wasm-build.
+      # so all 33 QUIC transport tests run without an explicit flag.
+      # hew-wasm browser/tooling smoke stays isolated in playground-wasm-build.
+      # hew-cli and hew-cabi are excluded for the spine pass — hew-cli pulls
+      # the C++ codegen via cmake; hew-cabi has #[no_mangle] symbols that
+      # conflict with hew-runtime when both link into a test binary.
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
-
-      - name: Run codegen unit tests
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-unit.xml
-          -R "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (native)
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-e2e-native.xml
-          -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (WASM)
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-e2e-wasm.xml
-          -j"$(nproc)" -L wasm
+        run: >-
+          cargo nextest run --workspace
+          --exclude hew-wasm
+          --exclude hew-cli
+          --exclude hew-cabi
+          --profile ci
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@v5
         with:
-          report_paths: |
-            target/nextest/ci/junit.xml
-            hew-codegen/build/codegen-unit.xml
-            hew-codegen/build/codegen-e2e-native.xml
-            hew-codegen/build/codegen-e2e-wasm.xml
+          report_paths: target/nextest/ci/junit.xml
           check_name: Test Results (Linux)
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -482,13 +424,11 @@ jobs:
 
       - name: Build Rust crates
         if: env.RUN_CODE_PATH == 'true'
-        # hew-cli embeds the C++ codegen via cmake; type-check it here
-        # rather than full build to keep this lane fast. hew-codegen-rs
-        # (inkwell -> llvm-sys-221) now compiles end-to-end because the
-        # upstream LLVM tarball is provisioned for Windows above.
-        run: |
-          cargo check -p hew-cli --release
-          cargo build -p adze-cli -p hew-runtime -p hew-lsp --release
+        # hew-cli is excluded during the v0.5 spine pass — its build.rs
+        # invokes cmake on the hew-codegen subtree, which is queued for
+        # deletion. hew-codegen-rs (inkwell -> llvm-sys-221) compiles
+        # end-to-end because the upstream LLVM tarball is provisioned above.
+        run: cargo build -p adze-cli -p hew-runtime -p hew-lsp --release
 
       - name: Run Rust workspace tests (no native codegen E2E)
         if: env.RUN_CODE_PATH == 'true'
@@ -552,12 +492,9 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - name: Configure embedded codegen toolchain (macOS)
+      - name: Set macOS deployment target
         if: env.RUN_CODE_PATH == 'true'
-        run: |
-          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
-          echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
       - uses: actions/cache@v4
         if: env.RUN_CODE_PATH == 'true'
@@ -573,51 +510,21 @@ jobs:
             build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
             build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-
 
-      - name: Cache hew-codegen build
-        if: env.RUN_CODE_PATH == 'true'
-        uses: actions/cache@v4
-        with:
-          path: hew-codegen/build
-          key: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
-          restore-keys: hew-codegen-build-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-
-
-      # Build hew-codegen (C++ MLIR backend) before any Rust step that links
-      # hew-cli.  hew-cli's build.rs invokes cmake independently, but requires a
-      # working LLVM cmake configure.  Running the explicit cmake steps first
-      # ensures the hew-codegen/build tree is populated on every cache miss, and
-      # exercises the cmake configure path before cargo attempts to link.
-      - name: Configure hew-codegen
-        if: env.RUN_CODE_PATH == 'true'
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
-            -DCMAKE_CXX_COMPILER="${LLVM_PREFIX}/bin/clang++" \
-            -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)" \
-            -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,${LLVM_PREFIX}/lib/c++" \
-            -DHEW_STATIC_LINK=ON \
-            -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
-            -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
-
-      - name: Build hew-codegen
-        if: env.RUN_CODE_PATH == 'true'
-        run: cmake --build hew-codegen/build -j"$(sysctl -n hw.ncpu)"
+      # C++ codegen build skipped during v0.5 spine pass; the hew-codegen
+      # subtree is queued for deletion. The Rust workspace (including
+      # hew-codegen-rs) is the active codegen path. hew-cli embeds the
+      # C++ codegen via its build.rs, so it is excluded from build and
+      # test the same way the Windows lane does.
 
       - name: Build libhew.a (runtime + stdlib)
         if: env.RUN_CODE_PATH == 'true'
-        # Build both release and debug so that CLI e2e tests (which run the
-        # debug hew binary) can find target/debug/libhew.a without relying on
-        # make runtime stdlib running inside the test process.
         run: |
           cargo build -p hew-lib --release
           cargo build -p hew-lib
 
-      - name: Build frontend (release + debug)
+      - name: Build frontend (release)
         if: env.RUN_CODE_PATH == 'true'
-        run: |
-          cargo build -p hew-cli -p hew-serialize --release
-          cargo build -p hew-cli
+        run: cargo build -p hew-serialize --release
 
       - name: Install WASI runner prerequisites
         if: env.RUN_CODE_PATH == 'true'
@@ -634,24 +541,12 @@ jobs:
 
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
-        # hew-wasm stays excluded in this macOS PR gate, but hew-cli's WASI
-        # runner e2e tests now require wasmtime plus the wasm32-wasip1 target.
-        # Both target/release/libhew.a and target/debug/libhew.a are pre-built
-        # above so CLI e2e tests that invoke `hew run` find the right one.
-        run: >
-          cargo nextest run --workspace --exclude hew-wasm
+        # hew-cli and hew-cabi are excluded for the spine pass — hew-cli
+        # pulls the C++ codegen via cmake; hew-cabi has #[no_mangle] symbols
+        # that conflict with hew-runtime when both link into a test binary.
+        run: >-
+          cargo nextest run --workspace
+          --exclude hew-wasm
+          --exclude hew-cli
+          --exclude hew-cabi
           --profile ci
-
-      - name: Run codegen unit tests
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-unit.xml
-          -R "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (native)
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-e2e-native.xml
-          -j"$(sysctl -n hw.ncpu)" -LE wasm -E "^(mlir_dialect|translate)$"

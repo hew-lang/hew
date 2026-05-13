@@ -369,6 +369,9 @@ codegen-test: hew stdlib wasm-runtime
 	cd hew-codegen/build && ctest --output-on-failure $(if $(PATTERN),-R "$(PATTERN)")
 
 codegen:
+ifeq ($(HEW_SPINE_PASS),1)
+	@echo "make codegen: skipped during v0.5 spine pass (HEW_SPINE_PASS=1)"
+else
 ifeq ($(shell uname -s),Darwin)
 	cmake -B hew-codegen/build -G Ninja \
 		$(CMAKE_EXTRA_ARGS) \
@@ -381,6 +384,7 @@ else
 		-S hew-codegen
 endif
 	cmake --build hew-codegen/build
+endif
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
@@ -554,10 +558,18 @@ test-runtime-unit:
 	cargo nextest run --profile ci -p hew-runtime --no-default-features
 
 test-codegen: hew codegen runtime stdlib
+ifeq ($(HEW_SPINE_PASS),1)
+	@echo "make test-codegen: skipped during v0.5 spine pass (HEW_SPINE_PASS=1)"
+else
 	cd hew-codegen/build && ctest --output-on-failure -LE wasm --timeout 90 -j"$(CTEST_JOBS)"
+endif
 
 test-wasm: hew codegen wasm-runtime
+ifeq ($(HEW_SPINE_PASS),1)
+	@echo "make test-wasm: skipped during v0.5 spine pass (HEW_SPINE_PASS=1)"
+else
 	cd hew-codegen/build && ctest --output-on-failure -L wasm --timeout 90 -j"$(CTEST_JOBS)"
+endif
 
 test-stdlib: hew
 	@echo "==> Type-checking stdlib .hew files"
@@ -582,8 +594,12 @@ test-hew: hew codegen runtime stdlib
 
 # C++ unit tests only (not E2E)
 test-cpp: codegen
+ifeq ($(HEW_SPINE_PASS),1)
+	@echo "make test-cpp: skipped during v0.5 spine pass (HEW_SPINE_PASS=1)"
+else
 	@echo "==> Running C++ unit tests"
 	cd hew-codegen/build && ctest --output-on-failure -R "^(mlir_dialect|mlirgen|translate|codegen_capi|msgpack_reader)$$"
+endif
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 asan:

@@ -1,0 +1,125 @@
+name: Setup LLVM
+description: >
+  Download and cache a pinned LLVM upstream binary release (from
+  github.com/llvm/llvm-project releases), verify its SHA256, extract it
+  to the runner's tool cache, and export LLVM_SYS_221_PREFIX plus the
+  bin/ directory on PATH. Supports Linux x86_64, macOS arm64, and
+  Windows x86_64 on hosted GitHub Actions runners.
+
+inputs:
+  version:
+    description: LLVM upstream release version (matches the llvmorg-<version> tag).
+    required: false
+    default: "22.1.5"
+
+outputs:
+  prefix:
+    description: Absolute path to the extracted LLVM install root (suitable for LLVM_SYS_*_PREFIX, LLVM_DIR, MLIR_DIR roots).
+    value: ${{ steps.layout.outputs.prefix }}
+
+runs:
+  using: composite
+  steps:
+    # Resolve the per-platform asset name, expected sha256 (pinned from the
+    # sigstore attestations published alongside each release tarball at
+    # github.com/llvm/llvm-project/releases), extraction subdirectory name,
+    # and install root path. Keeping these in one step makes future version
+    # bumps a single-file edit.
+    - name: Resolve LLVM asset metadata
+      id: layout
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="${{ inputs.version }}"
+        case "${{ runner.os }}-${{ runner.arch }}" in
+          Linux-X64)
+            asset="LLVM-${version}-Linux-X64.tar.xz"
+            subdir="LLVM-${version}-Linux-X64"
+            ;;
+          macOS-ARM64)
+            asset="LLVM-${version}-macOS-ARM64.tar.xz"
+            subdir="LLVM-${version}-macOS-ARM64"
+            ;;
+          Windows-X64)
+            asset="clang+llvm-${version}-x86_64-pc-windows-msvc.tar.xz"
+            subdir="clang+llvm-${version}-x86_64-pc-windows-msvc"
+            ;;
+          *)
+            echo "::error::No upstream LLVM binary asset known for ${{ runner.os }}-${{ runner.arch }}"
+            exit 1
+            ;;
+        esac
+        # SHA256 digests pinned from
+        # https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/${asset}.jsonl
+        # (sigstore in-toto attestation, subject digest).
+        case "${asset}" in
+          "LLVM-22.1.5-Linux-X64.tar.xz")
+            sha256="04dfa3ab6f1c332dd73a057daeb8f48cdaacdef24178f8eccddf2cbfa8944aa4"
+            ;;
+          "LLVM-22.1.5-macOS-ARM64.tar.xz")
+            sha256="c4e5aa26d5bb9938237fa1626fe3b0506887b50026bac785b85dd3314be8d5e6"
+            ;;
+          "clang+llvm-22.1.5-x86_64-pc-windows-msvc.tar.xz")
+            sha256="52c15696665ec3010e100261cb2919d40712dbf871c9a2886a2e60b665bcd2c6"
+            ;;
+          *)
+            echo "::error::No pinned SHA256 for asset ${asset}. Update .github/actions/setup-llvm/action.yml when bumping the version."
+            exit 1
+            ;;
+        esac
+        if [ -n "${RUNNER_TOOL_CACHE:-}" ]; then
+          install_root="${RUNNER_TOOL_CACHE}/llvm/${version}"
+        else
+          install_root="${RUNNER_TEMP}/llvm/${version}"
+        fi
+        prefix="${install_root}/${subdir}"
+        mkdir -p "${install_root}"
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+        echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+        echo "subdir=${subdir}" >> "$GITHUB_OUTPUT"
+        echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+        echo "install_root=${install_root}" >> "$GITHUB_OUTPUT"
+        echo "prefix=${prefix}" >> "$GITHUB_OUTPUT"
+
+    - name: Cache extracted LLVM
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.layout.outputs.prefix }}
+        key: llvm-${{ runner.os }}-${{ runner.arch }}-${{ steps.layout.outputs.version }}-${{ steps.layout.outputs.sha256 }}
+
+    # The extracted tree is ~5-8 GB; the tarball itself is ~1.8 GB. We cache
+    # the extracted directory (skip re-extract cost) and re-download on miss
+    # rather than caching the tarball.
+    - name: Download and verify LLVM tarball
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ steps.layout.outputs.version }}/${{ steps.layout.outputs.asset }}"
+        tarball="${RUNNER_TEMP}/${{ steps.layout.outputs.asset }}"
+        echo "Downloading ${url}"
+        curl -fL --retry 3 --retry-delay 5 -o "${tarball}" "${url}"
+        echo "${{ steps.layout.outputs.sha256 }}  ${tarball}" > "${tarball}.sha256"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum -c "${tarball}.sha256"
+        else
+          # macOS shasum fallback
+          shasum -a 256 -c "${tarball}.sha256"
+        fi
+        echo "Extracting to ${{ steps.layout.outputs.install_root }}"
+        tar -xJf "${tarball}" -C "${{ steps.layout.outputs.install_root }}"
+        rm -f "${tarball}" "${tarball}.sha256"
+
+    - name: Export LLVM environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        prefix="${{ steps.layout.outputs.prefix }}"
+        # llvm-sys-221 honours LLVM_SYS_221_PREFIX; inkwell follows.
+        echo "LLVM_SYS_221_PREFIX=${prefix}" >> "$GITHUB_ENV"
+        # Generic prefix var for downstream cmake/codegen consumers that prefer
+        # one knob (LLVM_DIR / MLIR_DIR are still passed explicitly in cmake
+        # configure steps so the binding stays obvious at the call site).
+        echo "LLVM_PREFIX=${prefix}" >> "$GITHUB_ENV"
+        echo "${prefix}/bin" >> "$GITHUB_PATH"

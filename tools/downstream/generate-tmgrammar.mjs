@@ -69,7 +69,7 @@ const keywordGroups = {
   ],
 
   'keyword.actor.hew': [
-    'actor', 'init', 'move', 'receive', 'spawn', 'terminate', 'this',
+    'actor', 'fork', 'init', 'move', 'receive', 'spawn', 'terminate', 'this',
   ],
 
   'keyword.supervisor.hew': [

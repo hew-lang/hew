@@ -239,8 +239,9 @@ impl Substitution {
 ///
 /// Row order: numeric types first (signed, then unsigned, then floats),
 /// followed by non-numeric scalars, then the special forms `()` and `!`.
-/// The `()` and `!` rows are consumed by `primitive_from_name` only;
-/// wirecodec has no wire representation for them.
+/// The `!` row is consumed by `primitive_from_name` only; wirecodec has no
+/// wire representation for `never`. Unit has an explicit wirecodec nil kind,
+/// whose canonical wire spelling is `unit`.
 pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("i8", &["i8"]),
     ("i16", &["i16"]),
@@ -257,8 +258,9 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("string", &["string", "String", "str"]),
     ("bytes", &["bytes", "Bytes"]),
     ("duration", &["duration", "Duration"]),
-    // Not in wirecodec: Unit and Never have no wire representation.
+    // Unit's type-system spelling is `()`, while wirecodec also accepts `unit`.
     ("()", &["()"]),
+    // Not in wirecodec: Never has no wire representation.
     ("!", &["!"]),
 ];
 

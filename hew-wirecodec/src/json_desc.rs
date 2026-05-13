@@ -57,6 +57,8 @@ pub enum JsonOp {
     /// Encode uses `hew_json_object_set_char` (std/encoding/json/src/lib.rs:610).
     /// Decode uses `hew_json_get_char` (std/encoding/json/src/lib.rs:649).
     SetChar,
+    /// Unit/null payload.
+    SetNull,
     /// Nested wire-type reference.
     Nested {
         /// Name of the nested wire-type referenced by this field.
@@ -200,6 +202,14 @@ mod tests {
         let plan = plan_with_fields("A", vec![simple_field("s", 1, PrimitiveWireKind::String)]);
         let desc = JsonCodecDesc::from_plan(&plan);
         assert_eq!(desc.fields[0].op, JsonOp::SetString);
+        assert!(desc.fields[0].bounds.is_none());
+    }
+
+    #[test]
+    fn unit_field_uses_set_null_with_no_bounds() {
+        let plan = plan_with_fields("A", vec![simple_field("done", 1, PrimitiveWireKind::Unit)]);
+        let desc = JsonCodecDesc::from_plan(&plan);
+        assert_eq!(desc.fields[0].op, JsonOp::SetNull);
         assert!(desc.fields[0].bounds.is_none());
     }
 

@@ -17,6 +17,7 @@ pub mod stdlib;
 pub mod stdlib_loader;
 pub mod traits;
 pub mod ty;
+pub mod type_descriptor;
 pub mod unify;
 
 pub use check::{
@@ -29,3 +30,4 @@ pub use lowering_facts::{
 };
 pub use resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy};
 pub use ty::{TraitObjectBound, Ty};
+pub use type_descriptor::TypeDescriptor;

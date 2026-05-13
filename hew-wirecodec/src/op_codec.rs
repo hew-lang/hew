@@ -40,6 +40,7 @@ pub(crate) fn op_for_kind(kind: &PrimitiveWireKind) -> JsonOp {
         PrimitiveWireKind::Bytes => JsonOp::SetBytes,
         PrimitiveWireKind::Duration => JsonOp::SetDuration,
         PrimitiveWireKind::Char => JsonOp::SetChar,
+        PrimitiveWireKind::Unit => JsonOp::SetNull,
         PrimitiveWireKind::Nested(name) => JsonOp::Nested {
             type_name: name.clone(),
         },

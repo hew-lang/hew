@@ -50,6 +50,8 @@ pub(crate) enum PrimitiveClass {
     /// Duration in nanoseconds (i64 range), varint, neither signed nor unsigned
     /// in the classifier sense.
     Duration,
+    /// Unit payload encoded as msgpack nil.
+    Unit,
 }
 
 impl PrimitiveClass {
@@ -244,6 +246,12 @@ pub(crate) const PRIMITIVE_DESCS: &[PrimitiveDesc] = &[
             max: i64::MAX as u64,
         }),
     },
+    PrimitiveDesc {
+        kind: PrimitiveWireKind::Unit,
+        aliases: &["unit", "()"],
+        class: PrimitiveClass::Unit,
+        bounds: None,
+    },
 ];
 
 /// Look up the descriptor for a primitive kind.
@@ -276,6 +284,7 @@ mod tests {
             PrimitiveWireKind::String,
             PrimitiveWireKind::Bytes,
             PrimitiveWireKind::Duration,
+            PrimitiveWireKind::Unit,
         ];
         for k in &kinds {
             assert!(desc_for_kind(k).is_some(), "missing descriptor for {k:?}");
@@ -325,6 +334,7 @@ mod tests {
             PrimitiveWireKind::F64,
             PrimitiveWireKind::String,
             PrimitiveWireKind::Bytes,
+            PrimitiveWireKind::Unit,
         ] {
             let desc = desc_for_kind(k).unwrap();
             assert!(!desc.class.is_varint(), "{k:?} should not be varint");
@@ -351,6 +361,7 @@ mod tests {
             PrimitiveWireKind::Bool,
             PrimitiveWireKind::Duration,
             PrimitiveWireKind::Char,
+            PrimitiveWireKind::Unit,
         ];
         for k in &not_signed {
             let desc = desc_for_kind(k).unwrap();

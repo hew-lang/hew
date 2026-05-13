@@ -1,22 +1,34 @@
-//! D2 textual and D7-style pre-MLIR proof emitter for the Hew compiler.
+//! Native and WebAssembly LLVM IR emitter for the v0.5 Hew backend.
 //!
-//! # Design decisions honoured
+//! The Cluster 1 cutover replaces the earlier Stage-9 text-trace emitter
+//! (`emit.rs`, deleted in commit 5 of this branch) with a direct LLVM IR
+//! emitter built on `inkwell`, adopted from the backend probe (Track C) at
+//! `.claude/worktrees/c1-backend-probe` HEAD `e6c83faa`. The emitter
+//! produces native object files and standalone WebAssembly modules from
+//! the `hew-mir` raw MIR, both verified by `Module::verify()`.
 //!
-//! - **D2** (`textual_first_tablegen_after_c1`): emits a deterministic Hew-IR textual proof using
-//!   named-op-like syntax.  No TableGen, no C++ dialect registration required,
-//!   and this Stage 9 text is not claimed to parse with MLIR tooling yet.
+//! ## Spine subset (Cluster 1)
 //!
-//! - **D7** (`type_attribute_storage_class`): records the current canonical
-//!   Hew dialect-style textual spellings. Full ownership/storage attributes remain
-//!   pending Stage 4 TypeDescriptor/THIR authority:
-//!   - `!hew.string`  — Hew string
-//!   - `!hew.bytes`   — Hew byte buffer
-//!   - `!hew.char`    — Unicode scalar value
-//!   - `!hew.duration` — nanosecond-precision duration
-//!   - MLIR built-ins (`i64`, `f32`, `i1`, …) for scalars
+//! The emitter accepts integer literals, integer arithmetic
+//! (`+`, `-`, `*`), `let` bindings, value moves, and `Return`. Composite
+//! types, strings, closures, generators, and coroutines fail closed with
+//! a `CodegenError::Unsupported` carrying the construct name; the CLI
+//! surfaces this as a non-zero exit. Later clusters widen the accepted
+//! subset:
 //!
-//! The sole public entry point is [`emit_mlir`].
+//! - Cluster 2: String / `to_string` / Display / composite types.
+//! - Cluster 3: Drop elaboration with cleanup CFG edges.
+//! - Cluster 4: Closures, generators, `Lazy<T>`.
+//!
+//! ## Public surface
+//!
+//! - [`emit_module`] — emit native + wasm artefacts for an `IrPipeline`.
+//! - [`EmitOptions`] — output configuration.
+//! - [`EmitArtefacts`] — paths of emitted files.
+//! - [`CodegenError`] — failure variants for diagnostic mapping.
 
 mod emit;
+pub mod llvm;
 
 pub use emit::emit_mlir;
+pub use llvm::{emit_module, CodegenError, EmitArtefacts, EmitOptions};

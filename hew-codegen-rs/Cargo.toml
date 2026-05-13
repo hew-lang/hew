@@ -4,15 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "D2 textual and D7-style pre-MLIR proof emitter for the Hew v0.5 compiler pipeline"
+description = "Native and WebAssembly LLVM IR emitter for the Hew v0.5 compiler pipeline"
 repository = "https://github.com/hew-lang/hew"
 readme = "../README.md"
-keywords = ["hew", "compiler", "mlir", "codegen"]
+keywords = ["hew", "compiler", "llvm", "codegen", "wasm"]
 categories = ["compilers"]
 
 [dependencies]
 hew-mir = { path = "../hew-mir" }
 hew-types = { path = "../hew-types" }
+# Inkwell wraps LLVM. Pinned to llvm22-1 because the v0.5 backend probe
+# (.claude/worktrees/c1-backend-probe @ e6c83faa) established this version
+# empirically against Homebrew llvm@22; the project Makefile already
+# auto-detects llvm@22 for the C++ subtree, so there is one shared LLVM
+# major across the codebase.
+inkwell = { version = "0.9", features = ["llvm22-1"] }
 
 [dev-dependencies]
 hew-hir = { path = "../hew-hir" }

@@ -82,3 +82,34 @@ fn cross_function_call_types_return_correctly() {
     assert!(mlir.contains("hew.func @main"));
     assert!(mlir.contains("hew.return : int"));
 }
+
+#[test]
+fn unknown_user_type_rejected_before_mlir() {
+    // D10: Named user types with no known ValueClass must be rejected at the
+    // MIR boundary.  They must never reach MLIR with "UnknownBlocked" in
+    // hew.value_decision.
+    let parsed = hew_parser::parse("fn f(x: Foo) -> Foo { return x; }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    // HIR has no error — type annotations resolve to Named for any identifier.
+    // The fail-closed boundary is MIR.
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR should not error on undeclared type name alone: {:?}",
+        output.diagnostics
+    );
+    let pipeline = lower_hir_module(&output.module);
+    assert!(
+        pipeline
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, MirDiagnosticKind::UnknownType { .. })),
+        "unknown named type must produce UnknownType at MIR boundary: {:?}",
+        pipeline.diagnostics
+    );
+    // MLIR must be empty — not emitted when there are diagnostics.
+    assert!(
+        pipeline.hew_mlir.dump().is_empty(),
+        "MLIR must not be emitted when UnknownType diagnostics are present"
+    );
+}

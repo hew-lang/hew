@@ -100,12 +100,27 @@ pub struct MirDiagnostic {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MirDiagnosticKind {
-    UseAfterConsume { binding: BindingId, name: String },
+    UseAfterConsume {
+        binding: BindingId,
+        name: String,
+    },
+    /// D10: a named user type had no known `ValueClass` at the MIR boundary.
+    /// Only builtin types are supported in slice 1.
+    UnknownType {
+        name: String,
+    },
+    /// Defense-in-depth: an `HirExprKind::Unsupported` node reached MIR
+    /// lowering.  The HIR diagnostic should have stopped the pipeline earlier.
+    UnsupportedNode {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionFact {
     pub site: SiteId,
+    /// The resolved type of the expression at this decision site.
+    pub ty: ResolvedTy,
     pub value_class: ValueClass,
     pub intent: IntentKind,
     pub strategy: Strategy,

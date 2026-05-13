@@ -32,3 +32,9 @@ if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unresolved_infe
   exit 1
 fi
 grep -q 'UnresolvedInferenceVar' "${reject_output}"
+
+if "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/reject/unknown_named_type.hew" >"${reject_output}" 2>&1; then
+  echo "expected unknown-named-type fixture to fail" >&2
+  exit 1
+fi
+grep -q 'UnknownType' "${reject_output}"

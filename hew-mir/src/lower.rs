@@ -28,7 +28,12 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
-                mlir_functions.push(lowered.mlir);
+                // D10: only emit MLIR for functions with no diagnostics.
+                // A function with UnknownType or UnsupportedNode diagnostics
+                // must not appear in the MLIR output at all.
+                if lowered.diagnostics.is_empty() {
+                    mlir_functions.push(lowered.mlir);
+                }
                 elaborated_mir.push(lowered.elaborated);
                 diagnostics.extend(lowered.diagnostics);
             }
@@ -77,7 +82,29 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         blocks: vec![raw_block.clone()],
         decisions: builder.decisions.clone(),
     };
-    let diagnostics = check_raw_mir(&raw_block);
+    let mut diagnostics = check_raw_mir(&raw_block);
+
+    // Collect diagnostics emitted by the builder (e.g., Unsupported HIR nodes).
+    diagnostics.append(&mut builder.diagnostics);
+
+    // D10: Named user types with ValueClass::Unknown must not reach MLIR.
+    // Emit a diagnostic for every UnknownBlocked decision site so the
+    // pipeline is rejected before lower_elaborated_to_mlir is called.
+    for decision in &builder.decisions {
+        if decision.strategy == Strategy::UnknownBlocked {
+            let name = match &decision.ty {
+                ResolvedTy::Named { name, .. } => name.clone(),
+                other => format!("{other:?}"),
+            };
+            diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnknownType { name },
+                note: "named user type has no known ValueClass at the MIR boundary; \
+                       only builtin types are supported in slice 1"
+                    .to_string(),
+            });
+        }
+    }
+
     let checked = CheckedMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
@@ -103,7 +130,16 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         statements: elaborated_statements,
         decisions: builder.decisions,
     };
-    let mlir = lower_elaborated_to_mlir(&elaborated);
+    // D10: skip MLIR emission when any diagnostic is pending.
+    // UnknownBlocked or UnsupportedNode must never reach lower_elaborated_to_mlir.
+    let mlir = if diagnostics.is_empty() {
+        lower_elaborated_to_mlir(&elaborated)
+    } else {
+        HewMlirFunction {
+            name: func.name.clone(),
+            ops: Vec::new(),
+        }
+    };
 
     LoweredFunction {
         thir,
@@ -120,6 +156,8 @@ struct Builder {
     statements: Vec<MirStatement>,
     decisions: Vec<DecisionFact>,
     owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
+    /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
+    diagnostics: Vec<MirDiagnostic>,
 }
 
 impl Builder {
@@ -236,9 +274,21 @@ impl Builder {
                     self.mark_binding_moved(*id);
                 }
             }
-            HirExprKind::Literal(_)
-            | HirExprKind::BindingRef { .. }
-            | HirExprKind::Unsupported(_) => {}
+            HirExprKind::Literal(_) | HirExprKind::BindingRef { .. } => {}
+            HirExprKind::Unsupported(reason) => {
+                // Defense-in-depth: HIR lowering should have emitted
+                // CutoverUnsupported and the driver should have stopped before
+                // reaching MIR.  Emit a MirDiagnostic so the pipeline is
+                // still rejected if somehow the gate was bypassed.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: reason.clone(),
+                    },
+                    note: "HIR Unsupported node reached MIR lowering; \
+                           CutoverUnsupported should have been caught earlier"
+                        .to_string(),
+                });
+            }
         }
     }
 
@@ -271,6 +321,7 @@ impl Builder {
         };
         self.decisions.push(DecisionFact {
             site: expr.site,
+            ty: expr.ty.clone(),
             value_class: expr.value_class,
             intent: expr.intent,
             strategy,
@@ -334,6 +385,17 @@ fn check_raw_mir(block: &BasicBlock) -> Vec<MirDiagnostic> {
 }
 
 fn lower_elaborated_to_mlir(func: &ElaboratedMirFunction) -> HewMlirFunction {
+    // D10 defense-in-depth: UnknownBlocked must never reach MLIR emission.
+    // lower_function gates on diagnostics before calling this; if somehow
+    // a UnknownBlocked decision arrives here, it is a programming error.
+    for decision in &func.decisions {
+        assert_ne!(
+            decision.strategy,
+            Strategy::UnknownBlocked,
+            "D10 violation: UnknownBlocked strategy for site {} reached MLIR emission",
+            decision.site
+        );
+    }
     let mut ops = Vec::new();
     for statement in &func.statements {
         match statement {

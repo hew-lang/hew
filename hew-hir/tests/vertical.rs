@@ -89,3 +89,29 @@ fn call_to_unresolved_function_emits_inference_var() {
         .iter()
         .any(|d| matches!(d.kind, HirDiagnosticKind::UnresolvedInferenceVar)));
 }
+
+#[test]
+fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
+    // Defense-in-depth: verify_hir emits CutoverUnsupported for any Unsupported
+    // HIR node it finds, even when the lowerer already emitted the diagnostic.
+    // A tuple literal is a slice-2 expression; `lower_expr` produces an
+    // HirExprKind::Unsupported node for it.
+    let output = lower("fn f() { let t = (1, 2); }");
+    // The lowerer already emits CutoverUnsupported for the unsupported expression.
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. })),
+        "lowerer must emit CutoverUnsupported for unsupported expression: {:?}",
+        output.diagnostics
+    );
+    // The verifier independently flags the surviving Unsupported node.
+    let verify = verify_hir(&output.module);
+    assert!(
+        verify
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. })),
+        "verifier must flag Unsupported HIR node as defense-in-depth: {verify:?}"
+    );
+}

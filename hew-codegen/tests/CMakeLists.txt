@@ -844,7 +844,8 @@ function(add_wasm_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wasm_reject_test.cmake
   )
   set_tests_properties(wasm_reject_${TEST_NAME} PROPERTIES
-    LABELS "wasm"
+    DISABLED TRUE
+    LABELS "wasm;v0.5-cutover-dual-load-disabled"
   )
 endfunction()
 

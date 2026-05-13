@@ -7985,6 +7985,7 @@ fn struct_init_coerces_literal_to_expected_type_arg() {
         Expr::StructInit {
             name: "Wrapper".to_string(),
             fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+            type_args: None,
         },
         0..20,
     );
@@ -8012,6 +8013,7 @@ fn struct_init_infers_type_param_from_literal() {
         Expr::StructInit {
             name: "Wrapper".to_string(),
             fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+            type_args: None,
         },
         0..20,
     );
@@ -8040,6 +8042,7 @@ fn struct_init_overflow_in_expected_type() {
         Expr::StructInit {
             name: "Wrapper".to_string(),
             fields: vec![("value".to_string(), make_int_literal(256, 10..13))],
+            type_args: None,
         },
         0..20,
     );
@@ -8058,7 +8061,264 @@ fn struct_init_overflow_in_expected_type() {
     );
 }
 
-// ── Trailing-literal coercion in typed functions (gap fix) ────────
+// ── Explicit type args at struct init site (F1 fix) ────────────────────────
+
+#[test]
+fn struct_init_explicit_type_arg_seeds_substitution() {
+    // `Wrapper<String> { value: "hello" }` — explicit type arg must constrain
+    // field checking against String, not an unbound param.
+    let source = r#"
+        type Wrapper<T> { value: T }
+        fn main() {
+            let w = Wrapper<String> { value: "hello" };
+        }
+    "#;
+    let tco = check_source(source);
+    assert!(
+        tco.errors.is_empty(),
+        "explicit type arg should check cleanly: {:?}",
+        tco.errors
+    );
+}
+
+#[test]
+fn struct_init_explicit_type_arg_wrong_field_type_errors() {
+    // `Wrapper<int> { value: "hello" }` — explicit arg is int, field is String: error.
+    let source = r#"
+        type Wrapper<T> { value: T }
+        fn main() {
+            let w = Wrapper<int> { value: "hello" };
+        }
+    "#;
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "should parse: {:?}",
+        parse_result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&parse_result.program);
+    assert!(
+        !tco.errors.is_empty(),
+        "mismatched explicit type arg should produce a type error"
+    );
+}
+
+#[test]
+fn struct_init_explicit_type_arg_arity_mismatch_errors() {
+    // `Wrapper<int, String>` on a one-param struct should report arity mismatch.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    register_generic_wrapper(&mut checker);
+
+    let span = 0..30_usize;
+    let type_args = Some(vec![
+        (
+            TypeExpr::Named {
+                name: "int".to_string(),
+                type_args: None,
+            },
+            0..3_usize,
+        ),
+        (
+            TypeExpr::Named {
+                name: "String".to_string(),
+                type_args: None,
+            },
+            4..10_usize,
+        ),
+    ]);
+    let init = (
+        Expr::StructInit {
+            name: "Wrapper".to_string(),
+            fields: vec![("value".to_string(), make_int_literal(1, 20..21))],
+            type_args,
+        },
+        span.clone(),
+    );
+    checker.synthesize(&init.0, &init.1);
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|e| e.message.contains("type parameter")),
+        "arity mismatch should produce an error, got: {:?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn struct_init_explicit_type_arg_roundtrip_via_parse() {
+    // Parser + checker integration: `Wrapper<String> { value: "hello" }` must
+    // parse *and* type-check with the synthesised type `Wrapper<String>`.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    register_generic_wrapper(&mut checker);
+
+    let source = r#"type Wrapper<T> { value: T }
+fn main() { let w = Wrapper<String> { value: "hello" }; }"#;
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "parse errors: {:?}",
+        parse_result.errors
+    );
+    let tco = checker.check_program(&parse_result.program);
+    assert!(
+        tco.errors.is_empty(),
+        "parse+check roundtrip should be error-free: {:?}",
+        tco.errors
+    );
+}
+
+// ── Reject tests for check_against paths (blocker fixes) ───────────────────
+
+#[test]
+fn struct_init_explicit_type_arg_conflicts_with_binding_type_errors() {
+    // `let w: Wrapper<int> = Wrapper<String> { value: 1 };`
+    // The explicit `String` annotation conflicts with the expected `int`.
+    // The checker must reject this rather than silently ignoring it.
+    let source = r"
+        type Wrapper<T> { value: T }
+        fn main() {
+            let w: Wrapper<int> = Wrapper<String> { value: 1 };
+        }
+    ";
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "should parse without errors: {:?}",
+        parse_result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&parse_result.program);
+    assert!(
+        !tco.errors.is_empty(),
+        "conflicting explicit type arg should produce a type error"
+    );
+    let has_mismatch = tco.errors.iter().any(|e| {
+        matches!(e.kind, TypeErrorKind::Mismatch { .. })
+            || e.message.contains("conflicts")
+            || e.message.contains("String")
+    });
+    assert!(
+        has_mismatch,
+        "error should mention the type conflict, got: {:?}",
+        tco.errors
+    );
+}
+
+#[test]
+fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
+    // Explicit type args on an enum variant struct initializer when the expected
+    // type is already known should produce an error (fail-closed for this slice).
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    // Register a generic enum `Keeper<T>` with a struct variant `Holding { value: T }`
+    let mut variant_fields = HashMap::new();
+    variant_fields.insert(
+        "Holding".to_string(),
+        VariantDef::Struct(vec![(
+            "value".to_string(),
+            Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            },
+        )]),
+    );
+    checker.type_defs.insert(
+        "Keeper".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Enum,
+            name: "Keeper".to_string(),
+            type_params: vec!["T".to_string()],
+            fields: HashMap::new(),
+            variants: variant_fields,
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+
+    let span = 0..30_usize;
+    // Explicit type args on an enum variant struct form in check_against path.
+    let type_args = Some(vec![(
+        TypeExpr::Named {
+            name: "int".to_string(),
+            type_args: None,
+        },
+        0..3_usize,
+    )]);
+    let init = Expr::StructInit {
+        name: "Holding".to_string(),
+        fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+        type_args,
+    };
+    let expected = Ty::Named {
+        name: "Keeper".to_string(),
+        args: vec![Ty::I64],
+    };
+    checker.check_against(&init, &span, &expected);
+    assert!(
+        !checker.errors.is_empty(),
+        "explicit type args on enum variant struct form in check_against should produce an error"
+    );
+}
+
+#[test]
+fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
+    // `Keeper::Holding<int> { value: 42 }` in the synthesize path — the explicit
+    // `int` annotation should pre-seed the type_arg_map so the synthesised type
+    // is `Keeper<int>`, not `Keeper<i64>` or an unconstrained type var.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    // Register `Keeper<T>` enum with struct variant `Holding { value: T }`
+    let mut variant_fields_map = HashMap::new();
+    variant_fields_map.insert(
+        "Keeper::Holding".to_string(),
+        VariantDef::Struct(vec![(
+            "value".to_string(),
+            Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            },
+        )]),
+    );
+    checker.type_defs.insert(
+        "Keeper".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Enum,
+            name: "Keeper".to_string(),
+            type_params: vec!["T".to_string()],
+            fields: HashMap::new(),
+            variants: variant_fields_map,
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+
+    let span = 0..30_usize;
+    let type_args = Some(vec![(
+        TypeExpr::Named {
+            name: "int".to_string(),
+            type_args: None,
+        },
+        0..3_usize,
+    )]);
+    let init = Expr::StructInit {
+        name: "Keeper::Holding".to_string(),
+        fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+        type_args,
+    };
+    let result = checker.synthesize(&init, &span);
+    assert!(
+        checker.errors.is_empty(),
+        "enum variant explicit type arg should synthesize without errors: {:?}",
+        checker.errors
+    );
+    // The synthesised type should be Keeper<int> (IntLiteral coerces to int / i64)
+    assert!(
+        matches!(result, Ty::Named { ref name, .. } if name == "Keeper"),
+        "synthesised type should be Keeper<…>, got: {result}"
+    );
+}
 
 #[test]
 fn trailing_integer_literal_coerces_to_declared_return_type() {
@@ -11222,6 +11482,7 @@ fn module_graph_body_private_local_type_is_available() {
                         Expr::StructInit {
                             name: "Local".to_string(),
                             fields: vec![("x".to_string(), make_int_literal(1, 0..1))],
+                            type_args: None,
                         },
                         0..10,
                     )),

@@ -211,6 +211,11 @@ pub enum Expr {
     StructInit {
         name: String,
         fields: Vec<(String, Spanned<Expr>)>,
+        /// Explicit type arguments supplied at the struct literal site,
+        /// e.g. `Wrapper<String> { value: "hello" }`.
+        /// Absent when the user omits them and inference fills the gap.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        type_args: Option<Vec<Spanned<TypeExpr>>>,
     },
     Send {
         target: Box<Spanned<Expr>>,

@@ -234,7 +234,11 @@ impl Checker {
             Expr::MapLiteral { entries } => self.synthesize_map_literal(entries, span),
 
             // Struct init
-            Expr::StructInit { name, fields } => self.check_struct_init(name, fields, span),
+            Expr::StructInit {
+                name,
+                fields,
+                type_args,
+            } => self.check_struct_init(name, fields, type_args.as_deref(), span),
 
             // Spawn
             Expr::Spawn { target, args } => {
@@ -1411,12 +1415,55 @@ impl Checker {
 
             // Struct init coercion: propagate expected type args into field checking
             (
-                Expr::StructInit { name, fields },
+                Expr::StructInit {
+                    name,
+                    fields,
+                    type_args,
+                },
                 Ty::Named {
                     name: expected_name,
                     args: expected_args,
                 },
             ) if name == expected_name => {
+                // If the literal carries explicit type args, validate that they agree
+                // with the expected args coming from the binding site.  Conflicting
+                // annotations (`Wrapper<String>` when expected is `Wrapper<int>`) are
+                // rejected here rather than being silently dropped.
+                if let Some(explicit_args) = type_args {
+                    if explicit_args.len() == expected_args.len() {
+                        for (te, expected_arg) in explicit_args.iter().zip(expected_args.iter()) {
+                            let resolved_arg = self.resolve_type_expr(te);
+                            let expected_resolved = self.subst.resolve(expected_arg);
+                            if resolved_arg != expected_resolved
+                                && !matches!(resolved_arg, Ty::Error)
+                            {
+                                self.report_error(
+                                    TypeErrorKind::Mismatch {
+                                        expected: expected_resolved.user_facing().to_string(),
+                                        actual: resolved_arg.user_facing().to_string(),
+                                    },
+                                    span,
+                                    format!(
+                                        "explicit type argument `{}` conflicts with expected `{}`",
+                                        resolved_arg.user_facing(),
+                                        expected_resolved.user_facing(),
+                                    ),
+                                );
+                            }
+                        }
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "struct `{name}` has {} type parameter(s) but {} were supplied",
+                                expected_args.len(),
+                                explicit_args.len()
+                            ),
+                        );
+                    }
+                }
+
                 if let Some(td) = self.lookup_type_def(name) {
                     if td.type_params.len() == expected_args.len() && !expected_args.is_empty() {
                         // Pre-seed type arg map from the expected type
@@ -1500,12 +1547,30 @@ impl Checker {
             // correctly.  This mirrors the plain-struct coercion arm above but
             // matches when the init name is a variant, not the type itself.
             (
-                Expr::StructInit { name, fields },
+                Expr::StructInit {
+                    name,
+                    fields,
+                    type_args,
+                },
                 Ty::Named {
                     name: expected_enum_name,
                     args: expected_args,
                 },
             ) => {
+                // Fail-closed: explicit type args on enum variant struct forms are not
+                // yet supported in the check_against path.  The expected type already
+                // provides the type args from the binding site, so there is no safe
+                // way to reconcile conflicting annotations here for this slice.
+                if type_args.is_some() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "explicit type arguments on enum variant struct initializer `{name}` \
+                             are not yet supported when the expected type is already known"
+                        ),
+                    );
+                }
                 let short = name.rsplit("::").next().unwrap_or(name.as_str());
                 // Reject mismatched qualified prefix (e.g. OtherEnum::Variant
                 // when expected is MyEnum).
@@ -3164,11 +3229,34 @@ impl Checker {
         &mut self,
         name: &str,
         fields: &[(String, Spanned<Expr>)],
+        type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
     ) -> Ty {
         if let Some(td) = self.lookup_type_def(name) {
-            // Track inferred type arguments for generic structs
+            // Track inferred type arguments for generic structs.
+            // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),
+            // pre-seed the map from them so field checking constrains against the
+            // declared types immediately rather than synthesizing unconstrained.
             let mut type_arg_map: HashMap<String, Ty> = HashMap::new();
+            if let Some(explicit_args) = type_args {
+                if explicit_args.len() == td.type_params.len() {
+                    for (tp, te) in td.type_params.iter().zip(explicit_args.iter()) {
+                        let resolved = self.resolve_type_expr(te);
+                        type_arg_map.insert(tp.clone(), resolved);
+                    }
+                } else {
+                    // Covers both `Foo<>` (zero explicit args) and wrong-count args.
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "struct `{name}` has {} type parameter(s) but {} were supplied",
+                            td.type_params.len(),
+                            explicit_args.len()
+                        ),
+                    );
+                }
+            }
 
             for (field_name, (expr, es)) in fields {
                 if let Some(declared_ty) = td.fields.get(field_name) {
@@ -3266,6 +3354,28 @@ impl Checker {
         {
             // Infer generic type args from field values, mirroring the plain-struct path.
             let mut type_arg_map: HashMap<String, Ty> = HashMap::new();
+            // If the caller supplied explicit type args (e.g. `Keeper::Holding<int> { … }`),
+            // pre-seed the map so field checking constrains against the declared types
+            // rather than synthesizing unconstrained.
+            if let Some(explicit_args) = type_args {
+                if explicit_args.len() == enum_type_params.len() {
+                    for (tp, te) in enum_type_params.iter().zip(explicit_args.iter()) {
+                        let resolved = self.resolve_type_expr(te);
+                        type_arg_map.insert(tp.clone(), resolved);
+                    }
+                } else {
+                    // Covers both `Variant<>` (zero explicit args) and wrong-count args.
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "enum variant `{name}` has {} type parameter(s) but {} were supplied",
+                            enum_type_params.len(),
+                            explicit_args.len()
+                        ),
+                    );
+                }
+            }
 
             for (field_name, (expr, es)) in fields {
                 if let Some((_, declared_ty)) = variant_fields.iter().find(|(n, _)| n == field_name)

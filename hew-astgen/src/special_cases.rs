@@ -908,6 +908,12 @@ fn expr_call_dispatcher() -> &'static str {
             fail("StructInit field tuple should have 2 elements");
           return std::make_pair(getString(arr[0]), parseSpannedPtr<ast::Expr>(arr[1], parseExpr));
         });
+    const auto *ta = mapGet(*payload, "type_args");
+    if (ta && !isNil(*ta)) {
+      e.type_args = parseVec<ast::Spanned<ast::TypeExpr>>(*ta, [](const msgpack::object &o) {
+        return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
+      });
+    }
     return ast::Expr{std::move(e), {}};
   }
   if (name == "Send") {
@@ -1940,5 +1946,33 @@ mod tests {
                 "Missing template helper: {template}"
             );
         }
+    }
+
+    #[test]
+    fn struct_init_dispatcher_includes_type_args_field() {
+        // The generated C++ parser for StructInit must optionally read `type_args`
+        // (backward-compatible: absent key → std::nullopt).
+        let src = expr_call_dispatcher();
+        // Confirm the StructInit branch exists.
+        assert!(
+            src.contains(r#"if (name == "StructInit")"#),
+            "StructInit branch missing"
+        );
+        // Confirm type_args is read with mapGet (optional, not required — back-compat).
+        assert!(
+            src.contains(r#"mapGet(*payload, "type_args")"#),
+            "StructInit parser must use mapGet (optional) for type_args"
+        );
+        // Confirm the TypeExpr vector parse is present.
+        assert!(
+            src.contains("parseVec<ast::Spanned<ast::TypeExpr>>"),
+            "type_args parse must use parseVec<ast::Spanned<ast::TypeExpr>>"
+        );
+        // Confirm name and fields are still parsed (non-regression).
+        assert!(
+            src.contains(r#"mapReq(*payload, "name")"#)
+                && src.contains(r#"mapReq(*payload, "fields")"#),
+            "name and fields must still be read"
+        );
     }
 }

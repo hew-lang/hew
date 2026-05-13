@@ -4372,4 +4372,107 @@ mod tests {
             module_graph: None,
         });
     }
+
+    // ── StructInit.type_args round-trip (F1) ──────────────────────────────
+
+    #[test]
+    fn struct_init_type_args_roundtrip_with_type_arg() {
+        // A program containing `Wrapper<String> { value: "hello" }`.
+        // The `type_args` field must survive a msgpack serialize → deserialize cycle.
+        // We use `parse()` to build the program so the type_args field is populated
+        // by the actual parser path, then verify it survives the wire encode/decode.
+        use hew_parser::ast::{Expr, Stmt, TypeExpr};
+        let source = r#"type Wrapper<T> { value: T }
+fn main() { let w = Wrapper<String> { value: "hello" }; }"#;
+        let program = hew_parser::parse(source).program;
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let restored = deserialize_from_msgpack(&bytes).expect("should deserialize");
+
+        // Locate the StructInit in the restored program and confirm type_args is Some.
+        let hew_parser::ast::Item::Function(f) = &restored.items[1].0 else {
+            panic!("expected function at index 1");
+        };
+        let Stmt::Let {
+            value:
+                Some((
+                    Expr::StructInit {
+                        name, type_args, ..
+                    },
+                    _,
+                )),
+            ..
+        } = &f.body.stmts[0].0
+        else {
+            panic!("expected let with StructInit");
+        };
+        assert_eq!(name, "Wrapper");
+        let args = type_args
+            .as_ref()
+            .expect("type_args must survive the wire round-trip");
+        assert_eq!(args.len(), 1, "one type arg expected");
+        assert!(
+            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "String"),
+            "type arg should be String, got {:?}",
+            args[0].0
+        );
+    }
+
+    #[test]
+    fn struct_init_type_args_roundtrip_absent_field_deserializes_as_none() {
+        // Backward compat: a struct literal without explicit type args (old format)
+        // must round-trip with type_args == None (serde #[skip_serializing_if = "None"]).
+        use hew_parser::ast::{Expr, Stmt};
+        let source = r#"type Wrapper<T> { value: T }
+fn main() { let w = Wrapper { value: "hello" }; }"#;
+        let program = hew_parser::parse(source).program;
+
+        let bytes = serialize_to_msgpack(
+            &program,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            vec![],
+            None,
+            None,
+        );
+        let restored = deserialize_from_msgpack(&bytes).expect("should deserialize");
+
+        let hew_parser::ast::Item::Function(f) = &restored.items[1].0 else {
+            panic!("expected function at index 1");
+        };
+        let Stmt::Let {
+            value: Some((Expr::StructInit { type_args, .. }, _)),
+            ..
+        } = &f.body.stmts[0].0
+        else {
+            panic!("expected let with StructInit");
+        };
+        assert!(
+            type_args.is_none(),
+            "struct literal without explicit type args should round-trip with type_args: None"
+        );
+    }
 }

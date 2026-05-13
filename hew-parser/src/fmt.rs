@@ -2069,8 +2069,17 @@ impl<'a> Formatter<'a> {
                 self.format_call_args(args);
                 self.write(")");
             }
-            Expr::StructInit { name, fields } => {
+            Expr::StructInit {
+                name,
+                fields,
+                type_args,
+            } => {
                 self.write(name);
+                if let Some(type_args) = type_args {
+                    self.write("<");
+                    self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
+                    self.write(">");
+                }
                 self.write(" { ");
                 self.comma_sep(fields, |f, (fname, fval)| {
                     f.write(fname);
@@ -3209,6 +3218,38 @@ fn main() {
         fork audit();
         worker
     };
+}
+";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    // ── StructInit with explicit type args (F1 formatter coverage) ────────
+
+    #[test]
+    fn struct_init_explicit_type_arg_formats_correctly() {
+        // The formatter must emit `Name<T> { ... }` when type_args is Some.
+        let src = "\
+type Wrapper<T> {
+    value: T;
+}
+
+fn main() {
+    let w = Wrapper<String> { value: \"hello\" };
+}
+";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn struct_init_without_type_arg_formats_unchanged() {
+        // The formatter must emit `Name { ... }` (no `<>`) when type_args is None.
+        let src = "\
+type Wrapper<T> {
+    value: T;
+}
+
+fn main() {
+    let w = Wrapper { value: \"hello\" };
 }
 ";
         assert_eq!(roundtrip(src), src);

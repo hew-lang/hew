@@ -92,7 +92,6 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
         ResolvedTy::Pointer { pointee, .. } => collect_named_type_names(pointee, names),
         ResolvedTy::TraitObject { traits } => {
             for bound in traits {
-                names.push(bound.trait_name.clone());
                 for arg in &bound.args {
                     collect_named_type_names(arg, names);
                 }
@@ -115,5 +114,67 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
         | ResolvedTy::Duration
         | ResolvedTy::Unit
         | ResolvedTy::Never => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::named_type_names;
+    use hew_types::{ResolvedTraitBound, ResolvedTy};
+
+    #[test]
+    fn trait_object_names_are_not_reported_as_unknown_named_types() {
+        let ty = ResolvedTy::TraitObject {
+            traits: vec![ResolvedTraitBound {
+                trait_name: "Display".to_string(),
+                args: Vec::new(),
+            }],
+        };
+
+        assert!(named_type_names(&ty).is_empty());
+    }
+
+    #[test]
+    fn trait_object_type_arguments_still_report_nested_named_types() {
+        let ty = ResolvedTy::TraitObject {
+            traits: vec![ResolvedTraitBound {
+                trait_name: "Iterator".to_string(),
+                args: vec![ResolvedTy::Named {
+                    name: "Foo".to_string(),
+                    args: Vec::new(),
+                }],
+            }],
+        };
+
+        assert_eq!(named_type_names(&ty), vec!["Foo".to_string()]);
+    }
+
+    #[test]
+    fn trait_object_nested_arguments_recurse_without_reporting_trait_names() {
+        let ty = ResolvedTy::TraitObject {
+            traits: vec![ResolvedTraitBound {
+                trait_name: "OuterTrait".to_string(),
+                args: vec![ResolvedTy::Tuple(vec![
+                    ResolvedTy::Named {
+                        name: "Foo".to_string(),
+                        args: Vec::new(),
+                    },
+                    ResolvedTy::TraitObject {
+                        traits: vec![ResolvedTraitBound {
+                            trait_name: "InnerTrait".to_string(),
+                            args: vec![ResolvedTy::Named {
+                                name: "Bar".to_string(),
+                                args: Vec::new(),
+                            }],
+                        }],
+                    },
+                ])],
+            }],
+        };
+
+        assert_eq!(
+            named_type_names(&ty),
+            vec!["Foo".to_string(), "Bar".to_string()]
+        );
     }
 }

@@ -607,11 +607,26 @@ fn declare_function<'ctx>(
         Some(Linkage::Internal)
     };
     let return_ty_llvm = primitive_to_llvm(ctx, &func.return_ty)?;
+    // Cluster 1's spine subset only lowers integer-returning functions.
+    // Bool/Unit/F32/F64 all reach `primitive_to_llvm` with valid shapes,
+    // but the MIR `Instr` stream cannot populate the return slot for them
+    // — the function body would emit `ret` against an uninitialised
+    // alloca. Reject the return type at declaration time so the failure
+    // is loud and well-located (LESSONS `boundary-fail-closed`).
+    if !matches!(return_ty_llvm, BasicTypeEnum::IntType(_)) {
+        return Err(CodegenError::Unsupported(
+            "Cluster 1 only lowers integer-returning functions; \
+             non-integer return types are out of the spine subset",
+        ));
+    }
     // Cluster 1 functions are zero-arg. When Cluster 2 adds params it
     // grows this loop; the shape is here so the diff is small.
     let param_tys: Vec<BasicMetadataTypeEnum> = Vec::new();
     let fn_ty = match return_ty_llvm {
         BasicTypeEnum::IntType(i) => i.fn_type(&param_tys, false),
+        // Other shapes are pre-filtered above; keep the arms exhaustive so
+        // the LLVM API surface stays explicit if a future cluster widens the
+        // accepted set.
         BasicTypeEnum::FloatType(f) => f.fn_type(&param_tys, false),
         BasicTypeEnum::StructType(s) => s.fn_type(&param_tys, false),
         BasicTypeEnum::PointerType(p) => p.fn_type(&param_tys, false),

@@ -184,6 +184,24 @@ pub enum MirDiagnosticKind {
     UnsupportedNode {
         reason: String,
     },
+    /// Cluster 1 spine subset rejection: an expression form (e.g. a call, a
+    /// non-integer literal, a control-flow construct) is recognised but not
+    /// yet lowered to the backend `Instr` stream. Fail-closed so the emitter
+    /// never sees a function body with an uninitialised return slot.
+    CutoverUnsupported {
+        construct: String,
+        site: SiteId,
+    },
+    /// A `BindingRef` could not be resolved to a backend `Place` (typically
+    /// a function parameter — Cluster 1's spine does not yet bind incoming
+    /// arguments to local slots). Without a Place, the value cannot be
+    /// moved into the return slot, so the function would silently emit a
+    /// binary with an uninitialised return.
+    UnresolvedPlace {
+        binding: BindingId,
+        name: String,
+        site: SiteId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

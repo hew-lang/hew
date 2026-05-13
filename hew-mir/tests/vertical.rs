@@ -42,18 +42,17 @@ fn checked_mir_rejects_use_after_consume() {
 }
 
 #[test]
-fn cross_function_call_types_return_correctly() {
-    // With the function registry, calling add() returns i64, not Unit.
-    // Before the registry, this would produce ReturnTypeMismatch in HIR
-    // and the pipeline() helper would panic on diagnostics.
+fn cross_function_call_types_typecheck_then_fail_closed_at_mir() {
+    // With the function registry, calling add() returns i64, not Unit — so
+    // HIR no longer produces a ReturnTypeMismatch. The MIR boundary is the
+    // next gate: Cluster 1's spine subset does not yet lower Call
+    // expressions, and function parameters do not bind to backend
+    // `Place`s, so the program must fail closed at the MIR boundary
+    // (LESSONS `boundary-fail-closed`). The pipeline() helper already
+    // asserts HIR is clean; this test pins the MIR rejection shape.
     let pipeline = pipeline(
         "fn add(a: i64, b: i64) -> i64 { return a + b; } \
          fn main() -> i64 { return add(0, 1); }",
-    );
-    assert!(
-        pipeline.diagnostics.is_empty(),
-        "{:?}",
-        pipeline.diagnostics
     );
     let names: Vec<&str> = pipeline.raw_mir.iter().map(|f| f.name.as_str()).collect();
     assert!(
@@ -63,6 +62,15 @@ fn cross_function_call_types_return_correctly() {
     assert!(
         names.contains(&"main"),
         "raw_mir must include main: {names:?}"
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::CutoverUnsupported { construct, .. }
+                if construct == "function call"
+        )),
+        "call expressions must fail closed at the MIR boundary: {:?}",
+        pipeline.diagnostics
     );
 }
 

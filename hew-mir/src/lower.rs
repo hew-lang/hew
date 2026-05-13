@@ -297,7 +297,7 @@ impl Builder {
     fn lower_value(&mut self, expr: &HirExpr) -> Option<Place> {
         self.decide(expr);
         match &expr.kind {
-            HirExprKind::Literal(lit) => self.lower_literal(lit, &expr.ty),
+            HirExprKind::Literal(lit) => self.lower_literal(lit, &expr.ty, expr.site),
             HirExprKind::BindingRef {
                 name,
                 resolved: ResolvedRef::Binding(id),
@@ -314,7 +314,25 @@ impl Builder {
                 {
                     self.mark_binding_moved(*id);
                 }
-                self.binding_locals.get(id).copied()
+                let place = self.binding_locals.get(id).copied();
+                if place.is_none() {
+                    // Function parameters and other bindings without a
+                    // backend slot are out of Cluster 1's spine. Without a
+                    // Place, the emitter would silently load an
+                    // uninitialised return slot — fail closed here.
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnresolvedPlace {
+                            binding: *id,
+                            name: name.clone(),
+                            site: expr.site,
+                        },
+                        note: "binding has no backend slot in the Cluster 1 spine \
+                               (function parameters and captured bindings are not \
+                               yet lowered)"
+                            .to_string(),
+                    });
+                }
+                place
             }
             HirExprKind::BindingRef { .. } => None,
             HirExprKind::Binary { op, left, right } => {
@@ -329,11 +347,22 @@ impl Builder {
                 // Cluster 1 does not lower Call to backend instructions yet
                 // (Terminator::Call is wired but the spine subset accepts
                 // only literal/binary/return). Walk the children so any
-                // Unsupported inside an argument still surfaces.
+                // Unsupported inside an argument still surfaces, then
+                // fail closed so the emitter never sees a return slot with
+                // no producer (LESSONS `boundary-fail-closed`).
                 let _ = self.lower_value(callee);
                 for arg in args {
                     let _ = self.lower_value(arg);
                 }
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "function call".to_string(),
+                        site: expr.site,
+                    },
+                    note: "call expressions are not yet lowered to the backend \
+                           instruction stream in the Cluster 1 spine subset"
+                        .to_string(),
+                });
                 None
             }
             HirExprKind::Block(block) => {
@@ -380,23 +409,43 @@ impl Builder {
         }
     }
 
-    fn lower_literal(&mut self, lit: &HirLiteral, ty: &ResolvedTy) -> Option<Place> {
-        match lit {
+    fn lower_literal(
+        &mut self,
+        lit: &HirLiteral,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Spine subset: only integer literals reach the backend in
+        // Cluster 1. Float/String/Bool/Char/Duration/Unit literals are out
+        // of scope (Cluster 2 takes String; Cluster 4 takes the rest).
+        // Fail closed so the emitter never produces a binary with an
+        // uninitialised return slot (LESSONS `boundary-fail-closed`).
+        let construct = match lit {
             HirLiteral::Integer(value) => {
                 let dest = self.alloc_local(ty.clone());
                 self.instructions.push(Instr::ConstI64 {
                     dest,
                     value: *value,
                 });
-                Some(dest)
+                return Some(dest);
             }
-            // Spine subset: only integer literals reach the backend in
-            // Cluster 1. Float/String/Bool/Char/Duration/Unit literals are
-            // out of scope (Cluster 2 takes String; Cluster 4 takes the
-            // rest). They still produce a Bind/Evaluate checker statement
-            // via the caller; the backend stream simply has no value.
-            _ => None,
-        }
+            HirLiteral::Bool(_) => "bool literal",
+            HirLiteral::Float(_) => "float literal",
+            HirLiteral::String(_) => "string literal",
+            HirLiteral::Char(_) => "char literal",
+            HirLiteral::Unit => "unit literal",
+            HirLiteral::Duration(_) => "duration literal",
+        };
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::CutoverUnsupported {
+                construct: construct.to_string(),
+                site,
+            },
+            note: "non-integer literals are not yet lowered to the backend \
+                   instruction stream in the Cluster 1 spine subset"
+                .to_string(),
+        });
+        None
     }
 
     fn lower_binary(

@@ -20,6 +20,18 @@ hew-types = { path = "../hew-types" }
 # major across the codebase.
 inkwell = { version = "0.9", features = ["llvm22-1"] }
 
+[[bin]]
+# Out-of-process helper that consumes a textual LLVM IR file and writes a
+# native or wasm object. Process isolation is the structural fix for the
+# legacy-PassManager assertion that fires when `libMLIR.dylib` and
+# `libLLVM.dylib` are both loaded into the same process (as they are in the
+# `hew` binary via the embedded C++ codegen). The CLI lowers MIR → LLVM IR
+# in-process (the IR-construction path is safe under dual load) and shells
+# out to this helper for the object-emission step. Mirrors the rustc front
+# half/back half split.
+name = "hew-emit-v05"
+path = "src/bin/hew_emit_v05.rs"
+
 [dev-dependencies]
 hew-hir = { path = "../hew-hir" }
 hew-parser = { path = "../hew-parser" }

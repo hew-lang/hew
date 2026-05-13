@@ -22,12 +22,28 @@
 //!
 //! ## Targets
 //!
-//! Cluster 1 emits both the host triple and `wasm32-unknown-unknown`.
+//! `emit_module` emits both the host triple and `wasm32-unknown-unknown`.
 //! Native emission writes a relocatable object; `cc` links it into a binary
 //! at the CLI layer. WASM emission writes a relocatable `.wasm.o` and then
 //! runs `wasm-ld --no-entry --export=main` (falling back to
 //! `rust-lld -flavor wasm`) to produce a standalone module that
 //! `wasmtime --invoke main` can instantiate directly.
+//!
+//! ## Two-stage emission (front-half / back-half split)
+//!
+//! IR construction runs in-process via inkwell — that path is safe even
+//! when the caller binary has `libMLIR.dylib` loaded (as the `hew` binary
+//! does via the embedded C++ codegen). Object emission via
+//! `TargetMachine::write_to_file` is **not** safe under that dual-load:
+//! LLVM's legacy PassManager scheduler (which the C codegen API still
+//! routes through) hits an `addLowerLevelRequiredPass` trap when libMLIR
+//! has pre-touched the global `PassRegistry`. The fix is structural —
+//! the back half runs in its own process. `emit_module` writes the
+//! textual `.ll` in-process, then spawns the sibling `hew-emit-v05`
+//! helper binary to compile each requested triple to a relocatable
+//! object. The helper's process loads only `libLLVM.dylib`, so the
+//! legacy PM scheduler finds its analyses and `write_to_file` succeeds.
+//! See `src/bin/hew_emit_v05.rs` for the helper's own module docs.
 //!
 //! ## Side-table audit
 //!
@@ -48,12 +64,10 @@ use hew_types::ResolvedTy;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module as LlvmModule};
-use inkwell::targets::{
-    CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
-};
+use inkwell::targets::TargetMachine;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use inkwell::{IntPredicate, OptimizationLevel};
+use inkwell::IntPredicate;
 
 // ---------------------------------------------------------------------------
 // Error model
@@ -138,10 +152,18 @@ pub struct EmitArtefacts {
 /// Emit native + wasm artefacts for `pipeline`'s raw MIR. Returns the paths
 /// of every artefact produced. Fail-closed on any verification failure.
 ///
+/// The textual LLVM IR (`<name>.ll`) is built in-process — the
+/// IR-construction path is safe under the dual `libMLIR` / `libLLVM` load
+/// state that the `hew` binary runs under. Object emission shells out to
+/// the `hew-emit-v05` helper (see the helper's module docs for why), so the
+/// caller's binary must ship `hew-emit-v05` alongside `hew` in the same
+/// directory (the workspace `cargo build` produces both into `target/<profile>/`).
+///
 /// # Errors
 ///
 /// Returns `CodegenError` if any function declares an unsupported construct,
-/// `Module::verify()` rejects the emitted IR, or `wasm-ld` fails.
+/// `Module::verify()` rejects the emitted IR, the helper binary cannot be
+/// located, the helper exits non-zero, or `wasm-ld` fails.
 pub fn emit_module(
     pipeline: &IrPipeline,
     options: &EmitOptions<'_>,
@@ -149,31 +171,18 @@ pub fn emit_module(
     std::fs::create_dir_all(options.out_dir)?;
     let mut artefacts = EmitArtefacts::default();
 
-    // Each emit creates its own `Context::create()` so the LLVM target
-    // machine state for one triple doesn't bleed into the next (the
-    // PassManager initialisation is per-context). This is the probe's
-    // pattern; mirroring it avoids an LLVM-internal `brk` trap when the
-    // wasm32 target machine reuses a context that already emitted host
-    // code.
-
-    // Always emit the textual .ll first — it's the cheapest forensic
-    // artefact and `opt -passes=verify` runs against it directly.
+    // Build the textual IR once and reuse it for both targets. `.ll` is also
+    // the cheapest forensic artefact — `opt -passes=verify` runs against it
+    // directly without re-deriving anything.
     let ll_path = options.out_dir.join(format!("{}.ll", options.module_name));
     emit_textual(pipeline, options.module_name, &ll_path)?;
-    artefacts.ll_path = Some(ll_path);
+    artefacts.ll_path = Some(ll_path.clone());
 
     if options.native {
         let obj_path = options.out_dir.join(format!("{}.o", options.module_name));
         let host_triple = TargetMachine::get_default_triple();
         let triple_str = host_triple.as_str().to_string_lossy().into_owned();
-        emit_for_triple(
-            pipeline,
-            options.module_name,
-            &triple_str,
-            "generic",
-            "",
-            &obj_path,
-        )?;
+        run_emit_helper(&ll_path, &triple_str, &obj_path)?;
         artefacts.native_obj_path = Some(obj_path);
     }
 
@@ -181,14 +190,7 @@ pub fn emit_module(
         let wasm_obj_path = options
             .out_dir
             .join(format!("{}.wasm.o", options.module_name));
-        emit_for_triple(
-            pipeline,
-            options.module_name,
-            "wasm32-unknown-unknown",
-            "generic",
-            "",
-            &wasm_obj_path,
-        )?;
+        run_emit_helper(&ll_path, "wasm32-unknown-unknown", &wasm_obj_path)?;
         let wasm_path = options
             .out_dir
             .join(format!("{}.wasm", options.module_name));
@@ -198,6 +200,62 @@ pub fn emit_module(
     }
 
     Ok(artefacts)
+}
+
+/// Locate the `hew-emit-v05` helper binary sibling to the currently running
+/// executable, then invoke it to compile `ll_path` for `triple` into
+/// `out_path`.
+///
+/// The rustc-driver-style discovery (sibling of `current_exe`) handles both
+/// the dev layout (`target/debug/hew` next to `target/debug/hew-emit-v05`)
+/// and any future install layout where the two binaries share a `bin/`.
+fn run_emit_helper(ll_path: &Path, triple: &str, out_path: &Path) -> CodegenResult<()> {
+    let helper = locate_emit_helper()?;
+    let output = Command::new(&helper)
+        .arg("--triple")
+        .arg(triple)
+        .arg("--in")
+        .arg(ll_path)
+        .arg("--out")
+        .arg(out_path)
+        .output()
+        .map_err(|e| CodegenError::Llvm(format!("spawn {}: {e}", helper.display())))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(CodegenError::Llvm(format!(
+            "hew-emit-v05 ({:?}) failed for triple={triple} out={}: {}",
+            output.status,
+            out_path.display(),
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
+fn locate_emit_helper() -> CodegenResult<std::path::PathBuf> {
+    let exe =
+        std::env::current_exe().map_err(|e| CodegenError::Llvm(format!("current_exe: {e}")))?;
+    let dir = exe.parent().ok_or_else(|| {
+        CodegenError::Llvm(format!(
+            "current exe `{}` has no parent directory",
+            exe.display()
+        ))
+    })?;
+    let name = if cfg!(windows) {
+        "hew-emit-v05.exe"
+    } else {
+        "hew-emit-v05"
+    };
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return Err(CodegenError::Llvm(format!(
+            "helper binary `{}` not found next to `{}`; \
+             ensure `cargo build -p hew-codegen-rs --bin hew-emit-v05` has run",
+            candidate.display(),
+            exe.display()
+        )));
+    }
+    Ok(candidate)
 }
 
 // ---------------------------------------------------------------------------
@@ -661,56 +719,6 @@ fn emit_textual(pipeline: &IrPipeline, name: &str, out: &Path) -> CodegenResult<
     llvm_mod
         .print_to_file(out)
         .map_err(|e| CodegenError::Llvm(format!("print_to_file {}: {e:?}", out.display())))?;
-    Ok(())
-}
-
-fn emit_for_triple(
-    pipeline: &IrPipeline,
-    name: &str,
-    triple: &str,
-    cpu: &str,
-    features: &str,
-    out: &Path,
-) -> CodegenResult<()> {
-    let ctx = Context::create();
-
-    Target::initialize_all(&InitializationConfig::default());
-    let target_triple = TargetTriple::create(triple);
-    let target = Target::from_triple(&target_triple)
-        .map_err(|e| CodegenError::Llvm(format!("from_triple({triple}): {e:?}")))?;
-    let machine = target
-        .create_target_machine(
-            &target_triple,
-            cpu,
-            features,
-            OptimizationLevel::Default,
-            RelocMode::Default,
-            CodeModel::Default,
-        )
-        .ok_or_else(|| CodegenError::Llvm(format!("create_target_machine for {triple}")))?;
-
-    // Set triple + data layout BEFORE lowering so the IR is built with the
-    // correct target context from the start. The probe's accepted pattern
-    // is to create the module, attach the triple, then lower.
-    let llvm_mod = ctx.create_module(name);
-    llvm_mod.set_triple(&target_triple);
-    llvm_mod.set_data_layout(&machine.get_target_data().get_data_layout());
-
-    let mut fn_symbols: FnSymbolMap<'_> = HashMap::new();
-    for func in &pipeline.raw_mir {
-        let sym = declare_function(&ctx, &llvm_mod, func)?;
-        fn_symbols.insert(func.name.clone(), sym);
-    }
-    for func in &pipeline.raw_mir {
-        lower_function(&ctx, &llvm_mod, func, &fn_symbols)?;
-    }
-    llvm_mod
-        .verify()
-        .map_err(|e| CodegenError::LlvmVerify(e.to_string()))?;
-
-    machine
-        .write_to_file(&llvm_mod, FileType::Object, out)
-        .map_err(|e| CodegenError::Llvm(format!("write_to_file {}: {e:?}", out.display())))?;
     Ok(())
 }
 

@@ -1239,6 +1239,9 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
     return generatePrintCall(call, /*newline=*/true);
   if (calleeName == "print")
     return generatePrintCall(call, /*newline=*/false);
+  // to_string — routed to generateToStringCall().
+  if (calleeName == "to_string")
+    return generateToStringCall(call);
   // assert_eq / assert_ne — routed to generateBuiltinCall() which emits
   // AssertEqOp / AssertNeOp directly from the argument values; type_args unused.
   if (calleeName == "assert_eq" || calleeName == "assert_ne")
@@ -2161,8 +2164,321 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
 }
 
 // ============================================================================
-// If expression generation (expression form that yields a value)
+// Multi-branch yield detector — used by generateToStringCall's pre-IR reject.
+//
+// Returns true if expr is, or wraps via single-path block/unsafe/scope, a
+// multi-branch expression (ExprIf, ExprIfLet, ExprMatch) in its value
+// position.  Detects the wrapper-smuggling bypass:
+//
+//   to_string({ if c { g } else { h } })   — block wrapping an if
+//   to_string(unsafe { match x { … } })    — unsafe block wrapping a match
+//
+// In these cases the outer expr.kind is ExprBlock / ExprUnsafe, not ExprIf /
+// ExprMatch, so the prior direct holds_alternative check did not fire.
+// extractYieldedIdentifier already returns nullptr for these shapes (since
+// the block's trailing expr is a branch, not an identifier), but that
+// nullptr is reached only after generateExpression has already emitted IR
+// for the multi-branch, leaving partial IR when we then have to reject.
+// This helper lets the pre-IR reject cover both direct and wrapped forms.
+//
+// Only the value-position tail of a block is scanned (trailing_expr or the
+// last statement's StmtExpression), matching blockExtractYieldedIdentifier.
 // ============================================================================
+
+static bool exprYieldsMultiBranchExpr(const ast::Expr &expr);
+
+static bool blockYieldsMultiBranchExpr(const ast::Block &blk) {
+  if (blk.trailing_expr)
+    return exprYieldsMultiBranchExpr(blk.trailing_expr->value);
+  if (!blk.stmts.empty()) {
+    const auto &last = blk.stmts.back()->value;
+    if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind))
+      return exprYieldsMultiBranchExpr(exprStmt->expr.value);
+    if (std::holds_alternative<ast::StmtIf>(last.kind) ||
+        std::holds_alternative<ast::StmtIfLet>(last.kind) ||
+        std::holds_alternative<ast::StmtMatch>(last.kind))
+      return true;
+  }
+  return false;
+}
+
+static bool exprYieldsMultiBranchExpr(const ast::Expr &expr) {
+  // Direct multi-branch shapes.
+  if (std::holds_alternative<ast::ExprIf>(expr.kind) ||
+      std::holds_alternative<ast::ExprIfLet>(expr.kind) ||
+      std::holds_alternative<ast::ExprMatch>(expr.kind))
+    return true;
+  // Single-path wrappers: unwrap and check the yielded expression.
+  if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+    return blockYieldsMultiBranchExpr(blockE->block);
+  if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+    return blockYieldsMultiBranchExpr(unsafeE->block);
+  if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+    return blockYieldsMultiBranchExpr(scopeE->block);
+  return false;
+}
+
+// ============================================================================
+// Identifier-yield extractor — used by generateToStringCall ownership transfer.
+//
+// Mirrors the exprYieldsFieldAccess family but returns a pointer to the
+// yielded ExprIdentifier rather than a bool.  Only handles single-path
+// wrappers (block/unsafe/scope) — multi-branch shapes (if/match) cannot be
+// unwrapped to a single canonical identifier and return nullptr.
+//
+// The intended use is ownership transfer after a consuming Display::fmt call:
+//   to_string(g)      — direct identifier, found immediately
+//   to_string({ g })  — block wrapper, unwrapped here to find g
+// In both cases the caller-side drop registration for the identifier must be
+// removed after Display::fmt consumes the value, even though the IR value
+// was produced by generating the wrapper expression, not g directly.
+// ============================================================================
+
+static const ast::ExprIdentifier *extractYieldedIdentifier(const ast::Expr &expr);
+
+static const ast::ExprIdentifier *blockExtractYieldedIdentifier(const ast::Block &blk) {
+  if (blk.trailing_expr)
+    return extractYieldedIdentifier(blk.trailing_expr->value);
+  if (!blk.stmts.empty()) {
+    const auto &last = blk.stmts.back()->value;
+    if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind))
+      return extractYieldedIdentifier(exprStmt->expr.value);
+  }
+  return nullptr;
+}
+
+static const ast::ExprIdentifier *extractYieldedIdentifier(const ast::Expr &expr) {
+  if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind))
+    return ident;
+  if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind))
+    return blockExtractYieldedIdentifier(blockE->block);
+  if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind))
+    return blockExtractYieldedIdentifier(unsafeE->block);
+  if (auto *scopeE = std::get_if<ast::ExprScope>(&expr.kind))
+    return blockExtractYieldedIdentifier(scopeE->block);
+  // Multi-branch shapes (ExprIf, ExprIfLet, ExprMatch) may yield different
+  // identifiers in different arms.  Return nullptr; callers that need a
+  // single canonical owner for ownership-transfer must guard against these
+  // shapes separately (see generateToStringCall's pre-IR multi-branch check).
+  return nullptr;
+}
+
+// ============================================================================
+// to_string built-in
+// ============================================================================
+
+mlir::Value MLIRGen::generateToStringCall(const ast::ExprCall &call) {
+  auto location = currentLoc;
+
+  // Arity guard: to_string takes exactly one argument.
+  if (call.args.size() != 1) {
+    ++errorCount_;
+    emitError(location) << "to_string requires exactly one argument";
+    return nullptr;
+  }
+
+  // ── Type classification (before IR emission) ─────────────────────────────
+  // requireResolvedTypeOf reads AST type-checker annotations keyed by span; it
+  // does not depend on the IR value and is safe to call before generateExpression.
+  auto *argType = requireResolvedTypeOf(ast::callArgExpr(call.args[0]).span,
+                                        "to_string argument type", location);
+  if (!argType)
+    return nullptr;
+
+  auto resolveAliasExpr = [this](llvm::StringRef name) { return resolveTypeAliasExpr(name); };
+  auto classified = classifyResolvedType(*argType, resolveAliasExpr);
+  if (!classified.named) {
+    ++errorCount_;
+    emitError(location) << "to_string: cannot determine argument type";
+    return nullptr;
+  }
+
+  auto kind = primitiveTypeKind(classified.canonicalName);
+
+  // Compute typeName once; used by both the field-alias guard and the Display path.
+  std::string typeName = classified.named->name;
+  if (typeName.empty())
+    typeName = classified.canonicalName;
+
+  bool hasDisplayImpl =
+      displayImplTypes.count(typeName) > 0 || displayImplTypes.count(classified.canonicalName) > 0;
+
+  // ── Field-alias guard (Display path only, BEFORE emitting any IR) ────────
+  // Fail-closed pre-check: reject to_string(holder.field) where the argument
+  // is (or wraps) a field access whose type has a Display impl.  Without
+  // field-alias / partial-move tracking, Display::fmt would consume the field
+  // value; the owning struct's scope-exit drop would then free it again →
+  // double-free.  Running the scan here — before generateExpression — means
+  // compilation genuinely fails without leaving partial IR on the reject path.
+  // The residual TODO is field-alias / partial-move tracking that would let
+  // these succeed.  The return-of-field-of-param scan inside Display::fmt itself
+  // is handled globally by MLIRGen.cpp's return-of-field-of-param scanner; this
+  // guard is specific to the call argument.
+  if (kind == PrimitiveTypeKind::Unknown && hasDisplayImpl) {
+    const auto &argExpr = ast::callArgExpr(call.args[0]).value;
+    if (exprYieldsFieldAccess(argExpr)) {
+      ++errorCount_;
+      emitError(location) << "to_string of field-aliased Display value is not yet supported; "
+                          << "bind the field to a local variable or pass the whole struct";
+      return nullptr;
+    }
+    // Fail-closed: multi-branch shapes (if/if-let/match), including those
+    // wrapped inside block/unsafe/scope expressions, cannot be safely
+    // ownership-transferred after Display::fmt consumes the receiver.
+    // extractYieldedIdentifier returns nullptr for these shapes: we cannot
+    // determine which branch owner was consumed, so the caller-side drop
+    // registration for the selected binding would remain active and fire again
+    // at scope exit.  Require the caller to bind the branch result to a local
+    // variable, from which the single-owner path works.
+    //
+    // exprYieldsMultiBranchExpr covers both direct shapes (ExprIf, ExprIfLet,
+    // ExprMatch) and wrapped forms (block/unsafe/scope whose value-position
+    // tail is a multi-branch), closing the wrapper-smuggling bypass where
+    // to_string({ if … }) or to_string(unsafe { match … }) could bypass the
+    // prior direct holds_alternative check.
+    if (exprYieldsMultiBranchExpr(argExpr)) {
+      ++errorCount_;
+      emitError(location) << "to_string with if/match expression yielding an owned Display "
+                          << "value is not yet supported; bind the branch result to a local "
+                          << "variable first";
+      return nullptr;
+    }
+  }
+
+  // ── Generate IR for the argument (all pre-IR guards have passed) ─────────
+  auto val = generateExpression(ast::callArgExpr(call.args[0]).value);
+  if (!val)
+    return nullptr;
+
+  // ── String → fresh clone ─────────────────────────────────────────────────
+  // The argument is already a String.  Return a fresh owned clone so the
+  // caller gets an independent copy rather than an alias of the source heap
+  // buffer — aliasing causes a double-free when both sides drop the pointer.
+  //
+  // The source may itself be a heap-allocated temporary (e.g. the result of
+  // a string concatenation "a" + "b" passed inline without binding it to a
+  // name).  Without registration such a temp would never be dropped —
+  // materializeTemporary inserts a tracked alloca so the drop system fires
+  // at scope exit.  For named-identifier sources the function is a no-op
+  // because the binding is already in the drop registry.
+  if (kind == PrimitiveTypeKind::String) {
+    materializeTemporary(val, ast::callArgExpr(call.args[0]).value);
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("clone"), val, mlir::ValueRange{})
+        .getResult();
+  }
+
+  // ── Char → hew_char_to_string ────────────────────────────────────────────
+  // The dedicated runtime function produces a single-character string
+  // (e.g. 'x' → "x").  We cannot use ToStringOp here because its i32 lowering
+  // calls hew_int_to_string, which would print the codepoint as a decimal
+  // integer instead.
+  if (kind == PrimitiveTypeKind::Char) {
+    auto strType = hew::StringRefType::get(&context);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_char_to_string");
+    return hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{strType}, calleeAttr,
+                                      mlir::ValueRange{val})
+        .getResult();
+  }
+
+  // ── Remaining primitives → hew::ToStringOp ───────────────────────────────
+  // Covers bool, i8…i64, u8…u64, f32, f64.  The is_unsigned attribute signals
+  // unsigned decimal conversion (hew_uint_to_string / hew_u64_to_string).
+  //
+  // Ordering invariant: primitive types are dispatched here, never through the
+  // user-Display path below.  The std/builtins.hew primitive Display impls
+  // (impl Display for i32 { fn fmt(v) { to_string(v) } }) must not be reached
+  // here — doing so would infinitely recurse through Display::fmt.
+  if (kind != PrimitiveTypeKind::Unknown) {
+    auto toStr = hew::ToStringOp::create(builder, location, hew::StringRefType::get(&context), val);
+    if (isUnsignedTypeExpr(*argType))
+      toStr->setAttr("is_unsigned", builder.getBoolAttr(true));
+    return toStr.getResult();
+  }
+
+  // ── Non-primitive: user Display::fmt ─────────────────────────────────────
+  if (hasDisplayImpl) {
+    auto savedModulePath = currentModulePath;
+    if (typeDefModulePath.count(typeName))
+      currentModulePath = typeDefModulePath[typeName];
+    std::string fmtName = resolveTraitImplBodyName(
+        typeName, "Display", "fmt", TraitImplBodyNameMode::PreferQualifiedIfGenerated);
+    currentModulePath = savedModulePath;
+
+    auto callee = module.lookupSymbol<mlir::func::FuncOp>(fmtName);
+    if (!callee)
+      callee = lookupImportedFunc(typeName, "fmt");
+    if (!callee) {
+      ++errorCount_;
+      emitError(location) << "to_string could not lower Display::fmt for type '" << typeName << "'";
+      return nullptr;
+    }
+
+    auto funcType = callee.getFunctionType();
+    if (funcType.getNumInputs() != 1) {
+      ++errorCount_;
+      emitError(location) << "Display::fmt for type '" << typeName
+                          << "' must take exactly one receiver argument";
+      return nullptr;
+    }
+    if (funcType.getNumResults() != 1 ||
+        !mlir::isa<mlir::LLVM::LLVMPointerType, hew::StringRefType>(funcType.getResult(0))) {
+      ++errorCount_;
+      emitError(location) << "Display::fmt for type '" << typeName << "' must return String";
+      return nullptr;
+    }
+
+    if (val.getType() != funcType.getInput(0)) {
+      val = coerceType(val, funcType.getInput(0), location);
+      if (!val)
+        return nullptr;
+    }
+
+    // ── Ownership transfer ────────────────────────────────────────────────
+    // Display::fmt takes its receiver by value (fn fmt(val: Self) -> String),
+    // so it CONSUMES the argument.  Without explicit ownership transfer the
+    // caller's drop registration for the binding/temporary would still fire at
+    // scope exit, double-freeing the already-dropped value.
+    //
+    // Mirror the generic consuming-call path in generateExprCall (lines ~1793,
+    // 1938-1956):
+    //   • Heap-allocated temps: materialize into a tracked slot before the call,
+    //     then null the slot after so the callee's param drop is the sole owner.
+    //   • Named identifier bindings: unregister the caller-side drop after the
+    //     call (transfers ownership to the callee's param).
+    const auto &argExpr = ast::callArgExpr(call.args[0]).value;
+    mlir::Value argAlloca;
+    materializeTemporary(val, argExpr, &argAlloca);
+
+    auto result =
+        mlir::func::CallOp::create(builder, location, callee, mlir::ValueRange{val}).getResult(0);
+
+    // Null caller-side ownership now that the callee has consumed the value.
+    // extractYieldedIdentifier unwraps single-path block/unsafe/scope wrappers
+    // so that to_string({ g }) correctly transfers ownership of the `g` binding
+    // (not just the block-expression result).  Multi-branch shapes (if/match)
+    // return nullptr and fall through to the alloca-based temp path.
+    if (const auto *ident = extractYieldedIdentifier(argExpr)) {
+      auto regDrop = getRegisteredDropFunc(ident->name);
+      if (!regDrop.empty() && !isOwnershipExemptDropFunc(regDrop))
+        unregisterDroppable(ident->name);
+    } else if (argAlloca) {
+      auto info = inferDropFuncForTemporary(val, argExpr);
+      if (!info.dropFunc.empty() && !isOwnershipExemptDropFunc(info.dropFunc))
+        nullOutDropSlotByAlloca(argAlloca, location);
+    }
+
+    return result;
+  }
+
+  // ── Fail-closed ───────────────────────────────────────────────────────────
+  // Argument type is not a primitive and has no Display impl.  The type checker
+  // should have rejected this call already; this guard ensures codegen is closed
+  // on any type-checker gap (error-count-exit-code invariant).
+  ++errorCount_;
+  emitError(location) << "to_string: argument type '" << typeName << "' has no Display lowering";
+  return nullptr;
+}
 
 mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exprSpan,
                                     bool statementPosition) {

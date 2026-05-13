@@ -212,10 +212,15 @@ pub fn string_length(s: String) -> i32 {
 
 /// Convert any value to its string representation.
 ///
+/// Accepts any type that implements `Display` — this includes all numeric
+/// primitives, `bool`, `char`, `String`, and user types with a `Display` impl.
+///
 /// # Examples
 ///
 /// ```
-/// let s = to_string(42);  // "42"
+/// let s = to_string(42);     // "42"
+/// let t = to_string(true);   // "true"
+/// let u = to_string('x');    // "x"
 /// ```
 pub fn to_string(value: dyn Display) -> String {
     ""

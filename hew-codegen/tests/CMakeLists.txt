@@ -688,6 +688,22 @@ add_e2e_reject_test(print_if_field_display_reject     e2e_negative    print_if_f
 add_e2e_reject_test(print_block_field_display_reject  e2e_negative    print_block_field_display_reject          "print of field-aliased Display value is not yet supported")
 add_e2e_reject_test(print_match_field_display_reject  e2e_negative    print_match_field_display_reject          "print of field-aliased Display value is not yet supported")
 
+# to_string diagnostics: undisplayable type rejected by the type checker;
+# field-aliased Display value rejected at codegen (same double-drop guard as print).
+add_e2e_reject_test(to_string_diag_undisplayable  e2e_negative  to_string_diag_undisplayable  "does not implement trait")
+add_e2e_reject_test(to_string_diag_field_alias    e2e_negative  to_string_diag_field_alias    "to_string of field-aliased Display value is not yet supported")
+# Multi-branch owned Display identifier-yield shapes: if/match expressions that
+# select between owned Display values cannot be ownership-transferred after
+# Display::fmt (extractYieldedIdentifier returns nullptr for these shapes).
+# Both rejected at codegen before any IR is emitted.
+add_e2e_reject_test(to_string_diag_branch_display_if    e2e_negative  to_string_diag_branch_display_if    "if/match expression yielding an owned Display")
+add_e2e_reject_test(to_string_diag_branch_display_match e2e_negative  to_string_diag_branch_display_match "if/match expression yielding an owned Display")
+# Wrapper-smuggling variants: block/unsafe wrappers around multi-branch shapes
+# must also be rejected — exprYieldsMultiBranchExpr covers both direct and
+# wrapped forms so these do not bypass the pre-IR guard.
+add_e2e_reject_test(to_string_diag_wrapped_block_if      e2e_negative  to_string_diag_wrapped_block_if      "if/match expression yielding an owned Display")
+add_e2e_reject_test(to_string_diag_wrapped_unsafe_match  e2e_negative  to_string_diag_wrapped_unsafe_match  "if/match expression yielding an owned Display")
+
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
 add_e2e_panic_test(stmt_match_unmatched_traps e2e_panic stmt_match_unmatched_traps "")
@@ -1610,6 +1626,17 @@ add_wasm_file_test(coverage_string_case           e2e_coverage  string_case_meth
 add_wasm_file_test(coverage_string_interp         e2e_coverage  string_interp_complex)
 add_wasm_file_test(coverage_string_methods        e2e_coverage  string_method_calls)
 add_wasm_file_test(coverage_to_string             e2e_coverage  to_string_op)
+add_wasm_file_test(coverage_to_string_int         e2e_coverage  to_string_int)
+add_wasm_file_test(coverage_to_string_bool        e2e_coverage  to_string_bool)
+add_wasm_file_test(coverage_to_string_float       e2e_coverage  to_string_float)
+add_wasm_file_test(coverage_to_string_char        e2e_coverage  to_string_char)
+add_wasm_file_test(coverage_to_string_string      e2e_coverage  to_string_string)
+add_wasm_file_test(coverage_to_string_unsigned    e2e_coverage  to_string_unsigned)
+add_wasm_file_test(coverage_to_string_concat      e2e_coverage  to_string_concat)
+add_wasm_file_test(coverage_to_string_i64_u64     e2e_coverage  to_string_i64_u64)
+add_wasm_file_test(coverage_to_string_display_wrapper_identifier e2e_coverage to_string_display_wrapper_identifier)
+add_wasm_file_test(coverage_to_string_display_identifier         e2e_coverage to_string_display_identifier)
+add_wasm_file_test(coverage_to_string_display_temp               e2e_coverage to_string_display_temp)
 add_wasm_file_test(coverage_trait_dispatch        e2e_coverage  trait_dispatch_generic)
 add_wasm_file_test(coverage_param_mutability      e2e_coverage  param_mutability_codegen)
 add_wasm_file_test(coverage_truthiness_coercion   e2e_coverage  truthiness_coercion)

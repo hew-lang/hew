@@ -245,7 +245,7 @@
         {
           "comment": "Actor and concurrency",
           "name": "keyword.actor.hew",
-          "match": "\\b(actor|init|move|receive|spawn|terminate|this)\\b"
+          "match": "\\b(actor|fork|init|move|receive|spawn|terminate|this)\\b"
         },
         {
           "comment": "Supervisor",

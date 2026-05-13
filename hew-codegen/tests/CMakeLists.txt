@@ -40,6 +40,12 @@ set_tests_properties(mlirgen PROPERTIES TIMEOUT 180)
 if(HEW_CLI)
   set_tests_properties(mlirgen PROPERTIES ENVIRONMENT "HEW_CLI=${HEW_CLI}")
 endif()
+# Disabled during v0.5 cutover: this harness shells out to `hew build`,
+# which now exits with an explicit cutover error. Re-enables in a single
+# label-exclude sweep once the C++ codegen subtree is removed.
+set_tests_properties(mlirgen PROPERTIES
+  DISABLED TRUE
+  LABELS "v0.5-cutover-dual-load-disabled")
 
 # ── Translation test (isolates translateModuleToLLVMIR hang) ──────────────
 add_executable(test_translate test_translate.cpp)
@@ -413,6 +419,12 @@ function(add_e2e_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/reject_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_reject_test.cmake
   )
+  # Disabled during v0.5 cutover: drives `hew build`, which now exits
+  # with an explicit cutover error. Re-enables in a single label-exclude
+  # sweep once the C++ codegen subtree is removed.
+  set_tests_properties(reject_${CATEGORY}_${HEW_NAME} PROPERTIES
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 endfunction()
 
 # Helper: verify a .hew file SUCCEEDS compilation (with a warning), emits the expected

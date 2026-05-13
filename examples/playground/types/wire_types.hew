@@ -4,7 +4,7 @@
 #[wire]
 struct UserMessage {
     name: String @1,
-    age: i32 @2,
+    age: int @2,
 }
 
 wire enum Command {

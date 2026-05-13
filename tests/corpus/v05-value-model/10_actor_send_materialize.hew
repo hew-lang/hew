@@ -1,0 +1,50 @@
+// Corpus fixture: actor send — materialize mode (deep copy on send).
+//
+// Status: future / corpus — not runnable under current compiler.
+// Value-model target: hand-written companion report checked in; the v0.5 checker + dialect must emit materialize mode at the send site.
+//
+// Materialize mode: the value is not CowValue/PersistentShare and cannot be
+// transferred (because the sender still holds a reference), so a deep copy
+// (materialize) is performed before the send.  This is the most expensive send
+// mode; the report flags it as a hidden-copy site.
+//
+// In practice materialize on send is rare for well-typed v0.5 code: most
+// shareable values are CowValue (share mode) or last-use (transfer mode).
+// The explicit `copy(x)` escape hatch silences the hidden-copy note.
+//
+// Value-model rules exercised:
+//   - A non-CowValue-shareable value reachable from sender after send → materialize
+//   - report records mode: materialize at the send site
+//   - hidden-copy note fires (note-level per user-confirmed policy)
+//   - explicit copy(x) version shows report with UserRequestedCopy reason (no note)
+//
+// NOTE: This fixture uses a hypothetical type that is *not* COW-able to force
+//       materialize mode.  The exact typing rules are finalised in the v0.5 checker implementation.
+
+// A type that opts out of COW sharing by declaring itself @linear (single-owner).
+// Sending it to an actor when the sender retains a reference requires materialize.
+// (In practice you'd restructure; this fixture documents the diagnostic.)
+@linear
+struct SnapshotBuffer {
+    data: Vec<int>,
+}
+
+actor Archiver {
+    receive fn archive(buf: SnapshotBuffer) {
+    }
+}
+
+fn materialize_on_send() {
+    // snapshot is AffineResource (@linear), so share mode is impossible.
+    // The sender still uses snapshot after the send → transfer is impossible.
+    // The compiler must materialize (deep copy) for the send.
+    var snapshot = SnapshotBuffer { data: [1, 2, 3] };
+    let archiver = spawn Archiver;
+    archiver.archive(copy(snapshot));  // explicit copy(x) → UserRequestedCopy, no note
+    snapshot.data.push(4);            // snapshot still valid (we deep-copied for send)
+    let _ = snapshot;
+}
+
+fn main() {
+    materialize_on_send();
+}

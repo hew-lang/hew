@@ -1,0 +1,35 @@
+// Corpus fixture: generator yield — mutable/consume conflict across yield (REJECT).
+//
+// Status: future / corpus — not runnable under current compiler.
+//         This fixture is an EXPECTED FAILURE: the v0.5 checker must reject
+//         this program with the diagnostic shown in the companion file.
+// Value-model target: hand-written diagnostic companion checked in; the v0.5 value-model checker must emit it.
+//
+// Mutation or consume of a value that is held across a yield point is rejected.
+// The Checked MIR analyser finds that the generator frame holds a read of
+// `buffer` across the yield, and a mutation of `buffer` occurs after the
+// yield inside the same generator body.  The aliasing rule (read-shared XOR
+// mutate-unique) is violated at the yield site.
+//
+// Value-model rules exercised:
+//   - CowValue read held across yield, then mutated → conflict
+//   - diagnostic names the yield site and the mutation site
+//   - suggests restructure: either don't hold the read across yield, or don't
+//     mutate, or clone before yielding
+
+fn conflicting_yield_use(mut_buf: Vec<int>) -> generator int {
+    var buffer = mut_buf;
+
+    // buffer is read across this yield: the frame holds a read of buffer.
+    for i in 0 .. 10 {
+        yield buffer.len();          // buffer read here (held across yield)
+        buffer.push(i);              // ERROR: buffer mutated after yield in same frame
+    }
+}
+
+fn main() {
+    let gen = conflicting_yield_use([]);
+    for n in gen {
+        let _ = n;
+    }
+}

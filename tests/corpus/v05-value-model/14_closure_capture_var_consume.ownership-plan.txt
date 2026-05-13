@@ -1,0 +1,22 @@
+$ hew explain ownership tests/corpus/v05-value-model/14_closure_capture_var_consume.hew
+
+fn accept_string (14_closure_capture_var_consume.hew)
+  site #1  Binding        s           : Value<String>
+                          strategy: consume_call      cost: OResourceTransfer
+                          why:      ConsumingReceiver
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)
+
+fn main (14_closure_capture_var_consume.hew)
+  site #1  Binding        greeting    : Value<String>
+                          strategy: move              cost: Free
+                          why:      LastUse (consumed by closure capture)
+  site #2  CaptureIntoClosure  greeting → sender
+                          strategy: consume_call      cost: Free
+                          why:      VarCaptureConsume (closure body consumes greeting)
+  site #3  Call           accept_string(greeting) [inside sender body]
+                          strategy: consume_call      cost: OResourceTransfer
+                          why:      ConsumingReceiver (last use inside closure)
+  site #4  Call           sender()
+                          strategy: move              cost: Free
+                          why:      LastUse (single-call consuming closure)
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

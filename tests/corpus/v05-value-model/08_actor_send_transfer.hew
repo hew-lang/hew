@@ -1,0 +1,43 @@
+// Corpus fixture: actor send — transfer mode (last-use move).
+//
+// Status: future / corpus — not runnable under current compiler.
+// Value-model target: hand-written companion report checked in; the v0.5 checker + dialect must emit transfer mode at the send site.
+//
+// Transfer mode: the sent value is at its last use in the sender; the sender
+// loses access and the receiver gains ownership.  No copy, no refcount bump.
+// This is the cheapest send path; the compiler prefers it when analysis proves
+// the value is not used after the send.
+//
+// Value-model rules exercised:
+//   - CowValue at last use before actor send → transfer mode
+//   - AffineResource at last use before actor send → transfer mode
+//     (only valid option for an affine resource: share is impossible)
+//   - report records mode: transfer at both send sites
+
+actor Consumer {
+    receive fn accept_string(s: String) {
+    }
+}
+
+actor Processor {
+    @resource
+    receive fn process_handle(h: FileHandle) {
+    }
+}
+
+@resource
+struct FileHandle {
+    fd: int,
+}
+
+fn main() {
+    let consumer = spawn Consumer;
+    let processor = spawn Processor;
+
+    let msg = "one-time message";
+    consumer.accept_string(msg);   // last use of msg → transfer (no cow_share)
+
+    let handle = FileHandle { fd: 7 };
+    processor.process_handle(handle);  // last use of handle → transfer (affine: only option)
+    // Neither msg nor handle is accessible after this point.
+}

@@ -1,0 +1,47 @@
+// Corpus fixture: AffineResource (Resource) — consume and valid use sequence.
+//
+// Status: future / corpus — not runnable under current compiler.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
+//
+// AffineResource (diagnostics: "Resource") values carry the @linear or
+// @resource marker.  They have at-most-one owner; no refcount, no COW.
+// A resource is consumed on last use; consuming a resource transfers
+// ownership to the callee (or to a drop at scope end).  Attempting to
+// read a resource after it has been consumed is a checker error (see the
+// _reject_ sibling fixture).
+//
+// Value-model rules exercised:
+//   - @resource type declaration
+//   - let binding of a Resource
+//   - immutable read of a Resource (borrow_read; does not consume)
+//   - consume_call: passing a Resource to a callee that takes ownership
+//   - drop at scope end when resource is not consumed (explicit Drop in
+//     Elaborated MIR; no user syntax needed)
+
+@resource
+struct FileHandle {
+    fd: int,
+}
+
+fn file_size(f: FileHandle) -> int {
+    // Immutable read — does not consume f.
+    f.fd   // placeholder: real impl would call fstat
+}
+
+fn close_file(consuming self: FileHandle) {
+    // Consuming receiver — f is consumed (transferred) here.
+    let _ = self.fd;
+    // Deterministic drop: OS-level close would happen via the resource drop.
+}
+
+fn use_file() {
+    let f = FileHandle { fd: 42 };
+    let size = file_size(f);   // immutable read; f is still valid
+    let _ = size;
+    close_file(f);             // consume_call; f is no longer usable
+    // Elaborated MIR inserts no Drop(f) on the exit path because f was consumed.
+}
+
+fn main() {
+    use_file();
+}

@@ -1,0 +1,28 @@
+$ hew explain ownership tests/corpus/v05-value-model/03_cowvalue_mutation_after_share.hew
+
+fn alias_then_mutate (03_cowvalue_mutation_after_share.hew)
+  site #1  Binding        original    : Value<Vec<int>>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (aliased by `alias`)
+  site #2  Binding        alias       : Value<Vec<int>>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (alias of `original`)
+  site #3  Call           alias.push(4)
+                          strategy: ensure_unique     cost: OAlloc (clone if refcount > 1)
+                          why:      MutationRequiresUniqueness
+  budget:  0 materialize · 1 ensure_unique  (within per-function budget)
+
+fn record_update_cow (03_cowvalue_mutation_after_share.hew)
+  site #1  Binding        user        : Value<User>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (read by record-update)
+  site #2  RecordUpdate   {..user, score: 20}  : Value<User>
+                          strategy: ensure_unique     cost: OAlloc
+                          why:      MutationRequiresUniqueness (field overwrite on fresh copy)
+  site #3  Binding        updated     : Value<User>
+                          strategy: move              cost: Free
+                          why:      LastUse
+  budget:  0 materialize · 1 ensure_unique  (within per-function budget)
+
+fn main (03_cowvalue_mutation_after_share.hew)
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

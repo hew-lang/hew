@@ -1,0 +1,14 @@
+# EXPECTED FAILURE — the v0.5 checker must reject this program.
+# Future checker expectation: assert this diagnostic fires with the exact message class.
+
+error[E_VALUE_CONSUMED]: value `f` is consumed at line 34 but read at line 35
+  --> 06_affine_resource_use_after_consume_reject.hew:35:20
+   |
+34 |     close_file(f);       // f is consumed here
+   |                - value `f` consumed here (consuming receiver)
+35 |     let _ = file_size(f); // ERROR: f is already consumed
+   |                       ^ value `f` read here after consume
+   |
+   = note: `FileHandle` is a Resource type; once consumed it cannot be used again.
+   = help: restructure to avoid re-using `f`, or pass a read-only view of the value
+           that does not consume it.

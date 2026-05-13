@@ -1,0 +1,16 @@
+$ hew explain ownership tests/corpus/v05-value-model/08_actor_send_transfer.hew
+
+fn main (08_actor_send_transfer.hew)
+  site #1  Binding        msg         : Value<String>
+                          strategy: move              cost: Free
+                          why:      LastUse (no subsequent read of `msg`)
+  site #2  ActorSend      consumer.accept_string(msg) : Value<String>
+                          strategy: move              cost: Free
+                          why:      TransferMode (last-use; sender loses access)
+  site #3  Binding        handle      : Resource<FileHandle>
+                          strategy: consume_call      cost: OResourceTransfer
+                          why:      AffineResourceTransfer (only valid send mode)
+  site #4  ActorSend      processor.process_handle(handle) : Resource<FileHandle>
+                          strategy: consume_call      cost: OResourceTransfer
+                          why:      TransferMode (affine resource; consume on send)
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

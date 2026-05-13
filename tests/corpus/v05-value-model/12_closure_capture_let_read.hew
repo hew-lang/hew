@@ -1,0 +1,38 @@
+// Corpus fixture: closure capture — let binding captured as read.
+//
+// Status: future / corpus — not runnable under current compiler.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
+//
+// Closure capture modes (inferred, not user-spelled):
+//   - A `let` binding captured by a closure → borrow_read (cheapest; no copy)
+//   - A `var` binding used read-only inside the closure → borrow_read
+//   - A `var` binding mutated inside the closure → ensure_unique (cow mutation)
+//   - A binding consumed inside the closure → consume_call (move into closure)
+//
+// This fixture covers the first case: all captured bindings are `let` and
+// are only read inside the closure body.  The inferred capture mode is read.
+//
+// Value-model rules exercised:
+//   - let binding of a CowValue captured by a closure → borrow_read
+//   - closure's capture mode shown in report as CaptureIntoClosure: read
+//   - the outer binding is still valid after the closure is constructed
+
+fn apply_to_greeting(f: fn(int) -> String) -> String {
+    f(42)
+}
+
+fn main() {
+    let prefix = "hello";       // CowValue<String>
+    let sep = ", ";             // CowValue<String>
+
+    // Both `prefix` and `sep` are captured as read (borrow_read) because
+    // the closure only reads them.  No copy needed.
+    let greeter = fn(n: int) -> String {
+        prefix + sep + n.to_string()
+    };
+
+    let result = apply_to_greeting(greeter);
+    let _ = prefix;   // still valid: captured as read, not consumed
+    let _ = sep;
+    let _ = result;
+}

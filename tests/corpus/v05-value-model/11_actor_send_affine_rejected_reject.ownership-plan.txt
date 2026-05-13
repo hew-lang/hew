@@ -1,0 +1,17 @@
+# EXPECTED FAILURE — the v0.5 checker must reject this program.
+# Future checker expectation: assert this diagnostic fires with the exact message class.
+
+error[E_RESOURCE_SEND_RETAINED]: the resource `f` cannot be shared across an actor send
+  --> 11_actor_send_affine_rejected_reject.hew:37:5
+   |
+35 |     let f = FileHandle { fd: 99 };
+   |         - resource `f` bound here
+37 |     reader.read_fd(f);    // ERROR: f is still reachable after this send
+   |     ^^^^^^^^^^^^^^^^^ resource sent here...
+38 |     let _ = f.fd;         // sender re-uses f here — this makes the send ambiguous
+   |             ^^^^ ...but `f` is still read here after the send
+   |
+   = note: `FileHandle` is a Resource type; it cannot be shared or copied across actor boundaries.
+   = help: consume the resource at the send site (ensure `f` is last-used before the send),
+           or extract the data you need (e.g. `f.fd` is a Copy value and can be sent freely):
+               reader.read_fd(f);   // last use — transfer mode; f is consumed

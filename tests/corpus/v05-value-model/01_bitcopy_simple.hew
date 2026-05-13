@@ -1,0 +1,38 @@
+// Corpus fixture: BitCopy (Copy) value class.
+//
+// Status: future / corpus — not runnable under current compiler.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
+//
+// BitCopy (diagnostics: "Copy") values are strict bit-copies: integers, bools,
+// floats, chars, unit, and tuples/fixed-arrays whose element type is Copy.
+// No destructor, no COW, no refcount.  Assignment and passing always bitcopy;
+// no ensure_unique, no materialize, no cow_share ever appears for a Copy type.
+//
+// Value-model rules exercised:
+//   - let binding of Copy type → strategy: borrow_read (the binding is not
+//     consumed; the compiler reads through the bit-copy cheaply)
+//   - function call receiving Copy type → strategy: move (by value, free)
+//   - arithmetic / field access on Copy → borrow_read, cost: Free
+//   - struct with all-Copy fields is itself Copy (structural)
+
+struct Point {
+    x: float,
+    y: float,
+}
+
+fn distance_sq(a: Point, b: Point) -> float {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    dx * dx + dy * dy
+}
+
+fn main() -> int {
+    let origin = Point { x: 0.0, y: 0.0 };
+    let target = Point { x: 3.0, y: 4.0 };
+    let d = distance_sq(origin, target);
+    // origin and target are Copy; both are still valid after the call.
+    let also_origin = origin;  // bitcopy; origin still usable
+    let _ = also_origin;
+    let _ = d;
+    0
+}

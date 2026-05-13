@@ -1,0 +1,33 @@
+$ hew explain ownership tests/corpus/v05-value-model/19_actor_scope.hew
+# NOTE: actor_scope ownership report is a design target; finalised in the v0.5 checker/lowering implementation.
+# The expected strategy profile is:
+#
+#   fn process_batch:
+#     site #1  Binding        items     : Value<Vec<String>>
+#                             strategy: borrow_read       cost: Free
+#                             why:      ImmutableReadReceiver (loop iterates, does not mutate)
+#     site #2  Binding        results   : Value<Vec<String>>
+#                             strategy: cow_share         cost: RefcountTouch
+#                             why:      VarCaptureMutate (scope body may mutate results)
+#     site #3  ScopeEntry     actor_scope { … }
+#                             strategy: borrow_read       cost: Free
+#                             why:      ActorScopeCleanupBarrier (deterministic on exit)
+#     site #4  ActorSend      worker_a.process(item)      : Value<String>
+#                             strategy: cow_share / move  cost: RefcountTouch / Free
+#                             why:      CowSafeAcrossSend / TransferMode (last-use)
+#     site #5  ScopeExit      actor_scope cleanup
+#                             strategy: borrow_read       cost: Free
+#                             why:      ActorScopeBarrier (wait + drop child actors)
+#     budget:  0 materialize · 0 ensure_unique  (within per-function budget)
+
+fn process_batch (19_actor_scope.hew)
+  site #1  Binding        items       : Value<Vec<String>>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver
+  site #2  Binding        results     : Value<Vec<String>>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      VarCaptureMutate (scope captures results for mutation)
+  site #3  ScopeEntry     actor_scope { … }
+                          strategy: borrow_read       cost: Free
+                          why:      ActorScopeCleanupBarrier
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

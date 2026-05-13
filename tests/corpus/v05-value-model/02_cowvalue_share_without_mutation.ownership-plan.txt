@@ -1,0 +1,31 @@
+$ hew explain ownership tests/corpus/v05-value-model/02_cowvalue_share_without_mutation.hew
+
+fn print_greeting (02_cowvalue_share_without_mutation.hew)
+  site #1  Binding        s           : Value<String>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)
+
+fn measure_len (02_cowvalue_share_without_mutation.hew)
+  site #1  Binding        s           : Value<String>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver
+  site #2  Call           s.len()     : Value<String>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)
+
+fn main (02_cowvalue_share_without_mutation.hew)
+  site #1  Binding        greeting    : Value<String>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead at print_greeting + measure_len + actor_send
+  site #2  Call           print_greeting(greeting)
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead
+  site #3  Call           measure_len(greeting)
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver (len takes a read-only view; value ownership unchanged)
+  site #4  ActorSend      logger.log(greeting)        : Value<String>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      CowSafeAcrossSend
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

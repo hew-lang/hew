@@ -1,0 +1,39 @@
+// Corpus fixture: AffineResource (Resource) — use-after-consume (REJECT).
+//
+// Status: future / corpus — not runnable under current compiler.
+//         This fixture is an EXPECTED FAILURE: the v0.5 checker must reject
+//         this program with the diagnostic shown in the companion file.
+// Value-model target: hand-written diagnostic companion checked in; the v0.5 value-model checker must emit it.
+//
+// Attempting to use a Resource after it has been consumed (passed to a
+// consuming callee) is a checker error.  The compiler identifies the
+// consume site and the subsequent use site, and names them in the diagnostic
+// using value-cost vocabulary — not borrow/lifetime language.
+//
+// Value-model rules exercised:
+//   - consume_call at the first use
+//   - use-after-consume error at the second use (same scope)
+//   - diagnostic: "value `f` is consumed at <span> but read at <span>"
+
+@resource
+struct FileHandle {
+    fd: int,
+}
+
+fn close_file(consuming self: FileHandle) {
+    let _ = self.fd;
+}
+
+fn file_size(f: FileHandle) -> int {
+    f.fd
+}
+
+fn use_after_consume_is_error() {
+    let f = FileHandle { fd: 42 };
+    close_file(f);       // f is consumed here
+    let _ = file_size(f); // ERROR: f is already consumed
+}
+
+fn main() {
+    use_after_consume_is_error();
+}

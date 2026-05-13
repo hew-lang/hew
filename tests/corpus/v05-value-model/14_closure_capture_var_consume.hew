@@ -1,0 +1,33 @@
+// Corpus fixture: closure capture — var binding consumed inside closure.
+//
+// Status: future / corpus — not runnable under current compiler.
+// Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
+//
+// When a closure *consumes* a captured binding (passing it to a consuming
+// callee or using consume(x)), the capture mode is consume.  The outer
+// binding is no longer valid after the closure runs.  If the closure is
+// called more than once, the second call is a checker error (use-after-consume
+// inside the closure).
+//
+// Value-model rules exercised:
+//   - let binding captured and consumed inside a closure → capture mode: consume
+//   - consume_call inside the closure body
+//   - outer binding is not accessible after the closure moves it
+//   - report shows CaptureIntoClosure: consume
+
+fn accept_string(consuming s: String) {
+    let _ = s;
+}
+
+fn main() {
+    let greeting = "hello";  // CowValue<String>
+
+    // The closure consumes `greeting` (passes it to a consuming callee).
+    // Capture mode is consume; greeting is moved into the closure at construction.
+    let sender = fn() {
+        accept_string(greeting);  // greeting consumed here
+    };
+
+    sender();    // greeting is consumed on this call
+    // greeting is no longer accessible — it was moved into the closure.
+}

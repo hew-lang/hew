@@ -1,0 +1,60 @@
+// Corpus fixture: actor_scope — structured actor cleanup primitive (v0.5 opt-in).
+//
+// Status: future / corpus — not runnable under current compiler.
+//         actor_scope syntax is a v0.5 design candidate confirmed for inclusion
+//         as an opt-in primitive (§8 decision 3, user-confirmed).
+// Value-model target: documents expected surface syntax and expected report shape; actor_scope
+//   lowers to a scoped op with attached actor-cleanup edges in Elaborated MIR.
+//
+// `actor_scope { … }` spawns child actors whose lifetimes are bounded by the
+// scope.  On scope exit (normal or panic), the runtime guarantees:
+//   1. All child actors have drained their mailboxes.
+//   2. All child actor resources have been dropped (deterministic cleanup).
+//   3. The scope does not return until all child actors have terminated.
+//
+// This mirrors structured concurrency (Swift's TaskGroup, Java's StructuredTaskScope).
+// The unstructured `spawn` path remains available for long-lived actors.
+//
+// Value-model rules exercised:
+//   - Values captured by the scope body follow the same rules as closure captures.
+//   - Resources owned by child actors are dropped on scope exit.
+//   - actor_scope is an exit-path with a cleanup block in Elaborated MIR (like
+//     any other scope-bound cleanup).
+//   - hew.scope op carries actor-cleanup edges; the scope cannot return while
+//     children are alive.
+
+fn process_batch(items: Vec<String>) -> Vec<String> {
+    var results: Vec<String> = [];
+
+    actor_scope {
+        // Workers are child actors bounded by this scope.
+        let worker_a = spawn Worker;
+        let worker_b = spawn Worker;
+
+        for item in items {
+            worker_a.process(item);
+        }
+        worker_b.summarize();
+        // On scope exit: worker_a and worker_b drain their mailboxes and
+        // their resources are dropped before process_batch returns.
+        // `results` is mutated via a shared mutable capture (see 13_ fixture).
+    };
+
+    results
+}
+
+actor Worker {
+    receive fn process(item: String) {
+        // Process item; in real code, send result back via a channel.
+        let _ = item;
+    }
+
+    receive fn summarize() {
+    }
+}
+
+fn main() {
+    let batch = ["a", "b", "c"];
+    let out = process_batch(batch);
+    let _ = out;
+}

@@ -1,0 +1,38 @@
+$ hew explain ownership tests/corpus/v05-value-model/17_to_string_display_read_receiver.hew
+
+fn User::fmt (17_to_string_display_read_receiver.hew)
+  site #1  Binding        self        : Value<User>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver (Display::fmt; read-only by rule)
+  site #2  FieldAccess    self.name   : Value<String>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver
+  site #3  Call           self.score.to_string()
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver (to_string; read-only by rule)
+  site #4  Call           "User(" + self.name + ...
+                          strategy: materialize       cost: OCopyN
+                          why:      StringConcatMaterialize (produces fresh Value<String>)
+  budget:  1 materialize · 0 ensure_unique
+  note: site #4 inserted a hidden copy for string format concatenation — expected idiom
+
+fn demonstrate_read_receiver (17_to_string_display_read_receiver.hew)
+  site #1  Binding        name        : Value<String>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (to_string + subsequent read)
+  site #2  Call           name.to_string()
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver (to_string; read-only by rule)
+  site #3  Binding        n           : Copy<int>
+                          strategy: borrow_read       cost: Free
+                          why:      BitCopyRead
+  site #4  Call           n.to_string()
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver (to_string on Copy; free)
+  site #5  Binding        user        : Value<User>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead (to_string + subsequent read)
+  site #6  Call           user.to_string()
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver (Display::fmt; read-only by rule)
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

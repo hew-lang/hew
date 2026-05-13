@@ -1,0 +1,13 @@
+$ hew explain ownership tests/corpus/v05-value-model/09_actor_send_share.hew
+
+fn main (09_actor_send_share.hew)
+  site #1  Binding        announcement : Value<String>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      SharedRead at two actor sends + subsequent read
+  site #2  ActorSend      broadcaster.broadcast(announcement) : Value<String>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      ShareMode (CowSafeAcrossSend; sender retains access)
+  site #3  ActorSend      broadcaster.broadcast(announcement) : Value<String>
+                          strategy: cow_share         cost: RefcountTouch
+                          why:      ShareMode (CowSafeAcrossSend; sender retains access)
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

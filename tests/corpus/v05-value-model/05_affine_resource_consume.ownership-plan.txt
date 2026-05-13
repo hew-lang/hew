@@ -1,0 +1,28 @@
+$ hew explain ownership tests/corpus/v05-value-model/05_affine_resource_consume.hew
+
+fn file_size (05_affine_resource_consume.hew)
+  site #1  Binding        f           : Resource<FileHandle>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver (not consumed)
+  site #2  FieldAccess    f.fd        : Copy<int>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)
+
+fn close_file (05_affine_resource_consume.hew)
+  site #1  Binding        self        : Resource<FileHandle>
+                          strategy: consume_call      cost: OResourceTransfer
+                          why:      ConsumingReceiver
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)
+
+fn use_file (05_affine_resource_consume.hew)
+  site #1  Binding        f           : Resource<FileHandle>
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver at file_size; consumed at close_file
+  site #2  Call           file_size(f)
+                          strategy: borrow_read       cost: Free
+                          why:      ImmutableReadReceiver
+  site #3  Call           close_file(f)
+                          strategy: consume_call      cost: OResourceTransfer
+                          why:      ConsumingReceiver (last use; no Drop(f) on exit)
+  budget:  0 materialize · 0 ensure_unique  (within per-function budget)

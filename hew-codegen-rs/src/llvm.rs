@@ -800,7 +800,6 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
-            hew_mlir: hew_mir::HewMlirModule { functions: vec![] },
             diagnostics: Vec::new(),
         }
     }
@@ -833,7 +832,6 @@ mod tests {
             raw_mir: vec![main],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
-            hew_mlir: hew_mir::HewMlirModule { functions: vec![] },
             diagnostics: Vec::new(),
         };
         let ctx = Context::create();

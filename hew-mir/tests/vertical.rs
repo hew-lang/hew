@@ -12,19 +12,6 @@ fn pipeline(source: &str) -> hew_mir::IrPipeline {
 }
 
 #[test]
-fn string_return_reaches_hew_mlir_with_site_decisions() {
-    let pipeline = pipeline(r#"fn main() -> String { let s = "hello"; return s; }"#);
-    let mlir = pipeline.hew_mlir.dump();
-
-    assert!(mlir.contains("hew.func @main"));
-    assert!(mlir.contains("hew.bind @s : String"));
-    assert!(mlir.contains("hew.return : String"));
-    assert!(mlir.contains("hew.site_id"));
-    assert!(mlir.contains("hew.value_decision"));
-    assert!(!mlir.contains("hew.drop @s"));
-}
-
-#[test]
 fn elaborated_mir_makes_owned_string_drop_explicit() {
     let pipeline = pipeline(r#"fn main() { let s = "hello"; }"#);
     let func = &pipeline.elaborated_mir[0];
@@ -55,15 +42,6 @@ fn checked_mir_rejects_use_after_consume() {
 }
 
 #[test]
-fn arithmetic_reaches_hew_mlir() {
-    let pipeline = pipeline("fn main() -> i64 { let a = 3; let b = 4; return a + b; }");
-    let mlir = pipeline.hew_mlir.dump();
-    assert!(mlir.contains("hew.func @main"));
-    assert!(mlir.contains("hew.return : int"));
-    assert!(mlir.contains("hew.site_id"));
-}
-
-#[test]
 fn cross_function_call_types_return_correctly() {
     // With the function registry, calling add() returns i64, not Unit.
     // Before the registry, this would produce ReturnTypeMismatch in HIR
@@ -77,17 +55,21 @@ fn cross_function_call_types_return_correctly() {
         "{:?}",
         pipeline.diagnostics
     );
-    let mlir = pipeline.hew_mlir.dump();
-    assert!(mlir.contains("hew.func @add"));
-    assert!(mlir.contains("hew.func @main"));
-    assert!(mlir.contains("hew.return : int"));
+    let names: Vec<&str> = pipeline.raw_mir.iter().map(|f| f.name.as_str()).collect();
+    assert!(
+        names.contains(&"add"),
+        "raw_mir must include add: {names:?}"
+    );
+    assert!(
+        names.contains(&"main"),
+        "raw_mir must include main: {names:?}"
+    );
 }
 
 #[test]
-fn unknown_user_type_rejected_before_mlir() {
+fn unknown_user_type_rejected_at_mir_boundary() {
     // D10: Named user types with no known ValueClass must be rejected at the
-    // MIR boundary.  They must never reach MLIR with "UnknownBlocked" in
-    // hew.value_decision.
+    // MIR boundary so they cannot reach the backend.
     let parsed = hew_parser::parse("fn f(x: Foo) -> Foo { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(&parsed.program, &ResolutionCtx);
@@ -107,15 +89,10 @@ fn unknown_user_type_rejected_before_mlir() {
         "unknown named type must produce UnknownType at MIR boundary: {:?}",
         pipeline.diagnostics
     );
-    // MLIR must be empty — not emitted when there are diagnostics.
-    assert!(
-        pipeline.hew_mlir.dump().is_empty(),
-        "MLIR must not be emitted when UnknownType diagnostics are present"
-    );
 }
 
 #[test]
-fn nested_tuple_user_type_rejected_before_mlir() {
+fn nested_tuple_user_type_rejected_at_mir_boundary() {
     let parsed = hew_parser::parse("fn f(x: (Foo, i64)) -> (Foo, i64) { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(&parsed.program, &ResolutionCtx);
@@ -130,14 +107,10 @@ fn nested_tuple_user_type_rejected_before_mlir() {
         "nested tuple Foo must produce UnknownType at MIR boundary: {:?}",
         pipeline.diagnostics
     );
-    assert!(
-        pipeline.hew_mlir.dump().is_empty(),
-        "MLIR must not be emitted when nested UnknownType diagnostics are present"
-    );
 }
 
 #[test]
-fn nested_array_user_type_rejected_before_mlir() {
+fn nested_array_user_type_rejected_at_mir_boundary() {
     let parsed = hew_parser::parse("fn f(x: [Foo; 2]) -> [Foo; 2] { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(&parsed.program, &ResolutionCtx);
@@ -151,9 +124,5 @@ fn nested_array_user_type_rejected_before_mlir() {
         }),
         "nested array Foo must produce UnknownType at MIR boundary: {:?}",
         pipeline.diagnostics
-    );
-    assert!(
-        pipeline.hew_mlir.dump().is_empty(),
-        "MLIR must not be emitted when nested UnknownType diagnostics are present"
     );
 }

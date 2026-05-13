@@ -2,15 +2,15 @@ use std::collections::{HashMap, HashSet};
 
 use hew_hir::{
     named_type_names, BindingId, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
-    HirStmtKind, IntentKind, ResolvedRef, SiteId, ValueClass,
+    HirStmtKind, IntentKind, ResolvedRef, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::ResolvedTy;
 
 use crate::model::{
-    BasicBlock, CheckedMirFunction, DecisionFact, ElaboratedMirFunction, HewMlirFunction,
-    HewMlirModule, HewMlirOp, Instr, IrPipeline, MirCheck, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
+    BasicBlock, CheckedMirFunction, DecisionFact, ElaboratedMirFunction, Instr, IrPipeline,
+    MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy,
+    Terminator, ThirFunction,
 };
 
 #[must_use]
@@ -19,7 +19,6 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut raw_mir = Vec::new();
     let mut checked_mir = Vec::new();
     let mut elaborated_mir = Vec::new();
-    let mut mlir_functions = Vec::new();
     let mut diagnostics = Vec::new();
 
     for item in &module.items {
@@ -29,12 +28,6 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
-                // D10: only emit MLIR for functions with no diagnostics.
-                // A function with UnknownType or UnsupportedNode diagnostics
-                // must not appear in the MLIR output at all.
-                if lowered.diagnostics.is_empty() {
-                    mlir_functions.push(lowered.mlir);
-                }
                 elaborated_mir.push(lowered.elaborated);
                 diagnostics.extend(lowered.diagnostics);
             }
@@ -46,9 +39,6 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         raw_mir,
         checked_mir,
         elaborated_mir,
-        hew_mlir: HewMlirModule {
-            functions: mlir_functions,
-        },
         diagnostics,
     }
 }
@@ -59,7 +49,6 @@ struct LoweredFunction {
     raw: RawMirFunction,
     checked: CheckedMirFunction,
     elaborated: ElaboratedMirFunction,
-    mlir: HewMlirFunction,
     diagnostics: Vec<MirDiagnostic>,
 }
 
@@ -117,23 +106,12 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         statements: elaborated_statements,
         decisions: builder.decisions,
     };
-    // D10: skip MLIR emission when any diagnostic is pending.
-    // UnknownBlocked or UnsupportedNode must never reach lower_elaborated_to_mlir.
-    let mlir = if diagnostics.is_empty() {
-        lower_elaborated_to_mlir(&elaborated)
-    } else {
-        HewMlirFunction {
-            name: func.name.clone(),
-            ops: Vec::new(),
-        }
-    };
 
     LoweredFunction {
         thir,
         raw,
         checked,
         elaborated,
-        mlir,
         diagnostics,
     }
 }
@@ -538,71 +516,4 @@ fn check_raw_mir(block: &BasicBlock) -> Vec<MirDiagnostic> {
     }
 
     diagnostics
-}
-
-fn lower_elaborated_to_mlir(func: &ElaboratedMirFunction) -> HewMlirFunction {
-    // D10 defense-in-depth: UnknownBlocked must never reach MLIR emission.
-    // lower_function gates on diagnostics before calling this; if somehow
-    // a UnknownBlocked decision arrives here, it is a programming error.
-    for decision in &func.decisions {
-        assert_ne!(
-            decision.strategy,
-            Strategy::UnknownBlocked,
-            "D10 violation: UnknownBlocked strategy for site {} reached MLIR emission",
-            decision.site
-        );
-    }
-    let mut ops = Vec::new();
-    for statement in &func.statements {
-        match statement {
-            MirStatement::Bind { name, site, ty, .. } => ops.push(HewMlirOp::Bind {
-                name: name.clone(),
-                ty: ty.clone(),
-                site: *site,
-                decision: decision_for(func, *site),
-            }),
-            MirStatement::Evaluate { site, ty } | MirStatement::Use { site, ty, .. } => {
-                ops.push(HewMlirOp::Read {
-                    ty: ty.clone(),
-                    site: *site,
-                    decision: decision_for(func, *site),
-                });
-            }
-            MirStatement::Return {
-                site: Some(site),
-                ty,
-            } => ops.push(HewMlirOp::Return {
-                ty: ty.clone(),
-                site: Some(*site),
-                decision: Some(decision_for(func, *site)),
-            }),
-            MirStatement::Return { site: None, ty } => {
-                ops.push(HewMlirOp::Return {
-                    ty: ty.clone(),
-                    site: None,
-                    decision: None,
-                });
-            }
-            MirStatement::Drop { name, ty, .. } => {
-                ops.push(HewMlirOp::Drop {
-                    name: name.clone(),
-                    ty: ty.clone(),
-                });
-            }
-        }
-    }
-    HewMlirFunction {
-        name: func.name.clone(),
-        ops,
-    }
-}
-
-fn decision_for(func: &ElaboratedMirFunction, site: SiteId) -> Strategy {
-    func.decisions
-        .iter()
-        .find(|decision| decision.site == site)
-        .map_or_else(
-            || unreachable!("missing DecisionFact for MLIR site {site}"),
-            |decision| decision.strategy,
-        )
 }

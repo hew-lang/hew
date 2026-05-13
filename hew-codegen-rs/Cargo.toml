@@ -1,0 +1,15 @@
+[package]
+name = "hew-codegen-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "D2/D7-compliant textual MLIR emitter for the Hew v0.5 compiler pipeline"
+repository = "https://github.com/hew-lang/hew"
+readme = "../README.md"
+keywords = ["hew", "compiler", "mlir", "codegen"]
+categories = ["compilers"]
+
+[dependencies]
+hew-mir = { path = "../hew-mir" }
+hew-types = { path = "../hew-types" }

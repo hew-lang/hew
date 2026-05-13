@@ -49,6 +49,7 @@ members = [
   "hew-compile",
   "hew-hir",
   "hew-mir",
+  "hew-codegen-rs",
   "hew-wirecodec",
   "hew-capability-gen",
 ]

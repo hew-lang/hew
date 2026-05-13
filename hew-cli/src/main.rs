@@ -139,7 +139,7 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         }
         std::process::exit(1);
     }
-    print!("{}", pipeline.hew_mlir.dump());
+    print!("{}", hew_codegen_rs::emit_mlir(&pipeline.hew_mlir));
 }
 
 fn cmd_run(a: &args::RunArgs) {

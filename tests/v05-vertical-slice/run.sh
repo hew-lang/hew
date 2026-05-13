@@ -7,10 +7,10 @@ HEW="${ROOT}/target/debug/hew"
 cargo build -q -p hew-cli
 
 "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/string_return.hew" \
-  | grep -q 'hew.return : String'
+  | grep -q 'hew.return : !hew.string'
 
 "${HEW}" compile-v05 "${ROOT}/tests/v05-vertical-slice/accept/01-arith.hew" \
-  | grep -q 'hew.return : int'
+  | grep -q 'hew.return : i64'
 
 reject_output="$(mktemp)"
 trap 'rm -f "${reject_output}"' EXIT

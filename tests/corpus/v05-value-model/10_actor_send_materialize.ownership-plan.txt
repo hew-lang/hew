@@ -1,6 +1,6 @@
 $ hew explain ownership tests/corpus/v05-value-model/10_actor_send_materialize.hew
 
-fn materialize_on_send (10_actor_send_materialize.hew:40:1)
+fn materialize_on_send (10_actor_send_materialize.hew)
   site #1  Binding        snapshot    : Resource<SnapshotBuffer>
                           strategy: borrow_read       cost: Free
                           why:      ImmutableReadReceiver (live after send)

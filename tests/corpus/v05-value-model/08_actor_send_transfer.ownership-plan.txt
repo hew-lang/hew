@@ -1,6 +1,6 @@
 $ hew explain ownership tests/corpus/v05-value-model/08_actor_send_transfer.hew
 
-fn main (08_actor_send_transfer.hew:36:1)
+fn main (08_actor_send_transfer.hew)
   site #1  Binding        msg         : Value<String>
                           strategy: move              cost: Free
                           why:      LastUse (no subsequent read of `msg`)

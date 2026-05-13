@@ -1,6 +1,6 @@
 $ hew explain ownership tests/corpus/v05-value-model/12_closure_capture_let_read.hew
 
-fn main (12_closure_capture_let_read.hew:24:1)
+fn main (12_closure_capture_let_read.hew)
   site #1  Binding        prefix      : Value<String>
                           strategy: cow_share         cost: RefcountTouch
                           why:      SharedRead (captured by closure + read after)

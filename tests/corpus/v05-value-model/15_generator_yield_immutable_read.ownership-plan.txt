@@ -1,6 +1,6 @@
 $ hew explain ownership tests/corpus/v05-value-model/15_generator_yield_immutable_read.hew
 
-fn generate_greetings (15_generator_yield_immutable_read.hew:23:1)
+fn generate_greetings (15_generator_yield_immutable_read.hew)
   site #1  Binding        names       : Value<Vec<String>>
                           strategy: borrow_read       cost: Free
                           why:      ImmutableReadReceiver (iterator loop)
@@ -19,5 +19,5 @@ fn generate_greetings (15_generator_yield_immutable_read.hew:23:1)
   budget:  1 materialize · 0 ensure_unique
   note: site #5 inserted a hidden copy for string concatenation — expected and idiomatic
 
-fn main (15_generator_yield_immutable_read.hew:32:1)
+fn main (15_generator_yield_immutable_read.hew)
   budget:  0 materialize · 0 ensure_unique  (within per-function budget)

@@ -7,10 +7,10 @@
 // Phase B-PR4: Checked MIR must emit the error shown below.
 //
 // Mutation or consume of a value that is held across a yield point is rejected.
-// The Checked MIR analyser finds that the generator frame holds a read borrow
-// of `buffer` across the yield, and a mutation of `buffer` occurs after the
+// The Checked MIR analyser finds that the generator frame holds a read of
+// `buffer` across the yield, and a mutation of `buffer` occurs after the
 // yield inside the same generator body.  The aliasing rule (read-shared XOR
-// mutate-unique) is violated at the yield-borrow site.
+// mutate-unique) is violated at the yield site.
 //
 // Value-model rules exercised:
 //   - CowValue read held across yield, then mutated → conflict
@@ -21,7 +21,7 @@
 fn conflicting_yield_use(mut_buf: Vec<int>) -> generator int {
     var buffer = mut_buf;
 
-    // buffer is read across this yield: the frame holds a borrow of buffer.
+    // buffer is read across this yield: the frame holds a read of buffer.
     for i in 0 .. 10 {
         yield buffer.len();          // buffer read here (held across yield)
         buffer.push(i);              // ERROR: buffer mutated after yield in same frame

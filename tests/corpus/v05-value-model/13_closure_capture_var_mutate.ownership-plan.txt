@@ -1,6 +1,6 @@
 $ hew explain ownership tests/corpus/v05-value-model/13_closure_capture_var_mutate.hew
 
-fn main (13_closure_capture_var_mutate.hew:18:1)
+fn main (13_closure_capture_var_mutate.hew)
   site #1  Binding        counter     : Value<Vec<int>>
                           strategy: cow_share         cost: RefcountTouch
                           why:      SharedRead (captured mutably by closure + read after)

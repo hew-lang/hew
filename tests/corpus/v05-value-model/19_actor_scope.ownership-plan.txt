@@ -20,7 +20,7 @@ $ hew explain ownership tests/corpus/v05-value-model/19_actor_scope.hew
 #                             why:      ActorScopeBarrier (wait + drop child actors)
 #     budget:  0 materialize · 0 ensure_unique  (within per-function budget)
 
-fn process_batch (19_actor_scope.hew:28:1)
+fn process_batch (19_actor_scope.hew)
   site #1  Binding        items       : Value<Vec<String>>
                           strategy: borrow_read       cost: Free
                           why:      ImmutableReadReceiver

@@ -1,6 +1,6 @@
 $ hew explain ownership tests/corpus/v05-value-model/18_record_update_syntax.hew
 
-fn cowvalue_record_update (18_record_update_syntax.hew:36:1)
+fn cowvalue_record_update (18_record_update_syntax.hew)
   site #1  Binding        user        : Value<User>
                           strategy: cow_share         cost: RefcountTouch
                           why:      SharedRead (read by two record-updates + subsequent read)
@@ -18,7 +18,7 @@ fn cowvalue_record_update (18_record_update_syntax.hew:36:1)
                           why:      LastUse
   budget:  0 materialize · 2 ensure_unique  (within per-function budget)
 
-fn bitcopy_record_update (18_record_update_syntax.hew:45:1)
+fn bitcopy_record_update (18_record_update_syntax.hew)
   site #1  Binding        p           : Copy<Point>
                           strategy: borrow_read       cost: Free
                           why:      BitCopyRead

@@ -1,6 +1,6 @@
 $ hew explain ownership tests/corpus/v05-value-model/07_view_field_slice_alias.hew
 
-fn first_word (07_view_field_slice_alias.hew:27:1)
+fn first_word (07_view_field_slice_alias.hew)
   site #1  Binding        s           : Value<String>
                           strategy: borrow_read       cost: Free
                           why:      ImmutableReadReceiver
@@ -16,7 +16,7 @@ fn first_word (07_view_field_slice_alias.hew:27:1)
   budget:  1 materialize · 0 ensure_unique
   note: site #4 inserted a hidden copy to return a View value — use `copy(...)` explicitly to silence
 
-fn iterate_keys (07_view_field_slice_alias.hew:33:1)
+fn iterate_keys (07_view_field_slice_alias.hew)
   site #1  Binding        map         : Value<Map<String,int>>
                           strategy: borrow_read       cost: Free
                           why:      ImmutableReadReceiver
@@ -28,7 +28,7 @@ fn iterate_keys (07_view_field_slice_alias.hew:33:1)
                           why:      ViewIteratorElement (read-only window into map)
   budget:  0 materialize · 0 ensure_unique  (within per-function budget)
 
-fn main (07_view_field_slice_alias.hew:41:1)
+fn main (07_view_field_slice_alias.hew)
   site #1  Binding        sentence    : Value<String>
                           strategy: cow_share         cost: RefcountTouch
                           why:      SharedRead (read by first_word + let _ = sentence)

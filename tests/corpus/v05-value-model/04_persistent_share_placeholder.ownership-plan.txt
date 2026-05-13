@@ -7,7 +7,7 @@ $ hew explain ownership tests/corpus/v05-value-model/04_persistent_share_placeho
 #   - actor send of a Shareable → share mode (structurally safe; no COW needed)
 #   - No ensure_unique, no materialize, no cow_share at any site
 
-fn persistent_map_example (04_persistent_share_placeholder.hew:31:1)
+fn persistent_map_example (04_persistent_share_placeholder.hew)
   site #1  Binding        m0          : Shareable<PersistentMap<String,int>>
                           strategy: borrow_read       cost: Free
                           why:      ShareableRead (persistent; structurally shared)

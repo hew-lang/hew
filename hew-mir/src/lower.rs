@@ -24,22 +24,19 @@ use crate::model::{
 /// The `MirCheck::DecisionMapTotal` invariant fires if any
 /// `DecisionFact` in this function carries `Strategy::UnknownBlocked`.
 ///
-/// LOAD-BEARING INVARIANT — single-block CFG. The forward-scan over
-/// `builder.statements` is correct *only* while MIR is structurally
-/// CFG-flat (`HirExprKind::If` and `HirExprKind::Block` lower their
-/// arms inline rather than producing separate `BasicBlock`s with
-/// branching terminators — see `lower_value`). When CFG construction
-/// for `If`/`match` lands, this scan must be replaced by per-block
-/// dataflow: a flat-stream walk would false-positive on
-/// `consume(x)` appearing in mutually-exclusive arms (flattened to
-/// `consume; consume` looks like `UseAfterConsume`) and false-
-/// negative across siblings of a branch that consumes on only one
-/// path (the binding is removed from `linear_live` globally). The
-/// fixture corpus that names `linear_unconsumed_fall_through` /
-/// `linear_consumed_both_branches` exists to drive that follow-on
-/// work — it cannot meaningfully run under this implementation.
-/// LESSONS: boundary-fail-closed (don't assume the substrate is
-/// path-sensitive when the construction surface is single-block).
+/// Delegates to `dataflow::analyze` which runs the four-state lattice
+/// (`Uninit / Live / Consumed / MaybeConsumed`) over the CFG's basic
+/// blocks via a forward fixpoint. Per-block transfer emits
+/// `InitialisedBeforeUse` on `Uninit` reads and `UseAfterConsume` on
+/// `Consumed`/`MaybeConsumed` reads; the inter-block meet rule is
+/// `Uninit ⊔ X = Uninit` (most-conservative). `If`-lowering (Slice 2)
+/// produces `Branch` + two arm blocks + a join block, so the
+/// path-sensitive cases that a flat-stream scan would mishandle
+/// (false-positive on mutually-exclusive `consume` arms; false-negative
+/// for a binding consumed on only one path) are handled correctly by
+/// the per-block fixpoint. LESSONS: `boundary-fail-closed` — verify
+/// the substrate is path-sensitive before relying on it for linear
+/// safety, and mandate property tests on meet rules before landing.
 fn check_function(
     builder: &Builder,
     blocks: &[BasicBlock],
@@ -1002,14 +999,15 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
 ///      ordered list of non-`BitCopy` bindings introduced by `let`).
 ///      The ledger is already maintained in source/declaration order
 ///      with bindings removed when consumed (`mark_binding_moved`).
-///   2. For every `Terminator::Return` exit (the only terminator the
-///      current single-block spine constructs), emit a `DropPlan`
-///      whose `drops` are the live owned-local list in reverse
-///      declaration order (LIFO).
+///   2. For every `Terminator::Return` exit, emit a `DropPlan` whose
+///      `drops` are the live owned-local list in reverse declaration
+///      order (LIFO). `If`-lowering (Slice 2) constructs
+///      `Terminator::Branch` and `Terminator::Goto` in addition to
+///      `Terminator::Return`; `enumerate_exits` handles all three.
 ///   3. For declared-but-not-constructed terminators (`Panic`, `Yield`,
-///      `Send`, `Goto`, `Branch`, `Call`), the pass enumerates them
-///      with an empty drop plan when reached — Cluster 4+ adds the
-///      construction surfaces that turn these into populated plans.
+///      `Send`, `Call`), the pass enumerates them with an empty drop
+///      plan when reached — later cluster additions add the construction
+///      surfaces that turn these into populated plans.
 ///   4. A `BlockKind::Cleanup` block is emitted ONLY when a
 ///      `Terminator::Panic` is constructed in the function's CFG
 ///      (currently no spine surface — declared scaffold). Same for

@@ -131,5 +131,11 @@ runs:
         # hew-cli build.rs treats any of those as a request to build the
         # embedded C++ codegen via cmake, which is skipped during the
         # v0.5 spine pass.
+        # On Windows the prefix arrives in POSIX form (under cygpath -u)
+        # but llvm-sys's build script invokes Windows-native APIs against
+        # it, so it needs to be a backslash path. Convert back here.
+        if command -v cygpath >/dev/null 2>&1; then
+          prefix="$(cygpath -w "${prefix}")"
+        fi
         echo "LLVM_SYS_221_PREFIX=${prefix}" >> "$GITHUB_ENV"
         echo "${prefix}/bin" >> "$GITHUB_PATH"

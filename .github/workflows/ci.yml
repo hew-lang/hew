@@ -490,12 +490,13 @@ jobs:
         # libffi and zstd are runtime deps of the upstream LLVM macOS
         # tarball; libxml2 ships in /usr/lib but libffi does not, so
         # llvm-sys's static-link path fails to resolve -lffi without
-        # the brew bottle. libffi is keg-only on macOS, so its lib dir
-        # is appended to LIBRARY_PATH for the linker.
+        # the brew bottle. libffi is keg-only on Homebrew, so we add its
+        # lib dir to the linker search path via RUSTFLAGS (LIBRARY_PATH
+        # is honoured by clang but not by every rustc link invocation).
         run: |
           brew install ninja libffi zstd
           LIBFFI_PREFIX="$(brew --prefix libffi)"
-          echo "LIBRARY_PATH=${LIBFFI_PREFIX}/lib:${LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-L ${LIBFFI_PREFIX}/lib ${RUSTFLAGS:-}" >> "$GITHUB_ENV"
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'

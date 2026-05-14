@@ -630,6 +630,24 @@ impl Checker {
                         return alias_ty;
                     }
                 }
+                // Reject user-written `Task<T>` in any type-annotation position.
+                //
+                // `Task<T>` is a compiler-internal type produced exclusively by
+                // HIR lowering of `fork name = expr`; it has no surface syntax.
+                // Any occurrence of the name "Task" in a user-source type
+                // annotation is an error. Emit `E_TASK_NOT_NAMEABLE` and
+                // return `Ty::Error` so downstream checks don't cascade.
+                if name == "Task" {
+                    self.report_error(
+                        TypeErrorKind::TaskNotNameable,
+                        &te.1,
+                        "Task<T> is a compiler-internal type and cannot be written in source. \
+                         Use `fork name = expr` to create a task handle; the binding's type is \
+                         inferred automatically."
+                            .to_string(),
+                    );
+                    return Ty::Error;
+                }
                 // Check for primitive types first
                 if let Some(prim) = Ty::from_name(name) {
                     return prim;

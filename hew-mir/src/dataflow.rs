@@ -301,10 +301,30 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
 /// Run the per-block move-checker over a function's CFG. Emits the
 /// `InitialisedBeforeUse` / `UseAfterConsume` / `MustConsume` checks
 /// derived from the four-state lattice.
+/// Result of the dataflow analysis. `checks` mirror what
+/// `check_blocks` returns; `exit_states[bb]` is the per-binding
+/// state map at each block's terminator — the elaborator consumes
+/// it to derive per-`Return`-exit live sets for drop planning.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DataflowResult {
+    pub checks: Vec<MirCheck>,
+    pub exit_states: HashMap<u32, BTreeMap<BindingId, BindingState>>,
+}
+
 #[must_use]
 pub fn check_blocks(blocks: &[BasicBlock], type_classes: &TypeClassTable) -> Vec<MirCheck> {
+    analyze(blocks, type_classes).checks
+}
+
+/// Run the full dataflow pass and return both diagnostics and the
+/// per-block exit-state map. The elaborator uses `exit_states` to
+/// filter the function-wide LIFO drop sequence down to per-exit
+/// live sets (plan §5 Slice 4: "per-exit drop list with Place
+/// threading").
+#[must_use]
+pub fn analyze(blocks: &[BasicBlock], type_classes: &TypeClassTable) -> DataflowResult {
     if blocks.is_empty() {
-        return Vec::new();
+        return DataflowResult::default();
     }
     let preds = build_preds(blocks);
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
@@ -420,7 +440,10 @@ pub fn check_blocks(blocks: &[BasicBlock], type_classes: &TypeClassTable) -> Vec
         // (the Bind never happened on any path reaching the exit).
     }
 
-    checks
+    DataflowResult {
+        checks,
+        exit_states,
+    }
 }
 
 // ---------- Property tests for the lattice ----------

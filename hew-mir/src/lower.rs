@@ -40,8 +40,13 @@ use crate::model::{
 /// work — it cannot meaningfully run under this implementation.
 /// LESSONS: boundary-fail-closed (don't assume the substrate is
 /// path-sensitive when the construction surface is single-block).
-fn check_function(builder: &Builder, blocks: &[BasicBlock], _func: &HirFn) -> Vec<MirCheck> {
-    let mut checks = dataflow::check_blocks(blocks, &builder.type_classes);
+fn check_function(
+    builder: &Builder,
+    blocks: &[BasicBlock],
+    _func: &HirFn,
+) -> dataflow::DataflowResult {
+    let mut result = dataflow::analyze(blocks, &builder.type_classes);
+    let checks = &mut result.checks;
 
     // DecisionMapTotal. Every `DecisionFact` on this function must
     // carry a concrete `Strategy` — `Strategy::UnknownBlocked` is a
@@ -67,7 +72,7 @@ fn check_function(builder: &Builder, blocks: &[BasicBlock], _func: &HirFn) -> Ve
     // when the construction surface for borrows, generators, and
     // actor sends lands.
 
-    checks
+    result
 }
 
 #[must_use]
@@ -159,9 +164,12 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     // stream. The `MirDiagnostic` surface that the CLI rejects on is
     // projected from these checks — there is one source of truth for
     // move/borrow/init legality.
-    let checks = check_function(&builder, &raw.blocks, func);
-    let mut diagnostics: Vec<MirDiagnostic> =
-        checks.iter().filter_map(check_to_diagnostic).collect();
+    let dataflow_result = check_function(&builder, &raw.blocks, func);
+    let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
+        .checks
+        .iter()
+        .filter_map(check_to_diagnostic)
+        .collect();
 
     // Collect diagnostics emitted by the builder (e.g., Unsupported HIR nodes).
     diagnostics.append(&mut builder.diagnostics);
@@ -173,7 +181,7 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
         return_ty: func.return_ty.clone(),
         blocks: raw.blocks.clone(),
         decisions: builder.decisions.clone(),
-        checks,
+        checks: dataflow_result.checks.clone(),
     };
     // Drop-elaboration pass. Consumes the CheckedMirFunction we just
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
@@ -187,7 +195,7 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     // does not emit a Drop. The elaboration shape is exercised by
     // hew-mir's unit tests that hand-construct CheckedMirFunction
     // inputs with synthesized DecisionFact::value_class values.
-    let elaborated = elaborate(&checked, &builder, &thir.statements);
+    let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
 
     LoweredFunction {
         thir,
@@ -1023,6 +1031,7 @@ fn elaborate(
     checked: &CheckedMirFunction,
     builder: &Builder,
     flat_statements: &[MirStatement],
+    dataflow_result: &dataflow::DataflowResult,
 ) -> ElaboratedMirFunction {
     // Statements stream: retained for snapshot/compat continuity with
     // the pre-Cluster-3 elaborator. Every non-`BitCopy` owned local
@@ -1040,12 +1049,23 @@ fn elaborate(
         });
     }
 
+    // Function-wide LIFO drop sequence — one ElabDrop per
+    // AffineResource owned local in reverse declaration order. The
+    // per-Return-block exit live-set then narrows this sequence to
+    // bindings still Live at that block's exit (drops fire only for
+    // bindings whose state is Live at the exit; Consumed / Uninit
+    // skip; MaybeConsumed is rejected upstream by the move-checker).
     let lifo_drops = build_lifo_drops(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.type_classes,
     );
-    let (elab_blocks, drop_plans) = enumerate_exits(&checked.blocks, &lifo_drops);
+    let (elab_blocks, drop_plans) = enumerate_exits(
+        &checked.blocks,
+        &lifo_drops,
+        &dataflow_result.exit_states,
+        &builder.binding_locals,
+    );
 
     ElaboratedMirFunction {
         name: checked.name.clone(),
@@ -1094,18 +1114,21 @@ fn build_lifo_drops(
                 };
                 // Resolve to the binding's real backend place. Falling
                 // back to `ReturnSlot` for an unmapped binding would
-                // drop the wrong slot, so we treat a missing entry as
-                // a builder invariant violation in debug builds and
-                // emit ReturnSlot in release as the historical
-                // placeholder (preserved so this change does not
-                // regress snapshot-stability if a previously-unmapped
-                // surface exists in another test). Today's call sites
-                // always populate `binding_locals` for any binding
-                // that reaches `owned_locals`.
-                let place = binding_locals
-                    .get(binding)
-                    .copied()
-                    .unwrap_or(Place::ReturnSlot);
+                // drop the wrong slot — fail closed instead. The
+                // `stmt` handler always populates `binding_locals` for
+                // any binding that reaches `owned_locals` (see
+                // `HirStmtKind::Let` arm), so this expect is a builder
+                // invariant. A future surface that grows
+                // `owned_locals` ahead of `binding_locals` must wire
+                // a real `Place` before reaching here. LESSONS:
+                // boundary-fail-closed.
+                let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                    panic!(
+                        "build_lifo_drops invariant: binding {binding:?} is in owned_locals \
+                         but missing from binding_locals; lowering must wire a Place before \
+                         the drop-elaboration pass observes the binding"
+                    )
+                });
                 drops.push(ElabDrop {
                     place,
                     ty: ty.clone(),
@@ -1130,12 +1153,29 @@ fn build_lifo_drops(
 /// function's CFG. Every basic block becomes one `ElabBlock` of
 /// `BlockKind::Normal`; `Terminator::Panic` synthesises a sibling
 /// `BlockKind::Cleanup` block. Each block's terminator maps to one
-/// `(ExitPath, DropPlan)` entry — `Return`-terminated blocks carry the
-/// function-wide LIFO `lifo` drop plan (Slice 4 will refine this to a
-/// per-exit live-set). All other terminators carry an empty plan.
+/// `(ExitPath, DropPlan)` entry. `Return`-terminated blocks narrow
+/// the function-wide LIFO `lifo` sequence to bindings whose state at
+/// that block's exit is `Live` — bindings already `Consumed` on
+/// every reaching path do not need their drop fired again
+/// (LESSONS `raii-null-after-move`). `MaybeConsumed` at a Return
+/// exit is rejected upstream by the move-checker; the elaborator
+/// treats it as if `Live` for drop-plan purposes, but the program
+/// would have already been rejected before reaching codegen so the
+/// drop list is informational.
+#[allow(
+    clippy::too_many_lines,
+    reason = "enumerate_exits is a flat match over Terminator variants \
+              with per-arm payload construction; the line count is the \
+              variant count, not deep nesting"
+)]
 fn enumerate_exits(
     blocks: &[BasicBlock],
     lifo: &[ElabDrop],
+    exit_states: &std::collections::HashMap<
+        u32,
+        std::collections::BTreeMap<hew_hir::BindingId, dataflow::BindingState>,
+    >,
+    binding_locals: &HashMap<BindingId, Place>,
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
     // Track the highest block id observed so cleanup-block ids can
     // start past it. Slice 2 onwards may emit multiple non-trivial
@@ -1155,13 +1195,51 @@ fn enumerate_exits(
     let mut plans: Vec<(ExitPath, DropPlan)> = Vec::new();
     let drops_template = lifo.to_vec();
 
+    // Map each owned-local's Place back to its BindingId so the
+    // per-exit filter can consult exit_states. The drops in `lifo`
+    // already carry the binding's Place but not its id; reverse the
+    // builder's `binding_locals` (BindingId -> Place) is the cleanest
+    // bridge. Builds only as large as there are owned bindings.
+    let place_to_binding: std::collections::HashMap<Place, BindingId> = binding_locals
+        .iter()
+        .map(|(binding, place)| (*place, *binding))
+        .collect();
+
+    let drops_for_exit = |block_id: u32| -> Vec<ElabDrop> {
+        let Some(state_map) = exit_states.get(&block_id) else {
+            // No dataflow result for this block (defensive — every
+            // reachable block has an exit_state entry after
+            // analyze). Fall back to the function-wide LIFO.
+            return drops_template.clone();
+        };
+        drops_template
+            .iter()
+            .filter(|drop| match place_to_binding.get(&drop.place) {
+                Some(binding) => matches!(
+                    state_map
+                        .get(binding)
+                        .copied()
+                        .unwrap_or(dataflow::BindingState::Uninit),
+                    dataflow::BindingState::Live | dataflow::BindingState::MaybeConsumed(_)
+                ),
+                // No binding mapping → conservatively keep the drop.
+                // This arm guards against future surfaces that build
+                // drops outside the binding_locals registry; the
+                // current `build_lifo_drops` `expect()` rules out
+                // this path today, but keep it for forward safety.
+                None => true,
+            })
+            .cloned()
+            .collect()
+    };
+
     for block in blocks {
         let block_id = block.id;
         let plan = match &block.terminator {
             Terminator::Return => (
                 ExitPath::Return { block: block_id },
                 DropPlan {
-                    drops: drops_template.clone(),
+                    drops: drops_for_exit(block_id),
                 },
             ),
             Terminator::Goto { target } => (

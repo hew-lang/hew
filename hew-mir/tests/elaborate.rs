@@ -110,3 +110,60 @@ fn elaborated_function_blocks_match_checked_block_id() {
     assert_eq!(normals.len(), 1);
     assert_eq!(normals[0].id, 0);
 }
+
+// ---------- Slice 4: per-exit live-set drop plan ----------
+//
+// enumerate_exits now consumes the dataflow's per-block exit-state
+// map and narrows the function-wide LIFO drop sequence to bindings
+// whose state at each Return exit is Live (or MaybeConsumed, which
+// the move-checker rejects upstream but the elaborator treats as
+// still-needing-a-drop for graceful failure of pipelines that
+// bypassed the rejection). The integer-only spine has no
+// AffineResource owned locals in any test, so the live-set narrowing
+// is structurally invisible — the elaborated drop plan stays empty.
+// This test pins the no-narrowing-equivalence at the single-Return
+// shape so a future surface that constructs @resource bindings can
+// add per-exit assertions on top.
+
+#[test]
+fn single_return_drop_plan_is_function_wide_lifo_on_spine_today() {
+    // hello_int has zero owned locals; LIFO is empty; per-exit
+    // narrowing of an empty sequence is also empty. The pin is the
+    // shape — one Return exit with an empty plan.
+    let p = pipeline("fn main() -> i64 { 42 }");
+    let func = first(&p);
+    let return_plan = func
+        .drop_plans
+        .iter()
+        .find(|(e, _)| matches!(e, ExitPath::Return { .. }))
+        .expect("Return exit on every function");
+    assert!(
+        return_plan.1.drops.is_empty(),
+        "spine has no owned locals; per-exit live-set drop plan is empty: {:?}",
+        return_plan.1.drops
+    );
+}
+
+#[test]
+fn if_expression_emits_one_return_exit_with_empty_plan_on_spine() {
+    // The new CFG for If gives the function 4 blocks; only the join
+    // block is Return-terminated. Per-exit live-set narrowing of the
+    // (empty) function-wide LIFO is also empty.
+    let p = pipeline("fn main() -> i64 { let r = if 1 == 1 { 7 } else { 8 }; r }");
+    let func = first(&p);
+    let returns: Vec<_> = func
+        .drop_plans
+        .iter()
+        .filter(|(e, _)| matches!(e, ExitPath::Return { .. }))
+        .collect();
+    assert_eq!(
+        returns.len(),
+        1,
+        "If expression with no early return produces exactly one Return exit"
+    );
+    assert!(
+        returns[0].1.drops.is_empty(),
+        "spine has no owned locals; per-exit drop plan is empty: {:?}",
+        returns[0].1.drops
+    );
+}

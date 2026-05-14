@@ -172,7 +172,7 @@ Block          = "{" { Stmt } Expr? "}" ;
 Stmt           = LetStmt | VarStmt | AssignStmt | IfStmt | IfLetStmt | MatchStmt
                | LoopStmt | ForStmt | WhileStmt | WhileLetStmt
                | BreakStmt | ContinueStmt | ReturnStmt | DeferStmt | ExprStmt
-               | UnsafeBlock | Scope | Block ;
+               | UnsafeBlock | Fork | Block ;
 
 LetStmt        = "let" Pattern ( ":" Type )? ( "=" Expr )? ";" ;
 VarStmt        = "var" Ident ( ":" Type )? ( "=" Expr )? ";" ;
@@ -232,7 +232,8 @@ Primary        = Literal
                | Spawn
                | SelectExpr                          (* select { ... } *)
                | JoinExpr                            (* join { ... } *)
-               | Scope                              (* scope { ... } or scope |s| { ... } *)
+               | Fork                                (* fork { ... } structured-concurrency block *)
+               | ForkChild                          (* fork name = expr or fork expr — only inside a Fork block *)
                | CooperateExpr
                | YieldExpr ;
 
@@ -265,12 +266,13 @@ TimeoutArm     = "after" Expr "=>" Expr ","? ;
 
 JoinExpr       = "join" ("{" | "(") Expr { "," Expr } ","? ("}" | ")") ;
 
-(* Structured concurrency *)
-Scope          = "scope" ( "|" Ident "|" )? Block ;
-(* Inside a scope |s| { ... } block, the binding s supports:
-   s.launch { expr }      — launch a concurrent task, returns Task<T>
-   s.spawn { expr }       — spawn a concurrent task
-   s.cancel()             — request cancellation of all tasks *)
+(* Structured concurrency. `fork` is dual-use: the block form opens a
+   structured-concurrency region; the child form spawns a sibling task
+   within an open block. The token after `fork` disambiguates — `{` opens
+   a block, anything else begins a child expression. Outside a block, a
+   child-form `fork` is a `ForkOutsideForkBlock` error. *)
+Fork           = "fork" Block ;
+ForkChild      = "fork" ( Ident "=" )? Expr ;
 CooperateExpr  = "cooperate" ;
 YieldExpr      = "yield" Expr? ;
 
@@ -280,7 +282,6 @@ YieldExpr      = "yield" Expr? ;
 (* Integer literals default to int (i64), float literals default to float (f64) *)
 Type           = Ident TypeArgs?
                | "Task" "<" Type ">"              (* Task type: Task<T> *)
-               | "Scope"                          (* Scope type (within scope blocks) *)
                | "ActorRef" "<" Type ">"          (* Actor reference: ActorRef<A> *)
                | "Actor" "<" Type ("," Type)? ">" (* Actor type: Actor<M> or Actor<M, R> *)
                | "Arc" "<" Type ">"               (* Atomic refcount: Arc<T> *)

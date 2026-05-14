@@ -106,6 +106,8 @@ decimal_bitwise_operands = "allow"
 
 [profile.dev]
 panic = "abort"
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
 
 [profile.release]
 opt-level = "s"

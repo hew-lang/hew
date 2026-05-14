@@ -588,6 +588,22 @@ fn lower_terminator<'ctx>(
                 "Terminator::Panic — panic lowering is Cluster 3 work",
             ));
         }
+        Terminator::Yield { .. } => {
+            // Generator lowering is Cluster 4 work. The variant is
+            // declared so Cluster 2's borrow-liveness check has a
+            // suspension point to look for; no v0.5 spine constructs it.
+            return Err(CodegenError::Unsupported(
+                "Terminator::Yield — generator lowering is Cluster 4 work",
+            ));
+        }
+        Terminator::Send { .. } => {
+            // Actor send lowering is Cluster 4 work. Same shape as
+            // Yield: declared for the legality check, no construction
+            // surface in C2's spine.
+            return Err(CodegenError::Unsupported(
+                "Terminator::Send — actor lowering is Cluster 4 work",
+            ));
+        }
     }
     Ok(())
 }

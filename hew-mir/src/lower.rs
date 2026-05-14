@@ -168,6 +168,12 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 elaborated_mir.push(lowered.elaborated);
                 diagnostics.extend(lowered.diagnostics);
             }
+            HirItem::TypeDecl(_) => {
+                // Type declarations carry no executable body. Their
+                // `ResourceMarker` is consumed via `HirModule.type_classes`
+                // by `ValueClass::of_ty` when a downstream expression
+                // references a Named type. Nothing else to lower here.
+            }
         }
     }
 

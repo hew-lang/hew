@@ -56,6 +56,21 @@ pub fn dump_hir(module: &HirModule) -> String {
                     dump_expr(&mut out, tail, 4);
                 }
             }
+            HirItem::TypeDecl(decl) => {
+                writeln!(
+                    out,
+                    "type {} {} marker={:?}",
+                    decl.id, decl.name, decl.marker
+                )
+                .expect("write to string");
+                for field in &decl.fields {
+                    writeln!(out, "  field {}: {}", field.name, field.ty.user_facing())
+                        .expect("write to string");
+                }
+                for method in &decl.consuming_methods {
+                    writeln!(out, "  consuming-method {method}").expect("write to string");
+                }
+            }
         }
     }
     out

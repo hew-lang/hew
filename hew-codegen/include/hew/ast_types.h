@@ -628,6 +628,12 @@ struct ConstDecl {
 
 enum class TypeDeclKind { Struct, Enum };
 
+// Ownership-discipline marker for a type declaration. `None` is the default
+// (ordinary value type); `Resource` indicates an implicit-drop external
+// resource (paired with `fn close(consuming self) -> ...`); `Linear` indicates
+// a single-owner value with no implicit drop, requiring consume on every exit.
+enum class ResourceMarker { None, Resource, Linear };
+
 struct VariantDecl {
   std::string name;
   struct VariantUnit {};
@@ -712,6 +718,8 @@ struct TypeDecl {
   std::vector<std::unique_ptr<FnDecl>> method_storage;
   std::optional<WireMetadata> wire;
   bool is_indirect = false;
+  ResourceMarker resource_marker = ResourceMarker::None;
+  std::vector<std::string> consuming_methods;
 };
 
 struct TypeAliasDecl {

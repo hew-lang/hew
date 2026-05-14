@@ -1235,42 +1235,26 @@ let alias = data.clone();  // refcount++, no data copy
 | Owned `T` | Copied on send | None | Default, small data |
 | `Rc<T>` | No | Non-atomic | Shared within actor |
 
-#### 3.7.6 Allocation Surface (not yet public)
+#### 3.7.6 Compiler Optimizations (Implementation Details)
 
-Earlier drafts of this spec described a user-visible allocator interface with
-types such as `GlobalAllocator`, `ArenaAllocator`, and `PoolAllocator`, plus
-collection constructors such as `Vec::new_in(arena)`. That surface is **not**
-part of Hew v0.2.0.
+The compiler may apply memory optimizations that are **invisible to user
+semantics**. Users always see RAII behaviour; optimizations affect only
+performance.
 
-Today, the public collection APIs use the default runtime allocator. In user
-code, prefer the shipped `Vec::new()` API or collection literals such as
-`[1, 2, 3]`. The arena discussion in the next section describes
-compiler/runtime optimization strategies, not a stable user-facing allocator
-API.
+- **Arena optimisation for message handlers.** The compiler may allocate
+  message-handler temporaries in an arena and bulk-free them when the
+  handler returns. The arena path applies only to values that do not
+  carry a drop side effect (§3.7.9). For values that do, the destructor
+  runs individually.
+- **Copy elision.** When sending messages, the compiler may optimise away
+  copies if the sender provably does not use the value after send.
+- **Escape analysis.** Values that do not escape their scope may be stack-
+  allocated rather than heap-allocated.
 
-#### 3.7.7 Compiler Optimizations (Implementation Details)
+These optimisations do not change program behaviour. A correct program
+produces identical results with or without them.
 
-The compiler may apply memory optimizations that are **invisible to user semantics**. Users always see RAII behaviour; optimizations affect only performance.
-
-**Arena optimization for message handlers:**
-The compiler may allocate message handler temporaries in an arena and bulk-free them when the handler returns. This is an optimization, not a semantic change:
-
-- User code behaves as if each value is individually dropped
-- `Drop::drop()` is still called for types that implement `Drop`
-- The arena optimization applies only to types without custom `Drop`
-
-> ⚠️ **Performance cliff: Adding `Drop` disables arena optimization.**
-> Types with a `Drop` implementation have their destructors called individually instead of benefiting from arena bulk-free. This means adding `Drop` for debugging purposes (e.g., logging on destruction) can significantly impact performance in hot message handlers. Consider using explicit cleanup functions instead of `Drop` when arena performance matters.
-
-**Copy elision:**
-When sending messages, the compiler may optimize away copies in cases where the sender provably does not use the value after send. This is semantically equivalent to copy-then-drop-original.
-
-**Escape analysis:**
-The compiler may stack-allocate values that do not escape their scope, avoiding heap allocation entirely.
-
-**Important:** These optimizations do not change program behaviour. A correct program produces identical results with or without optimizations.
-
-#### 3.7.8 Memory Safety Guarantees
+#### 3.7.7 Memory Safety Guarantees
 
 | Guarantee         | How Hew ensures it                                             |
 | ----------------- | -------------------------------------------------------------- |
@@ -1280,97 +1264,181 @@ The compiler may stack-allocate values that do not escape their scope, avoiding 
 | No GC pauses      | No tracing GC; deterministic refcounting and scope-based drops |
 | No memory leaks\* | RAII ensures cleanup; cycles in `Rc` can leak (use weak refs)  |
 
-\*Reference cycles in `Rc<T>` can cause leaks. Use `Weak<T>` to break cycles.
+\*Reference cycles in `Rc<T>` can cause leaks. Use `Weak<T>` to break
+cycles. Actor references (`ActorRef<A>`) use reference counting and can
+form cycles; supervision trees naturally avoid them by keeping ownership
+parent-to-child only, and `Weak<ActorRef<A>>` is available for back-
+references.
 
-#### 3.7.8 Actor Reference Cycles
+#### 3.7.8 Resource markers (`@resource` and `@linear`)
 
-Actor references (`ActorRef<A>`) use reference counting. This means cycles between actors can cause leaks:
+Edition 2026 introduces two type annotations for resources whose lifecycle
+must be visible in the type system. Both are single-owner; both interact
+with the move-checker so use-after-consume becomes a compile-time error.
+They differ in whether dropping the value at scope exit is an implicit,
+infallible action.
+
+##### 3.7.8.1 `@resource` — single-owner with drop side effect
+
+`@resource` marks a type that carries an external resource (file
+descriptor, socket, allocator handle, GPU context, libc pointer) and
+**must** declare a consuming-receiver `close` method:
 
 ```hew
-// ⚠️ LEAK: A holds ref to B, B holds ref to A — neither can be freed
-actor A {
-    var peer: ActorRef<B>;
-}
-actor B {
-    var peer: ActorRef<A>;
+@resource
+type File {
+    fd: int
+    pub fn open(path: String) -> Result<File, IoError> { ... }
+    pub fn read(self: &File, buf: &mut [byte]) -> Result<int, IoError> { ... }
+    pub fn close(consuming self) -> Result<(), IoError> { ... }
 }
 ```
 
-**Mitigation: Use `Weak<ActorRef<A>>` for back-references:**
+Semantics:
+
+1. **Required `close` method.** The compiler errors at type-declaration
+   time if `@resource T` has no `fn close(consuming self) -> Result<(), E>`
+   for some error type `E`.
+2. **Implicit drop calls `close`.** When the value goes out of scope
+   without an explicit close, the compiler emits a drop site that calls
+   `close(value)` and discards the returned `Result`. The discard is
+   intentional — there is nowhere for the error to propagate at drop time.
+3. **Early close is a normal method call.** `f.close()?` consumes `f` and
+   surfaces the error via `?` like any other method. Any subsequent use
+   of `f` is a use-after-consume diagnostic from Checked MIR.
+4. **Affine in the move-checker.** Sends, moves, and method calls with a
+   consuming receiver all consume the value; the move-checker tracks the
+   single live binding.
+
+Typical example — file I/O with implicit cleanup:
 
 ```hew
-actor B {
-    var parent: Weak<ActorRef<A>>;  // weak ref — does not prevent A from being freed
-
-    receive fn notify_parent() {
-        if let Some(parent) = parent.upgrade() {
-            parent.notify(Notification);
-        }
-    }
+fn read_config(path: String) -> Result<Config, IoError> {
+    let f = File::open(path)?;
+    let bytes = f.read_all()?;
+    parse(bytes)
+    // f drops at scope exit; the fd is closed automatically.
 }
 ```
 
-**Supervision trees naturally avoid cycles:** Parent supervisors hold strong `ActorRef` to children, but children do not hold ownership references back to parents. If a child needs to communicate with its parent, it should use a `Weak<ActorRef>` or an explicit message protocol.
-
-#### 3.7.8 Defer Statements
-
-The `defer` statement schedules an expression to execute when the enclosing function returns, regardless of the return path (normal exit or early `return`). Deferred expressions execute in **LIFO** (last-in, first-out) order — the most recently deferred expression runs first.
+Early close, surfacing the I/O error to the caller:
 
 ```hew
-fn example() {
-    defer println("cleanup");
-    println("work");
-}
-// Output:
-//   work
-//   cleanup
-```
-
-**Semantics:**
-
-1. **Function-scoped.** Deferred expressions are bound to the enclosing function, not to the enclosing block.
-2. **LIFO execution order.** Multiple `defer` statements in the same function execute in reverse order of registration:
-
-```hew
-fn multi_defer() {
-    defer println("third");
-    defer println("second");
-    defer println("first");
-}
-// Output:
-//   first
-//   second
-//   third
-```
-
-3. **Runs before return.** Deferred expressions execute before the function returns, including on early `return` paths:
-
-```hew
-fn early_return() -> i32 {
-    defer println("cleanup");
-    if condition {
-        return 42;  // "cleanup" prints before returning 42
-    }
-    return 0;       // "cleanup" prints before returning 0
+fn read_and_process(path: String) -> Result<Summary, AppError> {
+    let f = File::open(path)?;
+    let bytes = f.read_all()?;
+    f.close()?;                 // close early; the error is visible.
+    Ok(crunch(bytes))           // do CPU work after the fd is released.
 }
 ```
 
-4. **Interaction with drops.** Deferred expressions execute before RAII drop calls at function exit.
-5. **Expression or block argument.** The `defer` keyword takes a single expression (typically a function call) or a block containing multiple statements:
+A type may opt into a separately-named cleanup method via the
+`@resource(dispose = <name>)` form:
 
 ```hew
-// Single expression:
-defer close(handle);
+@resource(dispose = dispose)
+type ResponseBody { ... }
 
-// Block with multiple cleanup steps:
-defer {
-    flush(handle);
-    close(handle);
-    println("resource released");
+impl ResponseBody {
+    pub fn finish(consuming self) -> Result<(), HttpError> { ... }
+    fn dispose(consuming self) { ... }
 }
 ```
 
-Block defers follow the same LIFO and early-return semantics as expression defers.
+`dispose` is a best-effort drop with no return value; `finish` is the
+success-path consuming method that propagates protocol errors. The
+`@resource(dispose = ...)` variant is available where a type wants
+`@resource` ergonomics with a protocol-finish method that does more than
+"close the handle and discard the error."
+
+##### 3.7.8.2 `@linear` — single-owner with no implicit drop
+
+`@linear` marks a type that **must be consumed** by one of its declared
+consuming methods. There is no implicit drop. Letting a `@linear` value
+go out of scope without consuming it is a compile error.
+
+```hew
+@linear
+type Transaction {
+    pub fn commit(consuming self) -> Result<(), DbError>
+    pub fn rollback(consuming self) -> Result<(), DbError>
+}
+```
+
+Semantics:
+
+1. **No implicit drop.** The compiler does not synthesise a drop call.
+   Scope exit with an unconsumed `@linear` value is a
+   `MustConsumeAtScopeExit` diagnostic.
+2. **Consumption discharges the obligation.** Calling any declared
+   consuming method (one whose receiver is `consuming self`) is enough to
+   satisfy the must-consume check.
+3. **No canonical method name.** The type declares which methods are
+   valid consumers. `Transaction` requires `commit` or `rollback`; a
+   capability token might require `revoke`; a GPU command buffer might
+   require `submit` or `discard`.
+4. **Affine in the move-checker.** Same as `@resource`: the move-checker
+   tracks the single live binding and rejects any use after the consuming
+   method call.
+
+A correct use:
+
+```hew
+fn transfer(db: &Database, from: AccountId, to: AccountId, amount: Money)
+    -> Result<(), DbError>
+{
+    let tx = db.begin_transaction()?;
+    tx.debit(from, amount)?;
+    tx.credit(to, amount)?;
+    tx.commit()                 // tx is consumed here.
+}
+```
+
+The compile error for forgetting to consume:
+
+```hew
+fn forgot_to_commit(db: &Database) -> Result<(), DbError> {
+    let tx = db.begin_transaction()?;
+    tx.debit(account, money)?;
+    Ok(())
+    // ERROR: `tx` of type Transaction (@linear) is not consumed at scope exit.
+    //        @linear values must be consumed via one of: commit, rollback.
+}
+```
+
+##### 3.7.8.3 Choosing between `@resource` and `@linear`
+
+| Question                                                          | Pick        |
+| ----------------------------------------------------------------- | ----------- |
+| Is "close and discard the error" a sensible default at scope exit? | `@resource` |
+| Must the caller surface the cleanup result, every time?            | `@linear`   |
+| Are there multiple distinct ways to consume (commit / rollback / ...)? | `@linear`   |
+| Is there exactly one cleanup action, and is it idempotent?         | `@resource` |
+
+File descriptors, sockets, allocator handles, regex compiled patterns,
+HTTP server/request handles — `@resource`. Database transactions,
+capability tokens, response-body finish protocols where the success path
+must be acknowledged, GPU command buffers — `@linear`.
+
+##### 3.7.8.4 Interaction with cancellation and supervision
+
+A `@resource` value owned by a child task whose enclosing `fork {}` is
+cancelled has its drop run on the unwinding edge of the CFG; the implicit
+`close()` discards the error as usual.
+
+A `@linear` value in the same situation is a compile-time problem the
+checker reports at the cancellation site: the value's consuming method
+must appear on every reachable exit path including the cancellation
+unwind. In practice, `@linear` values are typically allocated inside a
+function whose error paths consume them explicitly, so the diagnostic
+fires at definition time rather than at cancellation propagation time.
+
+When an actor with a `@resource` field is supervised through a restart,
+the runtime drops the actor's heap, which runs each `@resource`'s
+implicit close. A `@linear` field on an actor is admitted only if the
+actor's terminating `receive fn` (its draining handler, supervised
+shutdown handler, or its `on_stop` body) consumes it. The move-checker
+verifies this at actor-declaration time.
 
 ---
 
@@ -2059,25 +2127,31 @@ panic, assert, debug_assert
 
 #### 3.10.7 Typed Handles
 
-Standard library functions return typed handle objects instead of raw pointers.
-These provide type-safe method access:
+Standard library functions return typed handle objects instead of raw
+pointers. Edition 2026's normative handle types are all `@resource`-
+annotated (§3.7.8): they drop with an implicit `close()` whose error is
+discarded, and they expose an explicit `close()` for callers that want
+to surface the cleanup error.
 
-| Type             | Created by                                 | Methods/Properties                                                                                                                              |
-| ---------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `http.Server`    | `http.listen(addr)`                        | `.accept()` → `http.Request`, `.close()`                                                                                                        |
-| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.free()` |
-| `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `.close()`                                                                                                      |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()`, `.write(data)`, `.close()`                                                                                                           |
-| `regex.Pattern`  | `re"pattern"` or `regex.new(pattern)`      | `.is_match(text)`, `.find(text)`, `.replace(text, replacement)`, `.free()`                                                                      |
-| `process.Child`  | `process.start(cmd)`                       | `.wait()`, `.kill()`                                                                                                                            |
+| Type             | Marker      | Created by                                 | Methods                                                                                                                              |
+| ---------------- | ----------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `http.Server`    | `@resource` | `http.listen(addr)`                        | `.accept()` → `http.Request`, `.close()`                                                                                              |
+| `http.Request`   | `@resource` | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.close()` |
+| `net.Listener`   | `@resource` | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `.close()`                                                                                            |
+| `net.Connection` | `@resource` | `listener.accept()` or `net.connect(addr)` | `.read()`, `.write(data)`, `.close()`                                                                                                 |
+| `process.Child`  | `@resource` | `process.start(cmd)`                       | `.wait()`, `.kill()`                                                                                                                  |
 
 Handle types are opaque — their internal representation is not accessible.
-They can be stored in variables, passed as function arguments, and returned from functions.
+They can be stored in variables, passed as function arguments, and
+returned from functions. The implicit drop calls `close()` and discards
+the error; explicit `handle.close()?` surfaces the error.
 
-**Explicit teardown (v0.4.0):** `http.Server`, `http.Request`, `regex.Pattern`, and `json.Value`
-do **not** auto-release on scope exit. Explicit `close()` / `free()` is the **only** release
-path for these handles. Failing to call it before the variable goes out of scope causes a
-resource leak. (PRs #1314, #1500)
+The v0.4.0 carve-out that required explicit `close()` / `free()` as the
+**only** release path is removed in edition 2026. `@resource` semantics
+make the implicit drop safe, and the move-checker still catches use-
+after-close at compile time. Migration: existing code that calls
+`close()` continues to work unchanged; new code may omit the call and
+rely on RAII.
 
 #### 3.10.8 Regular Expressions
 

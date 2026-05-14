@@ -453,19 +453,28 @@ fn lower_instruction(fn_ctx: &FnCtx<'_>, instr: &Instr) -> CodegenResult<()> {
         Instr::Drop {
             place: _,
             ty: _,
-            drop_fn: _,
+            drop_fn,
         } => {
-            // Spine emission: Drop is a no-op on the integer-only spine,
-            // where every `@resource`/`@linear`-bearing function fails the
-            // ValueClass match in lower_value. The richer `drop_fn` field
-            // (Cluster 3) carries the `@resource::close` method name when
-            // `@resource` types reach the spine subset; the emitter wires
-            // it to a call instruction at that point. For now `drop_fn`
-            // is `None` on every Drop construction reachable from the
-            // current ladder, so this arm is structurally unreachable on
-            // a working build — the explicit arm exists so the match is
-            // exhaustive without a wildcard (LESSONS:
-            // exhaustive-traversal-and-lowering).
+            // Fail-closed substrate guard. `drop_fn: None` is a
+            // legitimate no-op for `@linear` (no implicit drop) and
+            // for non-Named drops. `drop_fn: Some(_)` means the
+            // elaborator decided a destructor must run — but the
+            // backend dispatch for that destructor has not been
+            // wired yet. Returning `FailClosed` here ensures any
+            // future construction surface that emits a real
+            // `Instr::Drop { drop_fn: Some(_) }` fails the build
+            // loudly rather than silently leaking the resource. The
+            // C4 follow-on PR replaces this with a real call to the
+            // registered close method. LESSONS:
+            // boundary-fail-closed (codegen-side complement to the
+            // checker-output-boundary row).
+            if let Some(name) = drop_fn {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::Drop carries drop_fn={name:?} but codegen \
+                     dispatch is not wired yet; refusing to silently \
+                     emit a no-op for a resource that must be closed",
+                )));
+            }
             let _ = ctx;
         }
     }

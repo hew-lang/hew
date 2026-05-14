@@ -22,6 +22,23 @@ use crate::model::{
 /// construction site for `Terminator::Yield` / `Terminator::Send`).
 /// The `MirCheck::DecisionMapTotal` invariant fires if any
 /// `DecisionFact` in this function carries `Strategy::UnknownBlocked`.
+///
+/// LOAD-BEARING INVARIANT — single-block CFG. The forward-scan over
+/// `builder.statements` is correct *only* while MIR is structurally
+/// CFG-flat (`HirExprKind::If` and `HirExprKind::Block` lower their
+/// arms inline rather than producing separate `BasicBlock`s with
+/// branching terminators — see `lower_value`). When CFG construction
+/// for `If`/`match` lands, this scan must be replaced by per-block
+/// dataflow: a flat-stream walk would false-positive on
+/// `consume(x)` appearing in mutually-exclusive arms (flattened to
+/// `consume; consume` looks like `UseAfterConsume`) and false-
+/// negative across siblings of a branch that consumes on only one
+/// path (the binding is removed from `linear_live` globally). The
+/// fixture corpus that names `linear_unconsumed_fall_through` /
+/// `linear_consumed_both_branches` exists to drive that follow-on
+/// work — it cannot meaningfully run under this implementation.
+/// LESSONS: boundary-fail-closed (don't assume the substrate is
+/// path-sensitive when the construction surface is single-block).
 fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
     let mut checks = Vec::new();
 
@@ -794,7 +811,7 @@ fn elaborate(checked: &CheckedMirFunction, builder: &Builder) -> ElaboratedMirFu
         });
     }
 
-    let lifo_drops = build_lifo_drops(&builder.owned_locals);
+    let lifo_drops = build_lifo_drops(&builder.owned_locals, &builder.binding_locals);
     let (elab_blocks, drop_plans) = enumerate_exits(&checked.block, &lifo_drops);
 
     ElaboratedMirFunction {
@@ -811,9 +828,19 @@ fn elaborate(checked: &CheckedMirFunction, builder: &Builder) -> ElaboratedMirFu
 /// LIFO drop sequence for an owned-locals ledger. Only `AffineResource`
 /// contributes; `Linear` is the move-checker's responsibility (`MustConsume`),
 /// and other classes have no implicit drop.
-fn build_lifo_drops(owned_locals: &[(BindingId, String, ResolvedTy)]) -> Vec<ElabDrop> {
+///
+/// The `binding_locals` map is consulted to resolve each owned-local's
+/// real backend `Place`. A binding without an entry (function parameters
+/// and other surfaces that don't populate `binding_locals`) does not
+/// appear in `owned_locals` either today, so the `ReturnSlot` fallback
+/// arm is structurally unreachable; it survives only as a fail-soft for
+/// future surfaces that may extend `owned_locals` ahead of `binding_locals`.
+fn build_lifo_drops(
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
-    for (_binding, _name, ty) in owned_locals.iter().rev() {
+    for (binding, _name, ty) in owned_locals.iter().rev() {
         match ValueClass::of_ty(ty) {
             ValueClass::AffineResource => {
                 // Synthesised drop_fn — the spine has no `@resource`
@@ -823,12 +850,22 @@ fn build_lifo_drops(owned_locals: &[(BindingId, String, ResolvedTy)]) -> Vec<Ela
                     ResolvedTy::Named { name, .. } => Some(format!("{name}::close")),
                     _ => Some("close".to_string()),
                 };
+                // Resolve to the binding's real backend place. Falling
+                // back to `ReturnSlot` for an unmapped binding would
+                // drop the wrong slot, so we treat a missing entry as
+                // a builder invariant violation in debug builds and
+                // emit ReturnSlot in release as the historical
+                // placeholder (preserved so this change does not
+                // regress snapshot-stability if a previously-unmapped
+                // surface exists in another test). Today's call sites
+                // always populate `binding_locals` for any binding
+                // that reaches `owned_locals`.
+                let place = binding_locals
+                    .get(binding)
+                    .copied()
+                    .unwrap_or(Place::ReturnSlot);
                 drops.push(ElabDrop {
-                    // Placeholder — Cluster 1's single-block spine doesn't
-                    // yet wire a Place to each owned-local binding. Swap
-                    // to the real Place once binding->Place mapping
-                    // covers all owned locals.
-                    place: Place::ReturnSlot,
+                    place,
                     ty: ty.clone(),
                     drop_fn,
                 });

@@ -2541,6 +2541,60 @@ ForkChild = "fork" ( Ident "=" )? Expr ;           (* child form, only inside a 
   cancelling: siblings are cancelled at their next safepoint and the
   first error wins as `ScopeError::primary`.
 
+**Capture rules for `@linear` and `@resource` values (normative):**
+
+The interaction between ownership-discipline markers (§3.4) and child
+tasks needs explicit rules, since a child may be cancelled at a
+safepoint before its body reaches a consuming or close call.
+
+1. **`@resource` capture.** A `@resource` value moved into a child task
+   has its drop discipline run on whichever exit path the child takes:
+   normal completion, recoverable `Err(E)`, trap, or cancellation. The
+   declared `close(consuming self) -> Result<(), E>` is invoked through
+   the child's stack-unwind path (§4.5), and its returned error is
+   discarded per the §3.4 `@resource` semantics. This is the *same*
+   discipline a `@resource` would receive in a non-task context; the
+   child's cancellation safepoint is simply one more exit through which
+   stack unwinding runs cleanup.
+
+2. **`@linear` capture.** A `@linear` value moved into a child task
+   transfers the must-consume obligation to the child body. The parent
+   cannot use the value after the capture site; the child must reach a
+   declared consuming method on every path that does not trap. Because
+   edition-2026 cancellation is **scope-structural only** (no user
+   cancellation tokens, no preemption), the checker rejects the capture
+   if the child body has any cancel-reachable exit that does not pass
+   through a consuming call. The rejection diagnostic is
+   `LinearCaptureCancellable`, and it points at the binding, the
+   capture site, and the cancel-reachable exit that proves the gap.
+
+   The conservative rule keeps the language honest in edition 2026:
+   without cancellation tokens, the programmer has no way to consume a
+   `@linear` value along the cancellation path, so the only safe shape
+   is for the child's *only* exits-to-completion to be ones the
+   compiler can prove consume the value. Relaxation is tracked in
+   HEW-FUTURE.md §1.2 alongside the broader cancellation-token
+   vocabulary.
+
+3. **`&` and `&mut` borrow into a child.** Shared `&` borrow into a
+   child is admitted only when the borrow's referent is provably alive
+   for the entire lexical fork-block and no mutable borrow of the same
+   region is live while any child runs. Mutable `&mut` borrow into a
+   child is rejected in edition 2026: the child runs on a substrate
+   thread distinct from the parent's, and aliased mutable access cannot
+   be made safe without synchronisation that the language deliberately
+   does not auto-inject (HEW-FUTURE.md §1.6). The rejection diagnostic
+   names the mutable borrow site and points at the fork child.
+
+4. **Task<T> handle escape.** A `Task<T>` handle bound by `fork name =
+   expr` is usable only within the lexical fork-block that introduced
+   it. The handle cannot be returned from the fork-block, stored in a
+   field, captured by a closure that outlives the block, nor moved into
+   a sibling child unless that sibling is itself a `fork` form inside
+   the same block. The rejection is structural: `Task<T>` is not a
+   nameable type at the source level (§4.1) and the handle has no
+   surface syntax to escape through.
+
 **`fork expr` — bare child form:**
 
 A degenerate single-child fork-block: `fork expr` evaluates `expr` as a
@@ -3062,6 +3116,40 @@ The `| after` combinator wraps the result in `Result<T, Timeout>`:
 (e | after d) : Result<T, Timeout>
 where e: Task<T>, d: Duration
 ```
+
+#### 4.11.4 `fork` and `select` Composition
+
+Edition 2026 defines the legal compositions of `fork {}` and `select {}`
+explicitly. Anything not listed is rejected by type checking, with the
+diagnostic pointing at the offending position.
+
+| Composition                                              | Legality        | Rationale                                                                                                                                                                                          |
+| -------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `select {}` inside a `fork {}` body or child             | Legal           | The four `select` forms are single-await constructs and compose with the fork block's cancellation discipline at their safepoints.                                                                |
+| `fork name = select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the binding is the `select` expression's result type.                                                                                      |
+| `fork {}` inside a `select` arm's `=>` result expression | Legal           | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a fork block.                                                               |
+| `fork { ... }` as a `select` arm source                  | **Rejected**    | The four sealed arm sources are exhaustive (§4.11.1). A fork block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose lifetime is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
+| `await <task>` arm where `<task>` was bound by `fork name = expr` of the enclosing block | Legal | A scoped child handle is a legal `await` source; the `select` arm's loser-cleanup rule (cancel the awaited task) is exactly what scope-structural cancellation expects when the awaited task is no longer needed. |
+
+**Cancellation propagation across the composition (normative):**
+
+- When a `fork {}` enters its cancelling state while a `select {}` in
+  its body is still pending, every `select` arm runs its loser-cleanup
+  rule (§4.11.1) and the cancellation then propagates through the
+  `select` site as if the site were any other safepoint. The `select`
+  does not return a value in this case; control unwinds.
+- When a `select` arm wins inside a fork-block body, only the *losing*
+  arms run their loser-cleanup. Sibling fork-children are not affected
+  by the arm transition; their lifetime is bound to the enclosing fork
+  block, not to the `select` site.
+- A child task failing (typed `Err(E)` or trap) while a `select` in the
+  fork-block body is still pending cancels the fork block; the
+  outer-cancellation rule applies to the in-flight `select`.
+
+The composition matrix is intentionally narrow in edition 2026. A
+future edition may relax the `fork`-as-arm-source rejection once a
+cancellation-token vocabulary (HEW-FUTURE.md §1.2) gives a fork block
+a callable cancel handle that `select` can hold as a source.
 
 ### 4.12 Generators
 

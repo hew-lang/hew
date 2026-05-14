@@ -1,0 +1,20 @@
+// Reject fixture for `MirCheck::UseAfterConsume` inside an `if`
+// expression arm.
+//
+// The `if` arm is a block expression; `lower_value` recurses through
+// the `HirExprKind::Block` arm into the nested `let s = "hello"`,
+// `let t = s` (consume), `let _u = s` (use-after-consume). The
+// move-checker fires on the checker-authority statement stream;
+// Checked MIR rejects with `E_MIR_CHECK ... UseAfterConsume` and
+// emits no artefact.
+fn main() -> i64 {
+    let _r = if 1 + 1 {
+        let s = "hello";
+        let t = s;
+        let _u = s;
+        7
+    } else {
+        8
+    };
+    return 42;
+}

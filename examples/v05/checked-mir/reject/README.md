@@ -7,13 +7,22 @@ Each `.hew` source in this directory exercises one `MirCheck` variant.
 - emit a `MirDiagnostic` whose `kind` matches the fixture's variant,
 - produce no native or wasm artefact.
 
-| Fixture                  | `MirCheck` variant         | Status   |
-| ------------------------ | -------------------------- | -------- |
-| `use_after_consume.hew`  | `UseAfterConsume`          | shipping |
-| `init_before_use.hew`    | `InitialisedBeforeUse`     | shipping |
-| `aliasing.hew`           | `Aliasing`                 | deferred |
-| `generator_borrow.hew`   | `GeneratorBorrowAcrossYield` | deferred |
-| `actor_send_escape.hew`  | `ActorSendEscape`          | deferred |
+| Fixture                            | `MirCheck` variant           | Status   |
+| ---------------------------------- | ---------------------------- | -------- |
+| `use_after_consume.hew`            | `UseAfterConsume`            | shipping |
+| `init_before_use.hew`              | `InitialisedBeforeUse`       | shipping |
+| `use_after_consume_in_block.hew`   | `UseAfterConsume`            | shipping |
+| `init_before_use_in_block.hew`     | `InitialisedBeforeUse`       | shipping |
+| `use_after_consume_in_if.hew`      | `UseAfterConsume`            | shipping |
+| `aliasing.hew`                     | `Aliasing`                   | deferred |
+| `generator_borrow.hew`             | `GeneratorBorrowAcrossYield` | deferred |
+| `actor_send_escape.hew`            | `ActorSendEscape`            | deferred |
+
+The `_in_block` and `_in_if` fixtures pin the recursion path through
+expression-embedded statements: the block-expression lowering forwards
+every nested `HirStmt` (not just `HirStmtKind::Expr`) into the
+checker-authority stream, so a `let` or `return` inside a block or
+inside an `if`/`struct-init`/`call` arm reaches the move-checker.
 
 The deferred fixtures cannot be constructed against the current MIR
 surface — the IR has no borrow-op `Instr`, no projection variant on

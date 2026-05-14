@@ -1,6 +1,6 @@
 // ============================================================
 //   Hew Programming Language — Formal Grammar (ANTLR4)
-//   Version: 0.10.0
+//   Version: 0.10.0-pre (in flux during v0.5 compiler refactor)
 //
 //   Converted from ISO 14977 EBNF (docs/specs/grammar.ebnf) and
 //   validated against all examples/ programs.

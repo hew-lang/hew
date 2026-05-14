@@ -1,6 +1,6 @@
 (* ============================================================
    Hew Programming Language — Formal Grammar (EBNF)
-   Version: 0.10.0
+   Version: 0.10.0-pre (in flux during v0.5 compiler refactor)
    
    This is the authoritative grammar specification for the Hew
    programming language. It is extracted from and kept in sync

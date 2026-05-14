@@ -107,6 +107,66 @@ fn checked_mir_rejects_use_of_uninitialised_binding() {
 }
 
 #[test]
+fn checked_mir_rejects_use_after_consume_inside_block_expression() {
+    // Block expressions used to drop nested `HirStmtKind::Let` /
+    // `HirStmtKind::Return` statements before they reached the
+    // checker-authority stream; the move-checker only saw
+    // `HirStmtKind::Expr` forwards. A real use-after-consume inside
+    // `{ ... }` would compile cleanly and emit a binary. Pin the
+    // recursive-lowering path here.
+    let pipeline =
+        pipeline(r#"fn main() -> i64 { { let s = "hello"; let t = s; let _u = s; } return 42; }"#);
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "s"
+        )),
+        "block-nested use-after-consume must surface: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn checked_mir_rejects_use_of_uninitialised_binding_inside_block_expression() {
+    // Companion to the use-after-consume case: a block-nested
+    // `let x; let _y = x;` exercises the same lowering recursion and
+    // must reach the move-checker.
+    let pipeline = pipeline("fn main() -> i64 { { let x; let _y = x; } return 42; }");
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::InitialisedBeforeUse { name, .. } if name == "x"
+        )),
+        "block-nested initialised-before-use must surface: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn checked_mir_rejects_use_after_consume_inside_if_arm() {
+    // `if` arms are themselves `HirExpr`s — when an arm is a block
+    // expression, the recursion path runs through `HirExprKind::If`
+    // -> `lower_value(then_expr)` -> `HirExprKind::Block`. Pin that
+    // the arm's nested `let` statements reach the move-checker.
+    let pipeline = pipeline(
+        "fn main() -> i64 { \
+             let _r = if 1 + 1 { \
+                 let s = \"hello\"; let t = s; let _u = s; 7 \
+             } else { 8 }; \
+             return 42; \
+         }",
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "s"
+        )),
+        "if-arm-nested use-after-consume must surface: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
 fn checked_mir_accepts_spine_integer_function() {
     // The v0.5 integer spine must not produce any MirCheck findings —
     // the move-checker is fail-closed only on real legality violations.

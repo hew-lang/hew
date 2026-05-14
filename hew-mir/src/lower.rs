@@ -453,10 +453,19 @@ impl Builder {
                 None
             }
             HirExprKind::Block(block) => {
+                // Every nested statement reaches the checker-authority
+                // stream via `self.stmt`, not just `HirStmtKind::Expr`.
+                // Forwarding only `Expr` here would silently drop nested
+                // `let` / `return` statements from a block expression and
+                // let a real `UseAfterConsume` / `InitialisedBeforeUse`
+                // pattern slip past the move-checker (fail-closed gap).
+                // The HIR-Block-as-expression case recurses through this
+                // arm — `If` / `StructInit` / `Call` / `Binary` lower
+                // their nested expressions via `lower_value`, so a block
+                // embedded in any of those forms reaches this arm and is
+                // lowered the same way.
                 for stmt in &block.statements {
-                    if let HirStmtKind::Expr(inner) = &stmt.kind {
-                        let _ = self.lower_value(inner);
-                    }
+                    self.stmt(stmt);
                 }
                 block.tail.as_ref().and_then(|tail| self.lower_value(tail))
             }

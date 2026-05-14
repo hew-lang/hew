@@ -1,4 +1,4 @@
-# Hew Language Specification (audited for v0.4.0)
+# Hew Language Specification — Edition 2026
 
 Hew is a **high-performance, network-native, machine-code compiled** language for building long-lived services. Its design is anchored in four proven pillars:
 
@@ -7,57 +7,49 @@ Hew is a **high-performance, network-native, machine-code compiled** language fo
 - **Structured concurrency with cooperative cancellation** (Swift-style model) ([docs.swift.org][3])
 - **Wire contracts with enforced schema evolution rules** (Protobuf best practices) ([protobuf.dev][4])
 
-This document specifies: goals, core semantics, type/effects model, module and trait systems, memory management, `machine` types, runtime state machines, compilation model, and an EBNF grammar sufficient to implement a working compiler and runtime.
+This document is the **normative specification for edition 2026**. It
+covers goals, core semantics, type/effects model, module and trait systems,
+memory management, `machine` types, runtime state machines, compilation
+model, and an EBNF grammar sufficient to implement a working compiler and
+runtime.
 
-**Spec version:** `0.10.0-pre` (in flux during the v0.5 compiler refactor; the
-authoritative grammar stamp lives in `docs/specs/grammar.ebnf` and
-`docs/specs/Hew.g4`). The `(audited for v0.4.0)` header above is a
-*compiler-release* alignment marker and tracks a different axis from the spec
-version.
+### Editions and release alignment
 
-**Release alignment note (v0.2.2):**
+Hew tracks **two version axes** that move independently:
 
-This document has been re-audited against the shipped compiler/runtime in
-release **v0.2.0** and incrementally updated through **v0.2.2**. Where earlier
-drafts described aspirational APIs, the text below now prefers what the
-parser, type-checker, codegen, runtime, and shipped stdlib implement today.
+- **Compiler version** is SemVer on the binary (`hew --version` → `hew
+  0.5.x`). Patch releases for soundness and codegen fixes; minor releases
+  for new stdlib surfaces and new language editions; the major release is
+  the v1.0 stability event.
+- **Spec edition** is a year-shaped identifier declared once per package in
+  `Hew.toml` as `edition = "2026"`. The first stabilised edition is
+  **2026**. Editions are cadence-free: the next edition lands when
+  accumulated breaking changes are worth a migration, expected every two
+  to three years.
 
-Key corrections in this audit:
+A compiler binary advertises its supported editions:
 
-- `self` is no longer a Hew keyword; methods use named receivers and actors use
-  bare field access plus `this` for actor self-reference
-- `while let`, nested struct destructuring, generic `impl<T>`, labelled loops,
-  enum-path constructors such as `Shape::Circle(5)`, and implicit generic
-  monomorphization are all implemented and documented
-- stdlib references now use the shipped module layout and current APIs
-- speculative shared error types such as `IoError` have been removed in favour
-  of the actual `Result<T, E>` model and current stdlib conventions
+```
+$ hew --supported-editions
+2026
+```
 
-**Release alignment note (v0.4.0):**
+A package on edition 2026 continues to compile under future compiler
+versions for as long as `2026` remains in the supported list. Inside a
+single edition, the language is **additive** — new stdlib modules and new
+type-system features that compile old code unchanged land in minor
+compiler releases. Anything that would reject previously-accepted code is
+an edition-breaking change and waits for the next edition.
 
-This document has been re-audited against the v0.4.0 surface. Key corrections:
+Hew does not adopt per-file edition pragmas. The edition stamp is
+package-level. Migration tooling (`hew migrate --edition <year>`) is the
+supported path between editions; cross-edition dependencies are a
+future-edition feature.
 
-- **`bytes`, `Vec<T>`, `HashMap<K,V>` method signatures** — public signatures
-  now use `int` throughout; `i32`/`i64` are restricted to `extern "C"` ABI
-  blocks and explicitly annotated internal seams (PR #1218, `stdlib-style-contract.md`)
-- **Explicit handle teardown** — `http.Server`, `http.Request`,
-  `regex.Pattern`, and `json.Value` no longer release on scope exit; explicit
-  `close()` / `free()` is now the **only** release path (PRs #1314, #1500)
-- **`std::encoding::compress` decompression functions** — `gzip_decompress`,
-  `deflate_decompress`, and `zlib_decompress` now require a caller-supplied
-  `max_output_len: int` parameter; callers that omit it receive a compile error
-  (PR #1471). The spec body does not yet have a compress module section; this
-  is a known gap for a future audit pass.
-- **HTTP client string helpers** — `http_client.get_string`,
-  `post_string`, and `request_string` return `Option<String>` instead of
-  `String`; `None` indicates transport failure (PR #1030). The spec body does
-  not yet have a dedicated `http_client` section; this is a known gap for a
-  future audit pass.
-- **`hew-wasm` empty-result encoding** — WASM exports that previously returned
-  `""` to indicate no result now return `"null"` (optional scalars) or `"[]"`
-  (collections); browser consumers that special-cased `result === ""` must
-  update. Normative detail lives in `hew-wasm/src/lib.rs` and
-  `docs/wasm-capability-matrix.md` (PR #1506).
+Surfaces that have been designed but are not normative in edition 2026
+live in `HEW-FUTURE.md` with explicit version targets. See the Changelog
+at the end of this document for what changed from the v0.4.0 pre-edition
+prose.
 
 ---
 
@@ -1048,13 +1040,11 @@ fn broadcast<T: Send>(message: T, recipients: Vec<ActorRef<Receiver>>) {
 }
 ```
 
-**Trait objects:**
+**Trait objects (`dyn Trait`):**
 
-```hew
-fn log_anything(item: dyn Display) {
-    print(item.display());
-}
-```
+> See HEW-FUTURE.md §2.2 for `dyn Trait` object types, object-safety
+> rules, associated-type bounds, and higher-ranked trait bounds —
+> targeted for v0.6, gated on coherence rules stabilising.
 
 ---
 
@@ -1233,25 +1223,17 @@ let alias = data.clone();  // refcount++, no data copy
 // data and alias share the same String
 ```
 
-**Runtime note: internal `Arc` support exists, but Hew source does not expose `Arc<T>` yet.**
-
-- The runtime contains ABI/runtime machinery for atomically reference-counted data
-- The intended surfaced rule remains “only deeply immutable data is shareable”
-- Until a language-level `Arc<T>` lands, user code should model cross-actor sharing via owned messages / actor state instead of `Arc` syntax
-
-**Arc cost transparency:**
-
-- Each `clone()` performs an atomic increment
-- Each drop performs an atomic decrement
-- When refcount reaches zero, `T` is dropped and memory freed
-- This is cheaper than deep-copying large immutable data, but not free
+> See HEW-FUTURE.md §2.3 for the user-facing `Arc<T>` surface — targeted
+> for v0.7. The runtime contains internal atomic-refcount machinery, but
+> source code has no `Arc<T>` keyword in edition 2026. Cross-actor sharing
+> is via owned messages and actor state; the intended invariant is that
+> only deeply-immutable (`Frozen`) data is shareable.
 
 **When to use which:**
 | Type | Cross-actor? | Refcount cost | Use case |
 |------|--------------|---------------|----------|
 | Owned `T` | Copied on send | None | Default, small data |
 | `Rc<T>` | No | Non-atomic | Shared within actor |
-| Runtime-internal `Arc` | ABI-only today | Atomic | Internal/runtime implementation detail until surfaced |
 
 #### 3.7.6 Allocation Surface (not yet public)
 
@@ -1424,33 +1406,8 @@ max(3.14, 2.71);       // max$f64
 
 #### 3.8.2 Type-Erased Dispatch with `dyn Trait`
 
-For cases where code size matters more than performance, Hew provides explicit type erasure via `dyn Trait`:
-
-```hew
-// Monomorphized (default) - static dispatch
-fn render_static<T: Display>(item: T) {
-    print(item.display());
-}
-
-// Type-erased (explicit) - dynamic dispatch via vtable
-fn render_dynamic(item: dyn Display) {
-    print(item.display());
-}
-```
-
-**`dyn` implementation:**
-
-- Fat pointer: (data pointer, vtable pointer)
-- Vtable generated per-trait, per-concrete-type
-- Object-safe traits only (no `Self` in return position, no generic methods)
-
-**Object safety rules:**
-A trait is object-safe if:
-
-- All methods have a named receiver parameter of type `Self`
-- No methods return `Self`
-- No methods have generic type parameters
-- No associated functions (only methods)
+> See HEW-FUTURE.md §2.2 for `dyn Trait`, vtable layout, and object-safety
+> rules — targeted for v0.6.
 
 #### 3.8.3 Trait Bounds
 
@@ -1478,16 +1435,8 @@ where
 
 **Associated type bounds:**
 
-```hew
-fn process<C: Container>(c: C)
-where
-    C::Item: Display + Send,
-{
-    for item in c.items() {
-        print(item.display());
-    }
-}
-```
+> See HEW-FUTURE.md §2.2 for `where T::Item: Display`-style associated-
+> type bounds — targeted for v0.6.
 
 #### 3.8.4 Associated Types in Traits
 
@@ -1497,14 +1446,6 @@ Traits can declare associated types that implementors must specify:
 trait Iterator {
     type Item;
     fn next(iter: Self) -> Option<Self::Item>;
-}
-
-trait Container {
-    type Item;
-    type Iter: Iterator[Item = Self::Item];
-
-    fn iter(c: Self) -> Self::Iter;
-    fn len(c: Self) -> usize;
 }
 
 impl Iterator for RangeIter {
@@ -1521,6 +1462,11 @@ impl Iterator for RangeIter {
     }
 }
 ```
+
+Edition 2026 admits a single associated type per trait at most. Multi-
+type traits (`Container { type Item; type Iter: Iterator[Item = ...]; }`)
+and the bound-projection surface land in the next edition. See
+HEW-FUTURE.md §2.2.
 
 #### 3.8.5 Send/Frozen Specialization for Actors
 
@@ -1867,31 +1813,36 @@ impl Drop for File {
 ### 3.10 Standard Library Architecture
 
 Hew ships its standard library as Hew source under `std/`. Modules are imported
-by path (`import std::math;`, `import std::net::dns;`,
+by path (`import std::math;`, `import std::fs;`,
 `import std::collections::hashset;`) and most high-level APIs are defined in
 those source modules rather than by a separate metadata system.
 
-#### 3.10.1 Library Tiers
+#### 3.10.1 Edition 2026 normative stdlib surface
 
 The current release does **not** expose a user-visible `core`/`alloc`/`std`
 tier split in Hew source. Instead, the shipped library is organised by module
-path.
+path. Edition 2026 makes normative guarantees about a deliberately narrow
+core; broader modules continue to exist in `std/` and compile, but their
+surface is informative until promoted into a future edition (see
+HEW-FUTURE.md §3).
 
-Commonly used modules include:
+Normative in edition 2026:
 
 - Core types and builtins: `Option<T>`, `Result<T, E>`, `Vec<T>`, `String`,
-  `HashMap<K, V>`, `print`, `println`, `panic`
-- Collections and helpers: `std::collections::hashset`, `std::deque`,
-  `std::iter`, `std::sort`
-- System and I/O: `std::fs`, `std::io`, `std::os`, `std::path`,
-  `std::process`, `std::stream`
-- Networking: `std::net`, `std::net::http`, `std::net::dns`,
-  `std::net::tls`, `std::net::url`, `std::net::quic`, `std::net::websocket`
-- Data encoding and formatting: `std::encoding::xml`, `std::encoding::json`,
-  `std::encoding::yaml`, `std::encoding::toml`, `std::encoding::csv`,
-  `std::encoding::msgpack`, `std::fmt`
-- Utilities: `std::math`, `std::testing`, `std::time`, `std::text::regex`,
-  `std::text::semver`
+  `HashMap<String, V>`, `print`, `println`, `panic`.
+- Concurrency types: `Task<T>`, `Stream<T>`, `Sink<T>`, `ScopeError<E>`,
+  `TaskError`, `select` (§4), `after` (§4.11.3).
+- System and I/O: `std::fs`, `std::io`, `std::path`, `std::os`,
+  `std::time`.
+- Formatting: `std::fmt`.
+- Encoding: `std::encoding::json`, `std::encoding::msgpack`.
+- HTTP: `std::net::http` (server + client at the request/response level).
+- Utilities: `std::math`, `std::testing`.
+
+See HEW-FUTURE.md §3 for modules that exist in `std/` today but are not yet
+normative — `std::net::dns`, `std::net::tls`, `std::net::quic`,
+`std::net::websocket`, `std::encoding::xml`/`yaml`/`toml`/`csv`,
+`std::text::regex`, `std::process`, `std::encoding::compress`.
 
 #### 3.10.2 Core Traits
 
@@ -2029,30 +1980,22 @@ hierarchy. Representative APIs include:
 
 ```hew
 import std::collections::hashset;
-import std::channel::channel;
 import std::deque;
-import std::encoding::xml;
 import std::fmt;
 import std::io;
 import std::iter;
 import std::math;
-import std::net::dns;
-import std::net::tls;
 import std::sort;
 import std::testing;
 
 let ints: Vec<int> = Vec::new();
 let set: HashSet<int> = HashSet::new();
 let dq = deque.new();
-let (tx, rx) = channel.new(8);
-let root = xml.parse("<root/>");
 
 println(math.abs(-5));
 println(fmt.to_hex(255));
 println(iter.sum(ints));
 testing.assert_true(true);
-println(dns.lookup_host("localhost"));
-let tls_stream = tls.connect("example.com", 443);
 println(io.read_all());
 ```
 
@@ -2138,54 +2081,10 @@ resource leak. (PRs #1314, #1500)
 
 #### 3.10.8 Regular Expressions
 
-Regex is a first-class type in Hew. Regex patterns are compiled at runtime.
-
-**Regex literals:**
-
-```hew
-let re = re"^hello\s+world$";
-re.free();
-```
-
-The `re"..."` syntax creates a `regex.Pattern` value. Standard regex escape sequences apply.
-When you bind one to a variable, call `free()` before it goes out of scope.
-
-**Match operators:**
-
-```hew
-let pat = re"pattern";
-if text =~ pat { ... }   // matches
-if text !~ pat { ... }   // does not match
-pat.free();
-```
-
-The `=~` operator returns `true` if the string matches the pattern.
-The `!~` operator returns `true` if the string does NOT match.
-
-Both operators have the same precedence as `==` and `!=`.
-
-**Regex methods:**
-
-```hew
-let re = re"[0-9]+";
-re.is_match("abc123")              // true
-re.find("hello 42 world")         // "42"
-re.replace("hello 42", "NUM")     // "hello NUM"
-re.free();
-```
-
-**Regex as first-class values:**
-
-Regex values can be stored, passed, and reused:
-
-```hew
-fn is_valid_email(s: string) -> bool {
-    let email_re = re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$";
-    let ok = s =~ email_re;
-    email_re.free();
-    ok
-}
-```
+> See HEW-FUTURE.md §3 for `std::text::regex` — targeted for v0.6+
+> alongside the stdlib port-forward. The current `regex.Pattern` typed
+> handle uses explicit `free()` for release; the next edition migrates it
+> to a `@resource`-annotated type with RAII handles (§3.7.9).
 
 ---
 
@@ -2885,41 +2784,12 @@ user-visible. The β substrate is OS-thread-per-task; the cooperative
 layer is an implementation detail that may be re-engaged in later
 phases without changing the surface keyword.
 
-### 4.10 Actor Await and Synchronization (parses today; no end-user examples; revisit after #1236)
+### 4.10 Actor Await and Synchronization
 
-Hew provides deterministic actor synchronization primitives that replace polling patterns like `sleep_ms()`. Note: The syntax and semantics described in this section are parseable by the compiler but lack comprehensive end-to-end implementation in current releases. Consult `examples/` for ground-truth usage.
-
-**Awaiting a single actor:**
-
-```hew
-let ref = spawn(MyActor::new());
-// ... send messages ...
-await ref;  // Blocks until ref reaches Stopped or Crashed
-```
-
-`await actor` installs a monitor on the target actor and blocks (via condvar) until the actor reaches a terminal state (`Stopped` or `Crashed`). This is event-driven — no polling or busy-waiting.
-
-**Close and await in one step:**
-
-```hew
-await close(actor);
-```
-
-For finite actors, `await close(actor)` is shorthand for `close(actor); await actor;`: it closes the mailbox to new messages and then waits for the actor to finish draining its remaining work.
-
-**Read-after-send barrier:**
-
-```hew
-counter.increment();
-counter.increment();
-let count = await counter.get_count();
-```
-
-For actor request/reply handlers, an awaited read acts as a barrier. The `get_count()` ask is enqueued after the earlier sends, so its reply observes all prior messages from the same sender.
-
-**Design rationale:**
-
-These primitives replace `sleep_ms()` patterns with deterministic, event-driven synchronization. `await actor` is zero-cost when the actor has already stopped, `await close(actor)` removes shutdown boilerplate for finite actors, and awaited reply handlers provide a simple mailbox barrier without polling.
+> See HEW-FUTURE.md §1.3 for actor await, `await close(actor)`, and the
+> read-after-send barrier — targeted for v0.6, gated on the I/O
+> subsystem (#1236) settling and a re-audit of the mailbox protocol's
+> failure modes.
 
 ### 4.11 Select and Join Expressions
 
@@ -3029,352 +2899,9 @@ where e: Task<T>, d: Duration
 
 ### 4.12 Generators
 
-A **generator** is a function that produces a sequence of values lazily, suspending after each `yield` and resuming when the consumer requests the next value. Generators compile using LLVM coroutines — each `yield` becomes a suspend point, and the generator's entire local state (including loop variables) is automatically preserved in a heap-allocated coroutine frame. This means `yield` works correctly inside `while`, `for`, and `loop` constructs.
-
-#### 4.12.1 Generator Functions
-
-A generator function is declared with the `gen` modifier before `fn`:
-
-```hew
-gen fn fibonacci() -> i32 {
-    var a = 0;
-    var b = 1;
-    loop {
-        yield a;
-        let temp = a;
-        a = b;
-        b = temp + b;
-    }
-}
-```
-
-**Syntax:**
-
-```ebnf
-GenFnDecl      = "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
-```
-
-**Semantics:**
-
-- The return type annotation after `->` specifies the **yield type** `Y` — the type of values produced by `yield` expressions.
-- Calling a generator function does NOT execute its body. Instead, it returns a `Generator<Y>` value representing the suspended computation.
-- The body executes incrementally: each call to `.next()` on the generator resumes execution until the next `yield` or until the function returns.
-- When the function body completes (reaches the end or executes `return;`), the generator is exhausted — subsequent `.next()` calls return `None`.
-
-```hew
-let fib = fibonacci();           // Returns Generator<i32>, body does NOT run yet
-let first = fib.next();          // Runs body until first yield → Some(0)
-let second = fib.next();         // Resumes, runs until second yield → Some(1)
-let third = fib.next();          // → Some(1)
-```
-
-**Generator type:**
-
-```hew
-type Generator<Y> { /* compiler-generated coroutine frame */ }
-
-impl<Y> Iterator for Generator<Y> {
-    type Item = Y;
-    fn next(g: Generator<Y>) -> Option<Y>;
-}
-```
-
-Because `Generator<Y>` implements `Iterator`, generators work everywhere iterators do:
-
-```hew
-// for-in loop (most common usage)
-for n in fibonacci() {
-    if n > 100 { break; }
-    println(n);
-}
-
-// Iterator combinators
-let squares = fibonacci()
-    .map((n) => n * n)
-    .filter((n) => n % 2 == 0)
-    .take(10)
-    .collect();
-```
-
-#### 4.12.2 Yield Expressions
-
-The `yield` keyword within a generator function produces a value to the consumer and suspends the generator until the next `.next()` call.
-
-**Syntax:**
-
-```ebnf
-YieldExpr      = "yield" Expr ;
-```
-
-**Semantics:**
-
-- `yield expr` evaluates `expr`, produces the value to the consumer, and suspends the generator.
-- When resumed, execution continues from the statement after the `yield`.
-- `yield` is only valid inside a `gen fn` or `async gen fn` body. Using `yield expr` outside a generator function is a compile error.
-- The keyword `cooperate` (§4.3) serves the distinct purpose of cooperative task scheduling. `yield` is reserved exclusively for generator value production.
-
-**Generator state machine:**
-
-Each `gen fn` compiles to a state machine (stackless coroutine). The compiler transforms the function body into states separated by `yield` points:
-
-```
-State 0 (Initial): Execute body until first yield → produce value, transition to State 1
-State 1: Resume after first yield, execute until second yield → produce value, transition to State 2
-...
-State N (Terminal): Body completed → return None for all subsequent .next() calls
-```
-
-#### 4.12.3 Generator Parameters and Local State
-
-Generator functions can take parameters and maintain mutable local state across yields:
-
-```hew
-gen fn range(start: i32, end: i32, step: i32) -> i32 {
-    var i = start;
-    while i < end {
-        yield i;
-        i += step;
-    }
-}
-
-gen fn sliding_window(data: Vec<f64>, size: i32) -> Vec<f64> {
-    for i in 0..(data.len() - size + 1) {
-        yield data[i..i+size].to_vec();
-    }
-}
-```
-
-Parameters and local variables are stored in the generator's coroutine frame. The frame is heap-allocated within the owning actor's per-actor heap and freed when the generator is dropped (RAII).
-
-#### 4.12.4 Async Generators
-
-An **async generator** can both `yield` values and `await` asynchronous operations. This enables streaming from I/O sources, network calls, or other actors.
-
-> **Note:** The `async` keyword is ONLY valid as a modifier on `gen fn`. Standalone `async fn` declarations have no specified semantics in the actor model (actors are inherently concurrent via message passing) and are not part of the Hew grammar. Use `async gen fn` to create async generators, or use actors and `receive fn` for async behaviour.
-
-```hew
-async gen fn fetch_pages(base_url: String) -> Page {
-    var page_num = 1;
-    loop {
-        let response = await http::get(f"{base_url}?page={page_num}");
-        if response.items.is_empty() {
-            return;  // Exhausts the generator
-        }
-        for item in response.items {
-            yield item;
-        }
-        page_num += 1;
-    }
-}
-```
-
-**Syntax:**
-
-```ebnf
-AsyncGenFnDecl = "async" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
-```
-
-**Type:**
-
-```hew
-type AsyncGenerator<Y> { /* coroutine frame with async suspend points */ }
-
-impl<Y> AsyncIterator for AsyncGenerator<Y> {
-    type Item = Y;
-    async fn next(g: AsyncGenerator<Y>) -> Option<Y>;
-}
-```
-
-**Consumption via `for await`:**
-
-```hew
-for await page in fetch_pages("https://api.example.com/users") {
-    process(page);
-}
-```
-
-```ebnf
-ForStmt        = "for" "await"? Pattern "in" Expr Block ;
-```
-
-**Semantics:**
-
-- `async gen fn` produces an `AsyncGenerator<Y>` — an async iterator.
-- `for await item in async_gen { ... }` desugars to repeatedly calling `await async_gen.next()` until `None`.
-- Between yields, the async generator can `await` other async operations. The generator suspends both when yielding a value AND when awaiting an external result.
-- Async generators participate in structured concurrency — they are cancelled when their enclosing `fork` block exits.
-
-#### 4.12.5 Cross-Actor Generators (Streaming Receive)
-
-A `receive gen fn` on an actor creates a **streaming message handler** — the actor lazily produces values that the caller consumes as a stream.
-
-```hew
-actor DatabaseActor {
-    var db: Connection;
-
-    init(conn_string: String) {
-        db = connect(conn_string);
-    }
-
-    // Streaming receive: yields rows lazily to the caller
-    receive gen fn query(sql: String) -> Row {
-        let cursor = db.execute(sql);
-        while let Some(row) = cursor.next() {
-            yield row;
-        }
-    }
-}
-```
-
-**Caller side:**
-
-```hew
-let db = spawn DatabaseActor("postgres://localhost/mydb");
-
-// Streaming consumption — rows arrive lazily
-for await row in db.query("SELECT * FROM users WHERE active = true") {
-    process(row);
-}
-
-// Only fetches what's needed — generator is dropped when loop breaks
-for await row in db.query("SELECT * FROM large_table") {
-    if found_target(row) {
-        break;  // Generator on DatabaseActor is cancelled
-    }
-}
-```
-
-**Semantics:**
-
-Calling a `receive gen fn` returns a `Stream<Y>` — a first-class stream handle backed by the actor mailbox protocol.
-
-```hew
-// Stream<Y> implements AsyncIterator
-```
-
-**Protocol (normative):**
-
-The cross-actor streaming protocol uses the existing mailbox infrastructure:
-
-1. **Initiation:** The caller sends a "start stream" message to the actor. The actor begins executing the `receive gen fn` body.
-2. **Yielding:** When the generator yields a value, the runtime sends it as a message to the caller's mailbox. The generator then suspends, waiting for a "next" request.
-3. **Requesting:** When the caller calls `.next()` (or the `for await` loop iterates), a "next" message is sent to the producing actor, resuming the generator.
-4. **Completion:** When the generator body completes, a "stream end" message is sent to the caller. Subsequent `.next()` calls return `None`.
-5. **Cancellation:** If the caller drops the stream handle (e.g., `break` from a `for await` loop), a "cancel stream" message is sent to the producing actor, which cancels the generator coroutine.
-
-**Backpressure:**
-
-Cross-actor generators provide **natural backpressure**: the producer only runs when the consumer requests the next value. This is demand-driven — unlike push-based streaming, the producer cannot overwhelm the consumer's mailbox.
-
-The streaming protocol MAY use a **prefetch window** to amortize message-passing overhead (not currently implemented):
-
-```hew
-actor DataSource {
-    #[prefetch(8)]
-    receive gen fn stream_events() -> Event {
-        for event in event_log {
-            yield event;
-        }
-    }
-}
-```
-
-This is an optimization hint — the observable semantics are identical to one-at-a-time request/yield. NOTE: The `#[prefetch(N)]` attribute is not yet implemented end-to-end.
-
-**Network transparency:**
-
-Cross-actor generators work identically for local and remote actors. The yielded values MUST satisfy `Send` (§3.3) since they cross actor boundaries.
-
-#### 4.12.6 Generator Lifetime and Structured Concurrency
-
-Generators participate in Hew's structured concurrency model:
-
-**Scope-bound lifetime:**
-
-```hew
-fork {
-    let gen = fibonacci();
-    for n in gen {
-        if n > 1000 { break; }
-        println(n);
-    }
-}
-// gen is dropped when the fork-block exits (if not already exhausted)
-```
-
-**Cross-actor stream cancellation:**
-
-When a stream handle is dropped (scope exit, break, or explicit drop), the runtime sends a cancellation message to the producing actor. The producer's generator coroutine is cancelled at its next yield/await point.
-
-**Invariant:** A generator's lifetime MUST NOT exceed the lifetime of the actor that created it. If the producing actor is stopped or crashed, all its active stream handles become invalidated — `.next()` returns `None`.
-
-#### 4.12.7 Type Inference for Generators
-
-The compiler infers generator types using the bidirectional inference framework (§3.8.6):
-
-**Yield type inference:**
-
-The yield type `Y` is inferred from the types of all `yield expr` expressions in the generator body. All yield expressions MUST produce the same type. The wrapper type (`Generator<Y>` or `AsyncGenerator<Y>`) is inferred by the compiler — it is never written explicitly by the programmer:
-
-```hew
-gen fn example() -> i32 {    // Y = i32 (explicit annotation)
-    yield 1;                 // Compiler infers return: Generator<i32>
-    yield 2;
-    yield 3;
-}
-
-async gen fn stream() -> i32 {  // Y = i32 (explicit annotation)
-    yield 1;                    // Compiler infers return: AsyncGenerator<i32>
-}
-```
-
-The `-> i32` annotation specifies the yield type, NOT the return type. The actual return type is always the appropriate generator wrapper:
-
-- `gen fn foo() -> i32 { ... }` → returns `Generator<i32>`
-- `async gen fn bar() -> i32 { ... }` → returns `AsyncGenerator<i32>`
-
-> **Note:** The return type annotation on `gen fn` is REQUIRED. This makes the yield type visible at the call site and in documentation.
-
-**Constraint generation:**
-
-For each `yield expr` in the body, generate constraint: `typeof(expr) = Y`. The overall generator synthesizes type `Generator<Y>` (sync) or `AsyncGenerator<Y>` (async), implementing `Iterator<Item = Y>` or `AsyncIterator<Item = Y>` respectively.
-
-#### 4.12.8 Generator Trait Hierarchy and Send Constraints
-
-Generators integrate into the trait system:
-
-```hew
-// Synchronous iterator protocol (existing — §3.6)
-trait Iterator {
-    type Item;
-    fn next(iter: Self) -> Option<Self::Item>;
-}
-
-// Asynchronous iterator protocol
-trait AsyncIterator {
-    type Item;
-    async fn next(iter: Self) -> Option<Self::Item>;
-}
-
-// Generator — an Iterator backed by a coroutine
-trait Generator: Iterator {
-    fn resume(g: Self) -> GeneratorState<Self::Item>;
-}
-
-enum GeneratorState<Y> {
-    Yielded(Y),
-    Complete,
-}
-```
-
-**Send constraints:**
-
-| Generator Kind      | `Send` if...                                     |
-| ------------------- | ------------------------------------------------ |
-| `Generator<Y>`      | `Y: Send` AND all captured/local state is `Send` |
-| `AsyncGenerator<Y>` | `Y: Send` AND all captured/local state is `Send` |
-
-Cross-actor generators (`receive gen fn`) enforce `Send` on the yield type at the declaration site.
+> See HEW-FUTURE.md §1.5 for generators (`gen fn`, `async gen fn`,
+> `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`) — targeted for v0.6,
+> gated on Cluster 4 (closures + generators lowering).
 
 ---
 
@@ -3952,124 +3479,12 @@ wire enum Status { PendingReview; ActiveNow; Completed; }
 "activeNow"
 ```
 
-#### 7.3.2a YAML Encoding — Configuration and Human-Readable Interop
+#### 7.3.2a YAML Encoding
 
-YAML encoding provides human-readable serialization suitable for configuration files, Kubernetes manifests, CI pipelines, and other tooling that consumes YAML.
-
-##### 7.3.2a.1 Mapping Rules
-
-| Hew Type               | YAML Representation                               |
-| ---------------------- | ------------------------------------------------- |
-| `bool`                 | YAML boolean (`true` / `false`)                   |
-| `u8`–`u64`, `i8`–`i64` | YAML integer                                      |
-| `f32`, `f64`           | YAML float (`.nan`, `.inf`, `-.inf` for specials) |
-| `string`               | YAML string (quoted if needed)                    |
-| `bytes`                | YAML string (base64-encoded)                      |
-| Lists                  | YAML sequence                                     |
-| `wire struct`          | YAML mapping with field names as keys             |
-| `wire enum`            | YAML string (variant name)                        |
-| Optional None          | YAML `null` or key omitted                        |
-| Optional Some(v)       | YAML value of v                                   |
-
-##### 7.3.2a.2 Field Names
-
-YAML field names follow the same priority rules as JSON:
-
-1. **Per-field override** — `yaml("name")` wire attribute sets the exact YAML key.
-2. **Struct-level convention** — `#[yaml(convention)]` attribute transforms all field names. Valid conventions: `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`.
-3. **Default** — field name is used as-is.
-
-JSON and YAML naming can be configured independently:
-
-```hew
-#[json(camelCase)]
-#[yaml(snake_case)]
-wire struct DatabaseConfig {
-    host_name: string @1;                       // JSON: "hostName",  YAML: "host_name"
-    port_number: u16  @2;                       // JSON: "portNumber", YAML: "port_number"
-    max_connections: u32 @3
-        json("maxConns")                        // JSON: "maxConns" (override)
-        yaml("max_conns");                      // YAML: "max_conns" (override)
-}
-```
-
-YAML output:
-
-```yaml
-host_name: db.internal
-port_number: 5432
-max_conns: 100
-```
-
-##### 7.3.2a.3 Unknown Fields in YAML
-
-YAML decoders SHOULD ignore unknown keys (permissive parsing), consistent with JSON behaviour.
-
-##### 7.3.2a.4 Enum Variant Names in YAML
-
-Same rules as JSON. Apply `#[yaml(convention)]` to the `wire enum` for bulk transformation; `yaml("name")` per-variant for individual overrides (future: variant-level overrides).
-
-Hew provides bidirectional compatibility with external schema systems.
-
-##### 7.3.3.1 Protocol Buffers Interop
-
-**Generating .proto files:**
-
-```hew
-// hew.toml
-[wire.export]
-format = "protobuf"
-output = "generated/schema.proto"
-```
-
-Or via CLI:
-
-```bash
-hew wire export --format protobuf --output schema.proto
-```
-
-**Mapping:**
-
-| Hew                  | Protocol Buffers  |
-| -------------------- | ----------------- |
-| `wire struct`        | `message`         |
-| `wire enum`          | `enum`            |
-| `i32`                | `sint32` (ZigZag) |
-| `u32`                | `uint32`          |
-| `i64`                | `sint64` (ZigZag) |
-| `u64`                | `uint64`          |
-| `f32`                | `float`           |
-| `f64`                | `double`          |
-| `bool`               | `bool`            |
-| `string`             | `string`          |
-| `bytes`              | `bytes`           |
-| `[T]`                | `repeated T`      |
-| `T?`                 | `optional T`      |
-| Nested `wire struct` | Nested `message`  |
-
-**Importing .proto files:**
-
-```hew
-// Import protobuf schema and generate Hew wire types
-wire import "external.proto" as external;
-
-// Use imported types
-wire struct MyMessage {
-    user: external.User @1;
-}
-```
-
-##### 7.3.3.2 JSON Schema Export
-
-```bash
-hew wire export --format json-schema --output schema.json
-```
-
-Generates JSON Schema (draft 2020-12) for each wire type, enabling validation in external systems.
-
-##### 7.3.3.3 Avro Compatibility (Future)
-
-Reserved for future implementation. Hew wire types can export to Avro schemas for integration with data processing systems.
+> See HEW-FUTURE.md §3 for `std::encoding::yaml` — targeted for v0.6+
+> alongside the stdlib port-forward. Wire types may serialize as YAML
+> via the same mapping rules JSON uses (§7.3.2); the normative YAML
+> mapping waits for the next edition.
 
 #### 7.3.4 Encoding Selection
 
@@ -4397,356 +3812,22 @@ mailbox 100 overflow coalesce(request_id);
 
 ## 10. Debugging, profiling, and observability
 
-Hew ships built-in tooling for debugging and profiling actor programs without
-requiring external agents or separate SDK instrumentation.
-
-### 10.1 `hew debug` — interactive debugger
-
-`hew debug file.hew [-- args...]` compiles the program with full debug
-information (no optimisation, no stripping) and launches it immediately under
-the system debugger:
-
-- **macOS / Linux with LLDB:** uses `lldb -- <binary> [args]`
-- **Linux with GDB:** uses `gdb --args <binary> [args]`
-
-If a Hew helper script (`hew_lldb.py` / `hew-gdb.py`) is found in
-`share/hew/` next to the installed `hew` binary (or in `scripts/debug/`
-relative to the development checkout), it is loaded automatically. These
-scripts improve pretty-printing of Hew types inside the debugger.
-
-```sh
-hew debug myapp.hew -- --config prod.toml
-```
-
-### 10.2 Built-in runtime profiler (`HEW_PPROF`)
-
-Every compiled Hew binary includes a dormant profiler that activates when the
-`HEW_PPROF` environment variable is set:
-
-| `HEW_PPROF` value | Behaviour |
-|---|---|
-| `auto` or `1` (Unix) | Binds a per-user unix domain socket; auto-discovered by `hew-observe` |
-| `:6060` or `host:port` | Binds a TCP listener on the given address |
-| *(unset)* | Profiler is disabled; zero overhead |
-
-The profiler exposes a live HTTP JSON API with scheduler metrics, per-actor
-mailbox depths, memory allocation stats, and time-series history. It runs on
-a dedicated OS thread and does not interfere with the actor scheduler.
-
-The easiest way to enable it is via `hew run --profile`:
-
-```sh
-hew run myapp.hew --profile
-```
-
-This injects `HEW_PPROF` into the compiled child process (no-op if already
-set). The value is platform-dependent:
-
-- **Unix:** `HEW_PPROF=auto` — per-user unix socket, auto-discovered by
-  `hew-observe`
-- **Non-Unix:** `HEW_PPROF=:6060` — TCP listener on port 6060 (`auto` is not
-  supported on non-Unix; the runtime would silently skip the profiler)
-
-For an already-compiled binary:
-
-```sh
-HEW_PPROF=auto ./myapp          # unix socket, auto-discovered
-HEW_PPROF=:6060 ./myapp         # TCP on port 6060
-```
-
-### 10.3 Profile file output (`HEW_PROF_OUTPUT`)
-
-Set `HEW_PROF_OUTPUT` to write a profile file on program exit:
-
-| Value | File written |
-|---|---|
-| `pprof` | `hew-profile.pb.gz` (pprof protobuf, compatible with `go tool pprof`) |
-| `flat` | `hew-profile.txt` (human-readable flat profile) |
-| `both` | Both files |
-
-```sh
-HEW_PPROF=auto HEW_PROF_OUTPUT=pprof ./myapp
-go tool pprof hew-profile.pb.gz
-```
-
-### 10.4 `hew-observe` — live TUI dashboard
-
-`hew-observe` is a terminal UI that attaches to a running program's profiler
-endpoint and displays real-time data:
-
-- Live actor count and message throughput
-- Per-actor mailbox depth and processing latency
-- Actor group hierarchy and supervisor trees
-- Memory allocation stats
-- Crash logs
-
-**Auto-discovery (Unix):** when `HEW_PPROF=auto`, `hew-observe` finds the
-running program automatically via the unix socket discovery directory:
-
-```sh
-# Terminal 1
-hew run myapp.hew --profile
-
-# Terminal 2
-hew-observe
-```
-
-**Explicit TCP address:**
-
-```sh
-hew-observe --addr localhost:6060
-```
-
-**List running profilers:**
-
-```sh
-hew-observe --list
-```
-
-**Multi-node observation:**
-
-```sh
-hew-observe --addr node1:6060 --node node2:6060 --node node3:6060
-```
+> See HEW-FUTURE.md §4.1 for the tooling specification (`hew debug`,
+> `HEW_PPROF`, `hew-observe`, LSP). Tooling tracks separately from the
+> language edition; the implementations exist today, but their
+> behavioural contracts are owned by `docs/operations/` rather than this
+> document.
 
 ---
 
 ## 11. Distributed computing and the Node API
 
-The normative distributed contract lives in [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md). This section is the surface summary for the current `Node::*` API.
-
-Hew provides built-in distributed computing through the `Node` API. Remote actor operations may use local-looking syntax, but they are **not** specified as local-equivalent operations: lookup, send, ask, timeout, cancellation, version negotiation, authorization, and backpressure remain typed distributed boundaries.
-
-**Design principles:**
-
-- **Transparent syntax, explicit failure:** local-looking syntax is allowed, but remote operations must expose typed failure instead of sentinel values or fabricated local-shaped success.
-- **Pluggable transport:** TCP (default) or QUIC with TLS 1.3. Selected before the node starts.
-- **Gossip-based registry:** Actor names propagate across the cluster via SWIM protocol piggybacking, so `Node::lookup` can resolve actors on any connected node when connectivity, authorization, and version compatibility permit.
-
-### 11.1 Node lifecycle
-
-A distributed node is started, used, and shut down within a single program:
-
-```hew
-fn main() {
-    Node::start("127.0.0.1:9000");
-
-    let counter = spawn Counter;
-    Node::register("counter", counter);
-
-    // ... interact with the cluster ...
-
-    Node::shutdown();
-}
-```
-
-**Node states:** `Starting` → `Running` → `Stopping` → `Stopped`
-
-The runtime currently maintains a single implicit current node per process. All `Node::` calls operate on this current node today. That implementation detail is not the same thing as the distributed identity contract; see `HEW-DIST-SPEC.md` for the NodeId/incarnation rules.
-
-### 11.2 API reference
-
-#### 11.2.1 `Node::start(addr: string)`
-
-Bind the current node to a network address and begin accepting connections.
-
-```hew
-Node::start("127.0.0.1:9000");   // fixed port
-Node::start("127.0.0.1:0");      // ephemeral port (OS-assigned)
-```
-
-- Creates the transport listener (TCP or QUIC, depending on `Node::set_transport`)
-- Initializes the SWIM cluster membership protocol
-- Spawns a background accept loop for incoming peer connections
-- Transitions node state to `Running`
-
-#### 11.2.2 `Node::connect(addr: string)`
-
-Connect the current node to a remote peer node.
-
-```hew
-Node::start("127.0.0.1:9000");
-Node::connect("127.0.0.1:9001");  // join peer
-```
-
-Once connected, registry gossip and message routing flow between the two nodes. Connections are bidirectional — either side can send messages to actors on the other.
-
-#### 11.2.3 `Node::register(name: string, actor)`
-
-Register a spawned actor under a human-readable name in the distributed registry.
-
-```hew
-let counter = spawn Counter;
-Node::register("counter", counter);
-```
-
-- Stores the name → PID mapping in the local registry
-- Queues a gossip event so remote nodes learn about the actor
-- The second parameter is generic (`T`) — any actor reference is accepted
-- The runtime automatically removes the name when that actor is freed or when
-  the owning node shuts down
-
-#### 11.2.4 `Node::lookup(name: string) -> Result<T, LookupError>`
-
-Look up an actor by its registered name. Distributed lookup is a typed-failure boundary: failure is reported explicitly, never as a zero value or sentinel actor reference.
-
-```hew
-match Node::lookup("counter") {
-    Ok(found) => {
-        found.increment(10);                           // remote fire-and-forget
-        // Remote ask returns typed failure and uses a caller-supplied timeout/deadline.
-        let reply = await found.get_count();
-        match reply {
-            Ok(n) => println(n),
-            Err(err) => println(err),
-        }
-    }
-    Err(err) => println(err),
-}
-```
-
-- Checks the local registry first, then the remote names learned via gossip
-- The success type is generic (`T`) — assign to a typed binding at the call site
-- The failure type is typed (`LookupError` or a tighter equivalent)
-- Remote request-response requires a caller-supplied timeout or deadline; the exact surface spelling is specified by the distributed spec, and distributed failure surfaces as a typed error instead of a synthesized zero/default reply
-
-#### 11.2.5 `Node::shutdown()`
-
-Shut down the current node, closing all connections and cleaning up resources.
-
-```hew
-Node::shutdown();
-```
-
-- Stops the accept loop and tears down transport connections
-- Leaves the SWIM cluster (notifies peers via a graceful `Left` event)
-- Unregisters this node's published actor names before tearing down the local
-  registry state
-- Frees all node-owned memory
-
-#### 11.2.6 `Node::set_transport(transport: string)`
-
-Select the network transport **before** calling `Node::start`. Supported values:
-
-| Value    | Transport                                |
-| -------- | ---------------------------------------- |
-| `"tcp"`  | TCP with 4-byte length framing (default) |
-| `"quic"` | QUIC with TLS 1.3 encryption             |
-
-```hew
-Node::set_transport("quic");
-Node::start("127.0.0.1:9000");
-```
-
-If not called, TCP is used. Calling `set_transport` after `start` has no effect on the current node.
-
-### 11.3 Remote message dispatch
-
-Messages sent to a remote actor are routed by the runtime, but routing does not erase the distributed failure boundary:
-
-```hew
-// On node A
-Node::start("127.0.0.1:9000");
-let counter = spawn Counter;
-Node::register("counter", counter);
-
-// On node B
-Node::start("127.0.0.1:9001");
-Node::connect("127.0.0.1:9000");
-
-match Node::lookup("counter") {
-    Ok(remote_counter) => {
-        remote_counter.increment(5);                            // routed to node A
-        // Remote ask returns typed failure and uses a caller-supplied timeout/deadline.
-        let reply = await remote_counter.get_count();
-        match reply {
-            Ok(n) => println(n),
-            Err(err) => println(err),
-        }
-    }
-    Err(err) => println(err),
-}
-```
-
-**Routing rules:**
-
-- Each actor PID encodes a 16-bit node ID and a 48-bit actor index.
-- When the target node ID matches the local node, the message is delivered directly via the local scheduler.
-- When the target node ID differs, the message is serialized using HBF framing (4-byte little-endian length prefix + payload) and sent over the transport to the remote node.
-- Remote request-response (`await`) assigns a unique request ID and waits for either a reply or a typed failure. The caller supplies the timeout/deadline; there is no hidden global distributed timeout in the language contract.
-
-### 11.4 Cross-node registry gossip
-
-Actor name registrations propagate across the cluster using the SWIM protocol's gossip channel:
-
-1. `Node::register("name", actor)` queues a registry-add event.
-2. The event is piggybacked on the next SWIM ping or ack message sent to peers.
-3. Receiving nodes update their remote name table.
-4. `Node::lookup("name")` on any node can now resolve the actor to `Ok(actor)` when registry state, connectivity, authorization, and version compatibility all line up; otherwise the lookup returns a typed failure.
-
-Registry events have a bounded dissemination count (pruned after 8 gossips). Unregister events propagate the same way when an actor is removed.
-
-**SWIM membership states:**
-
-| State     | Meaning                                 |
-| --------- | --------------------------------------- |
-| `Alive`   | Node is responding to pings             |
-| `Suspect` | Node missed a direct ping               |
-| `Dead`    | Node confirmed unreachable              |
-| `Left`    | Node departed gracefully via `shutdown` |
-
-### 11.5 QUIC transport
-
-When `Node::set_transport("quic")` is used, the node communicates over QUIC with TLS 1.3:
-
-- **Self-signed certificates** are generated automatically by default.
-- **Custom certificates** can be provided via environment variables:
-  - `HEW_QUIC_CERT` — PEM server certificate chain
-  - `HEW_QUIC_KEY` — PEM server private key
-- Message framing is identical to TCP (4-byte little-endian length prefix), layered on QUIC bidirectional streams.
-
-### 11.6 Complete example
-
-```hew
-actor Counter {
-    let count: int;
-
-    receive fn increment(n: int) {
-        count = count + n;
-    }
-
-    receive fn get_count() -> int {
-        count
-    }
-}
-
-fn main() {
-    // Start a local node on an ephemeral port.
-    Node::start("127.0.0.1:0");
-
-    // Spawn and register an actor.
-    let counter = spawn Counter;
-    counter.increment(10);
-    counter.increment(5);
-    Node::register("counter", counter);
-
-    // Look up the actor by name and handle the distributed boundary explicitly.
-    match Node::lookup("counter") {
-        Ok(found) => {
-            // Remote ask returns typed failure and uses a caller-supplied timeout/deadline.
-            let result = await found.get_count();
-            match result {
-                Ok(n) => println(n),    // 15
-                Err(err) => println(err),
-            }
-        }
-        Err(err) => println(err),
-    }
-
-    await close(counter);
-    Node::shutdown();
-}
-```
+> See HEW-FUTURE.md §4.2 for the Node API and distributed actor
+> surface — targeted for v0.7+, gated on wire types stabilising,
+> actors remaining stable, and an authentication story landing. The
+> normative distributed contract draft lives in
+> [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md); promotion into this
+> document waits for the next edition.
 
 ---
 
@@ -4955,173 +4036,10 @@ above shows their surface spelling.
 
 ## 13. Self-Hosting Roadmap
 
-Hew is designed with self-hosting as a long-term goal. This section outlines the strategy and requirements for the Hew compiler to be written in Hew itself.
-
-### 13.1 Minimum Viable Subset for Self-Hosting
-
-The compiler requires only a subset of Hew's features. The following features are **essential**:
-
-| Category         | Required Features                 | Used For                            |
-| ---------------- | --------------------------------- | ----------------------------------- |
-| **Data Types**   | i32, i64, u8, usize, bool, String | Token positions, flags, source code |
-| **Collections**  | Vec<T>, HashMap<K, V>             | Token streams, symbol tables        |
-| **Sum Types**    | enum with data variants           | AST nodes, IR instructions          |
-| **Control Flow** | if, match, loop, for              | Dispatch, iteration                 |
-| **Functions**    | First-class, closures             | Visitors, transformers              |
-| **Generics**     | Basic type parameters             | Container types                     |
-| **I/O**          | File read/write, stdout           | Source input, output                |
-| **Memory**       | Heap allocation, Drop             | Dynamic structures                  |
-
-The following Hew features are **NOT required** for self-hosting:
-
-| Feature         | Why Not Needed                  |
-| --------------- | ------------------------------- |
-| Actors          | Compiler is single-threaded     |
-| Message passing | No concurrency needed           |
-| Supervisors     | No fault tolerance needed       |
-| Async/await     | Synchronous processing suffices |
-| Wire types      | No serialization needed         |
-| Network I/O     | File-based operation            |
-
-### 13.2 Kernel Language Concept
-
-The "kernel language" is the minimal subset that can compile itself:
-
-```hew
-// Kernel language includes:
-struct, enum, fn, impl, trait
-let, var, const
-if, else, match, loop, while, for, break, continue, return
-// Standard operators and expressions
-
-// Kernel does NOT include:
-actor, supervisor, spawn, receive, await, wire
-```
-
-The kernel standard library includes:
-
-- `Option<T>` and `Result<T, E>`
-- `Vec<T>`, `String`, `Box<T>`
-- `HashMap<K, V>`
-- File I/O (`Read`, `Write`, `File`)
-- Basic formatting
-
-### 13.3 Bootstrap Chain
-
-**Phase 1: Rust Frontend + C++ MLIR Codegen (Current)**
-
-```
-Source (.hew) → hew (Rust) → MessagePack → embedded codegen (C++/MLIR) → native
-hew compiles Hew programs through its embedded MLIR backend
-```
-
-**Phase 2: Hew Implementation (Kernel)**
-
-```
-embedded codegen (C++/MLIR) → hewcpp.hew (Hew source) → hewcpp2 (Hew binary)
-hewcpp2 can compile full Hew, including itself
-```
-
-**Phase 3: Self-Sustaining**
-
-```
-hewcpp2 (Hew binary) → hewcpp.hew (Hew source) → hewcpp3 (Hew binary)
-hewcpp2 and hewcpp3 should be identical (verified via hash)
-```
-
-### 13.4 Verification Strategy
-
-**Diverse Double Compilation (DDC):**
-
-To verify the self-hosted compiler hasn't been compromised:
-
-1. Compile Hew compiler source with Rust compiler → Binary_R
-2. Compile Hew compiler source with Hew compiler → Binary_H
-3. Use Binary_R to compile Hew source → Binary_RR
-4. Use Binary_H to compile Hew source → Binary_HH
-5. Verify: Binary_RR == Binary_HH
-
-If they match, neither compiler injected malicious code.
-
-**Reproducible Builds:**
-
-Requirements for verifiable builds:
-
-- No timestamps embedded in binaries
-- Deterministic linking order
-- Fixed seeds for any "random" build decisions
-- Sorted iteration over collections
-
-### 13.5 Implementation Ordering
-
-**Recommended porting order for compiler components:**
-
-```
-Phase 1: Foundation
-├── Lexer (~1200 lines) - Pure transformation
-└── AST definitions - Data structures only
-
-Phase 2: Core Pipeline
-├── Parser - Depends on Lexer + AST
-└── Type definitions - Self-contained
-
-Phase 3: Backend
-├── IR definitions - Depends on AST + Types
-├── IR lowering - Depends on IR + Parser
-└── Code generation - Final stage
-
-Phase 4: Driver
-└── Compiler main - Ties everything together
-```
-
-### 13.6 Stdlib for Self-Hosting
-
-Minimum standard library required (estimated ~2600 lines):
-
-| Component       | Lines | Contents                        |
-| --------------- | ----- | ------------------------------- |
-| **core**        | ~500  | Option, Result, traits, mem ops |
-| **alloc**       | ~800  | Vec, String, Box                |
-| **collections** | ~600  | HashMap                         |
-| **io**          | ~400  | Read, Write, File, BufReader    |
-| **fmt**         | ~300  | Basic formatting                |
-
-### 13.7 Backend Strategy for Bootstrap
-
-**Recommended approach:**
-
-1. **Phase 1 (Bootstrap):** Keep MLIR/LLVM as target
-   - Already working in current compiler
-   - Maximum portability
-   - Leverages GCC/Clang optimization
-
-2. **Phase 2 (Post-Bootstrap):** Consider QBE
-   - Removes C compiler dependency
-   - ~10K lines of C (vs millions for LLVM)
-   - Designed for language bootstrapping
-
-3. **Phase 3 (Long-term):** Optional LLVM
-   - For maximum performance
-   - Can be optional backend
-
-### 13.8 WASM as Portable Bootstrap Format
-
-Future consideration: compile the Hew compiler to WebAssembly for portable bootstrapping:
-
-```
-hewc.wasm (checked into repository)
-    ↓ (runs on any WASM runtime)
-hewc.wasm compiles hewc.hew → native hewc
-    ↓
-native hewc compiles everything
-```
-
-Benefits:
-
-- Single artifact bootstraps all platforms
-- Deterministic execution
-- Auditable format
-- No platform-specific trust requirements
+> See HEW-FUTURE.md §5.1 for the self-hosting roadmap — targeted for
+> v1.0+. Bootstrap chain, minimum viable subset, kernel-language
+> concept, and WASM-as-portable-bootstrap belong to the post-
+> stability project.
 
 ---
 
@@ -5157,105 +4075,34 @@ If you want this to be directly executable as an engineering project, the next m
 
 ## Changelog
 
-### v0.4.0 (spec-v040-reaudit)
+### Edition 2026 (this document)
 
-- **Header bumped** to `(audited for v0.4.0)`.
-- **`bytes` method table (§3.3.2)** — signatures updated from `i32`/`i64` to
-  `int` throughout (`push`, `pop`, `get`, `set`, `len`, `contains`).
-- **`Vec<T>` impl sketch (§3.10.3)** — `len` and `get` updated from `i64` to
-  `int`.
-- **`HashMap` method table (§3.10.3)** — `m.len()` return updated from `i64`
-  to `int`.
-- **Typed handle teardown (§3.10.7)** — tightened to normative: explicit
-  `close()` / `free()` is the **only** release path for `http.Server`,
-  `http.Request`, `regex.Pattern`, and `json.Value`; scope-exit auto-release
-  no longer occurs (PRs #1314, #1500).
-- **Release alignment note** — v0.4.0 paragraph added documenting all five
-  surface deltas; known gaps (no compress section, no http_client section,
-  WASM export encoding delegated to capability matrix) noted inline.
-- **Known gaps:** `std::encoding::compress` module section not yet written;
-  `std::net::http::http_client` string-helper section not yet written; WASM
-  export encoding (`"null"` / `"[]"`) not yet in spec body (normative detail
-  in `hew-wasm/src/lib.rs` and `docs/wasm-capability-matrix.md`).
-
-### v0.2.2 (user-facing-docs-update)
-
-- **Updated release alignment note** — bumped framing from v0.2.0 to v0.2.2
-  to match the current `Cargo.toml` workspace version.
-- No semantic changes to the language specification in this revision; all
-  constructs documented below remain as specified in v0.2.1.
-
-### v0.2.1 (spec-machine-map-alignment)
-
-- **Added §3.11 `machine` Types** — syntax, states/events/transitions, guard
-  conditions (`when`), wildcard rules, `default` handler, elided target state
-  name shorthand, body-less transition shorthand, the `state`/`event` bindings
-  in transition bodies, generated `step()` and `state_name()` API, pattern
-  matching, and actor integration.  Grounded in `e2e_machine/` and
-  `e2e_negative/machine_*` codegen tests and `hew-types/tests/machine_typecheck.rs`.
-- **Added map literal documentation in §3.10.3** — `{"key": value, ...}`
-  syntax, inference rules, trailing-comma and empty-block coercion, and
-  `HashMap` method table.  Grounded in `e2e_collections/map_literal.hew`,
-  `hew-parser/src/parser.rs` (`parse_map_literal_entries`), and
-  `hew-types/src/check/expressions.rs` (`synthesize_map_literal`).
-- **Updated §11 intro** — added `machine` declarations and map literals to the
-  list of constructs covered by `grammar.ebnf` / `Hew.g4`.
-
-### v0.2.0
-
-- Audited the specification against the shipped compiler/runtime and stdlib
-- Documented the removal of `self` and the use of named receivers plus `this`
-- Added `while let` to the syntax chapter and aligned labelled-loop grammar
-- Updated standard-library documentation to match the shipped module layout
-- Removed speculative shared error-type references such as `IoError`
-
-### v0.9.1
-
-- **Removed:** `self` keyword — no longer a keyword or special identifier in Hew
-- **Added:** Named receivers (Go-style) for trait and impl methods (`fn display(p: Point)`)
-- **Added:** Bare field access in actors (`count += 1` instead of `self.count += 1`)
-- **Added:** `this` keyword for actor self-reference (read-only `ActorRef<Self>` handle)
-- **Changed:** Variable shadowing is now a hard error (prerequisite for bare field names)
-- **Changed:** `Drop` trait uses `fn drop(val: Self)` named receiver
-- **Changed:** Object safety requires a named receiver of type `Self` (not `self`)
-- **Changed:** All stdlib trait and impl method signatures updated to named receivers
-- **Unchanged:** `Self` (capital S) type alias remains valid in trait/impl blocks
-
-### v0.9.0
-
-- **Added:** Cooperative task model. `s.launch` spawns micro-coroutines on actor thread; `s.spawn` for parallel OS threads.
-- **Added:** `await actor`, `await close(actor)`, and awaited actor reply barriers.
-- **Added:** RAII auto-close for streams/sinks via Drop.
-- **Added:** Duration literal suffixes (i64 nanoseconds); `duration` is a distinct primitive type.
-- **Fixed:** Task model spec contradiction (§4.3/§4.7/§4.8 unified).
-- **Fixed:** Actor lifecycle states match runtime (6 states, not 8).
-- **Fixed:** Cooperate described as actor-level reduction-based preemption.
-- **Fixed:** TaskScope cancellation data race (bool → AtomicBool).
-- **Removed:** `isolated` keyword (tautological — all actors are isolated).
-- **Removed:** Template literal syntax (use f-strings only).
-- **Removed:** `and`/`or` keyword operators (use `&&`/`||` only).
-- **Removed:** Manual `is_cancelled()` (cancellation is automatic at safepoints).
-
-### v0.8.0
-
-- **`isolated` actor modifier**: `isolated actor Foo { }` declares an actor with no shared state dependencies
-- **Duration literals section**: Documented `100ms`, `5s`, `1m`, `1h` syntax compiling to i64 nanoseconds
-- **Removed `ActorStream<Y>`**: Removed the deprecated alias; use `Stream<Y>` instead
-- **Generator type inference**: Clarified that `Generator<Y>` and `AsyncGenerator<Y>` wrappers are compiler-inferred, not annotated
-- **`async` keyword**: Clarified `async` is only valid as modifier on `gen fn`; standalone `async fn` is not part of the grammar
-- **Module alias**: Clarified that `import std::net::http;` makes the module available as `http` (last path segment)
-
-### v0.7.0
-
-- **Typed handles**: `http.Server`, `http.Request`, `net.Listener`, `net.Connection`, `regex.Pattern`, `process.Child` — stdlib functions return typed handles with method/property access
-- **Regex literals**: `re"pattern"` syntax creates first-class `regex.Pattern` values
-- **Match operators**: `=~` and `!~` for regex matching at `==` precedence
-- **Regex as first-class type**: regex values can be stored, passed as arguments, and used with `.is_match()`, `.find()`, `.replace()` methods
-
-### v0.6.4
-
-- **Module dot-syntax**: `http.listen()`, `fs.read()`, `os.args()` — clean module-qualified function calls
-- **String methods**: `s.contains()`, `s.trim()`, `s.len()` etc. — method syntax on strings
-- **String operators**: `+` for concatenation, `==`/`!=` for equality
-- **Bool returns**: Predicate functions (`fs.exists`, `regex.is_match`) return `bool`
-- **F-string expressions**: `f"result: {x + y}"` with full expression support
+- **Edition stamp.** Spec file renamed `HEW-SPEC-2026.md`; package descriptor
+  declares `edition = "2026"`. Compiler version (`hew 0.5.x`) and edition
+  track independently. See §1.3.
+- **Resource markers.** `@resource` and `@linear` annotations replace the
+  v0.4.0 explicit-teardown carve-out (§3.7.9). `@resource` types get an
+  implicit drop that calls a declared `close(consuming self)` method;
+  `@linear` types must be consumed via a declared consuming method and have
+  no implicit drop.
+- **Sealed `select{}`.** `select{}` widens from actor-receive-only to a
+  four-form sealed construct over task await, stream `next`, actor ask, and
+  timer (§4.11). Not user-extensible in this edition.
+- **`fork{}` consolidation.** The `scope |s| { s.launch / s.spawn / s.cancel }`
+  surface is removed; `fork {}` is the structured-concurrency block, and
+  `fork name = expr` / `fork expr` are the only child-spawning forms.
+  Historical note retained at §4.9.
+- **Stdlib narrowing.** The edition 2026 normative stdlib is deliberately
+  narrow (§3.10.1). Surfaces that exist in `std/` today but are not
+  normative — `dns`, `tls`, `quic`, `websocket`, `xml`/`yaml`/`toml`/`csv`,
+  `regex`, `process`, `compress` — move to HEW-FUTURE.md §3.
+- **MIR ladder.** §8 (compilation model) is rewritten around the new IR
+  ladder: AST → Resolved HIR → THIR → Raw MIR → Checked MIR → Elaborated
+  MIR → LLVM IR via inkwell. The Rust-frontend / C++-MLIR / MessagePack-AST
+  pipeline of v0.4.0 is no longer the design.
+- **Deferred to next edition.** Generators (`gen fn` / `async gen fn` /
+  `receive gen fn` / `Lazy<T>` / `#[prefetch(N)]`), closures with captured
+  environment, user-facing `Arc<T>`, `dyn Trait`, full `Iterator` trait
+  hierarchy, generic `HashMap<K, V>`, cancellation tokens, channels, actor
+  await + read-after-send barrier, distributed Node API, and the self-
+  hosting roadmap. See HEW-FUTURE.md for the surface and version targets.

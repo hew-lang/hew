@@ -8,9 +8,9 @@ use hew_parser::ast::BinaryOp;
 use hew_types::ResolvedTy;
 
 use crate::model::{
-    BasicBlock, BlockKind, CheckedMirFunction, DecisionFact, DropPlan, ElabBlock, ElabDrop,
-    ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
+    BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropPlan, ElabBlock,
+    ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
 };
 
 /// Run Checked MIR's legality passes over a function's statement
@@ -519,7 +519,7 @@ impl Builder {
                 let lhs = self.lower_value(left);
                 let rhs = self.lower_value(right);
                 match (lhs, rhs) {
-                    (Some(lhs), Some(rhs)) => self.lower_binary(*op, lhs, rhs, &expr.ty),
+                    (Some(lhs), Some(rhs)) => self.lower_binary(*op, lhs, rhs, &expr.ty, expr.site),
                     _ => None,
                 }
             }
@@ -604,9 +604,12 @@ impl Builder {
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Spine subset: only integer literals reach the backend in
-        // Cluster 1. Float/String/Bool/Char/Duration/Unit literals are out
-        // of scope (Cluster 2 takes String; Cluster 4 takes the rest).
+        // Spine subset: only integer + bool literals reach the backend in
+        // the CFG-construction lane. Float/String/Char/Duration/Unit
+        // literals remain out of scope (Cluster 2 takes String; Cluster 4
+        // takes the rest). Bool lands here because the CFG-construction
+        // surface needs a constructible condition Place for `If`:
+        // without bool literals, no non-trivial `If` condition compiles.
         // Fail closed so the emitter never produces a binary with an
         // uninitialised return slot (LESSONS `boundary-fail-closed`).
         let construct = match lit {
@@ -618,7 +621,21 @@ impl Builder {
                 });
                 return Some(dest);
             }
-            HirLiteral::Bool(_) => "bool literal",
+            HirLiteral::Bool(value) => {
+                // Bool lowers as an integer truth value (1 / 0) into the
+                // dest local's natural width. The dest local's type is
+                // whatever HIR resolved for the literal — `ResolvedTy::Bool`
+                // on this base, which the codegen maps to i8. The
+                // `ConstI64.value` is fed through the same store path as
+                // ConstI64 for integer literals; `Instr::ConstI64`'s
+                // emitter already truncates to the dest local's width.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::ConstI64 {
+                    dest,
+                    value: i64::from(*value),
+                });
+                return Some(dest);
+            }
             HirLiteral::Float(_) => "float literal",
             HirLiteral::String(_) => "string literal",
             HirLiteral::Char(_) => "char literal",
@@ -643,20 +660,59 @@ impl Builder {
         lhs: Place,
         rhs: Place,
         ty: &ResolvedTy,
+        site: hew_hir::SiteId,
     ) -> Option<Place> {
         let dest = self.alloc_local(ty.clone());
+        // Comparison binops: lower to `Instr::IntCmp` with a `CmpPred`
+        // discriminator. The result Place is allocated to whatever type
+        // HIR resolved for the expression (`ResolvedTy::Bool` for cmp
+        // ops); codegen widens the LLVM `i1` cmp result to the dest's
+        // stored width on the way to the store. Without this arm,
+        // `if 1 == 1 { ... }` cannot construct a condition Place for
+        // CFG-construction-lane `If` lowering — the boolean-condition
+        // pre-requisite called out by the cluster plan §1 / Slice 0.
+        let cmp_pred = match op {
+            BinaryOp::Equal => Some(CmpPred::Eq),
+            BinaryOp::NotEqual => Some(CmpPred::NotEq),
+            BinaryOp::Less => Some(CmpPred::SignedLess),
+            BinaryOp::LessEqual => Some(CmpPred::SignedLessEq),
+            BinaryOp::Greater => Some(CmpPred::SignedGreater),
+            BinaryOp::GreaterEqual => Some(CmpPred::SignedGreaterEq),
+            _ => None,
+        };
+        if let Some(pred) = cmp_pred {
+            self.instructions.push(Instr::IntCmp {
+                dest,
+                pred,
+                lhs,
+                rhs,
+            });
+            return Some(dest);
+        }
         let instr = match op {
             BinaryOp::Add => Instr::IntAdd { dest, lhs, rhs },
             BinaryOp::Subtract => Instr::IntSub { dest, lhs, rhs },
             BinaryOp::Multiply => Instr::IntMul { dest, lhs, rhs },
-            // Cluster 1 only supports +/-/* on integers. Anything else
-            // (Divide, Modulo, comparisons, logical ops, range, send,
-            // regex) falls outside the spine subset and the backend
-            // pipeline rejects it at the driver level via the
-            // `E_CUTOVER_UNSUPPORTED` reject path. Drop the dest local
-            // and return None so the caller propagates the absence.
+            // The spine subset still rejects Divide / Modulo / logical
+            // / shift / range / send / regex / bitwise binops. Previously
+            // this arm silently popped the dest local and returned
+            // `None`, letting the parent expression succeed with a
+            // missing producer (quiet fail-soft — caller's `decide`
+            // ran, `MirDiagnostic` did not). Fail closed now: drop the
+            // dest local, emit a `CutoverUnsupported` so the CLI
+            // rejection surface sees the offending construct, and
+            // return `None`. LESSONS `boundary-fail-closed`.
             _ => {
                 self.locals.pop();
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("binary operator `{op}`"),
+                        site,
+                    },
+                    note: "binary operator is recognised by HIR but not yet lowered \
+                           to the backend instruction stream"
+                        .to_string(),
+                });
                 return None;
             }
         };

@@ -1,5 +1,5 @@
 use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
-use hew_mir::{lower_hir_module, MirCheck, MirDiagnosticKind, MirStatement};
+use hew_mir::{lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement};
 
 // ---------- @resource / @linear surface ----------
 //
@@ -474,6 +474,134 @@ fn nested_array_user_type_rejected_at_mir_boundary() {
             matches!(d.kind, MirDiagnosticKind::UnknownType { ref name } if name == "Foo")
         }),
         "nested array Foo must produce UnknownType at MIR boundary: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+// ---------- Slice 0: bool literal + comparison binop lowering ----------
+//
+// CFG construction needs a constructible condition Place for `If`
+// lowering. Without bool literals + comparison binops at MIR, every
+// non-trivial `If` condition emits `CutoverUnsupported` and the
+// fixture corpus collapses to "integer non-zero" conditions only.
+// These tests pin the seam.
+
+#[test]
+fn lower_bool_literal_true_emits_consti64_one() {
+    let pipeline = pipeline("fn main() -> i64 { let r = true; 42 }");
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "bool literal must lower cleanly: {:?}",
+        pipeline.diagnostics
+    );
+    let func = &pipeline.raw_mir[0];
+    let has_const_one = func.blocks[0]
+        .instructions
+        .iter()
+        .any(|i| matches!(i, Instr::ConstI64 { value: 1, .. }));
+    assert!(
+        has_const_one,
+        "bool literal `true` must lower to ConstI64 {{ value: 1, .. }}: {:#?}",
+        func.blocks[0].instructions
+    );
+}
+
+#[test]
+fn lower_bool_literal_false_emits_consti64_zero() {
+    let pipeline = pipeline("fn main() -> i64 { let r = false; 42 }");
+    let func = &pipeline.raw_mir[0];
+    let has_const_zero = func.blocks[0]
+        .instructions
+        .iter()
+        .filter(|i| matches!(i, Instr::ConstI64 { value: 0, .. }))
+        .count()
+        >= 1;
+    assert!(
+        has_const_zero,
+        "bool literal `false` must lower to ConstI64 {{ value: 0, .. }}: {:#?}",
+        func.blocks[0].instructions
+    );
+}
+
+#[test]
+fn lower_equality_cmp_emits_intcmp_eq() {
+    let pipeline = pipeline("fn main() -> i64 { let r = 1 == 1; 42 }");
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "comparison binop must lower cleanly: {:?}",
+        pipeline.diagnostics
+    );
+    let func = &pipeline.raw_mir[0];
+    let has_eq = func.blocks[0].instructions.iter().any(|i| {
+        matches!(
+            i,
+            Instr::IntCmp {
+                pred: CmpPred::Eq,
+                ..
+            }
+        )
+    });
+    assert!(
+        has_eq,
+        "`1 == 1` must lower to IntCmp(Eq): {:#?}",
+        func.blocks[0].instructions
+    );
+}
+
+#[test]
+fn lower_all_six_comparison_preds() {
+    // One fixture per CmpPred variant. Pins that the BinaryOp ->
+    // CmpPred routing in lower_binary is complete.
+    let cases: &[(&str, CmpPred)] = &[
+        ("fn f() -> i64 { let r = 1 == 2; 0 }", CmpPred::Eq),
+        ("fn f() -> i64 { let r = 1 != 2; 0 }", CmpPred::NotEq),
+        ("fn f() -> i64 { let r = 1 < 2; 0 }", CmpPred::SignedLess),
+        ("fn f() -> i64 { let r = 1 <= 2; 0 }", CmpPred::SignedLessEq),
+        ("fn f() -> i64 { let r = 1 > 2; 0 }", CmpPred::SignedGreater),
+        (
+            "fn f() -> i64 { let r = 1 >= 2; 0 }",
+            CmpPred::SignedGreaterEq,
+        ),
+    ];
+    for (src, expected) in cases {
+        let pipeline = pipeline(src);
+        let func = &pipeline.raw_mir[0];
+        let got = func.blocks[0]
+            .instructions
+            .iter()
+            .find_map(|i| match i {
+                Instr::IntCmp { pred, .. } => Some(*pred),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no IntCmp emitted for {src}"));
+        assert_eq!(got, *expected, "wrong CmpPred for {src}");
+    }
+}
+
+#[test]
+fn lower_unsupported_binop_fails_closed_with_diagnostic() {
+    // Previously `lower_binary` silently popped the dest local and
+    // returned None for any non-{Add,Sub,Mul} binop, letting the
+    // caller's `decide` run while the emitter produced no
+    // instruction — a quiet fail-soft. Now the unsupported branch
+    // emits a `CutoverUnsupported` so the CLI rejection surface
+    // catches the construct.
+    let parsed = hew_parser::parse("fn main() -> i64 { let r = 1 / 2; 0 }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    assert!(
+        output.diagnostics.is_empty(),
+        "Divide should parse + lower cleanly through HIR: {:?}",
+        output.diagnostics
+    );
+    let pipeline = lower_hir_module(&output.module);
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::CutoverUnsupported { construct, .. }
+                if construct.contains("binary operator")
+        )),
+        "Divide must emit CutoverUnsupported at MIR: {:?}",
         pipeline.diagnostics
     );
 }

@@ -22,12 +22,15 @@ fn v05_pipeline_rejects_nested_named_type_before_codegen() {
     );
 }
 
-/// A bool return value cannot reach codegen in Cluster 1: the literal does
-/// not lower to an `Instr`, so the return slot would be uninitialised. The
-/// MIR boundary must emit a `CutoverUnsupported` diagnostic that the driver
-/// honours before any binary is produced (LESSONS `boundary-fail-closed`).
+/// Bool literals lower to `Instr::ConstI64 { value: 0/1 }` once the CFG
+/// construction lane lands its bool + cmp prerequisite (Slice 0). The
+/// stored width is whatever HIR resolved (`ResolvedTy::Bool`, mapped to
+/// i8 by `primitive_to_llvm`); `ConstI64`'s store truncates the value
+/// to the dest local's width. The MIR pipeline must accept `fn main()
+/// -> bool { true }` cleanly — no `CutoverUnsupported` for bool
+/// literals, no `UnresolvedPlace`, nothing else.
 #[test]
-fn v05_pipeline_rejects_bool_literal_return_before_codegen() {
+fn v05_pipeline_accepts_bool_literal_return() {
     let parsed = hew_parser::parse("fn main() -> bool { true }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
@@ -35,19 +38,15 @@ fn v05_pipeline_rejects_bool_literal_return_before_codegen() {
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),
-        "hir gate must accept this; cutover happens at MIR: hir={:?} verify={:?}",
+        "hir gate must accept this: hir={:?} verify={:?}",
         output.diagnostics,
         verify
     );
 
     let pipeline = hew_mir::lower_hir_module(&output.module);
     assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
-                if construct == "bool literal"
-        )),
-        "bool literal must surface a CutoverUnsupported diagnostic: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "bool literal must lower cleanly without diagnostics: {:?}",
         pipeline.diagnostics
     );
 }

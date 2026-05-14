@@ -109,6 +109,22 @@ pub enum Place {
     ReturnSlot,
 }
 
+/// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The
+/// signed-ness selector is intentional: Hew's spine treats `int` as a
+/// signed 64-bit integer, so the default cmp lowerings are signed
+/// comparisons. Once unsigned types reach value-bearing positions in
+/// the spine, the lowering picks the unsigned variant from the same
+/// enum; the IR shape doesn't change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpPred {
+    Eq,
+    NotEq,
+    SignedLess,
+    SignedLessEq,
+    SignedGreater,
+    SignedGreaterEq,
+}
+
 /// Minimal machine-level instruction set for the spine subset (integer
 /// literals, integer add, value moves). Each variant maps to a single
 /// inkwell builder call in `hew-codegen-rs::llvm`.
@@ -126,6 +142,19 @@ pub enum Instr {
     IntSub { dest: Place, lhs: Place, rhs: Place },
     /// `dest = lhs * rhs` on i64.
     IntMul { dest: Place, lhs: Place, rhs: Place },
+    /// `dest = (lhs <pred> rhs)` on integers. The result is written into
+    /// `dest` as an integer truth value: `1` for true, `0` for false. The
+    /// dest's local type controls the result width (today every cmp dest
+    /// is allocated as the front-half's `bool` resolved to i64 by the
+    /// type checker; the lowering zero-extends the LLVM i1 result so the
+    /// stored value matches the dest's width). When a real bool type
+    /// lands in v0.6, the dest narrows to i8/i1 without IR-level rework.
+    IntCmp {
+        dest: Place,
+        pred: CmpPred,
+        lhs: Place,
+        rhs: Place,
+    },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:

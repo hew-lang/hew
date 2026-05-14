@@ -344,6 +344,14 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::TraitObject { .. } => Err(CodegenError::Unsupported(
             "TraitObject type — Cluster 4 lowering",
         )),
+        // Task<T> lowers to a `*mut HewTask` pointer (i64* on the spine).
+        // Full task-spawn ABI lowering lands in a later slice (MIR/codegen
+        // glue: hew_task_new + hew_task_spawn_thread + hew_task_free). Until
+        // that slice lands, reaching this arm is a codegen error — a
+        // Task<T>-typed value cannot be emitted by the spine subset.
+        ResolvedTy::Task(_) => Err(CodegenError::Unsupported(
+            "Task<T> type — task-spawn lowering lands in a later slice",
+        )),
     }
 }
 

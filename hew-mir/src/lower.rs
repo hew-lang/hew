@@ -1108,6 +1108,10 @@ fn build_lifo_drops(
                         .get(name)
                         .and_then(|(_, close)| close.as_ref())
                         .map(|m| format!("{name}::{m}")),
+                    // Task<T> and all other types have no user-visible close
+                    // method. Task<T> drop (hew_task_await_blocking +
+                    // hew_task_free) lands as a runtime ABI call in a later
+                    // slice (MIR/codegen glue); no close method name here.
                     _ => None,
                 };
                 // Resolve to the binding's real backend place. Falling

@@ -15025,3 +15025,107 @@ fn handle_bearing_registration_scales_linearly_not_quadratically() {
          (quadratic would be ~16×, linear is ~4×). t100={t100:?} t400={t400:?}"
     );
 }
+
+// ── Task<T> surface rules ──────────────────────────────────────────────────
+//
+// `Task<T>` is a compiler-internal type. It has no user-source spelling:
+//   - `fork name = expr` inside a `fork{}` body is the only construction site;
+//     the binding's type is inferred to `Ty::Task(T)` by HIR lowering.
+//   - `await name` inside a `select` arm or `fork{}` body consumes the handle
+//     and yields `T`.
+//   - Any explicit `Task<T>` in a user-written type annotation is rejected with
+//     `E_TASK_NOT_NAMEABLE` (= `TypeErrorKind::TaskNotNameable`).
+//
+// §3.3 diagnostic-surface coverage: BOTH paths must be covered:
+//   1. `Task<T>` written in an annotation → `TaskNotNameable` error (no infer).
+//   2. `scope.launch { ... }` / `ScopeLaunch` → inferred `Ty::Task(T)`;
+//      `await` on it yields `T` (no error on clean code).
+
+mod task_type_surface_rules {
+    use super::*;
+
+    // ── Rejection: user-written Task<T> in annotation positions ─────────────
+
+    #[test]
+    fn task_in_let_annotation_is_rejected() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _t: Task<int> = 0;
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+            "Task<int> in let annotation must emit TaskNotNameable; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn task_in_fn_param_annotation_is_rejected() {
+        let output = check_source(
+            r"
+            fn foo(t: Task<int>) -> int { 0 }
+            fn main() -> int { 0 }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+            "Task<int> in fn param must emit TaskNotNameable; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn task_in_return_type_annotation_is_rejected() {
+        let output = check_source(
+            r"
+            fn foo() -> Task<int> { 0 }
+            fn main() -> int { 0 }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+            "Task<int> as return type must emit TaskNotNameable; got: {:#?}",
+            output.errors
+        );
+    }
+
+    // ── Accept path: scope.launch{} infers Ty::Task; await yields T ─────────
+
+    #[test]
+    fn scope_launch_infers_task_and_await_yields_inner_type() {
+        // `scope |s| { let task = s.launch { 42 }; await task }` should
+        // type-check cleanly on a native target: the task binding gets
+        // Ty::Task(int) and await strips the wrapper.
+        let output = check_source(
+            r"
+            fn main() {
+                let result = scope |s| {
+                    let task = s.launch { 42 };
+                    await task
+                };
+                println(result);
+            }
+            ",
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+            "clean scope.launch + await must not emit TaskNotNameable; got: {:#?}",
+            output.errors
+        );
+    }
+}

@@ -140,13 +140,16 @@ impl TypeDescriptorWireExt for ResolvedTy {
             ResolvedTy::Named { .. } | ResolvedTy::TraitObject { .. } => {
                 Ok(PrimitiveWireKind::Nested(self.canonical_string()))
             }
+            // Task<T> is compiler-internal and not wire-serialisable; task
+            // handles cannot cross actor/wire boundaries in v0.5.
             ResolvedTy::Never
             | ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
             | ResolvedTy::Pointer { .. }
             | ResolvedTy::Tuple(_)
             | ResolvedTy::Array(_, _)
-            | ResolvedTy::Slice(_) => Err(WireBoundaryError::NonWireType {
+            | ResolvedTy::Slice(_)
+            | ResolvedTy::Task(_) => Err(WireBoundaryError::NonWireType {
                 canonical: self.canonical_string(),
             }),
         }

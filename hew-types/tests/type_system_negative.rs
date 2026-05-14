@@ -75,6 +75,11 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
         | Ty::Unit
         | Ty::Never
         | Ty::Error => false,
+        // Task<T> is compiler-internal; checking its inner type for inference
+        // variables is still meaningful if Task<T> were ever produced during
+        // type-checking (today it is only produced during HIR lowering after
+        // the checker has run, so this arm is structurally unreachable here).
+        Ty::Task(inner) => ty_contains_unresolved_var(inner),
     }
 }
 

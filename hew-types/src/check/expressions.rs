@@ -273,9 +273,7 @@ impl Checker {
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
                 // await Task<T> → T (simplified)
                 match inner_ty {
-                    Ty::Named { name, args } if name == "Task" && !args.is_empty() => {
-                        args[0].clone()
-                    }
+                    Ty::Task(inner) => *inner,
                     // `await close(actor)` or bare actor ref → Unit (actor termination).
                     // But NOT for method calls that happen to return an ActorRef —
                     // those should pass through the method's declared return type.
@@ -1016,10 +1014,7 @@ impl Checker {
             }
             Expr::ScopeLaunch(block) | Expr::ScopeSpawn(block) => {
                 let body_ty = self.check_block(block, None);
-                Ty::Named {
-                    name: "Task".to_string(),
-                    args: vec![body_ty],
-                }
+                Ty::Task(Box::new(body_ty))
             }
             Expr::Select { arms, timeout } => {
                 let mut result_ty: Option<Ty> = None;

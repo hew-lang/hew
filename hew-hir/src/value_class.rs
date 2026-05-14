@@ -73,6 +73,14 @@ impl ValueClass {
                 Some((ResourceMarker::Linear, _)) => Self::Linear,
                 Some((ResourceMarker::None, _)) | None => Self::Unknown,
             },
+            // Task handles are consume-once: MirCheck::MustConsume fires if a
+            // ForkTaskHandle binding is live at an exit without being consumed
+            // via AwaitTask or the implicit block-end join. Linear is the
+            // correct class — it threads through C2's existing UseAfterConsume /
+            // MustConsume machinery without new checks. The inner type T's own
+            // class is checked independently when the task is awaited and T is
+            // produced.
+            ResolvedTy::Task(_) => Self::Linear,
         }
     }
 }
@@ -132,6 +140,10 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
                 }
             }
         }
+        // Task<T> is compiler-internal; recurse into T so that a
+        // `Task<SomeResource>` binding is still diagnosed correctly if T
+        // is a named type with a resource/linear marker.
+        ResolvedTy::Task(inner) => collect_named_type_names(inner, names),
         ResolvedTy::I8
         | ResolvedTy::I16
         | ResolvedTy::I32

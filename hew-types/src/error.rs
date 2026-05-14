@@ -416,6 +416,11 @@ pub enum TypeErrorKind {
     /// drop elements, and `HashMap` confuses Rc pointers with strings.  Until
     /// the runtime properly manages owned-type element drops, this is unsound.
     UnsafeCollectionElement,
+    /// User wrote `Task<T>` in a source type position (annotation, return type,
+    /// parameter type, struct field). `Task<T>` is a compiler-internal type; it
+    /// cannot be named in user source. Bindings of this type are inferred from
+    /// `fork name = expr` context only.
+    TaskNotNameable,
 }
 
 impl TypeErrorKind {
@@ -460,6 +465,7 @@ impl TypeErrorKind {
             Self::BorrowedParamReturn => "BorrowedParamReturn",
             Self::OrPatternBindingMismatch => "OrPatternBindingMismatch",
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
+            Self::TaskNotNameable => "TaskNotNameable",
         }
     }
 }

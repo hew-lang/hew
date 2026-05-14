@@ -338,6 +338,12 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
             Ok(())
         }
 
+        // Task<T> ~ Task<U>: unify inner types.
+        // Task<T> ~ non-Task is deliberately rejected (falls to mismatch below)
+        // per TI-5: task handles cannot be treated as their inner type without
+        // an explicit `await`.
+        (Ty::Task(a_inner), Ty::Task(b_inner)) => unify(subst, a_inner, b_inner),
+
         // Mismatch
         _ => Err(UnifyError::Mismatch {
             expected: a_resolved,
@@ -750,5 +756,53 @@ mod tests {
         )
         .is_ok());
         assert_eq!(subst.resolve(&Ty::Var(v)), Ty::String);
+    }
+
+    // --- Task<T> unification tests ---
+
+    #[test]
+    fn task_unifies_with_same_inner_type() {
+        let mut subst = Substitution::new();
+        let a = Ty::Task(Box::new(Ty::I64));
+        let b = Ty::Task(Box::new(Ty::I64));
+        assert!(unify(&mut subst, &a, &b).is_ok());
+    }
+
+    #[test]
+    fn task_unifies_inner_var() {
+        TypeVar::reset();
+        let mut subst = Substitution::new();
+        let v = TypeVar::fresh();
+        let a = Ty::Task(Box::new(Ty::Var(v)));
+        let b = Ty::Task(Box::new(Ty::I64));
+        assert!(unify(&mut subst, &a, &b).is_ok());
+        // The inner var should resolve to I64.
+        assert_eq!(subst.resolve(&Ty::Var(v)), Ty::I64);
+    }
+
+    #[test]
+    fn task_does_not_unify_with_non_task() {
+        // TI-5: Task<T> cannot be used where T is expected — a mismatch error
+        // surfaces rather than a silent coercion.
+        let mut subst = Substitution::new();
+        let task = Ty::Task(Box::new(Ty::I64));
+        let result = unify(&mut subst, &task, &Ty::I64);
+        assert!(
+            result.is_err(),
+            "Task<int> must not unify with int; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn task_mismatch_display_uses_angle_bracket_spelling() {
+        let mut subst = Substitution::new();
+        let task = Ty::Task(Box::new(Ty::I64));
+        let err = unify(&mut subst, &task, &Ty::I64).unwrap_err();
+        let rendered = err.to_string();
+        // The error should name the task type with the compiler-internal spelling.
+        assert!(
+            rendered.contains("<task<"),
+            "expected <task< in mismatch message, got: {rendered}"
+        );
     }
 }

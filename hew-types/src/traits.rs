@@ -511,6 +511,19 @@ impl TraitRegistry {
                     false
                 }
             }),
+
+            // Task<T> is a compiler-internal consume-once handle. It is NOT
+            // Copy, Clone, Frozen, or Eq. It IS Send iff T is Send (the task
+            // executes on a thread; crossing the fork-block boundary is
+            // structurally send-safe). For all other markers it is false today;
+            // the full marker set for Task<T> is revisited when task handles
+            // become user-accessible (v0.6+).
+            Ty::Task(inner) => match marker {
+                MarkerTrait::Send | MarkerTrait::Sync => {
+                    self.implements_marker(inner, MarkerTrait::Send)
+                }
+                _ => false,
+            },
         }
     }
 

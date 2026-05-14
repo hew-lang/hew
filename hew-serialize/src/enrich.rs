@@ -225,7 +225,10 @@ fn ty_has_ownership_sensitive_bindings(
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> bool {
     match ty {
-        Ty::String | Ty::Bytes => true,
+        // Task<T> is ownership-sensitive (consume-once handle). In practice it
+        // never appears in user-declared struct fields (no surface annotation),
+        // but explicit here so the sweep is honest.
+        Ty::String | Ty::Bytes | Ty::Task(_) => true,
         Ty::Named { name, args } => {
             matches!(name.as_str(), "String" | "string" | "bytes")
                 || registry.is_drop_type(name)

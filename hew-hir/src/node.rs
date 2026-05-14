@@ -1,9 +1,8 @@
-use std::collections::HashMap;
-
 use hew_parser::ast::{BinaryOp, ResourceMarker, Span};
 use hew_types::ResolvedTy;
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
+use crate::value_class::TypeClassTable;
 use crate::{IntentKind, ValueClass};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +19,7 @@ pub struct HirModule {
     /// Named type a resource/linear?" — `ValueClass::of_ty(ty, &type_classes)`
     /// reads from here. No phase re-derives the answer by walking the parser
     /// AST. LESSONS: `type-info-survival`.
-    pub type_classes: HashMap<String, (ResourceMarker, Option<String>)>,
+    pub type_classes: TypeClassTable,
 }
 
 #[derive(Debug, Clone, PartialEq)]

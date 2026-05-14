@@ -60,46 +60,55 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
     // Discard first-pass diagnostics; the second pass will re-emit any real ones.
     ctx.diagnostics.clear();
 
-    // Second pass: lower function bodies with full signature knowledge.
-    // Type declarations are lowered into `HirItem::TypeDecl` with their
-    // `ResourceMarker` and `consuming_methods` lifted from the parser
-    // surface; the per-name marker/close-method table on `HirModule` is
-    // populated in the same pass so downstream `ValueClass::of_ty` calls
-    // have a single authority to consult.
-    let mut items = Vec::new();
-    let mut type_classes = HashMap::new();
+    // Second pass: lower type declarations and populate the per-module
+    // type-class registry. Type-decl bodies don't depend on function
+    // signatures, but function bodies depend on type markers (so
+    // `ValueClass::of_ty` resolves `Named` types correctly during the
+    // function pass). Ordering: type-decls before function bodies.
+    let mut items: Vec<HirItem> = Vec::new();
+    let mut type_decl_indices: HashMap<String, usize> = HashMap::new();
+    for (item, span) in &program.items {
+        if let Item::TypeDecl(decl) = item {
+            let hir_decl = ctx.lower_type_decl(decl, span.clone());
+            let close_method = if hir_decl.marker == ResourceMarker::Resource {
+                hir_decl
+                    .consuming_methods
+                    .iter()
+                    .find(|m| m.as_str() == "close")
+                    .cloned()
+            } else {
+                None
+            };
+            ctx.type_classes
+                .insert(hir_decl.name.clone(), (hir_decl.marker, close_method));
+            type_decl_indices.insert(hir_decl.name.clone(), items.len());
+            items.push(HirItem::TypeDecl(hir_decl));
+        }
+    }
+
+    // Third pass: lower function bodies with full signature + type-class
+    // knowledge. Functions and type-decls are interleaved in the final
+    // `items` vec but type-decls are always recorded first so they appear
+    // before any function that constructs values of them; this also
+    // mirrors typical source order in fixtures.
     for (item, span) in &program.items {
         match item {
             Item::Function(func) => {
                 items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
             }
-            Item::TypeDecl(decl) => {
-                let hir_decl = ctx.lower_type_decl(decl, span.clone());
-                // Record the marker and close-method name for downstream
-                // value-class resolution. `None`-marked types are recorded
-                // too — they resolve to `ValueClass::Unknown` in `of_ty`
-                // and the entry's presence proves the type was registered
-                // (vs. a typo / unresolved Named).
-                let close_method = if hir_decl.marker == ResourceMarker::Resource {
-                    hir_decl
-                        .consuming_methods
-                        .iter()
-                        .find(|m| m.as_str() == "close")
-                        .cloned()
-                } else {
-                    None
-                };
-                type_classes.insert(hir_decl.name.clone(), (hir_decl.marker, close_method));
-                items.push(HirItem::TypeDecl(hir_decl));
+            Item::TypeDecl(_) => {
+                // Already lowered in the type-decl pass above.
             }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
     }
+    // Suppress unused-warning until a future pass needs the index.
+    let _ = type_decl_indices;
 
     LowerOutput {
         module: HirModule {
             items,
-            type_classes,
+            type_classes: ctx.type_classes,
         },
         diagnostics: ctx.diagnostics,
     }
@@ -111,6 +120,10 @@ struct LowerCtx {
     scopes: Vec<HashMap<String, (BindingId, ResolvedTy)>>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
+    /// Per-named-type marker + close-method registry. Pre-populated from
+    /// every `Item::TypeDecl` before function bodies lower so that
+    /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
+    type_classes: crate::value_class::TypeClassTable,
     diagnostics: Vec<HirDiagnostic>,
 }
 
@@ -455,7 +468,7 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ty),
+            value_class: ValueClass::of_ty(&ty, &self.type_classes),
             ty,
             intent,
             kind,

@@ -1,4 +1,16 @@
+use std::collections::HashMap;
+
+use hew_parser::ast::ResourceMarker;
 use hew_types::ResolvedTy;
+
+/// Per-named-type classification table consumed by `ValueClass::of_ty`.
+///
+/// Construction-site authority: the table is populated by HIR lowering
+/// from every `Item::TypeDecl`'s `#[resource]` / `#[linear]` marker, and
+/// is the single fact about whether a Named type participates in the
+/// ownership-discipline surface. Downstream phases read; they never
+/// re-derive by walking the parser AST. LESSONS: `type-info-survival`.
+pub type TypeClassTable = HashMap<String, (ResourceMarker, Option<String>)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueClass {
@@ -19,8 +31,19 @@ pub enum ValueClass {
 }
 
 impl ValueClass {
+    /// Resolve a type's value-class.
+    ///
+    /// For `ResolvedTy::Named { name, .. }`, looks up the marker in the
+    /// supplied `TypeClassTable`:
+    /// - `Some((Resource, _))` → `Self::AffineResource`
+    /// - `Some((Linear, _))` → `Self::Linear`
+    /// - `Some((None, _))` or absent → `Self::Unknown` (preserved fallback;
+    ///   the unmarked Named-type behaviour the slice still routes through
+    ///   `Strategy::UnknownBlocked` at MIR boundary).
+    ///
+    /// Builtin types are independent of the table.
     #[must_use]
-    pub fn of_ty(ty: &ResolvedTy) -> Self {
+    pub fn of_ty(ty: &ResolvedTy, type_classes: &TypeClassTable) -> Self {
         match ty {
             ResolvedTy::Bool
             | ResolvedTy::Char
@@ -45,7 +68,11 @@ impl ValueClass {
             ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
             | ResolvedTy::TraitObject { .. } => Self::PersistentShare,
-            ResolvedTy::Named { .. } => Self::Unknown,
+            ResolvedTy::Named { name, .. } => match type_classes.get(name) {
+                Some((ResourceMarker::Resource, _)) => Self::AffineResource,
+                Some((ResourceMarker::Linear, _)) => Self::Linear,
+                Some((ResourceMarker::None, _)) | None => Self::Unknown,
+            },
         }
     }
 }

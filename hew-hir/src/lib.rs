@@ -22,5 +22,5 @@ pub use node::{
     HirBlock, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLiteral, HirModule, HirStmt,
     HirStmtKind, HirTypeDecl,
 };
-pub use value_class::{contains_named_type, named_type_names, ValueClass};
+pub use value_class::{contains_named_type, named_type_names, TypeClassTable, ValueClass};
 pub use verify::verify_hir;

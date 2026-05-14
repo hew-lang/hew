@@ -62,7 +62,7 @@ fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
             } => {
                 initialised.insert(*binding);
                 consumed.remove(binding);
-                if ValueClass::of_ty(ty) == ValueClass::Linear {
+                if ValueClass::of_ty(ty, &builder.type_classes) == ValueClass::Linear {
                     linear_live.insert(*binding, (name.clone(), ty.clone()));
                 }
             }
@@ -88,7 +88,9 @@ fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
                         used_at: *site,
                     });
                 }
-                if *intent == IntentKind::Consume && ValueClass::of_ty(ty) != ValueClass::BitCopy {
+                if *intent == IntentKind::Consume
+                    && ValueClass::of_ty(ty, &builder.type_classes) != ValueClass::BitCopy
+                {
                     consumed.insert(*binding, *site);
                     linear_live.remove(binding);
                 }
@@ -161,7 +163,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
-                let lowered = lower_function(func);
+                let lowered = lower_function(func, &module.type_classes);
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
@@ -195,8 +197,11 @@ struct LoweredFunction {
     diagnostics: Vec<MirDiagnostic>,
 }
 
-fn lower_function(func: &HirFn) -> LoweredFunction {
-    let mut builder = Builder::default();
+fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> LoweredFunction {
+    let mut builder = Builder {
+        type_classes: type_classes.clone(),
+        ..Builder::default()
+    };
     builder.function_body(func);
 
     let thir = ThirFunction {
@@ -342,6 +347,11 @@ struct Builder {
     owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
     /// Diagnostics collected during MIR building (e.g., Unsupported HIR nodes).
     diagnostics: Vec<MirDiagnostic>,
+    /// Per-named-type marker registry, cloned from the parent `HirModule` at
+    /// builder construction. Read by every `ValueClass::of_ty` call site in
+    /// MIR lowering so the marker is the single fact about whether a Named
+    /// type participates in the ownership-discipline surface.
+    type_classes: hew_hir::TypeClassTable,
 }
 
 impl Builder {
@@ -391,7 +401,7 @@ impl Builder {
                     site: value.site,
                     ty: binding.ty.clone(),
                 });
-                if ValueClass::of_ty(&binding.ty) != ValueClass::BitCopy {
+                if ValueClass::of_ty(&binding.ty, &self.type_classes) != ValueClass::BitCopy {
                     self.owned_locals
                         .push((binding.id, binding.name.clone(), binding.ty.clone()));
                 }
@@ -455,7 +465,7 @@ impl Builder {
                     intent: expr.intent,
                 });
                 if expr.intent == IntentKind::Consume
-                    && ValueClass::of_ty(&expr.ty) != ValueClass::BitCopy
+                    && ValueClass::of_ty(&expr.ty, &self.type_classes) != ValueClass::BitCopy
                 {
                     self.mark_binding_moved(*id);
                 }
@@ -817,7 +827,11 @@ fn elaborate(checked: &CheckedMirFunction, builder: &Builder) -> ElaboratedMirFu
         });
     }
 
-    let lifo_drops = build_lifo_drops(&builder.owned_locals, &builder.binding_locals);
+    let lifo_drops = build_lifo_drops(
+        &builder.owned_locals,
+        &builder.binding_locals,
+        &builder.type_classes,
+    );
     let (elab_blocks, drop_plans) = enumerate_exits(&checked.block, &lifo_drops);
 
     ElaboratedMirFunction {
@@ -844,17 +858,26 @@ fn elaborate(checked: &CheckedMirFunction, builder: &Builder) -> ElaboratedMirFu
 fn build_lifo_drops(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
+    type_classes: &hew_hir::TypeClassTable,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
-        match ValueClass::of_ty(ty) {
+        match ValueClass::of_ty(ty, type_classes) {
             ValueClass::AffineResource => {
-                // Synthesised drop_fn — the spine has no `@resource`
-                // method resolution surface yet. The name is illustrative
-                // until `@resource` types reach the ladder.
+                // Registry-driven drop_fn dispatch. The HIR-lowering pass
+                // populates `type_classes` with `(marker, Some(close_method))`
+                // for every `#[resource]` type; reaching this arm without
+                // a `close_method` is structurally unreachable because the
+                // `E_RESOURCE_MISSING_CLOSE` HIR diagnostic short-circuits
+                // the pipeline upstream. The string form is preserved as a
+                // failsafe; codegen rejects `Some(_)` until runtime drop
+                // dispatch lands (`hew-codegen-rs/src/llvm.rs:471`).
                 let drop_fn = match ty {
-                    ResolvedTy::Named { name, .. } => Some(format!("{name}::close")),
-                    _ => Some("close".to_string()),
+                    ResolvedTy::Named { name, .. } => type_classes
+                        .get(name)
+                        .and_then(|(_, close)| close.as_ref())
+                        .map(|m| format!("{name}::{m}")),
+                    _ => None,
                 };
                 // Resolve to the binding's real backend place. Falling
                 // back to `ReturnSlot` for an unmapped binding would

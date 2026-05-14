@@ -9,6 +9,12 @@ Hew is a **high-performance, network-native, machine-code compiled** language fo
 
 This document specifies: goals, core semantics, type/effects model, module and trait systems, memory management, `machine` types, runtime state machines, compilation model, and an EBNF grammar sufficient to implement a working compiler and runtime.
 
+**Spec version:** `0.10.0-pre` (in flux during the v0.5 compiler refactor; the
+authoritative grammar stamp lives in `docs/specs/grammar.ebnf` and
+`docs/specs/Hew.g4`). The `(audited for v0.4.0)` header above is a
+*compiler-release* alignment marker and tracks a different axis from the spec
+version.
+
 **Release alignment note (v0.2.2):**
 
 This document has been re-audited against the shipped compiler/runtime in

@@ -1,5 +1,12 @@
 //! Bounded child-process execution helpers for native Hew binaries.
 
+#![allow(
+    dead_code,
+    reason = "the dispatcher short-circuits `hew run` with a cutover error before \
+              reaching this module; its helpers are dormant until the C++ codegen \
+              subtree is removed in a later stage of the v0.5 cutover"
+)]
+
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};

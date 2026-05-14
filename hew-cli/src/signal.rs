@@ -1,6 +1,13 @@
 //! Signal forwarding: when `hew run` receives SIGTERM or SIGINT, forward it to
 //! the compiled child binary so it is not orphaned.
 
+#![allow(
+    dead_code,
+    reason = "the dispatcher short-circuits `hew run` with a cutover error before \
+              reaching this module; its helpers are dormant until the C++ codegen \
+              subtree is removed in a later stage of the v0.5 cutover"
+)]
+
 use std::sync::atomic::{AtomicI32, Ordering};
 
 /// PID of the child process to receive forwarded signals.

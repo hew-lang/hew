@@ -47,6 +47,9 @@ members = [
   "hew-analysis",
   "hew-astgen",
   "hew-compile",
+  "hew-hir",
+  "hew-mir",
+  "hew-codegen-rs",
   "hew-wirecodec",
   "hew-capability-gen",
 ]

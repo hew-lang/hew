@@ -2,6 +2,8 @@
 //!
 //! ```text
 //! hew build file.hew [-o output]   # Compile to executable
+//! hew compile-v05 file.hew [--emit-dir DIR] [--dump-mir raw|elab] [--no-wasm]
+//!                                  # Run the v0.5 IR ladder and emit native + wasm binaries
 //! hew run file.hew [-- args...]    # Compile and run
 //! hew debug file.hew [-- args...]  # Build with debug info + launch gdb/lldb
 //! hew check file.hew               # Parse + typecheck only
@@ -93,6 +95,12 @@ fn hew_main() {
 // Sub-commands
 // ---------------------------------------------------------------------------
 
+// The dispatcher short-circuits `hew build` and `hew run` with a cutover
+// error before reaching the bodies below; each `#[allow(dead_code, ...)]`
+// keeps the body compiled while it is dormant. The attributes come off when
+// the C++ codegen subtree is removed in a later stage of the v0.5 cutover.
+
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn cmd_build(a: &args::BuildArgs) {
     let input = a.input.display().to_string();
     let output = a.output.as_ref().map(|p| p.display().to_string());
@@ -106,6 +114,141 @@ fn cmd_build(a: &args::BuildArgs) {
     }
 }
 
+/// Surface the diagnostic family in the CLI prefix so users see what
+/// gate tripped at a glance. `MirCheck` findings (move/init/aliasing
+/// legality) are a distinct family from spine-subset rejections; the
+/// kind in the debug payload disambiguates further.
+fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
+    match kind {
+        hew_mir::MirDiagnosticKind::UseAfterConsume { .. }
+        | hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. }
+        | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. } => "E_MIR_CHECK",
+        hew_mir::MirDiagnosticKind::CutoverUnsupported { .. } => "E_CUTOVER_UNSUPPORTED",
+        hew_mir::MirDiagnosticKind::UnknownType { .. }
+        | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
+        | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. } => "E_MIR",
+    }
+}
+
+fn cmd_compile_v05(a: &args::CompileV05Args) {
+    let input = a.input.display().to_string();
+    let source = std::fs::read_to_string(&a.input).unwrap_or_else(|e| {
+        eprintln!("Error: cannot read {input}: {e}");
+        std::process::exit(1);
+    });
+
+    let parsed = hew_parser::parse(&source);
+    if !parsed.errors.is_empty() {
+        for error in parsed.errors {
+            eprintln!("{error:?}");
+        }
+        std::process::exit(1);
+    }
+
+    let lower_output = hew_hir::lower_program(&parsed.program, &hew_hir::ResolutionCtx);
+    let mut diagnostics = lower_output.diagnostics;
+    diagnostics.extend(hew_hir::verify_hir(&lower_output.module));
+    if !diagnostics.is_empty() {
+        for diagnostic in diagnostics {
+            eprintln!("{diagnostic:?}");
+        }
+        std::process::exit(1);
+    }
+
+    let pipeline = hew_mir::lower_hir_module(&lower_output.module);
+    if !pipeline.diagnostics.is_empty() {
+        for diagnostic in &pipeline.diagnostics {
+            eprintln!("{} {diagnostic:?}", diagnostic_prefix(&diagnostic.kind));
+        }
+        std::process::exit(1);
+    }
+
+    // Dump path: print the requested MIR stage and exit. Useful for
+    // spot-checking the lowering during development.
+    if let Some(stage) = a.dump_mir.as_deref() {
+        match stage {
+            "raw" => {
+                for func in &pipeline.raw_mir {
+                    println!("{func:#?}");
+                }
+            }
+            "checked" => {
+                // The Checked MIR dump includes the `MirCheck` findings
+                // list. On a function that passes, `checks` is empty —
+                // that emptiness is the load-bearing signal the CLI
+                // rejection path keys off of.
+                for func in &pipeline.checked_mir {
+                    println!("{func:#?}");
+                }
+            }
+            "elab" => {
+                for func in &pipeline.elaborated_mir {
+                    println!("{func:#?}");
+                }
+            }
+            other => {
+                eprintln!("Error: unknown --dump-mir stage `{other}`");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
+    // Default emit dir: `.tmp/compile-v05-out` under the cwd. `.tmp/` is
+    // gitignored across the workspace.
+    let default_dir = std::path::PathBuf::from(".tmp/compile-v05-out");
+    let emit_dir = a.emit_dir.as_ref().unwrap_or(&default_dir);
+    let module_name = a
+        .input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("module");
+
+    let options = hew_codegen_rs::EmitOptions {
+        module_name,
+        out_dir: emit_dir,
+        native: true,
+        wasm: !a.no_wasm,
+    };
+    let artefacts = match hew_codegen_rs::emit_module(&pipeline, &options) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("E_CUTOVER_UNSUPPORTED: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Link the native object into an executable using the system C
+    // compiler. Using cc keeps the link command portable across macOS and
+    // Linux and inherits whichever SDK the host has installed.
+    if let Some(obj) = &artefacts.native_obj_path {
+        let bin_path = emit_dir.join(module_name);
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+        let status = std::process::Command::new(&cc)
+            .arg(obj)
+            .arg("-o")
+            .arg(&bin_path)
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                println!("native: {}", bin_path.display());
+            }
+            Ok(s) => {
+                eprintln!("Error: `{cc}` link failed with status {s}");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Error: cannot invoke `{cc}`: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(wasm) = &artefacts.wasm_path {
+        println!("wasm:   {}", wasm.display());
+    }
+}
+
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn cmd_run(a: &args::RunArgs) {
     let input = a.input.display().to_string();
     let timeout = resolve_optional_timeout(a.timeout.as_deref());
@@ -131,6 +274,7 @@ fn cmd_run(a: &args::RunArgs) {
     exit_after_native_run(artifact, &a.program_args, timeout, a.profile);
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn resolve_optional_timeout(raw: Option<&str>) -> Option<std::time::Duration> {
     raw.map(crate::util::parse_timeout)
         .transpose()
@@ -140,6 +284,7 @@ fn resolve_optional_timeout(raw: Option<&str>) -> Option<std::time::Duration> {
         })
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn resolve_run_target(requested: Option<&str>, profile: bool) -> target::ExecutionTarget {
     let target = target::ExecutionTarget::from_requested(requested).unwrap_or_else(|e| {
         eprintln!("{e}");
@@ -165,8 +310,13 @@ struct CompiledTempExecutable {
 }
 
 enum TempExecutableCleanup {
-    TempPath { _temp_path: tempfile::TempPath },
-    TempDir { _temp_dir: tempfile::TempDir },
+    #[allow(dead_code, reason = "dormant during v0.5 cutover")]
+    TempPath {
+        _temp_path: tempfile::TempPath,
+    },
+    TempDir {
+        _temp_dir: tempfile::TempDir,
+    },
 }
 
 impl CompiledTempExecutable {
@@ -179,6 +329,7 @@ impl CompiledTempExecutable {
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn compile_temp_run_artifact(
     input: &str,
     options: &compile::CompileOptions,
@@ -214,6 +365,7 @@ fn compile_temp_artifact(
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn create_run_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempExecutable {
     let temp_path = tempfile::Builder::new()
         .prefix("hew_run_")
@@ -249,6 +401,7 @@ fn create_debug_temp_artifact(target: &target::ExecutionTarget) -> CompiledTempE
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn exit_after_native_run(
     artifact: CompiledTempExecutable,
     program_args: &[String],
@@ -283,6 +436,7 @@ fn exit_after_native_run(
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn run_native_binary(
     cmd: &mut std::process::Command,
     timeout: Option<std::time::Duration>,
@@ -313,6 +467,7 @@ fn run_native_binary(
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn configure_profiler_env(cmd: &mut std::process::Command, profile: bool) {
     if !profile || std::env::var_os("HEW_PPROF").is_some() {
         return;
@@ -335,6 +490,7 @@ fn configure_profiler_env(cmd: &mut std::process::Command, profile: bool) {
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn exit_after_wasi_run(
     artifact: CompiledTempExecutable,
     program_args: &[String],
@@ -426,6 +582,7 @@ fn cmd_check(a: &args::CheckArgs) {
     }
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 fn cmd_debug(a: &args::DebugArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();

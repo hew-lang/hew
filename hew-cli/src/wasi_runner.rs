@@ -1,5 +1,12 @@
 //! Bounded `wasmtime` wrapper for `hew run --target wasm32-wasi`.
 
+#![allow(
+    dead_code,
+    reason = "the dispatcher short-circuits `hew run` with a cutover error before \
+              reaching this module; its helpers are dormant until the C++ codegen \
+              subtree is removed in a later stage of the v0.5 cutover"
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::Duration;

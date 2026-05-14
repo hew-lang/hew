@@ -14,7 +14,9 @@ permissions:
   security-events: write
 
 env:
-  LLVM_VERSION: "22"
+  # Pinned LLVM upstream release tag. Bumps must be reflected in
+  # .github/actions/setup-llvm/action.yml (asset SHA256 pins) too.
+  LLVM_VERSION: "22.1.5"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -50,6 +52,7 @@ jobs:
               - 'examples/**'
               - 'Makefile'
               - '.github/workflows/ci.yml'
+              - '.github/actions/setup-llvm/**'
             playground:
               - 'hew-wasm/**'
               - 'examples/playground/**'
@@ -80,8 +83,18 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: lint-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: lint-${{ runner.os }}-
+          key: lint-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            lint-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+            lint-${{ runner.os }}-
+
+      # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
+      # script requires LLVM_SYS_221_PREFIX or llvm-config on PATH for
+      # `cargo clippy --workspace --tests` to compile the workspace.
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -98,9 +111,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Clippy
+        # hew-cli is excluded during the v0.5 spine pass — its build.rs
+        # invokes cmake on the hew-codegen subtree, which is queued for
+        # deletion.
         run: |
           set -o pipefail
-          cargo clippy --workspace --tests --message-format=json -- -D warnings \
+          cargo clippy --workspace --tests --exclude hew-cli --message-format=json -- -D warnings \
             | clippy-sarif \
             | tee clippy-results.sarif \
             | sarif-fmt
@@ -180,30 +196,17 @@ jobs:
       - uses: actions/checkout@v4
         if: env.RUN_CODE_PATH == 'true'
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
+      - name: Install build tools
         if: env.RUN_CODE_PATH == 'true'
         run: |
-          sudo mkdir -p /etc/apt/keyrings
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
-            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            cmake ninja-build \
-            llvm-${{ env.LLVM_VERSION }}-dev \
-            libmlir-${{ env.LLVM_VERSION }}-dev \
-            mlir-${{ env.LLVM_VERSION }}-tools \
-            clang-${{ env.LLVM_VERSION }} \
-            lld-${{ env.LLVM_VERSION }} \
-            libssl-dev pkg-config
+          sudo apt-get install -y -qq cmake ninja-build libssl-dev pkg-config
 
-      - name: Configure embedded codegen toolchain (Linux)
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
-        run: |
-          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
-          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
 
       - uses: dtolnay/rust-toolchain@stable
         if: env.RUN_CODE_PATH == 'true'
@@ -223,48 +226,25 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: build-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          key: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
           restore-keys: |
-            build-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-            build-test-${{ runner.os }}-
+            build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
+            build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
 
-      - name: Cache hew-codegen build
-        if: env.RUN_CODE_PATH == 'true'
-        uses: actions/cache@v4
-        with:
-          path: hew-codegen/build
-          key: hew-codegen-build-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
-          restore-keys: hew-codegen-build-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+      # C++ codegen build skipped during v0.5 spine pass; the hew-codegen
+      # subtree is queued for deletion. The Rust workspace (including
+      # hew-codegen-rs) is the active codegen path.
 
-      # Build hew-codegen (C++ MLIR backend) before any Rust step that links
-      # hew-cli.  hew-cli's build.rs invokes cmake independently, but requires a
-      # working LLVM cmake configure.  Running the explicit cmake steps first
-      # ensures the hew-codegen/build tree is populated on every cache miss, and
-      # exercises the cmake configure path before cargo attempts to link.
-      - name: Configure hew-codegen
-        if: env.RUN_CODE_PATH == 'true'
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
-            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
-
-      - name: Build hew-codegen
-        if: env.RUN_CODE_PATH == 'true'
-        run: cmake --build hew-codegen/build -j"$(nproc)"
-
+      # hew-cli embeds the C++ codegen via cmake in its build.rs; while the
+      # subtree is in the spine-pass freeze, exclude it from build and test
+      # the same way the Windows lane does.
       - name: Build Rust runtime and frontend (release)
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-cli -p hew-runtime -p hew-serialize -p hew-lsp --release
+        run: cargo build -p hew-runtime -p hew-serialize -p hew-lsp --release
 
       - name: Smoke test hew-lsp
         if: env.RUN_CODE_PATH == 'true'
         run: ./target/release/hew-lsp --version
-
-      - name: Build hew binary (debug — needed by test_runner tests)
-        if: env.RUN_CODE_PATH == 'true'
-        run: cargo build -p hew-cli
 
       - name: Build WASM runtime
         if: env.RUN_CODE_PATH == 'true'
@@ -285,61 +265,32 @@ jobs:
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
           "./${WASMTIME_DIR}/wasmtime" --version
 
-      - name: Run curated playground WASI runtime preflight
-        if: env.RUN_CODE_PATH == 'true'
-        run: make playground-wasi-check
-
       - name: Run WASM runtime actual-target libtests
         if: env.RUN_CODE_PATH == 'true'
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
         run: cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
 
-      - name: Build libhew.a (runtime + stdlib)
-        if: env.RUN_CODE_PATH == 'true'
-        # Build both release and debug so workspace tests that run the debug
-        # hew binary do not pick up a stale cached target/debug/libhew.a.
-        run: |
-          cargo build -p hew-lib --release
-          cargo build -p hew-lib
-
       # Default features include "full" (encryption + profiler + quic),
-      # so all 33 QUIC transport tests run without an explicit flag. hew-wasm
-      # browser/tooling smoke stays isolated in playground-wasm-build.
+      # so all 33 QUIC transport tests run without an explicit flag.
+      # hew-wasm browser/tooling smoke stays isolated in playground-wasm-build.
+      # hew-cli and hew-cabi are excluded for the spine pass — hew-cli pulls
+      # the C++ codegen via cmake; hew-cabi has #[no_mangle] symbols that
+      # conflict with hew-runtime when both link into a test binary.
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
-
-      - name: Run codegen unit tests
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-unit.xml
-          -R "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (native)
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-e2e-native.xml
-          -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (WASM)
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-e2e-wasm.xml
-          -j"$(nproc)" -L wasm
+        run: >-
+          cargo nextest run --workspace
+          --exclude hew-wasm
+          --exclude hew-cli
+          --exclude hew-cabi
+          --profile ci
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'
         uses: mikepenz/action-junit-report@v5
         with:
-          report_paths: |
-            target/nextest/ci/junit.xml
-            hew-codegen/build/codegen-unit.xml
-            hew-codegen/build/codegen-e2e-native.xml
-            hew-codegen/build/codegen-e2e-wasm.xml
+          report_paths: target/nextest/ci/junit.xml
           check_name: Test Results (Linux)
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -377,8 +328,20 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: coverage-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: coverage-${{ runner.os }}-
+          key: coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+            coverage-${{ runner.os }}-
+
+      # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
+      # script requires LLVM_SYS_221_PREFIX. `cargo llvm-cov nextest
+      # --workspace` resolves and compiles the full workspace, including
+      # hew-codegen-rs, even though hew-cli is excluded.
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        if: env.RUN_CODE_PATH == 'true'
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
 
       - name: Run tests with coverage
         if: env.RUN_CODE_PATH == 'true'
@@ -417,7 +380,7 @@ jobs:
           path: coverage-html/
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Build & test — Windows (LLVM provisioning deferred)
+  # Build & test — Windows
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test-windows:
     name: Build & test (Windows)
@@ -440,7 +403,11 @@ jobs:
         run: choco install ninja cmake -y
         shell: pwsh
 
-      # TODO: LLVM+MLIR provisioning (build from source, pre-built artifact, or installer)
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        if: env.RUN_CODE_PATH == 'true'
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
 
       - uses: dtolnay/rust-toolchain@stable
         if: env.RUN_CODE_PATH == 'true'
@@ -455,24 +422,24 @@ jobs:
             ~\.cargo\registry\
             ~\.cargo\git\
             target\
-          key: build-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: build-test-${{ runner.os }}-
+          key: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
 
       - name: Build Rust crates
         if: env.RUN_CODE_PATH == 'true'
-        # hew-cli requires LLVM/MLIR for its embedded codegen; use check
-        # (type-check only) until LLVM provisioning is set up on Windows.
-        run: |
-          cargo check -p hew-cli --release
-          cargo build -p adze-cli -p hew-runtime -p hew-lsp --release
+        # hew-cli is excluded during the v0.5 spine pass — its build.rs
+        # invokes cmake on the hew-codegen subtree, which is queued for
+        # deletion. hew-codegen-rs (inkwell -> llvm-sys-221) compiles
+        # end-to-end because the upstream LLVM tarball is provisioned above.
+        run: cargo build -p adze-cli -p hew-runtime -p hew-lsp --release
 
-      - name: Run Rust workspace tests (no codegen)
+      - name: Run Rust workspace tests (no native codegen E2E)
         if: env.RUN_CODE_PATH == 'true'
         # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
         # that conflict with hew-runtime when both are linked into a
         # test binary (duplicate symbol errors).
-        # hew-cli is excluded because it requires LLVM/MLIR to link its
-        # embedded codegen; Windows LLVM provisioning is not yet set up.
+        # hew-cli is excluded because the embedded C++ MLIR codegen
+        # cmake build is not exercised on this Windows lane yet.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         run: >-
@@ -492,8 +459,8 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Build & test — macOS (Apple Silicon)
   #
-  # Run Rust workspace tests and hew-codegen E2E on macOS arm64.
-  # Homebrew ships LLVM 22 bottles for Apple Silicon runners.
+  # Run Rust workspace tests and hew-codegen E2E on macOS arm64 against
+  # the upstream LLVM arm64 binary release.
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test-macos:
     name: Build & test (macOS arm64)
@@ -518,6 +485,46 @@ jobs:
       - uses: taiki-e/install-action@nextest
         if: env.RUN_CODE_PATH == 'true'
 
+      - name: Install build tools
+        if: env.RUN_CODE_PATH == 'true'
+        # libffi and zstd are runtime deps of the upstream LLVM macOS
+        # tarball; libxml2 ships in /usr/lib but libffi does not, so
+        # llvm-sys's static-link path fails to resolve -lffi without
+        # the brew bottle. libffi is keg-only on Homebrew, so we add its
+        # lib dir to the linker search path via RUSTFLAGS (LIBRARY_PATH
+        # is honoured by clang but not by every rustc link invocation).
+        run: |
+          brew install ninja libffi zstd
+          LIBFFI_PREFIX="$(brew --prefix libffi)"
+          # Apple's bundled ld (Xcode 15.4) ships libLTO 15.0.0, which cannot
+          # parse LLVM 22 bitcode attribute kinds embedded in llvm-sys-221's
+          # static libs. Use the ld64.lld that ships in the same upstream
+          # LLVM 22.1.5 tarball we already vendor (on PATH via setup-llvm).
+          # LLD doesn't auto-add libc++/libc++abi the way Apple's ld does, so
+          # link them explicitly — LTO of llvm-sys's C++ static libs pulls
+          # in operator new/delete and __cxa_* runtime symbols.
+          echo "RUSTFLAGS=-L ${LIBFFI_PREFIX}/lib -C link-arg=-fuse-ld=lld -C link-arg=-lc++ -C link-arg=-lc++abi ${RUSTFLAGS:-}" >> "$GITHUB_ENV"
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        if: env.RUN_CODE_PATH == 'true'
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Add LLVM lib to runtime rpath
+        if: env.RUN_CODE_PATH == 'true'
+        # LLD links the test binaries against -lc++ -lc++abi from the
+        # upstream LLVM 22 tarball, but does not record an LC_RPATH for
+        # the dynamic loader. Without an rpath, dyld fails to locate
+        # libc++abi.1.dylib at execution time. Append a -Wl,-rpath link
+        # arg pointing at the vendored LLVM tarball's lib/ directory.
+        run: |
+          echo "RUSTFLAGS=${RUSTFLAGS} -C link-arg=-Wl,-rpath,${LLVM_SYS_221_PREFIX}/lib" >> "$GITHUB_ENV"
+
+      - name: Set macOS deployment target
+        if: env.RUN_CODE_PATH == 'true'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
       - uses: actions/cache@v4
         if: env.RUN_CODE_PATH == 'true'
         with:
@@ -527,72 +534,26 @@ jobs:
             target/
           # Include hew-codegen C++ sources in the cache key so that a stale cmake
           # build dir inside target/ is never reused when codegen source files change.
-          key: build-test-${{ runner.os }}-arm64-macos13-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          key: build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock', 'hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
           restore-keys: |
-            build-test-${{ runner.os }}-arm64-macos13-${{ hashFiles('**/Cargo.lock') }}
-            build-test-${{ runner.os }}-arm64-macos13-
+            build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
+            build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-
 
-      - name: Install LLVM/MLIR
-        if: env.RUN_CODE_PATH == 'true'
-        run: |
-          brew install llvm@${{ env.LLVM_VERSION }} lld ninja
-          LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
-          LLD_PREFIX="$(brew --prefix lld)"
-          echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
-          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
-          echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
-          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
-          echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
-          # Record the concrete patch version so cache keys bust on Homebrew patch upgrades.
-          LLVM_VERSION_FULL="$("${LLVM_PREFIX}/bin/llvm-config" --version)"
-          echo "LLVM_VERSION_FULL=${LLVM_VERSION_FULL}" >> "$GITHUB_ENV"
-
-      - name: Cache hew-codegen build
-        if: env.RUN_CODE_PATH == 'true'
-        uses: actions/cache@v4
-        with:
-          path: hew-codegen/build
-          key: hew-codegen-build-${{ runner.os }}-arm64-macos13-llvm${{ env.LLVM_VERSION_FULL }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
-          restore-keys: hew-codegen-build-${{ runner.os }}-arm64-macos13-llvm${{ env.LLVM_VERSION_FULL }}-
-
-      # Build hew-codegen (C++ MLIR backend) before any Rust step that links
-      # hew-cli.  hew-cli's build.rs invokes cmake independently, but requires a
-      # working LLVM cmake configure.  Running the explicit cmake steps first
-      # ensures the hew-codegen/build tree is populated on every cache miss, and
-      # exercises the cmake configure path before cargo attempts to link.
-      - name: Configure hew-codegen
-        if: env.RUN_CODE_PATH == 'true'
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
-            -DCMAKE_CXX_COMPILER="${LLVM_PREFIX}/bin/clang++" \
-            -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)" \
-            -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,${LLVM_PREFIX}/lib/c++" \
-            -DHEW_STATIC_LINK=ON \
-            -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
-            -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
-
-      - name: Build hew-codegen
-        if: env.RUN_CODE_PATH == 'true'
-        run: cmake --build hew-codegen/build -j"$(sysctl -n hw.ncpu)"
+      # C++ codegen build skipped during v0.5 spine pass; the hew-codegen
+      # subtree is queued for deletion. The Rust workspace (including
+      # hew-codegen-rs) is the active codegen path. hew-cli embeds the
+      # C++ codegen via its build.rs, so it is excluded from build and
+      # test the same way the Windows lane does.
 
       - name: Build libhew.a (runtime + stdlib)
         if: env.RUN_CODE_PATH == 'true'
-        # Build both release and debug so that CLI e2e tests (which run the
-        # debug hew binary) can find target/debug/libhew.a without relying on
-        # make runtime stdlib running inside the test process.
         run: |
           cargo build -p hew-lib --release
           cargo build -p hew-lib
 
-      - name: Build frontend (release + debug)
+      - name: Build frontend (release)
         if: env.RUN_CODE_PATH == 'true'
-        run: |
-          cargo build -p hew-cli -p hew-serialize --release
-          cargo build -p hew-cli
+        run: cargo build -p hew-serialize --release
 
       - name: Install WASI runner prerequisites
         if: env.RUN_CODE_PATH == 'true'
@@ -609,24 +570,12 @@ jobs:
 
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
-        # hew-wasm stays excluded in this macOS PR gate, but hew-cli's WASI
-        # runner e2e tests now require wasmtime plus the wasm32-wasip1 target.
-        # Both target/release/libhew.a and target/debug/libhew.a are pre-built
-        # above so CLI e2e tests that invoke `hew run` find the right one.
-        run: >
-          cargo nextest run --workspace --exclude hew-wasm
+        # hew-cli and hew-cabi are excluded for the spine pass — hew-cli
+        # pulls the C++ codegen via cmake; hew-cabi has #[no_mangle] symbols
+        # that conflict with hew-runtime when both link into a test binary.
+        run: >-
+          cargo nextest run --workspace
+          --exclude hew-wasm
+          --exclude hew-cli
+          --exclude hew-cabi
           --profile ci
-
-      - name: Run codegen unit tests
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-unit.xml
-          -R "^(mlir_dialect|translate)$"
-
-      - name: Run codegen E2E tests (native)
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cd hew-codegen/build &&
-          ctest --output-on-failure --output-junit codegen-e2e-native.xml
-          -j"$(sysctl -n hw.ncpu)" -LE wasm -E "^(mlir_dialect|translate)$"

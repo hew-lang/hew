@@ -1,0 +1,17 @@
+// Reject fixture for `MirCheck::InitialisedBeforeUse` inside a
+// block expression.
+//
+// The nested `{ let x; let _y = x; }` would previously skip the
+// move-checker because the block expression's lowering only
+// forwarded `HirStmtKind::Expr` statements into the checker-authority
+// stream. The `let` statements were dropped, and a real
+// `InitialisedBeforeUse` pattern produced a binary. With nested
+// statements lowered, `x` is read before any `Bind` for it appears
+// and Checked MIR rejects the program.
+fn main() -> i64 {
+    {
+        let x;
+        let _y = x;
+    };
+    return 42;
+}

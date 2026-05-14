@@ -81,7 +81,9 @@ pub enum CodegenMode {
     EmitAst,
     EmitJson,
     EmitMsgpack,
+    #[allow(dead_code, reason = "dormant during v0.5 cutover")]
     EmitMlir,
+    #[allow(dead_code, reason = "dormant during v0.5 cutover")]
     EmitLlvm,
     EmitObj,
 }

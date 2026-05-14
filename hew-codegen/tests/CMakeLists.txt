@@ -40,6 +40,12 @@ set_tests_properties(mlirgen PROPERTIES TIMEOUT 180)
 if(HEW_CLI)
   set_tests_properties(mlirgen PROPERTIES ENVIRONMENT "HEW_CLI=${HEW_CLI}")
 endif()
+# Disabled during v0.5 cutover: this harness shells out to `hew build`,
+# which now exits with an explicit cutover error. Re-enables in a single
+# label-exclude sweep once the C++ codegen subtree is removed.
+set_tests_properties(mlirgen PROPERTIES
+  DISABLED TRUE
+  LABELS "v0.5-cutover-dual-load-disabled")
 
 # ── Translation test (isolates translateModuleToLLVMIR hang) ──────────────
 add_executable(test_translate test_translate.cpp)
@@ -264,7 +270,10 @@ function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/e2e_${TEST_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test.cmake
   )
-  set_tests_properties(e2e_${TEST_NAME} PROPERTIES TIMEOUT 90)
+  set_tests_properties(e2e_${TEST_NAME} PROPERTIES
+    TIMEOUT 90
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 endfunction()
 
 add_e2e_test(struct test_struct.hew "30\n")
@@ -333,7 +342,10 @@ function(add_e2e_file_test TEST_NAME CATEGORY HEW_NAME)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_file.cmake
   )
-  set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES TIMEOUT 90)
+  set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES
+    TIMEOUT 90
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 endfunction()
 
 # Sorted variant for tests with non-deterministic output ordering
@@ -349,7 +361,10 @@ function(add_e2e_file_test_sorted TEST_NAME CATEGORY HEW_NAME)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_sorted.cmake
   )
-  set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES TIMEOUT 90)
+  set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES
+    TIMEOUT 90
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 endfunction()
 
 # Helper: verify a .hew file compiles but panics at runtime with expected stderr
@@ -364,7 +379,10 @@ function(add_e2e_panic_test TEST_NAME CATEGORY HEW_NAME EXPECTED_STDERR)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/panic_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_panic_test.cmake
   )
-  set_tests_properties(panic_${CATEGORY}_${HEW_NAME} PROPERTIES TIMEOUT 90)
+  set_tests_properties(panic_${CATEGORY}_${HEW_NAME} PROPERTIES
+    TIMEOUT 90
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 endfunction()
 
 function(add_wasm_panic_test TEST_NAME CATEGORY HEW_NAME EXPECTED_STDERR)
@@ -384,7 +402,8 @@ function(add_wasm_panic_test TEST_NAME CATEGORY HEW_NAME EXPECTED_STDERR)
   )
   set_tests_properties(wasm_panic_${CATEGORY}_${HEW_NAME} PROPERTIES
     TIMEOUT 90
-    LABELS "wasm"
+    DISABLED TRUE
+    LABELS "wasm;v0.5-cutover-dual-load-disabled"
   )
 endfunction()
 
@@ -400,6 +419,12 @@ function(add_e2e_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/reject_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_reject_test.cmake
   )
+  # Disabled during v0.5 cutover: drives `hew build`, which now exits
+  # with an explicit cutover error. Re-enables in a single label-exclude
+  # sweep once the C++ codegen subtree is removed.
+  set_tests_properties(reject_${CATEGORY}_${HEW_NAME} PROPERTIES
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 endfunction()
 
 # Helper: verify a .hew file SUCCEEDS compilation (with a warning), emits the expected
@@ -417,7 +442,10 @@ function(add_e2e_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/warn_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_warn_test.cmake
   )
-  set_tests_properties(warn_${CATEGORY}_${HEW_NAME} PROPERTIES TIMEOUT 90)
+  set_tests_properties(warn_${CATEGORY}_${HEW_NAME} PROPERTIES
+    TIMEOUT 90
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 endfunction()
 
 function(add_wasm_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
@@ -436,7 +464,8 @@ function(add_wasm_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
   )
   set_tests_properties(wasm_warn_${TEST_NAME} PROPERTIES
     TIMEOUT 90
-    LABELS "wasm"
+    DISABLED TRUE
+    LABELS "wasm;v0.5-cutover-dual-load-disabled"
   )
 endfunction()
 
@@ -453,6 +482,9 @@ if(HEW_DWARFDUMP)
       -DEXPECTED_SYMBOL_LINES=Worker_ping|8,Worker_dispatch|8,Pool_init|18
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_smoke_test.cmake
   )
+  set_tests_properties(dwarf_generated_locations PROPERTIES
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 
   # Linked-binary DWARF test: verifies debug info survives linking (and dSYM
   # generation on macOS).  Exercises three demangling paths:
@@ -470,6 +502,9 @@ if(HEW_DWARFDUMP)
       -DEXPECTED_SYMBOL_LINES=Pair.sum|11,add|16,main|20
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_linked_test.cmake
   )
+  set_tests_properties(dwarf_linked_binary PROPERTIES
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
   add_test(
     NAME dwarf_variable_metadata
     COMMAND ${CMAKE_COMMAND}
@@ -479,6 +514,9 @@ if(HEW_DWARFDUMP)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/dwarf_variable_metadata_smoke${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dwarf_variable_metadata_test.cmake
   )
+  set_tests_properties(dwarf_variable_metadata PROPERTIES
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
   # W-1 COFF DWARF smoke: emits an x86_64-pc-windows-msvc object from the same
   # fixture and asserts that DWARF (DW_AT_name, DW_AT_decl_line, source file)
   # survives the COFF path.  No Windows host, linker, or CodeView/PDB toolchain
@@ -496,6 +534,8 @@ if(HEW_DWARFDUMP)
   )
   set_tests_properties(dwarf_coff_smoke PROPERTIES
     SKIP_REGULAR_EXPRESSION "COFF_SMOKE_SKIP:"
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled"
   )
 else()
   message(STATUS "Skipping DWARF smoke test — dwarfdump not found")
@@ -513,6 +553,9 @@ if(HEW_LLDB)
       -DBREAKPOINT_LINE=20
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_lldb_smoke_test.cmake
   )
+  set_tests_properties(lldb_smoke_linked_binary PROPERTIES
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 
   # Name-breakpoint parity: verifies that
   #   - plain -n add resolves via DW_AT_name (already worked before this slice)
@@ -529,6 +572,9 @@ if(HEW_LLDB)
       -DEXPECTED_SUM_LINE=11
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_lldb_name_breakpoint_parity_test.cmake
   )
+  set_tests_properties(lldb_name_breakpoint_parity PROPERTIES
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 else()
   message(STATUS "Skipping LLDB smoke test — lldb not found")
 endif()
@@ -549,6 +595,9 @@ if(APPLE)
         -DEXPECTED_SYMBOL_LINES=__HM19dwarf_linked_binaryT4PairF3sum|11,__HM19dwarf_linked_binaryF3add|16,_main|20
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_atos_smoke_test.cmake
     )
+    set_tests_properties(dwarf_atos_smoke PROPERTIES
+      DISABLED TRUE
+      LABELS "v0.5-cutover-dual-load-disabled")
   else()
     message(STATUS "Skipping Darwin atos smoke test — atos or nm not found")
   endif()
@@ -582,6 +631,9 @@ if(UNIX AND NOT APPLE)
         -DEXPECTED_SYMBOL_LINES=_HM19dwarf_linked_binaryT4PairF3sum|11,_HM19dwarf_linked_binaryF3add|16,main|20
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_linux_symbolizer_smoke_test.cmake
     )
+    set_tests_properties(linux_symbolizer_smoke_linked_binary PROPERTIES
+      DISABLED TRUE
+      LABELS "v0.5-cutover-dual-load-disabled")
   else()
     message(STATUS "Skipping Linux symbolizer smoke test — nm or symbolizer not found")
   endif()
@@ -749,7 +801,8 @@ function(add_wasm_file_test TEST_NAME CATEGORY HEW_NAME)
   )
   set_tests_properties(wasm_${CATEGORY}_${HEW_NAME} PROPERTIES
     TIMEOUT 90
-    LABELS "wasm"
+    DISABLED TRUE
+    LABELS "wasm;v0.5-cutover-dual-load-disabled"
   )
 endfunction()
 
@@ -770,7 +823,8 @@ function(add_wasm_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
   )
   set_tests_properties(wasm_e2e_${TEST_NAME} PROPERTIES
     TIMEOUT 90
-    LABELS "wasm"
+    DISABLED TRUE
+    LABELS "wasm;v0.5-cutover-dual-load-disabled"
   )
 endfunction()
 
@@ -790,7 +844,8 @@ function(add_wasm_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wasm_reject_test.cmake
   )
   set_tests_properties(wasm_reject_${TEST_NAME} PROPERTIES
-    LABELS "wasm"
+    DISABLED TRUE
+    LABELS "wasm;v0.5-cutover-dual-load-disabled"
   )
 endfunction()
 
@@ -1030,7 +1085,10 @@ function(add_example_test TEST_NAME HEW_FILE_ABS EXPECTED_FILE_ABS)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_file.cmake
   )
-  set_tests_properties(${TEST_NAME} PROPERTIES TIMEOUT 90)
+  set_tests_properties(${TEST_NAME} PROPERTIES
+    TIMEOUT 90
+    DISABLED TRUE
+    LABELS "v0.5-cutover-dual-load-disabled")
 endfunction()
 
 # Playground examples (subcategories: basics, concurrency, types)

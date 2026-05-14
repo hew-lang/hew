@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# test-release-binary.sh — Smoke-test the release hew binary with `hew run`.
+# test-release-binary.sh — Smoke-test the release hew binary via compile-v05.
 #
-# Builds hew-cli in release mode and runs a trivial Hew program to confirm
-# process-exit is clean (no SIGABRT, no malloc errors).
+# Builds hew-cli in release mode and drives a trivial Hew program through
+# the v0.5 IR ladder (`hew compile-v05`) to confirm the release binary
+# produces a working native executable.
 #
 # This guard exists to catch ABI-mismatch aborts (see issue #1606): bugs
 # where the release binary silently crashes at process exit, which debug
@@ -31,6 +32,8 @@ echo "==> Release binary smoke test"
 if (( NO_BUILD == 0 )); then
     echo "==> Building hew-cli (release)"
     cargo build --release -p hew-cli 2>&1
+    echo "==> Building hew-emit-v05 helper (release)"
+    cargo build --release -p hew-codegen-rs --bin hew-emit-v05 2>&1
 fi
 
 HEW="$REPO_ROOT/target/release/hew"
@@ -38,30 +41,44 @@ if [[ ! -x "$HEW" ]]; then
     echo "error: $HEW not found — run without --no-build or run 'cargo build --release -p hew-cli' first" >&2
     exit 1
 fi
+EMIT_V05="$REPO_ROOT/target/release/hew-emit-v05"
+if [[ ! -x "$EMIT_V05" ]]; then
+    echo "error: $EMIT_V05 not found — run without --no-build or run 'cargo build --release -p hew-codegen-rs --bin hew-emit-v05' first" >&2
+    exit 1
+fi
 
-# Write a minimal Hew program to a temp file.
-SMOKE_FILE="$(mktemp /tmp/hew-release-smoke-XXXXXX).hew"
-trap 'rm -f "$SMOKE_FILE"' EXIT
+# Drive the spine fixture through the v0.5 IR ladder. The compile-v05
+# subcommand emits artefacts under `.tmp/compile-v05-out/` relative to the
+# current working directory, so run it from a scratch directory and then
+# execute the native binary it produced. The fixture's `main` returns 42.
+FIXTURE="$REPO_ROOT/examples/v05/hello_int.hew"
+EXPECTED_EXIT=42
+WORK_DIR="$(mktemp -d /tmp/hew-release-smoke-XXXXXX)"
+trap 'rm -rf "$WORK_DIR"' EXIT
 
-cat > "$SMOKE_FILE" <<'HEWEOF'
-fn main() {
-    print("hello-release-smoke")
-}
-HEWEOF
+cp "$FIXTURE" "$WORK_DIR/hello_int.hew"
 
-echo "==> Running: $HEW run $SMOKE_FILE"
-# Under set -euo pipefail, a non-zero exit inside $(...) propagates before
-# status=$? executes, making the FAIL diagnostic unreachable.  Using the
-# if-negation form keeps set -e active and lets us emit the operator message.
-if ! output=$("$HEW" run "$SMOKE_FILE" 2>/dev/null); then
-    echo "FAIL: hew run exited nonzero (expected 0)" >&2
+echo "==> Running: $HEW compile-v05 hello_int.hew (cwd=$WORK_DIR)"
+if ! ( cd "$WORK_DIR" && "$HEW" compile-v05 hello_int.hew ); then
+    echo "FAIL: hew compile-v05 exited nonzero (expected 0)" >&2
     echo "This may be a process-exit SIGABRT — see issue #1606." >&2
     exit 1
 fi
 
-if [[ "$output" != *"hello-release-smoke"* ]]; then
-    echo "FAIL: expected 'hello-release-smoke' in output, got: $output" >&2
+NATIVE_BIN="$WORK_DIR/.tmp/compile-v05-out/hello_int"
+if [[ ! -x "$NATIVE_BIN" ]]; then
+    echo "FAIL: expected native binary at $NATIVE_BIN, not found" >&2
     exit 1
 fi
 
-echo "PASS: release binary ran cleanly (exit 0, output: $output)"
+set +e
+"$NATIVE_BIN"
+actual_exit=$?
+set -e
+
+if (( actual_exit != EXPECTED_EXIT )); then
+    echo "FAIL: native binary exited $actual_exit (expected $EXPECTED_EXIT)" >&2
+    exit 1
+fi
+
+echo "PASS: release binary compiled fixture and produced binary that exited $EXPECTED_EXIT"

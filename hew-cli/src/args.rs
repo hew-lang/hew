@@ -27,6 +27,8 @@ pub struct Cli {
 pub enum Command {
     /// Compile a .hew file to an executable.
     Build(BuildArgs),
+    /// Run the local v0.5 IR ladder and print a pre-MLIR Hew-IR textual proof.
+    CompileV05(CompileV05Args),
     /// Compile and run a .hew file.
     Run(RunArgs),
     /// Build with debug info and launch under gdb/lldb.
@@ -55,6 +57,26 @@ pub enum Command {
     Completions(CompletionsArgs),
     /// Print version info.
     Version,
+}
+
+#[derive(Debug, Args)]
+pub struct CompileV05Args {
+    /// Input .hew file.
+    pub input: PathBuf,
+    /// Directory to write `<name>.ll`, `<name>.o`, `<name>.wasm.o`, and
+    /// `<name>.wasm` artefacts into. Default: `.tmp/compile-v05-out`.
+    #[arg(long = "emit-dir", value_name = "DIR")]
+    pub emit_dir: Option<PathBuf>,
+    /// Emit a textual MIR dump and exit (no LLVM emission).
+    /// Accepts `raw` (the lowered `RawMirFunction`), `checked` (the
+    /// `CheckedMirFunction` after move/init/aliasing checks run), and
+    /// `elab` (the elaborated MIR with drop entries). Useful for
+    /// spot-checking the front-half lowering during development.
+    #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["raw", "checked", "elab"])]
+    pub dump_mir: Option<String>,
+    /// Skip the wasm emit + wasm-ld link step. Native object still emits.
+    #[arg(long = "no-wasm")]
+    pub no_wasm: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +164,7 @@ pub struct BuildArgs {
     pub common: CommonBuildArgs,
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 impl BuildArgs {
     pub fn codegen_mode(&self) -> crate::compile::CodegenMode {
         use crate::compile::CodegenMode;
@@ -216,6 +239,7 @@ pub struct RunArgs {
     pub program_args: Vec<String>,
 }
 
+#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {

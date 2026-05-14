@@ -874,23 +874,20 @@ fn consume_in_both_arms_without_post_join_use_is_accepted() {
 }
 
 #[test]
-fn binding_introduced_only_in_then_arm_is_uninit_after_join() {
-    // `let x = ...` inside the then arm; after the join, x is Uninit
-    // on the else path. The subsequent `let _u = x` must surface
-    // InitialisedBeforeUse.
+fn maybe_consumed_at_join_without_post_join_use_is_accepted() {
+    // `s` is consumed in the then arm, Live in the else arm. At the
+    // join its state is MaybeConsumed. With no post-join use of `s`,
+    // neither UseAfterConsume nor InitialisedBeforeUse should fire.
+    // Pins the `Consumed ⊓ Live = MaybeConsumed` lattice cell
+    // together with the "no diagnostic without a post-join use"
+    // boundary.
     //
-    // Note: this is a structural assertion at the MIR move-checker
-    // level; HIR scoping rules normally hide arm-local bindings from
-    // post-join lookups, so this test exercises a path that real
-    // user programs may not even produce. We pin it because the
-    // four-state lattice's `Uninit ⊓ Live = Uninit` cell exists
-    // precisely for this scenario class. If HIR scoping refuses
-    // to produce the construct, this test becomes a documented
-    // dead arm — the cell remains correct.
-    //
-    // For now, demonstrate the corresponding accept case (binding
-    // declared at function-body scope, read on both arms) which is
-    // unambiguously accepted.
+    // The `Uninit ⊓ Live = Uninit` cell (binding initialised only on
+    // one arm, read after join) is not reachable from Hew source today:
+    // HIR has no assignment statement (`HirStmtKind` is `Let | Expr |
+    // Return`), so a binding declared before an `if` cannot be
+    // conditionally initialised inside an arm. If an assignment surface
+    // is added in a future version, add a companion reject test here.
     let p = pipeline(
         r#"fn main() -> i64 {
             let s = "hello";
@@ -898,9 +895,7 @@ fn binding_introduced_only_in_then_arm_is_uninit_after_join() {
             0
         }"#,
     );
-    // `s` is consumed on then, Live on else → MaybeConsumed at
-    // join. With no post-join use, no diagnostic fires; the
-    // observation is the well-formedness of the program.
+    // `s` is MaybeConsumed at the join; no post-join use → no diagnostic.
     assert!(
         !p.diagnostics.iter().any(|d| matches!(
             &d.kind,

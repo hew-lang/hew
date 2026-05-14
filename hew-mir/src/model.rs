@@ -128,11 +128,19 @@ pub enum Instr {
     IntMul { dest: Place, lhs: Place, rhs: Place },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
-    /// Run the drop ritual for `place`. Cluster 1 emits this for every
-    /// `AffineResource` local at function exit; the inkwell backend treats
-    /// it as a no-op for now (real Drop emission is Cluster 3). The shape
-    /// exists so the emitter's `match` is exhaustive without a wildcard.
-    Drop { place: Place, ty: ResolvedTy },
+    /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
+    /// `drop_fn = Some(name)` calls the `@resource` type's declared
+    /// `close(consuming self)` method; `drop_fn = None` is a trivial drop
+    /// (no side effect — `@linear` types whose move-checker proof is
+    /// elsewhere, or value classes with no implicit close). The inkwell
+    /// backend treats trivial drops as no-ops on the integer spine; real
+    /// emission of the `close` call lands when `@resource` types reach
+    /// the spine subset.
+    Drop {
+        place: Place,
+        ty: ResolvedTy,
+        drop_fn: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -196,14 +204,147 @@ pub enum MirCheck {
     /// (not `UnknownBlocked`). Violation indicates a lowering bug, not
     /// a user error — surface as a hard rejection.
     DecisionMapTotal { offending_sites: Vec<SiteId> },
+    /// A `@linear` (`ValueClass::Linear`) binding is live at an exit
+    /// without being consumed via a declared consuming method. Symmetric
+    /// to `UseAfterConsume`: that variant rejects consume-then-use, this
+    /// one rejects bind-but-never-consume. The payload carries the
+    /// exit site for diagnostic anchoring (which path forgot to commit).
+    MustConsume {
+        binding: BindingId,
+        name: String,
+        exit_site: SiteId,
+        ty: ResolvedTy,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElaboratedMirFunction {
     pub name: String,
     pub return_ty: ResolvedTy,
+    /// Checker-authority statement stream, retained for compatibility with the
+    /// existing `--dump-mir elab` consumers and for snapshot continuity.
+    /// Drop-elaboration's authoritative output is `blocks` + `drop_plans` —
+    /// once the inkwell emitter consumes those directly, `statements` becomes
+    /// pure documentation (council R-C3.1 — staged retirement).
     pub statements: Vec<MirStatement>,
     pub decisions: Vec<DecisionFact>,
+    /// Basic-block CFG: drop-elaboration's structural output. One entry per
+    /// `BasicBlock` (id-indexed via the block's own `id` field, matching
+    /// `RawMirFunction::blocks`). Spine-only functions (no `@resource` /
+    /// `@linear` locals) carry a single `Normal` block.
+    pub blocks: Vec<ElabBlock>,
+    /// Per-`ExitPath` drop plan. One entry per terminator-bearing exit edge
+    /// across the function. Spine-only functions carry a single
+    /// `ExitPath::Return` with an empty `DropPlan`.
+    pub drop_plans: Vec<(ExitPath, DropPlan)>,
+    /// Generator state schema. Declared but not constructed by Cluster 3.
+    /// `None` on every non-generator function; the field exists so
+    /// Cluster 4's generator state-machine lowering has a slot to fill.
+    // PROBE-AMBIGUITY: Cluster 4 fills
+    pub coroutine: Option<CoroutineSchema>,
+}
+
+/// A basic-block kind. `Normal` blocks carry user-level statements;
+/// `Cleanup` blocks run drop plans on panic / cancel / outer-trap edges
+/// per HEW-SPEC §3.7.8.4. Cleanup blocks are reachable only via
+/// `ExitPath::Panic` / `ExitPath::Cancel` predecessors and always
+/// flow to a strictly outer cleanup block or to function-trap; this is
+/// enforced structurally — cleanup blocks form a tree, never a cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlockKind {
+    Normal,
+    Cleanup,
+}
+
+/// Elaborated basic block. Carries the same `id` as the corresponding
+/// `RawMirFunction::blocks[id]` for normal blocks; cleanup blocks use
+/// fresh ids past the highest normal-block id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElabBlock {
+    pub id: u32,
+    pub kind: BlockKind,
+    /// Drop instructions to fire on entry to this block. Empty for normal
+    /// blocks; populated in LIFO declaration order for cleanup blocks.
+    pub drops: Vec<ElabDrop>,
+    /// Successor block to jump to after firing this block's drops. `None`
+    /// indicates the function terminates here (trap / return-from-cleanup).
+    pub successor: Option<u32>,
+}
+
+/// Exit-path discriminator. One value per outgoing edge a function's
+/// CFG can take. Mirrors `Terminator::*` plus the new `Cancel` variant
+/// (scope-structural cancellation propagation in `fork{}` blocks per
+/// HEW-SPEC §3.7.8.4 "lexical task cancellation"). Generator suspension
+/// (`Yield`) and actor send (`Send`) are declared so the elaboration pass
+/// is exhaustive; the integer spine never constructs them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ExitPath {
+    Return {
+        block: u32,
+    },
+    Goto {
+        block: u32,
+        target: u32,
+    },
+    Branch {
+        block: u32,
+        then_target: u32,
+        else_target: u32,
+    },
+    Call {
+        block: u32,
+        callee: String,
+        next: u32,
+    },
+    Panic {
+        block: u32,
+    },
+    Cancel {
+        block: u32,
+    },
+    Yield {
+        block: u32,
+        next: u32,
+    },
+    Send {
+        block: u32,
+        actor: String,
+        next: u32,
+    },
+}
+
+/// Ordered drop sequence for a single exit. Drops fire in
+/// reverse-declaration (LIFO) order: the latest-bound `@resource`
+/// drops first.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DropPlan {
+    pub drops: Vec<ElabDrop>,
+}
+
+/// A single elaborated drop op. Either a `@resource` drop calling the
+/// type's `close` method (`drop_fn = Some(name)`), or a trivial drop
+/// for a value class with no side effect (`drop_fn = None`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElabDrop {
+    pub place: Place,
+    pub ty: ResolvedTy,
+    pub drop_fn: Option<String>,
+}
+
+/// Generator state-machine schema. Declared scaffold; constructed in
+/// Cluster 4.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoroutineSchema {
+    /// The single resume-state type carrying the generator's locals
+    /// across yield points.
+    // PROBE-AMBIGUITY: Cluster 4 fills
+    pub state: ResolvedTy,
+    /// Every yield site in the generator body, in source order.
+    // PROBE-AMBIGUITY: Cluster 4 fills
+    pub yield_points: Vec<SiteId>,
+    /// Places captured into the state record.
+    // PROBE-AMBIGUITY: Cluster 4 fills
+    pub captured: Vec<Place>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -261,6 +402,15 @@ pub enum MirDiagnosticKind {
     /// `Strategy::UnknownBlocked`. Surfaced from
     /// `MirCheck::DecisionMapTotal`.
     DecisionMapTotal { offending_sites: Vec<SiteId> },
+    /// A `@linear` binding reached an exit without being consumed via
+    /// a declared consuming method. Symmetric to `UseAfterConsume`.
+    /// Surfaced from `MirCheck::MustConsume`.
+    MustConsume {
+        binding: BindingId,
+        name: String,
+        exit_site: SiteId,
+        ty: ResolvedTy,
+    },
     /// D10: a named user type had no known `ValueClass` at the MIR boundary.
     /// Only builtin types are supported in slice 1.
     UnknownType { name: String },

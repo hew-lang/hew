@@ -127,9 +127,9 @@ runs:
         set -euo pipefail
         prefix="${{ steps.layout.outputs.prefix }}"
         # llvm-sys-221 honours LLVM_SYS_221_PREFIX; inkwell follows.
+        # Intentionally do NOT set LLVM_PREFIX or LLVM_DIR / MLIR_DIR — the
+        # hew-cli build.rs treats any of those as a request to build the
+        # embedded C++ codegen via cmake, which is skipped during the
+        # v0.5 spine pass.
         echo "LLVM_SYS_221_PREFIX=${prefix}" >> "$GITHUB_ENV"
-        # Generic prefix var for downstream cmake/codegen consumers that prefer
-        # one knob (LLVM_DIR / MLIR_DIR are still passed explicitly in cmake
-        # configure steps so the binding stays obvious at the call site).
-        echo "LLVM_PREFIX=${prefix}" >> "$GITHUB_ENV"
         echo "${prefix}/bin" >> "$GITHUB_PATH"

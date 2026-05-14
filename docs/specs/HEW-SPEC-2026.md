@@ -3644,114 +3644,135 @@ These constructors currently return the wire type directly rather than
 
 ## 8. Compilation model
 
-The Rust frontend processes source code into a typed AST, serializes it to MessagePack, and passes it to Hew's embedded C++ codegen for MLIR generation, LLVM lowering, and native code emission. The Rust frontend is also compiled to WASM (via `hew-wasm/`) for in-browser diagnostics. Native WASM compilation is supported via `hew build --target=wasm32-wasi`, which compiles `hew-runtime` for `wasm32-wasip1` (thread-dependent modules gated out) and links with WASI libc. Depending on the feature, the WASM checker passes supported code through, emits warnings for semantic differences, or rejects unsupported operations; see §8.0 and the capability matrix for the full tier contract.
+Edition 2026 specifies the language. This section describes the
+compiler's structural commitments at the level a language specification
+needs to make — the names and responsibilities of the IR stages — and
+leaves the implementation details (file paths, crate boundaries, dump
+formats) to the compiler's own documentation.
 
-### 8.0 WASM32 target capabilities
+### 8.1 The IR ladder
 
-> **Authoritative reference:** [`docs/wasm-capability-matrix.md`](../wasm-capability-matrix.md)
-> contains the full Tier 1 / Tier 2 feature disposition table, including
-> compiler enforcement details and the WASM-TODO backlog.
-
-There are two WASM target tiers:
-
-- **Tier 1** (`hew-wasm`, `wasm32-unknown-unknown` via `wasm-bindgen`): analysis-only browser surface — lexer, parser, and type checker only.  Powers the online playground and editor tooling.
-- **Tier 2** (`hew-runtime`, `wasm32-wasip1`): WASI execution runtime with a single-threaded cooperative actor scheduler.
-
-Tier 1 is intentionally **browser analysis-only**: it does not execute Hew programs, and only exposes diagnostics/editor services.
-
-Tier 2 uses checker disposition categories instead of a single "supported vs unsupported" split:
-
-- **Pass** — the surface works on WASI as implemented today (for example, basic actors such as `spawn` / `send` / `ask`).
-- **Warn** — the surface exists on WASI but with important cooperative-semantics differences (for example, `sleep_ms` / `sleep`).
-- **Error** — the checker rejects the surface at compile time on WASI because Hew does not yet provide a coherent runtime path there (for example, structured concurrency scopes).
-- **WASM-TODO** — the surface remains a documented backlog item and is not yet checker-gated with a dedicated Pass / Warn / Error disposition (for example, raw host WASI socket capability).
-
-For the authoritative full feature table — including the current bounded non-blocking channel subset, timer warnings, compile-time networking rejects, and the remaining WASM-TODO backlog — see [`docs/wasm-capability-matrix.md`](../wasm-capability-matrix.md).
-
-### 8.1 Pipeline Overview
-
-> **Visual diagrams:** See [`docs/diagrams.md`](../diagrams.md) for Mermaid sequence diagrams and flowcharts of the compilation pipeline and MLIR lowering stages.
+A Hew compiler accepts source files and produces native object code and
+WASM modules. Between source and machine code, the compiler maintains
+the following named intermediate representations:
 
 ```
-Source (.hew) → hew (Rust: lex/parse/typecheck) → MessagePack AST → embedded codegen (C++: MLIRGen → MLIR → LLVM IR → native)
+Source (.hew)
+    │  lex + parse
+    ▼
+AST                       — concrete syntax, no name resolution
+    │  resolve
+    ▼
+Resolved HIR              — names, scopes, capabilities resolved;
+    │  type check          stable BindingId / SiteId carriage
+    ▼
+THIR                      — every expression carries its concrete type;
+    │  lower               monomorphisation and trait-dispatch done
+    ▼
+Raw MIR                   — real CFG, real Places, real terminators
+    │  check
+    ▼
+Checked MIR               — fail-closed boundary: use-after-consume,
+    │  elaborate           aliasing, init/use-after-move,
+    ▼                       generator-borrow-across-yield,
+Elaborated MIR              actor-send escape analysis
+    │  emit                 (drops elaborated into the CFG)
+    ▼
+LLVM IR                   — emitted via inkwell; LLVM's own passes,
+    │  llvm                 coroutine intrinsics, and target machine
+    ▼
+Native object / WASM
 ```
 
-Each stage is invocable independently via compiler flags (`--no-typecheck`, `--emit-mlir`, `--emit-llvm`, `--emit-obj`).
+**What each stage guarantees:**
 
-### 8.2 Lexical Analysis
+- **AST.** Concrete syntactic structure. No name resolution; no type
+  information. Comments and whitespace stripped.
+- **Resolved HIR.** Every name binding has a stable identifier; every
+  use site resolves to a binding or to a `NameNotFound` diagnostic.
+  Capabilities (Send, Frozen, Copy) attach here. Module structure is
+  fully resolved.
+- **THIR.** Every expression carries its concrete `Ty`. No `Ty::Var`
+  survives this stage — the boundary is fail-closed. Generic functions
+  are monomorphised at use sites; trait dispatch resolves to concrete
+  implementations; closure signatures are explicit; struct
+  initialiser type arguments are carried.
+- **Raw MIR.** The function body is a control-flow graph of basic
+  blocks with real terminators (`Goto`, `Branch`, `Return`, `Drop`,
+  `Call`, `Unreachable`). Local variables are `Place`s. The
+  `return;`-inside-an-`if` case has a CFG terminator, not a soft
+  flag. Generator handles are typed `Place`s, not name-registry
+  entries.
+- **Checked MIR.** The semantic fail-closed boundary. Every program
+  that survives this stage is guaranteed to be free of:
+  - Use after consume (affine value moved and then used).
+  - Aliasing violations (read-shared XOR mutate-unique).
+  - Use after move.
+  - Generator borrow across yield.
+  - Actor-send escape (a value captured into an outgoing message that
+    aliases live state in the sending actor).
+  `@linear` must-consume obligations are discharged here; unconsumed
+  `@linear` values surface as `MustConsumeAtScopeExit`.
+- **Elaborated MIR.** Drops are first-class basic blocks in the CFG.
+  Cleanup edges (panic, cancellation) are real edges. Every CFG exit
+  runs the right destructor sequence in the right order. `@resource`
+  types' implicit `close()` calls are emitted here.
+- **LLVM IR.** Produced via the `inkwell` Rust binding to LLVM. LLVM's
+  coroutine intrinsics handle generator state machines; LLVM's target
+  machine handles native and WASM emission; LLVM's pass manager
+  handles standard optimisations.
 
-The lexer (`hew-lexer/src/lib.rs`) is implemented in Rust using the logos crate. It converts source text into a token stream. Tokens include keywords, identifiers, numeric and string literals (including raw and interpolated strings), operators, delimiters, and comments. Whitespace, newlines, and comments are filtered before parsing.
+The compiler may collapse adjacent stages into a single in-memory
+representation as an implementation detail, but the **responsibilities**
+above are structural: a Hew compiler that skips a checked-MIR pass is
+not a conforming compiler.
 
-**Integer literal bases:**
+### 8.2 WASM target capabilities
 
-Integer literals support four bases with optional `_` digit separators:
+The authoritative WASM capability matrix lives in
+[`docs/wasm-capability-matrix.md`](../wasm-capability-matrix.md). The
+specification commits to two target tiers:
 
-| Prefix      | Base         | Example                 | Value        |
-| ----------- | ------------ | ----------------------- | ------------ |
-| _(none)_    | 10 (decimal) | `255`, `1_000_000`      | 255, 1000000 |
-| `0x` / `0X` | 16 (hex)     | `0xFF`, `0x1A_2B`       | 255, 6699    |
-| `0o` / `0O` | 8 (octal)    | `0o377`, `0o755`        | 255, 493     |
-| `0b` / `0B` | 2 (binary)   | `0b1111_1111`, `0b1010` | 255, 10      |
+- **Tier 1** (`wasm32-unknown-unknown` via `wasm-bindgen`):
+  analysis-only browser surface — lexer, parser, and type checker
+  only. Powers the online playground and editor tooling. Does not
+  execute Hew programs.
+- **Tier 2** (`wasm32-wasip1`): WASI execution runtime with a
+  single-threaded cooperative actor scheduler.
 
-All bases produce the same `i64` value at parse time; the base is purely a source-level convenience.
+Tier 2 surfaces are classified per feature as **Pass** (works as
+implemented), **Warn** (works with documented semantic differences),
+**Error** (compile-time rejected for lack of a coherent runtime path),
+or **WASM-TODO** (backlog item not yet checker-gated). The capability
+matrix is the source of truth for which feature falls into which bucket.
 
-### 8.3 Parsing
+### 8.3 Linking
 
-The parser (`hew-parser/src/parser.rs`) is implemented in Rust as a recursive-descent parser with Pratt precedence for expressions. It produces a typed AST (`hew-parser/src/ast.rs`) representing the full program structure: functions, actors, structs, enums, extern blocks, type aliases, and top-level expressions. The AST is serialized to MessagePack and passed to the embedded C++ codegen backend.
+The compiler links emitted object code with `libhew_runtime` (the
+runtime library), platform threading (e.g. `pthread`), and the math
+library `-lm`, producing a standalone native executable. WASM
+linking uses LLVM's WASM linker and a WASI libc; thread-dependent
+runtime modules are gated out for Tier 2.
 
-### 8.4 Type Checking
+### 8.4 Runtime contract
 
-Type checking is an optional pass enabled by default. The `TypeChecker` (`hew-types/src/`) walks the AST and produces a `TypeCheckOutput` containing inferred types, resolved names, and diagnostic errors. Type errors are fatal by default. The `--no-typecheck` flag skips the pass entirely.
+`libhew_runtime` exports a stable C ABI consumed by every compiled Hew
+program. It provides:
 
-When type check output is available, it is provided to the MLIR generation stage for type-informed code generation.
+- An M:N work-stealing scheduler.
+- Actor lifecycle (spawn, dispatch, stop, destroy) with the dispatch
+  signature documented at §9.1.1.
+- Bounded mailboxes with configurable overflow policies.
+- Supervisor trees with restart strategies (§5).
+- Built-in collection runtimes for `String`, `Vec<T>`, and
+  `HashMap<String, V>`.
+- Timer wheels and platform I/O integration (`epoll` / `kqueue` /
+  `io_uring`).
 
-### 8.5 MLIR Generation
-
-`MLIRGen` (`hew-codegen/src/mlir/MLIRGen.cpp`) receives the MessagePack-encoded AST from the Rust frontend (deserialized by `msgpack_reader.cpp` inside the embedded backend) and translates it into MLIR using a combination of the Hew dialect and standard MLIR dialects.
-
-**Hew dialect operations** (`hew.*`):
-
-| Category | Operations                                                                                | Purpose                                      |
-| -------- | ----------------------------------------------------------------------------------------- | -------------------------------------------- |
-| Values   | `hew.constant`, `hew.global_string`, `hew.cast`                                           | Literals, string constants, type conversions |
-| Structs  | `hew.struct_init`, `hew.field_get`, `hew.field_set`                                       | Struct construction and field access         |
-| Actors   | `hew.actor_spawn`, `hew.actor_send`, `hew.actor_ask`, `hew.actor_stop`, `hew.actor_close` | Actor lifecycle and messaging                |
-| I/O      | `hew.print`                                                                               | Polymorphic print                            |
-
-**Standard dialects** reused: `func` (function declarations/calls), `arith` (integer/float arithmetic), `scf` (structured control flow: if, for, while), `memref` (stack allocation for mutable variables).
-
-Enum construction uses LLVM dialect operations (`llvm.mlir.undef`, `llvm.insertvalue`) directly — no dedicated Hew dialect op is needed.
-
-### 8.6 Code Generation
-
-The codegen pipeline (`hew-codegen/src/codegen.cpp`) performs progressive lowering through multiple MLIR conversion passes:
-
-1. **Hew → Standard/LLVM**: Actor ops expand to runtime function calls; struct ops become `llvm.insertvalue`/`llvm.extractvalue`; `hew.print` lowers to type-specific print calls.
-2. **SCF → CF**: `scf.if`/`scf.for`/`scf.while` lower to `cf.br`/`cf.cond_br` basic blocks.
-3. **Standard → LLVM**: `func.*` → `llvm.func`/`llvm.call`; `arith.*` → LLVM arithmetic; `memref.alloca` → `llvm.alloca`.
-4. **LLVM dialect → LLVM IR**: Translation via `mlir::translateModuleToLLVMIR`.
-5. **LLVM IR → Object**: LLVM machine code generation for the host target triple.
-
-### 8.7 Linking
-
-The compiler invokes the system C compiler (`cc`) to link the emitted object file with:
-
-- `libhew_runtime.a` — the Hew runtime library from `hew-runtime/` (located automatically relative to the compiler binary, or via `--runtime-lib-dir`)
-- `-lpthread` — POSIX threads (required by the runtime scheduler)
-- `-lm` — math library
-
-The result is a standalone native executable.
-
-### 8.8 Runtime
-
-`libhew_runtime` is a pure Rust staticlib (`hew-runtime/`) exporting C ABI functions via `#[no_mangle] extern "C"` linked into every compiled Hew program. It provides:
-
-- **Scheduler**: M:N work-stealing scheduler with per-worker Chase-Lev deques
-- **Actors**: Lifecycle management (spawn, dispatch, stop, destroy) with the dispatch signature `void (*dispatch)(void* state, int msg_type, void* data, size_t data_size)` (see §9.1.1)
-- **Mailboxes**: Bounded message queues with configurable overflow policies
-- **Supervision**: Supervisor trees for fault-tolerant actor hierarchies
-- **Collections**: String, Vec, HashMap
-- **I/O**: Timer wheels and I/O integration (epoll/kqueue/io_uring)
+The runtime ABI is committed to within a compiler major version. Edition
+2026 does not specify the ABI's exact symbol set, but a compiler that
+emits code calling a runtime symbol must link against a `libhew_runtime`
+that provides it.
 
 ---
 

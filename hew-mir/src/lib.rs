@@ -5,6 +5,7 @@
 //! with full CFG, borrow, and drop implementations without changing the
 //! stage boundaries.
 
+pub mod dataflow;
 pub mod lower;
 pub mod model;
 

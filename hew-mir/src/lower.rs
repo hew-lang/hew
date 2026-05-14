@@ -7,6 +7,7 @@ use hew_hir::{
 use hew_parser::ast::BinaryOp;
 use hew_types::ResolvedTy;
 
+use crate::dataflow;
 use crate::model::{
     BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropPlan, ElabBlock,
     ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck, MirDiagnostic,
@@ -40,104 +41,12 @@ use crate::model::{
 /// LESSONS: boundary-fail-closed (don't assume the substrate is
 /// path-sensitive when the construction surface is single-block).
 fn check_function(builder: &Builder, blocks: &[BasicBlock], _func: &HirFn) -> Vec<MirCheck> {
-    let mut checks = Vec::new();
+    let mut checks = dataflow::check_blocks(blocks, &builder.type_classes);
 
-    // Pass 1: forward-scan the checker-authority statement stream.
-    // Track which bindings have been initialised (`Bind`) and which
-    // have been consumed (`Use` with `IntentKind::Consume` on a
-    // non-`BitCopy` type). A `Use` of an uninitialised binding is
-    // `InitialisedBeforeUse`; a `Use` of a consumed binding is
-    // `UseAfterConsume`. A `Linear` binding live at `Return` without
-    // being consumed is `MustConsume` — symmetric to `UseAfterConsume`,
-    // closing the move-checker's @linear-side proof obligation.
-    //
-    // LOAD-BEARING INVARIANT — Slice 1 preserves flat semantics. The
-    // forward-scan over `blocks[*].statements` (concatenated in
-    // construction order) is correct *only* while MIR remains
-    // structurally CFG-flat. The cursor refactor here does NOT change
-    // the algorithm; Slice 2 introduces real CFG splits, after which
-    // Slice 3 replaces this scan with per-block dataflow + worklist
-    // fixpoint over the four-state lattice.
-    let mut initialised: HashSet<BindingId> = HashSet::new();
-    let mut consumed: HashMap<BindingId, hew_hir::SiteId> = HashMap::new();
-    // Linear binding ledger: name + type + the site at which the
-    // binding was introduced. Cleared when the binding is consumed.
-    let mut linear_live: HashMap<BindingId, (String, ResolvedTy)> = HashMap::new();
-    let flat: Vec<&MirStatement> = blocks.iter().flat_map(|b| b.statements.iter()).collect();
-    for statement in flat {
-        match statement {
-            MirStatement::Bind {
-                binding, name, ty, ..
-            } => {
-                initialised.insert(*binding);
-                consumed.remove(binding);
-                if ValueClass::of_ty(ty, &builder.type_classes) == ValueClass::Linear {
-                    linear_live.insert(*binding, (name.clone(), ty.clone()));
-                }
-            }
-            MirStatement::Use {
-                binding,
-                name,
-                site,
-                ty,
-                intent,
-            } => {
-                if !initialised.contains(binding) {
-                    checks.push(MirCheck::InitialisedBeforeUse {
-                        binding: *binding,
-                        name: name.clone(),
-                        use_site: *site,
-                    });
-                }
-                if let Some(consumed_at) = consumed.get(binding) {
-                    checks.push(MirCheck::UseAfterConsume {
-                        binding: *binding,
-                        name: name.clone(),
-                        consumed_at: *consumed_at,
-                        used_at: *site,
-                    });
-                }
-                if *intent == IntentKind::Consume
-                    && ValueClass::of_ty(ty, &builder.type_classes) != ValueClass::BitCopy
-                {
-                    consumed.insert(*binding, *site);
-                    linear_live.remove(binding);
-                }
-            }
-            MirStatement::Return { site, .. } => {
-                // Any `Linear` binding still live at a Return is an
-                // unconsumed `@linear` value reaching an exit. Emit
-                // `MustConsume` for each, anchored at the Return site
-                // (or `SiteId::default` if the Return synthesised no
-                // site — only happens on unit-returning trailing-stmt
-                // bodies with no tail expression).
-                // Sentinel SiteId(0) for unit-return tail-less bodies
-                // (no Return-site is constructed by the builder). The
-                // real exit-site projection lands when CFG construction
-                // surfaces in Cluster 4+.
-                let exit_site = site.unwrap_or(hew_hir::SiteId(0));
-                // Deterministic order: walk in BindingId order so
-                // diagnostics are stable across runs.
-                let mut ids: Vec<_> = linear_live.keys().copied().collect();
-                ids.sort();
-                for id in ids {
-                    if let Some((name, ty)) = linear_live.get(&id) {
-                        checks.push(MirCheck::MustConsume {
-                            binding: id,
-                            name: name.clone(),
-                            exit_site,
-                            ty: ty.clone(),
-                        });
-                    }
-                }
-            }
-            MirStatement::Evaluate { .. } | MirStatement::Drop { .. } => {}
-        }
-    }
-
-    // Pass 2: DecisionMapTotal. Every `DecisionFact` on this function
-    // must carry a concrete `Strategy` — `Strategy::UnknownBlocked` is
-    // a lowering escape valve that must never reach the emitter.
+    // DecisionMapTotal. Every `DecisionFact` on this function must
+    // carry a concrete `Strategy` — `Strategy::UnknownBlocked` is a
+    // lowering escape valve that must never reach the emitter. This
+    // pass is independent of the per-block dataflow.
     let offending: Vec<_> = builder
         .decisions
         .iter()

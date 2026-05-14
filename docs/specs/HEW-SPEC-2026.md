@@ -2867,44 +2867,81 @@ phases without changing the surface keyword.
 
 ### 4.11 Select and Join Expressions
 
-Hew provides two built-in concurrency expressions for coordinating multiple asynchronous operations. These are expressions — they produce values — and integrate with Hew's structured concurrency and actor models.
+Hew provides two built-in concurrency expressions for coordinating
+multiple asynchronous operations. They are expressions — they produce
+values — and integrate with structured concurrency and the actor model.
 
 #### 4.11.1 `select` Expression
 
-The `select` expression waits for the first of several actor request/reply operations to complete, then evaluates the corresponding arm. Remaining operations are cancelled.
+`select { }` is a **sealed compiler-known construct** in edition 2026. It
+waits for the first of four named operation forms to complete, evaluates
+the corresponding arm, and cancels the losing arms. There is no user-
+implementable `Awaitable` trait — the four forms are exhaustive.
 
-**Syntax:**
+**Canonical syntax:**
 
 ```hew
-let result = select {
-    count from counter.get_count() => count * 2,
-    data from worker.get_data() => data.len,
-    after 1.seconds => -1,       // timeout arm
-};
+select {
+    msg     from next(events)          => handle(msg),    // Stream<T>::next
+    reply   from ask worker.call(x)    => use(reply),     // actor ask
+    done    from await user_task       => use(done),      // Task<T>
+    after 5.seconds                    => abort(),        // timer
+}
 ```
+
+**The four forms (closed set):**
+
+| Form                       | Binds                  | Source type | Loser-arm cleanup                                                                                                                                       |
+| -------------------------- | ---------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<id> from next(<stream>)` | `id: T`                | `Stream<T>` | Pending read is cancelled; the stream itself is **not consumed**. The stream binding remains usable in the enclosing scope.                              |
+| `<id> from ask <call>`     | `id: <reply-type>`     | actor ask   | The ask is withdrawn from the target actor's mailbox if not yet dispatched; if dispatched, the reply (when it arrives) is discarded.                     |
+| `<id> from await <task>`   | `id: T`                | `Task<T>`   | The task is cancelled with `TaskError::Cancelled`. The cancellation is observed at the task's next safepoint (§4.5).                                     |
+| `after <duration>`         | (no binding)           | timer       | The timer is cancelled. No effect propagates.                                                                                                            |
 
 **Semantics:**
 
-- Each arm starts an actor request/reply operation.
-- The first operation to complete wins; its binding is made available to the `=>` expression.
-- All other operations are cancelled cooperatively.
-- The `from` keyword binds the result of the operation to the identifier.
-- An `after` arm provides a timeout — if no operation completes within the given duration, the timeout arm evaluates.
-- All arm result expressions must have the same type `T`. The `select` expression has type `T`.
-- Each non-timeout source must be an actor receive handler call with a return type. An explicit `await` is accepted for backward compatibility but is redundant inside `select`.
+1. **Exhaustive arm set.** Each arm's source must be one of the four
+   forms above. Anything else is `SelectArmInvalid` at parse or type-
+   check time.
+2. **First-completion wins.** The first arm whose source completes (or
+   whose timer fires) wins. The bound identifier is in scope for that
+   arm's `=>` expression.
+3. **Loser cleanup is per-form.** The runtime applies the cleanup rule
+   from the table above to every non-winning arm before the `select`
+   expression returns. Cleanup runs synchronously from the `select`
+   site's perspective; observable effects on other actors are
+   asynchronous.
+4. **Same-type arms.** All arm result expressions must have the same
+   type `T`. The `select` expression has type `T`. There is no `T =
+   Result<U, E>` flattening — if arms return `Result`, the `select`
+   returns `Result`.
+5. **Cancellation propagates outward.** If the enclosing `fork {}` is
+   cancelled while a `select` is pending, every arm runs its loser-
+   cleanup rule and the cancellation propagates through the `select`
+   site as if it were any other safepoint.
 
-**Type rules:**
+**Type rule:**
 
 ```
 select {
-    p1 from actor1.compute() => r1,
-    p2 from actor2.compute() => r2,
-    after d => r3,
+    p1 from next(s1)         => r1,         where s1: Stream<A>, r1: T
+    p2 from ask act.call(x)  => r2,         where act.call(x): B, r2: T
+    p3 from await t          => r3,         where t: Task<C>, r3: T
+    after d                  => r4,         where d: Duration, r4: T
 } : T
-where actor1.compute(): A, actor2.compute(): B, r1: T, r2: T, r3: T
 ```
 
-The bound identifiers (`p1`, `p2`) have types `A`, `B` respectively within their arm expressions. The overall `select` has type `T` — the common type of all arm results.
+The bound identifiers (`p1: A`, `p2: B`, `p3: C`) are in scope only
+inside their own `=>` expressions.
+
+**Why sealed?**
+
+A user-implementable `Awaitable` trait would have to specify coherence
+rules, cancellation hooks, fairness rules, pinning constraints, and a
+loser-cleanup protocol — all unsettled in edition 2026. The four forms
+above are the workloads `select` exists to serve. A user `Awaitable`
+surface may land in a future edition once trait lowering and generator
+cancellation are proven; see HEW-FUTURE.md.
 
 #### 4.11.2 `join` Expression
 

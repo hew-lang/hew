@@ -1422,23 +1422,75 @@ must be acknowledged, GPU command buffers — `@linear`.
 
 ##### 3.7.8.4 Interaction with cancellation and supervision
 
-A `@resource` value owned by a child task whose enclosing `fork {}` is
-cancelled has its drop run on the unwinding edge of the CFG; the implicit
-`close()` discards the error as usual.
+`@resource` and `@linear` differ in how their obligations interact with
+each of the four teardown paths the language exposes. The rules below
+are normative; the move-checker (for `@linear`) and drop elaboration
+(for `@resource`) enforce them at the cited stage.
 
-A `@linear` value in the same situation is a compile-time problem the
-checker reports at the cancellation site: the value's consuming method
-must appear on every reachable exit path including the cancellation
-unwind. In practice, `@linear` values are typically allocated inside a
-function whose error paths consume them explicitly, so the diagnostic
-fires at definition time rather than at cancellation propagation time.
+**Path 1 — Lexical task cancellation.** A `fork {}` child is cancelled
+at a safepoint (§4.5) while holding the value:
 
-When an actor with a `@resource` field is supervised through a restart,
-the runtime drops the actor's heap, which runs each `@resource`'s
-implicit close. A `@linear` field on an actor is admitted only if the
-actor's terminating `receive fn` (its draining handler, supervised
-shutdown handler, or its `on_stop` body) consumes it. The move-checker
-verifies this at actor-declaration time.
+- `@resource`: implicit `close()` runs on the cancellation-unwind edge
+  of the CFG, in reverse construction order. The result is discarded as
+  with any other implicit drop. The cancellation continues to propagate.
+- `@linear`: the consuming method must appear on every reachable exit
+  path including the cancellation-unwind edge. The move-checker reports
+  the missing consume at the cancellation site (in practice, at
+  definition time of the surrounding function), so the diagnostic fires
+  before the program ever runs. There is no "cancellation forgives the
+  obligation" rule.
+
+**Path 2 — Graceful actor drain.** The actor's supervisor or
+`actor.shutdown()` call runs the actor's terminating handler (`on_stop`,
+or the supervised shutdown handler):
+
+- `@resource` fields: each field's implicit `close()` runs in
+  declaration order after the terminating handler returns. The handler
+  may also close them explicitly via `f.close()?` to surface errors; an
+  already-closed `@resource` is a use-after-consume diagnostic on any
+  subsequent reference.
+- `@linear` fields: the move-checker requires that every reachable exit
+  path of the terminating handler consume each `@linear` field via one
+  of its declared consuming methods. The check runs at actor-declaration
+  time; an actor whose declared terminating handler cannot statically
+  consume every `@linear` field is a compile error.
+
+**Path 3 — Supervised actor crash (handler trap that bypasses the
+terminating handler).** A trap raised by any handler restarts the
+actor under the supervisor's policy. The terminating handler is *not*
+guaranteed to run on this path; only heap teardown is:
+
+- `@resource` fields: implicit `close()` runs as part of heap teardown
+  during the restart. Errors are discarded per the `@resource` contract.
+- `@linear` fields: a crash bypasses the consume path the move-checker
+  relied on in Path 2. Edition 2026 resolves this conservatively: a
+  `@linear` field is admitted on an actor only when the field's type
+  *also* satisfies `@resource` semantics, so heap teardown invokes the
+  implicit drop on the crash path. A bare `@linear` field whose consume
+  path can be bypassed by a supervised restart is a compile error at
+  actor-declaration time. A future edition may relax this with an
+  explicit consuming-handler attribute that the runtime guarantees to
+  invoke on crash (see HEW-FUTURE.md §1.7).
+
+**Path 4 — Outer trap propagation.** A trap unwinds through stack
+frames holding the value (distinct from cooperative cancellation,
+which respects safepoints):
+
+- `@resource`: implicit `close()` runs best-effort on the unwind edge;
+  drop elaboration places the call on the trap-cleanup path the same
+  way it places it on the normal cleanup path. Trap unwind continues.
+- `@linear`: the consume obligation cannot be satisfied on a trap path
+  because a trap is, by definition, unrecoverable. The move-checker
+  does not require `@linear` consume on trap-only edges; instead, the
+  value's storage is reclaimed by the runtime without invoking any
+  consuming method. A `@linear` type whose author needs trap-safe
+  cleanup must additionally satisfy `@resource` so its implicit close
+  runs on the trap edge.
+
+These four paths are the only teardown paths edition 2026 commits to.
+Any new teardown surface added by a future edition (for example,
+checkpoint snapshots, hot-swap upgrades) must extend this table before
+it is admitted.
 
 ---
 

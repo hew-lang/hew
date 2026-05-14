@@ -98,6 +98,26 @@ with the appropriate synchronisation primitive. Reversed 2026-05-09.
 Concurrent unsynchronised mutable bindings are an error in edition 2026;
 the diagnostic includes a fix-it pointing at the right wrapper.
 
+### 1.7 On-crash consuming-handler attribute for `@linear` actor fields
+
+**[Target: v0.7+]**
+
+Edition 2026 admits a `@linear` field on an actor only when the field
+type also satisfies `@resource` semantics, so heap teardown drops it on
+the supervised-crash path (HEW-SPEC-2026 §3.7.8.4, Path 3). A bare
+`@linear` field whose consume can be bypassed by a crash is a compile
+error today.
+
+A future edition may relax this by introducing an opt-in attribute —
+sketched as `#[on_crash = method]` on the field — that declares a
+runtime-invoked consuming handler the supervisor runs *before* heap
+teardown on the crash path. The handler's signature, the supervisor's
+delivery guarantee, and the diagnostic that fires when the actor's
+declared restart classification cannot honour the attribute are
+unsettled and need design work alongside the broader supervision-extras
+surface (§1.4). Defer until a real workload demands a `@linear` actor
+field that is neither escalation-only nor `@resource`-backed.
+
 ---
 
 ## 2. Type-system surfaces deferred from edition 2026

@@ -589,19 +589,19 @@ fn lower_terminator<'ctx>(
             ));
         }
         Terminator::Yield { .. } => {
-            // Generator lowering is Cluster 4 work. The variant is
-            // declared so Cluster 2's borrow-liveness check has a
-            // suspension point to look for; no v0.5 spine constructs it.
+            // The variant is declared so Checked MIR's borrow-liveness
+            // check has a suspension point to look for; the v0.5
+            // integer spine never constructs it. Generator lowering
+            // arrives with the construction surface in a later release.
             return Err(CodegenError::Unsupported(
-                "Terminator::Yield — generator lowering is Cluster 4 work",
+                "Terminator::Yield — generator lowering not yet implemented",
             ));
         }
         Terminator::Send { .. } => {
-            // Actor send lowering is Cluster 4 work. Same shape as
-            // Yield: declared for the legality check, no construction
-            // surface in C2's spine.
+            // Same shape as Yield: declared for the legality check, no
+            // construction surface in the v0.5 spine.
             return Err(CodegenError::Unsupported(
-                "Terminator::Send — actor lowering is Cluster 4 work",
+                "Terminator::Send — actor lowering not yet implemented",
             ));
         }
     }

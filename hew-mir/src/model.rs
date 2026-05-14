@@ -4,8 +4,8 @@ use hew_types::ResolvedTy;
 /// Distinguishes shared (read-only, may alias) from mutable (unique,
 /// no-alias) borrows for the aliasing check. The check itself is
 /// declared in `MirCheck::Aliasing` but the spine has no construction
-/// surface for borrows yet — the variant exists so Cluster 4's borrow
-/// lowering doesn't have to retrofit the kind enum.
+/// surface for borrows yet — the variant exists so the borrow
+/// lowering that lands later doesn't have to retrofit the kind enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BorrowKind {
     Shared,
@@ -84,13 +84,14 @@ pub enum Terminator {
     /// Generator suspension: yield `value` to the resumer and continue
     /// at `next` on resume. The presence of this terminator in a
     /// function's CFG is what makes `MirCheck::GeneratorBorrowAcrossYield`
-    /// interesting; Cluster 4 wires the construction surface for it.
+    /// interesting; the v0.5 integer spine never constructs it.
     /// Declared here so the borrow-liveness check has a place to look.
     Yield { value: Place, next: u32 },
     /// Actor message send. The sent value at `value` crosses the
     /// actor boundary; `MirCheck::ActorSendEscape` checks the value's
-    /// transitive references satisfy the `Send` constraint. Cluster 4
-    /// wires the construction surface.
+    /// transitive references satisfy the `Send` constraint. Declared
+    /// here so the escape check has a construction site to look for;
+    /// the v0.5 integer spine never constructs it.
     Send {
         actor: Place,
         value: Place,
@@ -150,11 +151,11 @@ pub struct CheckedMirFunction {
 /// The variants are exhaustive over the v0.5 move/borrow/init/aliasing
 /// surface. Variants whose construction surface doesn't yet exist in
 /// the spine (`Aliasing`, `GeneratorBorrowAcrossYield`,
-/// `ActorSendEscape`) are declared here so Cluster 4 / 5 don't have to
-/// retrofit the enum when they add borrow ops, `Terminator::Yield`,
-/// and actor-send lowering. They cannot be constructed by passes today
-/// because the IR has no surface for them; the passes that target them
-/// are no-ops on the current spine.
+/// `ActorSendEscape`) are declared here so subsequent work that adds
+/// borrow ops, `Terminator::Yield` construction, and actor-send
+/// lowering doesn't have to retrofit the enum. They cannot be
+/// constructed by passes today because the IR has no surface for
+/// them; the passes that target them are no-ops on the current spine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MirCheck {
     /// A binding is used before any initialising `Bind` for it appears
@@ -175,18 +176,20 @@ pub enum MirCheck {
     },
     /// A shared and mutable borrow of the same place are simultaneously
     /// live, violating read-shared XOR mutate-unique. Declared variant;
-    /// no construction surface in C2's spine — Cluster 4's borrow ops
-    /// will populate it.
+    /// no construction surface in the v0.5 integer spine — borrow ops
+    /// will populate it once they land.
     Aliasing {
         conflicting_borrows: Vec<(SiteId, BorrowKind)>,
     },
     /// A borrow is live across a generator yield point. Declared
-    /// variant; `Terminator::Yield` exists for the construction surface
-    /// but Cluster 4 builds the generator-body construction surface.
+    /// variant; `Terminator::Yield` exists as the suspension site
+    /// shape, but the generator-body construction surface that builds
+    /// it isn't in the v0.5 integer spine.
     GeneratorBorrowAcrossYield { place: Place, yield_point: SiteId },
     /// A non-`Send` value escapes across an actor message boundary.
-    /// Declared variant; `Terminator::Send` exists for the construction
-    /// surface but Cluster 4 builds actor lowering.
+    /// Declared variant; `Terminator::Send` exists as the boundary
+    /// shape, but actor lowering that builds it isn't in the v0.5
+    /// integer spine.
     ActorSendEscape { place: Place, send_site: SiteId },
     /// Structural invariant on the lowering: every value-producing
     /// `SiteId` must have a `DecisionFact` with a concrete `Strategy`

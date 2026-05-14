@@ -108,7 +108,7 @@ fn checked_mir_rejects_use_of_uninitialised_binding() {
 
 #[test]
 fn checked_mir_accepts_spine_integer_function() {
-    // The Cluster 1 integer spine must not produce any MirCheck findings —
+    // The v0.5 integer spine must not produce any MirCheck findings —
     // the move-checker is fail-closed only on real legality violations.
     let pipeline = pipeline("fn main() -> i64 { let x = 1 + 2; return x; }");
     for func in &pipeline.checked_mir {

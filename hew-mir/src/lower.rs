@@ -14,13 +14,14 @@ use crate::model::{
 };
 
 /// Run Checked MIR's legality passes over a function's statement
-/// stream. Cluster 2 ships two real passes (use-after-consume,
-/// initialised-before-use); aliasing, generator-borrow-across-yield,
-/// and actor-send-escape variants are declared on `MirCheck` but have
-/// no construction surface yet (no borrow ops in `Instr`, no
-/// `Terminator::Yield` / `Terminator::Send` construction site). The
-/// `MirCheck::DecisionMapTotal` invariant fires if any `DecisionFact`
-/// in this function carries `Strategy::UnknownBlocked`.
+/// stream. Two real passes ship today (use-after-consume,
+/// initialised-before-use); the aliasing, generator-borrow-across-
+/// yield, and actor-send-escape variants are declared on `MirCheck`
+/// but have no construction surface in the v0.5 integer spine yet
+/// (no borrow ops in `Instr`, no projection variants on `Place`, no
+/// construction site for `Terminator::Yield` / `Terminator::Send`).
+/// The `MirCheck::DecisionMapTotal` invariant fires if any
+/// `DecisionFact` in this function carries `Strategy::UnknownBlocked`.
 fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
     let mut checks = Vec::new();
 
@@ -86,11 +87,12 @@ fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
     }
 
     // Aliasing, GeneratorBorrowAcrossYield, and ActorSendEscape have
-    // no construction surface in Cluster 2's spine: `Place` has no
-    // projection variants, `Instr` has no borrow ops, and
+    // no construction surface in the v0.5 integer spine: `Place` has
+    // no projection variants, `Instr` has no borrow ops, and
     // `Terminator::Yield` / `Terminator::Send` are declared but never
-    // built. The passes are no-ops on the current IR; they will
-    // populate when Cluster 4 wires the construction surface.
+    // built. The passes are no-ops on the current IR; they populate
+    // when the construction surface for borrows, generators, and
+    // actor sends lands.
 
     checks
 }
@@ -156,11 +158,9 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         blocks: vec![raw_block.clone()],
         decisions: builder.decisions.clone(),
     };
-    // Checked MIR's `checks` field is populated by `check_function`.
-    // Cluster 1 left it as a scaffold (three unit variants regardless of
-    // facts); Cluster 2 turns it into a fail-closed semantic boundary
-    // populated from real dataflow over the `MirStatement` stream.
-    // The `MirDiagnostic` surface that the CLI rejects on is now
+    // Checked MIR's `checks` field is populated by `check_function`
+    // from real dataflow over the checker-authority `MirStatement`
+    // stream. The `MirDiagnostic` surface that the CLI rejects on is
     // projected from these checks — there is one source of truth for
     // move/borrow/init legality.
     let checks = check_function(&builder, func);
@@ -658,9 +658,10 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                    the emitter must never receive an undecided value-class site"
                 .to_string(),
         }),
-        // No construction surface in C2's spine. Cluster 4 will wire
-        // them and add the corresponding `MirDiagnosticKind` projections
-        // alongside the construction surface.
+        // No construction surface in the v0.5 integer spine. The
+        // corresponding `MirDiagnosticKind` projections will land
+        // alongside the construction surface for borrows, generators,
+        // and actor sends.
         MirCheck::Aliasing { .. }
         | MirCheck::GeneratorBorrowAcrossYield { .. }
         | MirCheck::ActorSendEscape { .. } => None,

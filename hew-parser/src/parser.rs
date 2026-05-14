@@ -6,11 +6,11 @@ use crate::ast::{
     FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
     LambdaParam, Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm,
     NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program,
-    ReceiveFnDecl, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl,
-    WireFieldMeta, WireMetadata,
+    ReceiveFnDecl, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart,
+    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
+    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
+    VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind,
+    WireFieldDecl, WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
@@ -1286,7 +1286,7 @@ impl<'src> Parser<'src> {
                         Item::TypeDecl(t)
                     }
                     Some(Token::Enum) => {
-                        let mut t = self.parse_struct_or_enum(vis)?;
+                        let mut t = self.parse_struct_or_enum(vis, &attrs)?;
                         t.doc_comment = doc_comment;
                         Item::TypeDecl(t)
                     }
@@ -1294,7 +1294,7 @@ impl<'src> Parser<'src> {
                         if self.is_type_alias_lookahead() {
                             Item::TypeAlias(self.parse_type_alias(vis, doc_comment)?)
                         } else {
-                            let mut t = self.parse_struct_or_enum(vis)?;
+                            let mut t = self.parse_struct_or_enum(vis, &attrs)?;
                             t.doc_comment = doc_comment;
                             Item::TypeDecl(t)
                         }
@@ -1371,7 +1371,7 @@ impl<'src> Parser<'src> {
                 Item::TypeDecl(t)
             }
             Some(Token::Enum) => {
-                let mut t = self.parse_struct_or_enum(Visibility::Private)?;
+                let mut t = self.parse_struct_or_enum(Visibility::Private, &attrs)?;
                 t.doc_comment = doc_comment;
                 Item::TypeDecl(t)
             }
@@ -1379,7 +1379,7 @@ impl<'src> Parser<'src> {
                 if self.is_type_alias_lookahead() {
                     Item::TypeAlias(self.parse_type_alias(Visibility::Private, doc_comment)?)
                 } else {
-                    let mut t = self.parse_struct_or_enum(Visibility::Private)?;
+                    let mut t = self.parse_struct_or_enum(Visibility::Private, &attrs)?;
                     t.doc_comment = doc_comment;
                     Item::TypeDecl(t)
                 }
@@ -1526,6 +1526,51 @@ impl<'src> Parser<'src> {
         })
     }
 
+    /// Parse a method inside a type body, returning `(FnDecl, has_consuming_self)`.
+    ///
+    /// Unlike `parse_function`, this variant accepts `consuming self` as the first
+    /// parameter. The boolean return indicates whether the method declared such a
+    /// receiver; callers record this in `TypeDecl.consuming_methods`.
+    fn parse_type_method(
+        &mut self,
+        fn_start: usize,
+        attributes: Vec<Attribute>,
+    ) -> Option<(FnDecl, bool)> {
+        let decl_start = self.peek_span().start;
+        let name = self.expect_ident()?;
+        let decl_end = self.peek_span().start;
+
+        let type_params = self.parse_opt_type_params()?;
+
+        self.expect(&Token::LeftParen)?;
+        let (params, has_consuming_self) = self.parse_params_with_receiver(true);
+        self.expect(&Token::RightParen)?;
+
+        let return_type = self.parse_opt_return_type()?;
+        let where_clause = self.parse_opt_where_clause()?;
+
+        let body = self.parse_block()?;
+        let fn_end = self.peek_span().start;
+
+        let decl = FnDecl {
+            attributes,
+            is_async: false,
+            is_generator: false,
+            visibility: Visibility::Private,
+            is_pure: false,
+            name,
+            type_params,
+            params,
+            return_type,
+            where_clause,
+            body,
+            doc_comment: None,
+            decl_span: decl_start..decl_end,
+            fn_span: fn_start..fn_end,
+        };
+        Some((decl, has_consuming_self))
+    }
+
     fn is_type_alias_lookahead(&self) -> bool {
         // Check for "type Name =" pattern (Name can be a contextual keyword)
         matches!(self.tokens.get(self.pos), Some((Token::Type, _)))
@@ -1554,7 +1599,16 @@ impl<'src> Parser<'src> {
         })
     }
 
-    fn parse_struct_or_enum(&mut self, visibility: Visibility) -> Option<TypeDecl> {
+    fn parse_struct_or_enum(
+        &mut self,
+        visibility: Visibility,
+        attrs: &[Attribute],
+    ) -> Option<TypeDecl> {
+        // Extract ownership-discipline marker from caller-supplied attributes.
+        // `#[resource]` and `#[linear]` are consumed here and do not propagate
+        // to TypeBodyItem fields or the formatter's attribute list.
+        let resource_marker = Self::extract_resource_marker(attrs);
+
         let kind = match self.peek() {
             Some(Token::Type) => {
                 self.advance();
@@ -1582,8 +1636,15 @@ impl<'src> Parser<'src> {
         self.expect(&Token::LeftBrace)?;
 
         let mut body = Vec::new();
+        let mut consuming_methods = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-            if let Some(item) = self.parse_type_body_item(kind) {
+            if let Some((item, has_consuming_self)) = self.parse_type_body_item(kind) {
+                if has_consuming_self {
+                    // Record the method name so the checker can validate ownership rules.
+                    if let TypeBodyItem::Method(ref m) = item {
+                        consuming_methods.push(m.name.clone());
+                    }
+                }
                 body.push(item);
             } else {
                 let found = match self.peek() {
@@ -1607,7 +1668,31 @@ impl<'src> Parser<'src> {
             doc_comment: None,
             wire: None,
             is_indirect: false,
+            resource_marker,
+            consuming_methods,
         })
+    }
+
+    /// Extract `ResourceMarker` from a pre-parsed attribute slice.
+    ///
+    /// `#[resource]` → `ResourceMarker::Resource`
+    /// `#[linear]`   → `ResourceMarker::Linear`
+    /// anything else → `ResourceMarker::None`
+    ///
+    /// The attribute is not consumed from the slice; callers that render
+    /// attributes should filter `resource` / `linear` out themselves if they
+    /// want to suppress them in output.  For now the checker is the only
+    /// consumer, so we leave the slice untouched.
+    fn extract_resource_marker(attrs: &[Attribute]) -> ResourceMarker {
+        let mut marker = ResourceMarker::None;
+        for attr in attrs {
+            match attr.name.as_str() {
+                "resource" => marker = ResourceMarker::Resource,
+                "linear" => marker = ResourceMarker::Linear,
+                _ => {}
+            }
+        }
+        marker
     }
 
     fn parse_indirect_enum(&mut self, visibility: Visibility) -> Option<TypeDecl> {
@@ -1616,12 +1701,20 @@ impl<'src> Parser<'src> {
             self.error("'indirect' can only be used with 'enum'".to_string());
             return None;
         }
-        let mut decl = self.parse_struct_or_enum(visibility)?;
+        // Indirect enums (recursive boxed enums) do not participate in the
+        // `#[resource]` / `#[linear]` ownership-discipline surface; pass an
+        // empty attribute slice so no marker is extracted.
+        let mut decl = self.parse_struct_or_enum(visibility, &[])?;
         decl.is_indirect = true;
         Some(decl)
     }
 
-    fn parse_type_body_item(&mut self, kind: TypeDeclKind) -> Option<TypeBodyItem> {
+    /// Parse one item in a type body, returning `(item, has_consuming_self)`.
+    ///
+    /// `has_consuming_self` is `true` only when the item is a method whose
+    /// first parameter is a `consuming self` receiver.  The caller records
+    /// consuming method names in `TypeDecl.consuming_methods`.
+    fn parse_type_body_item(&mut self, kind: TypeDeclKind) -> Option<(TypeBodyItem, bool)> {
         // Collect any doc comments before attributes or the field/variant/method
         // itself. Support both `/// docs #[attr]` and `#[attr] /// docs`.
         let mut doc_comment = self.collect_doc_comments();
@@ -1639,17 +1732,11 @@ impl<'src> Parser<'src> {
                 if self.peek() == Some(&Token::Fn) {
                     let fn_start = self.peek_span().start;
                     self.advance();
-                    // Attributes on methods are passed to parse_function
-                    let mut method = self.parse_function(
-                        fn_start,
-                        false,
-                        false,
-                        Visibility::Private,
-                        false,
-                        attributes,
-                    )?;
+                    // Use parse_type_method so `consuming self` receivers are accepted.
+                    let (mut method, has_consuming_self) =
+                        self.parse_type_method(fn_start, attributes)?;
                     method.doc_comment = doc_comment;
-                    Some(TypeBodyItem::Method(method))
+                    Some((TypeBodyItem::Method(method), has_consuming_self))
                 } else {
                     // Field with optional attributes (e.g. #[encode(rename = "x")])
                     let name = self.expect_ident()?;
@@ -1663,13 +1750,16 @@ impl<'src> Parser<'src> {
                     // range item_start..item_end (comments are skipped by the lexer,
                     // but extract_comments scans the raw source for them).
                     let item_end = self.peek_span().start;
-                    Some(TypeBodyItem::Field {
-                        name,
-                        ty,
-                        attributes,
-                        doc_comment,
-                        span: item_start..item_end,
-                    })
+                    Some((
+                        TypeBodyItem::Field {
+                            name,
+                            ty,
+                            attributes,
+                            doc_comment,
+                            span: item_start..item_end,
+                        },
+                        false,
+                    ))
                 }
             }
             TypeDeclKind::Enum => {
@@ -1708,12 +1798,15 @@ impl<'src> Parser<'src> {
                 }
                 // peek_span() is now the position after the trailing `;`
                 let item_end = self.peek_span().start;
-                Some(TypeBodyItem::Variant(VariantDecl {
-                    name,
-                    kind,
-                    doc_comment,
-                    span: item_start..item_end,
-                }))
+                Some((
+                    TypeBodyItem::Variant(VariantDecl {
+                        name,
+                        kind,
+                        doc_comment,
+                        span: item_start..item_end,
+                    }),
+                    false,
+                ))
             }
         }
     }
@@ -2786,6 +2879,8 @@ impl<'src> Parser<'src> {
                 min_version,
             }),
             is_indirect: false,
+            resource_marker: ResourceMarker::None,
+            consuming_methods: Vec::new(),
         })
     }
 
@@ -3418,6 +3513,47 @@ impl<'src> Parser<'src> {
         }
 
         params
+    }
+
+    /// Parse a parameter list, optionally accepting a `consuming self` receiver.
+    ///
+    /// When `allow_consuming_self` is true (type-body method context), the first
+    /// token pair `consuming self` is recognised as a consuming-self receiver.
+    /// The receiver does not appear in the returned `Vec<Param>`; instead the
+    /// boolean return indicates its presence so the caller can record it in
+    /// `TypeDecl.consuming_methods`.
+    ///
+    /// `consuming self` is only valid at the first-parameter position. If it
+    /// appears elsewhere (or `allow_consuming_self` is false), it falls through
+    /// to the regular error path.
+    fn parse_params_with_receiver(&mut self, allow_consuming_self: bool) -> (Vec<Param>, bool) {
+        let mut has_consuming_self = false;
+
+        // Check for `consuming self` at the first-parameter position.
+        if allow_consuming_self && !self.at_end() && self.peek() != Some(&Token::RightParen) {
+            // `consuming` lexes as Token::Identifier("consuming").
+            let is_consuming_kw =
+                matches!(self.peek(), Some(Token::Identifier(s)) if *s == "consuming");
+            if is_consuming_kw {
+                // Peek one further to check for `self`.
+                let next_is_self = matches!(
+                    self.tokens.get(self.pos + 1),
+                    Some((Token::Identifier(s), _)) if *s == "self"
+                );
+                if next_is_self {
+                    // Consume both tokens.
+                    self.advance(); // consuming
+                    self.advance(); // self
+                    has_consuming_self = true;
+                    // Skip optional trailing comma before further params.
+                    self.eat(&Token::Comma);
+                }
+            }
+        }
+
+        // Parse remaining ordinary parameters.
+        let params = self.parse_params();
+        (params, has_consuming_self)
     }
 
     /// Returns true if the expression is a block-like construct that doesn't need a trailing semicolon.
@@ -7165,5 +7301,69 @@ wire type Msg {
             "parse errors (regression: `<` in comparison swallowed): {:?}",
             result.errors
         );
+    }
+    #[test]
+    fn parses_resource_marker_and_consuming_method() {
+        let source = r"
+            #[resource]
+            type File {
+                fd: int
+                fn close(consuming self) -> int { 0 }
+            }
+        ";
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            result.errors
+        );
+        assert_eq!(result.program.items.len(), 1);
+        let (item, _span) = &result.program.items[0];
+        let Item::TypeDecl(td) = item else {
+            panic!("expected TypeDecl, got {item:?}");
+        };
+        assert_eq!(td.resource_marker, ResourceMarker::Resource);
+        assert_eq!(td.consuming_methods, vec!["close".to_string()]);
+        assert_eq!(td.name, "File");
+    }
+
+    #[test]
+    fn parses_linear_marker_and_multiple_consuming_methods() {
+        let source = r"
+            #[linear]
+            type Txn {
+                id: int
+                fn commit(consuming self) -> int { 0 }
+                fn rollback(consuming self) -> int { 1 }
+                fn id(t: Txn) -> int { 0 }
+            }
+        ";
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            result.errors
+        );
+        let (Item::TypeDecl(td), _) = &result.program.items[0] else {
+            panic!("expected TypeDecl");
+        };
+        assert_eq!(td.resource_marker, ResourceMarker::Linear);
+        // Only `commit` and `rollback` consume; `id(self: Txn)` does not.
+        assert_eq!(
+            td.consuming_methods,
+            vec!["commit".to_string(), "rollback".to_string()],
+        );
+    }
+
+    #[test]
+    fn unmarked_type_has_no_resource_marker() {
+        let source = "type Point { x: int; y: int }";
+        let result = parse(source);
+        assert!(result.errors.is_empty());
+        let (Item::TypeDecl(td), _) = &result.program.items[0] else {
+            panic!("expected TypeDecl");
+        };
+        assert_eq!(td.resource_marker, ResourceMarker::None);
+        assert!(td.consuming_methods.is_empty());
     }
 } // mod tests

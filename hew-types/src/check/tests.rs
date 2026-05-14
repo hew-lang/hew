@@ -120,6 +120,8 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         doc_comment: None,
         wire: None,
         is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     };
     let outer = TypeDecl {
         visibility: Visibility::Private,
@@ -143,6 +145,8 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         doc_comment: None,
         wire: None,
         is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     };
     let plain = TypeDecl {
         visibility: Visibility::Private,
@@ -166,6 +170,8 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         doc_comment: None,
         wire: None,
         is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     };
 
     checker.register_type_decl(&inner);
@@ -5286,6 +5292,8 @@ fn user_module_registers_types() {
         doc_comment: None,
         wire: None,
         is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     };
     let import = make_user_import(
         &["myapp", "config"],
@@ -5915,6 +5923,8 @@ fn local_type_impl_no_orphan_warning() {
         doc_comment: None,
         wire: None,
         is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     };
     let impl_decl = ImplDecl {
         type_params: None,
@@ -6005,6 +6015,8 @@ fn test_file_import_private_items_not_visible() {
         doc_comment: None,
         wire: None,
         is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     });
 
     let resolved: Vec<Spanned<Item>> = vec![
@@ -10950,6 +10962,8 @@ mod non_root_module_inference_scope {
             doc_comment: None,
             wire: None,
             is_indirect: false,
+            resource_marker: hew_parser::ast::ResourceMarker::None,
+            consuming_methods: Vec::new(),
         };
         let impl_decl = ImplDecl {
             type_params: None,
@@ -11454,6 +11468,8 @@ fn module_graph_body_private_local_type_is_available() {
         is_indirect: false,
         doc_comment: None,
         wire: None,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     };
 
     let ok_fn = FnDecl {
@@ -14929,6 +14945,8 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
                 doc_comment: None,
                 wire: None,
                 is_indirect: false,
+                resource_marker: hew_parser::ast::ResourceMarker::None,
+                consuming_methods: Vec::new(),
             };
             checker.register_type_decl(&td);
         }
@@ -14986,6 +15004,8 @@ fn handle_bearing_registration_scales_linearly_not_quadratically() {
                 doc_comment: None,
                 wire: None,
                 is_indirect: false,
+                resource_marker: hew_parser::ast::ResourceMarker::None,
+                consuming_methods: Vec::new(),
             };
             checker.register_type_decl(&td);
         }

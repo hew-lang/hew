@@ -628,10 +628,13 @@ struct ConstDecl {
 
 enum class TypeDeclKind { Struct, Enum };
 
-// Ownership-discipline marker for a type declaration. `None` is the default
-// (ordinary value type); `Resource` indicates an implicit-drop external
-// resource (paired with `fn close(consuming self) -> ...`); `Linear` indicates
-// a single-owner value with no implicit drop, requiring consume on every exit.
+// NOTE: ResourceMarker and the fields below are present because hew-astgen
+// generates a parseResourceMarker helper from the Rust AST enum of the same
+// name, and the generated msgpack_reader.cpp references ast::ResourceMarker.
+// The C++ reader does NOT populate resource_marker or consuming_methods on
+// TypeDecl — those fields are consumed only on the Rust side.  The C++ codegen
+// subtree is scheduled for deletion; do not add logic here to consume them.
+// (Global CLAUDE.md "Shims, Stubs, and Seams" rule.)
 enum class ResourceMarker { None, Resource, Linear };
 
 struct VariantDecl {
@@ -718,6 +721,10 @@ struct TypeDecl {
   std::vector<std::unique_ptr<FnDecl>> method_storage;
   std::optional<WireMetadata> wire;
   bool is_indirect = false;
+  // NOTE: these fields are intentionally not consumed by the C++ reader.
+  // The C++ codegen subtree is scheduled for deletion; resource_marker and
+  // consuming_methods are consumed only on the Rust side.  This is a
+  // deliberate seam per the global CLAUDE.md "Shims, Stubs, and Seams" rule.
   ResourceMarker resource_marker = ResourceMarker::None;
   std::vector<std::string> consuming_methods;
 };

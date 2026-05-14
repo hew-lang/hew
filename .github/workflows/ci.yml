@@ -496,7 +496,8 @@ jobs:
         run: |
           brew install ninja libffi zstd
           LIBFFI_PREFIX="$(brew --prefix libffi)"
-          echo "RUSTFLAGS=-L ${LIBFFI_PREFIX}/lib ${RUSTFLAGS:-}" >> "$GITHUB_ENV"
+          # TODO: remove once macOS ld error is resolved
+          echo "RUSTFLAGS=-L ${LIBFFI_PREFIX}/lib -Clink-arg=-Wl,-v ${RUSTFLAGS:-}" >> "$GITHUB_ENV"
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'

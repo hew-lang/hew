@@ -1,5 +1,6 @@
 [package]
 name = "std::text::regex"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::text::regex package"
 authors = ["Hew Contributors"]

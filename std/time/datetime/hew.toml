@@ -1,5 +1,6 @@
 [package]
 name = "std::time::datetime"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::time::datetime package"
 authors = ["Hew Contributors"]

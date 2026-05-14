@@ -1,5 +1,6 @@
 [package]
 name = "std::encoding::json"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::encoding::json package"
 authors = ["Hew Contributors"]

@@ -1,5 +1,6 @@
 [package]
 name = "std::encoding::csv"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::encoding::csv package"
 authors = ["Hew Contributors"]

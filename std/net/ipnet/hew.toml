@@ -1,5 +1,6 @@
 [package]
 name = "std::net::ipnet"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::net::ipnet package"
 authors = ["Hew Contributors"]

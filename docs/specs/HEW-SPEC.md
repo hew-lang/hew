@@ -271,23 +271,23 @@ worker <- 42;
 let result = await calc <- 5;
 ```
 
-**Integration with scope (normative):**
+**Integration with `fork` blocks (normative):**
 
-Lambda actors spawned within a `scope` block have their **lifetime** managed by that scope, but are NOT integrated with the scope's task cancellation or trap propagation:
+Lambda actors spawned within a `fork` block have their **lifetime** managed by that block, but are NOT integrated with the block's task cancellation or trap propagation:
 
 ```hew
-scope {
+fork {
     let worker = spawn (x: int) => { ... };
     worker <- 1;
-}  // worker stopped when scope exits
+}  // worker stopped when the fork-block exits
 ```
 
 Specifically:
 
-- When a scope exits, all lambda actors spawned within it are sent a stop signal (equivalent to `actor_stop`)
-- `s.cancel()` does NOT cancel lambda actors — it only cancels tasks spawned via `s.launch`
-- A trap within a lambda actor does NOT propagate to sibling tasks or the enclosing scope — the actor fails independently
-- For failure propagation across actors, use supervision trees (Section 5), not structured concurrency scopes
+- When a fork-block exits, all lambda actors spawned within it are sent a stop signal (equivalent to `actor_stop`).
+- Sibling-cancellation triggered by a child failure does NOT cancel lambda actors — it only cancels structured child tasks (`fork name = expr`).
+- A trap within a lambda actor does NOT propagate to sibling tasks or the enclosing fork-block — the actor fails independently.
+- For failure propagation across actors, use supervision trees (Section 5), not structured concurrency.
 
 **Limitations:**
 
@@ -354,7 +354,7 @@ pure fn add(a: int, b: int) -> int {
 **Purity rules.** Inside a `pure fn` or `pure receive fn`:
 
 1. Only other `pure` functions may be called.
-2. The `spawn`, `scope`, `select`, `join` expressions are forbidden.
+2. The `spawn`, `fork`, `select`, `join` expressions are forbidden.
 3. Assignment to actor fields (bare field names) is forbidden.
 4. Local `var` mutations _are_ allowed — they do not escape the function.
 
@@ -2460,103 +2460,91 @@ Task<T>
 | --------- | -------------------------------- | ----------------------------------------------------------- |
 | `is_done` | `fn is_done(t: Task<T>) -> bool` | Returns `true` if task has completed, cancelled, or trapped |
 
-### 4.2 Scope: Structured Concurrency Boundary
+### 4.2 Fork: Structured Concurrency Boundary
 
-A `scope` block creates a structured concurrency boundary. All tasks spawned within a scope must complete before the scope exits.
+A `fork` block creates a structured concurrency boundary. All child tasks
+forked within the block must complete before the block returns.
 
 **Syntax:**
 
 ```hew
-scope {
-    // Tasks spawned here are children of this scope
-    // Block exits only when all child tasks complete
+fork {
+    fork a = compute_a();   // child task: spawned + name-bound
+    fork b = compute_b();   // sibling child task
+    (a?, b?)                // block result; implicit join before this point
 }
 ```
 
 **Semantics:**
 
-1. **Lifetime containment**: Tasks cannot outlive their enclosing scope
-2. **Automatic join**: Scope block waits for all child tasks before returning
-3. **Scope value**: A scope is an expression; its value is the final expression in the block
-4. **Nested scopes**: Scopes may be nested; each manages its own children
+1. **Lifetime containment**: Child tasks cannot outlive their enclosing `fork` block.
+2. **Automatic join**: The block waits for every child task before returning.
+3. **Block value**: A `fork` block is an expression; its value is the final expression in the block.
+4. **Nested forks**: `fork` blocks may be nested; each manages its own children.
+5. **First-failure-cancels-siblings**: If any child returns `Err(E)` or traps, the runtime cancels the remaining siblings at the next safepoint. The block evaluates to `Err(ScopeError<E>)` for fallible children or propagates the trap.
 
-**Scope type:**
+**Child form:**
 
-Within a `scope` block, the implicit `scope` binding has type `Scope`. This binding is only valid inside the scope block.
+`fork name = expr` (or bare `fork expr`) is only legal dynamically inside a
+`fork` block. The disambiguator is the token after `fork`: `fork {` opens a
+block; anything else is a child production whose first token must be an
+expression starter. Outside a fork-block, a child-form `fork` is a
+`ForkOutsideForkBlock` error.
 
-| Method   | Signature                                         | Description                                         |
-| -------- | ------------------------------------------------- | --------------------------------------------------- |
-| `launch` | `fn launch<T>(s: Scope, f: fn() -> T) -> Task<T>` | Launch a cooperative task (coroutine) in this scope |
-| `spawn`  | `fn spawn<T>(s: Scope, f: fn() -> T) -> Task<T>`  | Spawn a parallel task (OS thread) in this scope     |
-| `cancel` | `fn cancel(s: Scope)`                             | Request cancellation of all tasks in this scope     |
-
-### 4.3 Spawning Tasks
-
-Hew provides two task-spawning primitives within a scope:
+### 4.3 Spawning Child Tasks
 
 ```hew
-scope |s| {
-    // Cooperative micro-coroutine — runs on the actor's thread
-    let task1 = s.launch { compute_a() };
-
-    // Parallel OS thread — true parallelism, cannot access actor state
-    let task2 = s.spawn { compute_b() };
+fork {
+    fork a = compute_a();
+    fork b = compute_b();
+    combine(a?, b?)
 }
 ```
 
 **Syntax:**
 
 ```ebnf
-Scope = "scope" ( "|" Ident "|" )? Block ;
-(* Inside the block, the binding supports: s.launch { }, s.spawn { }, s.cancel() *)
+Fork      = "fork" Block ;                         (* block form *)
+ForkChild = "fork" ( Ident "=" )? Expr ;           (* child form, only inside a Fork block *)
 ```
 
-**`s.launch { expr }` — cooperative micro-coroutine:**
+**`fork name = expr` — structured child task:**
 
-- Returns `Task<T>` where `T` is the type of `expr`
-- Runs on the actor's own thread as a cooperative micro-coroutine (8 KB pooled stacks, ~10 ns context switch)
-- **CAN** access actor state safely — same thread, no data races, only one cooperative task runs at a time
-- Captured variables follow the same rules as closures (move semantics by default)
+- Returns `Task<T>` where `T` is the type of `expr`.
+- Spawned task runs concurrently with its siblings.
+- Captured variables follow the same rules as actor sends and closures
+  (move semantics by default; explicit `move` to force a moving capture).
+- On `Err(E)` or trap, the enclosing `fork` block transitions to
+  cancelling: siblings are cancelled at their next safepoint and the
+  first error wins as `ScopeError::primary`.
 
-**`s.spawn { expr }` — parallel OS thread:**
+**`fork expr` — bare child form:**
 
-- Returns `Task<T>` where `T` is the type of `expr`
-- Spawns a separate OS thread for true parallelism across CPU cores
-- **Cannot** access actor state — data must be moved or cloned into the task body
-- This prevents data races without requiring locks
+A degenerate single-child fork-block: `fork expr` evaluates `expr` as a
+child task whose value is the result of the enclosing fork-block. Useful
+when the surrounding code only needs one structured child.
 
-**Scheduling model (normative):**
+**Substrate (informative):**
 
-Tasks within an actor follow a **two-level scheduling** model:
-
-- **Level 1 (Runtime scheduler):** The M:N work-stealing scheduler (§9) selects which actor to run next. Actors are scheduled across worker threads.
-- **Level 2 (Actor-local coroutine executor):** Within a running actor, cooperative tasks (`s.launch`) are multiplexed on the actor's thread. Only one runs at a time; they yield at safepoints and the next ready coroutine resumes.
-
-```
-Level 1: Scheduler picks Actor A to run on Worker 3
-    │
-    Level 2: Actor A's coroutine executor runs cooperative tasks:
-    ├─── Task 1 executes ──► yields at await (coro_switch)
-    ├─── Task 2 executes ──► yields at cooperate
-    ├─── Task 1 resumes  ──► completes
-    └─── Task 2 resumes  ──► completes
-    │
-Level 1: Actor A yields; scheduler picks Actor B
-    │
-    (s.spawn tasks run independently on OS threads)
-```
+The β surface lowers each child to an OS-thread-per-task substrate
+(`hew-runtime/src/task_scope.rs`). A cooperative coroutine layer
+(`hew-runtime/src/coro.rs`) exists in the runtime but is not exposed at
+the source level; the source surface is a single `fork` child production
+whose scheduling discipline is the runtime's concern. The earlier draft
+that exposed two child verbs (`s.launch` for cooperative coroutines vs
+`s.spawn` for OS threads) was superseded — see "Historical note" at the
+end of §4.9.
 
 **Yield points (normative):**
 
-Cooperative tasks (`s.launch`) MUST yield at:
+A child task MUST yield at:
 
-- `await` expressions — suspends coroutine until awaited result is ready
-- `cooperate` — reduction budget exhaustion; compiler inserts `cooperate` calls at loop headers and function call sites
-- Tasks may opt out of safepoints in critical sections with `#[no_safepoint]` (not currently implemented)
+- `await` expressions — suspends until the awaited task or actor is ready.
+- `cooperate` — reduction budget exhaustion; compiler inserts `cooperate`
+  calls at loop headers and function call sites.
+- IO operations — cancellation is observed at the syscall boundary.
 
-Parallel tasks (`s.spawn`) run on OS threads and are not subject to cooperative yield points.
-
-**Implementation note:** `s.launch` allocates an 8 KB stack from a pool and runs the body as a stackful coroutine via `coro_switch`. `s.spawn` outlines the body to a separate function and spawns it on a new OS thread. `await` suspends the calling coroutine (or blocks the calling thread for `s.spawn`). The runtime uses `Mutex`/`Condvar` for cross-thread completion notification. Scope exit calls `join_all` to wait for all tasks.
+Yield points are also where cooperative cancellation is delivered (§4.5).
 
 ### 4.4 Awaiting Tasks
 
@@ -2583,11 +2571,12 @@ let result = await task;
 await : Task<T> -> Result<T, E>
 ```
 
-Cancellation is an **expected** outcome (it is explicitly requested via
-`s.cancel()`) and MUST be modeled as a recoverable error, not a trap. The
-current release does not expose a named `CancellationError` type in source;
-callers should handle the `Err(...)` branch of the `await` result. Traps are
-reserved for unexpected, unrecoverable failures (Section 2.2).
+Cancellation is an **expected** outcome (it is triggered automatically
+when a sibling child fails, or implicitly at fork-block exit) and MUST be
+modeled as a recoverable error, not a trap. The current release does not
+expose a named `CancellationError` type in source; callers should handle
+the `Err(...)` branch of the `await` result. Traps are reserved for
+unexpected, unrecoverable failures (Section 2.2).
 
 ```hew
 // Cancellation returns Err, not a trap:
@@ -2607,12 +2596,12 @@ let value = (await task)?;
 
 ```hew
 // Simple await
-let value = scope |s| { await s.launch { expensive_compute() } };
+let value = fork { fork x = expensive_compute(); await x };
 
 // Concurrent tasks with sequential await
-scope |s| {
-    let a = s.launch { fetch_user(id1) };
-    let b = s.launch { fetch_user(id2) };
+fork {
+    fork a = fetch_user(id1);
+    fork b = fetch_user(id2);
 
     // Both fetches run concurrently
     // We wait for results in order
@@ -2625,13 +2614,20 @@ scope |s| {
 
 ### 4.5 Cancellation
 
-Cancellation in Hew is **automatic at safepoints**: when a scope is cancelled, running tasks are interrupted at the next safepoint without manual polling.
+Cancellation in Hew is **automatic at safepoints**: when a fork-block is
+cancelled, running children are interrupted at the next safepoint without
+manual polling.
 
-**Requesting cancellation:**
+**Cancellation triggers:**
 
-```hew
-s.cancel();  // Request cancellation of all tasks in scope
-```
+A fork-block transitions to cancelling when:
+
+1. A child returns `Err(E)` — the first such `E` becomes `ScopeError::primary`.
+2. A child traps — siblings are cancelled and the trap propagates after join.
+3. An outer fork-block (or its enclosing actor) is itself cancelled.
+
+There is no user-level `cancel()` call against a fork-block from inside its
+own body; cancellation is event-driven from child outcomes.
 
 **Cancellation is automatic at safepoints:**
 
@@ -2659,26 +2655,26 @@ fn commit_transaction(tx: Transaction) -> Result<(), Error> {
 
 **Cancellation propagation:**
 
-When a scope is cancelled:
+When a fork-block is cancelled:
 
-1. Pending tasks that haven't started are immediately marked `Cancelled`
-2. Running tasks are cancelled at their next safepoint (automatic — no polling needed)
-3. Stack unwinding runs `defer`/`Drop` blocks for deterministic cleanup
-4. Child scopes receive the cancellation signal
+1. Pending child tasks that haven't started are immediately marked `Cancelled`.
+2. Running children are cancelled at their next safepoint (automatic — no polling needed).
+3. Stack unwinding runs `defer`/`Drop` blocks for deterministic cleanup.
+4. Nested fork-blocks receive the cancellation signal.
 
 **Cancellation does NOT:**
 
-- Forcibly terminate running code between safepoints
-- Interrupt `#[noncancellable]` sections
-- Affect tasks in other scopes or other actors
+- Forcibly terminate running code between safepoints.
+- Interrupt `#[noncancellable]` sections.
+- Affect tasks in other fork-blocks or other actors.
 
 **Example with cleanup:**
 
 ```hew
 receive fn download_files(urls: Vec<String>) -> Result<Vec<Data>, Error> {
-    scope |s| {
+    fork {
         for url in urls {
-            s.launch {
+            fork {
                 let data = http::get(url)?;  // Safepoint — cancellation checked here
                 process(data)                // If cancelled, stack unwinds; defer blocks run
             };
@@ -2696,11 +2692,12 @@ Tasks can fail in two ways:
 
 **Recoverable errors:**
 
-When a task returns a `Result`, errors can be handled by the awaiter:
+When a child task returns a `Result`, errors can be handled by the awaiter
+directly, or aggregated through `ScopeError<E>` at fork-block exit:
 
 ```hew
-scope |s| {
-    let task = s.launch {
+fork {
+    fork task = {
         fallible_operation()?;
         Ok(value)
     };
@@ -2712,51 +2709,58 @@ scope |s| {
 }
 ```
 
+When fork-block children return `Result<T, E>` and at least one child
+returns `Err`, the block evaluates to `Result<T, ScopeError<E>>` whose
+`primary` is the first observed error. Subsequent errors land in
+`also_failed`; cancellation-driven failures contribute to
+`cancelled_count`. `?` on the block value propagates `primary`. See
+`std/concurrency/scope_error.hew` for the layout.
+
 **Traps (unrecoverable errors):**
 
-When a task traps:
+When a child task traps:
 
-1. The task transitions to `Trapped` state
-2. Sibling tasks in the same scope are cancelled
-3. The scope itself traps, propagating to its enclosing context
+1. The task transitions to `Trapped` state.
+2. Sibling children in the same fork-block are cancelled.
+3. The fork-block itself traps, propagating to its enclosing context.
 
 **Trap in a `receive fn` (normative):**
 
-When a trap propagates out of a `scope` block inside a `receive fn`:
+When a trap propagates out of a `fork` block inside a `receive fn`:
 
 1. The current message handler terminates immediately
 2. The actor transitions to `Crashed` state (see §9.1)
 3. The actor's supervisor is notified with the trap reason
 4. The supervisor applies its restart policy (Section 5.1)
 
-This means a trap within a scoped task inside a `receive fn` causes the entire actor to crash — it does NOT silently discard the error and proceed to the next message. This matches Erlang's "let it crash" philosophy: unexpected failures are handled by the supervision tree, not by application-level error recovery.
+This means a trap within a forked child inside a `receive fn` causes the entire actor to crash — it does NOT silently discard the error and proceed to the next message. This matches Erlang's "let it crash" philosophy: unexpected failures are handled by the supervision tree, not by application-level error recovery.
 
 **Trap propagation example:**
 
 ```hew
-scope |s| {
-    let a = s.launch { compute() };        // Running
-    let b = s.launch { trap!("failed") };  // Traps
+fork {
+    fork a = compute();        // Running
+    fork b = trap!("failed");  // Traps
     // Task 'a' is cancelled
-    // Scope traps
+    // Fork-block traps
 }
 // Code here never executes
 ```
 
-**Isolating failures with nested scopes:**
+**Isolating failures with nested fork-blocks:**
 
 ```hew
-scope |s| {
-    let results = s.launch {
-        // Inner scope isolates failures
-        scope |inner| {
-            let task = inner.launch { risky_operation() };
+fork {
+    fork results = {
+        // Inner fork-block isolates failures
+        fork {
+            fork task = risky_operation();
             await task
         }
     };
 
-    // Outer scope continues even if inner scope trapped
-    // (if using ? pattern)
+    // Outer fork-block continues even if inner block returned Err
+    // (if using ? pattern with ScopeError<E>)
 }
 ```
 
@@ -2775,7 +2779,7 @@ fn read_config(path: String) -> Result<Config, String> {
 **IO operations are cancellation-aware:**
 
 ```hew
-// If scope is cancelled while waiting for response,
+// If the enclosing fork-block is cancelled while waiting for response,
 // http::get returns Err(Cancelled)
 let response = http::get(url)?;
 ```
@@ -2790,35 +2794,35 @@ Hew runtime may offload blocking operations to a thread pool. From the task's pe
 
 **Actor isolation guarantees:**
 
-Actor isolation is preserved through the two-task model:
-
-- **Cooperative tasks (`s.launch`):** Share the actor's mutable state. Only one cooperative task runs at a time within an actor (cooperative scheduling), so no data races occur on actor state.
-- **Parallel tasks (`s.spawn`):** Do NOT share actor state. Data must be moved or cloned in. Multiple `s.spawn` tasks may execute simultaneously on different cores.
+Actor isolation is preserved because every fork-child runs on its own OS
+thread (β substrate). Captured values must be sendable; `move` semantics
+apply at the child-spawn site just as they do at every other actor send
+boundary. The actor's own state remains owned by the actor's thread and
+is not shared into child tasks.
 
 ### 4.8 Interaction with Actor Messages
 
-Tasks spawned within a receive handler interact with actor state differently depending on the spawn primitive:
-
-- **`s.launch` (cooperative):** Runs on the actor's thread. CAN access actor state directly — only one cooperative task runs at a time, so no data races.
-- **`s.spawn` (parallel):** Runs on a separate OS thread. Cannot access actor state — data must be moved or cloned into the task body.
+Child tasks forked within a receive handler are isolated from the
+actor's mutable state: each runs on its own OS thread, captured values
+move (or clone) across the boundary, and the actor's fields are not
+reachable from inside a child body.
 
 ```hew
 actor DataProcessor {
     var cache: HashMap<String, Data> = HashMap::new();
 
     receive fn process_batch(ids: Vec<String>) -> Vec<Data> {
-        scope |s| {
+        fork {
             var results: Vec<Task<Data>> = Vec::new();
 
             for id in ids {
-                // s.spawn: data passed explicitly — task body cannot access actor state
-                let task = s.spawn {
-                    fetch_data(id)
-                };
+                // Captures of `id` move into the child; actor fields
+                // (e.g. `cache`) are not in scope inside the child body.
+                fork task = fetch_data(id);
                 results.push(task);
             }
 
-            // Await all results (back on actor thread)
+            // Await all results (back on the actor's thread)
             results.iter().map(|t| await t).collect()
         }
     }
@@ -2827,12 +2831,11 @@ actor DataProcessor {
 
 **Message-task interaction rules:**
 
-1. A `receive fn` handler executes on the actor's thread
-2. Cooperative tasks (`s.launch`) run on the actor's thread and can access actor state
-3. Parallel tasks (`s.spawn`) run on separate OS threads and are isolated from actor state
-4. The actor does not process the next message until the current handler (and all its tasks) complete
-5. If a handler's tasks trap, the actor may trap (per failure model)
-6. Data shared with `s.spawn` tasks must be moved or cloned (no implicit sharing)
+1. A `receive fn` handler executes on the actor's thread.
+2. Child tasks spawned by `fork name = expr` run on their own OS threads and are isolated from actor state.
+3. The actor does not process the next message until the current handler (and all its forked children) complete.
+4. If a handler's child task traps, the actor may trap (per failure model).
+5. Data captured into a child body must be moved or cloned (no implicit sharing of actor state).
 
 **Yielding to the scheduler:**
 
@@ -2849,32 +2852,38 @@ fn heavy_computation() {
 
 ### 4.9 Summary: Tasks vs Actors
 
-| Aspect        | `s.launch` (cooperative)                    | `s.spawn` (parallel)                | Actors                           |
-| ------------- | ------------------------------------------- | ----------------------------------- | -------------------------------- |
-| Communication | Shared actor state + await                  | Explicit data passing + await       | Message passing                  |
-| Concurrency   | Cooperative (one at a time on actor thread) | True parallelism (separate threads) | True parallelism (M:N scheduler) |
-| Isolation     | Shares actor state (safe: single-threaded)  | Complete (no shared mutable state)  | Complete (mailbox only)          |
-| Failure       | Traps propagate in scope                    | Traps propagate in scope            | Traps isolated to actor          |
-| Lifetime      | Bound to scope                              | Bound to scope                      | Independent                      |
-| Cancellation  | Automatic at safepoints                     | Automatic at safepoints             | Supervisor control               |
-| Scheduling    | Actor-local coroutine (~10 ns switch)       | OS thread per task                  | M:N work-stealing scheduler      |
+| Aspect        | `fork` child task                                   | Actors                           |
+| ------------- | --------------------------------------------------- | -------------------------------- |
+| Communication | Explicit data passing on spawn + `await` for result | Message passing                  |
+| Concurrency   | True parallelism (one OS thread per child)          | True parallelism (M:N scheduler) |
+| Isolation     | Complete (no shared mutable state with parent)      | Complete (mailbox only)          |
+| Failure       | First error becomes `ScopeError::primary`; siblings cancel | Traps isolated to actor   |
+| Lifetime      | Bound to enclosing `fork` block                     | Independent                      |
+| Cancellation  | Automatic at safepoints                             | Supervisor control               |
+| Scheduling    | OS thread per child (substrate); cooperative coroutines are an internal runtime layer | M:N work-stealing scheduler |
 
 **Design rationale:**
 
-Hew combines Go's lightweight concurrency with Erlang's actor isolation:
+Hew combines Go's lightweight spawn ergonomics with Erlang's actor
+isolation and Swift/Kotlin/Loom-grade structured concurrency:
 
-- **Like Go**: Lightweight tasks with `s.launch`/`s.spawn`, true parallelism via `s.spawn`
-- **Like Erlang**: Actors as isolated failure domains, supervisors for fault tolerance, no shared mutable state between actors
-- **Like Swift**: Structured concurrency with scope-bounded lifetimes, automatic cancellation at safepoints
-- **Cooperative + parallel**: `s.launch` for actor-local work that needs state access; `s.spawn` for CPU-bound parallelism
+- **Like Go**: a single short verb (`fork`) covers both block-form and child-form, with no nursery/scope object to pass around.
+- **Like Erlang**: actors are isolated failure domains with supervisors; child tasks inside an actor cannot reach the actor's state.
+- **Like Swift / Kotlin / Loom**: every child has a known parent block, the first failure cancels siblings, and no child error is silently dropped — `?` propagates `ScopeError::primary`.
 
-This hybrid provides:
+**Historical note.**
 
-- Simple concurrent code within actors (cooperative coroutines)
-- True parallelism when needed (OS threads via `s.spawn`)
-- Strong isolation between actors (Erlang-style)
-- Safe resource management via structured lifetimes (Swift-style)
-- No data-race-by-design at all levels of concurrency
+Earlier drafts (pre-β) exposed the structured-concurrency surface as
+`scope |s| { s.launch { … } / s.spawn { … } / s.cancel() }`, with two
+child verbs distinguished by scheduling discipline (`launch` for
+cooperative coroutines, `spawn` for OS threads). That surface was
+subsumed in favour of a single dual-use `fork` keyword. The cooperative
+coroutine layer (`hew-runtime/src/coro.rs`) and the OS-thread-per-task
+runtime (`hew-runtime/src/task_scope.rs`) both still exist below the
+source surface; the source-level choice between them is no longer
+user-visible. The β substrate is OS-thread-per-task; the cooperative
+layer is an implementation detail that may be re-engaged in later
+phases without changing the surface keyword.
 
 ### 4.10 Actor Await and Synchronization (parses today; no end-user examples; revisit after #1236)
 
@@ -3193,7 +3202,7 @@ ForStmt        = "for" "await"? Pattern "in" Expr Block ;
 - `async gen fn` produces an `AsyncGenerator<Y>` — an async iterator.
 - `for await item in async_gen { ... }` desugars to repeatedly calling `await async_gen.next()` until `None`.
 - Between yields, the async generator can `await` other async operations. The generator suspends both when yielding a value AND when awaiting an external result.
-- Async generators participate in structured concurrency — they are cancelled when their enclosing scope exits.
+- Async generators participate in structured concurrency — they are cancelled when their enclosing `fork` block exits.
 
 #### 4.12.5 Cross-Actor Generators (Streaming Receive)
 
@@ -3283,14 +3292,14 @@ Generators participate in Hew's structured concurrency model:
 **Scope-bound lifetime:**
 
 ```hew
-scope {
+fork {
     let gen = fibonacci();
     for n in gen {
         if n > 1000 { break; }
         println(n);
     }
 }
-// gen is dropped when scope exits (if not already exhausted)
+// gen is dropped when the fork-block exits (if not already exhausted)
 ```
 
 **Cross-actor stream cancellation:**
@@ -4241,7 +4250,7 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 
 1. **Message budget (256 msgs/activation):** Coarse scheduler preemption — after processing 256 messages, the actor yields to the scheduler so other actors can run.
 2. **Reduction budget (4000/dispatch):** The compiler inserts `cooperate` calls at loop headers and function call sites. Each operation decrements a reduction counter; when exhausted, the actor yields to the scheduler.
-3. **Cooperative task yield:** When running inside a coroutine context (`s.launch`), `await` and `cooperate` trigger `coro_switch` to the next ready coroutine within the actor.
+3. **Cooperative task yield:** When the runtime's coroutine layer is engaged (see §4.3 "Substrate" — internal to `hew-runtime`, not a source-level distinction), `await` and `cooperate` trigger `coro_switch` to the next ready coroutine within the actor.
 
 - Round-robin within priority levels
 - Starvation prevention through queue aging
@@ -4290,7 +4299,7 @@ Actors start `Idle` after spawn. There is no separate `Blocked` state — actors
 | **Entity**      | Entire actor instance                          | Individual task within an actor               |
 | **Managed by**  | Runtime scheduler (Level 1)                    | Actor-local coroutine executor (Level 2)      |
 | **States**      | Idle/Runnable/Running/Stopping/Stopped/Crashed | Pending/Running/Completed/Cancelled/Trapped   |
-| **Granularity** | One per actor                                  | Many per actor (one per `s.launch`/`s.spawn`) |
+| **Granularity** | One per actor                                  | Many per actor (one per `fork` child)         |
 
 Supervisor observes actor terminal states `Stopped` or `Crashed`.
 

@@ -506,7 +506,7 @@ stmt
     | exprStmt
     | unsafeBlock
     | block                                 // Standalone block: { ... }
-    | scope                                 // scope { ... } without trailing ;
+    | forkExpr                              // fork { ... } or fork child without trailing ;
     ;
 
 letStmt
@@ -687,7 +687,7 @@ primary
     | spawn
     | selectExpr
     | joinExpr
-    | scope                                 // scope { } or scope |s| { ... }
+    | forkExpr                              // fork { ... } block or fork [name '='] expr child
     | cooperateExpr
     | yieldExpr
     ;
@@ -792,14 +792,25 @@ joinExpr
 //  Structured concurrency
 // ----------------------------------------------------------------
 
-scope
-    : 'scope' ( '|' ident '|' )? block
+// `fork` is dual-use. The block opens a structured-concurrency region;
+// the child form (`fork name = expr` or bare `fork expr`) spawns a
+// sibling task within an open block. Both share the keyword; the
+// disambiguator is the token following `fork`. The two forms are
+// folded into a single production here so the keyword is matched
+// only once.
+//
+// Notes:
+//   - `fork name = expr` and bare `fork expr` are only legal dynamically
+//     inside a `fork` block; outside one, the checker emits
+//     `ForkOutsideForkBlock`.
+//   - Earlier drafts exposed `scope |s| { s.launch { } / s.spawn { } /
+//     s.cancel() }`; that surface was subsumed by `fork` (HEW-SPEC §4.9
+//     historical note).
+forkExpr
+    : 'fork' block                          // block form: fork { ... }
+    | 'fork' ident '=' expr                 // child binding: fork name = expr
+    | 'fork' expr                           // bare child:   fork expr
     ;
-
-// Inside scope |s| { ... }, the binding supports:
-//   s.launch { expr }      — via identifier desugaring in parser
-//   s.spawn { expr }       — via identifier desugaring in parser
-//   s.cancel()             — via identifier desugaring in parser
 
 cooperateExpr
     : 'cooperate'
@@ -815,7 +826,7 @@ yieldExpr
 //  Built-in generic types (Task<T>, Vec<T>, HashMap<K,V>, etc.)
 //  are syntactically just ident typeArgs?, so they are folded
 //  into the first alternative.  Listed in comments for reference:
-//    Task<T>, Scope, ActorRef<T>, Actor<M,R>, Arc<T>, Rc<T>,
+//    Task<T>, ActorRef<T>, Actor<M,R>, Arc<T>, Rc<T>,
 //    Weak<T>, Result<T,E>, Option<T>, Generator<Y>,
 //    AsyncGenerator<Y>, Vec<T>, HashMap<K,V>
 // ----------------------------------------------------------------

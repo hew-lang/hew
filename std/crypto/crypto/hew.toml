@@ -1,5 +1,6 @@
 [package]
 name = "std::crypto::crypto"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::crypto::crypto package"
 authors = ["Hew Contributors"]

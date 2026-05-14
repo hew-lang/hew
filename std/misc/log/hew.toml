@@ -1,5 +1,6 @@
 [package]
 name = "std::misc::log"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::misc::log package"
 authors = ["Hew Contributors"]

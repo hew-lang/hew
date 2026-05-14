@@ -6,6 +6,21 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+// ── Hew language editions ───────────────────────────────────────────────────
+
+/// Hew language editions this build understands. Updated each time a new
+/// edition stabilizes; sources that name an edition outside this set are
+/// rejected at manifest-load time.
+pub const SUPPORTED_EDITIONS: &[&str] = &["2026"];
+
+/// The edition used when `hew.toml` omits the `edition` field. During the
+/// cutover this defaults to the current edition; a future release will refuse
+/// to load a manifest without an explicit `edition` line.
+#[must_use]
+pub fn default_edition() -> String {
+    "2026".to_string()
+}
+
 // ── Dependency specification ────────────────────────────────────────────────
 
 /// A dependency can be specified as a bare version string or as a table with
@@ -73,6 +88,11 @@ pub enum ManifestError {
     Io(std::io::Error),
     Parse(toml::de::Error),
     Serialize(toml::ser::Error),
+    /// The manifest declares an edition this build does not support.
+    UnsupportedEdition {
+        edition: String,
+        supported: &'static [&'static str],
+    },
 }
 
 impl fmt::Display for ManifestError {
@@ -81,6 +101,13 @@ impl fmt::Display for ManifestError {
             Self::Io(e) => write!(f, "cannot read manifest: {e}"),
             Self::Parse(e) => write!(f, "invalid manifest: {e}"),
             Self::Serialize(e) => write!(f, "cannot serialize manifest: {e}"),
+            Self::UnsupportedEdition {
+                edition,
+                supported,
+            } => write!(
+                f,
+                "E_UNSUPPORTED_EDITION: hew.toml declares edition = \"{edition}\", which this build does not support (supported: {supported:?})"
+            ),
         }
     }
 }
@@ -91,6 +118,7 @@ impl std::error::Error for ManifestError {
             Self::Io(e) => Some(e),
             Self::Parse(e) => Some(e),
             Self::Serialize(e) => Some(e),
+            Self::UnsupportedEdition { .. } => None,
         }
     }
 }
@@ -153,9 +181,10 @@ pub struct Package {
     /// Glob patterns to include when publishing (overrides exclude).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include: Option<Vec<String>>,
-    /// Hew language edition (e.g. `"2026"`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub edition: Option<String>,
+    /// Hew language edition (e.g. `"2026"`). Defaults to the current edition
+    /// when absent from `hew.toml`; a future release will require it explicitly.
+    #[serde(default = "default_edition")]
+    pub edition: String,
     /// Minimum Hew compiler version required (e.g. `">=0.8.0"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hew: Option<String>,
@@ -245,6 +274,12 @@ impl HewManifest {
 pub fn parse_manifest(path: &Path) -> Result<HewManifest, ManifestError> {
     let text = std::fs::read_to_string(path)?;
     let manifest: HewManifest = toml::from_str(&text)?;
+    if !SUPPORTED_EDITIONS.contains(&manifest.package.edition.as_str()) {
+        return Err(ManifestError::UnsupportedEdition {
+            edition: manifest.package.edition.clone(),
+            supported: SUPPORTED_EDITIONS,
+        });
+    }
     Ok(manifest)
 }
 
@@ -269,7 +304,7 @@ pub fn write_manifest_with_template(
     template: ManifestTemplate,
 ) -> Result<(), ManifestError> {
     let content = format!(
-        "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"{}\"\n\n[dependencies]\n",
+        "[package]\nname = \"{name}\"\nedition = \"2026\"\nversion = \"0.1.0\"\ndescription = \"{}\"\n\n[dependencies]\n",
         template.description()
     );
     std::fs::write(path, content)?;
@@ -559,7 +594,7 @@ mod tests {
                 readme: None,
                 exclude: Some(vec!["target/*".to_string()]),
                 include: None,
-                edition: None,
+                edition: default_edition(),
                 hew: None,
             },
             dependencies: BTreeMap::new(),
@@ -616,7 +651,7 @@ mod tests {
                 readme: None,
                 exclude: None,
                 include: None,
-                edition: None,
+                edition: default_edition(),
                 hew: None,
             },
             dependencies: BTreeMap::new(),
@@ -707,8 +742,37 @@ mod tests {
             "hew = \">=0.8.0\"\n",
         ));
         let m = parse_manifest(f.path()).unwrap();
-        assert_eq!(m.package.edition.as_deref(), Some("2026"));
+        assert_eq!(m.package.edition, "2026");
         assert_eq!(m.package.hew.as_deref(), Some(">=0.8.0"));
+    }
+
+    #[test]
+    fn missing_edition_defaults_to_current() {
+        let f = write_temp(concat!(
+            "[package]\n",
+            "name = \"defpkg\"\n",
+            "version = \"0.1.0\"\n",
+        ));
+        let m = parse_manifest(f.path()).unwrap();
+        assert_eq!(m.package.edition, "2026");
+    }
+
+    #[test]
+    fn unsupported_edition_is_rejected() {
+        let f = write_temp(concat!(
+            "[package]\n",
+            "name = \"futurepkg\"\n",
+            "version = \"0.1.0\"\n",
+            "edition = \"2027\"\n",
+        ));
+        let err = parse_manifest(f.path()).expect_err("edition 2027 must be rejected");
+        match err {
+            ManifestError::UnsupportedEdition { edition, supported } => {
+                assert_eq!(edition, "2027");
+                assert_eq!(supported, SUPPORTED_EDITIONS);
+            }
+            other => panic!("expected UnsupportedEdition, got {other:?}"),
+        }
     }
 
     #[test]
@@ -764,7 +828,7 @@ mod tests {
                 readme: None,
                 exclude: None,
                 include: None,
-                edition: None,
+                edition: default_edition(),
                 hew: None,
             },
             dependencies: BTreeMap::new(),
@@ -791,7 +855,7 @@ mod tests {
                 readme: None,
                 exclude: None,
                 include: None,
-                edition: None,
+                edition: default_edition(),
                 hew: None,
             },
             dependencies: BTreeMap::new(),
@@ -833,7 +897,7 @@ mod tests {
                 readme: None,
                 exclude: None,
                 include: None,
-                edition: None,
+                edition: default_edition(),
                 hew: None,
             },
             dependencies: deps,

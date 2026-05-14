@@ -1798,9 +1798,22 @@ pub fn compile_program_to_msgpack(
     })
 }
 
+/// Hew language editions the compiler accepts. Sources in a package whose
+/// `hew.toml` names an edition outside this set are rejected before parsing.
+const SUPPORTED_EDITIONS: &[&str] = &["2026"];
+
+/// Edition assumed when `hew.toml` is absent or omits the `edition` field.
+const DEFAULT_EDITION: &str = "2026";
+
+fn default_edition() -> String {
+    DEFAULT_EDITION.to_string()
+}
+
 #[derive(Debug, Deserialize)]
 struct PackageSection {
     name: String,
+    #[serde(default = "default_edition")]
+    edition: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1839,7 +1852,21 @@ fn load_optional_toml<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, Fro
 }
 
 fn load_manifest(dir: &Path) -> Result<Option<TomlManifest>, FrontendFailure> {
-    load_optional_toml(&dir.join("hew.toml"))
+    let path = dir.join("hew.toml");
+    let manifest: Option<TomlManifest> = load_optional_toml(&path)?;
+    if let Some(m) = &manifest {
+        if let Some(package) = &m.package {
+            if !SUPPORTED_EDITIONS.contains(&package.edition.as_str()) {
+                return Err(FrontendFailure::message_only(format!(
+                    "Error: E_UNSUPPORTED_EDITION: {} declares edition = \"{}\", which this compiler does not support (supported: {:?})",
+                    path.display(),
+                    package.edition,
+                    SUPPORTED_EDITIONS
+                )));
+            }
+        }
+    }
+    Ok(manifest)
 }
 
 fn load_manifest_metadata(
@@ -1942,6 +1969,49 @@ mod tests {
         assert_eq!(
             load_package_name(dir.path()).expect("valid manifest should load"),
             None
+        );
+    }
+
+    #[test]
+    fn edition_2026_is_accepted() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(
+            dir.path(),
+            "[package]\nname = \"editpkg\"\nedition = \"2026\"\n",
+        );
+        assert_eq!(
+            load_package_name(dir.path()).expect("edition 2026 should load"),
+            Some("editpkg".to_string())
+        );
+    }
+
+    #[test]
+    fn missing_edition_defaults_to_current() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(dir.path(), "[package]\nname = \"defaultpkg\"\n");
+        assert_eq!(
+            load_package_name(dir.path()).expect("missing edition should default"),
+            Some("defaultpkg".to_string())
+        );
+    }
+
+    #[test]
+    fn unsupported_edition_is_rejected() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_toml(
+            dir.path(),
+            "[package]\nname = \"futurepkg\"\nedition = \"2027\"\n",
+        );
+        let err = load_package_name(dir.path()).expect_err("edition 2027 must be rejected");
+        assert!(
+            err.message.contains("E_UNSUPPORTED_EDITION"),
+            "missing structured code: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("2027"),
+            "missing edition in message: {}",
+            err.message
         );
     }
 

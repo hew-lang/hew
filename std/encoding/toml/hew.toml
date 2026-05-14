@@ -1,5 +1,6 @@
 [package]
 name = "std::encoding::toml"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::encoding::toml package"
 authors = ["Hew Contributors"]

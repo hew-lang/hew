@@ -1,5 +1,6 @@
 [package]
 name = "std::encoding::protobuf"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::encoding::protobuf package"
 authors = ["Hew Contributors"]

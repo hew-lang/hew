@@ -1011,7 +1011,7 @@ fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
                 authors: m.package.authors.clone().unwrap_or_default(),
                 deps: deps.clone(),
                 features: m.features.clone(),
-                edition: m.package.edition.clone(),
+                edition: Some(m.package.edition.clone()),
                 hew: m.package.hew.clone(),
                 keywords: m.package.keywords.clone(),
                 categories: m.package.categories.clone(),

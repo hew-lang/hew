@@ -1,2 +1,3 @@
 [package]
 name = "myapp"
+edition = "2026"

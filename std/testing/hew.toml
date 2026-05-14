@@ -1,5 +1,6 @@
 [package]
 name = "std::testing"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::testing package"
 authors = ["Hew Contributors"]

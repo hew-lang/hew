@@ -1,5 +1,6 @@
 [package]
 name = "std::net::websocket"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::net::websocket package"
 authors = ["Hew Contributors"]

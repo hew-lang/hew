@@ -85,6 +85,7 @@ adze install
 ```toml
 [package]
 name = "my-project"
+edition = "2026"
 version = "1.0.0"
 description = "A Hew project"
 authors = ["Your Name"]
@@ -96,6 +97,11 @@ repository = "https://github.com/user/project"
 "std::net::http" = "^1.0"
 "ecosystem::db::postgres" = "~2.0"
 ```
+
+The `edition` field selects the Hew language edition the package's sources
+target. Currently only `"2026"` is accepted; the compiler refuses to build a
+package that names an unsupported edition. When the field is omitted the
+current edition is assumed, but new manifests should set it explicitly.
 
 ## Lock File (adze.lock)
 

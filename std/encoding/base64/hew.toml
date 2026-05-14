@@ -1,5 +1,6 @@
 [package]
 name = "std::encoding::base64"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::encoding::base64 package"
 authors = ["Hew Contributors"]

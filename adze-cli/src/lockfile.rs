@@ -185,7 +185,7 @@ mod tests {
                 readme: None,
                 exclude: None,
                 include: None,
-                edition: None,
+                edition: crate::manifest::default_edition(),
                 hew: None,
             },
             dependencies: deps

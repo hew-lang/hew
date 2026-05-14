@@ -1,5 +1,6 @@
 [package]
 name = "std::crypto::password"
+edition = "2026"
 version = "0.1.0"
 description = "Hew std::crypto::password package"
 authors = ["Hew Contributors"]

@@ -1,4 +1,4 @@
-# Hew Language Specification (audited for v0.4.0)
+# Hew Language Specification
 
 Hew is a **high-performance, network-native, machine-code compiled** language for building long-lived services. Its design is anchored in four proven pillars:
 
@@ -8,6 +8,15 @@ Hew is a **high-performance, network-native, machine-code compiled** language fo
 - **Wire contracts with enforced schema evolution rules** (Protobuf best practices) ([protobuf.dev][4])
 
 This document specifies: goals, core semantics, type/effects model, module and trait systems, memory management, `machine` types, runtime state machines, compilation model, and an EBNF grammar sufficient to implement a working compiler and runtime.
+
+**Version label note:**
+
+Hew release versions and language specification revisions are separate tracks.
+The current compiler/CLI release alignment for this document is **v0.4.0**.
+The canonical grammar snapshots in [`grammar.ebnf`](./grammar.ebnf) and
+[`Hew.g4`](./Hew.g4) currently identify themselves as **v0.10.0**. The
+revision history at the end of this document records language/spec changes and
+may not match the shipped compiler release number.
 
 **Release alignment note (v0.2.2):**
 
@@ -5142,9 +5151,21 @@ If you want this to be directly executable as an engineering project, the next m
 
 ## Changelog
 
-### v0.4.0 (spec-v040-reaudit)
+### v0.10.0 (grammar-implementation audit)
 
-- **Header bumped** to `(audited for v0.4.0)`.
+- **Grammar snapshots updated to v0.10.0** — `docs/specs/grammar.ebnf` and
+  `docs/specs/Hew.g4` were audited against the parser implementation.
+- **Added grammar coverage** for `if let`, `while let`, labelled `for`, import
+  aliasing, enum struct variants, impl body type aliases, `as` casts, array
+  repeats, map literals, byte arrays, multi-trait `dyn`, negative literal
+  patterns, wire `since`, `#[wire] struct` declarations, pure trait methods,
+  associated type defaults, struct field attributes, and parenthesis-free /
+  module-qualified actor spawn forms.
+
+### v0.4.0 (compiler-release-alignment audit)
+
+- **Compiler release alignment recorded** — this document was re-audited against
+  the v0.4.0 compiler/runtime surface.
 - **`bytes` method table (§3.3.2)** — signatures updated from `i32`/`i64` to
   `int` throughout (`push`, `pop`, `get`, `set`, `len`, `contains`).
 - **`Vec<T>` impl sketch (§3.10.3)** — `len` and `get` updated from `i64` to

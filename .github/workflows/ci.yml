@@ -496,8 +496,14 @@ jobs:
         run: |
           brew install ninja libffi zstd
           LIBFFI_PREFIX="$(brew --prefix libffi)"
-          # TODO: remove once macOS ld error is resolved
-          echo "RUSTFLAGS=-L ${LIBFFI_PREFIX}/lib -Clink-arg=-Wl,-v ${RUSTFLAGS:-}" >> "$GITHUB_ENV"
+          # Apple's bundled ld (Xcode 15.4) ships libLTO 15.0.0, which cannot
+          # parse LLVM 22 bitcode attribute kinds embedded in llvm-sys-221's
+          # static libs. Use the ld64.lld that ships in the same upstream
+          # LLVM 22.1.5 tarball we already vendor (on PATH via setup-llvm).
+          # LLD doesn't auto-add libc++/libc++abi the way Apple's ld does, so
+          # link them explicitly — LTO of llvm-sys's C++ static libs pulls
+          # in operator new/delete and __cxa_* runtime symbols.
+          echo "RUSTFLAGS=-L ${LIBFFI_PREFIX}/lib -C link-arg=-fuse-ld=lld -C link-arg=-lc++ -C link-arg=-lc++abi ${RUSTFLAGS:-}" >> "$GITHUB_ENV"
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'

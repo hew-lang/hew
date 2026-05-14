@@ -5,13 +5,14 @@
 //! with full CFG, borrow, and drop implementations without changing the
 //! stage boundaries.
 
+pub mod dataflow;
 pub mod lower;
 pub mod model;
 
 pub use lower::lower_hir_module;
 pub use model::{
-    BasicBlock, BlockKind, BorrowKind, CheckedMirFunction, CoroutineSchema, DecisionFact, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck,
+    BasicBlock, BlockKind, BorrowKind, CheckedMirFunction, CmpPred, CoroutineSchema, DecisionFact,
+    DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck,
     MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator,
     ThirFunction,
 };

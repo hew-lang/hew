@@ -58,7 +58,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use hew_mir::{Instr, IrPipeline, Place, RawMirFunction, Terminator};
+use hew_mir::{CmpPred, Instr, IrPipeline, Place, RawMirFunction, Terminator};
 use hew_types::ResolvedTy;
 
 use inkwell::builder::Builder;
@@ -432,6 +432,66 @@ fn lower_instruction(fn_ctx: &FnCtx<'_>, instr: &Instr) -> CodegenResult<()> {
                 .builder
                 .build_store(dest_ptr, result)
                 .map_err(|e| CodegenError::Llvm(format!("arith store: {e:?}")))?;
+        }
+        Instr::IntCmp {
+            dest,
+            pred,
+            lhs,
+            rhs,
+        } => {
+            // Load both operands at their declared int type, compare with
+            // the predicate, zero-extend the i1 result to the dest's
+            // stored width. The dest's type is whatever HIR resolved for
+            // the comparison expression (today `ResolvedTy::Bool` -> i8
+            // per `primitive_to_llvm`); a later real `bool` type just
+            // narrows the dest width without changing this lowering.
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => return Err(CodegenError::FailClosed("IntCmp lhs is not an int".into())),
+            };
+            if rhs_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntCmp operands must share the same int type".into(),
+                ));
+            }
+            let dest_int = match dest_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => return Err(CodegenError::FailClosed("IntCmp dest is not an int".into())),
+            };
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "cmp_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("cmp lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "cmp_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("cmp rhs load: {e:?}")))?
+                .into_int_value();
+            let llvm_pred = match pred {
+                CmpPred::Eq => IntPredicate::EQ,
+                CmpPred::NotEq => IntPredicate::NE,
+                CmpPred::SignedLess => IntPredicate::SLT,
+                CmpPred::SignedLessEq => IntPredicate::SLE,
+                CmpPred::SignedGreater => IntPredicate::SGT,
+                CmpPred::SignedGreaterEq => IntPredicate::SGE,
+            };
+            let bit = fn_ctx
+                .builder
+                .build_int_compare(llvm_pred, lhs_v, rhs_v, "cmp_bit")
+                .map_err(|e| CodegenError::Llvm(format!("icmp: {e:?}")))?;
+            let widened = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(bit, dest_int, "cmp_zext")
+                .map_err(|e| CodegenError::Llvm(format!("cmp zext: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .map_err(|e| CodegenError::Llvm(format!("cmp store: {e:?}")))?;
+            let _ = ctx;
         }
         Instr::Move { dest, src } => {
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;

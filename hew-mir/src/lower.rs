@@ -7,10 +7,11 @@ use hew_hir::{
 use hew_parser::ast::BinaryOp;
 use hew_types::ResolvedTy;
 
+use crate::dataflow;
 use crate::model::{
-    BasicBlock, BlockKind, CheckedMirFunction, DecisionFact, DropPlan, ElabBlock, ElabDrop,
-    ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
+    BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropPlan, ElabBlock,
+    ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
 };
 
 /// Run Checked MIR's legality passes over a function's statement
@@ -23,112 +24,31 @@ use crate::model::{
 /// The `MirCheck::DecisionMapTotal` invariant fires if any
 /// `DecisionFact` in this function carries `Strategy::UnknownBlocked`.
 ///
-/// LOAD-BEARING INVARIANT — single-block CFG. The forward-scan over
-/// `builder.statements` is correct *only* while MIR is structurally
-/// CFG-flat (`HirExprKind::If` and `HirExprKind::Block` lower their
-/// arms inline rather than producing separate `BasicBlock`s with
-/// branching terminators — see `lower_value`). When CFG construction
-/// for `If`/`match` lands, this scan must be replaced by per-block
-/// dataflow: a flat-stream walk would false-positive on
-/// `consume(x)` appearing in mutually-exclusive arms (flattened to
-/// `consume; consume` looks like `UseAfterConsume`) and false-
-/// negative across siblings of a branch that consumes on only one
-/// path (the binding is removed from `linear_live` globally). The
-/// fixture corpus that names `linear_unconsumed_fall_through` /
-/// `linear_consumed_both_branches` exists to drive that follow-on
-/// work — it cannot meaningfully run under this implementation.
-/// LESSONS: boundary-fail-closed (don't assume the substrate is
-/// path-sensitive when the construction surface is single-block).
-fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
-    let mut checks = Vec::new();
+/// Delegates to `dataflow::analyze` which runs the four-state lattice
+/// (`Uninit / Live / Consumed / MaybeConsumed`) over the CFG's basic
+/// blocks via a forward fixpoint. Per-block transfer emits
+/// `InitialisedBeforeUse` on `Uninit` reads and `UseAfterConsume` on
+/// `Consumed`/`MaybeConsumed` reads; the inter-block meet rule is
+/// `Uninit ⊔ X = Uninit` (most-conservative). `If`-lowering (Slice 2)
+/// produces `Branch` + two arm blocks + a join block, so the
+/// path-sensitive cases that a flat-stream scan would mishandle
+/// (false-positive on mutually-exclusive `consume` arms; false-negative
+/// for a binding consumed on only one path) are handled correctly by
+/// the per-block fixpoint. LESSONS: `boundary-fail-closed` — verify
+/// the substrate is path-sensitive before relying on it for linear
+/// safety, and mandate property tests on meet rules before landing.
+fn check_function(
+    builder: &Builder,
+    blocks: &[BasicBlock],
+    _func: &HirFn,
+) -> dataflow::DataflowResult {
+    let mut result = dataflow::analyze(blocks, &builder.type_classes);
+    let checks = &mut result.checks;
 
-    // Pass 1: forward-scan the checker-authority statement stream.
-    // Track which bindings have been initialised (`Bind`) and which
-    // have been consumed (`Use` with `IntentKind::Consume` on a
-    // non-`BitCopy` type). A `Use` of an uninitialised binding is
-    // `InitialisedBeforeUse`; a `Use` of a consumed binding is
-    // `UseAfterConsume`. A `Linear` binding live at `Return` without
-    // being consumed is `MustConsume` — symmetric to `UseAfterConsume`,
-    // closing the move-checker's @linear-side proof obligation.
-    let mut initialised: HashSet<BindingId> = HashSet::new();
-    let mut consumed: HashMap<BindingId, hew_hir::SiteId> = HashMap::new();
-    // Linear binding ledger: name + type + the site at which the
-    // binding was introduced. Cleared when the binding is consumed.
-    let mut linear_live: HashMap<BindingId, (String, ResolvedTy)> = HashMap::new();
-    for statement in &builder.statements {
-        match statement {
-            MirStatement::Bind {
-                binding, name, ty, ..
-            } => {
-                initialised.insert(*binding);
-                consumed.remove(binding);
-                if ValueClass::of_ty(ty, &builder.type_classes) == ValueClass::Linear {
-                    linear_live.insert(*binding, (name.clone(), ty.clone()));
-                }
-            }
-            MirStatement::Use {
-                binding,
-                name,
-                site,
-                ty,
-                intent,
-            } => {
-                if !initialised.contains(binding) {
-                    checks.push(MirCheck::InitialisedBeforeUse {
-                        binding: *binding,
-                        name: name.clone(),
-                        use_site: *site,
-                    });
-                }
-                if let Some(consumed_at) = consumed.get(binding) {
-                    checks.push(MirCheck::UseAfterConsume {
-                        binding: *binding,
-                        name: name.clone(),
-                        consumed_at: *consumed_at,
-                        used_at: *site,
-                    });
-                }
-                if *intent == IntentKind::Consume
-                    && ValueClass::of_ty(ty, &builder.type_classes) != ValueClass::BitCopy
-                {
-                    consumed.insert(*binding, *site);
-                    linear_live.remove(binding);
-                }
-            }
-            MirStatement::Return { site, .. } => {
-                // Any `Linear` binding still live at a Return is an
-                // unconsumed `@linear` value reaching an exit. Emit
-                // `MustConsume` for each, anchored at the Return site
-                // (or `SiteId::default` if the Return synthesised no
-                // site — only happens on unit-returning trailing-stmt
-                // bodies with no tail expression).
-                // Sentinel SiteId(0) for unit-return tail-less bodies
-                // (no Return-site is constructed by the builder). The
-                // real exit-site projection lands when CFG construction
-                // surfaces in Cluster 4+.
-                let exit_site = site.unwrap_or(hew_hir::SiteId(0));
-                // Deterministic order: walk in BindingId order so
-                // diagnostics are stable across runs.
-                let mut ids: Vec<_> = linear_live.keys().copied().collect();
-                ids.sort();
-                for id in ids {
-                    if let Some((name, ty)) = linear_live.get(&id) {
-                        checks.push(MirCheck::MustConsume {
-                            binding: id,
-                            name: name.clone(),
-                            exit_site,
-                            ty: ty.clone(),
-                        });
-                    }
-                }
-            }
-            MirStatement::Evaluate { .. } | MirStatement::Drop { .. } => {}
-        }
-    }
-
-    // Pass 2: DecisionMapTotal. Every `DecisionFact` on this function
-    // must carry a concrete `Strategy` — `Strategy::UnknownBlocked` is
-    // a lowering escape valve that must never reach the emitter.
+    // DecisionMapTotal. Every `DecisionFact` on this function must
+    // carry a concrete `Strategy` — `Strategy::UnknownBlocked` is a
+    // lowering escape valve that must never reach the emitter. This
+    // pass is independent of the per-block dataflow.
     let offending: Vec<_> = builder
         .decisions
         .iter()
@@ -149,7 +69,7 @@ fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
     // when the construction surface for borrows, generators, and
     // actor sends lands.
 
-    checks
+    result
 }
 
 #[must_use]
@@ -204,22 +124,36 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     };
     builder.function_body(func);
 
+    // Drain the in-flight current block into a sealed `BasicBlock` with
+    // a `Terminator::Return`. Slice 1's flat lowering always produces a
+    // singleton blocks vector; Slice 2+ may surface multiple blocks
+    // when `If` (and later `Match` / loops) split the CFG. The order is
+    // monotone in block id.
+    let blocks = builder.finalize_blocks(Terminator::Return);
+    // THIR's `statements` is the union of every block's checker stream
+    // in CFG-construction order — the THIR snapshot's job is preserving
+    // the pre-CFG flat-stream shape for diagnostic readers that haven't
+    // been ported to block-aware iteration yet. Slice 3's per-block
+    // dataflow consumes `RawMirFunction.blocks` directly and doesn't
+    // touch this snapshot.
+    let thir_statements: Vec<MirStatement> = blocks
+        .iter()
+        .flat_map(|b| b.statements.iter().cloned())
+        .collect();
     let thir = ThirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
-        statements: builder.statements.clone(),
+        statements: thir_statements,
     };
-    let raw_block = BasicBlock {
-        id: 0,
-        statements: builder.statements.clone(),
-        instructions: builder.instructions.clone(),
-        terminator: Terminator::Return,
-    };
+    // `CheckedMirFunction` mirrors `RawMirFunction.blocks` directly
+    // (widened in Slice 2 from a single-block field to a vec). The
+    // elaborator + check_function consume the block vec; legacy
+    // single-block tests still see `blocks[0]` as the entry block.
     let raw = RawMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
         locals: builder.locals.clone(),
-        blocks: vec![raw_block.clone()],
+        blocks,
         decisions: builder.decisions.clone(),
     };
     // Checked MIR's `checks` field is populated by `check_function`
@@ -227,9 +161,12 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     // stream. The `MirDiagnostic` surface that the CLI rejects on is
     // projected from these checks — there is one source of truth for
     // move/borrow/init legality.
-    let checks = check_function(&builder, func);
-    let mut diagnostics: Vec<MirDiagnostic> =
-        checks.iter().filter_map(check_to_diagnostic).collect();
+    let dataflow_result = check_function(&builder, &raw.blocks, func);
+    let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
+        .checks
+        .iter()
+        .filter_map(check_to_diagnostic)
+        .collect();
 
     // Collect diagnostics emitted by the builder (e.g., Unsupported HIR nodes).
     diagnostics.append(&mut builder.diagnostics);
@@ -239,9 +176,9 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     let checked = CheckedMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
-        block: raw_block,
+        blocks: raw.blocks.clone(),
         decisions: builder.decisions.clone(),
-        checks,
+        checks: dataflow_result.checks.clone(),
     };
     // Drop-elaboration pass. Consumes the CheckedMirFunction we just
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
@@ -255,7 +192,7 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     // does not emit a Drop. The elaboration shape is exercised by
     // hew-mir's unit tests that hand-construct CheckedMirFunction
     // inputs with synthesized DecisionFact::value_class values.
-    let elaborated = elaborate(&checked, &builder);
+    let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
 
     LoweredFunction {
         thir,
@@ -352,15 +289,34 @@ fn push_unknown_type_diagnostic(
 
 #[derive(Debug, Default)]
 struct Builder {
-    /// Checker-authority stream: one `MirStatement` per Hew-level site
-    /// (`Bind`, `Use`, `Evaluate`, `Return`, `Drop`). Consumed by
-    /// `check_raw_mir` and the D10 / use-after-consume passes.
+    /// Checker-authority stream for the *current* basic block. Drained
+    /// into a `BasicBlock` when the cursor moves (`finish_current_block`)
+    /// or at function-body finalisation. Once a block is sealed it lives
+    /// in `pending_blocks` until the function's body walk completes.
     statements: Vec<MirStatement>,
-    /// Backend-authority stream: one `Instr` per machine-level value
-    /// movement. Consumed by `hew-codegen-rs::llvm`. Populated in lock-step
-    /// with `statements` by `lower_value` so the checker and the emitter
-    /// agree on what each `SiteId` resolves to.
+    /// Backend-authority stream for the *current* basic block. Populated
+    /// in lock-step with `statements` by `lower_value` so the checker
+    /// and the emitter agree on what each `SiteId` resolves to. Drained
+    /// at the same cursor-move site as `statements`.
     instructions: Vec<Instr>,
+    /// Completed basic blocks in construction order. Block id `0` is the
+    /// function's entry block; subsequent ids are monotone in allocation
+    /// order. The currently-being-built block (`current_block_id` /
+    /// `statements` / `instructions`) is appended at function-body
+    /// finalisation. Slice 1 leaves this empty for every function (the
+    /// cursor never moves under the CFG-flat lowering); Slice 2's `If`
+    /// lowering is the first writer.
+    pending_blocks: Vec<BasicBlock>,
+    /// Monotone counter for fresh `BasicBlock` ids. `alloc_block` returns
+    /// the next id without switching the cursor — the caller is
+    /// responsible for `finish_current_block(...)` + `start_block(id)`
+    /// at the right point in the lowering sequence.
+    next_block_id: u32,
+    /// Id of the block currently receiving `statements` / `instructions`.
+    /// Initialised to `0` (the entry block). Updated by
+    /// `start_block(id)` after a `finish_current_block(...)` seals the
+    /// previous block into `pending_blocks`.
+    current_block_id: u32,
     /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
     /// `Place::Local(i as u32)`.
     locals: Vec<ResolvedTy>,
@@ -388,6 +344,96 @@ impl Builder {
             .expect("function exceeds u32::MAX locals — impossible in Hew");
         self.locals.push(ty);
         Place::Local(id)
+    }
+
+    /// Allocate a fresh `BasicBlock` id without switching the cursor.
+    /// The caller invokes `finish_current_block(terminator)` to seal
+    /// the current block, then `start_block(id)` to route subsequent
+    /// `statements` / `instructions` into the new block.
+    ///
+    /// The very first `alloc_block` call returns id `1` because id `0`
+    /// is reserved for the function's entry block (the cursor starts
+    /// there at `Builder::default()`-time).
+    #[allow(
+        dead_code,
+        reason = "Slice 1 declares cursor helpers; Slice 2 is the first caller"
+    )]
+    fn alloc_block(&mut self) -> u32 {
+        // `next_block_id` starts at 0; bump to 1 the first time
+        // `alloc_block` is called (id 0 is the entry block, allocated by
+        // construction). After that, monotone increment.
+        if self.next_block_id == 0 {
+            self.next_block_id = 1;
+        }
+        let id = self.next_block_id;
+        self.next_block_id = self
+            .next_block_id
+            .checked_add(1)
+            .expect("function exceeds u32::MAX blocks — impossible in Hew");
+        id
+    }
+
+    /// Seal the current basic block with `terminator` and move its
+    /// statements + instructions into `pending_blocks`. The cursor is
+    /// left at the just-sealed block's id; `start_block(new_id)` must
+    /// be called before any further `statements.push` /
+    /// `instructions.push` routes into the new block.
+    #[allow(
+        dead_code,
+        reason = "Slice 1 declares cursor helpers; Slice 2 is the first caller"
+    )]
+    fn finish_current_block(&mut self, terminator: Terminator) {
+        let block = BasicBlock {
+            id: self.current_block_id,
+            statements: std::mem::take(&mut self.statements),
+            instructions: std::mem::take(&mut self.instructions),
+            terminator,
+        };
+        self.pending_blocks.push(block);
+    }
+
+    /// Move the cursor to `id`. `statements` and `instructions` must be
+    /// empty before this call — typically reached by following a
+    /// `finish_current_block(...)` which drains both. The new id is
+    /// recorded for the next `finish_current_block` call's
+    /// `BasicBlock.id` payload.
+    #[allow(
+        dead_code,
+        reason = "Slice 1 declares cursor helpers; Slice 2 is the first caller"
+    )]
+    fn start_block(&mut self, id: u32) {
+        debug_assert!(
+            self.statements.is_empty() && self.instructions.is_empty(),
+            "start_block must follow finish_current_block; \
+             current block has {} statements / {} instructions buffered",
+            self.statements.len(),
+            self.instructions.len(),
+        );
+        self.current_block_id = id;
+    }
+
+    /// Finalise the function's CFG by sealing the in-flight current
+    /// block with the provided terminator. Returns the full
+    /// `Vec<BasicBlock>` in id order. Slice 1 always returns a singleton
+    /// because no caller invokes `finish_current_block`/`start_block`
+    /// during the function-body walk; Slice 2's `If` lowering is the
+    /// first writer to produce a non-trivial CFG here.
+    fn finalize_blocks(&mut self, terminator: Terminator) -> Vec<BasicBlock> {
+        let last = BasicBlock {
+            id: self.current_block_id,
+            statements: std::mem::take(&mut self.statements),
+            instructions: std::mem::take(&mut self.instructions),
+            terminator,
+        };
+        let mut blocks = std::mem::take(&mut self.pending_blocks);
+        blocks.push(last);
+        // Sort by id so consumers can index by position when they want
+        // RPO-ish iteration. Construction order is already monotone
+        // because `alloc_block` is monotone, so this is a no-op in
+        // every Slice 1 callsite (single-block) and a stable order in
+        // Slice 2+.
+        blocks.sort_by_key(|b| b.id);
+        blocks
     }
 
     fn function_body(&mut self, func: &HirFn) {
@@ -519,7 +565,7 @@ impl Builder {
                 let lhs = self.lower_value(left);
                 let rhs = self.lower_value(right);
                 match (lhs, rhs) {
-                    (Some(lhs), Some(rhs)) => self.lower_binary(*op, lhs, rhs, &expr.ty),
+                    (Some(lhs), Some(rhs)) => self.lower_binary(*op, lhs, rhs, &expr.ty, expr.site),
                     _ => None,
                 }
             }
@@ -566,14 +612,7 @@ impl Builder {
                 condition,
                 then_expr,
                 else_expr,
-            } => {
-                let _ = self.lower_value(condition);
-                let _ = self.lower_value(then_expr);
-                if let Some(else_expr) = else_expr {
-                    let _ = self.lower_value(else_expr);
-                }
-                None
-            }
+            } => self.lower_if(condition, then_expr, else_expr.as_deref(), &expr.ty),
             HirExprKind::StructInit { fields, .. } => {
                 for (_, field) in fields {
                     let _ = self.lower_value(field);
@@ -604,9 +643,12 @@ impl Builder {
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Spine subset: only integer literals reach the backend in
-        // Cluster 1. Float/String/Bool/Char/Duration/Unit literals are out
-        // of scope (Cluster 2 takes String; Cluster 4 takes the rest).
+        // Spine subset: only integer + bool literals reach the backend in
+        // the CFG-construction lane. Float/String/Char/Duration/Unit
+        // literals remain out of scope (Cluster 2 takes String; Cluster 4
+        // takes the rest). Bool lands here because the CFG-construction
+        // surface needs a constructible condition Place for `If`:
+        // without bool literals, no non-trivial `If` condition compiles.
         // Fail closed so the emitter never produces a binary with an
         // uninitialised return slot (LESSONS `boundary-fail-closed`).
         let construct = match lit {
@@ -618,7 +660,21 @@ impl Builder {
                 });
                 return Some(dest);
             }
-            HirLiteral::Bool(_) => "bool literal",
+            HirLiteral::Bool(value) => {
+                // Bool lowers as an integer truth value (1 / 0) into the
+                // dest local's natural width. The dest local's type is
+                // whatever HIR resolved for the literal — `ResolvedTy::Bool`
+                // on this base, which the codegen maps to i8. The
+                // `ConstI64.value` is fed through the same store path as
+                // ConstI64 for integer literals; `Instr::ConstI64`'s
+                // emitter already truncates to the dest local's width.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::ConstI64 {
+                    dest,
+                    value: i64::from(*value),
+                });
+                return Some(dest);
+            }
             HirLiteral::Float(_) => "float literal",
             HirLiteral::String(_) => "string literal",
             HirLiteral::Char(_) => "char literal",
@@ -643,25 +699,156 @@ impl Builder {
         lhs: Place,
         rhs: Place,
         ty: &ResolvedTy,
+        site: hew_hir::SiteId,
     ) -> Option<Place> {
         let dest = self.alloc_local(ty.clone());
+        // Comparison binops: lower to `Instr::IntCmp` with a `CmpPred`
+        // discriminator. The result Place is allocated to whatever type
+        // HIR resolved for the expression (`ResolvedTy::Bool` for cmp
+        // ops); codegen widens the LLVM `i1` cmp result to the dest's
+        // stored width on the way to the store. Without this arm,
+        // `if 1 == 1 { ... }` cannot construct a condition Place for
+        // CFG-construction-lane `If` lowering — the boolean-condition
+        // pre-requisite called out by the cluster plan §1 / Slice 0.
+        let cmp_pred = match op {
+            BinaryOp::Equal => Some(CmpPred::Eq),
+            BinaryOp::NotEqual => Some(CmpPred::NotEq),
+            BinaryOp::Less => Some(CmpPred::SignedLess),
+            BinaryOp::LessEqual => Some(CmpPred::SignedLessEq),
+            BinaryOp::Greater => Some(CmpPred::SignedGreater),
+            BinaryOp::GreaterEqual => Some(CmpPred::SignedGreaterEq),
+            _ => None,
+        };
+        if let Some(pred) = cmp_pred {
+            self.instructions.push(Instr::IntCmp {
+                dest,
+                pred,
+                lhs,
+                rhs,
+            });
+            return Some(dest);
+        }
         let instr = match op {
             BinaryOp::Add => Instr::IntAdd { dest, lhs, rhs },
             BinaryOp::Subtract => Instr::IntSub { dest, lhs, rhs },
             BinaryOp::Multiply => Instr::IntMul { dest, lhs, rhs },
-            // Cluster 1 only supports +/-/* on integers. Anything else
-            // (Divide, Modulo, comparisons, logical ops, range, send,
-            // regex) falls outside the spine subset and the backend
-            // pipeline rejects it at the driver level via the
-            // `E_CUTOVER_UNSUPPORTED` reject path. Drop the dest local
-            // and return None so the caller propagates the absence.
+            // The spine subset still rejects Divide / Modulo / logical
+            // / shift / range / send / regex / bitwise binops. Previously
+            // this arm silently popped the dest local and returned
+            // `None`, letting the parent expression succeed with a
+            // missing producer (quiet fail-soft — caller's `decide`
+            // ran, `MirDiagnostic` did not). Fail closed now: drop the
+            // dest local, emit a `CutoverUnsupported` so the CLI
+            // rejection surface sees the offending construct, and
+            // return `None`. LESSONS `boundary-fail-closed`.
             _ => {
                 self.locals.pop();
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("binary operator `{op}`"),
+                        site,
+                    },
+                    note: "binary operator is recognised by HIR but not yet lowered \
+                           to the backend instruction stream"
+                        .to_string(),
+                });
                 return None;
             }
         };
         self.instructions.push(instr);
         Some(dest)
+    }
+
+    /// Lower an `If` expression into a real CFG with a `Branch`
+    /// terminator on the entry block, separate `then` / `else` blocks
+    /// each terminated by a `Goto join_bb`, and a join block that
+    /// receives the result value.
+    ///
+    /// The expression's value Place is a result-local *alloca'd before
+    /// the branch* — when each arm finishes lowering its tail
+    /// expression, the arm emits an `Instr::Move { dest: result_local,
+    /// src: arm_value }` before the `Goto`. The join block then loads
+    /// the value through the result local. This matches the existing
+    /// alloca-per-local pattern (`alloc_local`) and the codegen's
+    /// `place_pointer` lookup (each Place is a stack slot); LLVM's
+    /// mem2reg pass promotes the alloca to SSA at the LLVM layer if
+    /// the optimiser sees fit. Phi at MIR is a v0.6 refactor
+    /// (`R-CFG-V06-phi`).
+    ///
+    /// `else_expr: None` reaches here when the HIR types the If as
+    /// `ResolvedTy::Unit` (no else block). The else arm is still
+    /// emitted as a block that just `Goto join` — no Move, no value
+    /// written to `result_place`. Downstream code that loads from
+    /// `result_place` on the else path observes whatever the alloca
+    /// was initialised with (LLVM `undef` for an i8 unit-stand-in,
+    /// inconsequential because Unit's value is by definition never
+    /// observed). No special fail-closed needed.
+    fn lower_if(
+        &mut self,
+        condition: &HirExpr,
+        then_expr: &HirExpr,
+        else_expr: Option<&HirExpr>,
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        // Result local first, so it dominates every branch arm's Move.
+        // Allocated even for Unit Ifs to keep a single Place-shape
+        // contract on the value-bearing return; codegen never loads a
+        // Unit result so the placeholder's initial value is unused.
+        let result_place = self.alloc_local(result_ty.clone());
+
+        // Lower the condition in the entry (current) block. Receive a
+        // Place holding the truth value; codegen's `Terminator::Branch`
+        // emitter loads it and compares non-zero.
+        // Condition lowering failed (CutoverUnsupported or similar) —
+        // propagate by returning None via `?`. The diagnostic already
+        // lives on `self.diagnostics`, so the CLI rejects the program;
+        // the half-built If does not need to seal the current block.
+        // Leaving the result_local dangling is benign — no Branch/Goto
+        // refers to it.
+        let cond_place = self.lower_value(condition)?;
+
+        // Allocate the three CFG blocks: then arm, else arm, join.
+        let then_bb = self.alloc_block();
+        let else_bb = self.alloc_block();
+        let join_bb = self.alloc_block();
+
+        // Seal the entry block with a Branch on the cond Place.
+        self.finish_current_block(Terminator::Branch {
+            cond: cond_place,
+            then_target: then_bb,
+            else_target: else_bb,
+        });
+
+        // Then arm.
+        self.start_block(then_bb);
+        let then_value = self.lower_value(then_expr);
+        if let Some(src) = then_value {
+            self.instructions.push(Instr::Move {
+                dest: result_place,
+                src,
+            });
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        // Else arm. `else_expr: None` (the HIR-types-as-Unit case)
+        // emits a Goto-only block — no Move, no value contributed.
+        self.start_block(else_bb);
+        if let Some(else_expr) = else_expr {
+            let else_value = self.lower_value(else_expr);
+            if let Some(src) = else_value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        // Join. Subsequent lowering continues in this block; the If
+        // expression's value Place is the result_local (loads happen
+        // through the same Place that both arms wrote into).
+        self.start_block(join_bb);
+        Some(result_place)
     }
 
     fn decide(&mut self, expr: &HirExpr) {
@@ -812,14 +999,15 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
 ///      ordered list of non-`BitCopy` bindings introduced by `let`).
 ///      The ledger is already maintained in source/declaration order
 ///      with bindings removed when consumed (`mark_binding_moved`).
-///   2. For every `Terminator::Return` exit (the only terminator the
-///      current single-block spine constructs), emit a `DropPlan`
-///      whose `drops` are the live owned-local list in reverse
-///      declaration order (LIFO).
+///   2. For every `Terminator::Return` exit, emit a `DropPlan` whose
+///      `drops` are the live owned-local list in reverse declaration
+///      order (LIFO). `If`-lowering (Slice 2) constructs
+///      `Terminator::Branch` and `Terminator::Goto` in addition to
+///      `Terminator::Return`; `enumerate_exits` handles all three.
 ///   3. For declared-but-not-constructed terminators (`Panic`, `Yield`,
-///      `Send`, `Goto`, `Branch`, `Call`), the pass enumerates them
-///      with an empty drop plan when reached — Cluster 4+ adds the
-///      construction surfaces that turn these into populated plans.
+///      `Send`, `Call`), the pass enumerates them with an empty drop
+///      plan when reached — later cluster additions add the construction
+///      surfaces that turn these into populated plans.
 ///   4. A `BlockKind::Cleanup` block is emitted ONLY when a
 ///      `Terminator::Panic` is constructed in the function's CFG
 ///      (currently no spine surface — declared scaffold). Same for
@@ -837,13 +1025,20 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
 ///   - All other classes -> no drop emitted (`BitCopy`, `CowValue`, `View`,
 ///     `PersistentShare`, `Unknown` — `Unknown` is itself an upstream
 ///     rejection).
-fn elaborate(checked: &CheckedMirFunction, builder: &Builder) -> ElaboratedMirFunction {
+fn elaborate(
+    checked: &CheckedMirFunction,
+    builder: &Builder,
+    flat_statements: &[MirStatement],
+    dataflow_result: &dataflow::DataflowResult,
+) -> ElaboratedMirFunction {
     // Statements stream: retained for snapshot/compat continuity with
     // the pre-Cluster-3 elaborator. Every non-`BitCopy` owned local
     // gets a checker-stream `Drop` entry in reverse-declaration order;
     // the structural drop plan in `drop_plans` is the authoritative
-    // per-`ExitPath` answer.
-    let mut elaborated_statements = builder.statements.clone();
+    // per-`ExitPath` answer. The flat stream is the union of every
+    // block's `statements` in construction order — Slice 1 maintains
+    // pre-CFG snapshot continuity by feeding the same union here.
+    let mut elaborated_statements: Vec<MirStatement> = flat_statements.to_vec();
     for (binding, name, ty) in builder.owned_locals.iter().rev() {
         elaborated_statements.push(MirStatement::Drop {
             binding: *binding,
@@ -852,12 +1047,23 @@ fn elaborate(checked: &CheckedMirFunction, builder: &Builder) -> ElaboratedMirFu
         });
     }
 
+    // Function-wide LIFO drop sequence — one ElabDrop per
+    // AffineResource owned local in reverse declaration order. The
+    // per-Return-block exit live-set then narrows this sequence to
+    // bindings still Live at that block's exit (drops fire only for
+    // bindings whose state is Live at the exit; Consumed / Uninit
+    // skip; MaybeConsumed is rejected upstream by the move-checker).
     let lifo_drops = build_lifo_drops(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.type_classes,
     );
-    let (elab_blocks, drop_plans) = enumerate_exits(&checked.block, &lifo_drops);
+    let (elab_blocks, drop_plans) = enumerate_exits(
+        &checked.blocks,
+        &lifo_drops,
+        &dataflow_result.exit_states,
+        &builder.binding_locals,
+    );
 
     ElaboratedMirFunction {
         name: checked.name.clone(),
@@ -906,18 +1112,21 @@ fn build_lifo_drops(
                 };
                 // Resolve to the binding's real backend place. Falling
                 // back to `ReturnSlot` for an unmapped binding would
-                // drop the wrong slot, so we treat a missing entry as
-                // a builder invariant violation in debug builds and
-                // emit ReturnSlot in release as the historical
-                // placeholder (preserved so this change does not
-                // regress snapshot-stability if a previously-unmapped
-                // surface exists in another test). Today's call sites
-                // always populate `binding_locals` for any binding
-                // that reaches `owned_locals`.
-                let place = binding_locals
-                    .get(binding)
-                    .copied()
-                    .unwrap_or(Place::ReturnSlot);
+                // drop the wrong slot — fail closed instead. The
+                // `stmt` handler always populates `binding_locals` for
+                // any binding that reaches `owned_locals` (see
+                // `HirStmtKind::Let` arm), so this expect is a builder
+                // invariant. A future surface that grows
+                // `owned_locals` ahead of `binding_locals` must wire
+                // a real `Place` before reaching here. LESSONS:
+                // boundary-fail-closed.
+                let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                    panic!(
+                        "build_lifo_drops invariant: binding {binding:?} is in owned_locals \
+                         but missing from binding_locals; lowering must wire a Place before \
+                         the drop-elaboration pass observes the binding"
+                    )
+                });
                 drops.push(ElabDrop {
                     place,
                     ty: ty.clone(),
@@ -939,100 +1148,173 @@ fn build_lifo_drops(
 }
 
 /// Build the elaborated block list + per-`ExitPath` drop plans for a
-/// single-block function. The spine constructs only `Terminator::Return`;
-/// the remaining variants are enumerated for forward compatibility so
-/// future construction surfaces don't have to retrofit the dispatch.
+/// function's CFG. Every basic block becomes one `ElabBlock` of
+/// `BlockKind::Normal`; `Terminator::Panic` synthesises a sibling
+/// `BlockKind::Cleanup` block. Each block's terminator maps to one
+/// `(ExitPath, DropPlan)` entry. `Return`-terminated blocks narrow
+/// the function-wide LIFO `lifo` sequence to bindings whose state at
+/// that block's exit is `Live` — bindings already `Consumed` on
+/// every reaching path do not need their drop fired again
+/// (LESSONS `raii-null-after-move`). `MaybeConsumed` at a Return
+/// exit is rejected upstream by the move-checker; the elaborator
+/// treats it as if `Live` for drop-plan purposes, but the program
+/// would have already been rejected before reaching codegen so the
+/// drop list is informational.
+#[allow(
+    clippy::too_many_lines,
+    reason = "enumerate_exits is a flat match over Terminator variants \
+              with per-arm payload construction; the line count is the \
+              variant count, not deep nesting"
+)]
 fn enumerate_exits(
-    block: &BasicBlock,
+    blocks: &[BasicBlock],
     lifo: &[ElabDrop],
+    exit_states: &std::collections::HashMap<
+        u32,
+        std::collections::BTreeMap<hew_hir::BindingId, dataflow::BindingState>,
+    >,
+    binding_locals: &HashMap<BindingId, Place>,
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
-    let block_id = block.id;
-    let mut blocks = vec![ElabBlock {
-        id: block_id,
-        kind: BlockKind::Normal,
-        drops: Vec::new(),
-        successor: None,
-    }];
-    let drops = lifo.to_vec();
-    let plan = match &block.terminator {
-        Terminator::Return => (
-            ExitPath::Return { block: block_id },
-            DropPlan {
-                drops: drops.clone(),
-            },
-        ),
-        Terminator::Goto { target } => (
-            ExitPath::Goto {
-                block: block_id,
-                target: *target,
-            },
-            DropPlan::default(),
-        ),
-        Terminator::Branch {
-            cond: _,
-            then_target,
-            else_target,
-        } => (
-            ExitPath::Branch {
-                block: block_id,
-                then_target: *then_target,
-                else_target: *else_target,
-            },
-            DropPlan::default(),
-        ),
-        Terminator::Call {
-            callee,
-            args: _,
-            dest: _,
-            next,
-        } => (
-            ExitPath::Call {
-                block: block_id,
-                callee: callee.clone(),
-                next: *next,
-            },
-            DropPlan::default(),
-        ),
-        Terminator::Panic => {
-            // Cleanup block: same LIFO drop plan as the normal exit at
-            // this scope depth; no successor (trap is terminal). Cleanup
-            // ids start past the highest normal-block id — single-block
-            // spine puts the cleanup at id 1.
-            blocks.push(ElabBlock {
-                id: block_id + 1,
-                kind: BlockKind::Cleanup,
-                drops: drops.clone(),
-                successor: None,
-            });
-            (
-                ExitPath::Panic { block: block_id },
-                DropPlan {
-                    drops: drops.clone(),
-                },
-            )
-        }
-        Terminator::Yield { value: _, next } => (
-            ExitPath::Yield {
-                block: block_id,
-                next: *next,
-            },
-            DropPlan::default(),
-        ),
-        Terminator::Send {
-            actor: _,
-            value: _,
-            next,
-        } => (
-            // `actor` is a Place; the ExitPath::Send slot carries the
-            // callee name. Spine has no Send construction surface, so
-            // this is unreachable in practice — empty placeholder.
-            ExitPath::Send {
-                block: block_id,
-                actor: String::new(),
-                next: *next,
-            },
-            DropPlan::default(),
-        ),
+    // Track the highest block id observed so cleanup-block ids can
+    // start past it. Slice 2 onwards may emit multiple non-trivial
+    // blocks; reserving cleanup ids past the max keeps invariants from
+    // the single-block era intact.
+    let max_normal_id = blocks.iter().map(|b| b.id).max().unwrap_or(0);
+    let mut elab_blocks: Vec<ElabBlock> = blocks
+        .iter()
+        .map(|b| ElabBlock {
+            id: b.id,
+            kind: BlockKind::Normal,
+            drops: Vec::new(),
+            successor: None,
+        })
+        .collect();
+    let mut next_cleanup_id = max_normal_id.saturating_add(1);
+    let mut plans: Vec<(ExitPath, DropPlan)> = Vec::new();
+    let drops_template = lifo.to_vec();
+
+    // Map each owned-local's Place back to its BindingId so the
+    // per-exit filter can consult exit_states. The drops in `lifo`
+    // already carry the binding's Place but not its id; reverse the
+    // builder's `binding_locals` (BindingId -> Place) is the cleanest
+    // bridge. Builds only as large as there are owned bindings.
+    let place_to_binding: std::collections::HashMap<Place, BindingId> = binding_locals
+        .iter()
+        .map(|(binding, place)| (*place, *binding))
+        .collect();
+
+    let drops_for_exit = |block_id: u32| -> Vec<ElabDrop> {
+        let Some(state_map) = exit_states.get(&block_id) else {
+            // No dataflow result for this block (defensive — every
+            // reachable block has an exit_state entry after
+            // analyze). Fall back to the function-wide LIFO.
+            return drops_template.clone();
+        };
+        drops_template
+            .iter()
+            .filter(|drop| match place_to_binding.get(&drop.place) {
+                Some(binding) => matches!(
+                    state_map
+                        .get(binding)
+                        .copied()
+                        .unwrap_or(dataflow::BindingState::Uninit),
+                    dataflow::BindingState::Live | dataflow::BindingState::MaybeConsumed(_)
+                ),
+                // No binding mapping → conservatively keep the drop.
+                // This arm guards against future surfaces that build
+                // drops outside the binding_locals registry; the
+                // current `build_lifo_drops` `expect()` rules out
+                // this path today, but keep it for forward safety.
+                None => true,
+            })
+            .cloned()
+            .collect()
     };
-    (blocks, vec![plan])
+
+    for block in blocks {
+        let block_id = block.id;
+        let plan = match &block.terminator {
+            Terminator::Return => (
+                ExitPath::Return { block: block_id },
+                DropPlan {
+                    drops: drops_for_exit(block_id),
+                },
+            ),
+            Terminator::Goto { target } => (
+                ExitPath::Goto {
+                    block: block_id,
+                    target: *target,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Branch {
+                cond: _,
+                then_target,
+                else_target,
+            } => (
+                ExitPath::Branch {
+                    block: block_id,
+                    then_target: *then_target,
+                    else_target: *else_target,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Call {
+                callee,
+                args: _,
+                dest: _,
+                next,
+            } => (
+                ExitPath::Call {
+                    block: block_id,
+                    callee: callee.clone(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Panic => {
+                // Cleanup block: same LIFO drop plan as the normal exit
+                // at this scope depth; no successor (trap is terminal).
+                let cleanup_id = next_cleanup_id;
+                next_cleanup_id = next_cleanup_id.saturating_add(1);
+                elab_blocks.push(ElabBlock {
+                    id: cleanup_id,
+                    kind: BlockKind::Cleanup,
+                    drops: drops_template.clone(),
+                    successor: None,
+                });
+                (
+                    ExitPath::Panic { block: block_id },
+                    DropPlan {
+                        drops: drops_template.clone(),
+                    },
+                )
+            }
+            Terminator::Yield { value: _, next } => (
+                ExitPath::Yield {
+                    block: block_id,
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Send {
+                actor: _,
+                value: _,
+                next,
+            } => (
+                // `actor` is a Place; the ExitPath::Send slot carries
+                // the callee name. Spine has no Send construction
+                // surface, so this is unreachable in practice — empty
+                // placeholder name.
+                ExitPath::Send {
+                    block: block_id,
+                    actor: String::new(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+        };
+        plans.push(plan);
+    }
+    (elab_blocks, plans)
 }

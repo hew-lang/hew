@@ -274,12 +274,22 @@ fn collect_unknown_type_diagnostics(
     let mut reported = HashSet::new();
 
     for param in &func.params {
-        push_unknown_type_diagnostics(&param.ty, &mut reported, diagnostics);
+        push_unknown_type_diagnostics(&param.ty, &builder.type_classes, &mut reported, diagnostics);
     }
-    push_unknown_type_diagnostics(&func.return_ty, &mut reported, diagnostics);
+    push_unknown_type_diagnostics(
+        &func.return_ty,
+        &builder.type_classes,
+        &mut reported,
+        diagnostics,
+    );
 
     for decision in &builder.decisions {
-        push_unknown_type_diagnostics(&decision.ty, &mut reported, diagnostics);
+        push_unknown_type_diagnostics(
+            &decision.ty,
+            &builder.type_classes,
+            &mut reported,
+            diagnostics,
+        );
         if decision.strategy == Strategy::UnknownBlocked
             && named_type_names(&decision.ty).is_empty()
         {
@@ -294,18 +304,33 @@ fn collect_unknown_type_diagnostics(
             | MirStatement::Use { ty, .. }
             | MirStatement::Return { ty, .. }
             | MirStatement::Drop { ty, .. } => {
-                push_unknown_type_diagnostics(ty, &mut reported, diagnostics);
+                push_unknown_type_diagnostics(
+                    ty,
+                    &builder.type_classes,
+                    &mut reported,
+                    diagnostics,
+                );
             }
         }
     }
 }
 
+/// Emit `UnknownType` diagnostics for each Named type in `ty` that is absent
+/// from `type_classes`. Names present in the registry are known — they carry
+/// an `@linear` or `@resource` marker — and must not be treated as unknown.
+/// This implements §3.1 "Checker authority survives downstream": the MIR layer
+/// consumes the HIR checker's `type_classes` decision rather than re-deriving
+/// Named-type knownness independently.
 fn push_unknown_type_diagnostics(
     ty: &ResolvedTy,
+    type_classes: &hew_hir::TypeClassTable,
     reported: &mut HashSet<String>,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
     for name in named_type_names(ty) {
+        if type_classes.contains_key(&name) {
+            continue;
+        }
         push_unknown_type_diagnostic(name, reported, diagnostics);
     }
 }

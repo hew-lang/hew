@@ -78,6 +78,17 @@ fn linear_unconsumed_single_exit_fires_must_consume() {
         "MustConsume should fire for unconsumed @linear binding `t`; checks: {:?}",
         func.checks
     );
+    // A declared `#[linear]` type must not produce a spurious UnknownType
+    // diagnostic — the MIR layer must honour the HIR checker's type_classes
+    // registry rather than treating every Named type as unknown.
+    assert!(
+        !pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UnknownType { name } if name == "Txn"
+        )),
+        "registered @linear type Txn must not produce UnknownType: {:?}",
+        pipeline.diagnostics
+    );
 }
 
 #[test]

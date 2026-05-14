@@ -2889,14 +2889,27 @@ select {
 }
 ```
 
-**The four forms (closed set):**
+**The four forms (closed set).** Each form is fully specified by four
+columns: what the winning arm binds, how the winning arm propagates a
+non-success outcome at the source, how the runtime cleans up *that* arm
+when a different arm wins (loser cleanup), and how the runtime cleans up
+the arm when the enclosing scope is cancelled while the `select` is still
+pending (outer-cancellation cleanup). Sources are the same in both
+cleanup columns; the difference is which side initiates the teardown.
 
-| Form                       | Binds                  | Source type | Loser-arm cleanup                                                                                                                                       |
-| -------------------------- | ---------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<id> from next(<stream>)` | `id: T`                | `Stream<T>` | Pending read is cancelled; the stream itself is **not consumed**. The stream binding remains usable in the enclosing scope.                              |
-| `<id> from ask <call>`     | `id: <reply-type>`     | actor ask   | The ask is withdrawn from the target actor's mailbox if not yet dispatched; if dispatched, the reply (when it arrives) is discarded.                     |
-| `<id> from await <task>`   | `id: T`                | `Task<T>`   | The task is cancelled with `TaskError::Cancelled`. The cancellation is observed at the task's next safepoint (§4.5).                                     |
-| `after <duration>`         | (no binding)           | timer       | The timer is cancelled. No effect propagates.                                                                                                            |
+| Form                       | Winning bind / type             | Winning error or trap at the source                                                                                                                                                                                       | Loser cleanup (a different arm won)                                                                                                                                                                       | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                                                              |
+| -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<id> from next(<stream>)` | `id: Option<T>` for `Stream<T>` | The stream's own error surface — if the stream reports an error on next, the winning arm sees it on the stream's terms. The stream binding remains usable.                                                                | Pending read is withdrawn from the stream; the stream itself is **not consumed** and remains usable in the enclosing scope.                                                                              | Same as loser cleanup: pending read withdrawn, stream binding remains usable for the cancellation handler.                                                  |
+| `<id> from ask <call>`     | `id: <reply-type>` per ask      | `AskError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
+| `<id> from await <task>`   | `id: T` for `Task<T>`           | The awaited task wins **only** when it completes with `Ok(T)`. If the task instead resolves to the unnamed cancellation `Err` per §4.4, that `Err` propagates through the `select` site as if the surrounding scope had taken the `Err` itself; the `select` does not treat the cancelled task as a winning arm. Traps in the awaited task propagate as traps through the `select` site (§4.4). | The task is cancelled at its next safepoint (§4.5). The resulting `Err` is consumed by the `select` site and not surfaced; the awaitable handle is torn down.                                            | The task is cancelled at its next safepoint and the awaitable handle is torn down; the outer cancellation propagates through the `select` site as usual. |
+| `after <duration>`         | no binding; arm type is `()`-shaped at the source | None. Timers cannot fail or trap in edition 2026.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
+
+The `from await` row resolves the apparent tension between §4.4 (which
+types `await` as `Result<T, _>`) and the `select` arm binding `id: T`:
+`from await` is "successful completion only". Cancellation and trap
+outcomes of the awaited task are *not* winning completions; they
+propagate through the `select` site by the same rule that propagates
+them out of any other safepoint in the enclosing scope.
 
 **Semantics:**
 
@@ -2931,8 +2944,12 @@ select {
 } : T
 ```
 
-The bound identifiers (`p1: A`, `p2: B`, `p3: C`) are in scope only
-inside their own `=>` expressions.
+The bound identifiers are in scope only inside their own `=>`
+expression. Their static types follow the table above: `p1: Option<A>`
+for `from next` (so `None` is a legitimate winning value indicating the
+stream observed EOF on that call), `p2: B` for `from ask`, `p3: C` for
+`from await` (the `Ok` payload; cancellation and traps propagate per the
+table), and no binding for `after`.
 
 **Why sealed?**
 

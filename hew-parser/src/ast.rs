@@ -707,6 +707,22 @@ pub struct ConstDecl {
     pub doc_comment: Option<String>,
 }
 
+/// Ownership discipline marker placed on a type via `#[resource]` or `#[linear]`.
+///
+/// - `Resource`: type holds an external resource; the runtime implicitly calls
+///   `fn close(consuming self) -> Result<(), E>` on scope exit.
+/// - `Linear`: single-owner type with no implicit drop; every consuming method
+///   declared on the type exhausts it; all live bindings must be consumed on
+///   every exit path.
+/// - `None`: ordinary type — no ownership discipline enforced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ResourceMarker {
+    #[default]
+    None,
+    Resource,
+    Linear,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeDecl {
     #[serde(default)]
@@ -723,6 +739,21 @@ pub struct TypeDecl {
     /// When true, this enum is heap-allocated behind a pointer, enabling recursive types.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_indirect: bool,
+    /// Ownership discipline marker from `#[resource]` or `#[linear]`.
+    #[serde(default, skip_serializing_if = "ResourceMarker::is_none")]
+    pub resource_marker: ResourceMarker,
+    /// Names of methods declared with a `consuming self` receiver in this type body.
+    /// Populated by the parser; used by the type checker to validate ownership rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consuming_methods: Vec<String>,
+}
+
+impl ResourceMarker {
+    /// Returns `true` when the marker is `None` (used for serde skip).
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -942,6 +973,8 @@ impl WireDecl {
                 min_version: None,
             }),
             is_indirect: false,
+            resource_marker: ResourceMarker::None,
+            consuming_methods: Vec::new(),
         }
     }
 }

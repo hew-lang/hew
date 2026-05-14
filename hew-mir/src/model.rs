@@ -237,10 +237,9 @@ pub struct ElaboratedMirFunction {
     /// across the function. Spine-only functions carry a single
     /// `ExitPath::Return` with an empty `DropPlan`.
     pub drop_plans: Vec<(ExitPath, DropPlan)>,
-    /// Generator state schema. Declared but not constructed by Cluster 3.
-    /// `None` on every non-generator function; the field exists so
-    /// Cluster 4's generator state-machine lowering has a slot to fill.
-    // PROBE-AMBIGUITY: Cluster 4 fills
+    /// Generator state schema. `None` on every non-generator function;
+    /// the field is a reserved slot for generator state-machine lowering.
+    // DROP-TODO: populate when generator construction surface lands
     pub coroutine: Option<CoroutineSchema>,
 }
 

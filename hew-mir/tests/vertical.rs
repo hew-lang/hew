@@ -1,5 +1,208 @@
-use hew_hir::{lower_program, verify_hir, ResolutionCtx};
+use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
 use hew_mir::{lower_hir_module, MirCheck, MirDiagnosticKind, MirStatement};
+
+// ---------- @resource / @linear surface ----------
+//
+// These tests exercise the user-source surface for `#[resource]` and
+// `#[linear]` ownership-discipline markers. The substrate they ride
+// on:
+//   - parser carries `TypeDecl.resource_marker` + `consuming_methods`
+//   - HIR lowers `Item::TypeDecl` into `HirItem::TypeDecl` and emits
+//     `ResourceMissingClose` / `LinearNoConsumingMethods` diagnostics
+//     on structurally invalid declarations
+//   - HIR populates `HirModule.type_classes` so that
+//     `ValueClass::of_ty(Named{T})` resolves to `Linear` /
+//     `AffineResource` when `T` carries the corresponding marker
+//   - MIR's existing forward-scan `MustConsume` check fires when a
+//     `Linear` binding reaches a `Return` site without being consumed
+//
+// What this surface CANNOT exercise today (deferred to a follow-on
+// cluster — method-call HIR lowering, `?` operator, and runtime Drop
+// dispatch):
+//   - calling a consuming method (`t.commit()`) to satisfy a `Linear`
+//     binding's must-consume obligation
+//   - `?`-bearing fixtures (`resource_early_close_propagates_err`)
+//   - emitting a binary that calls `close(consuming self)` on scope
+//     exit — codegen `Instr::Drop { drop_fn: Some(_) }` is fail-closed
+//     per the substrate-PR hardening
+
+#[test]
+fn linear_unconsumed_single_exit_fires_must_consume() {
+    // A `#[linear]` binding live at the implicit return fires
+    // `MirCheck::MustConsume`. No consuming method is needed in the
+    // body to drive the check — only the marker registration that
+    // makes `ValueClass::of_ty(Named{Txn})` resolve to `Linear`.
+    let src = r"
+        #[linear]
+        type Txn {
+            id: int
+            fn commit(consuming self) -> int { 0 }
+        }
+        fn main() -> int {
+            let t = Txn { id: 0 };
+            42
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    // No HIR-validation diagnostics: `Txn` has a consuming method.
+    assert!(
+        !output.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            HirDiagnosticKind::LinearNoConsumingMethods { .. }
+                | HirDiagnosticKind::ResourceMissingClose { .. }
+        )),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "verify diagnostics: {verify:?}");
+    let pipeline = lower_hir_module(&output.module);
+
+    let func = pipeline
+        .checked_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main is in checked_mir");
+    let must_consume = func.checks.iter().find_map(|check| match check {
+        MirCheck::MustConsume { name, .. } if name == "t" => Some(()),
+        _ => None,
+    });
+    assert!(
+        must_consume.is_some(),
+        "MustConsume should fire for unconsumed @linear binding `t`; checks: {:?}",
+        func.checks
+    );
+    // A declared `#[linear]` type must not produce a spurious UnknownType
+    // diagnostic — the MIR layer must honour the HIR checker's type_classes
+    // registry rather than treating every Named type as unknown.
+    assert!(
+        !pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UnknownType { name } if name == "Txn"
+        )),
+        "registered @linear type Txn must not produce UnknownType: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn linear_no_consuming_methods_declared_fires_hir_diagnostic() {
+    // `#[linear]` type whose body declares zero `consuming self`
+    // methods is structurally invalid: no exit path can ever exhaust
+    // a binding of this type. HIR lowering emits
+    // `LinearNoConsumingMethods` at type registration.
+    let src = r"
+        #[linear]
+        type Bad {
+            x: int
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    let diag = output.diagnostics.iter().find(|d| {
+        matches!(d.kind, HirDiagnosticKind::LinearNoConsumingMethods { ref name } if name == "Bad")
+    });
+    assert!(
+        diag.is_some(),
+        "LinearNoConsumingMethods should fire for `Bad`; diagnostics: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn linear_with_consuming_method_emits_no_diagnostic() {
+    // A `#[linear]` type that declares at least one `consuming self` method
+    // is structurally valid; HIR must not emit `LinearNoConsumingMethods`.
+    let src = r"
+        #[linear]
+        type Token {
+            id: int
+            fn consume(consuming self) -> int { 0 }
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::LinearNoConsumingMethods { .. })),
+        "valid @linear type must not produce LinearNoConsumingMethods: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn resource_missing_close_method_fires_hir_diagnostic() {
+    // `#[resource]` type whose body has no method named `close`
+    // declared with `consuming self`. The implicit-drop contract
+    // requires this method; HIR lowering rejects.
+    let src = r"
+        #[resource]
+        type Sock {
+            fd: int
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    let diag = output.diagnostics.iter().find(|d| {
+        matches!(d.kind, HirDiagnosticKind::ResourceMissingClose { ref name } if name == "Sock")
+    });
+    assert!(
+        diag.is_some(),
+        "ResourceMissingClose should fire for `Sock`; diagnostics: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn resource_with_close_method_emits_no_diagnostic() {
+    // A `#[resource]` type that declares `close(consuming self)` satisfies
+    // the implicit-drop contract; HIR must not emit `ResourceMissingClose`.
+    let src = r"
+        #[resource]
+        type File {
+            fd: int
+            fn close(consuming self) -> int { 0 }
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::ResourceMissingClose { .. })),
+        "valid @resource type must not produce ResourceMissingClose: {:?}",
+        output.diagnostics
+    );
+}
 
 fn pipeline(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);

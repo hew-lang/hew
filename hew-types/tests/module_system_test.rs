@@ -490,6 +490,8 @@ fn test_pub_type_accessible_qualified() {
         doc_comment: None,
         wire: None,
         is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     };
     let import = make_user_import(
         &["myapp", "config"],
@@ -527,6 +529,8 @@ fn test_pub_type_import_conflicting_with_local_type_errors() {
         doc_comment: None,
         wire: None,
         is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     };
     let imported_type = TypeDecl {
         visibility: Visibility::Pub,
@@ -538,6 +542,8 @@ fn test_pub_type_import_conflicting_with_local_type_errors() {
         doc_comment: None,
         wire: None,
         is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        consuming_methods: Vec::new(),
     };
     let import = make_user_import(
         &["myapp", "config"],

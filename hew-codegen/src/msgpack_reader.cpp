@@ -626,6 +626,14 @@ static ast::TypeAliasDecl parseTypeAliasDecl(const msgpack::object &obj) {
   return result;
 }
 
+static ast::ResourceMarker parseResourceMarker(const msgpack::object &obj) {
+  auto s = getString(obj);
+  if (s == "None") return ast::ResourceMarker::None;
+  if (s == "Resource") return ast::ResourceMarker::Resource;
+  if (s == "Linear") return ast::ResourceMarker::Linear;
+  fail("unknown ResourceMarker: " + s);
+}
+
 static ast::TypeDeclKind parseTypeDeclKind(const msgpack::object &obj) {
   auto s = getString(obj);
   if (s == "Struct") return ast::TypeDeclKind::Struct;

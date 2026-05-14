@@ -30,6 +30,14 @@ impl Verifier {
                     }
                     self.block(&func.body);
                 }
+                HirItem::TypeDecl(decl) => {
+                    // Type declarations contribute only their HirNodeId
+                    // uniqueness to the verifier — they carry no bindings,
+                    // sites, or expressions to validate. The marker /
+                    // consuming-method validations fire upstream in
+                    // `lower_type_decl`.
+                    self.node(decl.node, decl.span.clone());
+                }
             }
         }
     }

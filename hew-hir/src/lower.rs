@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    BinaryOp, Block, Expr, FnDecl, Item, Literal, Pattern, Program, Spanned, Stmt, TypeExpr,
+    BinaryOp, Block, Expr, FnDecl, Item, Literal, Pattern, Program, ResourceMarker, Spanned, Stmt,
+    TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::ResolvedTy;
 
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
 use crate::node::{
-    HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt,
-    HirStmtKind,
+    HirBinding, HirBlock, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLiteral, HirModule,
+    HirStmt, HirStmtKind, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -59,10 +60,44 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
     // Discard first-pass diagnostics; the second pass will re-emit any real ones.
     ctx.diagnostics.clear();
 
-    // Second pass: lower function bodies with full signature knowledge.
-    let mut items = Vec::new();
+    // Second pass: lower type declarations and populate the per-module
+    // type-class registry. Stored here so the source-order pass can emit them
+    // in program order without a second lowering call. Function bodies depend
+    // on type markers (so `ValueClass::of_ty` resolves `Named` types
+    // correctly), but type-decl bodies do not depend on function signatures,
+    // so this pre-pass can safely run before the combined item pass below.
+    let mut type_decl_cache: HashMap<*const hew_parser::ast::TypeDecl, HirTypeDecl> =
+        HashMap::new();
+    for (item, span) in &program.items {
+        if let Item::TypeDecl(decl) = item {
+            let hir_decl = ctx.lower_type_decl(decl, span.clone());
+            let close_method = if hir_decl.marker == ResourceMarker::Resource {
+                hir_decl
+                    .consuming_methods
+                    .iter()
+                    .find(|m| m.as_str() == "close")
+                    .cloned()
+            } else {
+                None
+            };
+            ctx.type_classes
+                .insert(hir_decl.name.clone(), (hir_decl.marker, close_method));
+            type_decl_cache.insert(decl as *const _, hir_decl);
+        }
+    }
+
+    // Third pass: emit all items in source order now that both fn signatures
+    // and type markers are fully resolved.
+    let mut items: Vec<HirItem> = Vec::new();
     for (item, span) in &program.items {
         match item {
+            Item::TypeDecl(decl) => {
+                // Retrieve the already-lowered decl so diagnostics are not
+                // emitted a second time.
+                if let Some(hir_decl) = type_decl_cache.remove(&(decl as *const _)) {
+                    items.push(HirItem::TypeDecl(hir_decl));
+                }
+            }
             Item::Function(func) => {
                 items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
             }
@@ -71,7 +106,10 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
     }
 
     LowerOutput {
-        module: HirModule { items },
+        module: HirModule {
+            items,
+            type_classes: ctx.type_classes,
+        },
         diagnostics: ctx.diagnostics,
     }
 }
@@ -82,6 +120,10 @@ struct LowerCtx {
     scopes: Vec<HashMap<String, (BindingId, ResolvedTy)>>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
+    /// Per-named-type marker + close-method registry. Pre-populated from
+    /// every `Item::TypeDecl` before function bodies lower so that
+    /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
+    type_classes: crate::value_class::TypeClassTable,
     diagnostics: Vec<HirDiagnostic>,
 }
 
@@ -120,6 +162,92 @@ impl LowerCtx {
             params,
             return_ty,
             body,
+            span,
+        }
+    }
+
+    fn lower_type_decl(&mut self, decl: &TypeDecl, span: std::ops::Range<usize>) -> HirTypeDecl {
+        // Generic resource/linear types are rejected — the type→class map is
+        // keyed by name, not by instantiation. This rule belongs at the
+        // checker boundary (LESSONS `checker-output-boundary`); HIR is the
+        // first place the marker is durable, so the check lands here.
+        if decl.resource_marker != ResourceMarker::None && decl.type_params.is_some() {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::ResourceGenericUnsupported {
+                    name: decl.name.clone(),
+                },
+                span.clone(),
+                "`#[resource]` / `#[linear]` types cannot have type parameters in v0.5",
+            ));
+        }
+
+        match decl.resource_marker {
+            ResourceMarker::Resource => {
+                // `#[resource]` must declare `close(consuming self)`.
+                let has_close = decl
+                    .consuming_methods
+                    .iter()
+                    .any(|name| name.as_str() == "close");
+                if !has_close {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::ResourceMissingClose {
+                            name: decl.name.clone(),
+                        },
+                        span.clone(),
+                        "`#[resource]` type must declare `fn close(consuming self) -> ...` \
+                         in its body; the implicit drop contract dispatches to this method",
+                    ));
+                }
+            }
+            ResourceMarker::Linear => {
+                // `#[linear]` must declare at least one consuming method.
+                if decl.consuming_methods.is_empty() {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::LinearNoConsumingMethods {
+                            name: decl.name.clone(),
+                        },
+                        span.clone(),
+                        "`#[linear]` type must declare at least one `consuming self` method; \
+                         without one no exit path could exhaust a binding of this type",
+                    ));
+                }
+            }
+            ResourceMarker::None => {}
+        }
+
+        // Carry the field set so dump-hir and future analysis have something
+        // to reason about; methods are out of scope for v0.5 MIR lowering
+        // and stay on the parser-side `TypeBodyItem::Method`.
+        let mut fields = Vec::new();
+        for item in &decl.body {
+            if let TypeBodyItem::Field {
+                name,
+                ty,
+                span: field_span,
+                ..
+            } = item
+            {
+                fields.push(HirField {
+                    name: name.clone(),
+                    ty: self.lower_type(ty),
+                    span: field_span.clone(),
+                });
+            }
+            // `TypeBodyItem::Method` is not lowered into HIR in v0.5 — the
+            // method-call expression form has no HIR/MIR lowering yet, so
+            // method bodies cannot be exercised. Their *declared names* are
+            // captured upstream as `TypeDecl.consuming_methods` and travel
+            // on `HirTypeDecl.consuming_methods`. `TypeBodyItem::Variant`
+            // belongs to enum bodies and is similarly out of slice scope.
+        }
+
+        HirTypeDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            name: decl.name.clone(),
+            marker: decl.resource_marker,
+            consuming_methods: decl.consuming_methods.clone(),
+            fields,
             span,
         }
     }
@@ -340,7 +468,7 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ty),
+            value_class: ValueClass::of_ty(&ty, &self.type_classes),
             ty,
             intent,
             kind,

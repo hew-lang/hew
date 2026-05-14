@@ -61,12 +61,13 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
     ctx.diagnostics.clear();
 
     // Second pass: lower type declarations and populate the per-module
-    // type-class registry. Type-decl bodies don't depend on function
-    // signatures, but function bodies depend on type markers (so
-    // `ValueClass::of_ty` resolves `Named` types correctly during the
-    // function pass). Ordering: type-decls before function bodies.
-    let mut items: Vec<HirItem> = Vec::new();
-    let mut type_decl_indices: HashMap<String, usize> = HashMap::new();
+    // type-class registry. Stored here so the source-order pass can emit them
+    // in program order without a second lowering call. Function bodies depend
+    // on type markers (so `ValueClass::of_ty` resolves `Named` types
+    // correctly), but type-decl bodies do not depend on function signatures,
+    // so this pre-pass can safely run before the combined item pass below.
+    let mut type_decl_cache: HashMap<*const hew_parser::ast::TypeDecl, HirTypeDecl> =
+        HashMap::new();
     for (item, span) in &program.items {
         if let Item::TypeDecl(decl) = item {
             let hir_decl = ctx.lower_type_decl(decl, span.clone());
@@ -81,29 +82,28 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
             };
             ctx.type_classes
                 .insert(hir_decl.name.clone(), (hir_decl.marker, close_method));
-            type_decl_indices.insert(hir_decl.name.clone(), items.len());
-            items.push(HirItem::TypeDecl(hir_decl));
+            type_decl_cache.insert(decl as *const _, hir_decl);
         }
     }
 
-    // Third pass: lower function bodies with full signature + type-class
-    // knowledge. Functions and type-decls are interleaved in the final
-    // `items` vec but type-decls are always recorded first so they appear
-    // before any function that constructs values of them; this also
-    // mirrors typical source order in fixtures.
+    // Third pass: emit all items in source order now that both fn signatures
+    // and type markers are fully resolved.
+    let mut items: Vec<HirItem> = Vec::new();
     for (item, span) in &program.items {
         match item {
+            Item::TypeDecl(decl) => {
+                // Retrieve the already-lowered decl so diagnostics are not
+                // emitted a second time.
+                if let Some(hir_decl) = type_decl_cache.remove(&(decl as *const _)) {
+                    items.push(HirItem::TypeDecl(hir_decl));
+                }
+            }
             Item::Function(func) => {
                 items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
-            }
-            Item::TypeDecl(_) => {
-                // Already lowered in the type-decl pass above.
             }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
     }
-    // Suppress unused-warning until a future pass needs the index.
-    let _ = type_decl_indices;
 
     LowerOutput {
         module: HirModule {

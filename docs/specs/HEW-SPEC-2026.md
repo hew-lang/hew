@@ -1244,7 +1244,7 @@ performance.
 - **Arena optimisation for message handlers.** The compiler may allocate
   message-handler temporaries in an arena and bulk-free them when the
   handler returns. The arena path applies only to values that do not
-  carry a drop side effect (§3.7.9). For values that do, the destructor
+  carry a drop side effect (§3.7.8). For values that do, the destructor
   runs individually.
 - **Copy elision.** When sending messages, the compiler may optimise away
   copies if the sender provably does not use the value after send.
@@ -1422,23 +1422,75 @@ must be acknowledged, GPU command buffers — `@linear`.
 
 ##### 3.7.8.4 Interaction with cancellation and supervision
 
-A `@resource` value owned by a child task whose enclosing `fork {}` is
-cancelled has its drop run on the unwinding edge of the CFG; the implicit
-`close()` discards the error as usual.
+`@resource` and `@linear` differ in how their obligations interact with
+each of the four teardown paths the language exposes. The rules below
+are normative; the move-checker (for `@linear`) and drop elaboration
+(for `@resource`) enforce them at the cited stage.
 
-A `@linear` value in the same situation is a compile-time problem the
-checker reports at the cancellation site: the value's consuming method
-must appear on every reachable exit path including the cancellation
-unwind. In practice, `@linear` values are typically allocated inside a
-function whose error paths consume them explicitly, so the diagnostic
-fires at definition time rather than at cancellation propagation time.
+**Path 1 — Lexical task cancellation.** A `fork {}` child is cancelled
+at a safepoint (§4.5) while holding the value:
 
-When an actor with a `@resource` field is supervised through a restart,
-the runtime drops the actor's heap, which runs each `@resource`'s
-implicit close. A `@linear` field on an actor is admitted only if the
-actor's terminating `receive fn` (its draining handler, supervised
-shutdown handler, or its `on_stop` body) consumes it. The move-checker
-verifies this at actor-declaration time.
+- `@resource`: implicit `close()` runs on the cancellation-unwind edge
+  of the CFG, in reverse construction order. The result is discarded as
+  with any other implicit drop. The cancellation continues to propagate.
+- `@linear`: the consuming method must appear on every reachable exit
+  path including the cancellation-unwind edge. The move-checker reports
+  the missing consume at the cancellation site (in practice, at
+  definition time of the surrounding function), so the diagnostic fires
+  before the program ever runs. There is no "cancellation forgives the
+  obligation" rule.
+
+**Path 2 — Graceful actor drain.** The actor's supervisor or
+`actor.shutdown()` call runs the actor's terminating handler (`on_stop`,
+or the supervised shutdown handler):
+
+- `@resource` fields: each field's implicit `close()` runs in
+  declaration order after the terminating handler returns. The handler
+  may also close them explicitly via `f.close()?` to surface errors; an
+  already-closed `@resource` is a use-after-consume diagnostic on any
+  subsequent reference.
+- `@linear` fields: the move-checker requires that every reachable exit
+  path of the terminating handler consume each `@linear` field via one
+  of its declared consuming methods. The check runs at actor-declaration
+  time; an actor whose declared terminating handler cannot statically
+  consume every `@linear` field is a compile error.
+
+**Path 3 — Supervised actor crash (handler trap that bypasses the
+terminating handler).** A trap raised by any handler restarts the
+actor under the supervisor's policy. The terminating handler is *not*
+guaranteed to run on this path; only heap teardown is:
+
+- `@resource` fields: implicit `close()` runs as part of heap teardown
+  during the restart. Errors are discarded per the `@resource` contract.
+- `@linear` fields: a crash bypasses the consume path the move-checker
+  relied on in Path 2. Edition 2026 resolves this conservatively: a
+  `@linear` field is admitted on an actor only when the field's type
+  *also* satisfies `@resource` semantics, so heap teardown invokes the
+  implicit drop on the crash path. A bare `@linear` field whose consume
+  path can be bypassed by a supervised restart is a compile error at
+  actor-declaration time. A future edition may relax this with an
+  explicit consuming-handler attribute that the runtime guarantees to
+  invoke on crash (see HEW-FUTURE.md §1.7).
+
+**Path 4 — Outer trap propagation.** A trap unwinds through stack
+frames holding the value (distinct from cooperative cancellation,
+which respects safepoints):
+
+- `@resource`: implicit `close()` runs best-effort on the unwind edge;
+  drop elaboration places the call on the trap-cleanup path the same
+  way it places it on the normal cleanup path. Trap unwind continues.
+- `@linear`: the consume obligation cannot be satisfied on a trap path
+  because a trap is, by definition, unrecoverable. The move-checker
+  does not require `@linear` consume on trap-only edges; instead, the
+  value's storage is reclaimed by the runtime without invoking any
+  consuming method. A `@linear` type whose author needs trap-safe
+  cleanup must additionally satisfy `@resource` so its implicit close
+  runs on the trap edge.
+
+These four paths are the only teardown paths edition 2026 commits to.
+Any new teardown surface added by a future edition (for example,
+checkpoint snapshots, hot-swap upgrades) must extend this table before
+it is admitted.
 
 ---
 
@@ -2158,7 +2210,7 @@ rely on RAII.
 > See HEW-FUTURE.md §3 for `std::text::regex` — targeted for v0.6+
 > alongside the stdlib port-forward. The current `regex.Pattern` typed
 > handle uses explicit `free()` for release; the next edition migrates it
-> to a `@resource`-annotated type with RAII handles (§3.7.9).
+> to a `@resource`-annotated type with RAII handles (§3.7.8).
 
 ---
 
@@ -2381,8 +2433,6 @@ value.
 ---
 
 ## 4. Effects, IO, and Async Semantics
-
-**Provisional (as of 2026-04-17).** This section is under active revision pending resolution of the I/O subsystem (#1236) and related sub-issues on cancellation semantics (#1243), actor I/O integration (#1239), and backpressure (milestone #3). Features marked "not currently implemented" or "parses today; no user-facing examples" below are parseable by the compiler today but may not be fully implemented end-to-end. Consult `examples/` for ground-truth usage before relying on them. This section will be updated after #1236's resolution to reflect the final design.
 
 This section defines Hew's concurrency model within actors. Hew distinguishes between:
 
@@ -2612,19 +2662,8 @@ The following points are safepoints where cancellation is checked automatically:
 
 When cancellation fires at a safepoint, the runtime initiates **stack unwinding** with a `Cancelled` payload. All `defer` blocks and `Drop` implementations run during unwinding, ensuring deterministic resource cleanup.
 
-**`#[noncancellable]` for critical sections (not currently implemented):**
-
-```hew
-#[noncancellable]
-fn commit_transaction(tx: Transaction) -> Result<(), Error> {
-    // This function will NOT be interrupted by cancellation.
-    // Cancellation is deferred until after this function returns.
-    // NOTE: This attribute is parses today but is not yet fully implemented end-to-end.
-    tx.write_log()?;
-    tx.commit()?;
-    Ok(())
-}
-```
+> See HEW-FUTURE.md §1.2 for `#[noncancellable]` — targeted beyond
+> edition 2026 alongside the broader cancellation-token vocabulary.
 
 **Cancellation propagation:**
 
@@ -2638,7 +2677,6 @@ When a fork-block is cancelled:
 **Cancellation does NOT:**
 
 - Forcibly terminate running code between safepoints.
-- Interrupt `#[noncancellable]` sections.
 - Affect tasks in other fork-blocks or other actors.
 
 **Example with cleanup:**
@@ -2889,14 +2927,27 @@ select {
 }
 ```
 
-**The four forms (closed set):**
+**The four forms (closed set).** Each form is fully specified by four
+columns: what the winning arm binds, how the winning arm propagates a
+non-success outcome at the source, how the runtime cleans up *that* arm
+when a different arm wins (loser cleanup), and how the runtime cleans up
+the arm when the enclosing scope is cancelled while the `select` is still
+pending (outer-cancellation cleanup). Sources are the same in both
+cleanup columns; the difference is which side initiates the teardown.
 
-| Form                       | Binds                  | Source type | Loser-arm cleanup                                                                                                                                       |
-| -------------------------- | ---------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<id> from next(<stream>)` | `id: T`                | `Stream<T>` | Pending read is cancelled; the stream itself is **not consumed**. The stream binding remains usable in the enclosing scope.                              |
-| `<id> from ask <call>`     | `id: <reply-type>`     | actor ask   | The ask is withdrawn from the target actor's mailbox if not yet dispatched; if dispatched, the reply (when it arrives) is discarded.                     |
-| `<id> from await <task>`   | `id: T`                | `Task<T>`   | The task is cancelled with `TaskError::Cancelled`. The cancellation is observed at the task's next safepoint (§4.5).                                     |
-| `after <duration>`         | (no binding)           | timer       | The timer is cancelled. No effect propagates.                                                                                                            |
+| Form                       | Winning bind / type             | Winning error or trap at the source                                                                                                                                                                                       | Loser cleanup (a different arm won)                                                                                                                                                                       | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                                                              |
+| -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<id> from next(<stream>)` | `id: Option<T>` for `Stream<T>` | The stream's own error surface — if the stream reports an error on next, the winning arm sees it on the stream's terms. The stream binding remains usable.                                                                | Pending read is withdrawn from the stream; the stream itself is **not consumed** and remains usable in the enclosing scope.                                                                              | Same as loser cleanup: pending read withdrawn, stream binding remains usable for the cancellation handler.                                                  |
+| `<id> from ask <call>`     | `id: <reply-type>` per ask      | `AskError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
+| `<id> from await <task>`   | `id: T` for `Task<T>`           | The awaited task wins **only** when it completes with `Ok(T)`. If the task instead resolves to the unnamed cancellation `Err` per §4.4, that `Err` propagates through the `select` site as if the surrounding scope had taken the `Err` itself; the `select` does not treat the cancelled task as a winning arm. Traps in the awaited task propagate as traps through the `select` site (§4.4). | The task is cancelled at its next safepoint (§4.5). The resulting `Err` is consumed by the `select` site and not surfaced; the awaitable handle is torn down.                                            | The task is cancelled at its next safepoint and the awaitable handle is torn down; the outer cancellation propagates through the `select` site as usual. |
+| `after <duration>`         | no binding; arm type is `()`-shaped at the source | None. Timers cannot fail or trap in edition 2026.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
+
+The `from await` row resolves the apparent tension between §4.4 (which
+types `await` as `Result<T, _>`) and the `select` arm binding `id: T`:
+`from await` is "successful completion only". Cancellation and trap
+outcomes of the awaited task are *not* winning completions; they
+propagate through the `select` site by the same rule that propagates
+them out of any other safepoint in the enclosing scope.
 
 **Semantics:**
 
@@ -2931,8 +2982,12 @@ select {
 } : T
 ```
 
-The bound identifiers (`p1: A`, `p2: B`, `p3: C`) are in scope only
-inside their own `=>` expressions.
+The bound identifiers are in scope only inside their own `=>`
+expression. Their static types follow the table above: `p1: Option<A>`
+for `from next` (so `None` is a legitimate winning value indicating the
+stream observed EOF on that call), `p2: B` for `from ask`, `p3: C` for
+`from await` (the `Ok` payload; cancellation and traps propagate per the
+table), and no binding for `after`.
 
 **Why sealed?**
 
@@ -4213,7 +4268,7 @@ If you want this to be directly executable as an engineering project, the next m
   declares `edition = "2026"`. Compiler version (`hew 0.5.x`) and edition
   track independently. See §1.3.
 - **Resource markers.** `@resource` and `@linear` annotations replace the
-  v0.4.0 explicit-teardown carve-out (§3.7.9). `@resource` types get an
+  v0.4.0 explicit-teardown carve-out (§3.7.8). `@resource` types get an
   implicit drop that calls a declared `close(consuming self)` method;
   `@linear` types must be consumed via a declared consuming method and have
   no implicit drop.

@@ -450,11 +450,22 @@ fn lower_instruction(fn_ctx: &FnCtx<'_>, instr: &Instr) -> CodegenResult<()> {
                 .build_store(dest_ptr, loaded)
                 .map_err(|e| CodegenError::Llvm(format!("move store: {e:?}")))?;
         }
-        Instr::Drop { place: _, ty: _ } => {
-            // Cluster 1 emits Drop as a no-op. Real Drop emission with
-            // cleanup CFG edges, `@hew_string_drop` calls, and panic
-            // unwind paths is Cluster 3. The probe's `@hew_string_drop`
-            // pattern is the reference for that work.
+        Instr::Drop {
+            place: _,
+            ty: _,
+            drop_fn: _,
+        } => {
+            // Spine emission: Drop is a no-op on the integer-only spine,
+            // where every `@resource`/`@linear`-bearing function fails the
+            // ValueClass match in lower_value. The richer `drop_fn` field
+            // (Cluster 3) carries the `@resource::close` method name when
+            // `@resource` types reach the spine subset; the emitter wires
+            // it to a call instruction at that point. For now `drop_fn`
+            // is `None` on every Drop construction reachable from the
+            // current ladder, so this arm is structurally unreachable on
+            // a working build — the explicit arm exists so the match is
+            // exhaustive without a wildcard (LESSONS:
+            // exhaustive-traversal-and-lowering).
             let _ = ctx;
         }
     }

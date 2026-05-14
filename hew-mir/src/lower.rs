@@ -8,9 +8,9 @@ use hew_parser::ast::BinaryOp;
 use hew_types::ResolvedTy;
 
 use crate::model::{
-    BasicBlock, CheckedMirFunction, DecisionFact, ElaboratedMirFunction, Instr, IrPipeline,
-    MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy,
-    Terminator, ThirFunction,
+    BasicBlock, BlockKind, CheckedMirFunction, DecisionFact, DropPlan, ElabBlock, ElabDrop,
+    ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck, MirDiagnostic, MirDiagnosticKind,
+    MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
 };
 
 /// Run Checked MIR's legality passes over a function's statement
@@ -30,14 +30,24 @@ fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
     // have been consumed (`Use` with `IntentKind::Consume` on a
     // non-`BitCopy` type). A `Use` of an uninitialised binding is
     // `InitialisedBeforeUse`; a `Use` of a consumed binding is
-    // `UseAfterConsume`.
+    // `UseAfterConsume`. A `Linear` binding live at `Return` without
+    // being consumed is `MustConsume` — symmetric to `UseAfterConsume`,
+    // closing the move-checker's @linear-side proof obligation.
     let mut initialised: HashSet<BindingId> = HashSet::new();
     let mut consumed: HashMap<BindingId, hew_hir::SiteId> = HashMap::new();
+    // Linear binding ledger: name + type + the site at which the
+    // binding was introduced. Cleared when the binding is consumed.
+    let mut linear_live: HashMap<BindingId, (String, ResolvedTy)> = HashMap::new();
     for statement in &builder.statements {
         match statement {
-            MirStatement::Bind { binding, .. } => {
+            MirStatement::Bind {
+                binding, name, ty, ..
+            } => {
                 initialised.insert(*binding);
                 consumed.remove(binding);
+                if ValueClass::of_ty(ty) == ValueClass::Linear {
+                    linear_live.insert(*binding, (name.clone(), ty.clone()));
+                }
             }
             MirStatement::Use {
                 binding,
@@ -63,11 +73,37 @@ fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
                 }
                 if *intent == IntentKind::Consume && ValueClass::of_ty(ty) != ValueClass::BitCopy {
                     consumed.insert(*binding, *site);
+                    linear_live.remove(binding);
                 }
             }
-            MirStatement::Evaluate { .. }
-            | MirStatement::Return { .. }
-            | MirStatement::Drop { .. } => {}
+            MirStatement::Return { site, .. } => {
+                // Any `Linear` binding still live at a Return is an
+                // unconsumed `@linear` value reaching an exit. Emit
+                // `MustConsume` for each, anchored at the Return site
+                // (or `SiteId::default` if the Return synthesised no
+                // site — only happens on unit-returning trailing-stmt
+                // bodies with no tail expression).
+                // Sentinel SiteId(0) for unit-return tail-less bodies
+                // (no Return-site is constructed by the builder). The
+                // real exit-site projection lands when CFG construction
+                // surfaces in Cluster 4+.
+                let exit_site = site.unwrap_or(hew_hir::SiteId(0));
+                // Deterministic order: walk in BindingId order so
+                // diagnostics are stable across runs.
+                let mut ids: Vec<_> = linear_live.keys().copied().collect();
+                ids.sort();
+                for id in ids {
+                    if let Some((name, ty)) = linear_live.get(&id) {
+                        checks.push(MirCheck::MustConsume {
+                            binding: id,
+                            name: name.clone(),
+                            exit_site,
+                            ty: ty.clone(),
+                        });
+                    }
+                }
+            }
+            MirStatement::Evaluate { .. } | MirStatement::Drop { .. } => {}
         }
     }
 
@@ -179,20 +215,19 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         decisions: builder.decisions.clone(),
         checks,
     };
-    let mut elaborated_statements = builder.statements.clone();
-    for (binding, name, ty) in builder.owned_locals.iter().rev() {
-        elaborated_statements.push(MirStatement::Drop {
-            binding: *binding,
-            name: name.clone(),
-            ty: ty.clone(),
-        });
-    }
-    let elaborated = ElaboratedMirFunction {
-        name: func.name.clone(),
-        return_ty: func.return_ty.clone(),
-        statements: elaborated_statements,
-        decisions: builder.decisions,
-    };
+    // Drop-elaboration pass. Consumes the CheckedMirFunction we just
+    // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
+    // are the authoritative description of what fires on every exit.
+    //
+    // The integer-only spine never lowers `@resource` or `@linear`
+    // bindings (no construction surface yet for those types — see
+    // R-C3.5), so on the current ladder `owned_locals` is empty
+    // whenever the function passed type-checking AND the only
+    // non-BitCopy class reaching MIR is `CowValue` (e.g. String) which
+    // does not emit a Drop. The elaboration shape is exercised by
+    // hew-mir's unit tests that hand-construct CheckedMirFunction
+    // inputs with synthesized DecisionFact::value_class values.
+    let elaborated = elaborate(&checked, &builder);
 
     LoweredFunction {
         thir,
@@ -581,7 +616,9 @@ impl Builder {
         }
         let strategy = match expr.value_class {
             ValueClass::CowValue => Strategy::CowShare,
-            ValueClass::AffineResource => Strategy::Move,
+            // `@linear` and `@resource` (AffineResource) both move by default;
+            // `MirCheck::MustConsume` rejects unconsumed `@linear` exits.
+            ValueClass::AffineResource | ValueClass::Linear => Strategy::Move,
             ValueClass::Unknown => Strategy::UnknownBlocked,
             ValueClass::BitCopy | ValueClass::PersistentShare | ValueClass::View => {
                 Strategy::BorrowRead
@@ -591,8 +628,16 @@ impl Builder {
             (ValueClass::CowValue, IntentKind::Modify) => Strategy::EnsureUnique,
             (ValueClass::CowValue, IntentKind::Read | IntentKind::Capture) => Strategy::CowShare,
             (ValueClass::AffineResource, IntentKind::Read) => Strategy::BorrowRead,
-            (
-                ValueClass::BitCopy | ValueClass::CowValue | ValueClass::AffineResource,
+            // `@linear` Read is *not* a borrow — the value must be consumed
+            // exactly once; a read-without-consume leaves the binding
+            // live for a later `MustConsume` rejection. Encode as Move
+            // alongside the explicit Consume arm below.
+            (ValueClass::Linear, IntentKind::Read | IntentKind::Capture)
+            | (
+                ValueClass::BitCopy
+                | ValueClass::CowValue
+                | ValueClass::AffineResource
+                | ValueClass::Linear,
                 IntentKind::Consume,
             ) => Strategy::Move,
             (_, IntentKind::Yield) => Strategy::Freeze,
@@ -667,6 +712,23 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                    the emitter must never receive an undecided value-class site"
                 .to_string(),
         }),
+        MirCheck::MustConsume {
+            binding,
+            name,
+            exit_site,
+            ty,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::MustConsume {
+                binding: *binding,
+                name: name.clone(),
+                exit_site: *exit_site,
+                ty: ty.clone(),
+            },
+            note: "@linear binding reached an exit without being consumed; \
+                   declare a consuming method (e.g. `commit(consuming self)`) \
+                   and ensure every reachable exit path invokes one"
+                .to_string(),
+        }),
         // No construction surface in the v0.5 integer spine. The
         // corresponding `MirDiagnosticKind` projections will land
         // alongside the construction surface for borrows, generators,
@@ -675,4 +737,211 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
         | MirCheck::GeneratorBorrowAcrossYield { .. }
         | MirCheck::ActorSendEscape { .. } => None,
     }
+}
+
+/// Drop-elaboration pass over a `CheckedMirFunction`.
+///
+/// Produces an `ElaboratedMirFunction` whose `blocks` + `drop_plans`
+/// describe, structurally, what drops fire on every exit edge of the
+/// function. The pass is intraprocedural and uses the
+/// `DecisionFact::value_class` data already on the checked MIR (no
+/// cross-join coalescing — council R-C3.1 / plan §5 commit 2: drops
+/// fire at each exit independently; full NLL precision is deferred to
+/// v0.6).
+///
+/// Algorithm per HEW-SPEC §3.7.8.4 (lexical scope teardown):
+///   1. Walk the builder's `owned_locals` ledger (the per-function
+///      ordered list of non-`BitCopy` bindings introduced by `let`).
+///      The ledger is already maintained in source/declaration order
+///      with bindings removed when consumed (`mark_binding_moved`).
+///   2. For every `Terminator::Return` exit (the only terminator the
+///      current single-block spine constructs), emit a `DropPlan`
+///      whose `drops` are the live owned-local list in reverse
+///      declaration order (LIFO).
+///   3. For declared-but-not-constructed terminators (`Panic`, `Yield`,
+///      `Send`, `Goto`, `Branch`, `Call`), the pass enumerates them
+///      with an empty drop plan when reached — Cluster 4+ adds the
+///      construction surfaces that turn these into populated plans.
+///   4. A `BlockKind::Cleanup` block is emitted ONLY when a
+///      `Terminator::Panic` is constructed in the function's CFG
+///      (currently no spine surface — declared scaffold). Same for
+///      `ExitPath::Cancel` (scope-structural cancellation, also
+///      declared scaffold in v0.5).
+///
+/// Drop classification:
+///   - `ValueClass::AffineResource` -> `ElabDrop { drop_fn: Some("<TypeName>::close") }`
+///     (synthesised name; once `@resource` types reach the spine subset,
+///     this is replaced by the resolved `FnId` of the type's `close`
+///     consuming method).
+///   - `ValueClass::Linear` -> NO implicit drop emitted. The move-checker
+///     is the proof-of-consume; an unconsumed `Linear` binding has
+///     already been rejected as `MirCheck::MustConsume` upstream.
+///   - All other classes -> no drop emitted (`BitCopy`, `CowValue`, `View`,
+///     `PersistentShare`, `Unknown` — `Unknown` is itself an upstream
+///     rejection).
+fn elaborate(checked: &CheckedMirFunction, builder: &Builder) -> ElaboratedMirFunction {
+    // Statements stream: retained for snapshot/compat continuity with
+    // the pre-Cluster-3 elaborator. Every non-`BitCopy` owned local
+    // gets a checker-stream `Drop` entry in reverse-declaration order;
+    // the structural drop plan in `drop_plans` is the authoritative
+    // per-`ExitPath` answer.
+    let mut elaborated_statements = builder.statements.clone();
+    for (binding, name, ty) in builder.owned_locals.iter().rev() {
+        elaborated_statements.push(MirStatement::Drop {
+            binding: *binding,
+            name: name.clone(),
+            ty: ty.clone(),
+        });
+    }
+
+    let lifo_drops = build_lifo_drops(&builder.owned_locals);
+    let (elab_blocks, drop_plans) = enumerate_exits(&checked.block, &lifo_drops);
+
+    ElaboratedMirFunction {
+        name: checked.name.clone(),
+        return_ty: checked.return_ty.clone(),
+        statements: elaborated_statements,
+        decisions: builder.decisions.clone(),
+        blocks: elab_blocks,
+        drop_plans,
+        coroutine: None,
+    }
+}
+
+/// LIFO drop sequence for an owned-locals ledger. Only `AffineResource`
+/// contributes; `Linear` is the move-checker's responsibility (`MustConsume`),
+/// and other classes have no implicit drop.
+fn build_lifo_drops(owned_locals: &[(BindingId, String, ResolvedTy)]) -> Vec<ElabDrop> {
+    let mut drops = Vec::new();
+    for (_binding, _name, ty) in owned_locals.iter().rev() {
+        match ValueClass::of_ty(ty) {
+            ValueClass::AffineResource => {
+                // Synthesised drop_fn — the spine has no `@resource`
+                // method resolution surface yet. The name is illustrative
+                // until `@resource` types reach the ladder.
+                let drop_fn = match ty {
+                    ResolvedTy::Named { name, .. } => Some(format!("{name}::close")),
+                    _ => Some("close".to_string()),
+                };
+                drops.push(ElabDrop {
+                    // Placeholder — Cluster 1's single-block spine doesn't
+                    // yet wire a Place to each owned-local binding. Swap
+                    // to the real Place once binding->Place mapping
+                    // covers all owned locals.
+                    place: Place::ReturnSlot,
+                    ty: ty.clone(),
+                    drop_fn,
+                });
+            }
+            // Linear, BitCopy, CowValue, PersistentShare, View, Unknown:
+            // no implicit drop. Linear is enforced by MustConsume; the
+            // rest have no drop semantics by value-class definition.
+            ValueClass::Linear
+            | ValueClass::BitCopy
+            | ValueClass::CowValue
+            | ValueClass::PersistentShare
+            | ValueClass::View
+            | ValueClass::Unknown => {}
+        }
+    }
+    drops
+}
+
+/// Build the elaborated block list + per-`ExitPath` drop plans for a
+/// single-block function. The spine constructs only `Terminator::Return`;
+/// the remaining variants are enumerated for forward compatibility so
+/// future construction surfaces don't have to retrofit the dispatch.
+fn enumerate_exits(
+    block: &BasicBlock,
+    lifo: &[ElabDrop],
+) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
+    let block_id = block.id;
+    let mut blocks = vec![ElabBlock {
+        id: block_id,
+        kind: BlockKind::Normal,
+        drops: Vec::new(),
+        successor: None,
+    }];
+    let drops = lifo.to_vec();
+    let plan = match &block.terminator {
+        Terminator::Return => (
+            ExitPath::Return { block: block_id },
+            DropPlan {
+                drops: drops.clone(),
+            },
+        ),
+        Terminator::Goto { target } => (
+            ExitPath::Goto {
+                block: block_id,
+                target: *target,
+            },
+            DropPlan::default(),
+        ),
+        Terminator::Branch {
+            cond: _,
+            then_target,
+            else_target,
+        } => (
+            ExitPath::Branch {
+                block: block_id,
+                then_target: *then_target,
+                else_target: *else_target,
+            },
+            DropPlan::default(),
+        ),
+        Terminator::Call {
+            callee,
+            args: _,
+            dest: _,
+            next,
+        } => (
+            ExitPath::Call {
+                block: block_id,
+                callee: callee.clone(),
+                next: *next,
+            },
+            DropPlan::default(),
+        ),
+        Terminator::Panic => {
+            // Cleanup block: same LIFO drop plan as the normal exit at
+            // this scope depth; no successor (trap is terminal). Cleanup
+            // ids start past the highest normal-block id — single-block
+            // spine puts the cleanup at id 1.
+            blocks.push(ElabBlock {
+                id: block_id + 1,
+                kind: BlockKind::Cleanup,
+                drops: drops.clone(),
+                successor: None,
+            });
+            (
+                ExitPath::Panic { block: block_id },
+                DropPlan {
+                    drops: drops.clone(),
+                },
+            )
+        }
+        Terminator::Yield { value: _, next } => (
+            ExitPath::Yield {
+                block: block_id,
+                next: *next,
+            },
+            DropPlan::default(),
+        ),
+        Terminator::Send {
+            actor: _,
+            value: _,
+            next,
+        } => (
+            // `actor` is a Place; the ExitPath::Send slot carries the
+            // callee name. Spine has no Send construction surface, so
+            // this is unreachable in practice — empty placeholder.
+            ExitPath::Send {
+                block: block_id,
+                actor: String::new(),
+                next: *next,
+            },
+            DropPlan::default(),
+        ),
+    };
+    (blocks, vec![plan])
 }

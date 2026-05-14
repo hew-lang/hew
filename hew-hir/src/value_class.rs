@@ -5,7 +5,15 @@ pub enum ValueClass {
     BitCopy,
     CowValue,
     PersistentShare,
+    /// `@resource` types — external-resource values with an implicit drop side
+    /// effect (`close(consuming self)`). Drop elaboration emits an explicit
+    /// `ElabMir::Drop { drop_fn: Some(close) }` on every reachable exit.
     AffineResource,
+    /// `@linear` types — single-owner values with **no implicit drop**.
+    /// The move-checker rejects any function where a `Linear` binding is
+    /// live at an exit without being consumed via a declared consuming
+    /// method (`MirCheck::MustConsume`).
+    Linear,
     View,
     Unknown,
 }

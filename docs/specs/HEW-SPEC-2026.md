@@ -1244,7 +1244,7 @@ performance.
 - **Arena optimisation for message handlers.** The compiler may allocate
   message-handler temporaries in an arena and bulk-free them when the
   handler returns. The arena path applies only to values that do not
-  carry a drop side effect (§3.7.9). For values that do, the destructor
+  carry a drop side effect (§3.7.8). For values that do, the destructor
   runs individually.
 - **Copy elision.** When sending messages, the compiler may optimise away
   copies if the sender provably does not use the value after send.
@@ -2210,7 +2210,7 @@ rely on RAII.
 > See HEW-FUTURE.md §3 for `std::text::regex` — targeted for v0.6+
 > alongside the stdlib port-forward. The current `regex.Pattern` typed
 > handle uses explicit `free()` for release; the next edition migrates it
-> to a `@resource`-annotated type with RAII handles (§3.7.9).
+> to a `@resource`-annotated type with RAII handles (§3.7.8).
 
 ---
 
@@ -2433,8 +2433,6 @@ value.
 ---
 
 ## 4. Effects, IO, and Async Semantics
-
-**Provisional (as of 2026-04-17).** This section is under active revision pending resolution of the I/O subsystem (#1236) and related sub-issues on cancellation semantics (#1243), actor I/O integration (#1239), and backpressure (milestone #3). Features marked "not currently implemented" or "parses today; no user-facing examples" below are parseable by the compiler today but may not be fully implemented end-to-end. Consult `examples/` for ground-truth usage before relying on them. This section will be updated after #1236's resolution to reflect the final design.
 
 This section defines Hew's concurrency model within actors. Hew distinguishes between:
 
@@ -2664,19 +2662,8 @@ The following points are safepoints where cancellation is checked automatically:
 
 When cancellation fires at a safepoint, the runtime initiates **stack unwinding** with a `Cancelled` payload. All `defer` blocks and `Drop` implementations run during unwinding, ensuring deterministic resource cleanup.
 
-**`#[noncancellable]` for critical sections (not currently implemented):**
-
-```hew
-#[noncancellable]
-fn commit_transaction(tx: Transaction) -> Result<(), Error> {
-    // This function will NOT be interrupted by cancellation.
-    // Cancellation is deferred until after this function returns.
-    // NOTE: This attribute is parses today but is not yet fully implemented end-to-end.
-    tx.write_log()?;
-    tx.commit()?;
-    Ok(())
-}
-```
+> See HEW-FUTURE.md §1.2 for `#[noncancellable]` — targeted beyond
+> edition 2026 alongside the broader cancellation-token vocabulary.
 
 **Cancellation propagation:**
 
@@ -2690,7 +2677,6 @@ When a fork-block is cancelled:
 **Cancellation does NOT:**
 
 - Forcibly terminate running code between safepoints.
-- Interrupt `#[noncancellable]` sections.
 - Affect tasks in other fork-blocks or other actors.
 
 **Example with cleanup:**
@@ -4282,7 +4268,7 @@ If you want this to be directly executable as an engineering project, the next m
   declares `edition = "2026"`. Compiler version (`hew 0.5.x`) and edition
   track independently. See §1.3.
 - **Resource markers.** `@resource` and `@linear` annotations replace the
-  v0.4.0 explicit-teardown carve-out (§3.7.9). `@resource` types get an
+  v0.4.0 explicit-teardown carve-out (§3.7.8). `@resource` types get an
   implicit drop that calls a declared `close(consuming self)` method;
   `@linear` types must be consumed via a declared consuming method and have
   no implicit drop.

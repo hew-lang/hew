@@ -511,6 +511,16 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
+      - name: Add LLVM lib to runtime rpath
+        if: env.RUN_CODE_PATH == 'true'
+        # LLD links the test binaries against -lc++ -lc++abi from the
+        # upstream LLVM 22 tarball, but does not record an LC_RPATH for
+        # the dynamic loader. Without an rpath, dyld fails to locate
+        # libc++abi.1.dylib at execution time. Append a -Wl,-rpath link
+        # arg pointing at the vendored LLVM tarball's lib/ directory.
+        run: |
+          echo "RUSTFLAGS=${RUSTFLAGS} -C link-arg=-Wl,-rpath,${LLVM_SYS_221_PREFIX}/lib" >> "$GITHUB_ENV"
+
       - name: Set macOS deployment target
         if: env.RUN_CODE_PATH == 'true'
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"

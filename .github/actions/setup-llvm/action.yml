@@ -72,8 +72,14 @@ runs:
         else
           install_root="${RUNNER_TEMP}/llvm/${version}"
         fi
-        prefix="${install_root}/${subdir}"
+        # Windows runners hand back paths with backslashes via env vars;
+        # subsequent tar/curl invocations under Git Bash mishandle the
+        # mixed separators. Normalise to POSIX whenever cygpath is around.
+        if command -v cygpath >/dev/null 2>&1; then
+          install_root="$(cygpath -u "${install_root}")"
+        fi
         mkdir -p "${install_root}"
+        prefix="${install_root}/${subdir}"
         echo "version=${version}" >> "$GITHUB_OUTPUT"
         echo "asset=${asset}" >> "$GITHUB_OUTPUT"
         echo "subdir=${subdir}" >> "$GITHUB_OUTPUT"
@@ -98,6 +104,10 @@ runs:
         set -euo pipefail
         url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ steps.layout.outputs.version }}/${{ steps.layout.outputs.asset }}"
         tarball="${RUNNER_TEMP}/${{ steps.layout.outputs.asset }}"
+        install_root="${{ steps.layout.outputs.install_root }}"
+        if command -v cygpath >/dev/null 2>&1; then
+          tarball="$(cygpath -u "${tarball}")"
+        fi
         echo "Downloading ${url}"
         curl -fL --retry 3 --retry-delay 5 -o "${tarball}" "${url}"
         echo "${{ steps.layout.outputs.sha256 }}  ${tarball}" > "${tarball}.sha256"
@@ -107,8 +117,8 @@ runs:
           # macOS shasum fallback
           shasum -a 256 -c "${tarball}.sha256"
         fi
-        echo "Extracting to ${{ steps.layout.outputs.install_root }}"
-        tar -xJf "${tarball}" -C "${{ steps.layout.outputs.install_root }}"
+        echo "Extracting to ${install_root}"
+        tar -xJf "${tarball}" -C "${install_root}"
         rm -f "${tarball}" "${tarball}.sha256"
 
     - name: Export LLVM environment

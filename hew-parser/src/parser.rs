@@ -1607,7 +1607,7 @@ impl<'src> Parser<'src> {
         // Extract ownership-discipline marker from caller-supplied attributes.
         // `#[resource]` and `#[linear]` are consumed here and do not propagate
         // to TypeBodyItem fields or the formatter's attribute list.
-        let resource_marker = Self::extract_resource_marker(attrs);
+        let resource_marker = self.extract_resource_marker(attrs);
 
         let kind = match self.peek() {
             Some(Token::Type) => {
@@ -1677,18 +1677,72 @@ impl<'src> Parser<'src> {
     ///
     /// `#[resource]` → `ResourceMarker::Resource`
     /// `#[linear]`   → `ResourceMarker::Linear`
-    /// anything else → `ResourceMarker::None`
+    ///
+    /// Emits a diagnostic if both `#[resource]` and `#[linear]` appear on the
+    /// same type (they declare incompatible ownership disciplines).  Emits a
+    /// diagnostic for any attribute that is not a recognised type-decl attribute;
+    /// unrecognised names could be ownership-marker typos and are rejected
+    /// fail-closed rather than silently ignored.
     ///
     /// The attribute is not consumed from the slice; callers that render
     /// attributes should filter `resource` / `linear` out themselves if they
     /// want to suppress them in output.  For now the checker is the only
     /// consumer, so we leave the slice untouched.
-    fn extract_resource_marker(attrs: &[Attribute]) -> ResourceMarker {
+    ///
+    /// Valid type-decl attributes: `resource`, `linear`, `wire`, `json`,
+    /// `yaml`, `deprecated`.  Anything else triggers `E_UNKNOWN_TYPE_MARKER`.
+    fn extract_resource_marker(&mut self, attrs: &[Attribute]) -> ResourceMarker {
+        // Known-valid attributes for type declarations.  These are consumed by
+        // other parser paths (wire metadata, deprecation, naming-case); only
+        // `resource` and `linear` belong to the ownership-discipline surface.
+        const KNOWN_TYPE_ATTRS: &[&str] =
+            &["resource", "linear", "wire", "json", "yaml", "deprecated"];
+
+        let mut resource_span: Option<std::ops::Range<usize>> = None;
+        let mut linear_span: Option<std::ops::Range<usize>> = None;
         let mut marker = ResourceMarker::None;
+
         for attr in attrs {
             match attr.name.as_str() {
-                "resource" => marker = ResourceMarker::Resource,
-                "linear" => marker = ResourceMarker::Linear,
+                "resource" => {
+                    if let Some(ref prev) = linear_span {
+                        // `#[linear]` already seen — conflict.
+                        self.error_at(
+                            "cannot combine #[resource] and #[linear] on the same type \
+                             — they declare incompatible ownership disciplines \
+                             [E_TYPE_MARKER_CONFLICT]"
+                                .to_string(),
+                            attr.span.clone(),
+                        );
+                        let _ = prev; // span used for context above
+                    }
+                    resource_span = Some(attr.span.clone());
+                    marker = ResourceMarker::Resource;
+                }
+                "linear" => {
+                    if let Some(ref prev) = resource_span {
+                        // `#[resource]` already seen — conflict.
+                        self.error_at(
+                            "cannot combine #[resource] and #[linear] on the same type \
+                             — they declare incompatible ownership disciplines \
+                             [E_TYPE_MARKER_CONFLICT]"
+                                .to_string(),
+                            attr.span.clone(),
+                        );
+                        let _ = prev;
+                    }
+                    linear_span = Some(attr.span.clone());
+                    marker = ResourceMarker::Linear;
+                }
+                name if !KNOWN_TYPE_ATTRS.contains(&name) => {
+                    self.error_at(
+                        format!(
+                            "unrecognised type attribute '#[{name}]' \
+                             [E_UNKNOWN_TYPE_MARKER]"
+                        ),
+                        attr.span.clone(),
+                    );
+                }
                 _ => {}
             }
         }
@@ -2721,6 +2775,24 @@ impl<'src> Parser<'src> {
         attrs: &[Attribute],
         visibility: Visibility,
     ) -> Option<TypeDecl> {
+        // `#[wire]` is exclusive with `#[resource]` and `#[linear]`: wire types
+        // describe runtime traffic shapes; resource/linear are ownership-discipline
+        // markers.  They operate at different levels and cannot compose on the same
+        // declaration.
+        for attr in attrs {
+            if attr.name == "resource" || attr.name == "linear" {
+                self.error_at(
+                    format!(
+                        "#[wire] cannot be combined with #[{}] on the same type — \
+                         wire types are traffic-shape declarations; #[resource] and \
+                         #[linear] are ownership-discipline markers \
+                         [E_TYPE_MARKER_CONFLICT]",
+                        attr.name
+                    ),
+                    attr.span.clone(),
+                );
+            }
+        }
         self.expect(&Token::Struct)?;
         let name = self.expect_ident()?;
         self.expect(&Token::LeftBrace)?;
@@ -7365,5 +7437,104 @@ wire type Msg {
         };
         assert_eq!(td.resource_marker, ResourceMarker::None);
         assert!(td.consuming_methods.is_empty());
+    }
+
+    #[test]
+    fn resource_and_linear_combined_emits_conflict_diagnostic() {
+        let source = r"
+            #[resource]
+            #[linear]
+            type Bad { x: int }
+        ";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected a conflict diagnostic but got none"
+        );
+        assert!(
+            result.errors[0].message.contains("E_TYPE_MARKER_CONFLICT"),
+            "expected E_TYPE_MARKER_CONFLICT in message, got: {:?}",
+            result.errors[0].message
+        );
+    }
+
+    #[test]
+    fn linear_then_resource_combined_emits_conflict_diagnostic() {
+        // Order is reversed: linear first, resource second — conflict at resource.
+        let source = r"
+            #[linear]
+            #[resource]
+            type Bad { x: int }
+        ";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected a conflict diagnostic but got none"
+        );
+        assert!(
+            result.errors[0].message.contains("E_TYPE_MARKER_CONFLICT"),
+            "expected E_TYPE_MARKER_CONFLICT in message, got: {:?}",
+            result.errors[0].message
+        );
+    }
+
+    #[test]
+    fn unknown_type_marker_emits_diagnostic() {
+        let source = r"
+            #[both]
+            type Bad { x: int }
+        ";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected E_UNKNOWN_TYPE_MARKER diagnostic but got none"
+        );
+        assert!(
+            result.errors[0].message.contains("E_UNKNOWN_TYPE_MARKER"),
+            "expected E_UNKNOWN_TYPE_MARKER in message, got: {:?}",
+            result.errors[0].message
+        );
+    }
+
+    #[test]
+    fn wire_and_resource_combined_emits_conflict_diagnostic() {
+        // `#[wire] struct` + `#[resource]` is disallowed: wire types are
+        // traffic-shape declarations; ownership discipline is separate.
+        let source = r"
+            #[wire]
+            #[resource]
+            struct Bad { x: int @1 }
+        ";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected E_TYPE_MARKER_CONFLICT diagnostic but got none"
+        );
+        assert!(
+            result.errors[0].message.contains("E_TYPE_MARKER_CONFLICT"),
+            "expected E_TYPE_MARKER_CONFLICT in message, got: {:?}",
+            result.errors[0].message
+        );
+    }
+
+    #[test]
+    fn deprecated_attr_on_type_is_accepted() {
+        // `#[deprecated]` is a known-valid type-decl attribute and must not
+        // trigger E_UNKNOWN_TYPE_MARKER.
+        let source = r"
+            #[deprecated]
+            type Old { x: int }
+        ";
+        let result = parse(source);
+        // No ownership-marker diagnostics; other errors (deprecation warnings
+        // etc.) are out of scope for the parser.
+        assert!(
+            result
+                .errors
+                .iter()
+                .all(|e| !e.message.contains("E_UNKNOWN_TYPE_MARKER")),
+            "deprecated attr triggered unknown-marker diagnostic: {:?}",
+            result.errors
+        );
     }
 } // mod tests

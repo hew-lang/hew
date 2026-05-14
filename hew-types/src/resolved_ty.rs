@@ -108,6 +108,14 @@ pub enum ResolvedTy {
         /// Trait bounds
         traits: Vec<ResolvedTraitBound>,
     },
+    /// Compiler-internal type for a running child task whose result has type
+    /// `T`. Produced exclusively by HIR lowering of `fork name = call_expr`
+    /// inside a `fork{}` body; never user-nameable (the parser has no grammar
+    /// production for `Task<T>` as a type annotation).
+    ///
+    /// Display: `<task<T>>` (angle brackets signal compiler-internal origin;
+    /// implemented via `to_ty()` → `Ty::Task` → `fmt_with_numeric_names`).
+    Task(Box<ResolvedTy>),
 }
 
 /// A single trait bound in a resolved trait object.
@@ -257,6 +265,7 @@ impl ResolvedTy {
                     .map(Self::convert_trait_bound)
                     .collect::<Result<Vec<_>, _>>()?,
             }),
+            Ty::Task(inner) => Ok(ResolvedTy::Task(Box::new(Self::from_ty(inner)?))),
         }
     }
 
@@ -331,6 +340,7 @@ impl ResolvedTy {
                     })
                     .collect(),
             },
+            ResolvedTy::Task(inner) => Ty::Task(Box::new(inner.to_ty())),
         }
     }
 
@@ -583,5 +593,50 @@ mod tests {
 
         let float_err = BoundaryError::UnmaterializedLiteral { is_integer: false };
         assert!(float_err.to_string().contains("float literal"));
+    }
+
+    // --- Task<T> variant tests ---
+
+    #[test]
+    fn task_variant_converts_from_concrete_ty() {
+        let ty = Ty::Task(Box::new(Ty::I64));
+        assert_eq!(
+            ResolvedTy::from_ty(&ty),
+            Ok(ResolvedTy::Task(Box::new(ResolvedTy::I64)))
+        );
+    }
+
+    #[test]
+    fn task_variant_rejects_nested_inference_var() {
+        let var = TypeVar::fresh();
+        let ty = Ty::Task(Box::new(Ty::Var(var)));
+        assert_eq!(
+            ResolvedTy::from_ty(&ty),
+            Err(BoundaryError::UnresolvedInference { var })
+        );
+    }
+
+    #[test]
+    fn task_variant_round_trips_to_ty() {
+        let ty = Ty::Task(Box::new(Ty::String));
+        let resolved = ResolvedTy::from_ty(&ty).expect("Task<String> is concrete");
+        assert_eq!(resolved.to_ty(), ty);
+    }
+
+    #[test]
+    fn task_display_uses_angle_bracket_spelling() {
+        // The `<task<T>>` spelling (with outer angle brackets) signals that
+        // this is a compiler-internal type, not a user-writable annotation.
+        let resolved = ResolvedTy::Task(Box::new(ResolvedTy::I64));
+        assert_eq!(resolved.to_string(), "<task<i64>>");
+    }
+
+    #[test]
+    fn task_display_nested_named_type() {
+        let resolved = ResolvedTy::Task(Box::new(ResolvedTy::Named {
+            name: "User".into(),
+            args: Vec::new(),
+        }));
+        assert_eq!(resolved.to_string(), "<task<User>>");
     }
 }

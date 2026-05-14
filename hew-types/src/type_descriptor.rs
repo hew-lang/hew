@@ -134,6 +134,10 @@ impl ResolvedTy {
                     .collect();
                 format!("dyn({})", bound_strs.join("+"))
             }
+            // Task<T> is compiler-internal and not wire-serialisable; the
+            // canonical string uses the same `<task<T>>` spelling as `Display`
+            // so diagnostic output is consistent.
+            ResolvedTy::Task(inner) => format!("<task<{}>>", inner.canonical_string()),
         }
     }
 

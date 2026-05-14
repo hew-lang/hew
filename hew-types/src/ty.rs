@@ -148,6 +148,15 @@ pub enum Ty {
         traits: Vec<TraitObjectBound>,
     },
 
+    /// Compiler-internal type for a running child task whose result has type
+    /// `T`. Produced exclusively by HIR lowering of `fork name = call_expr`
+    /// inside a `fork{}` body; never user-nameable (see `E_TASK_NOT_NAMEABLE`
+    /// in HIR diagnostics). The user writes `fork name = expr`, not
+    /// `let name: Task<T> = expr`.
+    ///
+    /// Display: `<task<T>>` (angle brackets signal compiler-internal origin).
+    Task(Box<Ty>),
+
     /// Error recovery — a type that unifies with anything
     Error,
 }
@@ -506,6 +515,11 @@ impl Ty {
                 }
                 Ok(())
             }
+            Ty::Task(inner) => {
+                write!(f, "<task<")?;
+                inner.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                write!(f, ">>")
+            }
             Ty::Error => write!(f, "<error>"),
         }
     }
@@ -609,6 +623,7 @@ impl Ty {
             Ty::TraitObject { traits } => traits
                 .iter()
                 .any(|bound| bound.args.iter().any(Ty::has_inference_var)),
+            Ty::Task(inner) => inner.has_inference_var(),
             _ => false,
         }
     }
@@ -1032,6 +1047,7 @@ impl Ty {
                     })
                     .collect(),
             },
+            Ty::Task(inner) => Ty::Task(Box::new(inner.apply_subst_inner(subst, visited))),
             _ => self.clone(),
         }
     }
@@ -1076,6 +1092,7 @@ impl Ty {
                     })
                     .collect(),
             },
+            Ty::Task(inner) => Ty::Task(Box::new(f(inner))),
             _ => self.clone(),
         }
     }
@@ -1094,6 +1111,7 @@ impl Ty {
             } => params.iter().any(f) || f(ret) || captures.iter().any(f),
             Ty::Pointer { pointee, .. } => f(pointee),
             Ty::TraitObject { traits } => traits.iter().any(|bound| bound.args.iter().any(f)),
+            Ty::Task(inner) => f(inner),
             _ => false,
         }
     }
@@ -1168,6 +1186,12 @@ impl Ty {
                     })
                     .collect(),
             },
+            // Task<T> is compiler-internal; T itself may reference a named param
+            // in a generic context (e.g. inside a function body that is generic
+            // over T), so we recurse into the inner type.
+            Ty::Task(inner) => Ty::Task(Box::new(
+                inner.substitute_named_param(param_name, replacement),
+            )),
             _ => self.clone(),
         }
     }

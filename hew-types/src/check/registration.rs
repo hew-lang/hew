@@ -135,7 +135,12 @@ impl Checker {
             | Ty::Closure { .. }
             | Ty::Pointer { .. }
             | Ty::TraitObject { .. }
-            | Ty::Error => false,
+            | Ty::Error
+            // Task<T> is compiler-internal; it does not appear in user-declared
+            // struct field types (there is no surface annotation for Task<T>),
+            // so this arm is structurally unreachable today. Explicit rather
+            // than wildcard so the sweep stays honest.
+            | Ty::Task(_) => false,
         }
     }
 

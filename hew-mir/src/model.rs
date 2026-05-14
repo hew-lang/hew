@@ -176,7 +176,14 @@ pub enum Instr {
 pub struct CheckedMirFunction {
     pub name: String,
     pub return_ty: ResolvedTy,
-    pub block: BasicBlock,
+    /// CFG basic blocks, mirroring `RawMirFunction.blocks`. Slice 1 of
+    /// the CFG-construction lane carries a single entry block (id 0)
+    /// terminated by `Terminator::Return`; Slice 2 widens the surface
+    /// to multi-block CFGs once `If` lowering builds Branch + Goto +
+    /// join terminators. Every consumer that previously read a single
+    /// `block` field iterates `blocks[*]` now — the entry block remains
+    /// `blocks[0]`.
+    pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
     pub checks: Vec<MirCheck>,
 }

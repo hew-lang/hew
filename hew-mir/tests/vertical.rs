@@ -1,5 +1,7 @@
 use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
-use hew_mir::{lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement};
+use hew_mir::{
+    lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement, Terminator,
+};
 
 // ---------- @resource / @linear surface ----------
 //
@@ -604,4 +606,193 @@ fn lower_unsupported_binop_fails_closed_with_diagnostic() {
         "Divide must emit CutoverUnsupported at MIR: {:?}",
         pipeline.diagnostics
     );
+}
+
+// ---------- Slice 2: CFG construction for HirExprKind::If ----------
+//
+// Real If lowering builds a Branch on the entry block; then/else arm
+// blocks each Goto a join block; the join block carries the result
+// local that each arm Move'd into. The CFG shape is observable on
+// RawMirFunction.blocks.
+
+#[test]
+fn if_expression_builds_four_blocks() {
+    // entry (Branch) + then (Goto) + else (Goto) + join (Return) = 4
+    let p = pipeline("fn main() -> i64 { let r = if 1 == 1 { 7 } else { 8 }; r }");
+    assert!(
+        p.diagnostics.is_empty(),
+        "If expression must lower cleanly: {:?}",
+        p.diagnostics
+    );
+    let func = &p.raw_mir[0];
+    assert_eq!(
+        func.blocks.len(),
+        4,
+        "If expression must produce four blocks (entry, then, else, join); got {} blocks: {:#?}",
+        func.blocks.len(),
+        func.blocks
+            .iter()
+            .map(|b| &b.terminator)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn if_expression_entry_block_terminates_with_branch() {
+    let p = pipeline("fn main() -> i64 { let r = if 1 == 1 { 7 } else { 8 }; r }");
+    let func = &p.raw_mir[0];
+    match &func.blocks[0].terminator {
+        Terminator::Branch {
+            then_target,
+            else_target,
+            ..
+        } => {
+            assert_ne!(then_target, else_target, "branch targets must differ");
+        }
+        other => panic!("entry block must end in Branch; got {other:?}"),
+    }
+}
+
+#[test]
+fn if_expression_arm_blocks_goto_join() {
+    let p = pipeline("fn main() -> i64 { let r = if 1 == 1 { 7 } else { 8 }; r }");
+    let func = &p.raw_mir[0];
+    let (then_target, else_target) = match &func.blocks[0].terminator {
+        Terminator::Branch {
+            then_target,
+            else_target,
+            ..
+        } => (*then_target, *else_target),
+        _ => panic!("expected Branch"),
+    };
+    let then_block = func.blocks.iter().find(|b| b.id == then_target).unwrap();
+    let else_block = func.blocks.iter().find(|b| b.id == else_target).unwrap();
+    let Terminator::Goto { target: then_goto } = then_block.terminator else {
+        panic!("then arm must Goto join")
+    };
+    let Terminator::Goto { target: else_goto } = else_block.terminator else {
+        panic!("else arm must Goto join")
+    };
+    assert_eq!(then_goto, else_goto, "both arms must Goto the same join");
+}
+
+#[test]
+fn if_expression_arm_blocks_write_result_local() {
+    // Each arm's tail value is Move'd into the result local; the join
+    // block's value Place is the result local. Pin the alloca-result-
+    // local pattern is in use (no phi at MIR layer).
+    let p = pipeline("fn main() -> i64 { let r = if 1 == 1 { 7 } else { 8 }; r }");
+    let func = &p.raw_mir[0];
+    let (then_target, else_target) = match &func.blocks[0].terminator {
+        Terminator::Branch {
+            then_target,
+            else_target,
+            ..
+        } => (*then_target, *else_target),
+        _ => panic!(),
+    };
+    for target in [then_target, else_target] {
+        let block = func.blocks.iter().find(|b| b.id == target).unwrap();
+        let has_move = block
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instr::Move { .. }));
+        assert!(
+            has_move,
+            "arm block {} must emit Move into result local; got {:#?}",
+            target, block.instructions
+        );
+    }
+}
+
+#[test]
+fn if_expression_join_block_terminates_with_return() {
+    // The trailing `r` in `... else { 8 }; r` reads the result local
+    // in the join block; the function-tail Return terminator lives on
+    // the join block (now the cursor's block at function_body
+    // finalisation).
+    let p = pipeline("fn main() -> i64 { let r = if 1 == 1 { 7 } else { 8 }; r }");
+    let func = &p.raw_mir[0];
+    let return_blocks: Vec<_> = func
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.terminator, Terminator::Return))
+        .collect();
+    assert_eq!(
+        return_blocks.len(),
+        1,
+        "exactly one Return-terminated block per simple If: {:#?}",
+        func.blocks
+            .iter()
+            .map(|b| &b.terminator)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn if_no_else_unit_typed_lowers_without_diagnostic() {
+    // HIR types `if x { 7 }` (no else) as Unit. Our `lower_if` accepts
+    // `else_expr: None` and emits an else block that Goto's join with
+    // no Move. No CutoverUnsupported here.
+    let p = pipeline("fn main() -> i64 { let _r = if 1 == 1 { 7 }; 42 }");
+    assert!(
+        p.diagnostics.is_empty(),
+        "else-less If must lower cleanly: {:?}",
+        p.diagnostics
+    );
+    let func = &p.raw_mir[0];
+    assert_eq!(
+        func.blocks.len(),
+        4,
+        "else-less If still produces entry/then/else/join CFG: {} blocks",
+        func.blocks.len()
+    );
+}
+
+#[test]
+fn sequential_ifs_each_contribute_three_blocks() {
+    // Two sequential let-init Ifs in the same function. Each
+    // contributes a 3-block split (then + else + join); the second
+    // If's entry block is the first If's join block. So the function
+    // has: entry-block-0 (Branch of If1), then1, else1, join1 (=
+    // entry of If2's Branch), then2, else2, join2. 7 blocks total.
+    // Pins that the cursor correctly continues lowering into the
+    // join block after one If and that a second alloc_block is
+    // monotone past the first set.
+    let p = pipeline(
+        "fn main() -> i64 { \
+            let a = if 1 == 1 { 7 } else { 8 }; \
+            let b = if 1 == 0 { 9 } else { 10 }; \
+            a + b \
+        }",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "sequential Ifs must lower cleanly: {:?}",
+        p.diagnostics
+    );
+    let func = &p.raw_mir[0];
+    assert_eq!(
+        func.blocks.len(),
+        7,
+        "sequential Ifs produce 7 blocks: {:#?}",
+        func.blocks
+            .iter()
+            .map(|b| (b.id, &b.terminator))
+            .collect::<Vec<_>>()
+    );
+    // Exactly one Return (the last join, which also holds the tail).
+    let returns = func
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.terminator, Terminator::Return))
+        .count();
+    assert_eq!(returns, 1, "exactly one Return on linear If chain");
+    // Two Branches (one per If).
+    let branches = func
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.terminator, Terminator::Branch { .. }))
+        .count();
+    assert_eq!(branches, 2);
 }

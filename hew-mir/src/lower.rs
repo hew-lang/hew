@@ -234,14 +234,10 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
         return_ty: func.return_ty.clone(),
         statements: thir_statements,
     };
-    // Cluster 3's elaborator + `check_function` still operate on a
-    // single `BasicBlock` payload via `CheckedMirFunction.block`. Slice
-    // 1 (this commit) preserves the legacy shape by feeding the entry
-    // block — every existing caller observes the same single-block
-    // surface they did before. Slice 3 widens `check_function` to a
-    // per-block dataflow at which point `CheckedMirFunction` itself
-    // grows a `Vec<BasicBlock>`.
-    let raw_block = blocks[0].clone();
+    // `CheckedMirFunction` mirrors `RawMirFunction.blocks` directly
+    // (widened in Slice 2 from a single-block field to a vec). The
+    // elaborator + check_function consume the block vec; legacy
+    // single-block tests still see `blocks[0]` as the entry block.
     let raw = RawMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
@@ -266,7 +262,7 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     let checked = CheckedMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
-        block: raw_block,
+        blocks: raw.blocks.clone(),
         decisions: builder.decisions.clone(),
         checks,
     };
@@ -702,14 +698,7 @@ impl Builder {
                 condition,
                 then_expr,
                 else_expr,
-            } => {
-                let _ = self.lower_value(condition);
-                let _ = self.lower_value(then_expr);
-                if let Some(else_expr) = else_expr {
-                    let _ = self.lower_value(else_expr);
-                }
-                None
-            }
+            } => self.lower_if(condition, then_expr, else_expr.as_deref(), &expr.ty),
             HirExprKind::StructInit { fields, .. } => {
                 for (_, field) in fields {
                     let _ = self.lower_value(field);
@@ -854,6 +843,98 @@ impl Builder {
         };
         self.instructions.push(instr);
         Some(dest)
+    }
+
+    /// Lower an `If` expression into a real CFG with a `Branch`
+    /// terminator on the entry block, separate `then` / `else` blocks
+    /// each terminated by a `Goto join_bb`, and a join block that
+    /// receives the result value.
+    ///
+    /// The expression's value Place is a result-local *alloca'd before
+    /// the branch* — when each arm finishes lowering its tail
+    /// expression, the arm emits an `Instr::Move { dest: result_local,
+    /// src: arm_value }` before the `Goto`. The join block then loads
+    /// the value through the result local. This matches the existing
+    /// alloca-per-local pattern (`alloc_local`) and the codegen's
+    /// `place_pointer` lookup (each Place is a stack slot); LLVM's
+    /// mem2reg pass promotes the alloca to SSA at the LLVM layer if
+    /// the optimiser sees fit. Phi at MIR is a v0.6 refactor
+    /// (`R-CFG-V06-phi`).
+    ///
+    /// `else_expr: None` reaches here when the HIR types the If as
+    /// `ResolvedTy::Unit` (no else block). The else arm is still
+    /// emitted as a block that just `Goto join` — no Move, no value
+    /// written to `result_place`. Downstream code that loads from
+    /// `result_place` on the else path observes whatever the alloca
+    /// was initialised with (LLVM `undef` for an i8 unit-stand-in,
+    /// inconsequential because Unit's value is by definition never
+    /// observed). No special fail-closed needed.
+    fn lower_if(
+        &mut self,
+        condition: &HirExpr,
+        then_expr: &HirExpr,
+        else_expr: Option<&HirExpr>,
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        // Result local first, so it dominates every branch arm's Move.
+        // Allocated even for Unit Ifs to keep a single Place-shape
+        // contract on the value-bearing return; codegen never loads a
+        // Unit result so the placeholder's initial value is unused.
+        let result_place = self.alloc_local(result_ty.clone());
+
+        // Lower the condition in the entry (current) block. Receive a
+        // Place holding the truth value; codegen's `Terminator::Branch`
+        // emitter loads it and compares non-zero.
+        // Condition lowering failed (CutoverUnsupported or similar) —
+        // propagate by returning None via `?`. The diagnostic already
+        // lives on `self.diagnostics`, so the CLI rejects the program;
+        // the half-built If does not need to seal the current block.
+        // Leaving the result_local dangling is benign — no Branch/Goto
+        // refers to it.
+        let cond_place = self.lower_value(condition)?;
+
+        // Allocate the three CFG blocks: then arm, else arm, join.
+        let then_bb = self.alloc_block();
+        let else_bb = self.alloc_block();
+        let join_bb = self.alloc_block();
+
+        // Seal the entry block with a Branch on the cond Place.
+        self.finish_current_block(Terminator::Branch {
+            cond: cond_place,
+            then_target: then_bb,
+            else_target: else_bb,
+        });
+
+        // Then arm.
+        self.start_block(then_bb);
+        let then_value = self.lower_value(then_expr);
+        if let Some(src) = then_value {
+            self.instructions.push(Instr::Move {
+                dest: result_place,
+                src,
+            });
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        // Else arm. `else_expr: None` (the HIR-types-as-Unit case)
+        // emits a Goto-only block — no Move, no value contributed.
+        self.start_block(else_bb);
+        if let Some(else_expr) = else_expr {
+            let else_value = self.lower_value(else_expr);
+            if let Some(src) = else_value {
+                self.instructions.push(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        // Join. Subsequent lowering continues in this block; the If
+        // expression's value Place is the result_local (loads happen
+        // through the same Place that both arms wrote into).
+        self.start_block(join_bb);
+        Some(result_place)
     }
 
     fn decide(&mut self, expr: &HirExpr) {
@@ -1055,7 +1136,7 @@ fn elaborate(
         &builder.binding_locals,
         &builder.type_classes,
     );
-    let (elab_blocks, drop_plans) = enumerate_exits(&checked.block, &lifo_drops);
+    let (elab_blocks, drop_plans) = enumerate_exits(&checked.blocks, &lifo_drops);
 
     ElaboratedMirFunction {
         name: checked.name.clone(),
@@ -1137,100 +1218,118 @@ fn build_lifo_drops(
 }
 
 /// Build the elaborated block list + per-`ExitPath` drop plans for a
-/// single-block function. The spine constructs only `Terminator::Return`;
-/// the remaining variants are enumerated for forward compatibility so
-/// future construction surfaces don't have to retrofit the dispatch.
+/// function's CFG. Every basic block becomes one `ElabBlock` of
+/// `BlockKind::Normal`; `Terminator::Panic` synthesises a sibling
+/// `BlockKind::Cleanup` block. Each block's terminator maps to one
+/// `(ExitPath, DropPlan)` entry — `Return`-terminated blocks carry the
+/// function-wide LIFO `lifo` drop plan (Slice 4 will refine this to a
+/// per-exit live-set). All other terminators carry an empty plan.
 fn enumerate_exits(
-    block: &BasicBlock,
+    blocks: &[BasicBlock],
     lifo: &[ElabDrop],
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
-    let block_id = block.id;
-    let mut blocks = vec![ElabBlock {
-        id: block_id,
-        kind: BlockKind::Normal,
-        drops: Vec::new(),
-        successor: None,
-    }];
-    let drops = lifo.to_vec();
-    let plan = match &block.terminator {
-        Terminator::Return => (
-            ExitPath::Return { block: block_id },
-            DropPlan {
-                drops: drops.clone(),
-            },
-        ),
-        Terminator::Goto { target } => (
-            ExitPath::Goto {
-                block: block_id,
-                target: *target,
-            },
-            DropPlan::default(),
-        ),
-        Terminator::Branch {
-            cond: _,
-            then_target,
-            else_target,
-        } => (
-            ExitPath::Branch {
-                block: block_id,
-                then_target: *then_target,
-                else_target: *else_target,
-            },
-            DropPlan::default(),
-        ),
-        Terminator::Call {
-            callee,
-            args: _,
-            dest: _,
-            next,
-        } => (
-            ExitPath::Call {
-                block: block_id,
-                callee: callee.clone(),
-                next: *next,
-            },
-            DropPlan::default(),
-        ),
-        Terminator::Panic => {
-            // Cleanup block: same LIFO drop plan as the normal exit at
-            // this scope depth; no successor (trap is terminal). Cleanup
-            // ids start past the highest normal-block id — single-block
-            // spine puts the cleanup at id 1.
-            blocks.push(ElabBlock {
-                id: block_id + 1,
-                kind: BlockKind::Cleanup,
-                drops: drops.clone(),
-                successor: None,
-            });
-            (
-                ExitPath::Panic { block: block_id },
+    // Track the highest block id observed so cleanup-block ids can
+    // start past it. Slice 2 onwards may emit multiple non-trivial
+    // blocks; reserving cleanup ids past the max keeps invariants from
+    // the single-block era intact.
+    let max_normal_id = blocks.iter().map(|b| b.id).max().unwrap_or(0);
+    let mut elab_blocks: Vec<ElabBlock> = blocks
+        .iter()
+        .map(|b| ElabBlock {
+            id: b.id,
+            kind: BlockKind::Normal,
+            drops: Vec::new(),
+            successor: None,
+        })
+        .collect();
+    let mut next_cleanup_id = max_normal_id.saturating_add(1);
+    let mut plans: Vec<(ExitPath, DropPlan)> = Vec::new();
+    let drops_template = lifo.to_vec();
+
+    for block in blocks {
+        let block_id = block.id;
+        let plan = match &block.terminator {
+            Terminator::Return => (
+                ExitPath::Return { block: block_id },
                 DropPlan {
-                    drops: drops.clone(),
+                    drops: drops_template.clone(),
                 },
-            )
-        }
-        Terminator::Yield { value: _, next } => (
-            ExitPath::Yield {
-                block: block_id,
-                next: *next,
-            },
-            DropPlan::default(),
-        ),
-        Terminator::Send {
-            actor: _,
-            value: _,
-            next,
-        } => (
-            // `actor` is a Place; the ExitPath::Send slot carries the
-            // callee name. Spine has no Send construction surface, so
-            // this is unreachable in practice — empty placeholder.
-            ExitPath::Send {
-                block: block_id,
-                actor: String::new(),
-                next: *next,
-            },
-            DropPlan::default(),
-        ),
-    };
-    (blocks, vec![plan])
+            ),
+            Terminator::Goto { target } => (
+                ExitPath::Goto {
+                    block: block_id,
+                    target: *target,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Branch {
+                cond: _,
+                then_target,
+                else_target,
+            } => (
+                ExitPath::Branch {
+                    block: block_id,
+                    then_target: *then_target,
+                    else_target: *else_target,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Call {
+                callee,
+                args: _,
+                dest: _,
+                next,
+            } => (
+                ExitPath::Call {
+                    block: block_id,
+                    callee: callee.clone(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Panic => {
+                // Cleanup block: same LIFO drop plan as the normal exit
+                // at this scope depth; no successor (trap is terminal).
+                let cleanup_id = next_cleanup_id;
+                next_cleanup_id = next_cleanup_id.saturating_add(1);
+                elab_blocks.push(ElabBlock {
+                    id: cleanup_id,
+                    kind: BlockKind::Cleanup,
+                    drops: drops_template.clone(),
+                    successor: None,
+                });
+                (
+                    ExitPath::Panic { block: block_id },
+                    DropPlan {
+                        drops: drops_template.clone(),
+                    },
+                )
+            }
+            Terminator::Yield { value: _, next } => (
+                ExitPath::Yield {
+                    block: block_id,
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Send {
+                actor: _,
+                value: _,
+                next,
+            } => (
+                // `actor` is a Place; the ExitPath::Send slot carries
+                // the callee name. Spine has no Send construction
+                // surface, so this is unreachable in practice — empty
+                // placeholder name.
+                ExitPath::Send {
+                    block: block_id,
+                    actor: String::new(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+        };
+        plans.push(plan);
+    }
+    (elab_blocks, plans)
 }

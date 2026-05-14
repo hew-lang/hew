@@ -111,9 +111,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Clippy
+        # hew-cli is excluded during the v0.5 spine pass — its build.rs
+        # invokes cmake on the hew-codegen subtree, which is queued for
+        # deletion.
         run: |
           set -o pipefail
-          cargo clippy --workspace --tests --message-format=json -- -D warnings \
+          cargo clippy --workspace --tests --exclude hew-cli --message-format=json -- -D warnings \
             | clippy-sarif \
             | tee clippy-results.sarif \
             | sarif-fmt

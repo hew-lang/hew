@@ -156,6 +156,15 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
                     println!("{func:#?}");
                 }
             }
+            "checked" => {
+                // The Checked MIR dump includes the `MirCheck` findings
+                // list. On a function that passes, `checks` is empty —
+                // that emptiness is the load-bearing signal the CLI
+                // rejection path keys off of.
+                for func in &pipeline.checked_mir {
+                    println!("{func:#?}");
+                }
+            }
             "elab" => {
                 for func in &pipeline.elaborated_mir {
                     println!("{func:#?}");

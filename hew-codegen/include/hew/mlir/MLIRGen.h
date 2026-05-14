@@ -1011,9 +1011,6 @@ private:
   /// Defining-module-mangled user Drop symbols already processed. Prevents
   /// flattened root-module clones from re-generating imported Drop impls.
   std::unordered_set<std::string> generatedUserDropImpls;
-  /// Mangled function/method symbols whose String result is just a borrowed
-  /// alias of an owned field on a caller-owned struct parameter/receiver.
-  std::unordered_set<std::string> borrowedFieldReturnCallees;
   using ExcludeSet = std::set<std::pair<std::string, size_t>>;
   void collectExcludeVars(const ast::Expr &expr, ExcludeSet &out, size_t depth);
   void collectExcludeVarsFromBlock(const ast::Block &block, ExcludeSet &out, size_t depth,
@@ -1143,7 +1140,6 @@ private:
   /// Returns true if `v` is a temporary string (heap-allocated, not from
   /// a variable load or a constant).  Safe to drop after consumption.
   bool isTemporaryString(mlir::Value v);
-  void maybeRegisterBorrowedFieldReturn(const ast::FnDecl &fn, llvm::StringRef symbolName);
 
   // ── Temporary materialization ─────────────────────────────────────
   /// Counter for generating unique __tmp_N implicit let-binding names.

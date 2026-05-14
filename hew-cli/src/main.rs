@@ -114,6 +114,22 @@ fn cmd_build(a: &args::BuildArgs) {
     }
 }
 
+/// Surface the diagnostic family in the CLI prefix so users see what
+/// gate tripped at a glance. `MirCheck` findings (move/init/aliasing
+/// legality) are a distinct family from spine-subset rejections; the
+/// kind in the debug payload disambiguates further.
+fn diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
+    match kind {
+        hew_mir::MirDiagnosticKind::UseAfterConsume { .. }
+        | hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. }
+        | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. } => "E_MIR_CHECK",
+        hew_mir::MirDiagnosticKind::CutoverUnsupported { .. } => "E_CUTOVER_UNSUPPORTED",
+        hew_mir::MirDiagnosticKind::UnknownType { .. }
+        | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
+        | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. } => "E_MIR",
+    }
+}
+
 fn cmd_compile_v05(a: &args::CompileV05Args) {
     let input = a.input.display().to_string();
     let source = std::fs::read_to_string(&a.input).unwrap_or_else(|e| {
@@ -142,7 +158,7 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
     let pipeline = hew_mir::lower_hir_module(&lower_output.module);
     if !pipeline.diagnostics.is_empty() {
         for diagnostic in &pipeline.diagnostics {
-            eprintln!("E_CUTOVER_UNSUPPORTED {diagnostic:?}");
+            eprintln!("{} {diagnostic:?}", diagnostic_prefix(&diagnostic.kind));
         }
         std::process::exit(1);
     }
@@ -153,6 +169,15 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
         match stage {
             "raw" => {
                 for func in &pipeline.raw_mir {
+                    println!("{func:#?}");
+                }
+            }
+            "checked" => {
+                // The Checked MIR dump includes the `MirCheck` findings
+                // list. On a function that passes, `checks` is empty —
+                // that emptiness is the load-bearing signal the CLI
+                // rejection path keys off of.
+                for func in &pipeline.checked_mir {
                     println!("{func:#?}");
                 }
             }

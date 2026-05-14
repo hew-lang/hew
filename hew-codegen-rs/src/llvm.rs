@@ -588,6 +588,22 @@ fn lower_terminator<'ctx>(
                 "Terminator::Panic — panic lowering is Cluster 3 work",
             ));
         }
+        Terminator::Yield { .. } => {
+            // The variant is declared so Checked MIR's borrow-liveness
+            // check has a suspension point to look for; the v0.5
+            // integer spine never constructs it. Generator lowering
+            // arrives with the construction surface in a later release.
+            return Err(CodegenError::Unsupported(
+                "Terminator::Yield — generator lowering not yet implemented",
+            ));
+        }
+        Terminator::Send { .. } => {
+            // Same shape as Yield: declared for the legality check, no
+            // construction surface in the v0.5 spine.
+            return Err(CodegenError::Unsupported(
+                "Terminator::Send — actor lowering not yet implemented",
+            ));
+        }
     }
     Ok(())
 }

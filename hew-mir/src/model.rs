@@ -1,6 +1,17 @@
 use hew_hir::{BindingId, IntentKind, SiteId, ValueClass};
 use hew_types::ResolvedTy;
 
+/// Distinguishes shared (read-only, may alias) from mutable (unique,
+/// no-alias) borrows for the aliasing check. The check itself is
+/// declared in `MirCheck::Aliasing` but the spine has no construction
+/// surface for borrows yet — the variant exists so the borrow
+/// lowering that lands later doesn't have to retrofit the kind enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BorrowKind {
+    Shared,
+    Mutable,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IrPipeline {
     pub thir: Vec<ThirFunction>,
@@ -70,6 +81,22 @@ pub enum Terminator {
     /// Hard abort: emit a trap or `unreachable`. Used by future panic
     /// lowering; Cluster 1 doesn't construct this.
     Panic,
+    /// Generator suspension: yield `value` to the resumer and continue
+    /// at `next` on resume. The presence of this terminator in a
+    /// function's CFG is what makes `MirCheck::GeneratorBorrowAcrossYield`
+    /// interesting; the v0.5 integer spine never constructs it.
+    /// Declared here so the borrow-liveness check has a place to look.
+    Yield { value: Place, next: u32 },
+    /// Actor message send. The sent value at `value` crosses the
+    /// actor boundary; `MirCheck::ActorSendEscape` checks the value's
+    /// transitive references satisfy the `Send` constraint. Declared
+    /// here so the escape check has a construction site to look for;
+    /// the v0.5 integer spine never constructs it.
+    Send {
+        actor: Place,
+        value: Place,
+        next: u32,
+    },
 }
 
 /// An addressable target for a load or store in the backend-authority
@@ -117,11 +144,58 @@ pub struct CheckedMirFunction {
     pub checks: Vec<MirCheck>,
 }
 
+/// Per-function legality findings produced by Checked MIR. A
+/// `CheckedMirFunction` with any non-`DecisionMapTotal` `MirCheck`
+/// is rejected by `hew compile-v05`; no backend artefact is emitted.
+///
+/// The variants are exhaustive over the v0.5 move/borrow/init/aliasing
+/// surface. Variants whose construction surface doesn't yet exist in
+/// the spine (`Aliasing`, `GeneratorBorrowAcrossYield`,
+/// `ActorSendEscape`) are declared here so subsequent work that adds
+/// borrow ops, `Terminator::Yield` construction, and actor-send
+/// lowering doesn't have to retrofit the enum. They cannot be
+/// constructed by passes today because the IR has no surface for
+/// them; the passes that target them are no-ops on the current spine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MirCheck {
-    InitialisedBeforeUse,
-    DecisionMapTotal,
-    UseAfterConsume,
+    /// A binding is used before any initialising `Bind` for it appears
+    /// in the function's statement stream.
+    InitialisedBeforeUse {
+        binding: BindingId,
+        name: String,
+        use_site: SiteId,
+    },
+    /// A non-`BitCopy` binding was consumed and then read again. The
+    /// payload carries the consume site and the offending use site so
+    /// the diagnostic surface can point at both ends of the bug.
+    UseAfterConsume {
+        binding: BindingId,
+        name: String,
+        consumed_at: SiteId,
+        used_at: SiteId,
+    },
+    /// A shared and mutable borrow of the same place are simultaneously
+    /// live, violating read-shared XOR mutate-unique. Declared variant;
+    /// no construction surface in the v0.5 integer spine — borrow ops
+    /// will populate it once they land.
+    Aliasing {
+        conflicting_borrows: Vec<(SiteId, BorrowKind)>,
+    },
+    /// A borrow is live across a generator yield point. Declared
+    /// variant; `Terminator::Yield` exists as the suspension site
+    /// shape, but the generator-body construction surface that builds
+    /// it isn't in the v0.5 integer spine.
+    GeneratorBorrowAcrossYield { place: Place, yield_point: SiteId },
+    /// A non-`Send` value escapes across an actor message boundary.
+    /// Declared variant; `Terminator::Send` exists as the boundary
+    /// shape, but actor lowering that builds it isn't in the v0.5
+    /// integer spine.
+    ActorSendEscape { place: Place, send_site: SiteId },
+    /// Structural invariant on the lowering: every value-producing
+    /// `SiteId` must have a `DecisionFact` with a concrete `Strategy`
+    /// (not `UnknownBlocked`). Violation indicates a lowering bug, not
+    /// a user error — surface as a hard rejection.
+    DecisionMapTotal { offending_sites: Vec<SiteId> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -173,25 +247,31 @@ pub enum MirDiagnosticKind {
     UseAfterConsume {
         binding: BindingId,
         name: String,
+        consumed_at: SiteId,
+        used_at: SiteId,
     },
+    /// A binding is read before any initialising `let` for it appears.
+    /// Surfaced from `MirCheck::InitialisedBeforeUse` in commit 2.
+    InitialisedBeforeUse {
+        binding: BindingId,
+        name: String,
+        use_site: SiteId,
+    },
+    /// Structural invariant on lowering: a `DecisionFact` carries
+    /// `Strategy::UnknownBlocked`. Surfaced from
+    /// `MirCheck::DecisionMapTotal`.
+    DecisionMapTotal { offending_sites: Vec<SiteId> },
     /// D10: a named user type had no known `ValueClass` at the MIR boundary.
     /// Only builtin types are supported in slice 1.
-    UnknownType {
-        name: String,
-    },
+    UnknownType { name: String },
     /// Defense-in-depth: an `HirExprKind::Unsupported` node reached MIR
     /// lowering.  The HIR diagnostic should have stopped the pipeline earlier.
-    UnsupportedNode {
-        reason: String,
-    },
+    UnsupportedNode { reason: String },
     /// Cluster 1 spine subset rejection: an expression form (e.g. a call, a
     /// non-integer literal, a control-flow construct) is recognised but not
     /// yet lowered to the backend `Instr` stream. Fail-closed so the emitter
     /// never sees a function body with an uninitialised return slot.
-    CutoverUnsupported {
-        construct: String,
-        site: SiteId,
-    },
+    CutoverUnsupported { construct: String, site: SiteId },
     /// A `BindingRef` could not be resolved to a backend `Place` (typically
     /// a function parameter — Cluster 1's spine does not yet bind incoming
     /// arguments to local slots). Without a Place, the value cannot be

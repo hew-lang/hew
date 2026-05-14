@@ -68,10 +68,11 @@ pub struct CompileV05Args {
     #[arg(long = "emit-dir", value_name = "DIR")]
     pub emit_dir: Option<PathBuf>,
     /// Emit a textual MIR dump and exit (no LLVM emission).
-    /// Accepts `raw` (the lowered `RawMirFunction`) and `elab` (the
-    /// elaborated MIR with drop entries). Useful for spot-checking the
-    /// front-half lowering during development.
-    #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["raw", "elab"])]
+    /// Accepts `raw` (the lowered `RawMirFunction`), `checked` (the
+    /// `CheckedMirFunction` after move/init/aliasing checks run), and
+    /// `elab` (the elaborated MIR with drop entries). Useful for
+    /// spot-checking the front-half lowering during development.
+    #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["raw", "checked", "elab"])]
     pub dump_mir: Option<String>,
     /// Skip the wasm emit + wasm-ld link step. Native object still emits.
     #[arg(long = "no-wasm")]

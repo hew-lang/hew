@@ -1,0 +1,13 @@
+// Reject fixture for `MirCheck::UseAfterConsume`.
+//
+// `s` is a String (a non-`BitCopy` value class). The `let t = s;`
+// consumes it. The trailing `return s;` reads `s` after the move,
+// which the Checked MIR move-checker rejects. `hew compile-v05`
+// emits a `MirDiagnostic::UseAfterConsume` carrying both the
+// consume site and the offending use site, and exits non-zero
+// without producing a binary.
+fn main() -> String {
+    let s = "hello";
+    let t = s;
+    return s;
+}

@@ -13,6 +13,90 @@ use crate::model::{
     Terminator, ThirFunction,
 };
 
+/// Run Checked MIR's legality passes over a function's statement
+/// stream. Two real passes ship today (use-after-consume,
+/// initialised-before-use); the aliasing, generator-borrow-across-
+/// yield, and actor-send-escape variants are declared on `MirCheck`
+/// but have no construction surface in the v0.5 integer spine yet
+/// (no borrow ops in `Instr`, no projection variants on `Place`, no
+/// construction site for `Terminator::Yield` / `Terminator::Send`).
+/// The `MirCheck::DecisionMapTotal` invariant fires if any
+/// `DecisionFact` in this function carries `Strategy::UnknownBlocked`.
+fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
+    let mut checks = Vec::new();
+
+    // Pass 1: forward-scan the checker-authority statement stream.
+    // Track which bindings have been initialised (`Bind`) and which
+    // have been consumed (`Use` with `IntentKind::Consume` on a
+    // non-`BitCopy` type). A `Use` of an uninitialised binding is
+    // `InitialisedBeforeUse`; a `Use` of a consumed binding is
+    // `UseAfterConsume`.
+    let mut initialised: HashSet<BindingId> = HashSet::new();
+    let mut consumed: HashMap<BindingId, hew_hir::SiteId> = HashMap::new();
+    for statement in &builder.statements {
+        match statement {
+            MirStatement::Bind { binding, .. } => {
+                initialised.insert(*binding);
+                consumed.remove(binding);
+            }
+            MirStatement::Use {
+                binding,
+                name,
+                site,
+                ty,
+                intent,
+            } => {
+                if !initialised.contains(binding) {
+                    checks.push(MirCheck::InitialisedBeforeUse {
+                        binding: *binding,
+                        name: name.clone(),
+                        use_site: *site,
+                    });
+                }
+                if let Some(consumed_at) = consumed.get(binding) {
+                    checks.push(MirCheck::UseAfterConsume {
+                        binding: *binding,
+                        name: name.clone(),
+                        consumed_at: *consumed_at,
+                        used_at: *site,
+                    });
+                }
+                if *intent == IntentKind::Consume && ValueClass::of_ty(ty) != ValueClass::BitCopy {
+                    consumed.insert(*binding, *site);
+                }
+            }
+            MirStatement::Evaluate { .. }
+            | MirStatement::Return { .. }
+            | MirStatement::Drop { .. } => {}
+        }
+    }
+
+    // Pass 2: DecisionMapTotal. Every `DecisionFact` on this function
+    // must carry a concrete `Strategy` — `Strategy::UnknownBlocked` is
+    // a lowering escape valve that must never reach the emitter.
+    let offending: Vec<_> = builder
+        .decisions
+        .iter()
+        .filter(|d| d.strategy == Strategy::UnknownBlocked)
+        .map(|d| d.site)
+        .collect();
+    if !offending.is_empty() {
+        checks.push(MirCheck::DecisionMapTotal {
+            offending_sites: offending,
+        });
+    }
+
+    // Aliasing, GeneratorBorrowAcrossYield, and ActorSendEscape have
+    // no construction surface in the v0.5 integer spine: `Place` has
+    // no projection variants, `Instr` has no borrow ops, and
+    // `Terminator::Yield` / `Terminator::Send` are declared but never
+    // built. The passes are no-ops on the current IR; they populate
+    // when the construction surface for borrows, generators, and
+    // actor sends lands.
+
+    checks
+}
+
 #[must_use]
 pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut thir = Vec::new();
@@ -74,7 +158,14 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         blocks: vec![raw_block.clone()],
         decisions: builder.decisions.clone(),
     };
-    let mut diagnostics = check_raw_mir(&raw_block);
+    // Checked MIR's `checks` field is populated by `check_function`
+    // from real dataflow over the checker-authority `MirStatement`
+    // stream. The `MirDiagnostic` surface that the CLI rejects on is
+    // projected from these checks — there is one source of truth for
+    // move/borrow/init legality.
+    let checks = check_function(&builder, func);
+    let mut diagnostics: Vec<MirDiagnostic> =
+        checks.iter().filter_map(check_to_diagnostic).collect();
 
     // Collect diagnostics emitted by the builder (e.g., Unsupported HIR nodes).
     diagnostics.append(&mut builder.diagnostics);
@@ -86,11 +177,7 @@ fn lower_function(func: &HirFn) -> LoweredFunction {
         return_ty: func.return_ty.clone(),
         block: raw_block,
         decisions: builder.decisions.clone(),
-        checks: vec![
-            MirCheck::InitialisedBeforeUse,
-            MirCheck::DecisionMapTotal,
-            MirCheck::UseAfterConsume,
-        ],
+        checks,
     };
     let mut elaborated_statements = builder.statements.clone();
     for (binding, name, ty) in builder.owned_locals.iter().rev() {
@@ -366,10 +453,19 @@ impl Builder {
                 None
             }
             HirExprKind::Block(block) => {
+                // Every nested statement reaches the checker-authority
+                // stream via `self.stmt`, not just `HirStmtKind::Expr`.
+                // Forwarding only `Expr` here would silently drop nested
+                // `let` / `return` statements from a block expression and
+                // let a real `UseAfterConsume` / `InitialisedBeforeUse`
+                // pattern slip past the move-checker (fail-closed gap).
+                // The HIR-Block-as-expression case recurses through this
+                // arm — `If` / `StructInit` / `Call` / `Binary` lower
+                // their nested expressions via `lower_value`, so a block
+                // embedded in any of those forms reaches this arm and is
+                // lowered the same way.
                 for stmt in &block.statements {
-                    if let HirStmtKind::Expr(inner) = &stmt.kind {
-                        let _ = self.lower_value(inner);
-                    }
+                    self.stmt(stmt);
                 }
                 block.tail.as_ref().and_then(|tail| self.lower_value(tail))
             }
@@ -528,41 +624,55 @@ impl Builder {
     }
 }
 
-fn check_raw_mir(block: &BasicBlock) -> Vec<MirDiagnostic> {
-    let mut consumed = HashSet::new();
-    let mut diagnostics = Vec::new();
-
-    for statement in &block.statements {
-        match statement {
-            MirStatement::Bind { binding, .. } => {
-                consumed.remove(binding);
-            }
-            MirStatement::Use {
-                binding,
-                name,
-                ty,
-                intent,
-                ..
-            } => {
-                if consumed.contains(binding) {
-                    diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::UseAfterConsume {
-                            binding: *binding,
-                            name: name.clone(),
-                        },
-                        note: "binding is used after an owned value move in checked MIR"
-                            .to_string(),
-                    });
-                }
-                if *intent == IntentKind::Consume && ValueClass::of_ty(ty) != ValueClass::BitCopy {
-                    consumed.insert(*binding);
-                }
-            }
-            MirStatement::Evaluate { .. }
-            | MirStatement::Return { .. }
-            | MirStatement::Drop { .. } => {}
-        }
+/// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
+/// rejection surface. `CheckedMirFunction::checks` is the single
+/// source of truth for move/borrow/init legality; this function
+/// adapts those findings to the older `MirDiagnostic` channel the
+/// driver already consumes. Variants whose construction surface
+/// isn't yet wired (`Aliasing`, `GeneratorBorrowAcrossYield`,
+/// `ActorSendEscape`) cannot appear today; they yield `None` defensively.
+fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
+    match check {
+        MirCheck::UseAfterConsume {
+            binding,
+            name,
+            consumed_at,
+            used_at,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::UseAfterConsume {
+                binding: *binding,
+                name: name.clone(),
+                consumed_at: *consumed_at,
+                used_at: *used_at,
+            },
+            note: "binding is used after an owned value move in checked MIR".to_string(),
+        }),
+        MirCheck::InitialisedBeforeUse {
+            binding,
+            name,
+            use_site,
+        } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::InitialisedBeforeUse {
+                binding: *binding,
+                name: name.clone(),
+                use_site: *use_site,
+            },
+            note: "binding is read before any initialising `let` for it appears".to_string(),
+        }),
+        MirCheck::DecisionMapTotal { offending_sites } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::DecisionMapTotal {
+                offending_sites: offending_sites.clone(),
+            },
+            note: "DecisionFact carries Strategy::UnknownBlocked at MIR boundary; \
+                   the emitter must never receive an undecided value-class site"
+                .to_string(),
+        }),
+        // No construction surface in the v0.5 integer spine. The
+        // corresponding `MirDiagnosticKind` projections will land
+        // alongside the construction surface for borrows, generators,
+        // and actor sends.
+        MirCheck::Aliasing { .. }
+        | MirCheck::GeneratorBorrowAcrossYield { .. }
+        | MirCheck::ActorSendEscape { .. } => None,
     }
-
-    diagnostics
 }

@@ -121,6 +121,34 @@ fn linear_no_consuming_methods_declared_fires_hir_diagnostic() {
 }
 
 #[test]
+fn linear_with_consuming_method_emits_no_diagnostic() {
+    // A `#[linear]` type that declares at least one `consuming self` method
+    // is structurally valid; HIR must not emit `LinearNoConsumingMethods`.
+    let src = r"
+        #[linear]
+        type Token {
+            id: int
+            fn consume(consuming self) -> int { 0 }
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::LinearNoConsumingMethods { .. })),
+        "valid @linear type must not produce LinearNoConsumingMethods: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn resource_missing_close_method_fires_hir_diagnostic() {
     // `#[resource]` type whose body has no method named `close`
     // declared with `consuming self`. The implicit-drop contract
@@ -144,6 +172,34 @@ fn resource_missing_close_method_fires_hir_diagnostic() {
     assert!(
         diag.is_some(),
         "ResourceMissingClose should fire for `Sock`; diagnostics: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn resource_with_close_method_emits_no_diagnostic() {
+    // A `#[resource]` type that declares `close(consuming self)` satisfies
+    // the implicit-drop contract; HIR must not emit `ResourceMissingClose`.
+    let src = r"
+        #[resource]
+        type File {
+            fd: int
+            fn close(consuming self) -> int { 0 }
+        }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(&parsed.program, &ResolutionCtx);
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::ResourceMissingClose { .. })),
+        "valid @resource type must not produce ResourceMissingClose: {:?}",
         output.diagnostics
     );
 }

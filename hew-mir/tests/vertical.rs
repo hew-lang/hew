@@ -1,5 +1,5 @@
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
-use hew_mir::{lower_hir_module, MirDiagnosticKind, MirStatement};
+use hew_mir::{lower_hir_module, MirCheck, MirDiagnosticKind, MirStatement};
 
 fn pipeline(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -39,6 +39,86 @@ fn checked_mir_rejects_use_after_consume() {
         diagnostic.kind,
         MirDiagnosticKind::UseAfterConsume { ref name, .. } if name == "s"
     )));
+}
+
+#[test]
+fn checked_mir_finding_carries_consume_and_use_sites() {
+    // The payload-bearing `MirCheck::UseAfterConsume` shape projects
+    // through to the diagnostic so a CLI consumer can point at both
+    // ends of the bug, not just the binding name.
+    let pipeline = pipeline(r#"fn main() -> String { let s = "hello"; let t = s; return s; }"#);
+    let func = pipeline
+        .checked_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main is in checked_mir");
+    let finding = func
+        .checks
+        .iter()
+        .find_map(|check| match check {
+            MirCheck::UseAfterConsume {
+                name,
+                consumed_at,
+                used_at,
+                ..
+            } if name == "s" => Some((*consumed_at, *used_at)),
+            _ => None,
+        })
+        .expect("UseAfterConsume finding for s");
+    assert_ne!(
+        finding.0, finding.1,
+        "consume and use sites are distinct: {finding:?}"
+    );
+}
+
+#[test]
+fn checked_mir_rejects_use_of_uninitialised_binding() {
+    // `let x;` declares without initialising; the subsequent `let _y = x;`
+    // reads `x` before any `Bind` for it. The check fires on the
+    // statement stream, independent of whether the backend can lower the
+    // value (the spine rejects this for unrelated reasons too — what we
+    // care about here is that the MirCheck variant is populated and the
+    // diagnostic surface carries the binding name).
+    let pipeline = pipeline("fn f() { let x; let _y = x; }");
+
+    let init_check = pipeline
+        .checked_mir
+        .iter()
+        .flat_map(|f| f.checks.iter())
+        .find(|check| matches!(check, MirCheck::InitialisedBeforeUse { name, .. } if name == "x"));
+    assert!(
+        init_check.is_some(),
+        "InitialisedBeforeUse finding expected for x: {:?}",
+        pipeline
+            .checked_mir
+            .iter()
+            .flat_map(|f| f.checks.iter())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::InitialisedBeforeUse { name, .. } if name == "x"
+        )),
+        "MirDiagnostic projection must carry the InitialisedBeforeUse \
+         finding to the CLI rejection channel: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn checked_mir_accepts_spine_integer_function() {
+    // The Cluster 1 integer spine must not produce any MirCheck findings —
+    // the move-checker is fail-closed only on real legality violations.
+    let pipeline = pipeline("fn main() -> i64 { let x = 1 + 2; return x; }");
+    for func in &pipeline.checked_mir {
+        assert!(
+            func.checks.is_empty(),
+            "spine integer function {} has unexpected checks: {:?}",
+            func.name,
+            func.checks
+        );
+    }
 }
 
 #[test]

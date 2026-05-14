@@ -1,0 +1,18 @@
+// Sequential `let r = if ...;` Ifs exercise the cursor's monotone
+// advance through the join blocks. The function compiles to a
+// 7-block CFG: entry-If1-branch, then1, else1, join1-If2-branch,
+// then2, else2, join2-Return. Both Ifs take their then arm
+// (conditions are `1 == 1`), so the binary computes `7 + 35 = 42`.
+fn main() -> int {
+    let a = if 1 == 1 {
+        7
+    } else {
+        8
+    };
+    let b = if 1 == 1 {
+        35
+    } else {
+        36
+    };
+    a + b
+}

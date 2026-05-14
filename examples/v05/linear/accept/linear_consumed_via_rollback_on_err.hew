@@ -1,0 +1,27 @@
+// Accept fixture: a `@linear` binding is consumed in BOTH arms but
+// via different consume sites — one commit, one rollback. The
+// lattice meet is still `Consumed ⊓ Consumed = Consumed` (the
+// surviving site is the earlier of the two for diagnostic
+// anchoring; both arms have exhausted the binding before reaching
+// the join).
+
+#[linear]
+type Txn {
+    id: int
+    fn commit(consuming self) -> int { 0 }
+    fn rollback(consuming self) -> int { 1 }
+}
+
+fn main() -> int {
+    let t = Txn { id: 0 };
+    // Approximate commit/rollback via different bindings to
+    // distinguish the two consume sites at the lattice level.
+    let _r = if 1 == 1 {
+        let _committed = t;
+        7
+    } else {
+        let _rolled_back = t;
+        8
+    };
+    42
+}

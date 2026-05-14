@@ -39,7 +39,7 @@ use crate::model::{
 /// work — it cannot meaningfully run under this implementation.
 /// LESSONS: boundary-fail-closed (don't assume the substrate is
 /// path-sensitive when the construction surface is single-block).
-fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
+fn check_function(builder: &Builder, blocks: &[BasicBlock], _func: &HirFn) -> Vec<MirCheck> {
     let mut checks = Vec::new();
 
     // Pass 1: forward-scan the checker-authority statement stream.
@@ -50,12 +50,21 @@ fn check_function(builder: &Builder, _func: &HirFn) -> Vec<MirCheck> {
     // `UseAfterConsume`. A `Linear` binding live at `Return` without
     // being consumed is `MustConsume` — symmetric to `UseAfterConsume`,
     // closing the move-checker's @linear-side proof obligation.
+    //
+    // LOAD-BEARING INVARIANT — Slice 1 preserves flat semantics. The
+    // forward-scan over `blocks[*].statements` (concatenated in
+    // construction order) is correct *only* while MIR remains
+    // structurally CFG-flat. The cursor refactor here does NOT change
+    // the algorithm; Slice 2 introduces real CFG splits, after which
+    // Slice 3 replaces this scan with per-block dataflow + worklist
+    // fixpoint over the four-state lattice.
     let mut initialised: HashSet<BindingId> = HashSet::new();
     let mut consumed: HashMap<BindingId, hew_hir::SiteId> = HashMap::new();
     // Linear binding ledger: name + type + the site at which the
     // binding was introduced. Cleared when the binding is consumed.
     let mut linear_live: HashMap<BindingId, (String, ResolvedTy)> = HashMap::new();
-    for statement in &builder.statements {
+    let flat: Vec<&MirStatement> = blocks.iter().flat_map(|b| b.statements.iter()).collect();
+    for statement in flat {
         match statement {
             MirStatement::Bind {
                 binding, name, ty, ..
@@ -204,22 +213,40 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     };
     builder.function_body(func);
 
+    // Drain the in-flight current block into a sealed `BasicBlock` with
+    // a `Terminator::Return`. Slice 1's flat lowering always produces a
+    // singleton blocks vector; Slice 2+ may surface multiple blocks
+    // when `If` (and later `Match` / loops) split the CFG. The order is
+    // monotone in block id.
+    let blocks = builder.finalize_blocks(Terminator::Return);
+    // THIR's `statements` is the union of every block's checker stream
+    // in CFG-construction order — the THIR snapshot's job is preserving
+    // the pre-CFG flat-stream shape for diagnostic readers that haven't
+    // been ported to block-aware iteration yet. Slice 3's per-block
+    // dataflow consumes `RawMirFunction.blocks` directly and doesn't
+    // touch this snapshot.
+    let thir_statements: Vec<MirStatement> = blocks
+        .iter()
+        .flat_map(|b| b.statements.iter().cloned())
+        .collect();
     let thir = ThirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
-        statements: builder.statements.clone(),
+        statements: thir_statements,
     };
-    let raw_block = BasicBlock {
-        id: 0,
-        statements: builder.statements.clone(),
-        instructions: builder.instructions.clone(),
-        terminator: Terminator::Return,
-    };
+    // Cluster 3's elaborator + `check_function` still operate on a
+    // single `BasicBlock` payload via `CheckedMirFunction.block`. Slice
+    // 1 (this commit) preserves the legacy shape by feeding the entry
+    // block — every existing caller observes the same single-block
+    // surface they did before. Slice 3 widens `check_function` to a
+    // per-block dataflow at which point `CheckedMirFunction` itself
+    // grows a `Vec<BasicBlock>`.
+    let raw_block = blocks[0].clone();
     let raw = RawMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
         locals: builder.locals.clone(),
-        blocks: vec![raw_block.clone()],
+        blocks,
         decisions: builder.decisions.clone(),
     };
     // Checked MIR's `checks` field is populated by `check_function`
@@ -227,7 +254,7 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     // stream. The `MirDiagnostic` surface that the CLI rejects on is
     // projected from these checks — there is one source of truth for
     // move/borrow/init legality.
-    let checks = check_function(&builder, func);
+    let checks = check_function(&builder, &raw.blocks, func);
     let mut diagnostics: Vec<MirDiagnostic> =
         checks.iter().filter_map(check_to_diagnostic).collect();
 
@@ -255,7 +282,7 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     // does not emit a Drop. The elaboration shape is exercised by
     // hew-mir's unit tests that hand-construct CheckedMirFunction
     // inputs with synthesized DecisionFact::value_class values.
-    let elaborated = elaborate(&checked, &builder);
+    let elaborated = elaborate(&checked, &builder, &thir.statements);
 
     LoweredFunction {
         thir,
@@ -352,15 +379,34 @@ fn push_unknown_type_diagnostic(
 
 #[derive(Debug, Default)]
 struct Builder {
-    /// Checker-authority stream: one `MirStatement` per Hew-level site
-    /// (`Bind`, `Use`, `Evaluate`, `Return`, `Drop`). Consumed by
-    /// `check_raw_mir` and the D10 / use-after-consume passes.
+    /// Checker-authority stream for the *current* basic block. Drained
+    /// into a `BasicBlock` when the cursor moves (`finish_current_block`)
+    /// or at function-body finalisation. Once a block is sealed it lives
+    /// in `pending_blocks` until the function's body walk completes.
     statements: Vec<MirStatement>,
-    /// Backend-authority stream: one `Instr` per machine-level value
-    /// movement. Consumed by `hew-codegen-rs::llvm`. Populated in lock-step
-    /// with `statements` by `lower_value` so the checker and the emitter
-    /// agree on what each `SiteId` resolves to.
+    /// Backend-authority stream for the *current* basic block. Populated
+    /// in lock-step with `statements` by `lower_value` so the checker
+    /// and the emitter agree on what each `SiteId` resolves to. Drained
+    /// at the same cursor-move site as `statements`.
     instructions: Vec<Instr>,
+    /// Completed basic blocks in construction order. Block id `0` is the
+    /// function's entry block; subsequent ids are monotone in allocation
+    /// order. The currently-being-built block (`current_block_id` /
+    /// `statements` / `instructions`) is appended at function-body
+    /// finalisation. Slice 1 leaves this empty for every function (the
+    /// cursor never moves under the CFG-flat lowering); Slice 2's `If`
+    /// lowering is the first writer.
+    pending_blocks: Vec<BasicBlock>,
+    /// Monotone counter for fresh `BasicBlock` ids. `alloc_block` returns
+    /// the next id without switching the cursor — the caller is
+    /// responsible for `finish_current_block(...)` + `start_block(id)`
+    /// at the right point in the lowering sequence.
+    next_block_id: u32,
+    /// Id of the block currently receiving `statements` / `instructions`.
+    /// Initialised to `0` (the entry block). Updated by
+    /// `start_block(id)` after a `finish_current_block(...)` seals the
+    /// previous block into `pending_blocks`.
+    current_block_id: u32,
     /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
     /// `Place::Local(i as u32)`.
     locals: Vec<ResolvedTy>,
@@ -388,6 +434,96 @@ impl Builder {
             .expect("function exceeds u32::MAX locals — impossible in Hew");
         self.locals.push(ty);
         Place::Local(id)
+    }
+
+    /// Allocate a fresh `BasicBlock` id without switching the cursor.
+    /// The caller invokes `finish_current_block(terminator)` to seal
+    /// the current block, then `start_block(id)` to route subsequent
+    /// `statements` / `instructions` into the new block.
+    ///
+    /// The very first `alloc_block` call returns id `1` because id `0`
+    /// is reserved for the function's entry block (the cursor starts
+    /// there at `Builder::default()`-time).
+    #[allow(
+        dead_code,
+        reason = "Slice 1 declares cursor helpers; Slice 2 is the first caller"
+    )]
+    fn alloc_block(&mut self) -> u32 {
+        // `next_block_id` starts at 0; bump to 1 the first time
+        // `alloc_block` is called (id 0 is the entry block, allocated by
+        // construction). After that, monotone increment.
+        if self.next_block_id == 0 {
+            self.next_block_id = 1;
+        }
+        let id = self.next_block_id;
+        self.next_block_id = self
+            .next_block_id
+            .checked_add(1)
+            .expect("function exceeds u32::MAX blocks — impossible in Hew");
+        id
+    }
+
+    /// Seal the current basic block with `terminator` and move its
+    /// statements + instructions into `pending_blocks`. The cursor is
+    /// left at the just-sealed block's id; `start_block(new_id)` must
+    /// be called before any further `statements.push` /
+    /// `instructions.push` routes into the new block.
+    #[allow(
+        dead_code,
+        reason = "Slice 1 declares cursor helpers; Slice 2 is the first caller"
+    )]
+    fn finish_current_block(&mut self, terminator: Terminator) {
+        let block = BasicBlock {
+            id: self.current_block_id,
+            statements: std::mem::take(&mut self.statements),
+            instructions: std::mem::take(&mut self.instructions),
+            terminator,
+        };
+        self.pending_blocks.push(block);
+    }
+
+    /// Move the cursor to `id`. `statements` and `instructions` must be
+    /// empty before this call — typically reached by following a
+    /// `finish_current_block(...)` which drains both. The new id is
+    /// recorded for the next `finish_current_block` call's
+    /// `BasicBlock.id` payload.
+    #[allow(
+        dead_code,
+        reason = "Slice 1 declares cursor helpers; Slice 2 is the first caller"
+    )]
+    fn start_block(&mut self, id: u32) {
+        debug_assert!(
+            self.statements.is_empty() && self.instructions.is_empty(),
+            "start_block must follow finish_current_block; \
+             current block has {} statements / {} instructions buffered",
+            self.statements.len(),
+            self.instructions.len(),
+        );
+        self.current_block_id = id;
+    }
+
+    /// Finalise the function's CFG by sealing the in-flight current
+    /// block with the provided terminator. Returns the full
+    /// `Vec<BasicBlock>` in id order. Slice 1 always returns a singleton
+    /// because no caller invokes `finish_current_block`/`start_block`
+    /// during the function-body walk; Slice 2's `If` lowering is the
+    /// first writer to produce a non-trivial CFG here.
+    fn finalize_blocks(&mut self, terminator: Terminator) -> Vec<BasicBlock> {
+        let last = BasicBlock {
+            id: self.current_block_id,
+            statements: std::mem::take(&mut self.statements),
+            instructions: std::mem::take(&mut self.instructions),
+            terminator,
+        };
+        let mut blocks = std::mem::take(&mut self.pending_blocks);
+        blocks.push(last);
+        // Sort by id so consumers can index by position when they want
+        // RPO-ish iteration. Construction order is already monotone
+        // because `alloc_block` is monotone, so this is a no-op in
+        // every Slice 1 callsite (single-block) and a stable order in
+        // Slice 2+.
+        blocks.sort_by_key(|b| b.id);
+        blocks
     }
 
     fn function_body(&mut self, func: &HirFn) {
@@ -893,13 +1029,19 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
 ///   - All other classes -> no drop emitted (`BitCopy`, `CowValue`, `View`,
 ///     `PersistentShare`, `Unknown` — `Unknown` is itself an upstream
 ///     rejection).
-fn elaborate(checked: &CheckedMirFunction, builder: &Builder) -> ElaboratedMirFunction {
+fn elaborate(
+    checked: &CheckedMirFunction,
+    builder: &Builder,
+    flat_statements: &[MirStatement],
+) -> ElaboratedMirFunction {
     // Statements stream: retained for snapshot/compat continuity with
     // the pre-Cluster-3 elaborator. Every non-`BitCopy` owned local
     // gets a checker-stream `Drop` entry in reverse-declaration order;
     // the structural drop plan in `drop_plans` is the authoritative
-    // per-`ExitPath` answer.
-    let mut elaborated_statements = builder.statements.clone();
+    // per-`ExitPath` answer. The flat stream is the union of every
+    // block's `statements` in construction order — Slice 1 maintains
+    // pre-CFG snapshot continuity by feeding the same union here.
+    let mut elaborated_statements: Vec<MirStatement> = flat_statements.to_vec();
     for (binding, name, ty) in builder.owned_locals.iter().rev() {
         elaborated_statements.push(MirStatement::Drop {
             binding: *binding,

@@ -220,9 +220,6 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::StructInit { fields, .. } => {
             fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
         }
-        Expr::Send { target, message } => {
-            expr_contains_defer(&target.0) || expr_contains_defer(&message.0)
-        }
         Expr::Select { arms, timeout } => {
             arms.iter()
                 .any(|arm| expr_contains_defer(&arm.source.0) || expr_contains_defer(&arm.body.0))
@@ -436,10 +433,6 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             for (_, expr) in fields {
                 mark_expr(&mut expr.0, false);
             }
-        }
-        Expr::Send { target, message } => {
-            mark_expr(&mut target.0, false);
-            mark_expr(&mut message.0, false);
         }
         Expr::Select { arms, timeout } => {
             for arm in arms {

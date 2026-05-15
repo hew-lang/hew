@@ -217,10 +217,6 @@ pub enum Expr {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         type_args: Option<Vec<Spanned<TypeExpr>>>,
     },
-    Send {
-        target: Box<Spanned<Expr>>,
-        message: Box<Spanned<Expr>>,
-    },
     Select {
         arms: Vec<SelectArm>,
         timeout: Option<Box<TimeoutClause>>,
@@ -414,7 +410,6 @@ pub enum BinaryOp {
     Shr,
     Range,
     RangeInclusive,
-    Send,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -440,7 +435,6 @@ impl std::fmt::Display for BinaryOp {
             Self::Shr => write!(f, ">>"),
             Self::Range => write!(f, ".."),
             Self::RangeInclusive => write!(f, "..="),
-            Self::Send => write!(f, "<-"),
         }
     }
 }

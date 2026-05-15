@@ -1963,18 +1963,18 @@ impl<'a> Formatter<'a> {
                 return_type,
                 body,
             } => {
-                self.write("spawn ");
+                self.write("actor ");
                 if *is_move {
                     self.write("move ");
                 }
-                self.write("(");
+                self.write("|");
                 self.format_lambda_params(params);
-                self.write(")");
+                self.write("|");
                 if let Some(ret) = return_type {
                     self.write(" -> ");
                     self.format_type_expr(&ret.0);
                 }
-                self.write(" => ");
+                self.write(" ");
                 self.format_expr(&body.0);
             }
             Expr::Scope { binding, body } => {
@@ -2067,11 +2067,6 @@ impl<'a> Formatter<'a> {
                     f.format_expr(&fval.0);
                 });
                 self.write(" }");
-            }
-            Expr::Send { target, message } => {
-                self.format_expr(&target.0);
-                self.write(" <- ");
-                self.format_expr(&message.0);
             }
             Expr::Select { arms, timeout } => {
                 self.write("select {\n");
@@ -2387,7 +2382,6 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
         BinaryOp::Shr => ">>",
         BinaryOp::Range => "..",
         BinaryOp::RangeInclusive => "..=",
-        BinaryOp::Send => "<-",
     }
 }
 
@@ -2395,7 +2389,6 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
 /// Values match the Pratt parser's binding powers in parser.rs.
 fn binop_precedence(op: BinaryOp) -> u8 {
     match op {
-        BinaryOp::Send => 1,
         BinaryOp::Or => 3,
         BinaryOp::BitOr => 5,
         BinaryOp::BitXor => 7,

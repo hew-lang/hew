@@ -107,6 +107,11 @@ pub struct HewStream {
     /// callback (closes the TOCTOU window where an item is received
     /// but the callback has not yet fired when cancel arrives).
     pending_state: Mutex<Option<Arc<Mutex<ParkState>>>>,
+    /// Test-only: incremented each time the park thread exits (Done or
+    /// Cancelled). Allows tests to wait deterministically for a specific
+    /// park-thread generation rather than sleeping (§5.7).
+    #[cfg(test)]
+    park_exit_gen: Arc<(Mutex<u64>, std::sync::Condvar)>,
 }
 
 impl Drop for HewStream {
@@ -401,6 +406,8 @@ fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
         closed: false,
         pending_read: AtomicU64::new(0),
         pending_state: Mutex::new(None),
+        #[cfg(test)]
+        park_exit_gen: Arc::new((Mutex::new(0u64), std::sync::Condvar::new())),
     }))
 }
 
@@ -411,6 +418,8 @@ fn into_stream_ptr_dyn(backing: Box<dyn StreamBacking>) -> *mut HewStream {
         closed: false,
         pending_read: AtomicU64::new(0),
         pending_state: Mutex::new(None),
+        #[cfg(test)]
+        park_exit_gen: Arc::new((Mutex::new(0u64), std::sync::Condvar::new())),
     }))
 }
 
@@ -1247,6 +1256,19 @@ pub unsafe extern "C" fn hew_stream_poll(
                     unsafe { libc::free(item_ptr) };
                 }
             }
+        }
+
+        // Signal park-thread exit so test waiters can unblock deterministically
+        // rather than sleeping (§5.7). Only compiled in test builds.
+        #[cfg(test)]
+        {
+            // SAFETY: stream_addr was cast from a valid *mut HewStream;
+            // caller guarantees stream outlives the park thread.
+            let (lock, cvar) = &*unsafe { (*stream).park_exit_gen.clone() };
+            *lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            cvar.notify_all();
         }
     });
 
@@ -3296,6 +3318,55 @@ mod tests {
         }
     }
 
+    /// Block until at least `min_gen` park threads spawned by `hew_stream_poll`
+    /// on `stream` have exited, or `deadline_ms` elapses. Uses the
+    /// `park_exit_gen` Condvar on the stream rather than sleeping (§5.7).
+    /// Returns `true` if the generation was reached in time.
+    ///
+    /// Pass the generation count before the poll as `min_gen` (i.e., snapshot
+    /// `park_exit_gen` before calling `hew_stream_poll`, then call this after).
+    ///
+    /// # Safety
+    ///
+    /// `stream` must be a valid, live `*mut HewStream`.
+    unsafe fn wait_park_exited(stream: *mut HewStream, min_gen: u64, deadline_ms: u64) -> bool {
+        let deadline = TestDuration::from_millis(deadline_ms);
+        // SAFETY: stream is valid and live per caller contract.
+        let (lock, cvar) = &*unsafe { (*stream).park_exit_gen.clone() };
+        let mut guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if *guard >= min_gen {
+                return true;
+            }
+            let (new_guard, timed_out) = cvar
+                .wait_timeout(guard, deadline)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard = new_guard;
+            if timed_out.timed_out() {
+                return false;
+            }
+        }
+    }
+
+    /// Return the current value of the park-exit generation counter for `stream`.
+    /// Use this to snapshot the counter before a `hew_stream_poll` call so that
+    /// `wait_park_exited` can target a specific generation.
+    ///
+    /// # Safety
+    ///
+    /// `stream` must be a valid, live `*mut HewStream`.
+    unsafe fn snapshot_park_exit_gen(stream: *mut HewStream) -> u64 {
+        // SAFETY: stream is valid and live per caller contract.
+        let arc = unsafe { (*stream).park_exit_gen.clone() };
+        let (lock, _) = &*arc;
+        let gen = *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gen
+    }
+
     /// Positive path: when an item arrives on the stream, the registered
     /// callback fires with a non-null payload and the stream remains
     /// usable (`pending_read` cleared, next poll permitted).
@@ -3400,6 +3471,7 @@ mod tests {
             hew_stream_pair_free(pair);
 
             let userdata = TestArc::as_ptr(&sink) as *mut c_void;
+            let gen_before = snapshot_park_exit_gen(stream_ptr);
             let id = hew_stream_poll(stream_ptr, record_callback, userdata);
             assert!(id > 0);
 
@@ -3417,8 +3489,11 @@ mod tests {
             let payload = [0xAA_u8];
             hew_sink_write(sink_ptr, payload.as_ptr().cast::<c_void>(), 1);
 
-            // Give the park thread time to observe Cancelled and exit.
-            std::thread::sleep(TestDuration::from_millis(50));
+            // Wait for the park thread to observe Cancelled and exit.
+            assert!(
+                wait_park_exited(stream_ptr, gen_before + 1, 30_000),
+                "park thread must exit within deadline after cancel+write",
+            );
 
             // The callback must NOT have fired.
             assert_eq!(
@@ -3564,22 +3639,30 @@ mod tests {
             hew_stream_pair_free(pair);
 
             let userdata = TestArc::as_ptr(&sink) as *mut c_void;
+            let gen_0 = snapshot_park_exit_gen(stream_ptr);
             let id1 = hew_stream_poll(stream_ptr, record_callback, userdata);
             hew_stream_cancel_pending_read(stream_ptr, id1);
 
-            // Give the park thread a moment to observe Cancelled. Send
-            // an item to unblock it.
+            // Send an item to unblock the park thread after cancel; wait for
+            // it to exit before issuing the next poll.
             let payload = [0xEE_u8];
             hew_sink_write(sink_ptr, payload.as_ptr().cast::<c_void>(), 1);
-            std::thread::sleep(TestDuration::from_millis(50));
+            assert!(
+                wait_park_exited(stream_ptr, gen_0 + 1, 30_000),
+                "park thread must exit within deadline after first cancel+write",
+            );
 
+            let gen_1 = snapshot_park_exit_gen(stream_ptr);
             let id2 = hew_stream_poll(stream_ptr, record_callback, userdata);
             assert!(id2 > id1, "ids must be monotonic ({id2} > {id1})");
 
             hew_stream_cancel_pending_read(stream_ptr, id2);
             let payload2 = [0xEF_u8];
             hew_sink_write(sink_ptr, payload2.as_ptr().cast::<c_void>(), 1);
-            std::thread::sleep(TestDuration::from_millis(50));
+            assert!(
+                wait_park_exited(stream_ptr, gen_1 + 1, 30_000),
+                "park thread must exit within deadline after second cancel+write",
+            );
 
             hew_stream_close(stream_ptr);
             drop(Box::from_raw(sink_ptr));

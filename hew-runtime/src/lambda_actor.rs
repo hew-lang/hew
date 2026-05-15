@@ -215,6 +215,7 @@ impl HewLambdaActorWeak {
 // a typed `SendError::DoubleClose` (= 4) return.
 
 /// C-ABI wrapper around [`HewLambdaActor`] with a double-release guard.
+#[repr(C)]
 #[derive(Debug)]
 pub struct HewLambdaActorHandle {
     released: AtomicBool,
@@ -231,6 +232,7 @@ impl HewLambdaActorHandle {
 }
 
 /// C-ABI wrapper around [`HewLambdaActorWeak`] with a double-drop guard.
+#[repr(C)]
 #[derive(Debug)]
 pub struct HewLambdaActorWeakHandle {
     released: AtomicBool,

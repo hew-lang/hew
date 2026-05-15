@@ -1391,7 +1391,6 @@ fn describe_select_source_shape(expr: &Expr) -> String {
         Expr::Index { .. } => "index expression".into(),
         Expr::Range { .. } => "range expression".into(),
         Expr::Cast { .. } => "cast expression".into(),
-        Expr::Send { .. } => "actor send".into(),
         Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) | Expr::ScopeCancel => "scope expression".into(),
         Expr::Timeout { .. } => "timeout expression".into(),
         Expr::Unsafe(_) => "unsafe block".into(),

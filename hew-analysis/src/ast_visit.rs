@@ -781,10 +781,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Send { target, message } => {
-                self.walk_expr(&target.0, &target.1, body);
-                self.walk_expr(&message.0, &message.1, body);
-            }
             Expr::Select { arms, timeout } => {
                 for arm in arms {
                     self.walk_select_arm(arm, body);

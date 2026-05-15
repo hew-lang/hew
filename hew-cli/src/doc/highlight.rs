@@ -134,7 +134,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::NotEqual
         | Token::FatArrow
         | Token::Arrow
-        | Token::LeftArrow
         | Token::LessEqual
         | Token::GreaterEqual
         | Token::AmpAmp

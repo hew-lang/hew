@@ -1051,10 +1051,6 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
             }
         }
         Expr::SpawnLambdaActor { body, .. } => v.visit_expr(body),
-        Expr::Send { target, message } => {
-            v.visit_expr(target);
-            v.visit_expr(message);
-        }
         Expr::Select { arms, timeout } => {
             for arm in arms {
                 v.visit_expr(&mut arm.source);
@@ -6592,16 +6588,6 @@ mod tests {
                         )),
                         80..90,
                     ),
-                    (
-                        Stmt::Expression((
-                            Expr::Send {
-                                target: Box::new(make_ident("actor")),
-                                message: Box::new(make_int_lit(0)),
-                            },
-                            90..100,
-                        )),
-                        90..100,
-                    ),
                     // Range
                     (
                         Stmt::Expression((
@@ -6610,9 +6596,9 @@ mod tests {
                                 end: Some(Box::new(make_int_lit(10))),
                                 inclusive: false,
                             },
-                            100..110,
+                            90..100,
                         )),
-                        100..110,
+                        90..100,
                     ),
                     // ArrayRepeat
                     (
@@ -6621,9 +6607,9 @@ mod tests {
                                 value: Box::new(make_int_lit(0)),
                                 count: Box::new(make_int_lit(5)),
                             },
-                            110..120,
+                            100..110,
                         )),
-                        110..120,
+                        100..110,
                     ),
                     // InterpolatedString
                     (
@@ -6631,9 +6617,9 @@ mod tests {
                             Expr::InterpolatedString(vec![hew_parser::ast::StringPart::Expr(
                                 make_int_lit(42),
                             )]),
-                            120..130,
+                            110..120,
                         )),
-                        120..130,
+                        110..120,
                     ),
                 ],
                 trailing_expr: None,
@@ -7308,7 +7294,7 @@ mod tests {
                                 )),
                                 95..105,
                             ),
-                            // Spawn, Send
+                            // Spawn
                             (
                                 Stmt::Expression((
                                     Expr::Spawn {
@@ -7319,16 +7305,6 @@ mod tests {
                                 )),
                                 105..115,
                             ),
-                            (
-                                Stmt::Expression((
-                                    Expr::Send {
-                                        target: Box::new(make_ident("actor")),
-                                        message: Box::new(make_int_lit(0)),
-                                    },
-                                    115..125,
-                                )),
-                                115..125,
-                            ),
                             // Range
                             (
                                 Stmt::Expression((
@@ -7337,9 +7313,9 @@ mod tests {
                                         end: Some(Box::new(make_int_lit(10))),
                                         inclusive: false,
                                     },
-                                    125..135,
+                                    115..125,
                                 )),
-                                125..135,
+                                115..125,
                             ),
                             // Block
                             (
@@ -7348,9 +7324,9 @@ mod tests {
                                         stmts: vec![],
                                         trailing_expr: Some(Box::new(make_int_lit(0))),
                                     }),
-                                    135..145,
+                                    125..135,
                                 )),
-                                135..145,
+                                125..135,
                             ),
                             // ArrayRepeat
                             (
@@ -7359,9 +7335,9 @@ mod tests {
                                         value: Box::new(make_int_lit(0)),
                                         count: Box::new(make_int_lit(5)),
                                     },
-                                    145..155,
+                                    135..145,
                                 )),
-                                145..155,
+                                135..145,
                             ),
                             // InterpolatedString
                             (
@@ -7369,9 +7345,9 @@ mod tests {
                                     Expr::InterpolatedString(vec![
                                         hew_parser::ast::StringPart::Expr(make_int_lit(42)),
                                     ]),
-                                    155..165,
+                                    145..155,
                                 )),
-                                155..165,
+                                145..155,
                             ),
                         ],
                         trailing_expr: None,

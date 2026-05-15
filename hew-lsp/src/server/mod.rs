@@ -812,7 +812,7 @@ mod tests {
             .find(|item| item.label == "select...")
             .unwrap();
         let select_text = select.insert_text.as_deref().unwrap();
-        assert!(select_text.contains("<-"));
+        assert!(select_text.contains(" from "));
         assert!(select_text.contains("after"));
 
         let select_from = snippets

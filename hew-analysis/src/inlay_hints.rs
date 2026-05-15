@@ -453,10 +453,6 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
             }
         }
-        Expr::Send { target, message } => {
-            collect_inlay_hints_from_expr(source, &target.0, tc, hints);
-            collect_inlay_hints_from_expr(source, &message.0, tc, hints);
-        }
         Expr::Spawn { target, args } => {
             collect_inlay_hints_from_expr(source, &target.0, tc, hints);
             for (_, value) in args {

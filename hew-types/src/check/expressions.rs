@@ -355,9 +355,6 @@ impl Checker {
                 }
             }
 
-            // Send: target <- message
-            Expr::Send { target, message } => self.synthesize_send(target, message, span),
-
             // Yield
             Expr::Yield(value) => self.synthesize_yield(value.as_deref(), span),
 
@@ -604,18 +601,6 @@ impl Checker {
         } else {
             Ty::Unit
         }
-    }
-
-    pub(super) fn synthesize_send(
-        &mut self,
-        target: &Spanned<Expr>,
-        message: &Spanned<Expr>,
-        span: &Span,
-    ) -> Ty {
-        let _target_ty = self.synthesize(&target.0, &target.1);
-        let msg_ty_raw = self.synthesize(&message.0, &message.1);
-        self.enforce_actor_boundary_send(&message.0, &message.1, span, &msg_ty_raw);
-        Ty::Unit
     }
 
     pub(super) fn report_invalid_actor_send(&mut self, ty: &Ty, span: &Span) {
@@ -1927,11 +1912,6 @@ impl Checker {
                     Ty::range(left_ty)
                 }
             }
-            BinaryOp::Send => {
-                // target <- message
-                self.enforce_actor_boundary_send(&right.0, &right.1, &right.1, &right_ty);
-                Ty::Unit
-            }
         }
     }
 
@@ -2739,7 +2719,6 @@ impl Checker {
             | Expr::Call { .. }
             | Expr::MethodCall { .. }
             | Expr::StructInit { .. }
-            | Expr::Send { .. }
             | Expr::Select { .. }
             | Expr::Join(_)
             | Expr::Timeout { .. }

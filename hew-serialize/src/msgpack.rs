@@ -740,10 +740,6 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(value, tco, visitor, out);
                 }
             }
-            Expr::Send { target, message } => {
-                collect_expr(target, tco, visitor, out);
-                collect_expr(message, tco, visitor, out);
-            }
             Expr::Select { arms, timeout } => {
                 for arm in arms {
                     collect_expr(&arm.source, tco, visitor, out);

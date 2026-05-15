@@ -641,7 +641,6 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("Call", VariantDisposition::Parsed),
     ("MethodCall", VariantDisposition::Parsed),
     ("StructInit", VariantDisposition::Parsed),
-    ("Send", VariantDisposition::Parsed),
     ("Select", VariantDisposition::Parsed),
     ("Join", VariantDisposition::Parsed),
     ("Timeout", VariantDisposition::Parsed),

@@ -5038,3 +5038,52 @@ fn deferred_channel_unresolved_inner_fails_closed() {
         output.method_call_rewrites
     );
 }
+
+#[test]
+fn let_propagate_sugar_valid_in_result_fn() {
+    // `let r? = expr;` desugars to `let r = expr?;`.  When the RHS is
+    // Result<T,E> and the enclosing function also returns Result<_,E>,
+    // the type-checker must accept it without errors.  The bound name `r`
+    // must have type T (the Ok-payload), not Result<T,E>.
+    let output = typecheck_inline(
+        r"
+        fn make_result(x: int) -> Result<int, String> {
+            Ok(x * 2)
+        }
+        fn use_sugar(x: int) -> Result<int, String> {
+            let r? = make_result(x);
+            Ok(r + 1)
+        }
+        fn main() { use_sugar(5); }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected no errors for valid `let r? = Result<_,_>` in Result-returning fn, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_propagate_sugar_typed_annotation_accepted() {
+    // `let r?: T = expr;` — the type annotation applies to the unwrapped
+    // Ok-payload (T), not to the Result.  The checker must accept this and
+    // bind `r` as type T.
+    let output = typecheck_inline(
+        r"
+        fn make_result(x: int) -> Result<int, String> {
+            Ok(x)
+        }
+        fn use_typed_sugar(x: int) -> Result<int, String> {
+            let r?: int = make_result(x);
+            Ok(r)
+        }
+        fn main() { use_typed_sugar(3); }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected no errors for `let r?: int = Result<int,_>`, got: {:?}",
+        output.errors
+    );
+}

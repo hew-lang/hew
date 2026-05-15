@@ -3780,6 +3780,27 @@ impl<'src> Parser<'src> {
                 self.advance();
                 let pattern = self.parse_pattern()?;
 
+                // `let r? = expr;` is syntactic sugar for `let r = expr?;`.
+                // The `?` must immediately follow a simple identifier pattern;
+                // complex patterns (tuples, constructors) cannot carry the
+                // propagation suffix — the binding site is ambiguous without a
+                // single name to anchor the unwrapped value to.
+                let propagate = if self.peek() == Some(&Token::Question) {
+                    let q_span = self.peek_span();
+                    if !matches!(pattern.0, Pattern::Identifier(_)) {
+                        self.error_at(
+                            "`?` propagation suffix requires a simple identifier pattern"
+                                .to_string(),
+                            q_span,
+                        );
+                        return None;
+                    }
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+
                 let ty = if self.eat(&Token::Colon) {
                     Some(self.parse_type()?)
                 } else {
@@ -3787,7 +3808,26 @@ impl<'src> Parser<'src> {
                 };
 
                 let value = if self.eat(&Token::Equal) {
-                    Some(self.parse_expr()?)
+                    let (expr, expr_span) = self.parse_expr()?;
+                    if propagate {
+                        // Desugar: wrap RHS in PostfixTry so `let r? = e;`
+                        // is exactly `let r = e?;` from the type-checker onward.
+                        // The span covers the full RHS so diagnostics from the
+                        // `?` type-check land on the expression, not on `r?`.
+                        let end = expr_span.end;
+                        Some((
+                            Expr::PostfixTry(Box::new((expr, expr_span))),
+                            pattern.1.start..end,
+                        ))
+                    } else {
+                        Some((expr, expr_span))
+                    }
+                } else if propagate {
+                    self.error(
+                        "`let r? = expr;` requires an initialiser; `let r?;` is not valid"
+                            .to_string(),
+                    );
+                    return None;
                 } else {
                     None
                 };

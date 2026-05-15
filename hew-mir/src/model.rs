@@ -155,13 +155,18 @@ pub enum SelectArmKind {
 ///
 /// ## M2 substrate variants (declared scaffold)
 ///
-/// `DuplexHandle` and `LambdaActorHandle` are the M2 unified-concurrency
-/// substrate's MIR addressing surface. Each carries only a
-/// discriminator-pointer to a `Local(N)` so the enum stays `Copy`. The
-/// S/R type information lives on the parent local's `ResolvedTy`
-/// (`Named { name: "Duplex", args: [S, R] }`). Half-handle aliases
-/// (`SendHalf` / `RecvHalf`) for direction-isolated drop semantics
-/// land in a sibling commit.
+/// `DuplexHandle`, `LambdaActorHandle`, `SendHalf`, and `RecvHalf`
+/// are the M2 unified-concurrency substrate's MIR addressing surface.
+/// Each carries only a discriminator-pointer to a `Local(N)` so the
+/// enum stays `Copy`. The S/R type information lives on the parent
+/// local's `ResolvedTy` (`Named { name: "Duplex", args: [S, R] }`).
+///
+/// The half-handle aliases address direction-isolated ends of a
+/// `Duplex<S, R>`'s dual queue: `SendHalf(parent)` is the write-only
+/// end of the parent's S-direction; `RecvHalf(parent)` is the
+/// read-only end of the parent's R-direction. Dropping a half closes
+/// only that direction; the Duplex itself ceases when both halves
+/// (or the last unified handle) are gone.
 ///
 /// The HIR currently has no construction surface for `LambdaActor` /
 /// `Duplex` (the parser flip lives in slice 1, the HIR-lower for it
@@ -186,6 +191,18 @@ pub enum Place {
     /// Drop semantics: stop-on-last-handle-drop with weak-ref body
     /// capture (§5.9 ratification 2).
     LambdaActorHandle(u32),
+    /// Write-only end of a `Duplex<S, R>`'s S-direction queue. The
+    /// carried `u32` is the parent Duplex's `Local(N)` id (the same
+    /// local that a `DuplexHandle` would address). Drop closes the
+    /// S-direction only; the R-direction stays open until the
+    /// matching `RecvHalf` (or last surviving `DuplexHandle`) drops.
+    SendHalf(u32),
+    /// Read-only end of a `Duplex<S, R>`'s R-direction queue. The
+    /// carried `u32` is the parent Duplex's `Local(N)` id (the same
+    /// local that a `DuplexHandle` would address). Drop closes the
+    /// R-direction only; the S-direction stays open until the
+    /// matching `SendHalf` (or last surviving `DuplexHandle`) drops.
+    RecvHalf(u32),
 }
 
 /// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The

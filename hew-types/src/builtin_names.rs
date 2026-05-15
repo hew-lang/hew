@@ -198,24 +198,19 @@ builtin_named_types! {
         canonical: "Stream",
         qualified: "stream.Stream",
         methods: [
-            "next" => {
+            // Channel-family naming: recv/close mirror Duplex and RecvHalf.
+            // Iterator-style aliases (.next, .lines, .collect) are removed from
+            // the fundamental surface; they land via trait impls in stdlib work.
+            "recv" => {
                 signature: ReturnOptionT,
                 runtime: BuiltinMethodRuntime::ElementOverload {
                     string_symbol: "hew_stream_next",
                     bytes_symbol: "hew_stream_next_bytes",
                 }
             },
-            "collect" => {
-                signature: ReturnString,
-                runtime: BuiltinMethodRuntime::Fixed("hew_stream_collect_string")
-            },
             "close" => {
                 signature: ReturnUnit,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_close")
-            },
-            "lines" => {
-                signature: ReturnContainerOfString,
-                runtime: BuiltinMethodRuntime::Fixed("hew_stream_lines")
             },
             "chunks" => {
                 signature: CountToSelf,
@@ -241,16 +236,15 @@ builtin_named_types! {
         canonical: "Sink",
         qualified: "stream.Sink",
         methods: [
-            "write" => {
+            // Channel-family naming: send/close mirror Duplex and SendHalf.
+            // .write and .flush are removed from the fundamental surface; they
+            // may re-surface via an I/O-sink trait in stdlib work.
+            "send" => {
                 signature: ValueToUnit,
                 runtime: BuiltinMethodRuntime::ElementOverload {
                     string_symbol: "hew_sink_write_string",
                     bytes_symbol: "hew_sink_write_bytes",
                 }
-            },
-            "flush" => {
-                signature: ReturnUnit,
-                runtime: BuiltinMethodRuntime::Fixed("hew_sink_flush")
             },
             "close" => {
                 signature: ReturnUnit,

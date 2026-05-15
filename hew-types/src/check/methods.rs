@@ -892,7 +892,11 @@ impl Checker {
         };
         let resolved_inner = self.subst.resolve(&inner);
         match method {
-            "next" | "close" => {
+            // Channel-family naming: .recv() replaced .next() as the fundamental
+            // recv surface (routes to the same hew_stream_next runtime symbol).
+            // .lines() and .collect() are iterator-style ops removed from the
+            // fundamental surface; they will land via trait impls in stdlib work.
+            "recv" | "close" => {
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
                     BuiltinNamedType::Stream.canonical_name(),
@@ -901,60 +905,6 @@ impl Checker {
                         BuiltinNamedType::Stream.canonical_name(),
                         method,
                         Self::runtime_stream_element_name(&resolved_inner),
-                    ),
-                ) else {
-                    return Ty::Error;
-                };
-                self.record_runtime_method_call_rewrite(span, c_symbol);
-                sig.return_type
-            }
-            "lines" => {
-                if inner != Ty::String {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`lines()` is only supported on `Stream<String>`, \
-                             not `Stream<{}>`",
-                            inner.user_facing()
-                        ),
-                    );
-                }
-                let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                    span,
-                    BuiltinNamedType::Stream.canonical_name(),
-                    method,
-                    crate::stdlib::resolve_stream_method(
-                        BuiltinNamedType::Stream.canonical_name(),
-                        method,
-                        None,
-                    ),
-                ) else {
-                    return Ty::Error;
-                };
-                self.record_runtime_method_call_rewrite(span, c_symbol);
-                sig.return_type
-            }
-            "collect" => {
-                if inner != Ty::String {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`collect()` is only supported on `Stream<String>`, \
-                             not `Stream<{}>`",
-                            inner.user_facing()
-                        ),
-                    );
-                }
-                let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                    span,
-                    BuiltinNamedType::Stream.canonical_name(),
-                    method,
-                    crate::stdlib::resolve_stream_method(
-                        BuiltinNamedType::Stream.canonical_name(),
-                        method,
-                        None,
                     ),
                 ) else {
                     return Ty::Error;
@@ -2607,7 +2557,12 @@ impl Checker {
                 }
                 let receiver_ty = Ty::sink(inner.clone());
                 match method {
-                    "write" => {
+                    // Channel-family naming: .send() replaced .write() as the
+                    // fundamental send surface (routes to the same
+                    // hew_sink_write_* runtime symbols). .flush() is removed
+                    // from the fundamental surface; it may re-surface via an
+                    // I/O-sink trait in stdlib work.
+                    "send" => {
                         let Some(sig) = self.require_builtin_method_sig(
                             span,
                             &receiver_ty,
@@ -2637,7 +2592,7 @@ impl Checker {
                         self.record_runtime_method_call_rewrite(span, c_symbol);
                         sig.return_type
                     }
-                    "close" | "flush" => {
+                    "close" => {
                         let Some(c_symbol) = self.require_builtin_runtime_symbol(
                             span,
                             BuiltinNamedType::Sink.canonical_name(),

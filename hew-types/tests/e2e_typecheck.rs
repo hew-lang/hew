@@ -288,7 +288,7 @@ fn method_call_rewrites_record_builtin_runtime_dispatch() {
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<String>) {
-    let _ = s.next();
+    let _ = s.recv();
 }
 ",
     );
@@ -705,13 +705,13 @@ fn test_directory(dir: &Path, label: &str) {
 fn stream_dot_sink_annotation_typechecks() {
     // A function whose parameter is explicitly spelled `stream.Sink<String>`.
     // Proves: the qualified spelling resolves to the canonical Sink<String>
-    // type and its write/close methods are available.
+    // type and its send/close methods are available.
     let output = typecheck_inline(
         r"
         import std::stream;
 
         fn flush_and_close(s: stream.Sink<String>, msg: String) {
-            s.write(msg);
+            s.send(msg);
             s.close();
         }
         ",

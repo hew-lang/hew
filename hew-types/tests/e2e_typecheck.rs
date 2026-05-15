@@ -2187,7 +2187,7 @@ fn regex_literal_no_false_positive_unused_import_warning() {
         r#"import std::text::regex;
 fn main() {
     let pat = re"[0-9]+";
-    if "hello123" =~ pat {
+    if pat.is_match("hello123") {
         println("match");
     }
 }

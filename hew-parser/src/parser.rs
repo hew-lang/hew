@@ -5428,8 +5428,8 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
         Token::PipePipe => Some((5, 6)),
         // Logical AND
         Token::AmpAmp => Some((7, 8)),
-        // Equality / regex match
-        Token::EqualEqual | Token::NotEqual | Token::MatchOp | Token::NotMatchOp => Some((9, 10)),
+        // Equality
+        Token::EqualEqual | Token::NotEqual => Some((9, 10)),
         // Relational
         Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual => Some((11, 12)),
         // Bitwise OR
@@ -5478,8 +5478,6 @@ fn token_to_binop(token: &Token) -> Option<BinaryOp> {
         Token::LeftArrow => Some(BinaryOp::Send),
         Token::DotDot => Some(BinaryOp::Range),
         Token::DotDotEqual => Some(BinaryOp::RangeInclusive),
-        Token::MatchOp => Some(BinaryOp::RegexMatch),
-        Token::NotMatchOp => Some(BinaryOp::RegexNotMatch),
         _ => None,
     }
 }

@@ -1932,29 +1932,6 @@ impl Checker {
                 self.enforce_actor_boundary_send(&right.0, &right.1, &right.1, &right_ty);
                 Ty::Unit
             }
-            BinaryOp::RegexMatch | BinaryOp::RegexNotMatch => {
-                if !matches!(left_ty, Ty::String) {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        &left.1,
-                        format!(
-                            "left side of regex match must be string, found `{}`",
-                            left_ty.user_facing()
-                        ),
-                    );
-                }
-                if !matches!(&right_ty, Ty::Named { name, .. } if name == "regex.Pattern") {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        &right.1,
-                        format!(
-                            "right side of regex match must be regex, found `{}`",
-                            right_ty.user_facing()
-                        ),
-                    );
-                }
-                Ty::Bool
-            }
         }
     }
 

@@ -1662,7 +1662,7 @@ mod tests {
             return;
         }
         let mut session = ReplSession::new();
-        let result = session.eval(r#""hello" =~ re"h.*o""#);
+        let result = session.eval(r#"re"h.*o".is_match("hello")"#);
         assert!(!result.had_errors, "errors: {:?}", result.errors);
         assert_eq!(result.output, "true\n");
     }

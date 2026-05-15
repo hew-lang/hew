@@ -821,16 +821,6 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne, lhs, rhs)
         .getResult();
 
-  case ast::BinaryOp::RegexMatch: {
-    return hew::RegexIsMatchOp::create(builder, location, builder.getI1Type(), rhs, lhs);
-  }
-  case ast::BinaryOp::RegexNotMatch: {
-    auto matchResult =
-        hew::RegexIsMatchOp::create(builder, location, builder.getI1Type(), rhs, lhs);
-    auto trueVal = mlir::arith::ConstantOp::create(builder, location, builder.getBoolAttr(true));
-    return mlir::arith::XOrIOp::create(builder, location, matchResult, trueVal).getResult();
-  }
-
   // Bitwise operators
   case ast::BinaryOp::BitAnd:
     return mlir::arith::AndIOp::create(builder, location, lhs, rhs).getResult();
@@ -4966,7 +4956,7 @@ std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(const ast::ExprMeth
 
     // regex.Pattern methods
     if (handleType == "regex.Pattern") {
-      if (method == "is_match")
+      if (method == "is_match" || method == "matches")
         return hew::RegexIsMatchOp::create(builder, location, builder.getI1Type(), argVals[0],
                                            argVals[1]);
       if (method == "find")

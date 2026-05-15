@@ -1,10 +1,10 @@
-// Regex Demo — showcases Hew's built-in regex support.
+// Regex Demo — showcases Hew's stdlib regex support.
 //
 // Features demonstrated:
-//   re"pattern"     — regex literal syntax
-//   string =~ re""  — regex match (returns bool)
-//   string !~ re""  — regex non-match
-//   match x { s if s =~ re"" => ... } — regex-powered match guards
+//   re"pattern"        — regex literal syntax
+//   pat.is_match(s)    — regex match (returns bool)
+//   !pat.is_match(s)   — regex non-match
+//   match x { s if pat.is_match(s) => ... } — regex-powered match guards
 //
 // Usage: hew build regex_demo.hew -o regex_demo && ./regex_demo
 fn main() {
@@ -18,43 +18,43 @@ fn main() {
     let request_line_re = re"^(GET|POST|PUT|DELETE) ";
     let read_only_re = re"^(GET|HEAD) ";
     let mutating_re = re"^(POST|PUT|PATCH|DELETE) ";
-    // Basic match with =~
+    // Basic match with is_match
     let email = "user@example.com";
-    if email =~ email_re {
+    if email_re.is_match(email) {
         println(f"'{email}' is a valid email");
     }
     // URL detection
     let url = "https://hew.sh";
-    if url =~ url_re {
+    if url_re.is_match(url) {
         println(f"'{url}' is a URL");
     }
-    // Negation with !~
+    // Negation
     let code = "let x = 42;";
-    if code !~ comment_re {
+    if !comment_re.is_match(code) {
         println(f"'{code}' is code, not a comment");
     }
     // Phone number validation
     let phone = "555-123-4567";
-    if phone =~ phone_re {
+    if phone_re.is_match(phone) {
         println(f"'{phone}' is a valid phone number");
     }
     // Combining match and non-match
     let name = "Alice";
-    if name =~ capitalized_name_re {
+    if capitalized_name_re.is_match(name) {
         println(f"'{name}' is a capitalized name");
     }
-    if name !~ digit_re {
+    if !digit_re.is_match(name) {
         println(f"'{name}' contains no digits");
     }
     // Pattern matching in conditions
     let input = "GET /api/users HTTP/1.1";
-    if input =~ request_line_re {
+    if request_line_re.is_match(input) {
         println(f"'{input}' is an HTTP request line");
     }
     let route = "POST /api/users";
     match route {
-        line if line =~ read_only_re => println(f"'{line}' is read-only"),
-        line if line =~ mutating_re => println(f"'{line}' mutates state"),
+        line if read_only_re.is_match(line) => println(f"'{line}' is read-only"),
+        line if mutating_re.is_match(line) => println(f"'{line}' mutates state"),
         _ => println(f"'{route}' is another command"),
     }
     email_re.free();

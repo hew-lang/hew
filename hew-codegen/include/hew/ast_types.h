@@ -139,8 +139,6 @@ enum class BinaryOp {
   Range,
   RangeInclusive,
   Send,
-  RegexMatch,
-  RegexNotMatch,
 };
 
 enum class UnaryOp {

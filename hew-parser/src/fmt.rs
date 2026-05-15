@@ -2408,8 +2408,6 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
         BinaryOp::Range => "..",
         BinaryOp::RangeInclusive => "..=",
         BinaryOp::Send => "<-",
-        BinaryOp::RegexMatch => "=~",
-        BinaryOp::RegexNotMatch => "!~",
     }
 }
 
@@ -2423,7 +2421,7 @@ fn binop_precedence(op: BinaryOp) -> u8 {
         BinaryOp::BitXor => 7,
         BinaryOp::BitAnd => 9,
         BinaryOp::And => 11,
-        BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::RegexMatch | BinaryOp::RegexNotMatch => 13,
+        BinaryOp::Equal | BinaryOp::NotEqual => 13,
         BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 15,
         BinaryOp::Range | BinaryOp::RangeInclusive => 17,
         BinaryOp::Shl | BinaryOp::Shr => 19,

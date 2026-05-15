@@ -1,5 +1,57 @@
 use hew_parser::ast::{CallArg, Expr, Item, Stmt};
 
+/// `=~` was removed in v0.5: regex matching now goes through `Pattern.is_match`.
+/// The lexer no longer recognizes `=~` as a token, so the parser sees `=`
+/// followed by `~` and errors out. We don't assert on a specific error
+/// message — only that the input fails to parse cleanly.
+#[test]
+fn removed_regex_match_op_is_rejected() {
+    let source = r#"fn main() { let x = "hi" =~ re"a"; }"#;
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected `=~` to be rejected, got clean parse"
+    );
+}
+
+/// Companion to `removed_regex_match_op_is_rejected`: `!~` is also gone.
+#[test]
+fn removed_regex_not_match_op_is_rejected() {
+    let source = r#"fn main() { let x = "hi" !~ re"a"; }"#;
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected `!~` to be rejected, got clean parse"
+    );
+}
+
+/// Accept side of §3.3: the supported replacement (`Pattern.is_match`) parses
+/// cleanly. Pairs with the reject tests above so the removal is exercised
+/// from both directions.
+#[test]
+fn pattern_is_match_method_call_parses() {
+    let source = r#"fn main() { let p = re"a"; let x = p.is_match("hi"); p.free(); }"#;
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "expected clean parse of `.is_match()`, got errors: {:?}",
+        result.errors
+    );
+}
+
+/// `Pattern.matches` (the non-boolean iterator form) also parses cleanly.
+/// Ensures both replacement methods are accepted by the parser.
+#[test]
+fn pattern_matches_method_call_parses() {
+    let source = r#"fn main() { let p = re"a+"; let ms = p.matches("aab"); p.free(); }"#;
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "expected clean parse of `.matches()`, got errors: {:?}",
+        result.errors
+    );
+}
+
 #[test]
 fn missing_param_type_reports_error() {
     let source = r"

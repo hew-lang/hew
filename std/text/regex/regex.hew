@@ -37,6 +37,12 @@ trait PatternMethods {
     /// ```
     fn is_match(pat: Pattern, input: String) -> bool;
 
+    /// Ergonomic alias for `is_match`. Returns `true` when the pattern matches
+    /// anywhere in `input`. Provided so call sites can read as
+    /// `pattern.matches(text)` — a one-to-one replacement for the removed
+    /// `text =~ pattern` operator.
+    fn matches(pat: Pattern, input: String) -> bool;
+
     /// Find the first match of the pattern in the input string.
     ///
     /// Returns the matched substring, or an empty string if no match.
@@ -69,6 +75,12 @@ trait PatternMethods {
 impl PatternMethods for Pattern {
     /// Test whether the pattern matches anywhere in the input string.
     fn is_match(pat: Pattern, input: String) -> bool {
+        unsafe {
+            hew_regex_is_match(pat, input)
+        }
+    }
+    /// Ergonomic alias for `is_match`.
+    fn matches(pat: Pattern, input: String) -> bool {
         unsafe {
             hew_regex_is_match(pat, input)
         }

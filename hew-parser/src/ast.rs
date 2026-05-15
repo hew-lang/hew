@@ -415,10 +415,6 @@ pub enum BinaryOp {
     Range,
     RangeInclusive,
     Send,
-    /// Regex match: `string =~ regex`.
-    RegexMatch,
-    /// Regex non-match: `string !~ regex`.
-    RegexNotMatch,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -445,8 +441,6 @@ impl std::fmt::Display for BinaryOp {
             Self::Range => write!(f, ".."),
             Self::RangeInclusive => write!(f, "..="),
             Self::Send => write!(f, "<-"),
-            Self::RegexMatch => write!(f, "=~"),
-            Self::RegexNotMatch => write!(f, "!~"),
         }
     }
 }

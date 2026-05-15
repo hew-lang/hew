@@ -818,13 +818,13 @@ fn fmt_comparison_operators() {
 }
 
 #[test]
-fn fmt_regex_match_roundtrip() {
-    exact_roundtrip("fn main() {\n    let ok = s =~ re\"pat\";\n}\n");
+fn fmt_regex_literal_roundtrip() {
+    exact_roundtrip("fn main() {\n    let ok = re\"pat\".is_match(s);\n}\n");
 }
 
 #[test]
-fn fmt_regex_not_match_roundtrip() {
-    exact_roundtrip("fn main() {\n    let no = s !~ re\"pat\";\n}\n");
+fn fmt_regex_negation_roundtrip() {
+    exact_roundtrip("fn main() {\n    let no = !re\"pat\".is_match(s);\n}\n");
 }
 
 #[test]

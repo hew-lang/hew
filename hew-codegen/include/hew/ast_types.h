@@ -367,7 +367,6 @@ struct ExprSpawnLambdaActor {
   std::unique_ptr<Spanned<Expr>> body;
 };
 struct ExprScope {
-  std::optional<std::string> binding;
   Block block;
 };
 struct ExprInterpolatedString {
@@ -452,14 +451,6 @@ struct ExprRange {
 struct ExprAwait {
   std::unique_ptr<Spanned<Expr>> inner;
 };
-struct ExprScopeLaunch {
-  Block block;
-};
-struct ExprScopeSpawn {
-  Block block;
-};
-struct ExprScopeCancel {};
-
 struct ExprRegexLiteral {
   std::string pattern;
 };
@@ -487,8 +478,8 @@ struct Expr {
                ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSend,
                ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate, ExprThis,
                ExprFieldAccess, ExprIndex, ExprCast, ExprPostfixTry, ExprRange, ExprAwait,
-               ExprScopeLaunch, ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat,
-               ExprByteStringLiteral, ExprByteArrayLiteral, ExprMapLiteral>
+               ExprRegexLiteral, ExprArrayRepeat, ExprByteStringLiteral, ExprByteArrayLiteral,
+               ExprMapLiteral>
       kind;
   Span span; // Copied from Spanned<Expr> wrapper for codegen convenience
 };

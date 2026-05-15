@@ -59,7 +59,6 @@ struct Formatter<'a> {
     comments: Vec<Comment>,
     next_comment: usize,
     prev_source_pos: usize,
-    scope_binding: Option<String>,
 }
 
 impl<'a> Formatter<'a> {
@@ -71,7 +70,6 @@ impl<'a> Formatter<'a> {
             comments,
             next_comment: 0,
             prev_source_pos: 0,
-            scope_binding: None,
         }
     }
 
@@ -1997,20 +1995,8 @@ impl<'a> Formatter<'a> {
                 self.write(" => ");
                 self.format_expr(&body.0);
             }
-            Expr::Scope { binding, body } => {
+            Expr::Scope { body } => {
                 self.write("scope ");
-                if let Some(name) = binding {
-                    self.write("|");
-                    self.write(name);
-                    self.write("| ");
-                }
-                let prev_binding = self.scope_binding.clone();
-                self.scope_binding.clone_from(binding);
-                self.format_block(body, self.source.len());
-                self.scope_binding = prev_binding;
-            }
-            Expr::Fork { body } => {
-                self.write("fork ");
                 self.format_block(body, self.source.len());
             }
             Expr::ForkChild { binding, expr } => {
@@ -2177,33 +2163,6 @@ impl<'a> Formatter<'a> {
                 self.write("await ");
                 self.format_expr(&inner.0);
             }
-            Expr::ScopeLaunch(block) => {
-                let name = self
-                    .scope_binding
-                    .clone()
-                    .unwrap_or_else(|| "s".to_string());
-                self.write(&name);
-                self.write(".launch ");
-                self.format_block(block, self.source.len());
-            }
-            Expr::ScopeSpawn(block) => {
-                let name = self
-                    .scope_binding
-                    .clone()
-                    .unwrap_or_else(|| "s".to_string());
-                self.write(&name);
-                self.write(".spawn ");
-                self.format_block(block, self.source.len());
-            }
-            Expr::ScopeCancel => {
-                let name = self
-                    .scope_binding
-                    .clone()
-                    .unwrap_or_else(|| "s".to_string());
-                self.write(&name);
-                self.write(".cancel()");
-            }
-
             Expr::RegexLiteral(pattern) => {
                 self.write("re\"");
                 self.write(&escape_regex_pattern(pattern));
@@ -3193,10 +3152,10 @@ extern \"C\" {
     }
 
     #[test]
-    fn fork_block_roundtrips() {
+    fn scope_block_roundtrips() {
         let src = "\
 fn main() {
-    let value = fork {
+    let value = scope {
         1
     };
 }
@@ -3216,10 +3175,10 @@ fn main() {
     }
 
     #[test]
-    fn nested_fork_roundtrips() {
+    fn nested_scope_roundtrips() {
         let src = "\
 fn main() {
-    let value = fork {
+    let value = scope {
         fork worker = run();
         fork audit();
         worker

@@ -1010,12 +1010,7 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
                 v.visit_expr(&mut arm.body);
             }
         }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block)
-        | Expr::Scope { body: block, .. }
-        | Expr::Fork { body: block } => {
+        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
             v.visit_block(block);
         }
         Expr::ForkChild { expr, .. } => v.visit_expr(expr),
@@ -1096,7 +1091,6 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::Cooperate
-        | Expr::ScopeCancel
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

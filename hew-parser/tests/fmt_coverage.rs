@@ -1446,41 +1446,8 @@ fn fmt_array_repeat_roundtrip() {
 }
 
 #[test]
-fn fmt_scope_launch_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    scope |s| {\n        let task = s.launch {\n            1\n        };\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_scope_spawn_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    scope |s| {\n        s.spawn {\n            println(1);\n        };\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_scope_cancel_roundtrip() {
-    exact_roundtrip("fn main() {\n    scope |s| {\n        s.cancel();\n    };\n}\n");
-}
-
-#[test]
-fn fmt_scope_launch_non_default_binding() {
-    exact_roundtrip(
-        "fn main() {\n    scope |handle| {\n        let task = handle.launch {\n            1\n        };\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_scope_spawn_non_default_binding() {
-    exact_roundtrip(
-        "fn main() {\n    scope |handle| {\n        handle.spawn {\n            println(1);\n        };\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_scope_cancel_non_default_binding() {
-    exact_roundtrip("fn main() {\n    scope |handle| {\n        handle.cancel();\n    };\n}\n");
+fn fmt_scope_block_roundtrip() {
+    exact_roundtrip("fn main() {\n    scope {\n        fork child = run();\n    };\n}\n");
 }
 
 #[test]

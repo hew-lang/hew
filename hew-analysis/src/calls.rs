@@ -329,10 +329,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 }
             }
         }
-        Expr::Scope { body, .. }
-        | Expr::ScopeLaunch(body)
-        | Expr::ScopeSpawn(body)
-        | Expr::Fork { body } => {
+        Expr::Scope { body } => {
             collect_calls_in_block(body, calls);
         }
         Expr::ForkChild { expr, .. } => collect_calls_in_expr(expr, calls),
@@ -363,7 +360,6 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::Cooperate
-        | Expr::ScopeCancel
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

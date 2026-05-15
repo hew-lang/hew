@@ -624,15 +624,15 @@ impl Builder {
                 }
                 None
             }
-            HirExprKind::Fork { body } => {
-                // TODO: MIR lowering for fork{} bodies. Required runtime contract:
+            HirExprKind::Scope { body } => {
+                // TODO: MIR lowering for scope{} bodies. Required runtime contract:
                 // (a) For each SpawnedCall child: allocate a HewTask slot via
                 //     hew_task_new, bind the closure environment, call
                 //     hew_task_spawn_thread to start the child on the thread pool.
                 // (b) For each named ForkTaskHandle binding (fork name = call):
                 //     same spawn sequence; the task pointer is stored in the
                 //     binding's Place so that a later AwaitTask can load it.
-                // (c) At fork-block exit: iterate the set of anonymous child tasks
+                // (c) At scope-block exit: iterate the set of anonymous child tasks
                 //     in declaration order; for each call hew_task_await_blocking
                 //     then hew_task_free (lifecycle-symmetry invariant: every
                 //     hew_task_new must be paired with hew_task_free on every
@@ -648,10 +648,10 @@ impl Builder {
                 let _ = body.tail.as_ref().map(|t| self.lower_value(t));
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "fork block".to_string(),
+                        construct: "scope block".to_string(),
                         site: expr.site,
                     },
-                    note: "fork{} MIR lowering is not yet implemented; \
+                    note: "scope{} MIR lowering is not yet implemented; \
                            codegen will wire hew_task_new / hew_task_spawn_thread / \
                            hew_task_await_blocking / hew_task_free"
                         .to_string(),

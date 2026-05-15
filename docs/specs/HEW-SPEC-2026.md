@@ -267,22 +267,22 @@ worker <- 42;
 let result = await calc <- 5;
 ```
 
-**Integration with `fork` blocks (normative):**
+**Integration with `scope` blocks (normative):**
 
-Lambda actors spawned within a `fork` block have their **lifetime** managed by that block, but are NOT integrated with the block's task cancellation or trap propagation:
+Lambda actors spawned within a `scope` block have their **lifetime** managed by that block, but are NOT integrated with the block's task cancellation or trap propagation:
 
 ```hew
-fork {
+scope {
     let worker = spawn (x: int) => { ... };
     worker <- 1;
-}  // worker stopped when the fork-block exits
+}  // worker stopped when the scope-block exits
 ```
 
 Specifically:
 
-- When a fork-block exits, all lambda actors spawned within it are sent a stop signal (equivalent to `actor_stop`).
+- When a scope-block exits, all lambda actors spawned within it are sent a stop signal (equivalent to `actor_stop`).
 - Sibling-cancellation triggered by a child failure does NOT cancel lambda actors — it only cancels structured child tasks (`fork name = expr`).
-- A trap within a lambda actor does NOT propagate to sibling tasks or the enclosing fork-block — the actor fails independently.
+- A trap within a lambda actor does NOT propagate to sibling tasks or the enclosing scope-block — the actor fails independently.
 - For failure propagation across actors, use supervision trees (Section 5), not structured concurrency.
 
 **Limitations:**
@@ -1478,7 +1478,7 @@ each of the four teardown paths the language exposes. The rules below
 are normative; the move-checker (for `@linear`) and drop elaboration
 (for `@resource`) enforce them at the cited stage.
 
-**Path 1 — Lexical task cancellation.** A `fork {}` child is cancelled
+**Path 1 — Lexical task cancellation.** A `scope {}` child is cancelled
 at a safepoint (§4.5) while holding the value:
 
 - `@resource`: implicit `close()` runs on the cancellation-unwind edge
@@ -2534,52 +2534,68 @@ Task<T>
 | --------- | -------------------------------- | ----------------------------------------------------------- |
 | `is_done` | `fn is_done(t: Task<T>) -> bool` | Returns `true` if task has completed, cancelled, or trapped |
 
-### 4.2 Fork: Structured Concurrency Boundary
+### 4.2 Scope: Structured Concurrency Boundary
 
-A `fork` block creates a structured concurrency boundary. All child tasks
+A `scope` block creates a structured concurrency boundary. All child tasks
 forked within the block must complete before the block returns.
 
 **Syntax:**
 
 ```hew
-fork {
+scope {
     fork a = compute_a();   // child task: spawned + name-bound
     fork b = compute_b();   // sibling child task
-    (a?, b?)                // block result; implicit join before this point
+    use_results(a?, b?);    // `?` propagates errors if a/b's return type is Result/Option;
+                            // the scope itself joins children on exit — no `await` needed.
 }
 ```
 
 **Semantics:**
 
-1. **Lifetime containment**: Child tasks cannot outlive their enclosing `fork` block.
+1. **Lifetime containment**: Child tasks cannot outlive their enclosing `scope` block.
 2. **Automatic join**: The block waits for every child task before returning.
-3. **Block value**: A `fork` block is an expression; its value is the final expression in the block.
-4. **Nested forks**: `fork` blocks may be nested; each manages its own children.
-5. **First-failure-cancels-siblings**: If any child returns `Err(E)` or traps, the runtime cancels the remaining siblings at the next safepoint. The block evaluates to `Err(ScopeError<E>)` for fallible children or propagates the trap.
+3. **Block value**: A `scope` block is **Unit-typed**. It is a statement, not a value-producer.
+   `scope` is the lexical-lifetime bracket; the `fork name = expr` children carry the values.
+   Conflating the bracket with a value-producer re-introduces the surface duplication that the
+   2026 edition resolved by splitting the two keywords. Use `await` inside the scope body
+   to resolve child values, bind them to `let` or `var` bindings, and return them from the
+   enclosing function directly.
+4. **Nested scopes**: `scope` blocks may be nested; each manages its own children.
+5. **First-failure-cancels-siblings**: If any child returns `Err(E)` or traps, the runtime
+   cancels the remaining siblings at the next safepoint. The error surfaces via the `await`
+   expression for that child: `?` on `await task` propagates `Err` to the enclosing function;
+   an unhandled trap unwinds the scope and propagates to the enclosing context.
+
+> **Design note.** `scope` is the lifetime bracket; `fork name = expr` is the value-producer.
+> These are deliberately separate keywords so neither can be confused for the other. See the
+> Historical note in §4.9 for the earlier `scope |s| { s.spawn { … } }` surface that mixed
+> the two roles and was removed in the 2026 edition.
 
 **Child form:**
 
 `fork name = expr` (or bare `fork expr`) is only legal dynamically inside a
-`fork` block. The disambiguator is the token after `fork`: `fork {` opens a
-block; anything else is a child production whose first token must be an
-expression starter. Outside a fork-block, a child-form `fork` is a
-`ForkOutsideForkBlock` error.
+`scope` block. `scope { ... }` opens the structured-concurrency block;
+`fork` is exclusively the child-start verb (`fork { ... }` as a block form
+is not accepted and the parser emits a clear diagnostic). Outside a
+scope-block, a child-form `fork` is a `ForkOutsideScopeBlock` error.
 
 ### 4.3 Spawning Child Tasks
 
 ```hew
-fork {
+var result;
+scope {
     fork a = compute_a();
     fork b = compute_b();
-    combine(a?, b?)
-}
+    result = combine(a?, b?);   // scope joins a and b on exit; `?` propagates Result/Option errors
+};
+result
 ```
 
 **Syntax:**
 
 ```ebnf
-Fork      = "fork" Block ;                         (* block form *)
-ForkChild = "fork" ( Ident "=" )? Expr ;           (* child form, only inside a Fork block *)
+Scope     = "scope" Block ;                        (* structured-concurrency block *)
+ForkChild = "fork" ( Ident "=" )? Expr ;           (* child form, only inside a Scope block *)
 ```
 
 **`fork name = expr` — structured child task:**
@@ -2588,7 +2604,7 @@ ForkChild = "fork" ( Ident "=" )? Expr ;           (* child form, only inside a 
 - Spawned task runs concurrently with its siblings.
 - Captured variables follow the same rules as actor sends and closures
   (move semantics by default; explicit `move` to force a moving capture).
-- On `Err(E)` or trap, the enclosing `fork` block transitions to
+- On `Err(E)` or trap, the enclosing `scope` block transitions to
   cancelling: siblings are cancelled at their next safepoint and the
   first error wins as `ScopeError::primary`.
 
@@ -2629,7 +2645,7 @@ safepoint before its body reaches a consuming or close call.
 
 3. **`&` and `&mut` borrow into a child.** Shared `&` borrow into a
    child is admitted only when the borrow's referent is provably alive
-   for the entire lexical fork-block and no mutable borrow of the same
+   for the entire lexical scope-block and no mutable borrow of the same
    region is live while any child runs. Mutable `&mut` borrow into a
    child is rejected in edition 2026: the child runs on a substrate
    thread distinct from the parent's, and aliased mutable access cannot
@@ -2638,8 +2654,8 @@ safepoint before its body reaches a consuming or close call.
    names the mutable borrow site and points at the fork child.
 
 4. **Task<T> handle escape.** A `Task<T>` handle bound by `fork name =
-   expr` is usable only within the lexical fork-block that introduced
-   it. The handle cannot be returned from the fork-block, stored in a
+   expr` is usable only within the lexical scope-block that introduced
+   it. The handle cannot be returned from the scope-block, stored in a
    field, captured by a closure that outlives the block, nor moved into
    a sibling child unless that sibling is itself a `fork` form inside
    the same block. The rejection is structural: `Task<T>` is not a
@@ -2648,9 +2664,11 @@ safepoint before its body reaches a consuming or close call.
 
 **`fork expr` — bare child form:**
 
-A degenerate single-child fork-block: `fork expr` evaluates `expr` as a
-child task whose value is the result of the enclosing fork-block. Useful
-when the surrounding code only needs one structured child.
+A degenerate single-child form: `fork expr` evaluates `expr` as a child
+task. The enclosing scope block is still Unit-typed; to consume the child's
+result, bind it with `fork name = expr` and then `await name` inside the
+scope body, or simply fire-and-forget with the bare form when the value is
+not needed.
 
 **Substrate (informative):**
 
@@ -2658,9 +2676,10 @@ The β surface lowers each child to an OS-thread-per-task substrate
 (`hew-runtime/src/task_scope.rs`). A cooperative coroutine layer
 (`hew-runtime/src/coro.rs`) exists in the runtime but is not exposed at
 the source level; the source surface is a single `fork` child production
-whose scheduling discipline is the runtime's concern. The earlier draft
-that exposed two child verbs (`s.launch` for cooperative coroutines vs
-`s.spawn` for OS threads) was superseded — see "Historical note" at the
+whose scheduling discipline is the runtime's concern. The earlier drafts
+exposed two child verbs (`s.launch` for cooperative coroutines vs
+`s.spawn` for OS threads) on a `scope |s| { ... }` handle; that surface
+was removed entirely in the 2026 edition — see "Historical note" at the
 end of §4.9.
 
 **Yield points (normative):**
@@ -2700,7 +2719,7 @@ await : Task<T> -> Result<T, E>
 ```
 
 Cancellation is an **expected** outcome (it is triggered automatically
-when a sibling child fails, or implicitly at fork-block exit) and MUST be
+when a sibling child fails, or implicitly at scope-block exit) and MUST be
 modeled as a recoverable error, not a trap. The current release does not
 expose a named `CancellationError` type in source; callers should handle
 the `Err(...)` branch of the `await` result. Traps are reserved for
@@ -2723,38 +2742,42 @@ let value = (await task)?;
 **Examples:**
 
 ```hew
-// Simple await
-let value = fork { fork x = expensive_compute(); await x };
+// Simple await — bind result before the scope, assign inside
+var value;
+scope {
+    fork x = expensive_compute();
+    value = await x;
+};
 
 // Concurrent tasks with sequential await
-fork {
+var merged;
+scope {
     fork a = fetch_user(id1);
     fork b = fetch_user(id2);
 
-    // Both fetches run concurrently
-    // We wait for results in order
+    // Both fetches run concurrently; await resolves them in order
     let user1 = await a;
     let user2 = await b;
-
-    merge_users(user1, user2)
-}
+    merged = merge_users(user1, user2);
+};
+merged
 ```
 
 ### 4.5 Cancellation
 
-Cancellation in Hew is **automatic at safepoints**: when a fork-block is
+Cancellation in Hew is **automatic at safepoints**: when a scope-block is
 cancelled, running children are interrupted at the next safepoint without
 manual polling.
 
 **Cancellation triggers:**
 
-A fork-block transitions to cancelling when:
+A scope-block transitions to cancelling when:
 
 1. A child returns `Err(E)` — the first such `E` becomes `ScopeError::primary`.
 2. A child traps — siblings are cancelled and the trap propagates after join.
-3. An outer fork-block (or its enclosing actor) is itself cancelled.
+3. An outer scope-block (or its enclosing actor) is itself cancelled.
 
-There is no user-level `cancel()` call against a fork-block from inside its
+There is no user-level `cancel()` call against a scope-block from inside its
 own body; cancellation is event-driven from child outcomes.
 
 **Cancellation is automatic at safepoints:**
@@ -2772,30 +2795,32 @@ When cancellation fires at a safepoint, the runtime initiates **stack unwinding*
 
 **Cancellation propagation:**
 
-When a fork-block is cancelled:
+When a scope-block is cancelled:
 
 1. Pending child tasks that haven't started are immediately marked `Cancelled`.
 2. Running children are cancelled at their next safepoint (automatic — no polling needed).
 3. Stack unwinding runs `defer`/`Drop` blocks for deterministic cleanup.
-4. Nested fork-blocks receive the cancellation signal.
+4. Nested scope-blocks receive the cancellation signal.
 
 **Cancellation does NOT:**
 
 - Forcibly terminate running code between safepoints.
-- Affect tasks in other fork-blocks or other actors.
+- Affect tasks in other scope-blocks or other actors.
 
 **Example with cleanup:**
 
 ```hew
 receive fn download_files(urls: Vec<String>) -> Result<Vec<Data>, Error> {
-    fork {
+    var results: Vec<Data> = Vec::new();
+    scope {
         for url in urls {
-            fork {
+            scope {
                 let data = http::get(url)?;  // Safepoint — cancellation checked here
-                process(data)                // If cancelled, stack unwinds; defer blocks run
+                results.push(process(data)); // If cancelled, stack unwinds; defer blocks run
             };
         }
-    }
+    };
+    Ok(results)
 }
 ```
 
@@ -2808,11 +2833,11 @@ Tasks can fail in two ways:
 
 **Recoverable errors:**
 
-When a child task returns a `Result`, errors can be handled by the awaiter
-directly, or aggregated through `ScopeError<E>` at fork-block exit:
+When a child task returns a `Result`, errors can be handled directly by the
+awaiter inside the scope body:
 
 ```hew
-fork {
+scope {
     fork task = {
         fallible_operation()?;
         Ok(value)
@@ -2825,24 +2850,27 @@ fork {
 }
 ```
 
-When fork-block children return `Result<T, E>` and at least one child
-returns `Err`, the block evaluates to `Result<T, ScopeError<E>>` whose
-`primary` is the first observed error. Subsequent errors land in
-`also_failed`; cancellation-driven failures contribute to
-`cancelled_count`. `?` on the block value propagates `primary`. See
-`std/concurrency/scope_error.hew` for the layout.
+The scope block is Unit-typed; `await task` resolves the child's
+`Result<T, E>` inline. If multiple children can fail and you need to
+aggregate their errors, collect the `await` results into a `Vec` inside the
+scope body and inspect it after the scope block completes. `ScopeError<E>`
+(see `std/concurrency/scope_error.hew`) is the layout for aggregated
+per-child errors; it is produced by the `await` expressions, not by the
+scope block itself. Propagating the first error with `?` is written as `?`
+on the `await` expression for that child, which propagates to the enclosing
+function — not to the scope block's "value."
 
 **Traps (unrecoverable errors):**
 
 When a child task traps:
 
 1. The task transitions to `Trapped` state.
-2. Sibling children in the same fork-block are cancelled.
-3. The fork-block itself traps, propagating to its enclosing context.
+2. Sibling children in the same scope-block are cancelled.
+3. The scope-block itself traps, propagating to its enclosing context.
 
 **Trap in a `receive fn` (normative):**
 
-When a trap propagates out of a `fork` block inside a `receive fn`:
+When a trap propagates out of a `scope` block inside a `receive fn`:
 
 1. The current message handler terminates immediately
 2. The actor transitions to `Crashed` state (see §9.1)
@@ -2854,7 +2882,7 @@ This means a trap within a forked child inside a `receive fn` causes the entire 
 **Trap propagation example:**
 
 ```hew
-fork {
+scope {
     fork a = compute();        // Running
     fork b = trap!("failed");  // Traps
     // Task 'a' is cancelled
@@ -2863,20 +2891,23 @@ fork {
 // Code here never executes
 ```
 
-**Isolating failures with nested fork-blocks:**
+**Isolating failures with nested scope-blocks:**
 
 ```hew
-fork {
+scope {
     fork results = {
-        // Inner fork-block isolates failures
-        fork {
+        // Inner scope-block isolates failures; the fork child body is an
+        // ordinary block (not a scope block) that can carry a value.
+        var outcome: Result<Data, Error>;
+        scope {
             fork task = risky_operation();
-            await task
-        }
+            outcome = await task;   // captures Ok or Err
+        };
+        outcome                     // fork child returns the Result
     };
 
-    // Outer fork-block continues even if inner block returned Err
-    // (if using ? pattern with ScopeError<E>)
+    // Outer scope-block continues even if results returned Err;
+    // inspect via `await results` inside this body.
 }
 ```
 
@@ -2895,7 +2926,7 @@ fn read_config(path: String) -> Result<Config, String> {
 **IO operations are cancellation-aware:**
 
 ```hew
-// If the enclosing fork-block is cancelled while waiting for response,
+// If the enclosing scope-block is cancelled while waiting for response,
 // http::get returns Err(Cancelled)
 let response = http::get(url)?;
 ```
@@ -2923,24 +2954,33 @@ actor's mutable state: each runs on its own OS thread, captured values
 move (or clone) across the boundary, and the actor's fields are not
 reachable from inside a child body.
 
+> **§4.8 design unsettled (2026-05-15)** — the dynamic-fork-in-loop
+> idiom shown below is illustrative only. The ratified `fork name = expr;`
+> shape requires a binding name per child; collecting handles into
+> `Vec<Task<T>>` contradicts the `Task<T>` non-nameability rule (§4.3),
+> and `await t` is not a primitive. The settled idiom is one of:
+> (a) `fork[]` array form yielding `[T; N]` on scope exit;
+> (b) a `scope_par_map(items, |x| f(x))` stdlib op;
+> (c) actor-mailbox accumulation via an anonymous `fork _ = …;`.
+> The example below uses an indicative placeholder pending ratification.
+
 ```hew
 actor DataProcessor {
     var cache: HashMap<String, Data> = HashMap::new();
 
     receive fn process_batch(ids: Vec<String>) -> Vec<Data> {
-        fork {
-            var results: Vec<Task<Data>> = Vec::new();
-
+        // Indicative shape; see §4.8 design-unsettled note above.
+        // The scope joins all forks on exit; `data` is populated
+        // via the (unsettled) accumulation mechanism.
+        var data: Vec<Data> = Vec::new();
+        scope {
             for id in ids {
                 // Captures of `id` move into the child; actor fields
                 // (e.g. `cache`) are not in scope inside the child body.
-                fork task = fetch_data(id);
-                results.push(task);
+                fork _ = collect_into(&mut data, fetch_data(id));
             }
-
-            // Await all results (back on the actor's thread)
-            results.iter().map(|t| await t).collect()
-        }
+        };
+        data
     }
 }
 ```
@@ -2974,7 +3014,7 @@ fn heavy_computation() {
 | Concurrency   | True parallelism (one OS thread per child)          | True parallelism (M:N scheduler) |
 | Isolation     | Complete (no shared mutable state with parent)      | Complete (mailbox only)          |
 | Failure       | First error becomes `ScopeError::primary`; siblings cancel | Traps isolated to actor   |
-| Lifetime      | Bound to enclosing `fork` block                     | Independent                      |
+| Lifetime      | Bound to enclosing `scope` block                     | Independent                      |
 | Cancellation  | Automatic at safepoints                             | Supervisor control               |
 | Scheduling    | OS thread per child (substrate); cooperative coroutines are an internal runtime layer | M:N work-stealing scheduler |
 
@@ -2983,23 +3023,26 @@ fn heavy_computation() {
 Hew combines Go's lightweight spawn ergonomics with Erlang's actor
 isolation and Swift/Kotlin/Loom-grade structured concurrency:
 
-- **Like Go**: a single short verb (`fork`) covers both block-form and child-form, with no nursery/scope object to pass around.
+- **Like Go**: a pair of short keywords — `scope { ... }` for the lifetime boundary and `fork name = call(...)` for child-start — with no nursery/scope object to pass around.
 - **Like Erlang**: actors are isolated failure domains with supervisors; child tasks inside an actor cannot reach the actor's state.
 - **Like Swift / Kotlin / Loom**: every child has a known parent block, the first failure cancels siblings, and no child error is silently dropped — `?` propagates `ScopeError::primary`.
 
 **Historical note.**
 
-Earlier drafts (pre-β) exposed the structured-concurrency surface as
+Earlier drafts exposed the structured-concurrency surface as
 `scope |s| { s.launch { … } / s.spawn { … } / s.cancel() }`, with two
 child verbs distinguished by scheduling discipline (`launch` for
-cooperative coroutines, `spawn` for OS threads). That surface was
-subsumed in favour of a single dual-use `fork` keyword. The cooperative
-coroutine layer (`hew-runtime/src/coro.rs`) and the OS-thread-per-task
-runtime (`hew-runtime/src/task_scope.rs`) both still exist below the
-source surface; the source-level choice between them is no longer
-user-visible. The β substrate is OS-thread-per-task; the cooperative
-layer is an implementation detail that may be re-engaged in later
-phases without changing the surface keyword.
+cooperative coroutines, `spawn` for OS threads). The 2026 edition
+removed that surface in its entirety: `scope { ... }` is the lexical-
+lifetime boundary; `fork name = call(...);` inside a scope is the
+child-start verb; the two keywords are not synonyms and the
+`s.launch / s.spawn / s.cancel` methods are not reintroduced. The
+cooperative coroutine layer (`hew-runtime/src/coro.rs`) and the
+OS-thread-per-task runtime (`hew-runtime/src/task_scope.rs`) both still
+exist below the source surface; the source-level choice between them is
+no longer user-visible. The β substrate is OS-thread-per-task; the
+cooperative layer is an implementation detail that may be re-engaged in
+later phases without changing the surface keyword.
 
 ### 4.10 Actor Await and Synchronization
 
@@ -3084,7 +3127,7 @@ them out of any other safepoint in the enclosing scope.
    type `T`. The `select` expression has type `T`. There is no `T =
    Result<U, E>` flattening — if arms return `Result`, the `select`
    returns `Result`.
-5. **Cancellation propagates outward.** If the enclosing `fork {}` is
+5. **Cancellation propagates outward.** If the enclosing `scope {}` is
    cancelled while a `select` is pending, every arm runs its loser-
    cleanup rule and the cancellation propagates through the `select`
    site as if it were any other safepoint.
@@ -3193,38 +3236,38 @@ The `| after` combinator wraps the result in `Result<T, Timeout>`:
 where e: Task<T>, d: Duration
 ```
 
-#### 4.11.4 `fork` and `select` Composition
+#### 4.11.4 `scope`/`fork` and `select` Composition
 
-Edition 2026 defines the legal compositions of `fork {}` and `select {}`
+Edition 2026 defines the legal compositions of `scope {}` and `select {}`
 explicitly. Anything not listed is rejected by type checking, with the
 diagnostic pointing at the offending position.
 
 | Composition                                              | Legality        | Rationale                                                                                                                                                                                          |
 | -------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `select {}` inside a `fork {}` body or child             | Legal           | The four `select` forms are single-await constructs and compose with the fork block's cancellation discipline at their safepoints.                                                                |
+| `select {}` inside a `scope {}` body or child             | Legal           | The four `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                |
 | `fork name = select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the binding is the `select` expression's result type.                                                                                      |
-| `fork {}` inside a `select` arm's `=>` result expression | Legal           | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a fork block.                                                               |
-| `fork { ... }` as a `select` arm source                  | **Rejected**    | The four sealed arm sources are exhaustive (§4.11.1). A fork block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose lifetime is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
+| `scope {}` inside a `select` arm's `=>` result expression | Legal           | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a scope block.                                                               |
+| `scope { ... }` as a `select` arm source                  | **Rejected**    | The four sealed arm sources are exhaustive (§4.11.1). A scope block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose lifetime is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
 | `await <task>` arm where `<task>` was bound by `fork name = expr` of the enclosing block | Legal | A scoped child handle is a legal `await` source; the `select` arm's loser-cleanup rule (cancel the awaited task) is exactly what scope-structural cancellation expects when the awaited task is no longer needed. |
 
 **Cancellation propagation across the composition (normative):**
 
-- When a `fork {}` enters its cancelling state while a `select {}` in
+- When a `scope {}` enters its cancelling state while a `select {}` in
   its body is still pending, every `select` arm runs its loser-cleanup
   rule (§4.11.1) and the cancellation then propagates through the
   `select` site as if the site were any other safepoint. The `select`
   does not return a value in this case; control unwinds.
-- When a `select` arm wins inside a fork-block body, only the *losing*
+- When a `select` arm wins inside a scope-block body, only the *losing*
   arms run their loser-cleanup. Sibling fork-children are not affected
-  by the arm transition; their lifetime is bound to the enclosing fork
+  by the arm transition; their lifetime is bound to the enclosing scope
   block, not to the `select` site.
 - A child task failing (typed `Err(E)` or trap) while a `select` in the
-  fork-block body is still pending cancels the fork block; the
+  scope-block body is still pending cancels the scope block; the
   outer-cancellation rule applies to the in-flight `select`.
 
 The composition matrix is intentionally narrow in edition 2026. A
-future edition may relax the `fork`-as-arm-source rejection once a
-cancellation-token vocabulary (HEW-FUTURE.md §1.2) gives a fork block
+future edition may relax the `scope`-as-arm-source rejection once a
+cancellation-token vocabulary (HEW-FUTURE.md §1.2) gives a scope block
 a callable cancel handle that `select` can hold as a source.
 
 ### 4.12 Generators
@@ -4439,9 +4482,11 @@ If you want this to be directly executable as an engineering project, the next m
 - **Sealed `select{}`.** `select{}` widens from actor-receive-only to a
   four-form sealed construct over task await, stream `next`, actor request-reply, and
   timer (§4.11). Not user-extensible in this edition.
-- **`fork{}` consolidation.** The `scope |s| { s.launch / s.spawn / s.cancel }`
-  surface is removed; `fork {}` is the structured-concurrency block, and
-  `fork name = expr` / `fork expr` are the only child-spawning forms.
+- **`scope{}` / `fork` split.** The `scope |s| { s.launch / s.spawn / s.cancel }`
+  surface is removed entirely. `scope { }` is the structured-concurrency
+  block (the lexical-lifetime boundary). `fork name = expr;` / `fork expr;`
+  are the only child-start forms, and they are only legal inside a
+  `scope { }` body. `scope` and `fork` are not synonyms.
   Historical note retained at §4.9.
 - **Stdlib narrowing.** The edition 2026 normative stdlib is deliberately
   narrow (§3.10.1). Surfaces that exist in `std/` today but are not

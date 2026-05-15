@@ -1585,17 +1585,17 @@ fn wasm_http_server_surface_rejected_before_codegen() {
 }
 
 #[test]
-fn wasm_fork_block_rejected_before_codegen() {
-    // Edition-2026 fork{} requires the OS-thread-per-task substrate in
+fn wasm_scope_block_rejected_before_codegen() {
+    // Edition-2026 scope{} requires the OS-thread-per-task substrate in
     // hew-runtime/src/task_scope.rs, which is `#[cfg(not(target_arch =
-    // "wasm32"))]`. The checker must reject a fork-block when the target
+    // "wasm32"))]`. The checker must reject a scope-block when the target
     // is wasm32 so the rejection is observable at compile time rather
     // than as a runtime trap or a silent no-op. Tracked at #1451.
     let output = typecheck_inline_wasm(
         r"
-        fn main() -> int {
-            fork {
-                42
+        fn main() {
+            scope {
+                let _ = 42;
             }
         }
         ",
@@ -1603,26 +1603,26 @@ fn wasm_fork_block_rejected_before_codegen() {
     let count = platform_limitation_error_count(&output, "Structured concurrency scopes");
     assert!(
         count >= 1,
-        "expected fork block to be rejected on WASM, got: {:#?}",
+        "expected scope block to be rejected on WASM, got: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn wasm_fork_with_child_block_rejected_before_codegen() {
-    // The block-form rejection fires once on the outer fork{}; nested
+fn wasm_scope_with_fork_child_rejected_before_codegen() {
+    // The block-form rejection fires once on the outer scope{}; nested
     // children inside the block do not re-fire because Ty::Error short-
     // circuits the body synthesis. The user-facing outcome is what
-    // matters: a fork{} with child tasks is observably rejected on
+    // matters: a scope{} with child tasks is observably rejected on
     // wasm32 with the StructuredConcurrency label naming the substrate
     // dependency.
     let output = typecheck_inline_wasm(
         r"
         fn compute() -> int { 7 }
-        fn main() -> int {
-            fork {
+        fn main() {
+            scope {
                 fork a = compute();
-                await a
+                await a;
             }
         }
         ",
@@ -1630,7 +1630,7 @@ fn wasm_fork_with_child_block_rejected_before_codegen() {
     let count = platform_limitation_error_count(&output, "Structured concurrency scopes");
     assert!(
         count >= 1,
-        "expected fork{{}} with children to be rejected on WASM, got: {:#?}",
+        "expected scope{{}} with children to be rejected on WASM, got: {:#?}",
         output.errors
     );
 }

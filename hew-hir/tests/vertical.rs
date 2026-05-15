@@ -438,7 +438,7 @@ fn select_stream_next_two_args_rejected() {
 fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
     let output = lower(
         "fn worker() -> i64 { return 42; } \
-         fn main() { fork { worker(); } }",
+         fn main() { scope { worker(); } }",
     );
     // No diagnostic errors expected from HIR lowering (the fork expression
     // itself lowers cleanly; MIR-level CutoverUnsupported fires downstream).
@@ -458,11 +458,12 @@ fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
         "fork body with bare call should lower cleanly: {hir_diags:?}"
     );
 
-    // The dump should mention `fork` and `spawned-call`.
+    // The dump should mention `scope` (renamed from `fork` in the rip+rename PR)
+    // and `spawned-call`.
     let dump = dump_hir(&output.module);
     assert!(
-        dump.contains("fork scope="),
-        "HIR dump should contain fork node: {dump}"
+        dump.contains("scope scope="),
+        "HIR dump should contain scope node: {dump}"
     );
     assert!(
         dump.contains("spawned-call"),
@@ -481,7 +482,7 @@ fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
 fn task_handle_ti2_named_fork_child_binds_task_type() {
     let output = lower(
         "fn compute() -> i64 { return 7; } \
-         fn main() { fork { fork t = compute(); } }",
+         fn main() { scope { fork t = compute(); } }",
     );
     // No HIR-level non-infrastructure diagnostics expected.
     let real_diags: Vec<_> = output
@@ -534,7 +535,7 @@ fn task_handle_ti3_call_outside_fork_is_synchronous() {
 fn task_handle_ti4_await_task_binding_inside_fork_lowers_to_await_task() {
     let output = lower(
         "fn compute() -> i64 { return 99; } \
-         fn main() { fork { fork t = compute(); await t; } }",
+         fn main() { scope { fork t = compute(); await t; } }",
     );
     // No non-infrastructure HIR diagnostics.
     let real_diags: Vec<_> = output
@@ -579,7 +580,7 @@ fn task_handle_ti4_await_outside_fork_rejects_with_await_out_of_position() {
 #[test]
 fn task_handle_ti4_await_non_task_rejects_with_await_non_task() {
     // Inside a fork body so position is legal, but the operand is i64.
-    let output = lower("fn f() { fork { let x = 5; await x; } }");
+    let output = lower("fn f() { scope { let x = 5; await x; } }");
     assert!(
         output
             .diagnostics
@@ -593,7 +594,7 @@ fn task_handle_ti4_await_non_task_rejects_with_await_non_task() {
 /// TI-2 (reject): `fork name = non_call_expr` emits `ForkChildNotACall`.
 #[test]
 fn task_handle_ti2_fork_child_non_call_rhs_rejects() {
-    let output = lower("fn f() { fork { fork t = 42; } }");
+    let output = lower("fn f() { scope { fork t = 42; } }");
     assert!(
         output
             .diagnostics
@@ -629,7 +630,7 @@ fn task_handle_ti5_task_annotation_in_let_rejects_task_not_nameable() {
 fn task_handle_ti4_await_in_let_value_position_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); let x = await t; } }",
+         fn f() { scope { fork t = compute(); let x = await t; } }",
     );
     assert!(
         output
@@ -649,7 +650,7 @@ fn task_handle_ti4_await_in_let_value_position_rejects() {
 fn await_in_return_position_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); return await t; } }",
+         fn f() { scope { fork t = compute(); return await t; } }",
     );
     assert!(
         output
@@ -668,7 +669,7 @@ fn await_in_function_arg_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
          fn sink(x: i64) { } \
-         fn f() { fork { fork t = compute(); sink(await t); } }",
+         fn f() { scope { fork t = compute(); sink(await t); } }",
     );
     assert!(
         output
@@ -686,7 +687,7 @@ fn await_in_function_arg_rejects() {
 fn await_in_binary_operand_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); let x = (await t) + 1; } }",
+         fn f() { scope { fork t = compute(); let x = (await t) + 1; } }",
     );
     // This may fire AwaitOutOfPosition (binary operand) or the existing
     // let-value intercept — either satisfies the position-rejection rule.
@@ -712,7 +713,7 @@ fn await_in_binary_operand_rejects() {
 fn inferred_task_return_rejects() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); return t; } }",
+         fn f() { scope { fork t = compute(); return t; } }",
     );
     assert!(
         output
@@ -729,7 +730,7 @@ fn inferred_task_return_rejects() {
 fn non_task_return_inside_fork_accepts() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { fork { fork t = compute(); await t; } }",
+         fn f() { scope { fork t = compute(); await t; } }",
     );
     let task_escape_errors: Vec<_> = output
         .diagnostics
@@ -742,13 +743,13 @@ fn non_task_return_inside_fork_accepts() {
     );
 }
 
-/// Verifier stability: a valid `fork { call(); }` program passes `verify_hir`
+/// Verifier stability: a valid `scope { call(); }` program passes `verify_hir`
 /// without dangling-ref or duplicate-id diagnostics.
 #[test]
 fn task_handle_fork_block_passes_verifier() {
     let output = lower(
         "fn work() -> i64 { return 1; } \
-         fn main() { fork { work(); } }",
+         fn main() { scope { work(); } }",
     );
     let verify = verify_hir(&output.module);
     // Verifier should not emit any DanglingRef, DuplicateBindingId, or

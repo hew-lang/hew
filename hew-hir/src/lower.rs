@@ -125,11 +125,11 @@ struct LowerCtx {
     /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
     type_classes: crate::value_class::TypeClassTable,
     diagnostics: Vec<HirDiagnostic>,
-    /// Depth counter for nested `fork{}` bodies. When > 0, statement-expression
-    /// calls are inferred as child-task spawns (TI-1); outside any fork body
+    /// Depth counter for nested `scope{}` bodies. When > 0, statement-expression
+    /// calls are inferred as child-task spawns (TI-1); outside any scope body
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
-    /// bool supports nested `fork{}` blocks correctly.
-    fork_depth: u32,
+    /// bool supports nested `scope{}` blocks correctly.
+    scope_depth: u32,
     /// Set to `true` immediately before lowering the expression of a
     /// `Stmt::Expression` statement. `lower_expr` consumes it via
     /// `mem::replace(…, false)` at entry, so all recursive calls see `false`.
@@ -303,7 +303,7 @@ impl LowerCtx {
         let kind = match stmt {
             Stmt::Let { pattern, ty, value } => {
                 // `await expr` is only legal as a statement-expression inside a
-                // fork{} body (TI-4). Using it as a let-value is always rejected —
+                // scope{} body (TI-4). Using it as a let-value is always rejected —
                 // the await result is consumed immediately and has no place to bind.
                 if let Some(val_expr) = value {
                     if matches!(&val_expr.0, Expr::Await(_)) {
@@ -311,7 +311,7 @@ impl LowerCtx {
                             HirDiagnosticKind::AwaitOutOfPosition,
                             val_expr.1.clone(),
                             "`await` cannot be used as a let-value; \
-                             it is only legal as a statement-expression inside a `fork{}` body",
+                             it is only legal as a statement-expression inside a `scope{}` body",
                         ));
                         let name = self
                             .pattern_name(pattern)
@@ -362,8 +362,8 @@ impl LowerCtx {
                 HirStmtKind::Let(binding, value)
             }
             Stmt::Expression(expr) => {
-                // Inside a fork{} body, statement-expression calls are child-task
-                // spawns (TI-1). Outside fork{} bodies all calls are synchronous
+                // Inside a scope{} body, statement-expression calls are child-task
+                // spawns (TI-1). Outside scope{} bodies all calls are synchronous
                 // (TI-3). The TI-1 rewrite only applies when the expression is a
                 // direct call — nested calls inside sub-expressions remain sync.
                 //
@@ -373,7 +373,7 @@ impl LowerCtx {
                 // sub-expression). The flag is consumed by `mem::replace` at the
                 // top of `lower_expr`, so recursive calls see `false`.
                 self.statement_position = true;
-                if self.fork_depth > 0 {
+                if self.scope_depth > 0 {
                     if let Expr::Call { .. } = &expr.0 {
                         let spawned = self.lower_spawned_call(expr);
                         HirStmtKind::Expr(spawned)
@@ -396,7 +396,7 @@ impl LowerCtx {
                             HirDiagnosticKind::TaskCannotEscape,
                             value.1.clone(),
                             "a `Task<T>` handle cannot escape via `return`; \
-                             await it inside the `fork{}` body with `await name`",
+                             await it inside the `scope{}` body with `await name`",
                         ));
                     } else if expr.ty != return_ty && return_ty != ResolvedTy::Unit {
                         self.diagnostics.push(HirDiagnostic::new(
@@ -538,37 +538,37 @@ impl LowerCtx {
                     },
                 )
             }
-            Expr::Fork { body } => {
-                // A `fork{}` block lowers to `HirExprKind::Fork`. Inside the
+            Expr::Scope { body } => {
+                // A `scope{}` block lowers to `HirExprKind::Scope`. Inside the
                 // body, statement-calls become spawned-call nodes (TI-1) and
                 // `fork name = call(...)` statements introduce `Task<T>` bindings
-                // (TI-2). The fork block's type is `Unit` — it does not produce
-                // a value at the use site.
-                self.fork_depth += 1;
-                let hir_body = self.lower_fork_block(body);
-                self.fork_depth -= 1;
-                (HirExprKind::Fork { body: hir_body }, ResolvedTy::Unit)
+                // (TI-2). The scope block's type is `Unit` — it is a lifetime
+                // boundary, not a value-producing expression.
+                self.scope_depth += 1;
+                let hir_body = self.lower_scope_block(body);
+                self.scope_depth -= 1;
+                (HirExprKind::Scope { body: hir_body }, ResolvedTy::Unit)
             }
             Expr::ForkChild { binding, expr } => {
-                // `fork name = expr` outside a `fork{}` body: no spawn context,
+                // `fork name = expr` outside a `scope{}` body: no spawn context,
                 // so this is malformed. Emit CutoverUnsupported — the grammar
-                // accepts this form but HIR-lowering requires fork context.
-                // (Inside fork{} bodies this variant is handled by lower_fork_block,
+                // accepts this form but HIR-lowering requires scope context.
+                // (Inside scope{} bodies this variant is handled by lower_scope_block,
                 // not by lower_expr directly.)
-                if self.fork_depth == 0 {
+                if self.scope_depth == 0 {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::AwaitOutOfPosition,
                         span.clone(),
-                        "`fork name = expr` is only valid inside a `fork{}` body",
+                        "`fork name = expr` is only valid inside a `scope{}` body",
                     ));
                     (
                         HirExprKind::Unsupported(
-                            "`fork name = expr` outside fork body".to_string(),
+                            "`fork name = expr` outside scope body".to_string(),
                         ),
                         ResolvedTy::Unit,
                     )
                 } else {
-                    // Inside a fork body, lower_fork_block handles this case;
+                    // Inside a scope body, lower_scope_block handles this case;
                     // reaching here means the expression appeared in a non-statement
                     // position (e.g. tail expression). Reject: task handles cannot
                     // be used as values.
@@ -587,17 +587,17 @@ impl LowerCtx {
             }
             Expr::Await(inner) => {
                 // `await expr` — only legal as the direct statement-expression
-                // inside a `fork{}` body in v0.5 (TI-4). Sub-expression positions
+                // inside a `scope{}` body in v0.5 (TI-4). Sub-expression positions
                 // (return value, function argument, binary operand, let value, block
                 // tail, etc.) are rejected with `AwaitOutOfPosition`.
                 // `in_stmt_position` is set by `Stmt::Expression` in `lower_stmt`
                 // and consumed by `mem::replace` at the top of this function, so
                 // recursive calls always see `false`.
-                if self.fork_depth == 0 || !in_stmt_position {
+                if self.scope_depth == 0 || !in_stmt_position {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::AwaitOutOfPosition,
                         span.clone(),
-                        "`await` is only legal as a statement-expression inside a `fork{}` body \
+                        "`await` is only legal as a statement-expression inside a `scope{}` body \
                          in v0.5. It cannot be used as a return value, function argument, \
                          binary operand, or let-value. Move the await to its own statement.",
                     ));
@@ -1181,30 +1181,30 @@ impl LowerCtx {
         }
     }
 
-    /// Lower the body block of a `fork{}` expression. This is separate from
-    /// `lower_block` because statements inside a fork body follow different
+    /// Lower the body block of a `scope{}` expression. This is separate from
+    /// `lower_block` because statements inside a scope body follow different
     /// rules:
     ///
     /// - `Stmt::Expression(Expr::Call{..})` → `SpawnedCall` (TI-1)
     /// - `Stmt::Expression(Expr::ForkChild { binding: Some(name), expr })` →
     ///   `HirStmtKind::Let` with a `Task<T>` typed binding (TI-2)
     /// - `Stmt::Expression(Expr::Await(..))` → `AwaitTask` (TI-4)
-    /// - All other statements lower normally, including nested `fork{}` blocks.
+    /// - All other statements lower normally, including nested `scope{}` blocks.
     ///
-    /// The caller is responsible for setting `fork_depth` before calling this
+    /// The caller is responsible for setting `scope_depth` before calling this
     /// function and restoring it after.
     #[allow(
         clippy::too_many_lines,
-        reason = "single match on fork-body statement variants; splitting would hurt readability"
+        reason = "single match on scope-body statement variants; splitting would hurt readability"
     )]
-    fn lower_fork_block(&mut self, block: &Block) -> HirBlock {
+    fn lower_scope_block(&mut self, block: &Block) -> HirBlock {
         self.push_scope();
         let scope = self.ids.scope();
         let mut statements = Vec::new();
 
         for (stmt, span) in &block.stmts {
             let hir_stmt = match stmt {
-                // `fork name = call(...)` inside a fork body → TI-2: typed Task<T> binding.
+                // `fork name = call(...)` inside a scope body → TI-2: typed Task<T> binding.
                 Stmt::Expression(expr)
                     if matches!(
                         &expr.0,
@@ -1278,7 +1278,7 @@ impl LowerCtx {
                 }
 
                 // `fork name = call(...)` without a binding name (bare ForkChild with no
-                // name, e.g. `fork { fork = expr }` — the grammar produces binding: None).
+                // name, e.g. `scope { fork = expr }` — the grammar produces binding: None).
                 // Lower the child expression as a plain SpawnedCall; the result is not bound.
                 Stmt::Expression(expr)
                     if matches!(&expr.0, Expr::ForkChild { binding: None, .. }) =>
@@ -1316,9 +1316,9 @@ impl LowerCtx {
                 }
 
                 // All other statements lower normally (including regular calls,
-                // let bindings, nested fork{} blocks, etc.). Inside fork depth,
+                // let bindings, nested scope{} blocks, etc.). Inside scope depth,
                 // `lower_stmt` will already handle statement-expression calls as
-                // SpawnedCall nodes via TI-1 (the fork_depth > 0 path in lower_stmt).
+                // SpawnedCall nodes via TI-1 (the scope_depth > 0 path in lower_stmt).
                 _ => self.lower_stmt(stmt, span.clone(), ResolvedTy::Unit),
             };
             statements.push(hir_stmt);
@@ -1343,7 +1343,7 @@ impl LowerCtx {
         }
     }
 
-    /// Lower a call expression appearing as a statement inside a `fork{}` body
+    /// Lower a call expression appearing as a statement inside a `scope{}` body
     /// as a child-task spawn (TI-1). The resulting `HirExpr` has kind
     /// `SpawnedCall` and type `Task<call_return_ty>`.
     fn lower_spawned_call(&mut self, expr: &Spanned<Expr>) -> HirExpr {
@@ -1392,7 +1392,6 @@ fn describe_select_source_shape(expr: &Expr) -> String {
         Expr::Range { .. } => "range expression".into(),
         Expr::Cast { .. } => "cast expression".into(),
         Expr::Send { .. } => "actor send".into(),
-        Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) | Expr::ScopeCancel => "scope expression".into(),
         Expr::Timeout { .. } => "timeout expression".into(),
         Expr::Unsafe(_) => "unsafe block".into(),
         Expr::Yield(_) => "yield expression".into(),

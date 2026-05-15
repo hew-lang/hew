@@ -124,8 +124,8 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, value, indent + 4);
             }
         }
-        HirExprKind::Fork { body } => {
-            writeln!(out, "{pad}  fork scope={}", body.scope).expect("write to string");
+        HirExprKind::Scope { body } => {
+            writeln!(out, "{pad}  scope scope={}", body.scope).expect("write to string");
             for stmt in &body.statements {
                 match &stmt.kind {
                     HirStmtKind::Let(binding, value) => {

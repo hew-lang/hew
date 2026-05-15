@@ -1796,13 +1796,13 @@ def fuzz_scope_concurrency(ctx: FuzzContext) -> None:
     """Structured concurrency: scope, select, join, cooperate."""
     cases = [
         ("basic_scope", "fn main() { scope { println(1); }; }"),
-        ("scope_with_binding", "fn main() { scope |s| { println(1); }; }"),
         (
-            "scope_launch",
+            "scope_fork_child",
             (
+                "fn compute() -> int { 42 }\n"
                 "fn main() {\n"
-                "  scope |s| {\n"
-                "    let t = s.launch { 42 };\n"
+                "  scope {\n"
+                "    fork t = compute();\n"
                 "    let r = await t;\n"
                 "    println(r);\n"
                 "  };\n"
@@ -1812,11 +1812,14 @@ def fuzz_scope_concurrency(ctx: FuzzContext) -> None:
         (
             "scope_multiple_tasks",
             (
+                "fn one() -> int { 1 }\n"
+                "fn two() -> int { 2 }\n"
+                "fn three() -> int { 3 }\n"
                 "fn main() {\n"
-                "  scope |s| {\n"
-                "    let t1 = s.launch { 1 };\n"
-                "    let t2 = s.launch { 2 };\n"
-                "    let t3 = s.launch { 3 };\n"
+                "  scope {\n"
+                "    fork t1 = one();\n"
+                "    fork t2 = two();\n"
+                "    fork t3 = three();\n"
                 "  };\n"
                 "}"
             ),

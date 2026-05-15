@@ -334,10 +334,6 @@ pub struct Parser<'src> {
     pos: usize,
     errors: Vec<ParseError>,
     depth: Cell<usize>,
-    /// When inside a `scope |s| { ... }` block, this holds the binding name "s"
-    /// so that `s.launch`, `s.cancel()` can be desugared
-    /// to the corresponding AST nodes.
-    scope_binding: Option<String>,
     /// Stack of token mutations performed by `eat_closing_angle`, so they can
     /// be rolled back on speculative-parse backtrack.
     angle_mutations: Vec<(usize, (Token<'src>, Span))>,
@@ -440,7 +436,6 @@ impl<'src> Parser<'src> {
             pos: 0,
             errors,
             depth: Cell::new(0),
-            scope_binding: None,
             angle_mutations: Vec::new(),
         }
     }
@@ -3643,9 +3638,6 @@ impl<'src> Parser<'src> {
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
                 | Expr::Scope { .. }
-                | Expr::Fork { .. }
-                | Expr::ScopeLaunch(_)
-                | Expr::ScopeSpawn(_)
                 | Expr::Unsafe(_)
                 | Expr::Select { .. }
         )
@@ -4438,47 +4430,6 @@ impl<'src> Parser<'src> {
                     }
                 }
 
-                // Desugar scope handle method calls: s.launch { ... }, s.spawn { ... }, s.cancel(), s.is_cancelled()
-                if self.scope_binding.as_deref() == Some(&name) && self.peek() == Some(&Token::Dot)
-                {
-                    let saved_pos = self.save_pos();
-                    self.advance(); // consume .
-
-                    // `spawn` is a keyword token, so handle it before the identifier match
-                    if self.peek() == Some(&Token::Spawn) {
-                        self.advance(); // consume "spawn"
-                        let body = self.parse_block()?;
-                        let end = self.peek_span().start;
-                        return Some((Expr::ScopeSpawn(body), start..end));
-                    }
-
-                    if let Some(Token::Identifier(method)) = self.peek() {
-                        let method = method.to_string();
-                        match method.as_str() {
-                            "launch" => {
-                                self.advance(); // consume "launch"
-                                let body = self.parse_block()?;
-                                let end = self.peek_span().start;
-                                return Some((Expr::ScopeLaunch(body), start..end));
-                            }
-                            "cancel" => {
-                                self.advance(); // consume "cancel"
-                                self.expect(&Token::LeftParen)?;
-                                self.expect(&Token::RightParen)?;
-                                let end = self.peek_span().start;
-                                return Some((Expr::ScopeCancel, start..end));
-                            }
-
-                            _ => {
-                                // Not a scope method, restore and fall through
-                                self.restore_pos(saved_pos);
-                            }
-                        }
-                    } else {
-                        self.restore_pos(saved_pos);
-                    }
-                }
-
                 // Check for struct initialization — including the explicit-type-arg form
                 // `Name<T, ...> { field: expr, ... }`.  We need a speculative parse
                 // because `<` is also a comparison operator: only commit when we see
@@ -4868,50 +4819,48 @@ impl<'src> Parser<'src> {
             }
             Token::Scope => {
                 self.advance();
-                // Reject old scope.method() syntax
+                // Reject obsolete surfaces: `scope.method()` and `scope |s| { ... }`.
                 if self.eat(&Token::Dot) {
                     self.error(
-                        "'scope.method()' syntax has been removed; use 'scope |s| { s.method() }' instead"
+                        "'scope.method()' syntax has been removed; use 'scope { ... }' with `fork name = expr;` bindings instead"
                             .to_string(),
                     );
                     return None;
                 }
-                // Parse optional binding: scope |s| { ... }
-                let binding = if self.eat(&Token::Pipe) {
+                if self.peek() == Some(&Token::Pipe) {
+                    self.error(
+                        "'scope |s| { s.launch / s.spawn / s.cancel }' has been removed; use 'scope { fork name = call(...); }' instead"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                Expr::Scope {
+                    body: self.parse_block()?,
+                }
+            }
+            Token::Fork => {
+                self.advance();
+                // `fork` is now exclusively the child-start verb inside a scope block:
+                // `fork name = call(...);` or bare `fork call(...);`.
+                // The legacy `fork { ... }` block form was removed; use `scope { ... }`.
+                if self.peek() == Some(&Token::LeftBrace) {
+                    self.error(
+                        "'fork { ... }' block syntax has been removed; use 'scope { ... }' for structured concurrency"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                let binding = if self.fork_starts_child_binding() {
                     let name = self.expect_ident()?;
-                    self.expect(&Token::Pipe)?;
+                    self.expect(&Token::Equal)?;
                     Some(name)
                 } else {
                     None
                 };
-                // Parse the scope body with the binding active
-                let prev_binding = self.scope_binding.take();
-                self.scope_binding.clone_from(&binding);
-                let body = self.parse_block()?;
-                self.scope_binding = prev_binding;
-                Expr::Scope { binding, body }
-            }
-            Token::Fork => {
-                self.advance();
-                // Disambiguation: `fork { ... }` is always the block form.
-                // Child form cannot treat `{` as its first expression token.
-                if self.peek() == Some(&Token::LeftBrace) {
-                    Expr::Fork {
-                        body: self.parse_block()?,
-                    }
-                } else {
-                    let binding = if self.fork_starts_child_binding() {
-                        let name = self.expect_ident()?;
-                        self.expect(&Token::Equal)?;
-                        Some(name)
-                    } else {
-                        None
-                    };
-                    let expr = self.parse_expr()?;
-                    Expr::ForkChild {
-                        binding,
-                        expr: Box::new(expr),
-                    }
+                let expr = self.parse_expr()?;
+                Expr::ForkChild {
+                    binding,
+                    expr: Box::new(expr),
                 }
             }
             Token::Try => {
@@ -7000,29 +6949,32 @@ wire type Msg {
     }
 
     #[test]
-    fn fork_keyword_emits_distinct_ast_variant() {
-        let expr = parse_let_expr("fork { 1 }");
+    fn scope_keyword_emits_scope_ast_variant() {
+        let expr = parse_let_expr("scope { 1 }");
         assert!(
-            matches!(expr, Expr::Fork { .. }),
-            "expected Fork, got {expr:?}"
+            matches!(expr, Expr::Scope { .. }),
+            "expected Scope, got {expr:?}"
         );
     }
 
     #[test]
-    fn parser_fork_block_disambiguates_from_child() {
-        let body = parse_main_body("let block = fork { 1 };\nfork child = run();\n");
+    fn parser_scope_block_distinct_from_fork_child() {
+        let body = parse_main_body("let block = scope { 1 };\nscope { fork child = run(); };\n");
         let Stmt::Let {
-            value: Some((Expr::Fork { .. }, _)),
+            value: Some((Expr::Scope { .. }, _)),
             ..
         } = &body.stmts[0].0
         else {
             panic!(
-                "expected let binding to use fork block: {:?}",
+                "expected let binding to use scope block: {:?}",
                 body.stmts[0]
             );
         };
-        let Stmt::Expression((Expr::ForkChild { binding, .. }, _)) = &body.stmts[1].0 else {
-            panic!("expected child fork expression: {:?}", body.stmts[1]);
+        let Stmt::Expression((Expr::Scope { body: inner }, _)) = &body.stmts[1].0 else {
+            panic!("expected outer scope block: {:?}", body.stmts[1]);
+        };
+        let Stmt::Expression((Expr::ForkChild { binding, .. }, _)) = &inner.stmts[0].0 else {
+            panic!("expected child fork expression: {:?}", inner.stmts[0]);
         };
         assert_eq!(binding.as_deref(), Some("child"));
     }
@@ -7056,10 +7008,10 @@ wire type Msg {
     }
 
     #[test]
-    fn parse_nested_fork_block_and_child() {
-        let expr = parse_let_expr("fork { fork run(); fork child = work(); child }");
-        let Expr::Fork { body } = expr else {
-            panic!("expected fork block");
+    fn parse_nested_scope_block_and_child() {
+        let expr = parse_let_expr("scope { fork run(); fork child = work(); child }");
+        let Expr::Scope { body } = expr else {
+            panic!("expected scope block");
         };
         assert_eq!(body.stmts.len(), 2, "expected two child statements");
         assert!(matches!(

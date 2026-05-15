@@ -165,10 +165,7 @@ impl<'ast> AstVisitor<'ast> for FoldingVisitor<'_> {
                 | Expr::Lambda { .. }
                 | Expr::SpawnLambdaActor { .. }
                 | Expr::Scope { .. }
-                | Expr::Fork { .. }
                 | Expr::Unsafe(_)
-                | Expr::ScopeLaunch(_)
-                | Expr::ScopeSpawn(_)
         ) {
             add_region(self.source, self.line_offsets, span, self.ranges);
         }

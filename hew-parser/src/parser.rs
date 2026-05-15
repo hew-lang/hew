@@ -83,8 +83,11 @@ fn unquote_str(s: &str) -> &str {
 /// Returns true if the attribute name designates an actor lifecycle hook.
 /// These attributes are permitted on plain `fn` declarations inside an
 /// actor body; all other attributes on such fns are rejected.
+///
+/// The parameterized form `#[on(start)]` / `#[on(stop)]` uses a single
+/// attribute name `on` with the hook kind as a positional argument.
 pub(crate) fn is_lifecycle_hook_attr(name: &str) -> bool {
-    matches!(name, "on_start" | "on_stop")
+    name == "on"
 }
 
 fn push_unescaped_sequence(
@@ -2191,7 +2194,7 @@ impl<'src> Parser<'src> {
                     return None;
                 }
             } else if self.peek() == Some(&Token::Fn) {
-                // Lifecycle-hook attributes `#[on_start]` and `#[on_stop]` are
+                // Lifecycle-hook attributes `#[on(start)]` and `#[on(stop)]` are
                 // permitted on plain `fn` declarations inside an actor body.
                 // All other attributes on actor methods are rejected: they
                 // belong on `receive fn` declarations.
@@ -6219,10 +6222,10 @@ mod tests {
     fn parse_actor_lifecycle_hook_and_receive_attributes() {
         // The `terminate { }` block surface was removed in favour of the
         // annotation-based hook surface; cleanup logic is expressed as a
-        // plain `fn` annotated with `#[on_stop]` (and `#[on_start]` for
+        // plain `fn` annotated with `#[on(stop)]` (and `#[on(start)]` for
         // startup logic).
         let source = r"actor Worker {
-    #[on_stop]
+    #[on(stop)]
     fn shutdown() { stop(); }
 
     #[every(50ms)]
@@ -6233,7 +6236,7 @@ mod tests {
         if let Item::Actor(actor) = &result.program.items[0].0 {
             assert_eq!(actor.methods.len(), 1);
             assert_eq!(actor.methods[0].attributes.len(), 1);
-            assert_eq!(actor.methods[0].attributes[0].name, "on_stop");
+            assert_eq!(actor.methods[0].attributes[0].name, "on");
 
             assert_eq!(actor.receive_fns.len(), 1);
             assert_eq!(actor.receive_fns[0].attributes.len(), 1);

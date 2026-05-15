@@ -174,7 +174,7 @@ fn test_actor_receive_self_uses_actor_guidance() {
 #[test]
 fn test_actor_init_and_method_self_use_actor_guidance() {
     // The `terminate { }` block surface was retired; the equivalent
-    // `#[on_stop]` fn is exercised by the dedicated lifecycle-hook
+    // `#[on(stop)]` fn is exercised by the dedicated lifecycle-hook
     // fixtures (see `hew-types/tests/actor_lifecycle_hooks.rs`).
     let output = typecheck(
         r"
@@ -230,7 +230,7 @@ fn test_actor_on_stop_hook_valid_field_access() {
         actor Worker {
             let id: i32;
 
-            #[on_stop]
+            #[on(stop)]
             fn flush() {
                 println(id);
             }
@@ -241,7 +241,7 @@ fn test_actor_on_stop_hook_valid_field_access() {
     );
     assert!(
         output.errors.is_empty(),
-        "`#[on_stop]` hook should be able to read bare field names: {:?}",
+        "`#[on(stop)]` hook should be able to read bare field names: {:?}",
         output.errors
     );
 }

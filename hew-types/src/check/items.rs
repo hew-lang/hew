@@ -206,11 +206,11 @@ impl Checker {
         }
 
         // Separate lifecycle-hook fns from regular methods. Hooks carry
-        // `#[on_start]` or `#[on_stop]` and have a fixed signature;
+        // `#[on(start)]` or `#[on(stop)]` and have a fixed signature;
         // regular methods carry no attributes and are checked as
         // ordinary actor methods.
         //
-        // `#[on_start]` is at most once per actor; `#[on_stop]` may
+        // `#[on(start)]` is at most once per actor; `#[on(stop)]` may
         // appear multiple times (lexical declaration order is the
         // run order — see HEW-SPEC-2026 §9.1.2).
         let mut on_start_seen: Option<Span> = None;
@@ -218,7 +218,7 @@ impl Checker {
             let hook_attrs: Vec<_> = method
                 .attributes
                 .iter()
-                .filter(|a| matches!(a.name.as_str(), "on_start" | "on_stop"))
+                .filter(|a| a.name.as_str() == "on")
                 .collect();
 
             if hook_attrs.is_empty() {
@@ -243,13 +243,44 @@ impl Checker {
             }
             let hook_attr = hook_attrs[0];
 
-            if hook_attr.name == "on_start" {
+            // Resolve the hook kind from the first positional arg.
+            let hook_kind = hook_attr.args.first().map(AttributeArg::as_str);
+            match hook_kind {
+                None | Some("") => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        hook_attr.span.clone(),
+                        format!(
+                            "`#[on]` on `{}::{}` requires a hook kind argument; \
+                             valid hook kinds are: start, stop",
+                            ad.name, method.name
+                        ),
+                    ));
+                    continue;
+                }
+                Some("start" | "stop") => {}
+                Some(unknown) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        hook_attr.span.clone(),
+                        format!(
+                            "`#[on({unknown})]` on `{}::{}` is not a recognised lifecycle hook; \
+                             valid hook kinds are: start, stop",
+                            ad.name, method.name
+                        ),
+                    ));
+                    continue;
+                }
+            }
+            let hook_kind_str = hook_kind.unwrap();
+
+            if hook_kind_str == "start" {
                 if let Some(prev) = &on_start_seen {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         hook_attr.span.clone(),
                         format!(
-                            "actor `{}` declares more than one `#[on_start]` hook; \
+                            "actor `{}` declares more than one `#[on(start)]` hook; \
                              only one is allowed (see prior at {}..{})",
                             ad.name, prev.start, prev.end
                         ),
@@ -261,7 +292,8 @@ impl Checker {
 
             // Validate signature and body. Hooks bind actor fields in
             // scope (bare names) and have no parameters beyond `self`.
-            self.check_lifecycle_hook(&ad.name, method, hook_attr.name.as_str(), &ad.fields);
+            let display_kind = format!("on({hook_kind_str})");
+            self.check_lifecycle_hook(&ad.name, method, &display_kind, &ad.fields);
         }
 
         self.current_actor_type = prev_actor_type;
@@ -312,7 +344,7 @@ impl Checker {
         self.env.pop_scope();
     }
 
-    /// Type-check an actor lifecycle hook (`#[on_start]` or `#[on_stop]`).
+    /// Type-check an actor lifecycle hook (`#[on(start)]` or `#[on(stop)]`).
     ///
     /// Required shape (HEW-SPEC-2026 §9.1.2):
     /// - exactly one parameter named `self` typed `&mut Self`

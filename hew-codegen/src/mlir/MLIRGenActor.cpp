@@ -701,7 +701,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   //
   // The `terminate { }` block surface has been replaced by annotation
   // hooks (HEW-SPEC-2026 §9.1.2). Hooks are regular `fn` decls inside
-  // the actor body carrying `#[on_start]` or `#[on_stop]`; lexical
+  // the actor body carrying `#[on(start)]` or `#[on(stop)]`; lexical
   // declaration order determines run order.
   //
   // The runtime ABI is unchanged: a single `_init` symbol and a single
@@ -712,26 +712,29 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   //   TODO(@hook-panic-isolation, v0.6): wrap each hook invocation in
   //   a catch so a panic in one hook does not abort the remaining
   //   hooks (HEW-SPEC-2026 §9.1.2 normative rule 5). Until then a
-  //   panicking `#[on_stop]` hook short-circuits subsequent hooks for
+  //   panicking `#[on(stop)]` hook short-circuits subsequent hooks for
   //   the same actor; subsequent `@resource` `close()` still runs via
   //   `state_drop_fn` (which is unaffected by terminate's behaviour).
+  // Hooks use the parameterized form `#[on(start)]` / `#[on(stop)]`:
+  // attribute name is "on" and the first positional arg is the kind.
   std::vector<const ast::FnDecl *> on_start_hooks;
   std::vector<const ast::FnDecl *> on_stop_hooks;
   for (const auto &m : decl.methods) {
     for (const auto &attr : m.attributes) {
-      if (attr.name == "on_start") {
-        on_start_hooks.push_back(&m);
-        break;
-      }
-      if (attr.name == "on_stop") {
-        on_stop_hooks.push_back(&m);
+      if (attr.name == "on" && !attr.args.empty()) {
+        const auto &kind = attr.args[0].as_str();
+        if (kind == "start") {
+          on_start_hooks.push_back(&m);
+        } else if (kind == "stop") {
+          on_stop_hooks.push_back(&m);
+        }
         break;
       }
     }
   }
 
   // 2b. Generate init function if the actor has an init block OR any
-  //     `#[on_start]` hook. The hook bodies are appended after the
+  //     `#[on(start)]` hook. The hook bodies are appended after the
   //     init body in lexical order.
   //     void ActorName_init(ptr state)
   if (decl.init || !on_start_hooks.empty()) {
@@ -789,12 +792,12 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     }
 
     // Generate init block body (if any). The init body runs first, then
-    // every `#[on_start]` hook in lexical declaration order.
+    // every `#[on(start)]` hook in lexical declaration order.
     if (decl.init) {
       generateBlock(decl.init->body, /*statementPosition=*/true);
     }
 
-    // Append `#[on_start]` hook bodies in lexical order. Each hook is a
+    // Append `#[on(start)]` hook bodies in lexical order. Each hook is a
     // parameterless `fn` whose body executes against the actor state
     // exactly like an init body (fields bound by bare name via the
     // already-declared `self` pointer).
@@ -810,7 +813,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   }
 
   // 2c. Generate terminate function if the actor declares any
-  //     `#[on_stop]` hook. Hook bodies are concatenated in lexical
+  //     `#[on(stop)]` hook. Hook bodies are concatenated in lexical
   //     order into one synthetic `_terminate` symbol — the runtime ABI
   //     stays single-function-pointer; multi-hook fan-in happens at
   //     codegen.
@@ -836,7 +839,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     auto selfPtr = entryBlock->getArgument(0);
     declareVariable("self", selfPtr);
 
-    // Concatenate each `#[on_stop]` hook body in lexical declaration
+    // Concatenate each `#[on(stop)]` hook body in lexical declaration
     // order. Per-hook panic isolation is deferred to v0.6 (see comment
     // in §2a above on `@hook-panic-isolation`).
     for (const auto *hook : on_stop_hooks) {
@@ -861,7 +864,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   // the state has no owned fields the body is empty and the call is a
   // cheap no-op the optimizer can inline away.
   //
-  // The state-drop runs AFTER every `#[on_stop]` hook (concatenated
+  // The state-drop runs AFTER every `#[on(stop)]` hook (concatenated
   // into the synthetic `_terminate` symbol above) and BEFORE the
   // trailing `libc::free(a.state)` (see free_actor_resources in
   // hew-runtime/src/actor.rs).  Per HEW-SPEC-2026 §9.1.2 normative

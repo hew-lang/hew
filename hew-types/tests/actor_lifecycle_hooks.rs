@@ -1,5 +1,5 @@
 //! Type-checker fixtures for actor lifecycle hooks
-//! (`#[on_start]` / `#[on_stop]`).
+//! (`#[on(start)]` / `#[on(stop)]`).
 //!
 //! These exercise the §9.1.2 surface defined in
 //! `docs/specs/HEW-SPEC-2026.md`. The accept fixtures pin the
@@ -20,7 +20,7 @@ fn accept_on_start_only() {
         actor Cache {
             let entries: i32;
 
-            #[on_start]
+            #[on(start)]
             fn warm() {
                 entries
             }
@@ -31,7 +31,7 @@ fn accept_on_start_only() {
     );
     assert!(
         output.errors.is_empty(),
-        "actor with only `#[on_start]` should type-check: {:?}",
+        "actor with only `#[on(start)]` should type-check: {:?}",
         output.errors
     );
 }
@@ -43,7 +43,7 @@ fn accept_on_stop_only() {
         actor Cache {
             let entries: i32;
 
-            #[on_stop]
+            #[on(stop)]
             fn flush() {
                 entries
             }
@@ -54,14 +54,14 @@ fn accept_on_stop_only() {
     );
     assert!(
         output.errors.is_empty(),
-        "actor with only `#[on_stop]` should type-check: {:?}",
+        "actor with only `#[on(stop)]` should type-check: {:?}",
         output.errors
     );
 }
 
 #[test]
 fn accept_multiple_on_stop_in_declared_order() {
-    // Multiple `#[on_stop]` hooks are legal; lexical order is the run
+    // Multiple `#[on(stop)]` hooks are legal; lexical order is the run
     // order (HEW-SPEC-2026 §9.1.2 rule 6). The type-checker accepts
     // them without complaint.
     let output = typecheck(
@@ -70,12 +70,12 @@ fn accept_multiple_on_stop_in_declared_order() {
             let entries: i32;
             let socket: i32;
 
-            #[on_stop]
+            #[on(stop)]
             fn flush_cache() {
                 entries
             }
 
-            #[on_stop]
+            #[on(stop)]
             fn close_socket() {
                 socket
             }
@@ -86,7 +86,7 @@ fn accept_multiple_on_stop_in_declared_order() {
     );
     assert!(
         output.errors.is_empty(),
-        "multiple `#[on_stop]` hooks should be accepted: {:?}",
+        "multiple `#[on(stop)]` hooks should be accepted: {:?}",
         output.errors
     );
 }
@@ -103,7 +103,7 @@ fn reject_hook_with_parameters() {
         actor Worker {
             let count: i32;
 
-            #[on_stop]
+            #[on(stop)]
             fn shutdown(unused: i32) {
                 count
             }
@@ -115,7 +115,7 @@ fn reject_hook_with_parameters() {
     assert!(
         output.errors.iter().any(|e| e.message.contains("must take")
             && e.message.contains("no parameters")
-            && e.message.contains("#[on_stop]")),
+            && e.message.contains("on(stop)")),
         "hook with parameters should be rejected with a hook-specific \
          diagnostic: {:?}",
         output.errors
@@ -124,19 +124,19 @@ fn reject_hook_with_parameters() {
 
 #[test]
 fn reject_duplicate_on_start() {
-    // `#[on_start]` is at-most-once per actor (rule 6). Declaring two
+    // `#[on(start)]` is at-most-once per actor (rule 6). Declaring two
     // is a structural error.
     let output = typecheck(
         r"
         actor Worker {
             let count: i32;
 
-            #[on_start]
+            #[on(start)]
             fn first() {
                 count
             }
 
-            #[on_start]
+            #[on(start)]
             fn second() {
                 count
             }
@@ -149,8 +149,8 @@ fn reject_duplicate_on_start() {
         output
             .errors
             .iter()
-            .any(|e| e.message.contains("more than one `#[on_start]`")),
-        "duplicate `#[on_start]` should be rejected: {:?}",
+            .any(|e| e.message.contains("more than one `#[on(start)]`")),
+        "duplicate `#[on(start)]` should be rejected: {:?}",
         output.errors
     );
 }
@@ -164,7 +164,7 @@ fn reject_pure_hook() {
         actor Worker {
             let count: i32;
 
-            #[on_stop]
+            #[on(stop)]
             pure fn flush() {
                 count
             }
@@ -177,8 +177,39 @@ fn reject_pure_hook() {
         output
             .errors
             .iter()
-            .any(|e| e.message.contains("#[on_stop]") && e.message.contains("`pure`")),
+            .any(|e| e.message.contains("on(stop)") && e.message.contains("`pure`")),
         "`pure` lifecycle hook should be rejected: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reject_unknown_hook_kind() {
+    // `#[on(restart)]` is not a recognised lifecycle hook in this edition;
+    // the checker emits a diagnostic listing the valid kinds (start, stop).
+    // Uses a plain identifier that is not a reserved keyword.
+    let output = typecheck(
+        r"
+        actor Worker {
+            let count: i32;
+
+            #[on(restart)]
+            fn setup() {
+                count
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("on(restart)")
+                && e.message.contains("start")
+                && e.message.contains("stop")),
+        "`#[on(restart)]` should be rejected with valid-kinds list: {:?}",
         output.errors
     );
 }

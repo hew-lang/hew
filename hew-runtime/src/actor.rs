@@ -279,7 +279,7 @@ pub struct HewActor {
     pub coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
 
     /// Optional cleanup function called when the actor is freed.
-    /// Generated from the actor's `#[on_stop]` lifecycle hooks: codegen
+    /// Generated from the actor's `#[on(stop)]` lifecycle hooks: codegen
     /// concatenates every hook body (in lexical declaration order) into
     /// a single synthetic `_terminate` symbol so the runtime ABI stays
     /// one C function pointer. See HEW-SPEC-2026 §9.1.2.
@@ -290,7 +290,7 @@ pub struct HewActor {
     /// `libc::free(a.state)`. Generated unconditionally for every actor by
     /// `MLIRGenActor`, even when the body is empty (no owned fields). Wired
     /// at spawn time via [`hew_actor_set_state_drop`]. Distinct from
-    /// `terminate_fn`: terminate runs the user's `#[on_stop]` hooks while
+    /// `terminate_fn`: terminate runs the user's `#[on(stop)]` hooks while
     /// the actor is still RUNNING; state-drop runs unconditionally after
     /// terminate has finished, immediately before the state allocation is
     /// freed, so that types implementing `Drop` (Vec, String, IO handles)
@@ -2313,7 +2313,7 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
 /// participate in RAII generate an empty body — calling state-drop is a
 /// no-op for actors with only value-type fields.
 ///
-/// State-drop runs after every `#[on_stop]` hook has finished and before
+/// State-drop runs after every `#[on(stop)]` hook has finished and before
 /// the state allocation is freed, so the field-level `Drop` callbacks
 /// see the same state pointer the runtime is about to release. State-drop
 /// is invoked on `a.state` only; the companion `a.init_state` is a byte

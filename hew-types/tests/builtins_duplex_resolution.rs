@@ -146,3 +146,94 @@ fn channel_non_send_rejected() {
         output.errors
     );
 }
+
+/// `duplex<Rc<int>, int>(16)` — Send constraint must apply to the standalone
+/// constructor on the S side, matching `duplex_pair`.
+#[test]
+fn duplex_non_send_s_rejected() {
+    let source = r"
+        fn main() {
+            let d: Duplex<Rc<int>, int> = duplex<Rc<int>, int>(16);
+        }
+    ";
+    let output = typecheck(source);
+    let has_bounds_err = output
+        .errors
+        .iter()
+        .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
+    assert!(
+        has_bounds_err,
+        "duplex<Rc<int>, int> should fail with BoundsNotSatisfied; got: {:#?}",
+        output.errors
+    );
+}
+
+/// `duplex<int, Rc<int>>(16)` — Send constraint on the R side.
+#[test]
+fn duplex_non_send_r_rejected() {
+    let source = r"
+        fn main() {
+            let d: Duplex<int, Rc<int>> = duplex<int, Rc<int>>(16);
+        }
+    ";
+    let output = typecheck(source);
+    let has_bounds_err = output
+        .errors
+        .iter()
+        .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
+    assert!(
+        has_bounds_err,
+        "duplex<int, Rc<int>> should fail with BoundsNotSatisfied; got: {:#?}",
+        output.errors
+    );
+}
+
+/// Calling `duplex_pair(16)` with no generic args at all must fail with
+/// the type-inference / annotation diagnostic — generic args cannot be
+/// inferred from the integer capacity alone.
+#[test]
+fn duplex_pair_missing_generic_args_rejected() {
+    let source = r"
+        fn main() {
+            let (a, b) = duplex_pair(16);
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        !output.errors.is_empty(),
+        "duplex_pair(16) without generic args must produce an error; got: {:#?}",
+        output.errors
+    );
+}
+
+/// Calling `duplex(16)` with no generic args must fail similarly.
+#[test]
+fn duplex_missing_generic_args_rejected() {
+    let source = r"
+        fn main() {
+            let d = duplex(16);
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        !output.errors.is_empty(),
+        "duplex(16) without generic args must produce an error; got: {:#?}",
+        output.errors
+    );
+}
+
+/// Calling `channel(16)` with no generic args must fail similarly.
+#[test]
+fn channel_missing_generic_args_rejected() {
+    let source = r"
+        fn main() {
+            let (s, r) = channel(16);
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        !output.errors.is_empty(),
+        "channel(16) without generic args must produce an error; got: {:#?}",
+        output.errors
+    );
+}

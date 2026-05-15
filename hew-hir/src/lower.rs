@@ -511,26 +511,30 @@ impl LowerCtx {
             );
         }
 
-        // The grammar permits a `timeoutArm` only at the end of a
-        // `select{}`, so a syntactic `Select { timeout }` carries at most
-        // one `after` arm. A user writing multiple `after` arms either
-        // (a) writes them as `selectArm`s with `after` as the source
-        // expression — which falls through to SelectArmNotSealedForm —
-        // or (b) the parser would have rejected. We defensively emit
-        // SelectMultipleAfterArms if a later widening of the grammar
-        // surfaces the case. Today this branch is unreachable on the
-        // base grammar; the diagnostic exists for forward-compatibility
-        // and is exercised by the dedicated unit test for the rule.
-        //
-        // No code path here currently emits SelectMultipleAfterArms; the
-        // surface is sealed at the grammar layer.
+        // Multiple `after` arms have no meaningful join semantics and are
+        // rejected. An `Expr::Timeout`-sourced arm in the `arms` vec is
+        // treated as an `AfterTimer` arm; if that is combined with the
+        // dedicated `timeout` field (or if two appear in `arms`) the
+        // second one triggers `SelectMultipleAfterArms`.
 
         let mut hir_arms: Vec<HirSelectArm> = Vec::with_capacity(arms.len() + 1);
         let mut expected_ty: Option<ResolvedTy> = None;
+        let mut first_after_span: Option<std::ops::Range<usize>> = None;
 
         for arm in arms {
             let binding_name = self.pattern_name(&arm.binding);
             let kind = self.recognize_sealed_arm_source(&arm.source);
+            if matches!(kind, HirSelectArmKind::AfterTimer { .. }) {
+                if first_after_span.is_some() {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::SelectMultipleAfterArms,
+                        arm.source.1.clone(),
+                        "select may have at most one `after` arm",
+                    ));
+                } else {
+                    first_after_span = Some(arm.source.1.clone());
+                }
+            }
             let body = self.lower_expr(&arm.body, IntentKind::Read);
             if let Some(expected) = expected_ty.as_ref() {
                 if &body.ty != expected {
@@ -555,6 +559,13 @@ impl LowerCtx {
         }
 
         if let Some(timeout) = timeout {
+            if first_after_span.is_some() {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::SelectMultipleAfterArms,
+                    timeout.duration.1.clone(),
+                    "select may have at most one `after` arm",
+                ));
+            }
             let duration = self.lower_expr(&timeout.duration, IntentKind::Read);
             let body = self.lower_expr(&timeout.body, IntentKind::Read);
             if let Some(expected) = expected_ty.as_ref() {
@@ -661,6 +672,17 @@ impl LowerCtx {
                 let task = self.lower_expr(task_expr, IntentKind::Read);
                 HirSelectArmKind::TaskAwait {
                     task: Box::new(task),
+                }
+            }
+            // Form 4 (arm-position): `after <duration>` written as an
+            // arm source rather than the dedicated `timeout` field.
+            // Recognised here so the `lower_select` multiple-after check
+            // can fire; the duplicate check in `lower_select` emits the
+            // diagnostic when this arm coexists with another after arm.
+            Expr::Timeout { duration, .. } => {
+                let dur = self.lower_expr(duration, IntentKind::Read);
+                HirSelectArmKind::AfterTimer {
+                    duration: Box::new(dur),
                 }
             }
             // Method-call dressed up as `stream.next()` — sealed

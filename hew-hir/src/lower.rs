@@ -1244,7 +1244,20 @@ impl LowerCtx {
             param_ids.insert(binding.id);
             hir_params.push(binding);
         }
+        // Lexically scope `current_actor_self` to THIS lambda body. If the
+        // caller (`lower_stmt`'s let-pre-bind path) set it before invoking
+        // `lower_expr`, that value is this lambda's self-id; otherwise this
+        // lambda is in expression position (anonymous) and has no self-id.
+        // Take the value out for the duration of the body walk so any
+        // nested actor-lambda lowered from within `body` does not inherit
+        // it — nested anonymous lambdas would otherwise misclassify
+        // captures of THIS lambda's enclosing-scope bindings as Weak.
+        // Restored before `collect_lambda_captures` so the capture-strength
+        // classifier sees the correct self-id, and restored to the caller's
+        // prior value on exit.
+        let my_self_id = self.current_actor_self.take();
         let lowered_body = self.lower_expr(body, IntentKind::Read);
+        self.current_actor_self = my_self_id;
         self.pop_scope();
         let captures = self.collect_lambda_captures(&lowered_body, &param_ids);
         (

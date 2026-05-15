@@ -353,10 +353,10 @@ impl TraitRegistry {
             | Ty::Error
             | Ty::Never => !matches!(marker, MarkerTrait::Resource),
 
-            // Floats: most traits but NOT Eq, Ord, Hash (NaN issues)
+            // Floats: most traits but NOT Eq, Ord, Hash (NaN issues), NOT Resource (value type)
             Ty::F32 | Ty::F64 | Ty::FloatLiteral => !matches!(
                 marker,
-                MarkerTrait::Eq | MarkerTrait::Ord | MarkerTrait::Hash
+                MarkerTrait::Eq | MarkerTrait::Ord | MarkerTrait::Hash | MarkerTrait::Resource
             ),
 
             // String: Send + Sync + Clone + Encode + Decode, but NOT Frozen (mutable), NOT Copy

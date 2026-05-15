@@ -769,12 +769,16 @@ fn duplex_is_not_copy_or_clone() {
 #[test]
 fn primitives_are_not_resource() {
     let reg = TraitRegistry::new();
-    assert!(
-        !reg.implements_marker(&Ty::I64, MarkerTrait::Resource),
-        "int must not be Resource"
-    );
-    assert!(
-        !reg.implements_marker(&Ty::Bool, MarkerTrait::Resource),
-        "bool must not be Resource"
-    );
+    for (ty, name) in [
+        (Ty::I64, "int"),
+        (Ty::Bool, "bool"),
+        (Ty::F32, "f32"),
+        (Ty::F64, "f64"),
+        (Ty::String, "string"),
+    ] {
+        assert!(
+            !reg.implements_marker(&ty, MarkerTrait::Resource),
+            "{name} must not be Resource"
+        );
+    }
 }

@@ -1,0 +1,10 @@
+// Reject fixture: E_LAMBDA_NO_SEND_METHOD
+// Lambda actor handles use call-syntax only: `handle(msg)` not `handle.send(msg)`.
+// The `.send()` method does not exist on Duplex handles; use `handle(msg)` instead.
+// Expected: type error containing "E_LAMBDA_NO_SEND_METHOD"
+fn main() {
+    let printer = actor |x: int| {
+        println(x);
+    };
+    printer.send(42);
+}

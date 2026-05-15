@@ -21,7 +21,7 @@ fn main() {
     sleep_ms(100);
 
     // Lambda actor: spawn and send
-    let doubler = spawn (x: int) => {
+    let doubler = actor |x: int| {
         println(x * 2);
     };
     doubler.send(21);

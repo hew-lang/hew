@@ -1,6 +1,6 @@
 // E2E test: lambda actor .send() exercises generateSendExpr.
 fn main() {
-    let counter = spawn (x: int) => {
+    let counter = actor |x: int| {
         println(x);
     };
     counter.send(42);

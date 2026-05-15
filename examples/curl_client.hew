@@ -124,7 +124,7 @@ Connection: close
     println("");
 
     // Spawn a progress reporter actor
-    let reporter = spawn (bytes_so_far: i64) => {
+    let reporter = actor |bytes_so_far: i64| {
         print(f"  Progress: {bytes_so_far} bytes received");
     };
     // Read response in chunks

@@ -641,6 +641,8 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("Call", VariantDisposition::Parsed),
     ("MethodCall", VariantDisposition::Parsed),
     ("StructInit", VariantDisposition::Parsed),
+    // MachineEmit is a machine-body-only expression; codegen handling is Lane B.
+    ("MachineEmit", VariantDisposition::Rejected),
     ("Send", VariantDisposition::Parsed),
     ("Select", VariantDisposition::Parsed),
     ("Join", VariantDisposition::Parsed),

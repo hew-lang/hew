@@ -24,10 +24,11 @@
 //!
 //! ## Body invocation
 //!
-//! Slice 4 only carries the data structures + ABI entries. Body
+//! This module carries the data structures + ABI entries. Body
 //! dispatch (deserialising a `Msg` envelope, running the lambda's
-//! statements, posting a Reply for ask-shape) is slice 5 codegen.
-//! Tests prove the upgrade discipline without invoking a body.
+//! statements, posting a Reply for ask-shape) is consumed by the
+//! codegen lowering. Tests prove the upgrade discipline without
+//! invoking a body.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(
@@ -42,7 +43,7 @@
 use std::ptr;
 use std::sync::{Arc, Weak};
 
-use crate::duplex::{HewDuplex, RecvError, SendError};
+use crate::duplex::{HewDuplex, HewRecvHalf, HewSendHalf, RecvError, SendError};
 
 /// Body-shape discriminator. Recorded at construction so the runtime
 /// knows whether to provision a reply correlator; codegen (slice 5)
@@ -61,19 +62,41 @@ pub enum LambdaShape {
 
 /// Internal shared state. The Arc's strong count is the external
 /// lambda-actor refcount.
+///
+/// The mailbox is constructed by pairing two `HewDuplex` handles and
+/// immediately splitting each — the lambda-actor is one end of the
+/// pair (clients write into `mailbox_in`; the body dispatch loop drains
+/// from `mailbox_out`). The opposite-direction queue of each pair-side
+/// is auto-released when the half-conversions drop their unused caps,
+/// so only the client-write-to-body-read direction stays open.
 #[derive(Debug)]
 pub struct LambdaActorInner {
-    /// The mailbox substrate. Sends go through `duplex.send`; the body
-    /// dispatch loop (slice 5) drains via `duplex.recv`.
-    duplex: HewDuplex,
+    /// Send-half retained from the client-side pair endpoint. Sends
+    /// from `HewLambdaActor::send` write here.
+    mailbox_in: HewSendHalf,
+    /// Recv-half retained from the body-side pair endpoint. The
+    /// body-dispatch loop drains messages here.
+    mailbox_out: HewRecvHalf,
     /// Body-shape discriminator.
     shape: LambdaShape,
 }
 
 impl LambdaActorInner {
     fn new(mailbox_capacity: usize, shape: LambdaShape) -> Self {
+        // Construct a cross-wired pair and immediately split each side
+        // into the half it needs. `client` retains the send capability
+        // toward the body; `body` retains the recv capability draining
+        // those messages. The reverse-direction queue (body → client)
+        // has no use today (tell-shape and the not-yet-wired ask-shape
+        // reply path will introduce it when the runtime carries
+        // correlator state); each split releases its unused cap and
+        // the unused queue is freed within the constructor.
+        let (client, body) = HewDuplex::new_pair(mailbox_capacity, mailbox_capacity);
+        let mailbox_in = client.into_send_half();
+        let mailbox_out = body.into_recv_half();
         Self {
-            duplex: HewDuplex::new_loopback(mailbox_capacity),
+            mailbox_in,
+            mailbox_out,
             shape,
         }
     }
@@ -81,13 +104,13 @@ impl LambdaActorInner {
     /// Send a message envelope on the actor's mailbox. Blocks if the
     /// mailbox is full and at least one receiver remains.
     pub fn send(&self, msg: Vec<u8>) -> SendError {
-        self.duplex.send(msg)
+        self.mailbox_in.send(msg)
     }
 
     /// Drain the next message envelope from the mailbox. Used by the
-    /// slice-5 body-dispatch loop (not exposed via C-ABI yet).
+    /// body-dispatch loop (not exposed via C-ABI yet).
     pub fn recv(&self) -> Result<Vec<u8>, RecvError> {
-        self.duplex.recv()
+        self.mailbox_out.recv()
     }
 
     #[must_use]
@@ -184,9 +207,9 @@ impl HewLambdaActorWeak {
 
 // ── C-ABI entries ──────────────────────────────────────────────────────────
 //
-// Slice-5 codegen calls these from emitted LLVM IR for the
-// `Place::LambdaActorHandle` shape (MIR slice 3) and the
-// `DropKind::LambdaActorRelease` drop-elaboration target.
+// Consumed by the codegen lowering for the `Place::LambdaActorHandle`
+// shape and the `DropKind::LambdaActorRelease` drop-elaboration
+// target.
 
 /// Allocate a new lambda-actor instance with the given mailbox capacity
 /// and shape discriminant. `shape` must be `0` (Tell) or `1` (Ask);

@@ -166,7 +166,6 @@ stable = [
   "hew_duplex_clone",
   "hew_duplex_close",
   "hew_duplex_close_half",
-  "hew_duplex_new",
   "hew_duplex_pair",
   "hew_duplex_payload_free",
   "hew_duplex_recv",

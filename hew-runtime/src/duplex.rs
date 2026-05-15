@@ -8,12 +8,15 @@
 //!
 //! Construction surfaces:
 //!
-//! - [`HewDuplex::new_loopback`] — one handle whose S-direction and
-//!   R-direction queues are the same allocation. Sends loop back to
-//!   recv. Useful for trivial single-endpoint cases.
 //! - [`HewDuplex::new_pair`] — two cross-wired handles `(a, b)` where
 //!   `a.s_queue == b.r_queue` and `a.r_queue == b.s_queue`. The MIR
-//!   surface `duplex_pair::<S, R>(N)` lowers to this.
+//!   surface `duplex_pair::<S, R>(N)` lowers to this. This is the
+//!   user-facing construction shape (a Duplex is a connection between
+//!   two endpoints; cf. §8.3).
+//! - [`HewDuplex::new_loopback`] — internal-only constructor where a
+//!   single handle's S- and R-queues alias each other. Used by the
+//!   lambda-actor mailbox composition and by tests. Not exposed on
+//!   the C-ABI surface.
 //!
 //! Half-handle extraction ([`HewDuplex::send_half`], [`HewDuplex::recv_half`])
 //! splits the unified Duplex handle into direction-only aliases (`SendHalf`
@@ -296,8 +299,10 @@ pub struct HewDuplex {
 impl HewDuplex {
     /// Construct a self-loopback Duplex. Sends to `s_queue` are
     /// observable via `r_queue` (because they are the same queue).
-    /// The loopback shape is what `hew_duplex_new` exposes for the
-    /// solo-construction surface; the more useful shape is `new_pair`.
+    /// This is an internal Rust constructor used by tests and by
+    /// the lambda-actor mailbox composition; the user-facing surface
+    /// is `new_pair`, which models the Duplex as a connection between
+    /// two endpoints (cf. the §8.3 Duplex-as-TCP-connection design).
     pub fn new_loopback(capacity: usize) -> Self {
         let queue = Queue::new(capacity);
         queue.acquire_sender();
@@ -528,30 +533,6 @@ pub enum HewDuplexDirection {
     Recv = 1,
 }
 
-/// Allocate a self-loopback Duplex with the given per-direction capacities.
-/// `s_cap` and `r_cap` are accepted symmetrically so the ABI also covers
-/// the future split-capacity case; the loopback uses one queue and
-/// honours `s_cap` (R-cap is ignored — they're the same queue).
-///
-/// Returns null on invalid input.
-///
-/// # Safety
-///
-/// The returned pointer is owned by the runtime; callers must release it
-/// with [`hew_duplex_close`] (close-both-dirs) or convert into halves with
-/// [`hew_duplex_send_half`] / [`hew_duplex_recv_half`] before dropping.
-#[no_mangle]
-pub extern "C" fn hew_duplex_new(s_cap: usize, r_cap: usize) -> *mut HewDuplex {
-    if s_cap == 0 || r_cap == 0 {
-        crate::set_last_error(format!(
-            "hew_duplex_new: capacity must be > 0 (got s_cap={s_cap}, r_cap={r_cap})"
-        ));
-        return ptr::null_mut();
-    }
-    let d = HewDuplex::new_loopback(s_cap);
-    Box::into_raw(Box::new(d))
-}
-
 /// Allocate a cross-wired pair. On success writes the two handle
 /// pointers into `out_a` and `out_b`. Both must be non-null.
 ///
@@ -603,8 +584,7 @@ pub unsafe extern "C" fn hew_duplex_pair(
 ///
 /// # Safety
 ///
-/// `d` must point to a valid Duplex returned by `hew_duplex_new` or
-/// `hew_duplex_pair`. `msg` must be valid for `len` bytes (may be null
+/// `d` must point to a valid Duplex returned by `hew_duplex_pair`. `msg` must be valid for `len` bytes (may be null
 /// if `len == 0`).
 #[no_mangle]
 pub unsafe extern "C" fn hew_duplex_send(d: *mut HewDuplex, msg: *const u8, len: usize) -> i32 {
@@ -637,7 +617,7 @@ pub unsafe extern "C" fn hew_duplex_send(d: *mut HewDuplex, msg: *const u8, len:
         unsafe { std::slice::from_raw_parts(msg, len) }.to_vec()
     };
     // SAFETY:
-    // - Provenance: caller guarantees `d` came from hew_duplex_new / pair.
+    // - Provenance: caller guarantees `d` came from hew_duplex_pair.
     // - Type tag: `*mut HewDuplex` matches the originating type.
     // - Lifetime owner: caller still owns the box; we take only a shared
     //   reference for the send call.
@@ -806,16 +786,16 @@ pub unsafe extern "C" fn hew_duplex_payload_free(ptr: *mut u8, len: usize) {
 ///
 /// # Safety
 ///
-/// `d` must have been returned by [`hew_duplex_new`] / [`hew_duplex_pair`]
-/// and must not be used after this call.
+/// `d` must have been returned by [`hew_duplex_pair`] and must not be
+/// used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_duplex_close(d: *mut HewDuplex) {
     if d.is_null() {
         return;
     }
     // SAFETY:
-    // - Provenance: caller guarantees `d` came from hew_duplex_new /
-    //   hew_duplex_pair, which both call `Box::into_raw`.
+    // - Provenance: caller guarantees `d` came from
+    //   hew_duplex_pair, which calls `Box::into_raw`.
     // - Type tag: `*mut HewDuplex` matches the Box's element type.
     // - Lifetime owner: ownership returns to this frame for the
     //   single, final drop. Caller's contract pins exclusivity.
@@ -839,8 +819,8 @@ pub unsafe extern "C" fn hew_duplex_close(d: *mut HewDuplex) {
 ///
 /// # Safety
 ///
-/// `d` must have been returned by `hew_duplex_new` / `hew_duplex_pair`.
-/// On success `d` is consumed and must not be used again.
+/// `d` must have been returned by `hew_duplex_pair`. On success `d`
+/// is consumed and must not be used again.
 #[no_mangle]
 pub unsafe extern "C" fn hew_duplex_send_half(d: *mut HewDuplex) -> *mut HewSendHalf {
     if d.is_null() {
@@ -1181,32 +1161,6 @@ mod tests {
     }
 
     #[test]
-    fn cabi_new_send_recv_close_loopback() {
-        let d = hew_duplex_new(4, 4);
-        assert!(!d.is_null());
-        let msg = b"abi-loop";
-        // SAFETY: d non-null, msg valid for its length, payload-free
-        // contract per docstring.
-        unsafe {
-            let send_rc = hew_duplex_send(d, msg.as_ptr(), msg.len());
-            assert_eq!(send_rc, SendError::Ok as i32);
-            let mut out_ptr: *mut u8 = ptr::null_mut();
-            let mut out_len: usize = 0;
-            let recv_rc = hew_duplex_recv(
-                d,
-                std::ptr::addr_of_mut!(out_ptr),
-                std::ptr::addr_of_mut!(out_len),
-            );
-            assert_eq!(recv_rc, RecvError::Ok as i32);
-            assert_eq!(out_len, msg.len());
-            let recovered = std::slice::from_raw_parts(out_ptr, out_len);
-            assert_eq!(recovered, msg);
-            hew_duplex_payload_free(out_ptr, out_len);
-            hew_duplex_close(d);
-        }
-    }
-
-    #[test]
     fn cabi_pair_cross_wires() {
         let mut a: *mut HewDuplex = ptr::null_mut();
         let mut b: *mut HewDuplex = ptr::null_mut();
@@ -1304,11 +1258,17 @@ mod tests {
     }
 
     #[test]
-    fn cabi_new_rejects_zero_capacity() {
-        let d = hew_duplex_new(0, 4);
-        assert!(d.is_null());
-        let d2 = hew_duplex_new(4, 0);
-        assert!(d2.is_null());
+    fn cabi_pair_rejects_zero_capacity() {
+        let mut a: *mut HewDuplex = ptr::null_mut();
+        let mut b: *mut HewDuplex = ptr::null_mut();
+        // SAFETY: out-slots valid stack variables.
+        let rc1 =
+            unsafe { hew_duplex_pair(0, 4, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
+        assert_eq!(rc1, SendError::Closed as i32);
+        // SAFETY: out-slots valid stack variables.
+        let rc2 =
+            unsafe { hew_duplex_pair(4, 0, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
+        assert_eq!(rc2, SendError::Closed as i32);
     }
 
     #[test]

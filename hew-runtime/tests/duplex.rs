@@ -19,7 +19,7 @@
 use std::ptr;
 
 use hew_runtime::duplex::{
-    hew_duplex_clone, hew_duplex_close, hew_duplex_close_half, hew_duplex_new, hew_duplex_pair,
+    hew_duplex_clone, hew_duplex_close, hew_duplex_close_half, hew_duplex_pair,
     hew_duplex_payload_free, hew_duplex_recv, hew_duplex_recv_half, hew_duplex_send,
     hew_duplex_send_half, hew_recv_half_recv, hew_send_half_send, HewDuplex, HewDuplexDirection,
     RecvError, SendError,
@@ -200,31 +200,6 @@ fn lambda_self_send_fib_stop_after_external_release() {
     assert_eq!(rc2, SendError::ActorStopped as i32);
     // SAFETY: clean up weak.
     unsafe { hew_lambda_actor_weak_drop(weak) };
-}
-
-// ── Loopback construction (single-handle duplex) ───────────────────────────
-//
-// Coverage check for `hew_duplex_new` (the un-paired construction
-// surface). Sends loop back to recv on the same handle.
-
-#[test]
-fn duplex_new_loopback_messages_round_trip() {
-    let d = hew_duplex_new(4, 4);
-    assert!(!d.is_null());
-    let msgs: &[&[u8]] = &[b"first", b"second", b"third"];
-    // SAFETY: d non-null; all payloads valid.
-    unsafe {
-        for m in msgs {
-            assert_eq!(
-                hew_duplex_send(d, m.as_ptr(), m.len()),
-                SendError::Ok as i32
-            );
-        }
-        for expected in msgs {
-            assert_eq!(recv_bytes(d).unwrap(), *expected);
-        }
-        hew_duplex_close(d);
-    }
 }
 
 // ── Clone keeps directions open ────────────────────────────────────────────

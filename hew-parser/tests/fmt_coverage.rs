@@ -979,7 +979,10 @@ fn main() {
 
 #[test]
 fn fmt_await_expression() {
-    let src = r"async fn fetch() -> i32 { 42 }
+    // `await` expression formatting is independent of the function modifier.
+    let src = r"fn fetch() -> i32 {
+    42
+}
 
 fn main() {
     let f = fetch();

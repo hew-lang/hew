@@ -1219,7 +1219,13 @@ impl<'src> Parser<'src> {
                 } else {
                     let fn_start = self.peek_span().start;
                     if self.eat(&Token::Fn) {
-                        (fn_start, true, false)
+                        self.error(
+                            "Hew has no `async fn` keyword — async-ness comes from `fork{}` \
+                             context. Use `fn` for regular functions or `async gen fn` for \
+                             async generators."
+                                .to_string(),
+                        );
+                        (fn_start, false, false)
                     } else {
                         self.error("expected 'fn' or 'gen fn' after 'async'".to_string());
                         return None;
@@ -5814,6 +5820,26 @@ mod tests {
         } else {
             panic!("expected Function item");
         }
+    }
+
+    #[test]
+    fn parse_async_fn_is_rejected() {
+        // Bare `async fn` has no semantics in Hew (no Task<T> to wrap, no checker rule).
+        // Async-ness comes from fork{} context (architecture §4.1, D2 ratification).
+        // Only `async gen fn` is accepted, as it produces a real Ty::async_generator.
+        let source = "async fn fetch() -> i32 { 42 }";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected a parse error for bare `async fn`"
+        );
+        assert!(
+            result.errors[0]
+                .message
+                .contains("Hew has no `async fn` keyword"),
+            "expected rejection diagnostic, got: {:?}",
+            result.errors[0].message
+        );
     }
 
     #[test]

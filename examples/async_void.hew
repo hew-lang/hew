@@ -1,4 +1,4 @@
-async fn print_message(msg: i32) {
+fn print_message(msg: i32) {
     println(msg);
     println(42);
 }

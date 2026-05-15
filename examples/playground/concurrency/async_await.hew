@@ -1,7 +1,7 @@
 //! @name Async/Await
 //! @description Async functions with await
 
-async fn compute(n: int) -> int {
+fn compute(n: int) -> int {
     let result = fib(n);
     result
 }

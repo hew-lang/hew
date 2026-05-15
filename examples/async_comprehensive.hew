@@ -1,10 +1,10 @@
 // Comprehensive async/await demo for Hew language
-async fn simple_calculation(n: i32) -> i32 {
+fn simple_calculation(n: i32) -> i32 {
     let result = n * 2 + 1;
     result
 }
 
-async fn print_async_message(msg: i32) {
+fn print_async_message(msg: i32) {
     println(msg);
 }
 

@@ -1911,7 +1911,7 @@ mod tests {
     #[test]
     fn eval_items_and_bindings_commands_list_entries() {
         let mut session = ReplSession::new();
-        session.session.add_item("async fn answer() -> i64 { 42 }");
+        session.session.add_item("fn answer() -> i64 { 42 }");
         session
             .session
             .add_binding("let (left, right) = pair();\nvar total = 0;");
@@ -1919,7 +1919,7 @@ mod tests {
         let items = session.eval(":items");
         assert!(!items.had_errors);
         assert!(items.output.contains("Remembered items (1):"));
-        assert!(items.output.contains("async fn answer"));
+        assert!(items.output.contains("fn answer"));
 
         let bindings = session.eval(":bindings");
         assert!(!bindings.had_errors);

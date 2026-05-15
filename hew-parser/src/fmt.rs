@@ -2833,7 +2833,15 @@ fn main() -> i32 {
 
     #[test]
     fn await_prefix_syntax() {
-        let src = "async fn main() {\n    let x = await foo();\n}\n";
+        // `await` expressions round-trip independently of the function modifier.
+        let src = "fn main() {\n    let x = await foo();\n}\n";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn async_gen_fn_roundtrip() {
+        // `async gen fn` is the only accepted async modifier; it round-trips cleanly.
+        let src = "async gen fn stream() -> i32 {\n    yield 1;\n}\n";
         assert_eq!(roundtrip(src), src);
     }
 

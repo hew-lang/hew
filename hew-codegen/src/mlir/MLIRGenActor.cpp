@@ -711,7 +711,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   //
   //   TODO(@hook-panic-isolation, 0.5.x hardening): wrap each hook invocation in
   //   a catch so a panic in one hook does not abort the remaining
-  //   hooks (HEW-SPEC-2026 §9.1.2 normative rule 5). Until then a
+  //   hooks (HEW-SPEC-2026 §9.1.2 Compilation note). Until then a
   //   panicking `#[on(stop)]` hook short-circuits subsequent hooks for
   //   the same actor; subsequent `@resource` `close()` still runs via
   //   `state_drop_fn` (which is unaffected by terminate's behaviour).
@@ -868,7 +868,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   // into the synthetic `_terminate` symbol above) and BEFORE the
   // trailing `libc::free(a.state)` (see free_actor_resources in
   // hew-runtime/src/actor.rs).  Per HEW-SPEC-2026 §9.1.2 normative
-  // rule 3, this ordering lets a hook's user logic still observe
+  // rule 8, this ordering lets a hook's user logic still observe
   // `@resource` fields before their `close()` runs.  It mirrors the
   // four-touch pattern used for terminate_fn: codegen emits the
   // symbol here, hew.actor_spawn lowering wires it via

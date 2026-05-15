@@ -346,8 +346,8 @@ impl Checker {
 
     /// Type-check an actor lifecycle hook (`#[on(start)]` or `#[on(stop)]`).
     ///
-    /// Required shape (HEW-SPEC-2026 §9.1.2):
-    /// - exactly one parameter named `self` typed `&mut Self`
+    /// Required shape (HEW-SPEC-2026 §9.1.2 rules 2-4):
+    /// - no parameters (actor fields are in scope by bare name, same as `init { }`)
     /// - no type parameters
     /// - no `where` clause
     /// - not `pure`

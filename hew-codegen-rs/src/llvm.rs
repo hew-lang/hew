@@ -712,17 +712,28 @@ fn lower_terminator<'ctx>(
             let first_kind = arms.first().map(|arm| &arm.kind);
             let msg: String = match first_kind {
                 Some(hew_mir::SelectArmKind::StreamNext { .. }) => {
-                    // TODO: emit pending-read registration for the
-                    // stream arm. The runtime must expose a
-                    // cancellable pending-read primitive distinct
-                    // from the consuming `hew_stream_next`: a losing
-                    // arm withdraws the pending read and the stream
-                    // binding remains usable (no item consumed). On
-                    // win, the binding receives `Option<T>` — `None`
-                    // is the EOF-wins value.
+                    // The cancellable pending-read primitive on
+                    // Stream<T> now exists in hew-runtime
+                    // (`hew_stream_poll` + `hew_stream_cancel_pending_read`).
+                    // Lowering still fails closed because the
+                    // heterogeneous-arm dispatch glue
+                    // (`hew_select_wait`) that picks a winner across
+                    // arm kinds is not yet wired. When that glue
+                    // lands, this arm emits:
+                    //   - `hew_stream_poll(stream, callback, userdata)`
+                    //     on the winning side, returning a
+                    //     PendingReadId stored per-arm.
+                    //   - `hew_stream_cancel_pending_read(stream, id)`
+                    //     on every losing side, using the stored id.
+                    //   - Binding for the winning arm receives the
+                    //     malloc'd item pointer (null → None on EOF).
                     "select{} stream-next arm awaits runtime substrate: \
-                     cancellable pending-read primitive on Stream<T> \
-                     (loser must not consume the stream)"
+                     hew_select_wait heterogeneous-arm dispatch glue \
+                     (the cancellable pending-read primitive on Stream<T> \
+                     is wired via hew_stream_poll / \
+                     hew_stream_cancel_pending_read; the loser-cleanup \
+                     path withdraws the pending read without consuming \
+                     the stream)"
                         .to_string()
                 }
                 Some(hew_mir::SelectArmKind::ActorAsk { .. }) => {
@@ -1108,8 +1119,12 @@ mod tests {
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("stream-next") && msg.contains("pending-read"),
-            "stream-next FailClosed must name the missing substrate: {msg}"
+            msg.contains("stream-next")
+                && msg.contains("hew_select_wait")
+                && msg.contains("hew_stream_poll")
+                && msg.contains("hew_stream_cancel_pending_read"),
+            "stream-next FailClosed must name the dispatch glue still \
+             missing and the substrate primitives that now exist: {msg}"
         );
     }
 

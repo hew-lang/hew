@@ -709,7 +709,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   // — each hook body is inlined sequentially into the synthetic
   // function. Per-hook panic isolation is deferred:
   //
-  //   TODO(@hook-panic-isolation, v0.6): wrap each hook invocation in
+  //   TODO(@hook-panic-isolation, 0.5.x hardening): wrap each hook invocation in
   //   a catch so a panic in one hook does not abort the remaining
   //   hooks (HEW-SPEC-2026 §9.1.2 normative rule 5). Until then a
   //   panicking `#[on(stop)]` hook short-circuits subsequent hooks for

@@ -1,5 +1,5 @@
-// Test: Actor terminate block — basic cleanup on shutdown
-// Exercises: terminate block runs at process exit for actors still idle
+// Test: Actor on(stop) hook — basic cleanup on shutdown
+// Exercises: #[on(stop)] hook runs at process exit for actors still idle
 actor Logger {
     let label: string;
 
@@ -7,7 +7,8 @@ actor Logger {
         println(f"[{label}] {msg}");
     }
 
-    terminate {
+    #[on(stop)]
+    fn cleanup() {
         println(f"[{label}] shutting down");
     }
 }

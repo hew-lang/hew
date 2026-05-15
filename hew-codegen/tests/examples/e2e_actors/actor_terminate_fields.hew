@@ -1,5 +1,5 @@
-// Test: Actor terminate block reads actor fields
-// Exercises: terminate block accesses mutable state for cleanup
+// Test: Actor on(stop) hook reads actor fields
+// Exercises: #[on(stop)] hook accesses mutable state for cleanup
 actor Counter {
     let count: int;
 
@@ -7,7 +7,8 @@ actor Counter {
         count = count + 1;
     }
 
-    terminate {
+    #[on(stop)]
+    fn cleanup() {
         println(f"Counter final value: {count}");
     }
 }

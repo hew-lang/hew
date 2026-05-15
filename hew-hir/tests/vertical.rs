@@ -892,3 +892,238 @@ fn select_one_after_arm_does_not_trigger_multiple_after() {
         output.diagnostics
     );
 }
+
+// ── actor-lambda capture lexical scoping ────────────────────────────────────
+//
+// Per HEW-SPEC-2026 §5.9 ratification 2, an actor-lambda's capture set
+// classifies each free variable as `Strong` (the body holds a refcount on the
+// captured handle) or `Weak` (the body's reference to its own let-binding
+// name, which must not keep the actor alive past external refcount zero).
+//
+// The discriminator is the lambda's lexical self-id — the BindingId of the
+// let-name that the actor-lambda is bound to via the forward-bind path. That
+// id is set on entry to the lambda body's walk and MUST be cleared (or saved
+// and overridden) when descending into a nested actor-lambda body, otherwise
+// the outer self-id leaks into the inner classifier and a Strong capture of
+// the outer name gets misclassified as Weak.
+
+/// Walk the lowered module, return every `HirExprKind::SpawnLambdaActor`
+/// reached. Used by the lambda-capture scoping tests below.
+fn collect_spawn_lambdas(output: &hew_hir::LowerOutput) -> Vec<&hew_hir::HirExpr> {
+    let mut out: Vec<&hew_hir::HirExpr> = Vec::new();
+    for item in &output.module.items {
+        if let hew_hir::HirItem::Function(f) = item {
+            for stmt in &f.body.statements {
+                if let HirStmtKind::Let(_, Some(expr)) = &stmt.kind {
+                    walk_expr_collect_lambdas(expr, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn walk_expr_collect_lambdas<'a>(expr: &'a hew_hir::HirExpr, out: &mut Vec<&'a hew_hir::HirExpr>) {
+    if matches!(expr.kind, HirExprKind::SpawnLambdaActor { .. }) {
+        out.push(expr);
+    }
+    match &expr.kind {
+        HirExprKind::SpawnLambdaActor { body, .. } => {
+            walk_expr_collect_lambdas(body, out);
+        }
+        HirExprKind::Block(block) | HirExprKind::Scope { body: block } => {
+            for s in &block.statements {
+                if let HirStmtKind::Let(_, Some(e)) = &s.kind {
+                    walk_expr_collect_lambdas(e, out);
+                }
+                if let HirStmtKind::Expr(e) = &s.kind {
+                    walk_expr_collect_lambdas(e, out);
+                }
+            }
+            if let Some(tail) = &block.tail {
+                walk_expr_collect_lambdas(tail, out);
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            walk_expr_collect_lambdas(condition, out);
+            walk_expr_collect_lambdas(then_expr, out);
+            if let Some(e) = else_expr {
+                walk_expr_collect_lambdas(e, out);
+            }
+        }
+        HirExprKind::Binary { left, right, .. } => {
+            walk_expr_collect_lambdas(left, out);
+            walk_expr_collect_lambdas(right, out);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            walk_expr_collect_lambdas(callee, out);
+            for a in args {
+                walk_expr_collect_lambdas(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn nested_actor_lambda_does_not_inherit_outer_self_id() {
+    // Body:
+    //   let outer = actor |x: i64| -> i64 {
+    //       actor |y: i64| -> i64 { outer; 0 };
+    //       x + 1
+    //   };
+    //
+    // The expression-position (non-let) inner lambda's body references
+    // `outer`. `outer` is a free variable captured from the enclosing
+    // scope — it MUST be Strong. Before the lexical-scoping fix, the
+    // outer's `current_actor_self` leaked into the inner lambda's
+    // classifier (the inner lambda never sets its own self-id because
+    // there is no `lower_stmt` let-pre-bind for an anonymous lambda)
+    // and `outer` got misclassified as Weak.
+    let source = r"
+fn make() {
+    let outer = actor |x: i64| -> i64 {
+        actor |y: i64| -> i64 {
+            outer;
+            0
+        };
+        x + 1
+    };
+}
+";
+    let output = lower(source);
+    let lambdas = collect_spawn_lambdas(&output);
+    // The inner lambda is the one whose parameter is named `y`. Picking by
+    // param name avoids tangling with the outer lambda's `inner`-capture.
+    let inner = lambdas
+        .iter()
+        .find(|expr| match &expr.kind {
+            HirExprKind::SpawnLambdaActor { params, .. } => params.iter().any(|p| p.name == "y"),
+            _ => false,
+        })
+        .expect("inner actor-lambda (param `y`) must exist");
+    let HirExprKind::SpawnLambdaActor { captures, .. } = &inner.kind else {
+        unreachable!();
+    };
+    let outer_cap = captures
+        .iter()
+        .find(|c| c.name == "outer")
+        .unwrap_or_else(|| {
+            panic!("`outer` must appear in inner lambda's captures; got {captures:?}")
+        });
+    assert_eq!(
+        outer_cap.kind,
+        hew_hir::HirCaptureKind::Strong,
+        "`outer` is a free variable captured by the inner lambda; it must \
+         be Strong, not the inner's own self-binding. captures = {captures:?}",
+    );
+}
+
+#[test]
+fn nested_actor_lambda_classifies_own_self_as_weak() {
+    // Sibling positive case: the inner lambda's OWN self-reference
+    // (its own let-name) must still classify as Weak — the lexical
+    // scoping fix must not regress the §5.9 ratification 2 path.
+    let source = r"
+fn make() {
+    let outer = actor |x: i64| -> i64 {
+        let inner = actor |y: i64| -> i64 {
+            inner;
+            y + 1
+        };
+        inner;
+        x + 1
+    };
+}
+";
+    let output = lower(source);
+    let lambdas = collect_spawn_lambdas(&output);
+    // The inner lambda is the one whose parameter is named `y`.
+    let inner = lambdas
+        .iter()
+        .find(|expr| match &expr.kind {
+            HirExprKind::SpawnLambdaActor { params, .. } => params.iter().any(|p| p.name == "y"),
+            _ => false,
+        })
+        .expect("inner actor-lambda (param `y`) must exist");
+    let HirExprKind::SpawnLambdaActor { captures, .. } = &inner.kind else {
+        unreachable!();
+    };
+    let inner_cap = captures
+        .iter()
+        .find(|c| c.name == "inner")
+        .unwrap_or_else(|| {
+            panic!("`inner` must appear in inner lambda's captures; got {captures:?}")
+        });
+    assert_eq!(
+        inner_cap.kind,
+        hew_hir::HirCaptureKind::Weak,
+        "the inner lambda's reference to its own let-name `inner` must \
+         classify as Weak (§5.9 ratification 2). captures = {captures:?}",
+    );
+}
+
+// ── typed-let forward-bind for actor lambdas ────────────────────────────────
+//
+// The forward-bind path in `lower_stmt` pre-allocates the let-binding so
+// the actor body can reference its own name recursively. Initially this
+// only fired when the let had no type annotation; a typed-let bypassed
+// pre-binding and the body's self-reference resolved as Unresolved.
+//
+// The fix extends the pre-bind to typed actor-lets. The annotation is
+// respected for the binding type (not overridden by the synthetic
+// Duplex shape).
+
+#[test]
+fn typed_actor_let_forward_bind_resolves_self_reference() {
+    // `let fib: Duplex<i64, i64> = actor |n: i64| -> i64 { fib; n + 1 };`
+    // The annotation matches the synthesised Duplex<i64, i64>. The body's
+    // bare-identifier `fib` must resolve to the let's binding — not emit
+    // UnresolvedSymbol.
+    let source = r"
+fn make() {
+    let fib: Duplex<i64, i64> = actor |n: i64| -> i64 {
+        fib;
+        n + 1
+    };
+}
+";
+    let output = lower(source);
+    let unresolved_fib: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| match &d.kind {
+            HirDiagnosticKind::UnresolvedSymbol { name } => name == "fib",
+            _ => false,
+        })
+        .collect();
+    assert!(
+        unresolved_fib.is_empty(),
+        "typed actor-let must pre-bind the let-name so the body's `fib` \
+         resolves; diagnostics = {:?}",
+        output.diagnostics
+    );
+    // And the lambda's captures must contain a Weak self-capture for `fib`.
+    let lambdas = collect_spawn_lambdas(&output);
+    let lambda = lambdas
+        .iter()
+        .find(|expr| matches!(expr.kind, HirExprKind::SpawnLambdaActor { .. }))
+        .expect("typed actor-let must lower to a SpawnLambdaActor");
+    let HirExprKind::SpawnLambdaActor { captures, .. } = &lambda.kind else {
+        unreachable!();
+    };
+    let fib_cap = captures
+        .iter()
+        .find(|c| c.name == "fib")
+        .expect("body's `fib` must appear as a capture");
+    assert_eq!(
+        fib_cap.kind,
+        hew_hir::HirCaptureKind::Weak,
+        "typed actor-let recursive self-reference must classify as Weak; \
+         captures = {captures:?}",
+    );
+}

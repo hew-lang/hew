@@ -270,6 +270,12 @@ pub enum Token<'src> {
     On,
     #[token("when")]
     When,
+    #[token("entry")]
+    Entry,
+    #[token("exit")]
+    Exit,
+    #[token("emit")]
+    Emit,
 
     // ── Multi-char operators (must precede single-char) ───────────────
     #[token("==")]
@@ -639,6 +645,9 @@ define_keywords! {
     Event      => "event",
     On         => "on",
     When       => "when",
+    Entry      => "entry",
+    Exit       => "exit",
+    Emit       => "emit",
 }
 
 impl Token<'_> {

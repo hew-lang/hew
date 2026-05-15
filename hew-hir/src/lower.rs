@@ -1,17 +1,19 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    BinaryOp, Block, Expr, FnDecl, Item, Literal, MachineDecl, Pattern, Program, ResourceMarker,
-    SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal, MachineDecl, Pattern, Program,
+    ResourceMarker, SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl,
+    TypeExpr,
 };
 use hew_types::ResolvedTy;
 
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
 use crate::node::{
-    HirBinding, HirBlock, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLiteral,
-    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirModule, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirTypeDecl,
+    HirBinding, HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem,
+    HirLambdaCapture, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
+    HirMachineTransition, HirModule, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
+    HirStmtKind, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -143,6 +145,15 @@ struct LowerCtx {
     /// a sub-expression of a return value, argument, binary operand, etc.
     /// (TI-4 position rule.)
     statement_position: bool,
+    /// `Some((let_id, let_name))` while lowering the body of an actor-lambda
+    /// that is the value of `let <let_name> = actor |..| { .. }`. The
+    /// capture-strength classifier inside the body walk compares each
+    /// resolved capture's `BindingId` to `let_id` to discriminate the
+    /// self-reference (Weak, §5.9 ratification 2) from every other captured
+    /// binding (Strong). Nested actor-lambdas restore the prior value via
+    /// `mem::replace` so the outer self-binding doesn't leak into an inner
+    /// lambda's classification.
+    current_actor_self: Option<(BindingId, String)>,
 }
 
 impl LowerCtx {
@@ -618,6 +629,53 @@ impl LowerCtx {
                         };
                     }
                 }
+                // Forward-bind for actor-lambda RHS. When the value is
+                // `actor |params| { body }` and the let-pattern is a bare
+                // identifier, the body may reference its own let-name for
+                // recursive self-dispatch (HEW-SPEC §5.9 ratification 2).
+                // Pre-bind the name with the Duplex type computed from the
+                // parameter / return annotations BEFORE lowering the body so
+                // the body's identifier reference resolves to a
+                // `ResolvedRef::Binding(let_id)` rather than `Unresolved`.
+                // The capture-strength classifier in `lower_expr`'s
+                // `Expr::SpawnLambdaActor` arm checks the resolved id
+                // against this let's id to discriminate Weak (self) from
+                // Strong (every other free-variable capture).
+                if ty.is_none() {
+                    if let (
+                        Pattern::Identifier(name),
+                        Some((
+                            Expr::SpawnLambdaActor {
+                                params: lambda_params,
+                                return_type,
+                                ..
+                            },
+                            _,
+                        )),
+                    ) = (&pattern.0, value.as_ref())
+                    {
+                        let duplex_ty =
+                            self.actor_lambda_duplex_ty(lambda_params, return_type.as_ref());
+                        // Pre-bind in the current scope; record the id so
+                        // we can detect a self-reference inside the body
+                        // walk via builder state.
+                        let pre_binding =
+                            self.bind(name.clone(), duplex_ty.clone(), false, pattern.1.clone());
+                        let prior = self
+                            .current_actor_self
+                            .replace((pre_binding.id, name.clone()));
+                        let lowered_value = self.lower_expr(
+                            value.as_ref().expect("value Some checked above"),
+                            IntentKind::Consume,
+                        );
+                        self.current_actor_self = prior;
+                        return HirStmt {
+                            node: self.ids.node(),
+                            kind: HirStmtKind::Let(pre_binding, Some(lowered_value)),
+                            span,
+                        };
+                    }
+                }
                 let value = value
                     .as_ref()
                     .map(|expr| self.lower_expr(expr, IntentKind::Consume));
@@ -964,6 +1022,12 @@ impl LowerCtx {
             Expr::Select { arms, timeout } => {
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
+            Expr::SpawnLambdaActor {
+                params,
+                return_type,
+                body,
+                ..
+            } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body),
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -1098,6 +1162,122 @@ impl LowerCtx {
 
         let result_ty = expected_ty.unwrap_or(ResolvedTy::Unit);
         (HirExprKind::Select(HirSelect { arms: hir_arms }), result_ty)
+    }
+
+    /// Build the `Duplex<Msg, Reply>` `ResolvedTy` for an actor-lambda
+    /// from its parameter list and optional return-type annotation.
+    /// Mirrors `hew-types::check::statements`' forward-bind logic
+    /// (slice 2): zero params → Unit message; one param → that param's
+    /// type; multiple params → tuple of param types. Missing param /
+    /// return annotations resolve to `ResolvedTy::Unit` at the HIR
+    /// layer — the type-checker reports any type-inference failure
+    /// upstream; HIR only needs a placeholder shape so the
+    /// forward-bind succeeds and capture resolution sees the let-name.
+    fn actor_lambda_duplex_ty(
+        &mut self,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+    ) -> ResolvedTy {
+        let param_tys: Vec<ResolvedTy> = params
+            .iter()
+            .map(|p| {
+                p.ty.as_ref()
+                    .map_or(ResolvedTy::Unit, |annotation| self.lower_type(annotation))
+            })
+            .collect();
+        let msg_ty = match param_tys.len() {
+            0 => ResolvedTy::Unit,
+            1 => param_tys.into_iter().next().unwrap(),
+            _ => ResolvedTy::Tuple(param_tys),
+        };
+        let reply_ty = return_type
+            .as_ref()
+            .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
+        ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: vec![msg_ty, reply_ty],
+        }
+    }
+
+    /// Lower an `Expr::SpawnLambdaActor` to an
+    /// `HirExprKind::SpawnLambdaActor` with a resolved capture set.
+    ///
+    /// The lambda body lowers inside a fresh scope so the parameter
+    /// bindings shadow outer names; after the body is built the
+    /// `current_actor_self` field tells us whether the body lives
+    /// under a `let <name> = actor |..| { .. }` forward-bind. The
+    /// capture walker then collects every `BindingRef { resolved:
+    /// Binding(id) }` whose `id` refers to a binding from an outer
+    /// scope (not a parameter introduced by this lambda) and
+    /// classifies the strength: `id == current_actor_self.0` → Weak
+    /// (recursive self-dispatch, §5.9 ratification 2), else → Strong.
+    ///
+    /// The HIR `expr.ty` is the Duplex<Msg, Reply> handle type. The
+    /// MIR producer wires this directly into a
+    /// `Place::LambdaActorHandle` whose drop selects
+    /// `DropKind::LambdaActorRelease`.
+    fn lower_spawn_lambda_actor(
+        &mut self,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+        body: &Spanned<Expr>,
+    ) -> (HirExprKind, ResolvedTy) {
+        let actor_ty = self.actor_lambda_duplex_ty(params, return_type);
+        let reply_ty = match &actor_ty {
+            ResolvedTy::Named { args, .. } if args.len() == 2 => args[1].clone(),
+            _ => ResolvedTy::Unit,
+        };
+        // Lower params + body inside a new scope. Track the parameter
+        // BindingIds so the capture walker can exclude them (params
+        // are intra-lambda bindings, not captures from the enclosing
+        // scope).
+        self.push_scope();
+        let mut hir_params: Vec<HirBinding> = Vec::with_capacity(params.len());
+        let mut param_ids: std::collections::HashSet<BindingId> =
+            std::collections::HashSet::with_capacity(params.len());
+        for param in params {
+            let ty = param
+                .ty
+                .as_ref()
+                .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
+            let binding = self.bind(param.name.clone(), ty, false, 0..0);
+            param_ids.insert(binding.id);
+            hir_params.push(binding);
+        }
+        let lowered_body = self.lower_expr(body, IntentKind::Read);
+        self.pop_scope();
+        let captures = self.collect_lambda_captures(&lowered_body, &param_ids);
+        (
+            HirExprKind::SpawnLambdaActor {
+                params: hir_params,
+                reply_ty,
+                body: Box::new(lowered_body),
+                captures,
+            },
+            actor_ty,
+        )
+    }
+
+    /// Walk a lowered lambda body collecting `BindingRef`s that resolve
+    /// to bindings from the enclosing scope. A reference is a capture
+    /// when its resolved binding id is not in `param_ids` (the lambda's
+    /// own parameters). Each unique binding is classified Weak when
+    /// its id matches `current_actor_self.0` (the let-name pre-bound
+    /// before body lowering) and Strong otherwise.
+    ///
+    /// Duplicate references to the same binding produce a single
+    /// capture entry — codegen needs the runtime to register the
+    /// captured handle once per binding, not once per use site.
+    fn collect_lambda_captures(
+        &self,
+        body: &HirExpr,
+        param_ids: &std::collections::HashSet<BindingId>,
+    ) -> Vec<HirLambdaCapture> {
+        let mut seen: std::collections::HashSet<BindingId> = std::collections::HashSet::new();
+        let mut captures: Vec<HirLambdaCapture> = Vec::new();
+        let self_id = self.current_actor_self.as_ref().map(|(id, _)| *id);
+        collect_captures_walk(body, param_ids, &mut seen, &mut captures, self_id);
+        captures
     }
 
     /// Recognise the sealed-form discriminator for a `select` arm
@@ -1660,6 +1840,167 @@ impl LowerCtx {
             },
             span,
         }
+    }
+}
+
+// ── Lambda-actor capture walker ─────────────────────────────────────────────
+
+/// Recursive walk over a lowered actor-lambda body collecting captures.
+///
+/// A capture is any `HirExprKind::BindingRef { resolved: Binding(id) }`
+/// whose `id` is NOT one of the lambda's own parameter bindings. The
+/// first occurrence of each capture is recorded with a strength
+/// classifier — `Weak` iff the id matches the lambda's let-binding id
+/// passed in `self_id` (the forward-bound recursive-self case, §5.9
+/// ratification 2), `Strong` otherwise. Subsequent references to the
+/// same binding are skipped — codegen wires one runtime capture per
+/// binding, not one per use site.
+///
+/// The walk is exhaustive over `HirExprKind` variants; nested lambdas
+/// (an actor lambda inside another actor lambda's body) are NOT
+/// descended into — their captures belong to the inner lambda's
+/// frame and are reported separately when that lambda's own
+/// `lower_spawn_lambda_actor` call ran. The nested lambda's appearance
+/// in the outer body's capture set, if any, would come from the
+/// outer body referencing a name that the inner lambda also referenced;
+/// but `BindingRef` lives only in the outer body's expression tree, so
+/// this falls out naturally from not descending into the inner body.
+fn collect_captures_walk(
+    expr: &HirExpr,
+    param_ids: &std::collections::HashSet<BindingId>,
+    seen: &mut std::collections::HashSet<BindingId>,
+    captures: &mut Vec<HirLambdaCapture>,
+    self_id: Option<BindingId>,
+) {
+    match &expr.kind {
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } => {
+            // Parameters of the current lambda are intra-frame
+            // bindings, never captures from the enclosing scope.
+            if param_ids.contains(id) {
+                return;
+            }
+            if !seen.insert(*id) {
+                return;
+            }
+            let kind = if Some(*id) == self_id {
+                HirCaptureKind::Weak
+            } else {
+                HirCaptureKind::Strong
+            };
+            captures.push(HirLambdaCapture {
+                binding: *id,
+                name: name.clone(),
+                kind,
+            });
+        }
+        // Empty-body terminals: nothing to walk.
+        //   - BindingRef without a resolved binding (Item / Unresolved):
+        //     does not produce a capture from the enclosing scope.
+        //   - Literal: no sub-expressions.
+        //   - SpawnLambdaActor (nested): its captures belong to its own
+        //     frame and were classified when the inner lambda lowered.
+        //   - Unsupported: nothing to walk.
+        HirExprKind::BindingRef { .. }
+        | HirExprKind::Literal(_)
+        | HirExprKind::SpawnLambdaActor { .. }
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } => {
+            collect_captures_walk(left, param_ids, seen, captures, self_id);
+            collect_captures_walk(right, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_captures_walk(callee, param_ids, seen, captures, self_id);
+            for arg in args {
+                collect_captures_walk(arg, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::Block(block) | HirExprKind::Scope { body: block } => {
+            collect_captures_walk_block(block, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_captures_walk(condition, param_ids, seen, captures, self_id);
+            collect_captures_walk(then_expr, param_ids, seen, captures, self_id);
+            if let Some(else_expr) = else_expr {
+                collect_captures_walk(else_expr, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::StructInit { fields, .. } => {
+            for (_, field) in fields {
+                collect_captures_walk(field, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::AwaitTask { binding_id, .. } => {
+            // The awaited task handle is captured from the enclosing
+            // scope unless it is one of the lambda's own params.
+            if param_ids.contains(binding_id) || !seen.insert(*binding_id) {
+                return;
+            }
+            let kind = if Some(*binding_id) == self_id {
+                HirCaptureKind::Weak
+            } else {
+                HirCaptureKind::Strong
+            };
+            captures.push(HirLambdaCapture {
+                binding: *binding_id,
+                // The await arm doesn't carry the binding's surface
+                // name on its own — reach for the binding name via
+                // the binding_name slot.
+                name: String::new(),
+                kind,
+            });
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    HirSelectArmKind::StreamNext { stream } => {
+                        collect_captures_walk(stream, param_ids, seen, captures, self_id);
+                    }
+                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_captures_walk(actor, param_ids, seen, captures, self_id);
+                        for arg in args {
+                            collect_captures_walk(arg, param_ids, seen, captures, self_id);
+                        }
+                    }
+                    HirSelectArmKind::TaskAwait { task } => {
+                        collect_captures_walk(task, param_ids, seen, captures, self_id);
+                    }
+                    HirSelectArmKind::AfterTimer { duration } => {
+                        collect_captures_walk(duration, param_ids, seen, captures, self_id);
+                    }
+                }
+                collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
+            }
+        }
+    }
+}
+
+fn collect_captures_walk_block(
+    block: &HirBlock,
+    param_ids: &std::collections::HashSet<BindingId>,
+    seen: &mut std::collections::HashSet<BindingId>,
+    captures: &mut Vec<HirLambdaCapture>,
+    self_id: Option<BindingId>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, Some(value)) => {
+                collect_captures_walk(value, param_ids, seen, captures, self_id);
+            }
+            HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
+                collect_captures_walk(expr, param_ids, seen, captures, self_id);
+            }
+            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_captures_walk(tail, param_ids, seen, captures, self_id);
     }
 }
 

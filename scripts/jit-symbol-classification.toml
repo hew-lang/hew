@@ -513,6 +513,7 @@ stable = [
   "hew_task_is_cancelled",
   "hew_task_new",
   "hew_task_scope_cancel",
+  "hew_task_scope_cancel_one",
   "hew_task_scope_complete_task",
   "hew_task_scope_destroy",
   "hew_task_scope_get_task",

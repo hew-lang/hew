@@ -730,6 +730,64 @@ impl Ty {
         }
     }
 
+    /// Construct `RecvError` — error type for `Duplex::recv` / half-recv calls.
+    #[must_use]
+    pub fn recv_error() -> Ty {
+        Ty::Named {
+            name: "RecvError".to_string(),
+            args: vec![],
+        }
+    }
+
+    /// Construct `CloseError` — error type for `Duplex::close` / half-close calls.
+    ///
+    /// Distinct from the process-resource `CloseError` registered by the
+    /// `Closable` trait (`registration.rs`); this variant names the duplex
+    /// close-failure (double-close / already-closed) at the type-checker
+    /// surface.  The two share a name by design; slice 6 (stdlib) will
+    /// unify them under a single `CloseError` enum.
+    #[must_use]
+    pub fn duplex_close_error() -> Ty {
+        Ty::Named {
+            name: "CloseError".to_string(),
+            args: vec![],
+        }
+    }
+
+    /// Construct `SendHalf<S>` — send-direction half of a split `Duplex<S, R>`.
+    ///
+    /// Returned by `Duplex<S, R>::send_half()`; consumes the source handle.
+    #[must_use]
+    pub fn send_half(s: Ty) -> Ty {
+        Self::normalize_named("SendHalf".to_string(), vec![s])
+    }
+
+    /// Construct `RecvHalf<R>` — receive-direction half of a split `Duplex<S, R>`.
+    ///
+    /// Returned by `Duplex<S, R>::recv_half()`; consumes the source handle.
+    #[must_use]
+    pub fn recv_half(r: Ty) -> Ty {
+        Self::normalize_named("RecvHalf".to_string(), vec![r])
+    }
+
+    /// Extract `S` from `SendHalf<S>`, or `None` if not a `SendHalf`.
+    #[must_use]
+    pub fn as_send_half(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "SendHalf" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// Extract `R` from `RecvHalf<R>`, or `None` if not a `RecvHalf`.
+    #[must_use]
+    pub fn as_recv_half(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "RecvHalf" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
     /// Construct `Generator<yields, returns>`.
     #[must_use]
     pub fn generator(yields: Ty, returns: Ty) -> Ty {

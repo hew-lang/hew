@@ -2820,3 +2820,250 @@ mod slice3_invariants {
         assert!(validate_drop_plan(&elab).is_empty());
     }
 }
+
+// ============================================================================
+// Generative property tests for per-Return live-set narrowing.
+//
+// The fixed-shape tests in `slice3_invariants` pin three hand-built shapes
+// (one live handle survives, every handle moved out, three live handles).
+// These proptest cases exercise the narrowing algorithm over randomly-
+// generated `(defined-bindings, moved-out-subset)` inputs so the
+// `dropped(block) == defined(block) - moved_out(block)` invariant is
+// checked across the full state space rather than three fixtures.
+//
+// The proptest dependency is scoped to `cfg(not(target_arch = "wasm32"))`
+// in `Cargo.toml` (matches the pattern in `hew-runtime`). The
+// `cfg_attr(target_arch = "wasm32", allow(unused))` on the module below
+// keeps the wasm build clean — the entire module compiles away on wasm
+// since `proptest` is not available there.
+// ============================================================================
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod slice3_narrowing_proptests {
+    use super::*;
+    use crate::dataflow::BindingState;
+    use hew_hir::SiteId;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
+
+    /// A `Duplex<i64, i64>` `ResolvedTy` payload — the inner type
+    /// detail is irrelevant for narrowing.
+    fn duplex_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::I64],
+        }
+    }
+
+    /// Build a single-block `BasicBlock` with a `Return` terminator.
+    fn single_return_block(block_id: u32) -> BasicBlock {
+        BasicBlock {
+            id: block_id,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        }
+    }
+
+    /// Build the function-wide LIFO drop template for `n` `DuplexHandle`
+    /// bindings, indexed `0..n`. Each drop carries the canonical
+    /// `(DuplexHandle(i), DropKind::DuplexClose)` shape.
+    fn build_lifo(n: u32) -> Vec<ElabDrop> {
+        (0..n)
+            .map(|i| ElabDrop {
+                place: Place::DuplexHandle(i),
+                ty: duplex_ty(),
+                drop_fn: None,
+                kind: DropKind::DuplexClose,
+            })
+            .collect()
+    }
+
+    /// Build the `binding_locals` map: `BindingId(i) -> DuplexHandle(i)`.
+    fn build_binding_locals(n: u32) -> HashMap<BindingId, Place> {
+        (0..n)
+            .map(|i| (BindingId(i), Place::DuplexHandle(i)))
+            .collect()
+    }
+
+    /// Build the `exit_states` map for block 0, marking each binding in
+    /// `moved_out` as `Consumed` and every other binding (up to `n`) as
+    /// `Live`. The narrowing must keep Live + `MaybeConsumed` and drop
+    /// Consumed.
+    fn build_exit_states(
+        n: u32,
+        moved_out: &[u32],
+    ) -> HashMap<u32, BTreeMap<BindingId, BindingState>> {
+        let mut per_binding: BTreeMap<BindingId, BindingState> = BTreeMap::new();
+        for i in 0..n {
+            let binding = BindingId(i);
+            if moved_out.contains(&i) {
+                per_binding.insert(binding, BindingState::Consumed(SiteId(0)));
+            } else {
+                per_binding.insert(binding, BindingState::Live);
+            }
+        }
+        let mut map = HashMap::new();
+        map.insert(0u32, per_binding);
+        map
+    }
+
+    proptest! {
+        /// `dropped(block) == defined(block) - moved_out(block)`.
+        ///
+        /// For every randomly-generated `(N, moved_out_subset)` input:
+        ///   - N is the number of defined DuplexHandle bindings.
+        ///   - moved_out_subset is the indices Consumed before Return.
+        ///   - The narrowed drop list must contain exactly the indices
+        ///     NOT in moved_out_subset, each as a DuplexHandle(i) drop.
+        ///
+        /// Proptest's default 256 cases sweeps shapes from N=0 (empty
+        /// drop list) up to N=8 (all eight handles live or moved
+        /// across every subset combination).
+        #[test]
+        fn dropped_equals_defined_minus_moved_out(
+            n in 0u32..8,
+            moved_out_mask in 0u32..256,
+        ) {
+            let moved_out: Vec<u32> = (0..n)
+                .filter(|i| (moved_out_mask >> i) & 1 == 1)
+                .collect();
+
+            let blocks = vec![single_return_block(0)];
+            let lifo = build_lifo(n);
+            let exit_states = build_exit_states(n, &moved_out);
+            let binding_locals = build_binding_locals(n);
+
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+
+            // Exactly one Return plan for the single block.
+            prop_assert_eq!(plans.len(), 1);
+            let (exit, plan) = &plans[0];
+            let is_return_block_0 = matches!(exit, ExitPath::Return { block: 0 });
+            prop_assert!(is_return_block_0);
+
+            // Build the expected drop list: every index 0..n not in
+            // moved_out, as a DuplexHandle drop. The order matches the
+            // input `lifo` template's iteration order (build_lifo
+            // emits 0..n in forward order; enumerate_exits' filter
+            // preserves that order).
+            let expected: Vec<Place> = (0..n)
+                .filter(|i| !moved_out.contains(i))
+                .map(Place::DuplexHandle)
+                .collect();
+            let actual: Vec<Place> = plan.drops.iter().map(|d| d.place).collect();
+            prop_assert_eq!(actual, expected,
+                "narrowing: defined={}, moved_out={:?}", n, moved_out);
+        }
+
+        /// `MaybeConsumed` at a Return is treated as Live for drop-plan
+        /// purposes (the move-checker rejects the program upstream, but
+        /// the drop list stays informational). Sweep random subsets
+        /// where bindings are MaybeConsumed and assert each appears in
+        /// the drop list alongside the Live bindings.
+        #[test]
+        fn maybe_consumed_appears_in_drop_list(
+            n in 0u32..6,
+            maybe_mask in 0u32..64,
+            consumed_mask in 0u32..64,
+        ) {
+            // Decide per-binding state: Consumed wins over MaybeConsumed
+            // wins over Live so the masks don't overlap meaningfully —
+            // a binding is Consumed if its bit is set in consumed_mask,
+            // else MaybeConsumed if set in maybe_mask, else Live.
+            let mut per_binding: BTreeMap<BindingId, BindingState> = BTreeMap::new();
+            for i in 0..n {
+                let state = if (consumed_mask >> i) & 1 == 1 {
+                    BindingState::Consumed(SiteId(0))
+                } else if (maybe_mask >> i) & 1 == 1 {
+                    BindingState::MaybeConsumed(SiteId(0))
+                } else {
+                    BindingState::Live
+                };
+                per_binding.insert(BindingId(i), state);
+            }
+            let mut exit_states = HashMap::new();
+            exit_states.insert(0u32, per_binding);
+
+            let blocks = vec![single_return_block(0)];
+            let lifo = build_lifo(n);
+            let binding_locals = build_binding_locals(n);
+
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (_, plan) = &plans[0];
+
+            // Expected: every binding NOT Consumed survives in the drop
+            // list (Live and MaybeConsumed both qualify).
+            let dropped: std::collections::HashSet<u32> = plan
+                .drops
+                .iter()
+                .filter_map(|d| match d.place {
+                    Place::DuplexHandle(i) => Some(i),
+                    _ => None,
+                })
+                .collect();
+            for i in 0..n {
+                let is_consumed = (consumed_mask >> i) & 1 == 1;
+                prop_assert_eq!(
+                    dropped.contains(&i),
+                    !is_consumed,
+                    "binding {} state should determine drop-list membership", i
+                );
+            }
+        }
+
+        /// The narrowing is deterministic: running `enumerate_exits`
+        /// twice on the same inputs produces the same drops. (Catches
+        /// any HashMap-iteration-order leakage into the output.)
+        #[test]
+        fn narrowing_is_deterministic(
+            n in 0u32..8,
+            moved_out_mask in 0u32..256,
+        ) {
+            let moved_out: Vec<u32> = (0..n)
+                .filter(|i| (moved_out_mask >> i) & 1 == 1)
+                .collect();
+            let blocks = vec![single_return_block(0)];
+            let lifo = build_lifo(n);
+            let exit_states = build_exit_states(n, &moved_out);
+            let binding_locals = build_binding_locals(n);
+
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+
+            prop_assert_eq!(b1.len(), b2.len());
+            prop_assert_eq!(p1.len(), p2.len());
+            for ((e1, plan1), (e2, plan2)) in p1.iter().zip(p2.iter()) {
+                prop_assert_eq!(e1, e2);
+                prop_assert_eq!(&plan1.drops, &plan2.drops);
+            }
+        }
+
+        /// No binding outside the function's owned set ever appears in
+        /// the narrowed drop list. The narrowing must be a subset
+        /// operation — it never INVENTS a drop.
+        #[test]
+        fn narrowing_never_invents_drops(
+            n in 0u32..8,
+            moved_out_mask in 0u32..256,
+        ) {
+            let moved_out: Vec<u32> = (0..n)
+                .filter(|i| (moved_out_mask >> i) & 1 == 1)
+                .collect();
+            let blocks = vec![single_return_block(0)];
+            let lifo = build_lifo(n);
+            let exit_states = build_exit_states(n, &moved_out);
+            let binding_locals = build_binding_locals(n);
+
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (_, plan) = &plans[0];
+
+            for d in &plan.drops {
+                let Place::DuplexHandle(i) = d.place else {
+                    panic!("non-DuplexHandle drop appeared: {:?}", d.place);
+                };
+                prop_assert!(i < n, "drop for binding {} but only {} defined", i, n);
+            }
+        }
+    }
+}

@@ -172,7 +172,10 @@ fn test_actor_receive_self_uses_actor_guidance() {
 }
 
 #[test]
-fn test_actor_init_terminate_and_method_self_use_actor_guidance() {
+fn test_actor_init_and_method_self_use_actor_guidance() {
+    // The `terminate { }` block surface was retired; the equivalent
+    // `#[on_stop]` fn is exercised by the dedicated lifecycle-hook
+    // fixtures (see `hew-types/tests/actor_lifecycle_hooks.rs`).
     let output = typecheck(
         r"
         actor Counter {
@@ -183,10 +186,6 @@ fn test_actor_init_terminate_and_method_self_use_actor_guidance() {
             }
 
             fn current() -> i32 {
-                self.count
-            }
-
-            terminate {
                 self.count
             }
         }
@@ -201,8 +200,8 @@ fn test_actor_init_terminate_and_method_self_use_actor_guidance() {
         .collect();
     assert_eq!(
         self_errors.len(),
-        3,
-        "expected actor-specific `self` errors in init, method, and terminate: {:?}",
+        2,
+        "expected actor-specific `self` errors in init and method: {:?}",
         output.errors
     );
     for self_error in self_errors {
@@ -225,13 +224,14 @@ fn test_actor_init_terminate_and_method_self_use_actor_guidance() {
 }
 
 #[test]
-fn test_actor_terminate_valid_field_access() {
+fn test_actor_on_stop_hook_valid_field_access() {
     let output = typecheck(
         r"
         actor Worker {
             let id: i32;
 
-            terminate {
+            #[on_stop]
+            fn flush() {
                 println(id);
             }
         }
@@ -241,7 +241,7 @@ fn test_actor_terminate_valid_field_access() {
     );
     assert!(
         output.errors.is_empty(),
-        "terminate block should be able to read bare field names: {:?}",
+        "`#[on_stop]` hook should be able to read bare field names: {:?}",
         output.errors
     );
 }

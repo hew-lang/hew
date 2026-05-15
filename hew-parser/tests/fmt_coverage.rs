@@ -587,16 +587,18 @@ fn fmt_actor_with_mailbox() {
 }
 
 #[test]
-fn fmt_actor_terminate_roundtrip() {
+fn fmt_actor_on_stop_hook_roundtrip() {
     roundtrip(
-        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    terminate {\n        println(f\"[{label}] shutting down\");\n    }\n}\n\nfn main() {\n}\n",
+        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on_stop]\n    fn shutdown() {\n        println(f\"[{label}] shutting down\");\n    }\n}\n\nfn main() {\n}\n",
     );
 }
 
 #[test]
-fn fmt_actor_terminate_and_receive_attributes_roundtrip() {
+fn fmt_actor_on_stop_and_receive_attributes_roundtrip() {
+    // The formatter emits actor body items in canonical order
+    // (receive fns before methods), independent of source order.
     exact_roundtrip(
-        "actor Worker {\n    #[cleanup]\n    terminate {\n        shutdown();\n    }\n\n    #[every(50ms)]\n    receive fn tick() {\n        work();\n    }\n}\n\nfn main() {\n}\n",
+        "actor Worker {\n    #[every(50ms)]\n    receive fn tick() {\n        work();\n    }\n\n    #[on_stop]\n    fn cleanup() {\n        shutdown();\n    }\n}\n\nfn main() {\n}\n",
     );
 }
 

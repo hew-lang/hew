@@ -4,10 +4,10 @@ use std::fmt::Write as _;
 use std::ops::Range;
 
 use crate::ast::{
-    ActorDecl, ActorInit, ActorTerminate, Attribute, AttributeArg, BinaryOp, Block, CallArg,
-    ChildSpec, CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl,
-    FnDecl, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
-    MatchArm, NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
+    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
+    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
+    ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl, MatchArm,
+    NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
     RestartPolicy, SelectArm, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
     TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
     TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
@@ -832,7 +832,6 @@ impl<'a> Formatter<'a> {
         self.write(";\n");
     }
 
-    #[expect(clippy::too_many_lines, reason = "actor formatting has many sections")]
     fn format_actor(&mut self, decl: &ActorDecl, span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
@@ -902,17 +901,6 @@ impl<'a> Formatter<'a> {
                 self.newline();
             }
             self.format_actor_init(init, span_end);
-            has_body_item = true;
-        }
-
-        if let Some(terminate) = &decl.terminate {
-            if self.has_comments() {
-                let pos = self.find_keyword_after("terminate", self.prev_source_pos);
-                self.flush_comments_before(pos);
-            } else if has_body_item {
-                self.newline();
-            }
-            self.format_actor_terminate(terminate, span_end);
             has_body_item = true;
         }
 
@@ -1084,14 +1072,6 @@ impl<'a> Formatter<'a> {
         self.format_params(&init.params);
         self.write(") ");
         self.format_block(&init.body, scope_end);
-        self.newline();
-    }
-
-    fn format_actor_terminate(&mut self, terminate: &ActorTerminate, scope_end: usize) {
-        self.format_attributes(&terminate.attributes);
-        self.write_indent();
-        self.write("terminate ");
-        self.format_block(&terminate.body, scope_end);
         self.newline();
     }
 

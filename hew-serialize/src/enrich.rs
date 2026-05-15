@@ -1212,9 +1212,6 @@ fn normalize_item_types(item: &mut Item, registry: &hew_types::module_registry::
             if let Some(ref mut init) = actor.init {
                 normalize_block_types(&mut init.body, registry);
             }
-            if let Some(ref mut term) = actor.terminate {
-                normalize_block_types(&mut term.body, registry);
-            }
             for recv in &mut actor.receive_fns {
                 for param in &mut recv.params {
                     normalize_type_expr(&mut param.ty.0, registry);
@@ -1620,15 +1617,6 @@ fn enrich_actor_with_diagnostics(
     if let Some(ref mut init) = actor.init {
         enrich_block_with_diagnostics(
             &mut init.body,
-            tco,
-            diagnostics,
-            registry,
-            allow_method_call_rewrite,
-        )?;
-    }
-    if let Some(ref mut term) = actor.terminate {
-        enrich_block_with_diagnostics(
-            &mut term.body,
             tco,
             diagnostics,
             registry,
@@ -5465,7 +5453,6 @@ mod tests {
                         trailing_expr: None,
                     },
                 }),
-                terminate: None,
                 fields: vec![hew_parser::ast::FieldDecl {
                     name: "data".into(),
                     ty: (
@@ -6893,7 +6880,6 @@ mod tests {
                             trailing_expr: None,
                         },
                     }),
-                    terminate: None,
                     fields: vec![],
                     receive_fns: vec![ReceiveFnDecl {
                         is_generator: false,

@@ -4062,6 +4062,42 @@ void Counter_dispatch(void* state, int msg_type, void* data, size_t data_size) {
 }
 ```
 
+#### 9.1.2 Lifecycle Hooks
+
+Actors expose user-defined startup and cleanup logic through **lifecycle hook annotations** on plain `fn` declarations inside the actor body. The hook surface is annotation-based to scale linearly to additional hooks (`@on_pre_restart`, `@on_panic`, …) in later editions without grammar growth.
+
+**Hooks defined in this edition:**
+
+| Annotation     | Signature  | Runs when                                                                                       |
+| -------------- | ---------- | ----------------------------------------------------------------------------------------------- |
+| `#[on_start]`  | `fn name()` | Once, after the actor's fields are initialized and before any message is dispatched.            |
+| `#[on_stop]`   | `fn name()` | Once per actor instance, on normal exit, cancellation by an enclosing `fork{}`, or supervisor `Shutdown`. |
+
+**Signature rules (normative):**
+
+1. A hook is a plain `fn` declaration inside an actor body carrying exactly one of `#[on_start]` or `#[on_stop]`.
+2. A hook takes **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
+3. A hook returns `()`.
+4. A hook is **not** `pure`, **not** generic, and has no `where` clause.
+5. Hook functions are not invocable from message handlers; the runtime is the sole caller.
+6. `#[on_start]` appears **at most once** per actor. `#[on_stop]` MAY appear multiple times; lexical declaration order is the run order.
+
+**Cancellation and resource ordering (normative):**
+
+7. Cancellation by an enclosing `fork{}` scope triggers `#[on_stop]` for each cancelled actor before its task ends. This is the common path under structured concurrency, not an exceptional one.
+8. The runtime sequence at terminal transition is:
+   - (a) actor body exits or is cancelled;
+   - (b) every `#[on_stop]` hook runs in lexical declaration order with field access live;
+   - (c) `@linear` consumed-checks fire (unconsumed linear values surface as diagnostics);
+   - (d) `@resource` field `close()` methods run in reverse declaration order.
+   Hooks therefore run BEFORE `@resource` `close()`, so user logic in a hook can still use resources for goodbye flushes.
+9. A panic in `#[on_start]` aborts actor startup. The supervisor is notified; `#[on_stop]` does NOT run, because the actor never reached the *started* state.
+10. The default `#[on_stop]` timeout budget is 5 seconds; future editions MAY introduce `#[on_stop(timeout = <duration>)]` to override per actor.
+
+**Compilation:** Multiple `#[on_stop]` hooks are concatenated by the codegen into a single C-ABI `_terminate` function pointer; the runtime ABI exposes one hook slot per actor regardless of source-level hook count. `#[on_start]` bodies are appended to the synthesized `_init` function in lexical order, after any `init { ... }` block. Per-hook panic isolation between sibling hooks is reserved for a future edition; in this edition a panic in one `#[on_stop]` hook short-circuits subsequent hooks of the same actor, while `@resource` `close()` (state-drop) is unaffected.
+
+**Migration from v0.4:** The `terminate { ... }` block surface accepted by the v0.4 parser is removed in this edition. Existing cleanup logic should be rewritten as a `#[on_stop] fn <name>() { ... }` declaration; the body and field-access semantics are identical.
+
 ### 9.2 Supervisor state machine
 
 States: `Healthy`, `Restarting`, `Escalating`, `Stopped`

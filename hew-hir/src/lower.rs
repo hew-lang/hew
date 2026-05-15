@@ -1171,13 +1171,28 @@ impl LowerCtx {
 
     /// Build the `Duplex<Msg, Reply>` `ResolvedTy` for an actor-lambda
     /// from its parameter list and optional return-type annotation.
-    /// Mirrors `hew-types::check::statements`' forward-bind logic
-    /// (slice 2): zero params → Unit message; one param → that param's
-    /// type; multiple params → tuple of param types. Missing param /
-    /// return annotations resolve to `ResolvedTy::Unit` at the HIR
-    /// layer — the type-checker reports any type-inference failure
-    /// upstream; HIR only needs a placeholder shape so the
-    /// forward-bind succeeds and capture resolution sees the let-name.
+    /// Mirrors the forward-bind logic in `hew-types::check::statements`:
+    /// zero params → Unit message; one param → that param's type;
+    /// multiple params → tuple of param types. The HIR layer only needs
+    /// a placeholder shape so the forward-bind succeeds and capture
+    /// resolution sees the let-name.
+    ///
+    /// SHIM — `ResolvedTy::Unit` for missing param / return annotations.
+    ///
+    /// - WHY: HIR has no type-inference machinery; the slice-2 type
+    ///   checker uses `TypeVar::fresh()` to allocate inference variables
+    ///   which HIR cannot represent. The forward-bind only needs a
+    ///   syntactic placeholder so the body's recursive self-reference
+    ///   resolves to a `BindingId`; the actual type identity is
+    ///   reconstructed downstream.
+    /// - WHEN OBSOLETE: either HIR gains a placeholder type variant
+    ///   (an explicit `ResolvedTy::Hole` or equivalent) for forward-bind
+    ///   sites, or the post-typecheck pipeline rewrites HIR binding
+    ///   types from the slice-2 unifier's substitution table via a
+    ///   side-table keyed on `BindingId`.
+    /// - REAL SOLUTION: lift the slice-2 unifier's substitution into a
+    ///   `BindingId → Ty` side-table emitted alongside HIR and consumed
+    ///   by MIR lowering, so HIR never has to invent a stand-in.
     fn actor_lambda_duplex_ty(
         &mut self,
         params: &[LambdaParam],

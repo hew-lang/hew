@@ -1,0 +1,21 @@
+//! Eager filter+map+sum: the closure-bench workload using the
+//! long-standing `iter.filter_int / iter.map_int / iter.sum` pipeline.
+//!
+//! Three intermediate Vec allocations: input, after filter, after map.
+
+import std::iter;
+import std::time::datetime;
+
+fn main() {
+    let t0 = datetime.now_nanos();
+
+    let xs: Vec<int> = Vec::new();
+    for i in 1 .. 100001 { xs.push(i); }
+
+    let evens   = iter.filter_int(xs, (x: int) => x % 2 == 0);
+    let mapped  = iter.map_int(evens, (x: int) => x + 5);
+    let r       = iter.sum(mapped);
+
+    let t1 = datetime.now_nanos();
+    println("variant=eager result=" + string_from_int(r) + " elapsed_us=" + string_from_int((t1 - t0) / 1000));
+}

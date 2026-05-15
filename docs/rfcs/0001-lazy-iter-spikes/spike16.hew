@@ -1,0 +1,25 @@
+// Spike 16: compose closures functionally — pure indexable chain.
+fn make_pull(xs: Vec<int>) -> fn(int) -> int { (i: int) => xs.get(i) }
+
+fn lazy_map(src: fn(int) -> int, f: fn(int) -> int) -> fn(int) -> int {
+    (i: int) => f(src(i))
+}
+
+fn drain_filter_sum(src: fn(int) -> int, pred: fn(int) -> bool, n: int) -> int {
+    var total: int = 0;
+    for i in 0 .. n {
+        let v = src(i);
+        if pred(v) { total = total + v; }
+    }
+    total
+}
+
+fn main() {
+    let xs: Vec<int> = Vec::new();
+    for i in 1 .. 11 { xs.push(i); }
+    let src = make_pull(xs);
+    let plus5 = (x: int) => x + 5;
+    let mapped = lazy_map(src, plus5);
+    let even = (x: int) => x % 2 == 0;
+    println("got=" + string_from_int(drain_filter_sum(mapped, even, 10)));
+}

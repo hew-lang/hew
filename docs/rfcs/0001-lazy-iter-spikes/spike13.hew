@@ -1,0 +1,26 @@
+// Spike 13: explicit return inside if branch
+fn make_counter(xs: Vec<int>, hi: int) -> fn(int) -> int {
+    (_: int) => {
+        let cur = xs.get(0);
+        if cur >= hi { return -1; }
+        xs.set(0, cur + 1);
+        cur
+    }
+}
+
+fn drain(it: fn(int) -> int, n: int) -> int {
+    var total: int = 0;
+    for i in 0 .. n {
+        let v = it(i);
+        if v < 0 { return total; }
+        total = total + v;
+    }
+    total
+}
+
+fn main() {
+    let xs: Vec<int> = Vec::new();
+    xs.push(1);
+    let f = make_counter(xs, 6);
+    println("got=" + string_from_int(drain(f, 100)));
+}

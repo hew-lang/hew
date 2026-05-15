@@ -1,0 +1,29 @@
+// Spike 10: stateful counter with dummy int arg
+fn make_counter(lo: int, hi: int) -> fn(int) -> int {
+    let state: Vec<int> = Vec::new();
+    state.push(lo);
+    (_: int) => {
+        let cur = state.get(0);
+        if cur >= hi {
+            -1
+        } else {
+            state.set(0, cur + 1);
+            cur
+        }
+    }
+}
+
+fn drain_sum(it: fn(int) -> int, cap: int) -> int {
+    var total: int = 0;
+    for _ in 0 .. cap {
+        let v = it(0);
+        if v < 0 { return total; }
+        total = total + v;
+    }
+    total
+}
+
+fn main() {
+    let it = make_counter(1, 6);
+    println("sum=" + string_from_int(drain_sum(it, 100))); // 15
+}

@@ -1,0 +1,12 @@
+// Spike 8: closure returning Option<int>, no for loop in main
+fn make_some() -> fn() -> Option<int> {
+    () => Some(42)
+}
+
+fn main() {
+    let f = make_some();
+    match f() {
+        Some(v) => println("got=" + string_from_int(v)),
+        None => println("none"),
+    }
+}

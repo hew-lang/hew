@@ -202,12 +202,10 @@ fn core_pipeline(seed: int) -> Result<int, int> {{
         acc = acc + j;
     }}
 
-    let scoped = scope |s| {{
-        let task = s.launch {{
-            closure(3)
-        }};
-        acc + 1
+    scope {{
+        fork task = closure(3);
     }};
+    let scoped = acc + 1;
 
     let interp = f"seed {{seed}} value {{scoped}}";
     Ok(mut_sum + scoped)
@@ -279,9 +277,7 @@ impl StructSpec {
 impl EnumSpec {
     fn to_source(&self, idx: usize) -> String {
         if self.with_payload {
-            format!(
-                "enum FuzzEnum{idx} {{\n    Empty;\n    One(int);\n    Pair(int, int);\n}}\n"
-            )
+            format!("enum FuzzEnum{idx} {{\n    Empty;\n    One(int);\n    Pair(int, int);\n}}\n")
         } else {
             format!("enum FuzzEnum{idx} {{\n    A;\n    B;\n    C;\n}}\n")
         }
@@ -293,9 +289,7 @@ impl TraitSpec {
         let methods = usize::from(self.methods % 2) + 1;
         let mut out = format!("trait FuzzTrait{idx} {{\n");
         for m in 0..methods {
-            out.push_str(&format!(
-                "    fn method_{m}(self: Self, x: int) -> int;\n"
-            ));
+            out.push_str(&format!("    fn method_{m}(self: Self, x: int) -> int;\n"));
         }
         out.push_str("}\n");
         out

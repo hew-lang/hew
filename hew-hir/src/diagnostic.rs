@@ -71,8 +71,8 @@ pub enum HirDiagnosticKind {
     ResourceGenericUnsupported {
         name: String,
     },
-    /// `await` appeared outside a `fork{}` body or `select` arm. In v0.5,
-    /// `await` is a statement-only form inside `fork{}` bodies. Future
+    /// `await` appeared outside a `scope{}` body or `select` arm. In v0.5,
+    /// `await` is a statement-only form inside `scope{}` bodies. Future
     /// versions additionally permit it inside `select` arm source expressions.
     AwaitOutOfPosition,
     /// `await` was applied to an expression that does not have type
@@ -90,8 +90,8 @@ pub enum HirDiagnosticKind {
     /// use `fork name = call(...)` to create a task handle instead.
     TaskNotNameable,
     /// A `Task<T>` handle (inferred or explicit) was used in a `return`
-    /// expression, causing it to escape the `fork{}` body. Task handles are
-    /// fork-body-scoped; await them inside the body with `await name`.
+    /// expression, causing it to escape the `scope{}` body. Task handles are
+    /// scope-body-scoped; await them inside the body with `await name`.
     TaskCannotEscape,
     /// A `select` arm's source expression is not one of the four sealed
     /// forms (`next(stream)`, `actor.method(args)`, `await task`, or the

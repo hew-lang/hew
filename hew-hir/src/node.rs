@@ -137,15 +137,16 @@ pub enum HirExprKind {
         type_args: Vec<ResolvedTy>,
         fields: Vec<(String, HirExpr)>,
     },
-    /// A `fork { stmts }` block. Every statement-call inside the body is a
+    /// A `scope { stmts }` block. Every statement-call inside the body is a
     /// child-task spawn (TI-1). Named bindings (`fork name = call(...)`)
     /// produce `Ty::Task(call_ret)` typed bindings (TI-2). The block joins
-    /// all anonymous children implicitly at block exit.
-    Fork {
+    /// all anonymous children implicitly at block exit. `scope` is the
+    /// structured-concurrency lifetime boundary; `fork` is the child-start verb.
+    Scope {
         body: HirBlock,
     },
     /// A call expression that is recognised as a child-task spawn because it
-    /// appears as a statement-expression inside a `fork {}` body. The callee
+    /// appears as a statement-expression inside a `scope {}` body. The callee
     /// and args are the same as `HirExprKind::Call`; the distinct kind routes
     /// MIR lowering to the task-spawn ABI rather than a direct synchronous
     /// call.
@@ -159,7 +160,7 @@ pub enum HirExprKind {
         task_ty: ResolvedTy,
     },
     /// `await name` consumes a `Task<T>` binding and produces `T`. Legal
-    /// positions in v0.5: statement-position inside a `fork{}` body. Future
+    /// positions in v0.5: statement-position inside a `scope{}` body. Future
     /// versions extend this to select-arm source expressions (cluster-5).
     ///
     /// `output_ty` is the inner `T` extracted from the binding's

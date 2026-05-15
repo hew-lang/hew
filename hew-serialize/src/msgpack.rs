@@ -668,11 +668,7 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(value, tco, visitor, out);
                 }
             }
-            Expr::Block(block)
-            | Expr::Unsafe(block)
-            | Expr::ScopeLaunch(block)
-            | Expr::ScopeSpawn(block)
-            | Expr::Fork { body: block } => {
+            Expr::Block(block) | Expr::Unsafe(block) => {
                 collect_block(block, tco, visitor, out);
             }
             Expr::If {
@@ -716,7 +712,7 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(arg, tco, visitor, out);
                 }
             }
-            Expr::Scope { body, .. } => collect_block(body, tco, visitor, out),
+            Expr::Scope { body } => collect_block(body, tco, visitor, out),
             Expr::ForkChild { expr, .. } => collect_expr(expr, tco, visitor, out),
             Expr::InterpolatedString(parts) => {
                 for part in parts {
@@ -780,7 +776,6 @@ fn walk_program<V: SideTableVisitor>(
             | Expr::Identifier(_)
             | Expr::Cooperate
             | Expr::This
-            | Expr::ScopeCancel
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}

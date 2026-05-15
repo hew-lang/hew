@@ -1262,9 +1262,6 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
   }
   if (name == "Scope") {
     ast::ExprScope e;
-    const auto *bind = mapGet(*payload, "binding");
-    if (bind && !isNil(*bind))
-      e.binding = getString(*bind);
     e.block = parseBlock(mapReq(*payload, "body"));
     return ast::Expr{std::move(e), {}};
   }
@@ -1423,13 +1420,6 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "ScopeLaunch")
-    return ast::Expr{ast::ExprScopeLaunch{parseBlock(*payload)}, {}};
-  if (name == "ScopeSpawn")
-    return ast::Expr{ast::ExprScopeSpawn{parseBlock(*payload)}, {}};
-  if (name == "ScopeCancel")
-    return ast::Expr{ast::ExprScopeCancel{}, {}};
-
   if (name == "RegexLiteral")
     return ast::Expr{ast::ExprRegexLiteral{getString(*payload)}, {}};
   if (name == "ByteStringLiteral")

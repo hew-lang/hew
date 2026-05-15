@@ -99,10 +99,10 @@ impl Checker {
             return;
         }
         match expr {
-            Expr::Scope { .. } | Expr::Fork { .. } | Expr::Join(_) => {
+            Expr::Scope { .. } | Expr::Join(_) => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
-            Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) | Expr::ForkChild { .. } => {
+            Expr::ForkChild { .. } => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Tasks);
             }
             _ => {}
@@ -920,14 +920,14 @@ impl Checker {
     pub(super) fn synthesize_concurrency(&mut self, expr: &Expr, span: &Span) -> Ty {
         if self.in_pure_function {
             match expr {
-                Expr::Scope { .. } | Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
+                Expr::Scope { .. } => {
                     self.report_error(
                         TypeErrorKind::PurityViolation,
                         span,
                         "cannot use `scope` in a pure function".to_string(),
                     );
                 }
-                Expr::Fork { .. } | Expr::ForkChild { .. } => {
+                Expr::ForkChild { .. } => {
                     self.report_error(
                         TypeErrorKind::PurityViolation,
                         span,
@@ -959,11 +959,11 @@ impl Checker {
             }
         }
         match expr {
-            Expr::Fork { .. } | Expr::ForkChild { .. } => {
+            Expr::ForkChild { .. } => {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    "`fork` is parser-only in this build; type checking lands in a follow-up change"
+                    "`fork name = expr;` is parser-only in this build; type checking lands in a follow-up change"
                         .to_string(),
                 );
                 Ty::Error
@@ -1004,17 +1004,18 @@ impl Checker {
                     args: vec![param_ty],
                 }
             }
-            Expr::Scope { body: block, .. } => self.check_block(block, None),
+            Expr::Scope { body: block } => {
+                // Type-check the block body for diagnostics; the scope itself is Unit
+                // (it is a lifetime boundary, not a value-producing block).
+                self.check_block(block, None);
+                Ty::Unit
+            }
             Expr::Unsafe(block) => {
                 let prev = self.in_unsafe;
                 self.in_unsafe = true;
                 let ty = self.check_block(block, None);
                 self.in_unsafe = prev;
                 ty
-            }
-            Expr::ScopeLaunch(block) | Expr::ScopeSpawn(block) => {
-                let body_ty = self.check_block(block, None);
-                Ty::Task(Box::new(body_ty))
             }
             Expr::Select { arms, timeout } => {
                 let mut result_ty: Option<Ty> = None;
@@ -2756,7 +2757,6 @@ impl Checker {
             | Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
             | Expr::Scope { .. }
-            | Expr::Fork { .. }
             | Expr::ForkChild { .. }
             | Expr::InterpolatedString(_)
             | Expr::Call { .. }
@@ -2776,9 +2776,6 @@ impl Checker {
             | Expr::PostfixTry(_)
             | Expr::Range { .. }
             | Expr::Await(_)
-            | Expr::ScopeLaunch(_)
-            | Expr::ScopeSpawn(_)
-            | Expr::ScopeCancel
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}

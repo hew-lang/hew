@@ -795,12 +795,9 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&val.0, counts);
             }
         }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block)
-        | Expr::Fork { body: block } => count_idents_in_block(block, counts),
-        Expr::Scope { body, .. } => count_idents_in_block(body, counts),
+        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
+            count_idents_in_block(block, counts);
+        }
         Expr::ForkChild { expr, .. } => count_idents_in_expr(&expr.0, counts),
         Expr::If {
             condition,

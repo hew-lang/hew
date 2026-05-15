@@ -471,10 +471,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
         std::holds_alternative<ast::ExprJoin>(expr.kind) ||
         std::holds_alternative<ast::ExprTimeout>(expr.kind) ||
         std::holds_alternative<ast::ExprYield>(expr.kind) ||
-        std::holds_alternative<ast::ExprCooperate>(expr.kind) ||
-        std::holds_alternative<ast::ExprScopeLaunch>(expr.kind) ||
-        std::holds_alternative<ast::ExprScopeSpawn>(expr.kind) ||
-        std::holds_alternative<ast::ExprScopeCancel>(expr.kind))
+        std::holds_alternative<ast::ExprCooperate>(expr.kind))
       return false;
 
     return true;

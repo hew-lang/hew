@@ -366,15 +366,8 @@ fn collect_inlay_hints_from_expr(
         Expr::SpawnLambdaActor { body, .. } => {
             collect_inlay_hints_from_expr(source, &body.0, tc, hints);
         }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block)
-        | Expr::Fork { body: block } => {
+        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
             collect_inlay_hints_from_block(source, block, tc, hints);
-        }
-        Expr::Scope { body, .. } => {
-            collect_inlay_hints_from_block(source, body, tc, hints);
         }
         Expr::ForkChild { expr, .. } => {
             collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
@@ -512,7 +505,6 @@ fn collect_inlay_hints_from_expr(
         | Expr::Identifier(_)
         | Expr::Cooperate
         | Expr::This
-        | Expr::ScopeCancel
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

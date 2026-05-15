@@ -4299,8 +4299,10 @@ impl<'src> Parser<'src> {
             }
 
             // Detect the removed `<-` send operator: lexer now produces two tokens
-            // `<` (at pos) and `-` (at pos+1) adjacently.  Emit E_OPERATOR_REMOVED
-            // and skip both tokens to allow recovery.
+            // `<` (at pos) and `-` (at pos+1) adjacently.  Emit E_OPERATOR_REMOVED,
+            // then skip to the statement boundary (`;` or `}`) so that the caller
+            // does not produce cascading "unexpected token" diagnostics for the
+            // right-hand side tokens.
             if self.peek() == Some(&Token::Less) {
                 let less_end = self.peek_span().end;
                 if self.peek_at(self.pos + 1) == Some(&Token::Minus) {
@@ -4316,10 +4318,27 @@ impl<'src> Parser<'src> {
                             "E_OPERATOR_REMOVED: the `<-` send operator has been removed; \
                              use `handle(msg)` call syntax instead (HEW-SPEC-2026 §4.x)"
                                 .to_string(),
-                            op_span,
+                            op_span.clone(),
                             "replace `target <- msg` with `target(msg)`".to_string(),
                         );
-                        return None;
+                        // Skip tokens through the end of the statement to suppress
+                        // cascading "unexpected token" diagnostics on the RHS.
+                        while !matches!(
+                            self.peek(),
+                            Some(&Token::Semicolon | &Token::RightBrace) | None
+                        ) {
+                            self.advance();
+                        }
+                        // Consume the `;` now so that parse_block treats this as a
+                        // fully consumed expression statement rather than seeing the
+                        // semicolon as unexpected.
+                        if self.peek() == Some(&Token::Semicolon) {
+                            self.advance();
+                        }
+                        // Return a synthetic unit expression so the block parser
+                        // completes the statement without entering the error-recovery path.
+                        lhs = (Expr::Tuple(vec![]), op_span);
+                        break;
                     }
                 }
             }

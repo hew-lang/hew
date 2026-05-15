@@ -952,9 +952,9 @@ impl<'a> Formatter<'a> {
             self.write_indent();
             self.write("state ");
             self.write(&state.name);
-            let has_body =
-                !state.fields.is_empty() || state.entry.is_some() || state.exit.is_some();
-            if has_body {
+            let has_entry_exit = state.entry.is_some() || state.exit.is_some();
+            if has_entry_exit {
+                // Multiline: entry/exit blocks require their own lines.
                 self.write(" {\n");
                 self.indent += 1;
                 for (name, ty) in &state.fields {
@@ -979,6 +979,17 @@ impl<'a> Formatter<'a> {
                 self.indent -= 1;
                 self.write_indent();
                 self.write("}\n");
+            } else if !state.fields.is_empty() {
+                // Compact single-line: `state S { field: Type; }`.
+                self.write(" {");
+                for (name, ty) in &state.fields {
+                    self.write(" ");
+                    self.write(name);
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                    self.write(";");
+                }
+                self.write(" }\n");
             } else {
                 self.write(";\n");
             }

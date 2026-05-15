@@ -810,6 +810,11 @@ impl<'src> Parser<'src> {
             Token::On => Some("on"),
             Token::When => Some("when"),
             Token::Join => Some("join"),
+            // Machine-block keywords that can also appear as external function names
+            // or identifiers in other positions.
+            Token::Entry => Some("entry"),
+            Token::Exit => Some("exit"),
+            Token::Emit => Some("emit"),
             _ => None,
         }
     }

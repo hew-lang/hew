@@ -3398,8 +3398,8 @@ mod rest_for_one_tests {
 mod supervisor_escalation_tests {
     use std::ffi::{c_char, c_void};
     use std::ptr;
-    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Condvar, Mutex};
     use std::time::{Duration, Instant};
 
     use hew_runtime::actor::{hew_actor_send, hew_actor_trap};
@@ -3416,10 +3416,37 @@ mod supervisor_escalation_tests {
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
 
+    /// Generous timeout for dispatch-wait synchronization. If the runtime
+    /// does not dispatch within this window, something is genuinely broken —
+    /// the previous `for _ in 0..20 { sleep 10ms }` pattern (200ms total)
+    /// raced on slow CI runners and caused spurious failures.
+    const DISPATCH_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     static NESTED_INIT_CALLS: AtomicUsize = AtomicUsize::new(0);
-    static NESTED_DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
-    static SIBLING_DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
+    /// (count, condvar) — dispatch callback increments the count under the
+    /// mutex and notifies; tests wait with a bounded `wait_timeout` for the
+    /// count to advance past a captured baseline. Replaces the racing
+    /// `AtomicI32` + sleep-poll pattern.
+    static NESTED_DISPATCH_COUNT: (Mutex<i32>, Condvar) = (Mutex::new(0), Condvar::new());
+    static SIBLING_DISPATCH_COUNT: (Mutex<i32>, Condvar) = (Mutex::new(0), Condvar::new());
+
+    /// Block until `signal.0` reaches at least `target`, or `DISPATCH_WAIT_TIMEOUT`
+    /// elapses. Returns the observed count on success, or the last-seen count
+    /// on timeout (so callers can assert and report the actual value).
+    fn wait_for_count(signal: &(Mutex<i32>, Condvar), target: i32) -> i32 {
+        let deadline = Instant::now() + DISPATCH_WAIT_TIMEOUT;
+        let mut count = signal.0.lock().unwrap();
+        while *count < target {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (guard, _) = signal.1.wait_timeout(count, remaining).unwrap();
+            count = guard;
+        }
+        *count
+    }
 
     unsafe extern "C" fn noop_dispatch(
         _state: *mut c_void,
@@ -3435,7 +3462,9 @@ mod supervisor_escalation_tests {
         _data: *mut c_void,
         _data_size: usize,
     ) {
-        NESTED_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+        let mut count = NESTED_DISPATCH_COUNT.0.lock().unwrap();
+        *count += 1;
+        NESTED_DISPATCH_COUNT.1.notify_all();
     }
 
     unsafe extern "C" fn sibling_dispatch(
@@ -3444,7 +3473,9 @@ mod supervisor_escalation_tests {
         _data: *mut c_void,
         _data_size: usize,
     ) {
-        SIBLING_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+        let mut count = SIBLING_DISPATCH_COUNT.0.lock().unwrap();
+        *count += 1;
+        SIBLING_DISPATCH_COUNT.1.notify_all();
     }
 
     unsafe extern "C" fn nested_child_supervisor_init() -> *mut HewSupervisor {
@@ -3658,8 +3689,8 @@ mod supervisor_escalation_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ensure_scheduler();
         NESTED_INIT_CALLS.store(0, Ordering::SeqCst);
-        NESTED_DISPATCH_COUNT.store(0, Ordering::SeqCst);
-        SIBLING_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+        *NESTED_DISPATCH_COUNT.0.lock().unwrap() = 0;
+        *SIBLING_DISPATCH_COUNT.0.lock().unwrap() = 0;
 
         unsafe {
             let parent = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 10, 60);
@@ -3706,17 +3737,13 @@ mod supervisor_escalation_tests {
                 "nested child actor should be spawned"
             );
 
-            let before = NESTED_DISPATCH_COUNT.load(Ordering::SeqCst);
+            let before = *NESTED_DISPATCH_COUNT.0.lock().unwrap();
             hew_actor_send(first_actor, 1, ptr::null_mut(), 0);
-            for _ in 0..20 {
-                if NESTED_DISPATCH_COUNT.load(Ordering::SeqCst) > before {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            let observed = wait_for_count(&NESTED_DISPATCH_COUNT, before + 1);
             assert!(
-                NESTED_DISPATCH_COUNT.load(Ordering::SeqCst) > before,
-                "nested actor should process messages before crashing",
+                observed > before,
+                "nested actor should process messages before crashing \
+                 (before={before}, observed={observed} after {DISPATCH_WAIT_TIMEOUT:?})",
             );
 
             let first_actor_id = (*first_actor).id;
@@ -3775,17 +3802,13 @@ mod supervisor_escalation_tests {
                 "replacement child supervisor should recreate its actor subtree",
             );
 
-            let before = NESTED_DISPATCH_COUNT.load(Ordering::SeqCst);
+            let before = *NESTED_DISPATCH_COUNT.0.lock().unwrap();
             hew_actor_send(recovered_actor, 1, ptr::null_mut(), 0);
-            for _ in 0..20 {
-                if NESTED_DISPATCH_COUNT.load(Ordering::SeqCst) > before {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            let observed = wait_for_count(&NESTED_DISPATCH_COUNT, before + 1);
             assert!(
-                NESTED_DISPATCH_COUNT.load(Ordering::SeqCst) > before,
-                "replacement nested actor should continue processing messages",
+                observed > before,
+                "replacement nested actor should continue processing messages \
+                 (before={before}, observed={observed} after {DISPATCH_WAIT_TIMEOUT:?})",
             );
 
             let sibling = hew_supervisor_get_child(parent, 0);
@@ -3793,17 +3816,13 @@ mod supervisor_escalation_tests {
                 !sibling.is_null(),
                 "healthy sibling actor should remain available after child supervisor recovery",
             );
-            let before = SIBLING_DISPATCH_COUNT.load(Ordering::SeqCst);
+            let before = *SIBLING_DISPATCH_COUNT.0.lock().unwrap();
             hew_actor_send(sibling, 1, ptr::null_mut(), 0);
-            for _ in 0..20 {
-                if SIBLING_DISPATCH_COUNT.load(Ordering::SeqCst) > before {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            let observed = wait_for_count(&SIBLING_DISPATCH_COUNT, before + 1);
             assert!(
-                SIBLING_DISPATCH_COUNT.load(Ordering::SeqCst) > before,
-                "healthy sibling actor should still process messages after nested recovery",
+                observed > before,
+                "healthy sibling actor should still process messages after nested recovery \
+                 (before={before}, observed={observed} after {DISPATCH_WAIT_TIMEOUT:?})",
             );
 
             hew_supervisor_stop(parent);

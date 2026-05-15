@@ -59,6 +59,8 @@ pub struct HirMachineState {
     pub has_exit: bool,
     /// Field names written by the `entry` block (used for effect-parity checking).
     pub entry_writes: Vec<String>,
+    /// Field names written by the `exit` block (used for effect-parity checking).
+    pub exit_writes: Vec<String>,
     pub span: Span,
 }
 
@@ -78,6 +80,11 @@ pub struct HirMachineTransition {
     /// True when `source_state == target_state` (self-transition). In a
     /// Moore machine, self-transitions do not re-run entry/exit.
     pub is_self_transition: bool,
+    /// True when the transition carries `@reenter`.  Only meaningful for self-
+    /// transitions; HIR rejects `@reenter` on non-self-transitions.  When true,
+    /// the Lane B codegen must fire `source.exit` and `target.entry` even though
+    /// the state identity does not change.
+    pub reenter: bool,
     /// Field names written by the transition body (used for effect-parity checking).
     pub body_writes: Vec<String>,
     /// Event names emitted directly from the transition body (used for emit-cycle checking).

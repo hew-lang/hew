@@ -293,11 +293,16 @@ impl LowerCtx {
                 })
                 .collect();
 
-            // Shallow-scan the entry block for field-assignment targets.
+            // Shallow-scan the entry and exit blocks for field-assignment targets.
             // Lane A does not fully lower block bodies; this is enough for
             // effect-parity checking.
             let entry_writes = state
                 .entry
+                .as_ref()
+                .map(collect_assigned_field_names)
+                .unwrap_or_default();
+            let exit_writes = state
+                .exit
                 .as_ref()
                 .map(collect_assigned_field_names)
                 .unwrap_or_default();
@@ -308,6 +313,7 @@ impl LowerCtx {
                 has_entry: state.entry.is_some(),
                 has_exit: state.exit.is_some(),
                 entry_writes,
+                exit_writes,
                 span: span.clone(),
             });
         }
@@ -351,6 +357,7 @@ impl LowerCtx {
                     target_state: tr.target_state.clone(),
                     has_guard: tr.guard.is_some(),
                     is_self_transition,
+                    reenter: tr.reenter,
                     body_writes,
                     body_emits,
                     span: tr.body.1.clone(),
@@ -393,35 +400,108 @@ impl LowerCtx {
             }
         }
 
-        // 2. Effect-parity: a transition body that writes a field also written
-        //    by the target state's `entry` block is an ordering conflict.
+        // 2. Self-transition @reenter rule: a non-empty self-loop body without
+        //    @reenter is a compile error. Empty body OR @reenter are both OK.
+        //    "Empty" means the body resolves to `Expr::Identifier(target_state)`
+        //    (the no-body semicolon shorthand) or an `Expr::Block` with no stmts
+        //    and no trailing expression.
+        for tr in decl.transitions.iter().zip(hir_transitions.iter()) {
+            let (ast_tr, hir_tr) = tr;
+            if !hir_tr.is_self_transition || hir_tr.reenter {
+                continue;
+            }
+            let body_is_empty = is_empty_self_body(&ast_tr.body.0, &hir_tr.target_state);
+            if !body_is_empty {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MachineSelfTransitionNeedsReenter {
+                        machine_name: decl.name.clone(),
+                        state_name: hir_tr.source_state.clone(),
+                        event_name: hir_tr.event_name.clone(),
+                    },
+                    hir_tr.span.clone(),
+                    format!(
+                        "self-transition `on {event}` in state `{state}` has a non-empty body \
+                         but is not annotated `@reenter`; annotate with `@reenter` to opt in to \
+                         Mealy re-entry semantics, or remove the body",
+                        event = hir_tr.event_name,
+                        state = hir_tr.source_state,
+                    ),
+                ));
+            }
+        }
+
+        // 3. Effect-parity: a transition body that writes a field also written
+        //    by the *target* state's `entry` block or the *source* state's `exit`
+        //    block creates ambiguous initialization/teardown order.
         for tr in &hir_transitions {
             if tr.body_writes.is_empty() {
                 continue;
             }
+            // Check target entry conflict.
             if let Some(target) = hir_states.iter().find(|s| s.name == tr.target_state) {
                 for field in &tr.body_writes {
                     if target.entry_writes.contains(field) {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::MachineEffectParityViolation {
-                                machine_name: decl.name.clone(),
-                                state_name: tr.target_state.clone(),
-                                field_name: field.clone(),
-                                transition_event: tr.event_name.clone(),
-                            },
-                            tr.span.clone(),
-                            format!(
-                                "transition `on {}` and state `{}` entry block both write field \
-                                 `{}`; remove the write from one site",
-                                tr.event_name, tr.target_state, field
-                            ),
-                        ));
+                        self.diagnostics.push(
+                            HirDiagnostic::new(
+                                HirDiagnosticKind::MachineEffectParityViolation {
+                                    machine_name: decl.name.clone(),
+                                    state_name: tr.target_state.clone(),
+                                    field_name: field.clone(),
+                                    transition_event: tr.event_name.clone(),
+                                    is_entry_conflict: true,
+                                },
+                                tr.span.clone(),
+                                format!(
+                                    "transition `on {}` body and state `{}` entry block both \
+                                     write field `{}`; remove the write from one site",
+                                    tr.event_name, tr.target_state, field
+                                ),
+                            )
+                            .with_secondary_spans(vec![(
+                                target.span.clone(),
+                                format!(
+                                    "state `{}` entry block writes `{}`",
+                                    tr.target_state, field
+                                ),
+                            )]),
+                        );
+                    }
+                }
+            }
+            // Check source exit conflict.
+            if let Some(source) = hir_states.iter().find(|s| s.name == tr.source_state) {
+                for field in &tr.body_writes {
+                    if source.exit_writes.contains(field) {
+                        self.diagnostics.push(
+                            HirDiagnostic::new(
+                                HirDiagnosticKind::MachineEffectParityViolation {
+                                    machine_name: decl.name.clone(),
+                                    state_name: tr.source_state.clone(),
+                                    field_name: field.clone(),
+                                    transition_event: tr.event_name.clone(),
+                                    is_entry_conflict: false,
+                                },
+                                tr.span.clone(),
+                                format!(
+                                    "transition `on {}` body and state `{}` exit block both \
+                                     write field `{}`; remove the write from one site",
+                                    tr.event_name, tr.source_state, field
+                                ),
+                            )
+                            .with_secondary_spans(vec![(
+                                source.span.clone(),
+                                format!(
+                                    "state `{}` exit block writes `{}`",
+                                    tr.source_state, field
+                                ),
+                            )]),
+                        );
                     }
                 }
             }
         }
 
-        // 3. Emit-cycle: `on E` transition that directly emits `E` would
+        // 4. Emit-cycle: `on E` transition that directly emits `E` would
         //    immediately re-trigger its own handler.
         for tr in &hir_transitions {
             if tr.body_emits.contains(&tr.event_name) {
@@ -441,12 +521,14 @@ impl LowerCtx {
         }
 
         // Fail-closed: if any diagnostic was pushed for this machine, abort.
-        // (Effect-parity and emit-cycle diagnostics are not return-None by
-        // themselves but we do abort to avoid a partially-valid machine in HIR.)
+        // (Effect-parity, self-transition, and emit-cycle diagnostics are not
+        // return-None by themselves but we abort to avoid a partially-valid
+        // machine in HIR.)
         let has_machine_errors = self.diagnostics.iter().any(|d| {
             matches!(
                 &d.kind,
-                HirDiagnosticKind::MachineEffectParityViolation { machine_name, .. }
+                HirDiagnosticKind::MachineSelfTransitionNeedsReenter { machine_name, .. }
+                | HirDiagnosticKind::MachineEffectParityViolation { machine_name, .. }
                 | HirDiagnosticKind::MachineEmitCycle { machine_name, .. }
                 if machine_name == &decl.name
             )
@@ -1578,6 +1660,22 @@ impl LowerCtx {
 }
 
 // ── Machine static-check helpers ────────────────────────────────────────────
+
+/// Determine whether a self-transition body is "empty" for the `@reenter` rule.
+///
+/// A body is considered empty when:
+/// - It is `Expr::Identifier(target_state)` — the no-body semicolon shorthand
+///   that the parser synthesises for `on E: S -> S;`.
+/// - It is `Expr::Block` with no statements and no trailing expression.
+///
+/// Any other form (statements, expressions) is non-empty and requires `@reenter`.
+fn is_empty_self_body(body: &Expr, target_state: &str) -> bool {
+    match body {
+        Expr::Identifier(name) => name == target_state,
+        Expr::Block(block) => block.stmts.is_empty() && block.trailing_expr.is_none(),
+        _ => false,
+    }
+}
 
 /// Shallow-scan a `Block` for field names appearing as the left-hand side of
 /// an assignment statement (`self.field = ...`). Used for effect-parity checking

@@ -145,6 +145,61 @@ fn positional_after_named_arg_is_skipped() {
     }
 }
 
+/// The `<-` send operator was removed in v0.5. Because the lexer no longer
+/// emits a `LeftArrow` token, the character sequence is tokenised as `<`
+/// followed by `-`. The parser detects adjacent `<` + `-` spans and emits
+/// `E_OPERATOR_REMOVED` instead of silently accepting a less-than comparison.
+#[test]
+fn left_arrow_operator_is_rejected() {
+    let source = "fn main() {\n    let w = 1;\n    w <- 42;\n}\n";
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected `<-` to be rejected with E_OPERATOR_REMOVED, got clean parse"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_OPERATOR_REMOVED")),
+        "expected E_OPERATOR_REMOVED in error messages, got: {:?}",
+        result.errors
+    );
+}
+
+/// The legacy `spawn (params) => body` lambda-actor syntax was removed in v0.5.
+/// The parser now emits `E_LEGACY_SPAWN_LAMBDA_SYNTAX` with a fixit pointing
+/// at `actor |params| { body }`.
+#[test]
+fn legacy_spawn_lambda_syntax_is_rejected() {
+    let source = "fn main() {\n    let w = spawn (x: int) => { println(x); };\n    w.send(1);\n}\n";
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "expected legacy spawn-lambda syntax to be rejected, got clean parse"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_LEGACY_SPAWN_LAMBDA_SYNTAX")),
+        "expected E_LEGACY_SPAWN_LAMBDA_SYNTAX in error messages, got: {:?}",
+        result.errors
+    );
+}
+
+/// Accept side: `actor |params| { body }` is the new lambda-actor syntax.
+#[test]
+fn actor_lambda_syntax_parses_cleanly() {
+    let source = "fn main() {\n    let w = actor |x: int| {\n        println(x);\n    };\n    w.send(42);\n}\n";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "expected `actor |params| {{ body }}` to parse cleanly, got: {:?}",
+        result.errors
+    );
+}
+
 // `ask` is not lexer-recognised in edition 2026 — it is reserved for a future
 // syntactic marker (HEW-FUTURE) but carries no keyword status today. `ask foo()`
 // is therefore treated as two adjacent expressions: the identifier `ask` followed

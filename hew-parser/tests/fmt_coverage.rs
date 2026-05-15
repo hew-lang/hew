@@ -1491,8 +1491,8 @@ fn fmt_cooperate_roundtrip() {
 }
 
 #[test]
-fn fmt_spawn_lambda_actor_roundtrip() {
-    exact_roundtrip("fn main() {\n    let worker = spawn (x: int) => x + 1;\n}\n");
+fn fmt_lambda_actor_roundtrip() {
+    exact_roundtrip("fn main() {\n    let worker = actor |x: int| {\n        x + 1\n    };\n}\n");
 }
 
 #[test]
@@ -1501,8 +1501,10 @@ fn fmt_move_lambda_roundtrip() {
 }
 
 #[test]
-fn fmt_spawn_move_lambda_actor_roundtrip() {
-    exact_roundtrip("fn main() {\n    let worker = spawn move (x: int) => x + 1;\n}\n");
+fn fmt_move_lambda_actor_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let worker = actor move |x: int| {\n        x + 1\n    };\n}\n",
+    );
 }
 
 #[test]
@@ -1529,9 +1531,16 @@ fn fmt_timeout_roundtrip() {
     exact_roundtrip("fn main() {\n    let value = await task | after 5s;\n}\n");
 }
 
+/// The `<-` operator was removed in v0.5.  Verify the parser rejects it
+/// rather than producing a silent no-op.  Pairs with the accept path in
+/// `parser_error_recovery.rs` (`left_arrow_send_operator_is_rejected`).
 #[test]
-fn fmt_send_roundtrip() {
-    exact_roundtrip("fn main() {\n    worker <- 42;\n}\n");
+fn fmt_send_operator_removed_rejects() {
+    let result = hew_parser::parse("fn main() {\n    worker <- 42;\n}\n");
+    assert!(
+        !result.errors.is_empty(),
+        "expected `<-` to be rejected (E_OPERATOR_REMOVED), got clean parse"
+    );
 }
 
 #[test]

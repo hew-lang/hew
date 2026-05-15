@@ -1203,11 +1203,12 @@ fn rc_rejected_at_actor_send_boundary() {
 
 #[test]
 fn lambda_actor_capture_must_be_send() {
+    // `actor move |params| { body }` captures are checked for Send; Rc<int> is not Send.
     let output = typecheck_inline(
         r"
         fn main() {
             let rc: Rc<int> = Rc::new(1);
-            let worker = spawn move (x: int) => {
+            let worker = actor move |x: int| {
                 println(rc.strong_count());
                 println(x);
             };
@@ -1220,17 +1221,18 @@ fn lambda_actor_capture_must_be_send() {
             .errors
             .iter()
             .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "spawned lambda actor must reject non-Send captures, got: {:#?}",
+        "actor lambda must reject non-Send captures, got: {:#?}",
         output.errors
     );
 }
 
 #[test]
 fn lambda_actor_send_method_requires_send_payload() {
+    // `.send()` on an actor lambda handle must reject non-Send payloads.
     let output = typecheck_inline(
         r"
         fn main() {
-            let worker = spawn (msg: Rc<int>) => {
+            let worker = actor |msg: Rc<int>| {
                 println(msg.strong_count());
             };
             let rc: Rc<int> = Rc::new(1);
@@ -1273,44 +1275,68 @@ fn actor_ref_send_method_requires_send_payload() {
     );
 }
 
+/// The `<-` send operator was removed in v0.5.  Both the lexer token and the
+/// parser infix rule are gone; any source using `<-` now fails to parse.
+/// This is the `E_OPERATOR_REMOVED` reject path (§3.3 of the migration guide).
 #[test]
-fn lambda_actor_send_operator_requires_send_payload() {
-    let output = typecheck_inline(
+fn left_arrow_send_operator_is_rejected() {
+    let result = hew_parser::parse(
         r"
         fn main() {
-            let worker = spawn (msg: Rc<int>) => {
-                println(msg.strong_count());
-            };
-            let rc: Rc<int> = Rc::new(1);
-            worker <- rc;
-        }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "`<-` must reject non-Send payloads, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn lambda_actor_send_operator_allows_send_payload() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let worker = spawn (msg: int) => {
-                println(msg);
-            };
+            let worker = actor |msg: int| { println(msg); };
             worker <- 1;
         }
         ",
     );
     assert!(
+        !result.errors.is_empty(),
+        "`<-` must be rejected by the parser (E_OPERATOR_REMOVED), got clean parse"
+    );
+}
+
+/// The legacy `spawn (...) => body` syntax was removed in v0.5.
+/// The parser now emits `E_LEGACY_SPAWN_LAMBDA_SYNTAX`.  Accept path uses the
+/// new `actor |...| { ... }` form.
+#[test]
+fn legacy_spawn_lambda_syntax_is_rejected() {
+    let result = hew_parser::parse(
+        r"
+        fn main() {
+            let worker = spawn (msg: int) => { println(msg); };
+        }
+        ",
+    );
+    assert!(
+        !result.errors.is_empty(),
+        "`spawn (...) => ...` must be rejected by the parser (E_LEGACY_SPAWN_LAMBDA_SYNTAX)"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_LEGACY_SPAWN_LAMBDA_SYNTAX")),
+        "expected E_LEGACY_SPAWN_LAMBDA_SYNTAX in error messages, got: {:#?}",
+        result.errors
+    );
+}
+
+/// Accept path for the new `actor |...| { ... }` syntax.
+/// Replaces the old `lambda_actor_send_operator_allows_send_payload` test.
+#[test]
+fn actor_lambda_new_syntax_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let worker = actor |msg: int| {
+                println(msg);
+            };
+            worker.send(1);
+        }
+        ",
+    );
+    assert!(
         output.errors.is_empty(),
-        "`<-` with Send payload should typecheck cleanly, got: {:#?}",
+        "`actor |...| {{ ... }}` with Send payload should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }

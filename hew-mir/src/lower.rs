@@ -10,9 +10,9 @@ use hew_types::ResolvedTy;
 use crate::dataflow;
 use crate::model::{
     BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator,
-    ThirFunction,
+    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, LambdaCapture,
+    MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy,
+    Terminator, ThirFunction,
 };
 
 /// Run Checked MIR's legality passes over a function's statement
@@ -1248,6 +1248,25 @@ fn elaborate(
         // (coroutine, Terminator::Yield/Send). Synthetic test
         // inputs in `hew-mir/tests/` populate it directly to
         // exercise the weak-ref invariant.
+        //
+        // WHEN-OBSOLETE: when HIR gains a SpawnLambdaActor expression
+        // kind (slice driving the .send_half() / .recv_half() seam),
+        // this side-table is populated by walking the lambda body's
+        // capture list:
+        //   - For each captured binding whose name matches the
+        //     lambda's own let-binding name (the forward-bind case
+        //     pre-bound by hew-types::check::statements at slice 2's
+        //     `forward-bind actor-lambda let name before body
+        //     synthesis` path), emit LambdaCapture { actor_handle:
+        //     LambdaActorHandle(spawn_local), captured, name,
+        //     capture_kind: CaptureKind::Weak }.
+        //   - For every other captured binding, emit a Strong capture
+        //     on the same actor_handle.
+        // The structural fail-closed checker `validate_lambda_captures`
+        // below already rejects the malformed shapes the future HIR
+        // walker could produce (Weak on non-LambdaActorHandle, multiple
+        // Weak captures on the same handle); the walker only needs to
+        // emit captures, not re-check them.
         lambda_captures: Vec::new(),
     }
 }
@@ -1290,14 +1309,45 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
         }
         check_duplex_split_state(*block, &plan.drops, &mut findings);
     }
-    // Lambda-actor capture invariants. A Weak capture must attach to a
-    // LambdaActorHandle (the self-binding weak-ref discipline only
-    // makes sense for the actor's own handle — §5.9 ratification 2).
-    // A Strong capture may attach to any Place. The weak-ref discipline
-    // exists to break the body-keeps-self-alive cycle; misattributing
-    // a Weak capture to a non-actor handle would silently relax the
-    // refcount discipline on a non-actor resource. Fail-closed.
-    for capture in &elab.lambda_captures {
+    validate_lambda_captures(&elab.lambda_captures, &mut findings);
+    findings
+}
+
+/// Lambda-actor capture invariants. The capture side-table encodes the
+/// runtime's self-binding weak-ref discipline (§5.9 ratification 2):
+/// the recursive forward-bind case
+///
+/// ```hew
+/// let fib = actor |n| { ... fib(n - 1) ... };
+/// ```
+///
+/// captures the lambda's own let-binding name as a `Weak` reference so
+/// the body does NOT keep the actor alive past external refcount zero.
+///
+/// Two structural invariants:
+///
+/// 1. A `Weak` capture must attach to a `LambdaActorHandle`. Attaching
+///    a `Weak` capture to any other `Place` (a `DuplexHandle`, a plain
+///    `Local`, etc.) would silently relax the refcount discipline on a
+///    non-actor resource.
+/// 2. At most ONE `Weak` capture per `LambdaActorHandle`. The self-
+///    binding-name discipline is a single-name discipline — every
+///    lambda has exactly one let-binding name, so a second `Weak`
+///    capture on the same actor handle is a lowering bug.
+///
+/// (a) is the existing "Weak must attach to `LambdaActorHandle`" check.
+/// (b) is the new "exactly one Weak per `LambdaActorHandle`" check. The
+/// non-recursive lambda case (`let f = actor |n| { n + 1 }`) has zero
+/// `Weak` captures and is silently accepted — the discipline only
+/// applies when the body references its own binding name.
+///
+/// LESSONS: boundary-fail-closed, raii-null-after-move (the weak-ref
+/// is the actor's null-after-move equivalent for the self-binding
+/// reference).
+fn validate_lambda_captures(captures: &[LambdaCapture], findings: &mut Vec<MirCheck>) {
+    use std::collections::BTreeMap;
+
+    for capture in captures {
         if matches!(capture.capture_kind, crate::model::CaptureKind::Weak)
             && !matches!(capture.actor_handle, Place::LambdaActorHandle(_))
         {
@@ -1312,7 +1362,38 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
             });
         }
     }
-    findings
+
+    // Tally Weak captures per LambdaActorHandle. The self-binding-name
+    // discipline is a single-name discipline — every lambda has
+    // exactly one let-binding name, so multiple Weak captures on the
+    // same actor handle indicate a lowering bug.
+    let mut weak_per_actor: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
+    for capture in captures {
+        if !matches!(capture.capture_kind, crate::model::CaptureKind::Weak) {
+            continue;
+        }
+        let Place::LambdaActorHandle(n) = capture.actor_handle else {
+            continue; // already rejected above
+        };
+        weak_per_actor
+            .entry(n)
+            .or_default()
+            .push(capture.name.as_str());
+    }
+    for (handle_id, names) in weak_per_actor {
+        if names.len() > 1 {
+            findings.push(MirCheck::DropPlanUndetermined {
+                block: 0,
+                reason: format!(
+                    "LambdaActorHandle({handle_id}) has {} weak captures ({}); \
+                     the self-binding-name weak-ref discipline is exactly one \
+                     per actor (§5.9 ratification 2)",
+                    names.len(),
+                    names.join(", "),
+                ),
+            });
+        }
+    }
 }
 
 /// Parent-local id for a Duplex-family Place. `DuplexHandle(N)`,
@@ -1784,7 +1865,7 @@ fn enumerate_exits(
 #[cfg(test)]
 mod slice3_invariants {
     use super::*;
-    use crate::model::{CaptureKind, Direction, LambdaCapture};
+    use crate::model::{CaptureKind, Direction};
 
     /// A `Duplex<i64, i64>` `ResolvedTy` used as a stand-in payload
     /// for synthetic `ElabDrop` entries. The body of these tests
@@ -2338,6 +2419,107 @@ mod slice3_invariants {
                 captured: BindingId(2),
                 name: "memo".to_string(),
                 capture_kind: CaptureKind::Strong,
+            },
+        ];
+        let elab = make_elab_with_captures(captures);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn non_recursive_lambda_has_zero_weak_captures() {
+        // The non-recursive lambda case: `let f = actor |n| { n + 1 }`.
+        // The body does not reference its own binding name, so the
+        // capture set contains zero Weak entries. The plan validates;
+        // any Strong captures (closed-over outer bindings) coexist
+        // freely.
+        let captures = vec![LambdaCapture {
+            actor_handle: Place::LambdaActorHandle(0),
+            captured: BindingId(1),
+            name: "outer".to_string(),
+            capture_kind: CaptureKind::Strong,
+        }];
+        let elab = make_elab_with_captures(captures);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn recursive_lambda_has_exactly_one_weak_capture() {
+        // The canonical forward-bind recursive shape:
+        //   let fib = actor |n| { ... fib(n - 1) ... };
+        // The capture-set discovery (slice 4) must emit EXACTLY ONE
+        // Weak capture (the `fib` self-reference) plus zero-or-more
+        // Strong captures for outer bindings. Pin the "exactly one"
+        // half of the discipline as a structural invariant on the
+        // synthetic capture list.
+        let captures = vec![LambdaCapture {
+            actor_handle: Place::LambdaActorHandle(0),
+            captured: BindingId(7),
+            name: "fib".to_string(),
+            capture_kind: CaptureKind::Weak,
+        }];
+        let elab = make_elab_with_captures(captures.clone());
+        let weak_count = captures
+            .iter()
+            .filter(|c| matches!(c.capture_kind, CaptureKind::Weak))
+            .count();
+        assert_eq!(
+            weak_count, 1,
+            "recursive lambda must have exactly one Weak capture (the self-binding-name)"
+        );
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn multiple_weak_captures_on_same_actor_handle_is_rejected() {
+        // Two Weak captures on the same LambdaActorHandle would mean
+        // the lambda has two self-binding-names — structurally
+        // impossible (a let-binding has exactly one name). This is a
+        // lowering bug; fail closed.
+        let captures = vec![
+            LambdaCapture {
+                actor_handle: Place::LambdaActorHandle(0),
+                captured: BindingId(1),
+                name: "fib".to_string(),
+                capture_kind: CaptureKind::Weak,
+            },
+            LambdaCapture {
+                actor_handle: Place::LambdaActorHandle(0),
+                captured: BindingId(2),
+                name: "fib_shadow".to_string(),
+                capture_kind: CaptureKind::Weak,
+            },
+        ];
+        let elab = make_elab_with_captures(captures);
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1, "expected one finding");
+        let MirCheck::DropPlanUndetermined { reason, .. } = &findings[0] else {
+            panic!("expected DropPlanUndetermined, got {:?}", findings[0]);
+        };
+        assert!(
+            reason.contains("LambdaActorHandle(0)")
+                && reason.contains("weak captures")
+                && reason.contains("fib"),
+            "diagnostic must name the actor handle, count, and capture names: {reason}"
+        );
+    }
+
+    #[test]
+    fn multiple_weak_captures_on_distinct_actor_handles_are_independent() {
+        // Two distinct lambda-actors, each with their own Weak self-
+        // capture. Validation must accept — the "exactly one" rule
+        // is per-LambdaActorHandle.
+        let captures = vec![
+            LambdaCapture {
+                actor_handle: Place::LambdaActorHandle(0),
+                captured: BindingId(1),
+                name: "fib".to_string(),
+                capture_kind: CaptureKind::Weak,
+            },
+            LambdaCapture {
+                actor_handle: Place::LambdaActorHandle(1),
+                captured: BindingId(2),
+                name: "fact".to_string(),
+                capture_kind: CaptureKind::Weak,
             },
         ];
         let elab = make_elab_with_captures(captures);

@@ -87,12 +87,15 @@ if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/lambda_arrow_operator
 fi
 grep -q 'E_OPERATOR_REMOVED' "${reject_output}"
 
-# Reject: .send() method on lambda actor handle (E_LAMBDA_NO_SEND_METHOD).
-if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/lambda_method_send.hew" >"${reject_output}" 2>&1; then
-  echo "expected lambda-method-send fixture to fail" >&2
+# Accept: .send() on a lambda-actor handle is now allowed (allowed-secondary surface).
+# Lambda-actor handles are Duplex<Msg, Reply> underneath; `.send()` routes to
+# hew_duplex_send, the same symbol as call-syntax.  The old reject/lambda_method_send.hew
+# file is kept for reference but now passes hew check.
+if ! "${HEW}" check "${ROOT}/tests/v05-vertical-slice/accept/lambda_method_send.hew" >"${reject_output}" 2>&1; then
+  echo "expected lambda-method-send fixture to pass; got:" >&2
+  cat "${reject_output}" >&2
   exit 1
 fi
-grep -q 'E_LAMBDA_NO_SEND_METHOD' "${reject_output}"
 
 # Reject: ask-shaped actor body return type mismatch (E_LAMBDA_RETURN_TYPE_MISMATCH).
 if "${HEW}" check "${ROOT}/tests/v05-vertical-slice/reject/lambda_return_mismatch.hew" >"${reject_output}" 2>&1; then

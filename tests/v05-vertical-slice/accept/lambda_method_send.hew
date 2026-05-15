@@ -1,0 +1,10 @@
+// Accept fixture: .send() on a lambda-actor handle is an allowed-secondary surface.
+// Lambda-actor handles are `Duplex<Msg, Reply>` underneath; `.send(msg)` routes
+// to the same runtime symbol (`hew_duplex_send`) as the canonical call-syntax
+// `handle(msg)`.  Both surfaces coexist per Q30=(a).
+fn main() {
+    let printer = actor |x: int| {
+        println(x);
+    };
+    printer.send(42);
+}

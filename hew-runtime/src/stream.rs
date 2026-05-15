@@ -38,7 +38,7 @@
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CStr};
 use std::fs;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Read};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -48,8 +48,8 @@ use std::sync::{mpsc, Arc, Mutex};
 // Defining them in hew-cabi avoids pulling the full runtime into stdlib packages.
 
 pub use hew_cabi::sink::{
-    into_sink_ptr, into_write_sink_ptr, set_last_error, set_last_error_with_errno, take_last_error,
-    HewSink,
+    into_channel_sink_ptr, into_sink_ptr, into_write_sink_ptr, set_last_error,
+    set_last_error_with_errno, take_last_error, HewSink,
 };
 
 // hew_stream_last_error is defined in hew-cabi::sink (with #[no_mangle])
@@ -78,8 +78,20 @@ type Item = Vec<u8>;
 // ── Backing traits ────────────────────────────────────────────────────────────
 
 trait StreamBacking: Send + std::fmt::Debug {
-    /// Return the next item, or `None` on EOF.
+    /// Return the next item, or `None` on EOF. Blocks until an item is available.
     fn next(&mut self) -> Option<Item>;
+    /// Non-blocking item poll. Returns `Some(item)` if one is immediately
+    /// available, or `None` if the stream is empty or closed. The default
+    /// falls back to `next()` (blocking); override for genuine non-blocking
+    /// behaviour.
+    fn try_next(&mut self) -> Option<Item> {
+        // Deliberately blocking default — callers that need non-blocking
+        // semantics must be created with a backing that overrides this method
+        // (e.g. ChannelStream). Other backings (file, TCP) do not support
+        // non-blocking reads, so returning None would be misleading; falling
+        // back to blocking is safer until a poll-based abstraction is added.
+        self.next()
+    }
     /// Discard remaining items and signal done to the producer.
     fn close(&mut self);
     /// Check if the stream is exhausted without consuming an item.
@@ -181,14 +193,13 @@ struct ChannelStream {
     rx: mpsc::Receiver<Item>,
 }
 
-#[derive(Debug)]
-struct ChannelSink {
-    tx: mpsc::SyncSender<Item>,
-}
-
 impl StreamBacking for ChannelStream {
     fn next(&mut self) -> Option<Item> {
         self.rx.recv().ok()
+    }
+
+    fn try_next(&mut self) -> Option<Item> {
+        self.rx.try_recv().ok()
     }
 
     fn close(&mut self) {
@@ -205,24 +216,13 @@ impl StreamBacking for ChannelStream {
     }
 }
 
-impl Write for ChannelSink {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.tx.send(data.to_vec()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "failed to send to channel sink",
-            )
-        })?;
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 impl StreamBacking for VecStream {
     fn next(&mut self) -> Option<Item> {
+        self.items.pop_front()
+    }
+
+    fn try_next(&mut self) -> Option<Item> {
+        // VecStream is in-memory and never blocks; try_next is identical to next.
         self.items.pop_front()
     }
 
@@ -726,7 +726,8 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
     let (tx, rx) = mpsc::sync_channel::<Item>(cap);
 
     let stream_ptr = into_stream_ptr(ChannelStream { rx });
-    let sink_ptr = into_write_sink_ptr(ChannelSink { tx });
+    // Use into_channel_sink_ptr so the sink supports try_write_item (non-blocking).
+    let sink_ptr = into_channel_sink_ptr(tx);
 
     Box::into_raw(Box::new(HewStreamPair {
         sink: sink_ptr,
@@ -1840,6 +1841,258 @@ pub unsafe extern "C" fn hew_sink_write_bytes(sink: *mut HewSink, data: *mut Hew
             hew_sink_write(sink, bytes.as_ptr().cast::<c_void>(), bytes.len());
         }
     }
+}
+
+// ── Non-blocking stream read / sink write ─────────────────────────────────────
+
+/// Non-blocking variant of [`hew_stream_next`].
+///
+/// Returns a malloc-allocated, NUL-terminated byte buffer if an item is
+/// immediately available, or **null** if the stream is empty or at EOF.
+///
+/// Unlike `hew_stream_next`, this function never blocks: if no item is ready
+/// it returns null immediately. For channel-backed streams this means the
+/// channel queue was empty at the time of the call; for other stream types the
+/// call falls back to blocking behaviour (see [`StreamBacking::try_next`]).
+///
+/// The caller must `free()` the returned pointer.
+///
+/// # Safety
+///
+/// ## Pointer validity
+/// `stream` must be a non-null pointer obtained from one of the
+/// `hew_stream_*` constructor functions and must not have been freed.
+///
+/// ## Aliasing
+/// No other thread may concurrently read from `stream` while this call is
+/// executing. Read operations on a single `HewStream` are not thread-safe.
+///
+/// ## Lifetime
+/// The returned buffer is valid until the caller frees it via `libc::free`.
+/// It must not be held past the point where `stream` is closed or freed.
+///
+/// ## Null return
+/// A null return indicates "no item available now" — it is not an error.
+/// The stream may still yield items on a future call.
+///
+/// ## Caller responsibility
+/// The caller must free the returned buffer with `free()` exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_try_next(stream: *mut HewStream) -> *mut c_void {
+    cabi_guard!(stream.is_null(), ptr::null_mut());
+    // SAFETY:
+    //   Provenance: `stream` came from a `hew_stream_*` constructor; non-null by guard above.
+    //   Type tag: cast to `&mut HewStream` matches the declared type emitted by the constructor.
+    //   Lifetime owner: caller retains the allocation; this fn does not free.
+    //   Aliasing/concurrency: caller contract bans concurrent reads; the &mut is exclusive for
+    //                          the duration of try_next; backing's internal sync covers the queue.
+    //   Bounds: not a slice access — direct enum-variant dispatch on the inner.
+    //   Failure mode: violations of provenance/aliasing are UAF / data race; documented at fn level.
+    let s = unsafe { &mut *stream };
+    match s.inner.try_next() {
+        Some(item) => {
+            let len = item.len();
+            // SAFETY:
+            //   Provenance: libc::malloc returns a fresh page or NULL.
+            //   Type tag: returned as `*mut c_void`, immediately cast to `*mut u8` for byte ops.
+            //   Lifetime owner: caller frees via free(); we hand it off.
+            //   Aliasing: fresh allocation; no aliases yet.
+            //   Bounds: requested `len + 1` bytes (item + NUL terminator).
+            //   Failure mode: NULL on OOM — checked immediately below.
+            let buf = unsafe { libc::malloc(len + 1) };
+            if buf.is_null() {
+                return ptr::null_mut();
+            }
+            if len > 0 {
+                // SAFETY:
+                //   Provenance: src=item.as_ptr() valid for `len` bytes from owned Vec<u8>; dst=buf valid for len+1.
+                //   Type tag: both are byte buffers (u8).
+                //   Lifetime owner: item drops at end-of-arm; buf hand-off to caller. No overlap with src lifetime.
+                //   Aliasing: copy_nonoverlapping requires non-overlapping; buf is fresh-malloc'd, item is owned.
+                //   Bounds: copying exactly `len` bytes; both buffers ≥ len.
+                //   Failure mode: violations would be UB; preconditions all checked.
+                unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
+            }
+            // SAFETY:
+            //   Provenance: buf is malloc'd, valid for len+1 bytes.
+            //   Type tag: writing single byte (u8) NUL.
+            //   Lifetime owner: still ours until return.
+            //   Aliasing: no other reference to buf yet.
+            //   Bounds: writing at offset `len`, buf is len+1, in-range.
+            //   Failure mode: NUL terminator absence would break C-string callers; this write guarantees it.
+            unsafe { *buf.cast::<u8>().add(len) = 0 };
+            buf.cast::<c_void>()
+        }
+        None => ptr::null_mut(),
+    }
+}
+
+/// Non-blocking variant of [`hew_stream_next_bytes`].
+///
+/// Returns a `*mut HewVec` if an item is immediately available, or **null**
+/// if the stream is empty or at EOF without blocking. The caller owns the
+/// returned `HewVec` and must free it.
+///
+/// # Safety
+///
+/// ## Pointer validity
+/// `stream` must be a non-null pointer obtained from one of the
+/// `hew_stream_*` constructor functions and must not have been freed.
+///
+/// ## Aliasing
+/// No other thread may concurrently read from `stream` during this call.
+///
+/// ## Lifetime
+/// The returned `HewVec` is caller-owned and must be freed exactly once.
+///
+/// ## Null return
+/// Null indicates "no item ready" — not a permanent EOF. The stream may
+/// yield items on a future call.
+///
+/// ## Caller responsibility
+/// Free the returned `HewVec` with the appropriate hew-runtime free function.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_try_next_bytes(stream: *mut HewStream) -> *mut HewVec {
+    if stream.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY:
+    //   Provenance: `stream` came from a `hew_stream_*` constructor; non-null by guard above.
+    //   Type tag: cast to `&mut HewStream` matches the declared type.
+    //   Lifetime owner: caller retains the allocation.
+    //   Aliasing/concurrency: caller contract bans concurrent reads; &mut is exclusive for the call.
+    //   Bounds: not a slice access — direct method dispatch.
+    //   Failure mode: violations are UAF / data race; documented at fn level.
+    let s = unsafe { &mut *stream };
+    match s.inner.try_next() {
+        None => std::ptr::null_mut(),
+        Some(item) => {
+            // SAFETY:
+            //   Provenance: `item` is an owned `Vec<u8>` returned from try_next; alive for this arm.
+            //   Type tag: u8 byte slice → HewVec (the canonical bytes carrier).
+            //   Lifetime owner: u8_to_hwvec allocates a fresh HewVec; caller will free it.
+            //   Aliasing: item is moved into the call; no concurrent reader.
+            //   Bounds: u8_to_hwvec copies all bytes; no out-of-range access.
+            //   Failure mode: OOM in u8_to_hwvec returns NULL HewVec; caller-visible.
+            unsafe { hew_cabi::vec::u8_to_hwvec(&item) }
+        }
+    }
+}
+
+/// Non-blocking variant of [`hew_sink_write_string`].
+///
+/// Writes a null-terminated C string to the sink if the backing buffer has
+/// capacity. Returns `0` (`SendError::Ok`) on success or `2`
+/// (`SendError::Full`) if the buffer is at capacity and the write would have
+/// blocked. For non-channel sinks the backing falls back to a blocking write
+/// and always returns `0`.
+///
+/// Returns `1` (`SendError::Closed`) if `sink` or `data` is null.
+///
+/// # Safety
+///
+/// ## Pointer validity
+/// `sink` must be a non-null pointer obtained from a `hew_stream_*` or
+/// `hew_sink_*` constructor and must not have been freed.
+/// `data` must be a non-null pointer to a valid NUL-terminated C string.
+///
+/// ## Aliasing
+/// No other thread may concurrently write to `sink` during this call.
+///
+/// ## Lifetime
+/// `data` must remain valid for the duration of this call; the runtime
+/// copies the bytes before returning.
+///
+/// ## Return value
+/// `0` = item accepted; `1` = null argument (closed); `2` = channel full.
+///
+/// ## Caller responsibility
+/// The caller retains ownership of `data`; the runtime copies the bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_try_write_string(sink: *mut HewSink, data: *const c_char) -> i32 {
+    // SendError::Closed = 1
+    if sink.is_null() || data.is_null() {
+        return 1;
+    }
+    // SAFETY:
+    //   Provenance: `data` is a NUL-terminated C string per caller contract; non-null by guard.
+    //   Type tag: c_char → CStr → &[u8]; the CStr scan validates NUL-termination.
+    //   Lifetime owner: caller retains `data`; we only borrow for this call (no take/free).
+    //   Aliasing/concurrency: read-only borrow; safe under caller's "no concurrent modification" contract.
+    //   Bounds: CStr::from_ptr walks until NUL; caller-promised termination keeps it bounded.
+    //   Failure mode: violation (missing NUL or invalid ptr) is UB — documented at fn level.
+    let s = unsafe { CStr::from_ptr(data) };
+    let bytes = s.to_bytes();
+    // SAFETY:
+    //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
+    //   Type tag: cast to `*mut HewSink` matches declared type.
+    //   Lifetime owner: caller retains; we do not free.
+    //   Aliasing/concurrency: caller contract bans concurrent writes; backing's try_write is internally synchronised.
+    //   Bounds: not a slice access — method dispatch with the bytes slice we just borrowed.
+    //   Failure mode: violations are UAF / data race; documented at fn level. Non-channel sinks fall back to blocking write per `SinkOps::try_write_item` default.
+    let accepted = unsafe { (*sink).try_write_item(bytes) };
+    if accepted {
+        0
+    } else {
+        2
+    } // 0 = Ok, 2 = Full
+}
+
+/// Non-blocking variant of [`hew_sink_write_bytes`].
+///
+/// Writes a `bytes` value to the sink if the backing buffer has capacity.
+/// Returns `0` (`SendError::Ok`) on success or `2` (`SendError::Full`) if
+/// the buffer is at capacity. For non-channel sinks the backing falls back
+/// to a blocking write and always returns `0`.
+///
+/// Returns `1` (`SendError::Closed`) if `sink` or `data` is null.
+///
+/// # Safety
+///
+/// ## Pointer validity
+/// `sink` must be a non-null pointer obtained from a `hew_stream_*` or
+/// `hew_sink_*` constructor and must not have been freed.
+/// `data` must be a non-null `HewVec` pointer.
+///
+/// ## Aliasing
+/// No other thread may concurrently write to `sink` during this call.
+///
+/// ## Lifetime
+/// `data` must remain valid for the duration of this call; the runtime
+/// copies the bytes before returning.
+///
+/// ## Return value
+/// `0` = item accepted; `1` = null argument (closed); `2` = channel full.
+///
+/// ## Caller responsibility
+/// The caller retains ownership of `data`; the runtime copies the bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_try_write_bytes(sink: *mut HewSink, data: *mut HewVec) -> i32 {
+    // SendError::Closed = 1
+    if sink.is_null() || data.is_null() {
+        return 1;
+    }
+    // SAFETY:
+    //   Provenance: `data` is a `*mut HewVec` from a `hew_*` constructor; non-null by guard.
+    //   Type tag: HewVec layout known; hwvec_to_u8 reads the canonical len/ptr fields.
+    //   Lifetime owner: caller retains `data`; hwvec_to_u8 returns a borrowed view (slice).
+    //   Aliasing/concurrency: read-only borrow of `data`'s buffer; safe under caller's no-concurrent-modify contract.
+    //   Bounds: hwvec_to_u8 honours the HewVec's len field; no out-of-range read.
+    //   Failure mode: violation of provenance is UAF; documented at fn level.
+    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    // SAFETY:
+    //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
+    //   Type tag: cast to `*mut HewSink` matches declared type.
+    //   Lifetime owner: caller retains; we do not free.
+    //   Aliasing/concurrency: caller contract bans concurrent writes; backing's try_write is internally synchronised.
+    //   Bounds: method dispatch with the bytes slice borrowed above.
+    //   Failure mode: violations are UAF / data race. Non-channel sinks fall back to blocking write.
+    let accepted = unsafe { (*sink).try_write_item(&bytes) };
+    if accepted {
+        0
+    } else {
+        2
+    } // 0 = Ok, 2 = Full
 }
 
 #[cfg(test)]

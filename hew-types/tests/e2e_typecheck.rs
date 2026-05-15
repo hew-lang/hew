@@ -288,7 +288,7 @@ fn method_call_rewrites_record_builtin_runtime_dispatch() {
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<String>) {
-    let _ = s.next();
+    let _ = s.recv();
 }
 ",
     );
@@ -705,13 +705,13 @@ fn test_directory(dir: &Path, label: &str) {
 fn stream_dot_sink_annotation_typechecks() {
     // A function whose parameter is explicitly spelled `stream.Sink<String>`.
     // Proves: the qualified spelling resolves to the canonical Sink<String>
-    // type and its write/close methods are available.
+    // type and its send/close methods are available.
     let output = typecheck_inline(
         r"
         import std::stream;
 
         fn flush_and_close(s: stream.Sink<String>, msg: String) {
-            s.write(msg);
+            s.send(msg);
             s.close();
         }
         ",
@@ -1474,10 +1474,17 @@ fn lambda_actor_recursive_self_call_typechecks() {
     );
 }
 
-/// `E_LAMBDA_NO_SEND_METHOD`: calling `.send()` on a lambda actor handle is rejected.
-/// Use call-syntax `handle(msg)` instead.
+/// Lambda actor handles are `Duplex<Msg, Reply>` under the hood.  Now that
+/// `Duplex::send()` is a wired method, calling `.send()` on a lambda actor
+/// handle routes through the duplex-method dispatcher and typechecks cleanly
+/// (the payload satisfies the Send bound; `int` is Copy + Send).
+///
+/// Call-syntax (`worker(1)`) remains the idiomatic surface, but `.send()`
+/// is no longer an error: both surfaces resolve to the same runtime symbol
+/// and the type system cannot distinguish a lambda-actor Duplex from a
+/// raw-duplex Duplex at the method-call site.
 #[test]
-fn lambda_actor_dot_send_rejected_with_e_lambda_no_send_method() {
+fn lambda_actor_dot_send_now_accepted_via_duplex_method() {
     let output = typecheck_inline(
         r"
         fn main() {
@@ -1489,11 +1496,8 @@ fn lambda_actor_dot_send_rejected_with_e_lambda_no_send_method() {
         ",
     );
     assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::UndefinedMethod
-                && e.message.contains("E_LAMBDA_NO_SEND_METHOD")
-        ),
-        "`.send()` on a lambda actor handle must emit E_LAMBDA_NO_SEND_METHOD, got: {:#?}",
+        output.errors.is_empty(),
+        "`.send()` on a lambda actor handle should typecheck via Duplex::send; got: {:#?}",
         output.errors
     );
 }

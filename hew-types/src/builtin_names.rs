@@ -198,24 +198,26 @@ builtin_named_types! {
         canonical: "Stream",
         qualified: "stream.Stream",
         methods: [
-            "next" => {
+            // Channel-family naming: recv/close mirror Duplex and RecvHalf.
+            // Iterator-style aliases (.next, .lines, .collect) are removed from
+            // the fundamental surface; they land via trait impls in stdlib work.
+            "recv" => {
                 signature: ReturnOptionT,
                 runtime: BuiltinMethodRuntime::ElementOverload {
                     string_symbol: "hew_stream_next",
                     bytes_symbol: "hew_stream_next_bytes",
                 }
             },
-            "collect" => {
-                signature: ReturnString,
-                runtime: BuiltinMethodRuntime::Fixed("hew_stream_collect_string")
+            "try_recv" => {
+                signature: ReturnOptionT,
+                runtime: BuiltinMethodRuntime::ElementOverload {
+                    string_symbol: "hew_stream_try_next",
+                    bytes_symbol: "hew_stream_try_next_bytes",
+                }
             },
             "close" => {
                 signature: ReturnUnit,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_close")
-            },
-            "lines" => {
-                signature: ReturnContainerOfString,
-                runtime: BuiltinMethodRuntime::Fixed("hew_stream_lines")
             },
             "chunks" => {
                 signature: CountToSelf,
@@ -241,16 +243,22 @@ builtin_named_types! {
         canonical: "Sink",
         qualified: "stream.Sink",
         methods: [
-            "write" => {
+            // Channel-family naming: send/close mirror Duplex and SendHalf.
+            // .write and .flush are removed from the fundamental surface; they
+            // may re-surface via an I/O-sink trait in stdlib work.
+            "send" => {
                 signature: ValueToUnit,
                 runtime: BuiltinMethodRuntime::ElementOverload {
                     string_symbol: "hew_sink_write_string",
                     bytes_symbol: "hew_sink_write_bytes",
                 }
             },
-            "flush" => {
-                signature: ReturnUnit,
-                runtime: BuiltinMethodRuntime::Fixed("hew_sink_flush")
+            "try_send" => {
+                signature: ValueToUnit,
+                runtime: BuiltinMethodRuntime::ElementOverload {
+                    string_symbol: "hew_sink_try_write_string",
+                    bytes_symbol: "hew_sink_try_write_bytes",
+                }
             },
             "close" => {
                 signature: ReturnUnit,
@@ -263,11 +271,10 @@ builtin_named_types! {
     // S = send direction (msg type), R = receive direction (reply type).
     // @resource: dropping the last handle closes both directions.
     // Send iff S: Send + R: Send (checked in traits.rs implements_marker).
-    // Call-syntax only: `handle(msg)` → `Result<(), SendError>` (tell) or
-    // `Result<R, AskError>` (ask).  `.send()` is rejected with E_LAMBDA_NO_SEND_METHOD.
-    //
-    // Methods are empty for slice 2; runtime dispatch methods land in slice 4.
-    // WHEN-OBSOLETE: slice 4 adds send_half / recv_half / close methods here.
+    // Call-syntax `handle(msg)` is canonical for lambda-actor handles; `.send()` is
+    // accepted as an allowed-secondary surface because lambda-actor handles are
+    // `Duplex<Msg, Reply>` underneath — both surfaces route to the same runtime symbol
+    // (`hew_duplex_send`).  The type system cannot distinguish them at the call site.
     Duplex {
         consts: (DUPLEX, QUALIFIED_DUPLEX),
         methods_const: DUPLEX_METHODS,

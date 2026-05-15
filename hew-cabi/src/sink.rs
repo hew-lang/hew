@@ -95,6 +95,13 @@ pub extern "C" fn hew_stream_last_errno() -> i32 {
 
 trait SinkOps: Send {
     fn write_item(&mut self, data: &[u8]);
+    /// Non-blocking write attempt. Returns `true` if the item was accepted,
+    /// `false` if the backing buffer is full. The default delegates to
+    /// `write_item` (always blocks, always returns `true`).
+    fn try_write_item(&mut self, data: &[u8]) -> bool {
+        self.write_item(data);
+        true
+    }
     fn flush(&mut self);
     fn close(&mut self);
 }
@@ -138,6 +145,20 @@ impl HewSink {
             return;
         };
         inner.write_item(data);
+    }
+
+    /// Attempt to write one item without blocking.
+    ///
+    /// Returns `true` if the item was accepted; `false` if the backing buffer
+    /// was full and the write would have blocked. For non-channel sinks the
+    /// default behaviour is to block (delegating to `write_item`) and return
+    /// `true` — callers that need genuine non-blocking semantics should create
+    /// the sink with [`into_channel_sink_ptr`].
+    pub fn try_write_item(&mut self, data: &[u8]) -> bool {
+        let Some(inner) = self.inner.as_mut() else {
+            return true; // closed sink: item silently discarded, not "full"
+        };
+        inner.try_write_item(data)
     }
 
     /// Flush any buffered writes (file sinks).
@@ -212,6 +233,63 @@ pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink
             flush: flush_via_write::<_>,
             close: close_via_write::<_>,
         })),
+    }))
+}
+
+// ── Channel-backed sink ───────────────────────────────────────────────────────
+
+/// Channel sink: wraps an `mpsc::SyncSender` and provides genuine non-blocking
+/// `try_write_item` semantics (returns `false` when the queue is at capacity).
+struct ChannelSinkBacking {
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+}
+
+// SAFETY: mpsc::SyncSender<Vec<u8>> is Send.
+unsafe impl Send for ChannelSinkBacking {}
+
+impl SinkOps for ChannelSinkBacking {
+    /// Blocking send. Waits until space is available in the bounded channel.
+    fn write_item(&mut self, data: &[u8]) {
+        // Errors mean the receiver is gone; treat as a silent discard so that
+        // pipeline tear-down does not propagate spurious errors.
+        let _ = self.tx.send(data.to_vec());
+    }
+
+    /// Non-blocking send. Returns `false` when the channel queue is full.
+    fn try_write_item(&mut self, data: &[u8]) -> bool {
+        use std::sync::mpsc::TrySendError;
+        match self.tx.try_send(data.to_vec()) {
+            // Disconnected: receiver is gone; item silently discarded.
+            // Report success so callers don't mistake a closed channel for a full one.
+            Ok(()) | Err(TrySendError::Disconnected(_)) => true,
+            Err(TrySendError::Full(_)) => false,
+        }
+    }
+
+    fn flush(&mut self) {
+        // mpsc channels are not buffered on the send side; flush is a no-op.
+    }
+
+    fn close(&mut self) {
+        // Dropping the SyncSender signals EOF to the receiver; nothing explicit needed.
+    }
+}
+
+/// Create a heap-allocated [`HewSink`] backed by a bounded `mpsc` channel sender.
+///
+/// Unlike [`into_write_sink_ptr`], the returned sink supports genuine non-blocking
+/// writes via [`HewSink::try_write_item`]: the call returns `false` immediately if
+/// the channel queue is at capacity rather than blocking until space is available.
+///
+/// # Ownership
+///
+/// The caller transfers ownership of `tx`. The sink owns the sender until it is
+/// closed or dropped, at which point the sender is released and the paired receiver
+/// observes EOF.
+#[must_use]
+pub fn into_channel_sink_ptr(tx: std::sync::mpsc::SyncSender<Vec<u8>>) -> *mut HewSink {
+    Box::into_raw(Box::new(HewSink {
+        inner: Some(Box::new(ChannelSinkBacking { tx })),
     }))
 }
 

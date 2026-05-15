@@ -125,6 +125,11 @@ struct LowerCtx {
     /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
     type_classes: crate::value_class::TypeClassTable,
     diagnostics: Vec<HirDiagnostic>,
+    /// Depth counter for nested `fork{}` bodies. When > 0, statement-expression
+    /// calls are inferred as child-task spawns (TI-1); outside any fork body
+    /// all calls are synchronous (TI-3). Using a depth counter rather than a
+    /// bool supports nested `fork{}` blocks correctly.
+    fork_depth: u32,
 }
 
 impl LowerCtx {
@@ -318,7 +323,22 @@ impl LowerCtx {
                 let binding = self.bind(name.clone(), binding_ty, true, span.clone());
                 HirStmtKind::Let(binding, value)
             }
-            Stmt::Expression(expr) => HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read)),
+            Stmt::Expression(expr) => {
+                // Inside a fork{} body, statement-expression calls are child-task
+                // spawns (TI-1). Outside fork{} bodies all calls are synchronous
+                // (TI-3). The TI-1 rewrite only applies when the expression is a
+                // direct call — nested calls inside sub-expressions remain sync.
+                if self.fork_depth > 0 {
+                    if let Expr::Call { .. } = &expr.0 {
+                        let spawned = self.lower_spawned_call(expr);
+                        HirStmtKind::Expr(spawned)
+                    } else {
+                        HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
+                    }
+                } else {
+                    HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
+                }
+            }
             Stmt::Return(value) => {
                 if let Some(value) = value {
                     let expr = self.lower_expr(value, IntentKind::Consume);
@@ -457,6 +477,134 @@ impl LowerCtx {
                     },
                 )
             }
+            Expr::Fork { body } => {
+                // A `fork{}` block lowers to `HirExprKind::Fork`. Inside the
+                // body, statement-calls become spawned-call nodes (TI-1) and
+                // `fork name = call(...)` statements introduce `Task<T>` bindings
+                // (TI-2). The fork block's type is `Unit` — it does not produce
+                // a value at the use site.
+                self.fork_depth += 1;
+                let hir_body = self.lower_fork_block(body);
+                self.fork_depth -= 1;
+                (HirExprKind::Fork { body: hir_body }, ResolvedTy::Unit)
+            }
+            Expr::ForkChild { binding, expr } => {
+                // `fork name = expr` outside a `fork{}` body: no spawn context,
+                // so this is malformed. Emit CutoverUnsupported — the grammar
+                // accepts this form but HIR-lowering requires fork context.
+                // (Inside fork{} bodies this variant is handled by lower_fork_block,
+                // not by lower_expr directly.)
+                if self.fork_depth == 0 {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::AwaitOutOfPosition,
+                        span.clone(),
+                        "`fork name = expr` is only valid inside a `fork{}` body",
+                    ));
+                    (
+                        HirExprKind::Unsupported(
+                            "`fork name = expr` outside fork body".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    )
+                } else {
+                    // Inside a fork body, lower_fork_block handles this case;
+                    // reaching here means the expression appeared in a non-statement
+                    // position (e.g. tail expression). Reject: task handles cannot
+                    // be used as values.
+                    let _ = binding;
+                    let _ = expr;
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::AwaitOutOfPosition,
+                        span.clone(),
+                        "`fork name = expr` must be a statement, not an expression value",
+                    ));
+                    (
+                        HirExprKind::Unsupported("`fork name = expr` as expression".to_string()),
+                        ResolvedTy::Unit,
+                    )
+                }
+            }
+            Expr::Await(inner) => {
+                // `await expr` — only legal as a statement inside a `fork{}` body
+                // in v0.5. Select-arm position is cluster-5's responsibility.
+                if self.fork_depth == 0 {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::AwaitOutOfPosition,
+                        span.clone(),
+                        "`await` is only legal inside a `fork{}` body in v0.5. \
+                         Move the await into a `fork{}` block.",
+                    ));
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::BitCopy,
+                        ty: ResolvedTy::Unit,
+                        intent,
+                        kind: HirExprKind::Unsupported("`await` out of position".to_string()),
+                        span,
+                    };
+                }
+                // Resolve the inner expression. It must be a binding-ref with a
+                // `Task<T>` type to be awaitable.
+                let inner_hir = self.lower_expr(inner, IntentKind::Consume);
+                match &inner_hir.ty {
+                    ResolvedTy::Task(output_ty) => {
+                        let output_ty = *output_ty.clone();
+                        // Extract the binding name and id for the AwaitTask node.
+                        // The inner expression must be a direct binding-ref; await
+                        // on a complex expression is not supported in v0.5.
+                        if let HirExprKind::BindingRef {
+                            name: binding_name,
+                            resolved: ResolvedRef::Binding(binding_id),
+                        } = &inner_hir.kind
+                        {
+                            let (binding_name, binding_id) = (binding_name.clone(), *binding_id);
+                            let value_class = ValueClass::of_ty(&output_ty, &self.type_classes);
+                            return HirExpr {
+                                node: self.ids.node(),
+                                site: self.ids.site(),
+                                value_class,
+                                ty: output_ty.clone(),
+                                intent,
+                                kind: HirExprKind::AwaitTask {
+                                    binding_name,
+                                    binding_id,
+                                    output_ty,
+                                },
+                                span,
+                            };
+                        }
+                        // Await on a non-binding-ref Task<T>: reject. The form
+                        // `await (some_expr)` where the expr is not a name is not
+                        // supported — only named bindings can be awaited.
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::AwaitOutOfPosition,
+                            span.clone(),
+                            "`await` requires a named task binding, not an expression",
+                        ));
+                        (
+                            HirExprKind::Unsupported("`await` on non-binding-ref task".to_string()),
+                            ResolvedTy::Unit,
+                        )
+                    }
+                    found_ty => {
+                        // The operand is not a Task<T> — reject with AwaitNonTask.
+                        let found_ty = found_ty.clone();
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::AwaitNonTask {
+                                found_ty: found_ty.clone(),
+                            },
+                            span.clone(),
+                            "`await` requires a task handle (`Task<T>`). \
+                             Hint: did you mean to bind a task with `fork name = call(...)` first?",
+                        ));
+                        (
+                            HirExprKind::Unsupported("`await` on non-task".to_string()),
+                            ResolvedTy::Unit,
+                        )
+                    }
+                }
+            }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -582,6 +730,19 @@ impl LowerCtx {
                     "Bytes" => ResolvedTy::Bytes,
                     "Duration" => ResolvedTy::Duration,
                     "Unit" | "()" => ResolvedTy::Unit,
+                    // `Task` is a compiler-internal value class with no user-source
+                    // syntax. Writing `Task<T>` in any annotation position is a
+                    // compile error. Use `fork name = call(...)` to obtain a task
+                    // handle. (TI-5 structural enforcement.)
+                    "Task" => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::TaskNotNameable,
+                            ty.1.clone(),
+                            "`Task<T>` is a compiler-internal type and cannot be written \
+                             in source. Use `fork name = call(...)` to create a task handle.",
+                        ));
+                        ResolvedTy::Unit
+                    }
                     _ => ResolvedTy::Named {
                         name: name.clone(),
                         args,
@@ -713,6 +874,198 @@ impl LowerCtx {
             value_class: ValueClass::BitCopy,
             intent: IntentKind::Unknown,
             kind: HirExprKind::Unsupported(note.into()),
+            span,
+        }
+    }
+
+    /// Lower the body block of a `fork{}` expression. This is separate from
+    /// `lower_block` because statements inside a fork body follow different
+    /// rules:
+    ///
+    /// - `Stmt::Expression(Expr::Call{..})` → `SpawnedCall` (TI-1)
+    /// - `Stmt::Expression(Expr::ForkChild { binding: Some(name), expr })` →
+    ///   `HirStmtKind::Let` with a `Task<T>` typed binding (TI-2)
+    /// - `Stmt::Expression(Expr::Await(..))` → `AwaitTask` (TI-4)
+    /// - All other statements lower normally, including nested `fork{}` blocks.
+    ///
+    /// The caller is responsible for setting `fork_depth` before calling this
+    /// function and restoring it after.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single match on fork-body statement variants; splitting would hurt readability"
+    )]
+    fn lower_fork_block(&mut self, block: &Block) -> HirBlock {
+        self.push_scope();
+        let scope = self.ids.scope();
+        let mut statements = Vec::new();
+
+        for (stmt, span) in &block.stmts {
+            let hir_stmt = match stmt {
+                // `fork name = call(...)` inside a fork body → TI-2: typed Task<T> binding.
+                Stmt::Expression(expr)
+                    if matches!(
+                        &expr.0,
+                        Expr::ForkChild {
+                            binding: Some(_),
+                            ..
+                        }
+                    ) =>
+                {
+                    if let Expr::ForkChild {
+                        binding: Some(binding_name),
+                        expr: child_expr,
+                    } = &expr.0
+                    {
+                        // The child expression must be a call; any other form is rejected.
+                        if matches!(&child_expr.0, Expr::Call { .. }) {
+                            // Lower the call synchronously first to get the return type,
+                            // then wrap in SpawnedCall + Task<T>.
+                            let call_hir = self.lower_expr(child_expr, IntentKind::Consume);
+                            let call_ret_ty = call_hir.ty.clone();
+                            let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
+
+                            // Destructure call_hir.kind once to extract callee + args.
+                            let HirExprKind::Call { callee, args } = call_hir.kind else {
+                                unreachable!("just verified Call shape above")
+                            };
+
+                            // Re-wrap as a SpawnedCall node with Task<T> type.
+                            let spawned = HirExpr {
+                                node: self.ids.node(),
+                                site: self.ids.site(),
+                                value_class: ValueClass::Linear, // Task handles are linear (consume-once).
+                                ty: task_ty.clone(),
+                                intent: IntentKind::Consume,
+                                kind: HirExprKind::SpawnedCall {
+                                    callee,
+                                    args,
+                                    task_ty: task_ty.clone(),
+                                },
+                                span: child_expr.1.clone(),
+                            };
+
+                            // Bind the name with Task<T> type in the current scope.
+                            let binding =
+                                self.bind(binding_name.clone(), task_ty, false, span.clone());
+                            HirStmt {
+                                node: self.ids.node(),
+                                kind: HirStmtKind::Let(binding, Some(spawned)),
+                                span: span.clone(),
+                            }
+                        } else {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::ForkChildNotACall,
+                                child_expr.1.clone(),
+                                "`fork name = expr` requires a call expression as the \
+                                 right-hand side; other expression forms cannot be spawned as tasks",
+                            ));
+                            // Emit an unsupported stmt and continue rather than stopping.
+                            self.unsupported(span.clone(), "fork-child-non-call", "slice-2");
+                            HirStmt {
+                                node: self.ids.node(),
+                                kind: HirStmtKind::Expr(
+                                    self.unsupported_expr(span.clone(), "fork child non-call"),
+                                ),
+                                span: span.clone(),
+                            }
+                        }
+                    } else {
+                        unreachable!("pattern guard ensures this branch")
+                    }
+                }
+
+                // `fork name = call(...)` without a binding name (bare ForkChild with no
+                // name, e.g. `fork { fork = expr }` — the grammar produces binding: None).
+                // Lower the child expression as a plain SpawnedCall; the result is not bound.
+                Stmt::Expression(expr)
+                    if matches!(&expr.0, Expr::ForkChild { binding: None, .. }) =>
+                {
+                    if let Expr::ForkChild {
+                        binding: None,
+                        expr: child_expr,
+                    } = &expr.0
+                    {
+                        if matches!(&child_expr.0, Expr::Call { .. }) {
+                            let spawned = self.lower_spawned_call(child_expr);
+                            HirStmt {
+                                node: self.ids.node(),
+                                kind: HirStmtKind::Expr(spawned),
+                                span: span.clone(),
+                            }
+                        } else {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::ForkChildNotACall,
+                                child_expr.1.clone(),
+                                "`fork = expr` requires a call expression",
+                            ));
+                            self.unsupported(span.clone(), "fork-child-non-call", "slice-2");
+                            HirStmt {
+                                node: self.ids.node(),
+                                kind: HirStmtKind::Expr(
+                                    self.unsupported_expr(span.clone(), "fork child non-call"),
+                                ),
+                                span: span.clone(),
+                            }
+                        }
+                    } else {
+                        unreachable!("pattern guard ensures this branch")
+                    }
+                }
+
+                // All other statements lower normally (including regular calls,
+                // let bindings, nested fork{} blocks, etc.). Inside fork depth,
+                // `lower_stmt` will already handle statement-expression calls as
+                // SpawnedCall nodes via TI-1 (the fork_depth > 0 path in lower_stmt).
+                _ => self.lower_stmt(stmt, span.clone(), ResolvedTy::Unit),
+            };
+            statements.push(hir_stmt);
+        }
+
+        let tail = block
+            .trailing_expr
+            .as_ref()
+            .map(|expr| Box::new(self.lower_expr(expr, IntentKind::Read)));
+        let ty = tail
+            .as_ref()
+            .map_or(ResolvedTy::Unit, |expr| expr.ty.clone());
+        self.pop_scope();
+
+        HirBlock {
+            node: self.ids.node(),
+            scope,
+            statements,
+            tail,
+            ty,
+            span: 0..0,
+        }
+    }
+
+    /// Lower a call expression appearing as a statement inside a `fork{}` body
+    /// as a child-task spawn (TI-1). The resulting `HirExpr` has kind
+    /// `SpawnedCall` and type `Task<call_return_ty>`.
+    fn lower_spawned_call(&mut self, expr: &Spanned<Expr>) -> HirExpr {
+        let span = expr.1.clone();
+        // Lower the call normally to resolve the callee and argument types.
+        let call_hir = self.lower_expr(expr, IntentKind::Consume);
+        let call_ret_ty = call_hir.ty.clone();
+        let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
+
+        let HirExprKind::Call { callee, args } = call_hir.kind else {
+            // Should not happen: caller verified the expression is a Call.
+            return self.unsupported_expr(span, "lower_spawned_call on non-call");
+        };
+
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::Linear, // Task handles are linear (consume-once).
+            ty: task_ty.clone(),
+            intent: IntentKind::Consume,
+            kind: HirExprKind::SpawnedCall {
+                callee,
+                args,
+                task_ty,
+            },
             span,
         }
     }

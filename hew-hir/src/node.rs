@@ -137,6 +137,42 @@ pub enum HirExprKind {
         type_args: Vec<ResolvedTy>,
         fields: Vec<(String, HirExpr)>,
     },
+    /// A `fork { stmts }` block. Every statement-call inside the body is a
+    /// child-task spawn (TI-1). Named bindings (`fork name = call(...)`)
+    /// produce `Ty::Task(call_ret)` typed bindings (TI-2). The block joins
+    /// all anonymous children implicitly at block exit.
+    Fork {
+        body: HirBlock,
+    },
+    /// A call expression that is recognised as a child-task spawn because it
+    /// appears as a statement-expression inside a `fork {}` body. The callee
+    /// and args are the same as `HirExprKind::Call`; the distinct kind routes
+    /// MIR lowering to the task-spawn ABI rather than a direct synchronous
+    /// call.
+    ///
+    /// `task_ty` is always `ResolvedTy::Task(call_return_ty)`. It duplicates
+    /// the `HirExpr::ty` field for convenience at codegen sites that pattern-
+    /// match on the kind without reaching back to the parent `HirExpr`.
+    SpawnedCall {
+        callee: Box<HirExpr>,
+        args: Vec<HirExpr>,
+        task_ty: ResolvedTy,
+    },
+    /// `await name` consumes a `Task<T>` binding and produces `T`. Legal
+    /// positions in v0.5: statement-position inside a `fork{}` body. Future
+    /// versions extend this to select-arm source expressions (cluster-5).
+    ///
+    /// `output_ty` is the inner `T` extracted from the binding's
+    /// `ResolvedTy::Task(T)`. Stored here so codegen can emit the result slot
+    /// without re-inspecting the binding's type.
+    AwaitTask {
+        /// The name of the task-handle binding being consumed.
+        binding_name: String,
+        /// The resolved binding id of the task handle.
+        binding_id: BindingId,
+        /// The `T` from `Task<T>` — the type produced by this await.
+        output_ty: ResolvedTy,
+    },
     Unsupported(String),
 }
 

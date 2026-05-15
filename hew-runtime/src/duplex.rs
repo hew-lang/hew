@@ -1410,6 +1410,41 @@ mod tests {
         assert!(wr.upgrade().is_none(), "q_ba leaked after order 4");
     }
 
+    #[test]
+    fn close_ordering_recv_then_send_then_unified() {
+        // Inverse of order 3: recv-half drops first, then send-half, then
+        // the unified peer last. Verifies the close-protocol is order-symmetric
+        // — recv-side closing first does not strand the q_ba queue or wedge
+        // the still-live send-half.
+        let (a, b) = HewDuplex::new_pair(2, 2);
+        let (ws, wr) = snapshot_weaks(&a);
+        let b_send = b.clone_handle().into_send_half();
+        let b_recv = b.into_recv_half();
+        drop(b_recv);
+        drop(b_send);
+        // Unified `a` still holds its caps; both queues alive until a drops.
+        assert!(ws.upgrade().is_some(), "q_ab freed too early in order 5");
+        assert!(wr.upgrade().is_some(), "q_ba freed too early in order 5");
+        drop(a);
+        assert!(ws.upgrade().is_none(), "q_ab leaked after order 5");
+        assert!(wr.upgrade().is_none(), "q_ba leaked after order 5");
+    }
+
+    #[test]
+    fn close_ordering_recv_then_unified_then_send() {
+        // Six-permutation closure: recv-first, unified-middle, send-last.
+        let (a, b) = HewDuplex::new_pair(2, 2);
+        let (ws, wr) = snapshot_weaks(&a);
+        let b_send = b.clone_handle().into_send_half();
+        let b_recv = b.into_recv_half();
+        drop(b_recv);
+        drop(a);
+        // b_send is still alive — at least one queue is held.
+        drop(b_send);
+        assert!(ws.upgrade().is_none(), "q_ab leaked after order 6");
+        assert!(wr.upgrade().is_none(), "q_ba leaked after order 6");
+    }
+
     // ── Concurrent producer / close-during-block stress ────────────────────
     //
     // Stress the queue's locking discipline using a `Barrier` to launch

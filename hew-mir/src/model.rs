@@ -347,6 +347,18 @@ pub enum MirCheck {
         exit_site: SiteId,
         ty: ResolvedTy,
     },
+    /// Drop-elaboration could not determine the live-set at a `Return`
+    /// block — either the meet-lattice produced an ambiguous state
+    /// for an M2 substrate handle (`Duplex` / lambda-actor /
+    /// half-handle) or the structural invariant ("every drop in the
+    /// per-exit plan resolves to a `DuplexHandle` / `LambdaActorHandle`
+    /// / `SendHalf` / `RecvHalf` Place that has a recorded
+    /// `DropKind`") fails. The elaborator aborts with this finding
+    /// rather than emitting a partial drop plan (LESSONS:
+    /// boundary-fail-closed, cleanup-all-exits). The payload carries
+    /// the offending block id and a short reason so the diagnostic
+    /// surface can anchor the rejection.
+    DropPlanUndetermined { block: u32, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -463,11 +475,74 @@ pub struct DropPlan {
 /// A single elaborated drop op. Either a `@resource` drop calling the
 /// type's `close` method (`drop_fn = Some(name)`), or a trivial drop
 /// for a value class with no side effect (`drop_fn = None`).
+///
+/// `kind` discriminates the M2 substrate's structural drop semantics:
+/// generic `@resource` close, Duplex-handle close-both-directions,
+/// half-handle close-one-direction, and lambda-actor stop-on-last.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElabDrop {
     pub place: Place,
     pub ty: ResolvedTy,
     pub drop_fn: Option<String>,
+    /// Drop-kind discriminator. Distinguishes the structural close
+    /// semantics that codegen (slice 5) and runtime (slice 4) need
+    /// to honour. Generic `@resource` drops use `DropKind::Resource`
+    /// (the existing path); M2-substrate drops use the specialised
+    /// variants. Defaults to `Resource` so existing call sites that
+    /// only populate the pre-M2 fields stay correct.
+    pub kind: DropKind,
+}
+
+/// Drop-kind discriminator for `ElabDrop`. Each variant pins a
+/// distinct structural close-protocol contract that the runtime
+/// (slice 4) and codegen (slice 5) layers must implement.
+///
+/// The pre-M2 path emits `DropKind::Resource` for every owned
+/// `@resource` binding — the existing close-method dispatch through
+/// `drop_fn = Some("Type::close")`. The three M2 variants encode the
+/// dual-queue Duplex protocol's three drop shapes (design §7.3-§7.4
+/// + §5.9 ratification 2):
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DropKind {
+    /// Generic `@resource` drop: call the type's `close` method (or
+    /// no-op if `drop_fn` is `None`). The pre-M2 default — every
+    /// owned `AffineResource` local lowers to this kind.
+    Resource,
+    /// `Duplex<S, R>` handle drop with close-both-directions. When
+    /// the last surviving handle for this Duplex drops, both the
+    /// S-direction and R-direction queues close. Codegen emits a
+    /// `hew_duplex_close(handle)` runtime call (slice 5); the
+    /// runtime's refcount + dual-queue protocol decides whether
+    /// this drop is the last-handle case (slice 4).
+    DuplexClose,
+    /// Half-handle drop that closes one direction of a Duplex's
+    /// dual queue. The carried `Direction` selects which queue
+    /// closes; the other direction stays open until the matching
+    /// half (or the last unified handle) drops. Codegen emits a
+    /// `hew_duplex_close_half(handle, direction)` runtime call
+    /// (slice 5).
+    DuplexHalfClose(Direction),
+    /// Lambda-actor stop-on-last-handle-drop. When the external
+    /// strong refcount reaches zero, the actor stops; the body's
+    /// recursive self-ref is held weakly so it does NOT keep the
+    /// actor alive past external refcount zero (§5.9 ratification
+    /// 2). Codegen emits a `hew_lambda_actor_release(handle)`
+    /// runtime call (slice 5); the runtime decides whether this
+    /// drop is the last-handle case (slice 4).
+    LambdaActorRelease,
+}
+
+/// Direction selector for `DropKind::DuplexHalfClose`. Mirrors the
+/// `SendHalf` / `RecvHalf` Place variants: `Send` closes the
+/// S-direction queue, `Recv` closes the R-direction queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// S-direction (send) queue: the write-end the `SendHalf`
+    /// addresses.
+    Send,
+    /// R-direction (recv) queue: the read-end the `RecvHalf`
+    /// addresses.
+    Recv,
 }
 
 /// Generator state-machine schema. Declared scaffold; constructed in
@@ -571,6 +646,12 @@ pub enum MirDiagnosticKind {
         name: String,
         site: SiteId,
     },
+    /// Drop-elaboration aborted because the M2 substrate's per-exit
+    /// drop plan could not be determined for a `Return` block. Surfaced
+    /// from `MirCheck::DropPlanUndetermined`; the elaborator never
+    /// emits a partial drop (fail-closed per LESSONS
+    /// `cleanup-all-exits` / `boundary-fail-closed`).
+    DropPlanUndetermined { block: u32, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

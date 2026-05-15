@@ -12,7 +12,7 @@ pub mod model;
 pub use lower::lower_hir_module;
 pub use model::{
     BasicBlock, BlockKind, BorrowKind, CheckedMirFunction, CmpPred, CoroutineSchema, DecisionFact,
-    DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm,
-    SelectArmKind, Strategy, Terminator, ThirFunction,
+    Direction, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr,
+    IrPipeline, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
+    SelectArm, SelectArmKind, Strategy, Terminator, ThirFunction,
 };

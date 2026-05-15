@@ -9,9 +9,10 @@ use hew_types::ResolvedTy;
 
 use crate::dataflow;
 use crate::model::{
-    BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropPlan, ElabBlock,
-    ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
+    BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropKind, DropPlan,
+    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, MirCheck,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator,
+    ThirFunction,
 };
 
 /// Run Checked MIR's legality passes over a function's statement
@@ -193,6 +194,19 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
     // hew-mir's unit tests that hand-construct CheckedMirFunction
     // inputs with synthesized DecisionFact::value_class values.
     let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
+
+    // Fail-closed validation of the elaborated drop plan. Surfaces a
+    // `MirCheck::DropPlanUndetermined` for any Return-block whose
+    // per-exit live-set decision the elaborator could not commit to.
+    // No partial drops escape: a `DropPlanUndetermined` finding
+    // upgrades into a `MirDiagnostic` via `check_to_diagnostic`, and
+    // the CLI rejects the program before codegen runs. LESSONS:
+    // cleanup-all-exits, boundary-fail-closed.
+    for check in validate_drop_plan(&elaborated) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
 
     LoweredFunction {
         thir,
@@ -1115,6 +1129,17 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                    and ensure every reachable exit path invokes one"
                 .to_string(),
         }),
+        MirCheck::DropPlanUndetermined { block, reason } => Some(MirDiagnostic {
+            kind: MirDiagnosticKind::DropPlanUndetermined {
+                block: *block,
+                reason: reason.clone(),
+            },
+            note: "drop-elaboration could not determine the per-exit live-set \
+                   for an M2 substrate handle (Duplex / lambda-actor / \
+                   half-handle); the elaborator aborts rather than emit a \
+                   partial drop plan (LESSONS cleanup-all-exits)"
+                .to_string(),
+        }),
         // No construction surface in the v0.5 integer spine. The
         // corresponding `MirDiagnosticKind` projections will land
         // alongside the construction surface for borrows, generators,
@@ -1217,6 +1242,77 @@ fn elaborate(
     }
 }
 
+/// Structural validation of an elaborated drop plan. Walks every
+/// `(ExitPath::Return, DropPlan)` and verifies that each drop's
+/// `kind` matches what the drop's `place` would select via
+/// `drop_kind_for`. A mismatch indicates the elaborator's drop-plan
+/// construction lost coherence — surface as `MirCheck::
+/// DropPlanUndetermined` so the program is rejected before codegen
+/// observes a partial / inconsistent plan.
+///
+/// This is the M2 substrate's fail-closed boundary: a `Place::
+/// DuplexHandle` paired with `DropKind::Resource` would otherwise
+/// route through the generic `close` method dispatch instead of the
+/// runtime's close-both-directions protocol — silently dropping the
+/// recv-direction queue. Same idea for `LambdaActorHandle` paired
+/// with `DropKind::DuplexClose` (would skip the actor's stop-
+/// protocol). LESSONS: boundary-fail-closed, cleanup-all-exits.
+#[must_use]
+fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
+    let mut findings = Vec::new();
+    for (exit, plan) in &elab.drop_plans {
+        let ExitPath::Return { block } = exit else {
+            continue;
+        };
+        for drop in &plan.drops {
+            let expected = drop_kind_for(drop.place, &drop.ty);
+            if drop.kind != expected {
+                findings.push(MirCheck::DropPlanUndetermined {
+                    block: *block,
+                    reason: format!(
+                        "drop on place {:?} has kind {:?}, but the place \
+                         variant selects {:?}; elaborator must use the \
+                         Place-driven kind",
+                        drop.place, drop.kind, expected,
+                    ),
+                });
+            }
+        }
+    }
+    findings
+}
+
+/// Resolve the `DropKind` for an `ElabDrop` given the addressable
+/// `Place` and the binding's `ResolvedTy`.
+///
+/// The M2 substrate's drop kinds are selected by the `Place` variant
+/// rather than the `ResolvedTy` alone — a binding whose type is
+/// `Duplex<S, R>` may be addressed by either a `DuplexHandle`
+/// (close-both-dirs) or a `SendHalf` / `RecvHalf` (close-one-dir
+/// alias), and the kind must follow the Place. Lambda-actor handles
+/// share the underlying `Duplex<Msg, Reply>` type but use
+/// `LambdaActorHandle` Place addressing so they select
+/// `LambdaActorRelease` — the stop-on-last-handle-drop protocol with
+/// weak-ref body capture (§5.9 ratification 2).
+///
+/// `Place::Local` / `Place::ReturnSlot` fall through to
+/// `DropKind::Resource` — the pre-M2 generic `@resource` close path.
+///
+/// LESSONS: cleanup-all-exits, raii-null-after-move,
+/// boundary-fail-closed (kind is selected by Place; mismatching
+/// Place + `DropKind` is structurally impossible because this function
+/// is the single source of truth).
+#[must_use]
+fn drop_kind_for(place: Place, _ty: &ResolvedTy) -> DropKind {
+    match place {
+        Place::DuplexHandle(_) => DropKind::DuplexClose,
+        Place::LambdaActorHandle(_) => DropKind::LambdaActorRelease,
+        Place::SendHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Send),
+        Place::RecvHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Recv),
+        Place::Local(_) | Place::ReturnSlot => DropKind::Resource,
+    }
+}
+
 /// LIFO drop sequence for an owned-locals ledger. Only `AffineResource`
 /// contributes; `Linear` is the move-checker's responsibility (`MustConsume`),
 /// and other classes have no implicit drop.
@@ -1272,10 +1368,18 @@ fn build_lifo_drops(
                          the drop-elaboration pass observes the binding"
                     )
                 });
+                // Drop-kind classification for the M2 substrate. The
+                // pre-M2 generic `@resource` path keeps `DropKind::Resource`;
+                // M2 Duplex / lambda-actor / half-handle Places select
+                // the specialised kinds so codegen (slice 5) and the
+                // runtime (slice 4) emit the right close protocol.
+                // LESSONS: cleanup-all-exits, raii-null-after-move.
+                let kind = drop_kind_for(place, ty);
                 drops.push(ElabDrop {
                     place,
                     ty: ty.clone(),
                     drop_fn,
+                    kind,
                 });
             }
             // Linear, BitCopy, CowValue, PersistentShare, View, Unknown:

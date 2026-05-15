@@ -2220,6 +2220,16 @@ rely on RAII.
 
 ## 3.11 `machine` Types
 
+> **Implementation status — v0.5.0 (Lane A shipped):**
+>
+> The front-end (lexer keywords, parser, AST, HIR lowering, static checks) and
+> the `hew machine diagram` visualisation subcommand are fully implemented and
+> gate-clean as of v0.5.0.  Code generation (`step()`, tagged-union layout,
+> event enum emission) is deferred to **v0.5.1 (Lane B)** — machines parse,
+> type-check at the HIR layer, and render to Mermaid/Graphviz/JSON, but are
+> not yet executable.  Sections §3.11.6 and §3.11.7 describe the *intended*
+> API and are marked accordingly.
+
 A `machine` is a **value type** that defines a closed set of named states, a
 closed set of named events, and transition rules mapping `(State, Event)` pairs
 to new states.  It compiles to a tagged union with a compiler-generated
@@ -2228,7 +2238,7 @@ with per-state fields and compiler-checked transition logic.
 
 > **Detailed specification:** See [`docs/specs/MACHINE-SPEC.md`](MACHINE-SPEC.md)
 > for the full normative reference.  This section summarises the implemented
-> surface in v0.2.0.
+> surface in v0.5.0.
 
 **Design pillars:**
 
@@ -2269,27 +2279,63 @@ machine Name {
 ```ebnf
 MachineDecl   = "machine" Ident "{" { MachineItem } "}" ;
 MachineItem   = MachineState | MachineEvent | MachineTransition | MachineDefault ;
-MachineState  = "state" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
+MachineState  = "state" Ident ( "{" { StateBodyItem } "}" )? ";"? ;
+StateBodyItem = ( Ident ":" Type (";" | ",") )      (* field declaration *)
+              | ( "entry" Block )                    (* entry hook — v0.5.0 *)
+              | ( "exit"  Block )                    (* exit hook  — v0.5.0 *)
+              ;
 MachineEvent  = "event" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
 MachineTransition = "on" Ident ":" StatePattern "->" StatePattern
                     ("when" Expr)? (Block | "{" FieldInitList "}" | ";") ;
 MachineDefault = "default" (Block | ";") ;
+
+(* Emit expression (usable inside transition bodies and entry/exit blocks): *)
+EmitExpr = "emit" Ident ( "{" FieldInitList "}" )? ;
+```
+
+> **Nested states are reserved** — a `state` declaration inside a state body
+> is a parse error.  Hierarchical states are planned for v0.6.
+
+**Visualisation (v0.5.0):** `hew machine diagram <file.hew>` renders any
+`machine` declaration as a Mermaid state diagram, Graphviz DOT, or JSON
+schema.  The command runs all HIR static checks before rendering, so it
+doubles as a structural validator.
+
+```
+hew machine diagram traffic_light.hew                   # Mermaid (default)
+hew machine diagram traffic_light.hew --format graphviz # Graphviz DOT
+hew machine diagram traffic_light.hew --format json     # JSON schema
+hew machine diagram traffic_light.hew --machine Name    # filter one machine
+hew machine diagram traffic_light.hew --no-check        # skip HIR checks
 ```
 
 ### 3.11.2 Constraints
 
-| Constraint                                  | Error if violated                          |
-| ------------------------------------------- | ------------------------------------------ |
-| At least two states                         | `machine_one_state` negative test          |
-| At least one event                          | `machine_no_events` negative test          |
-| No duplicate explicit transition per (S, E) | `machine_dup_transition` negative test     |
-| No duplicate wildcard for same event        | `machine_dup_wildcard` negative test       |
-| All referenced states/events must be declared | `machine_unknown_state/event` negative tests |
-| All (S, E) pairs covered (exhaustiveness)   | `machine_exhaustive_fail` negative test    |
+| Constraint                                  | Checked at  | Error if violated                             |
+| ------------------------------------------- | ----------- | --------------------------------------------- |
+| At least two states                         | Parse       | `machine_one_state` negative test             |
+| At least one event                          | Parse       | `machine_no_events` negative test             |
+| No nested `state` inside a state body       | Parse       | diagnostic: hierarchical states reserved v0.6 |
+| No duplicate explicit transition per (S, E) | Parse/HIR   | `machine_dup_transition` negative test        |
+| No duplicate wildcard for same event        | Parse/HIR   | `machine_dup_wildcard` negative test          |
+| All referenced states/events must be declared | HIR       | `machine_unknown_state/event` negative tests  |
+| All (S, E) pairs covered (exhaustiveness)   | HIR         | `MachineExhaustivenessViolation` diagnostic   |
+| Effect parity: transition body writes ≡ entry writes | HIR  | `MachineEffectParityViolation` diagnostic     |
+| No direct self-emit (`emit E` in transition for event E) | HIR | `MachineEmitCycle` diagnostic          |
 
-Exhaustiveness can be satisfied by: explicit `on` rules, wildcard `on` rules,
-or a `default` handler.  A `default` handler alone covers all pairs that have
-no other matching rule.
+Exhaustiveness can be satisfied by: explicit `on` rules, wildcard (`_`-source)
+rules, or a `default` handler.  A `default` handler alone covers all pairs that
+have no other matching rule.
+
+**Effect parity** (v0.5.0): when a transition body writes a state field (via
+`self.field = …`) and the target state's `entry` block also writes that same
+field, the compiler emits a `MachineEffectParityViolation` diagnostic.  This
+prevents silent shadowing between transition-side and entry-side field
+initialisation.
+
+**Emit-cycle detection** (v0.5.0): a transition handling event `E` may not
+directly `emit E` — that would form an immediate re-entry cycle.  Indirect
+cycles (A emits B, B emits A) are not checked in v0.5.0.
 
 ### 3.11.3 Transition Bodies
 
@@ -2367,7 +2413,11 @@ Priority order (highest to lowest):
 
 Specific transitions always win over wildcards for the same event.
 
-### 3.11.6 Generated API
+### 3.11.6 Generated API *(v0.5.1 — Lane B, not yet implemented)*
+
+> Code generation for `machine` is deferred to the Lane B follow-up.  The API
+> described here is the *intended* design; `step()` and the companion event
+> enum are not emitted by the v0.5.0 compiler.
 
 The compiler generates the following for every `machine Name { ... }`:
 
@@ -2400,7 +2450,10 @@ match cb {
 }
 ```
 
-### 3.11.7 Using Machines Inside Actors
+### 3.11.7 Using Machines Inside Actors *(v0.5.1 — Lane B, not yet implemented)*
+
+> This section describes the intended runtime embedding pattern.  Machine
+> values are not yet executable in v0.5.0 — `step()` is not generated.
 
 Machines are values — they are commonly embedded as actor fields:
 

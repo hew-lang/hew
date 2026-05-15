@@ -8,7 +8,6 @@
 //   hew machine diagram examples/machine/traffic_light.hew
 //   hew machine diagram examples/machine/traffic_light.hew --format graphviz
 //   hew machine diagram examples/machine/traffic_light.hew --format json
-
 machine TrafficLight {
     state Red {
         entry {
@@ -18,13 +17,11 @@ machine TrafficLight {
             println("leaving red");
         }
     }
-
     state Green {
         entry {
             println("signal: GREEN — go");
         }
     }
-
     state Yellow {
         entry {
             println("signal: YELLOW — prepare to stop");
@@ -33,8 +30,15 @@ machine TrafficLight {
 
     event Tick;
 
-    // Red → Green → Yellow → Red cycle
-    on Tick: Red    -> Green  { Green  }
-    on Tick: Green  -> Yellow { Yellow }
-    on Tick: Yellow -> Red    { Red    }
+    on Tick: Red -> Green {
+
+        // Red → Green → Yellow → Red cycle
+        Green
+    }
+    on Tick: Green -> Yellow {
+        Yellow
+    }
+    on Tick: Yellow -> Red {
+        Red
+    }
 }

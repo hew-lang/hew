@@ -12,84 +12,92 @@
 //   hew machine diagram examples/machine/tcp_handshake.hew
 //   hew machine diagram examples/machine/tcp_handshake.hew --format mermaid
 //   hew machine diagram examples/machine/tcp_handshake.hew --machine TcpHandshake
-
 machine TcpHandshake {
     state Closed;
-
     state SynReceived {
         remote_port: Int;
         entry {
             println("SYN received — sent SYN-ACK");
         }
     }
-
     state Established {
         remote_port: Int;
         entry {
             println("connection established");
         }
     }
-
-    // Passive close: we received a FIN from the peer.
     state CloseWait {
         entry {
+
+            // Passive close: we received a FIN from the peer.
             println("received FIN — entering close-wait");
         }
     }
 
-    event SynReceive  { remote_port: Int; }
+    event SynReceive { remote_port: Int; }
     event AckReceive;
     event FinReceive;
     event Reset;
 
-    // ── Named transitions ────────────────────────────────────────────────
-
-    // Passive open: peer sends SYN.
     on SynReceive: Closed -> SynReceived {
-        emit AckReceive;
+
+        // ── Named transitions ────────────────────────────────────────────────
+
+        // Passive open: peer sends SYN.
+        emit AckReceive {};
         SynReceived { remote_port: remote_port }
     }
-
-    // Peer's ACK completes the handshake.
     on AckReceive: SynReceived -> Established {
+
+        // Peer's ACK completes the handshake.
         Established { remote_port: self.remote_port }
     }
-
-    // Peer initiates close while established.
     on FinReceive: Established -> CloseWait {
-        emit AckReceive;
+
+        // Peer initiates close while established.
+        emit AckReceive {};
         CloseWait
     }
-
-    // Close-wait → closed (we have sent our FIN and got ACK).
     on AckReceive: CloseWait -> Closed {
+
+        // Close-wait → closed (we have sent our FIN and got ACK).
         Closed
     }
+    on Reset: _ -> Closed {
 
-    // Reset collapses to Closed from any state.
-    on Reset: _ -> Closed { Closed }
-
-    // ── Wildcard fallbacks (protocol violations — stay in current state) ─
-
-    // SYN while not Closed: ignore (already connected or waiting).
+        // Reset collapses to Closed from any state.
+        Closed
+    }
     on SynReceive: SynReceived -> SynReceived {
+
+        // ── Wildcard fallbacks (protocol violations — stay in current state) ─
+
+        // SYN while not Closed: ignore (already connected or waiting).
         SynReceived { remote_port: self.remote_port }
     }
     on SynReceive: Established -> Established {
         Established { remote_port: self.remote_port }
     }
-    on SynReceive: CloseWait -> CloseWait { CloseWait }
+    on SynReceive: CloseWait -> CloseWait {
+        CloseWait
+    }
+    on AckReceive: Closed -> Closed {
 
-    // Unexpected ACK while Closed or Established: ignore.
-    on AckReceive: Closed -> Closed { Closed }
+        // Unexpected ACK while Closed or Established: ignore.
+        Closed
+    }
     on AckReceive: Established -> Established {
         Established { remote_port: self.remote_port }
     }
+    on FinReceive: Closed -> Closed {
 
-    // FIN while not Established: ignore (nothing to close).
-    on FinReceive: Closed -> Closed { Closed }
+        // FIN while not Established: ignore (nothing to close).
+        Closed
+    }
     on FinReceive: SynReceived -> SynReceived {
         SynReceived { remote_port: self.remote_port }
     }
-    on FinReceive: CloseWait -> CloseWait { CloseWait }
+    on FinReceive: CloseWait -> CloseWait {
+        CloseWait
+    }
 }

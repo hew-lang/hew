@@ -132,19 +132,21 @@ counter.increment(10);
 let n = await counter.get();
 ```
 
-**The `<-` operator (explicit send):**
+**Sending messages:**
 
-For lambda actors and explicit message sending, the `<-` operator provides a concise send syntax:
+Lambda actors receive messages via call-syntax. Named actors expose typed receive methods:
 
 ```hew
-// Lambda actor send
-let worker = spawn (msg: int) => { println(msg * 2); };
-worker <- 42;                    // fire-and-forget
+// Lambda actor: call the handle directly
+let worker = actor |msg: int| { println(msg * 2); };
+worker.send(42);                // fire-and-forget
 
-// The <- operator enqueues the message (fire-and-forget)
+// Named actor: use the receive method
+counter.increment();
 ```
 
-The `<-` operator is syntactic sugar for enqueueing a message and returning `()`. It is the primary way to send messages to lambda actors. For named actors, direct method calls are preferred.
+Fire-and-forget sends enqueue the message and return `()`. Named-actor request-response
+uses `await` on the receive method (see §2.1.4).
 
 **Actor instantiation:**
 
@@ -158,7 +160,7 @@ let counter = spawn Counter(0);
 let worker = spawn WorkerActor();
 ```
 
-> **Note:** Named actor spawn always uses parenthesized arguments, even when empty. This is distinct from lambda actor spawn, which uses `spawn (params) => body` syntax.
+> **Note:** Named actor spawn always uses parenthesized arguments, even when empty. This is distinct from lambda actor syntax, which uses `actor |params| { body }`.
 
 Actor behaviours can also be defined via traits:
 
@@ -206,30 +208,26 @@ actor HealthChecker {
 
 ### 2.1.3 Lambda Actors
 
-Lambda actors provide lightweight, inline actor definitions using lambda syntax:
+Lambda actors provide lightweight, inline actor definitions:
 
 ```hew
 // Basic lambda actor
-let worker = spawn (msg: int) => {
+let worker = actor |msg: int| {
     println(msg * 2);
 };
 
-// With return type for request-response
-let calc = spawn (x: int) -> int => { x * x };
-
 // With state capture (move semantics)
 let factor = 2;
-let multiplier = spawn move (x: int) -> int => {
-    x * factor
+let multiplier = actor move |x: int| {
+    println(x * factor);
 };
 ```
 
 **Syntax:**
 
 ```ebnf
-Spawn          = "spawn" ( LambdaActor | ActorSpawn ) ;
-LambdaActor    = "move"? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
-ActorSpawn     = Ident TypeArgs? "(" FieldInitList? ")" ;  (* Named fields: spawn Counter(count: 0) *)
+LambdaActorExpr = "actor" "move"? "|" LambdaParams? "|" Block ;
+ActorSpawn      = "spawn" Ident TypeArgs? "(" FieldInitList? ")" ;  (* spawn Counter(count: 0) *)
 ```
 
 **Type system:**
@@ -245,9 +243,8 @@ Lambda actors return `ActorRef<Actor<M>>` for fire-and-forget or `ActorRef<Actor
 // Named actor spawn returns ActorRef<ActorType>
 let counter: ActorRef<Counter> = spawn Counter(0);
 
-// Lambda actor spawn returns ActorRef<Actor<M>> or ActorRef<Actor<M, R>>
-let worker: ActorRef<Actor<int>> = spawn (msg: int) => { println(msg); };
-let calc: ActorRef<Actor<int, int>> = spawn (x: int) -> int => { x * x };
+// Lambda actor expression returns ActorRef<Actor<M>>
+let worker: ActorRef<Actor<int>> = actor |msg: int| { println(msg); };
 ```
 
 **Capture semantics:**
@@ -260,11 +257,11 @@ let calc: ActorRef<Actor<int, int>> = spawn (x: int) -> int => { x * x };
 **Operations:**
 
 ```hew
-// Fire-and-forget send (for ActorRef<Actor<M>>)
-worker <- 42;
+// Fire-and-forget send
+worker.send(42);
 
-// Request-response (for ActorRef<Actor<M, R>>)
-let result = await calc <- 5;
+// Named actor request-response
+let result = await counter.get();
 ```
 
 **Integration with `fork` blocks (normative):**
@@ -273,8 +270,8 @@ Lambda actors spawned within a `fork` block have their **lifetime** managed by t
 
 ```hew
 fork {
-    let worker = spawn (x: int) => { ... };
-    worker <- 1;
+    let worker = actor |x: int| { ... };
+    worker.send(1);
 }  // worker stopped when the fork-block exits
 ```
 
@@ -596,7 +593,7 @@ This distinction exists because actor fields are stateful (they change over the 
 
 #### 3.4.4 The Boundary Rule: Move on Send
 
-The **only** ownership constraint is at actor boundaries. When a value crosses an actor boundary (via method call, `<-`, or `spawn`), it must be **moved** or **cloned**:
+The **only** ownership constraint is at actor boundaries. When a value crosses an actor boundary (via method call or `.send()`), it must be **moved** or **cloned**:
 
 ```hew
 receive fn forward(message: Message, target: ActorRef<Handler>) {
@@ -605,14 +602,14 @@ receive fn forward(message: Message, target: ActorRef<Handler>) {
 }
 
 // Or for lambda actors:
-worker <- message;           // message is MOVED via <- operator
+worker.send(message);        // message is MOVED via .send()
 ```
 
-> **Note:** Throughout this specification, "sending a message" refers to invoking a `receive fn` method on an actor (for named actors) or using the `<-` operator (for lambda actors). The internal runtime function `.send()` is an implementation detail not exposed in Hew syntax.
+> **Note:** Throughout this specification, "sending a message" refers to invoking a `receive fn` method on an actor (for named actors) or calling `.send()` on a lambda actor handle.
 
 > **Send semantics (language vs runtime):**
 >
-> - **Language level**: A method call or `<-` moves the value — the sender can no longer use it
+> - **Language level**: A method call or `.send()` moves the value — the sender can no longer use it
 > - **Runtime level**: The value is deep-copied into the receiver's per-actor heap
 > - This gives the safety of Rust's move semantics with the simplicity of Erlang's copy-on-send
 
@@ -634,7 +631,7 @@ receive fn broadcast(message: Message, targets: Vec<ActorRef<Handler>>) {
 
 // Or for lambda actors:
 for target in targets {
-    target <- message.clone();
+    target.send(message.clone());
 }
 ```
 
@@ -656,17 +653,17 @@ When spawning a lambda actor, captured variables follow these rules:
 let config = load_config();        // Config is not Copy
 
 // Without move: compile error (config cannot be copied)
-// let worker = spawn (msg: Msg) => { use(config); };
+// let worker = actor |msg: Msg| { use(config); };
 
 // With move: config is moved into the actor
-let worker = spawn move (msg: Msg) => {
+let worker = actor move |msg: Msg| {
     use(config);   // ok - config now owned by this actor
 };
 // config invalid here - it was moved
 
 // Alternative: clone first
 let config2 = config.clone();
-let worker2 = spawn move (msg: Msg) => {
+let worker2 = actor move |msg: Msg| {
     use(config2);
 };
 ```
@@ -1139,7 +1136,7 @@ This hybrid gives the safety of Rust's move semantics (no use-after-send bugs) w
 
 **Move-on-send:**
 
-- When a message is sent to an actor (via method call or `<-`), the value is moved at the language level — the sender can no longer use it. At runtime, the value is deep-copied into the receiver's per-actor heap.
+- When a message is sent to an actor (via method call or `.send()`), the value is moved at the language level — the sender can no longer use it. At runtime, the value is deep-copied into the receiver's per-actor heap.
 - The receiver owns an independent copy
 - No references cross actor boundaries
 
@@ -1675,12 +1672,12 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 ```hew
 // Error: T might not be Send
 receive fn forward_unsafe<T>(message: T, target: ActorRef<Handler<T>>) {
-    target <- message;     // Compile error: T not bounded by Send
+    target.handle(message);     // Compile error: T not bounded by Send
 }
 
 // Correct: T is bounded by Send
 receive fn forward<T: Send>(message: T, target: ActorRef<Handler<T>>) {
-    target <- message;     // OK: T: Send verified at instantiation
+    target.handle(message);     // OK: T: Send verified at instantiation
 }
 ```
 
@@ -4293,8 +4290,7 @@ These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.t
 12. Logical OR: `||`
 13. Range: `..`, `..=`
 14. Timeout: `| after`
-15. Send: `<-`
-16. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 
 ### 12.3 Duration Literals
 

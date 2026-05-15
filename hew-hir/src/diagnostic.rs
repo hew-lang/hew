@@ -89,4 +89,8 @@ pub enum HirDiagnosticKind {
     /// `Task<T>` is a compiler-internal value class with no surface syntax;
     /// use `fork name = call(...)` to create a task handle instead.
     TaskNotNameable,
+    /// A `Task<T>` handle (inferred or explicit) was used in a `return`
+    /// expression, causing it to escape the `fork{}` body. Task handles are
+    /// fork-body-scoped; await them inside the body with `await name`.
+    TaskCannotEscape,
 }

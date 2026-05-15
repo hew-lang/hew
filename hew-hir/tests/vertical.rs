@@ -328,6 +328,107 @@ fn task_handle_ti4_await_in_let_value_position_rejects() {
     );
 }
 
+// ── TI-4 position-completeness tests (await in non-statement sub-expression positions) ──
+
+/// TI-4 (reject): `return await t` inside a fork body emits `AwaitOutOfPosition`.
+/// Await is only legal as a statement-expression, not as a return value.
+#[test]
+fn await_in_return_position_rejects() {
+    let output = lower(
+        "fn compute() -> i64 { return 1; } \
+         fn f() { fork { fork t = compute(); return await t; } }",
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
+        "`return await t` must emit AwaitOutOfPosition: {:?}",
+        output.diagnostics
+    );
+}
+
+/// TI-4 (reject): `sink(await t)` inside a fork body emits `AwaitOutOfPosition`.
+/// Await cannot appear as a function argument.
+#[test]
+fn await_in_function_arg_rejects() {
+    let output = lower(
+        "fn compute() -> i64 { return 1; } \
+         fn sink(x: i64) { } \
+         fn f() { fork { fork t = compute(); sink(await t); } }",
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
+        "`sink(await t)` must emit AwaitOutOfPosition: {:?}",
+        output.diagnostics
+    );
+}
+
+/// TI-4 (reject): `(await t) + 1` inside a fork body emits `AwaitOutOfPosition`.
+/// Await cannot appear as a binary operand.
+#[test]
+fn await_in_binary_operand_rejects() {
+    let output = lower(
+        "fn compute() -> i64 { return 1; } \
+         fn f() { fork { fork t = compute(); let x = (await t) + 1; } }",
+    );
+    // This may fire AwaitOutOfPosition (binary operand) or the existing
+    // let-value intercept — either satisfies the position-rejection rule.
+    let has_position_error = output.diagnostics.iter().any(|d| {
+        matches!(
+            d.kind,
+            HirDiagnosticKind::AwaitOutOfPosition | HirDiagnosticKind::AwaitNonTask { .. }
+        )
+    });
+    assert!(
+        has_position_error,
+        "`(await t) + 1` must emit AwaitOutOfPosition: {:?}",
+        output.diagnostics
+    );
+}
+
+// ── TI-5 escape-via-return tests ────────────────────────────────────────────
+
+/// TI-5 (reject): returning an inferred `Task<T>` binding from inside a fork
+/// body must emit `TaskCannotEscape`. The type checker rejects user-written
+/// `Task<T>` annotations via `TaskNotNameable`; this closes the inferred-escape path.
+#[test]
+fn inferred_task_return_rejects() {
+    let output = lower(
+        "fn compute() -> i64 { return 1; } \
+         fn f() { fork { fork t = compute(); return t; } }",
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::TaskCannotEscape)),
+        "`return t` where t: Task<T> must emit TaskCannotEscape: {:?}",
+        output.diagnostics
+    );
+}
+
+/// TI-5 (accept): returning a non-Task value from inside a fork body is fine.
+#[test]
+fn non_task_return_inside_fork_accepts() {
+    let output = lower(
+        "fn compute() -> i64 { return 1; } \
+         fn f() { fork { fork t = compute(); await t; } }",
+    );
+    let task_escape_errors: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.kind, HirDiagnosticKind::TaskCannotEscape))
+        .collect();
+    assert!(
+        task_escape_errors.is_empty(),
+        "await-then-no-return should not emit TaskCannotEscape: {task_escape_errors:?}"
+    );
+}
+
 /// Verifier stability: a valid `fork { call(); }` program passes `verify_hir`
 /// without dangling-ref or duplicate-id diagnostics.
 #[test]

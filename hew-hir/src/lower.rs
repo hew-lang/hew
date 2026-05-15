@@ -130,6 +130,13 @@ struct LowerCtx {
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
     /// bool supports nested `fork{}` blocks correctly.
     fork_depth: u32,
+    /// Set to `true` immediately before lowering the expression of a
+    /// `Stmt::Expression` statement. `lower_expr` consumes it via
+    /// `mem::replace(…, false)` at entry, so all recursive calls see `false`.
+    /// This lets `Expr::Await` check whether it is the direct statement, not
+    /// a sub-expression of a return value, argument, binary operand, etc.
+    /// (TI-4 position rule.)
+    statement_position: bool,
 }
 
 impl LowerCtx {
@@ -283,6 +290,10 @@ impl LowerCtx {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single large match on stmt variants; splitting would hurt readability"
+    )]
     fn lower_stmt(
         &mut self,
         stmt: &Stmt,
@@ -355,6 +366,13 @@ impl LowerCtx {
                 // spawns (TI-1). Outside fork{} bodies all calls are synchronous
                 // (TI-3). The TI-1 rewrite only applies when the expression is a
                 // direct call — nested calls inside sub-expressions remain sync.
+                //
+                // Mark this as statement position before lowering so that
+                // `lower_expr`'s `Expr::Await` arm can enforce TI-4 (await is
+                // only legal in statement-expression position, not as a
+                // sub-expression). The flag is consumed by `mem::replace` at the
+                // top of `lower_expr`, so recursive calls see `false`.
+                self.statement_position = true;
                 if self.fork_depth > 0 {
                     if let Expr::Call { .. } = &expr.0 {
                         let spawned = self.lower_spawned_call(expr);
@@ -369,7 +387,18 @@ impl LowerCtx {
             Stmt::Return(value) => {
                 if let Some(value) = value {
                     let expr = self.lower_expr(value, IntentKind::Consume);
-                    if expr.ty != return_ty && return_ty != ResolvedTy::Unit {
+                    // TI-5 escape check: a `Task<T>` value must not escape via
+                    // return, whether the type was user-written or inferred. The
+                    // `lower_type` wall blocks user-written `Task<T>` annotations;
+                    // this check closes the inferred-escape path.
+                    if matches!(expr.ty, ResolvedTy::Task(_)) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::TaskCannotEscape,
+                            value.1.clone(),
+                            "a `Task<T>` handle cannot escape via `return`; \
+                             await it inside the `fork{}` body with `await name`",
+                        ));
+                    } else if expr.ty != return_ty && return_ty != ResolvedTy::Unit {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::ReturnTypeMismatch {
                                 expected: return_ty,
@@ -401,6 +430,11 @@ impl LowerCtx {
         reason = "single large match on expr variants; splitting would hurt readability"
     )]
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
+        // Consume the statement-position flag atomically. Every recursive call
+        // to `lower_expr` (for arguments, operands, return values, block tails,
+        // etc.) therefore sees `false`. Only the `Stmt::Expression` arm in
+        // `lower_stmt` sets this to `true` immediately before calling us.
+        let in_stmt_position = std::mem::replace(&mut self.statement_position, false);
         let span = expr.1.clone();
         let (kind, ty) = match &expr.0 {
             Expr::Literal(lit) => Self::lower_literal(lit),
@@ -552,14 +586,20 @@ impl LowerCtx {
                 }
             }
             Expr::Await(inner) => {
-                // `await expr` — only legal as a statement inside a `fork{}` body
-                // in v0.5. Select-arm position is cluster-5's responsibility.
-                if self.fork_depth == 0 {
+                // `await expr` — only legal as the direct statement-expression
+                // inside a `fork{}` body in v0.5 (TI-4). Sub-expression positions
+                // (return value, function argument, binary operand, let value, block
+                // tail, etc.) are rejected with `AwaitOutOfPosition`.
+                // `in_stmt_position` is set by `Stmt::Expression` in `lower_stmt`
+                // and consumed by `mem::replace` at the top of this function, so
+                // recursive calls always see `false`.
+                if self.fork_depth == 0 || !in_stmt_position {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::AwaitOutOfPosition,
                         span.clone(),
-                        "`await` is only legal inside a `fork{}` body in v0.5. \
-                         Move the await into a `fork{}` block.",
+                        "`await` is only legal as a statement-expression inside a `fork{}` body \
+                         in v0.5. It cannot be used as a return value, function argument, \
+                         binary operand, or let-value. Move the await to its own statement.",
                     ));
                     return HirExpr {
                         node: self.ids.node(),

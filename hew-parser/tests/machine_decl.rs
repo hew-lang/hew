@@ -257,3 +257,44 @@ machine Bad {
         result.errors
     );
 }
+
+#[test]
+fn extern_fn_named_entry_exit_emit_parses() {
+    // `entry`, `exit`, and `emit` are contextual keywords added for machine
+    // declarations.  They must remain valid as function names in `extern` blocks
+    // so existing FFI declarations are not broken.
+    let source = r#"
+extern "C" {
+    fn entry(code: i32) -> i32;
+    fn exit(code: i32) -> i32;
+    fn emit(code: i32) -> i32;
+}
+
+fn main() {}
+"#;
+    let result = hew_parser::parse(source);
+    let errors = &result.errors;
+    assert!(
+        result.errors.is_empty(),
+        "contextual keywords entry/exit/emit must be usable as extern fn names, got: {errors:?}"
+    );
+    // Confirm the extern block has exactly 3 functions.
+    let extern_block = result.program.items.iter().find_map(|item| {
+        if let hew_parser::ast::Item::ExternBlock(b) = &item.0 {
+            Some(b)
+        } else {
+            None
+        }
+    });
+    let extern_block = extern_block.expect("expected ExternBlock item");
+    assert_eq!(extern_block.functions.len(), 3);
+    let names: Vec<&str> = extern_block
+        .functions
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"entry") && names.contains(&"exit") && names.contains(&"emit"),
+        "expected entry, exit, emit functions in extern block, got: {names:?}"
+    );
+}

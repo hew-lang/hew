@@ -176,19 +176,24 @@ machine Cyclic {
 
 #[test]
 fn self_transition_flag_recorded() {
+    // @reenter is required for a non-empty self-transition body.
     let src = r"
 machine Counter {
     state Running { count: Int; }
 
     event Tick;
 
-    on Tick: Running -> Running {
+    on Tick: Running -> Running @reenter {
         Running { count: 1 }
     }
 }
 ";
     let output = lower(src);
-    // No exhaustiveness error (single state, single event, covered)
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
     let machine = output.module.items.iter().find_map(|item| {
         if let HirItem::Machine(m) = item {
             Some(m)
@@ -201,5 +206,167 @@ machine Counter {
     assert!(
         tr.is_self_transition,
         "Running -> Running should be flagged as self-transition"
+    );
+    assert!(
+        tr.reenter,
+        "transition annotated @reenter should carry reenter=true"
+    );
+}
+
+// ── @reenter rule ────────────────────────────────────────────────────────────
+
+#[test]
+fn reject_self_transition_nonempty_body_without_reenter() {
+    // A non-empty self-loop without @reenter must be rejected.
+    let src = r"
+machine Counter {
+    state Running { count: Int; }
+
+    event Tick;
+
+    on Tick: Running -> Running {
+        Running { count: 1 }
+    }
+}
+";
+    let output = lower(src);
+    let has_reenter_error = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::MachineSelfTransitionNeedsReenter {
+                machine_name,
+                event_name,
+                ..
+            }
+            if machine_name == "Counter" && event_name == "Tick"
+        )
+    });
+    assert!(
+        has_reenter_error,
+        "expected MachineSelfTransitionNeedsReenter diagnostic, got: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn accept_self_transition_empty_body_no_reenter() {
+    // An empty self-loop (semicolon shorthand) requires no @reenter annotation.
+    let src = r"
+machine Ping {
+    state Active;
+
+    event Noop;
+
+    on Noop: Active -> Active;
+}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "expected no diagnostics for empty self-loop, got: {:?}",
+        output.diagnostics
+    );
+    let machine = output.module.items.iter().find_map(|item| {
+        if let HirItem::Machine(m) = item {
+            Some(m)
+        } else {
+            None
+        }
+    });
+    let machine = machine.expect("expected Machine HirItem");
+    assert!(!machine.transitions[0].reenter);
+}
+
+// ── Effect-parity (entry and exit) ──────────────────────────────────────────
+
+#[test]
+fn reject_effect_parity_entry_conflict() {
+    // Transition body and target entry block both write the same field.
+    // Uses `this.count` (Hew keyword for self-reference in machine context).
+    let src = r"
+machine Conflict {
+    state Idle;
+    state Active {
+        count: Int;
+        entry {
+            this.count = 0;
+        }
+    }
+
+    event Start;
+    event Stop;
+
+    on Start: Idle -> Active {
+        this.count = 1;
+        Active { count: 1 }
+    }
+    on Stop: Active -> Idle;
+    on Start: Active -> Active;
+    on Stop: Idle -> Idle;
+}
+";
+    let output = lower(src);
+    let has_parity_error = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::MachineEffectParityViolation {
+                machine_name,
+                field_name,
+                is_entry_conflict,
+                ..
+            }
+            if machine_name == "Conflict" && field_name == "count" && *is_entry_conflict
+        )
+    });
+    assert!(
+        has_parity_error,
+        "expected entry effect-parity diagnostic, got: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn reject_effect_parity_exit_conflict() {
+    // Transition body and source exit block both write the same field.
+    // Uses `this.val` (Hew keyword for self-reference in machine context).
+    let src = r"
+machine ExitConflict {
+    state Source {
+        val: Int;
+        exit {
+            this.val = 0;
+        }
+    }
+    state Target;
+
+    event Move;
+    event Reset;
+
+    on Move: Source -> Target {
+        this.val = 99;
+        Target
+    }
+    on Reset: Target -> Source;
+    on Move: Target -> Target;
+    on Reset: Source -> Source;
+}
+";
+    let output = lower(src);
+    let has_exit_parity_error = output.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::MachineEffectParityViolation {
+                machine_name,
+                field_name,
+                is_entry_conflict,
+                ..
+            }
+            if machine_name == "ExitConflict" && field_name == "val" && !is_entry_conflict
+        )
+    });
+    assert!(
+        has_exit_parity_error,
+        "expected exit effect-parity diagnostic, got: {:?}",
+        output.diagnostics
     );
 }

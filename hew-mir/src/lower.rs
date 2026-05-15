@@ -1271,13 +1271,50 @@ fn elaborate(
     }
 }
 
+/// Owning-block id for an `ExitPath`. Every variant carries a `block`
+/// field — surfacing it as a single function keeps `validate_drop_plan`
+/// uniform across exit kinds.
+#[must_use]
+fn exit_block_id(exit: &ExitPath) -> u32 {
+    match *exit {
+        ExitPath::Return { block }
+        | ExitPath::Goto { block, .. }
+        | ExitPath::Branch { block, .. }
+        | ExitPath::Call { block, .. }
+        | ExitPath::Panic { block }
+        | ExitPath::Cancel { block }
+        | ExitPath::Yield { block, .. }
+        | ExitPath::Send { block, .. }
+        | ExitPath::Select { block, .. } => block,
+    }
+}
+
+/// Human-readable label for an `ExitPath` discriminator — surfaced in
+/// `DropPlanUndetermined` diagnostics so the rejected exit is named.
+#[must_use]
+fn exit_kind_label(exit: &ExitPath) -> &'static str {
+    match exit {
+        ExitPath::Return { .. } => "Return",
+        ExitPath::Goto { .. } => "Goto",
+        ExitPath::Branch { .. } => "Branch",
+        ExitPath::Call { .. } => "Call",
+        ExitPath::Panic { .. } => "Panic",
+        ExitPath::Cancel { .. } => "Cancel",
+        ExitPath::Yield { .. } => "Yield",
+        ExitPath::Send { .. } => "Send",
+        ExitPath::Select { .. } => "Select",
+    }
+}
+
 /// Structural validation of an elaborated drop plan. Walks every
-/// `(ExitPath::Return, DropPlan)` and verifies that each drop's
-/// `kind` matches what the drop's `place` would select via
-/// `drop_kind_for`. A mismatch indicates the elaborator's drop-plan
-/// construction lost coherence — surface as `MirCheck::
-/// DropPlanUndetermined` so the program is rejected before codegen
-/// observes a partial / inconsistent plan.
+/// `(ExitPath, DropPlan)` entry and every `ElabBlock.drops` cleanup
+/// list, verifying that each drop's `kind` matches what the drop's
+/// `place` would select via `drop_kind_for`, that the per-block
+/// consume-on-split invariant holds, and that the lambda-actor
+/// capture side-table honours the weak-ref discipline. A mismatch
+/// indicates the elaborator's drop-plan construction lost coherence —
+/// surface as `MirCheck::DropPlanUndetermined` so the program is
+/// rejected before codegen observes a partial / inconsistent plan.
 ///
 /// This is the M2 substrate's fail-closed boundary: a `Place::
 /// DuplexHandle` paired with `DropKind::Resource` would otherwise
@@ -1285,29 +1322,73 @@ fn elaborate(
 /// runtime's close-both-directions protocol — silently dropping the
 /// recv-direction queue. Same idea for `LambdaActorHandle` paired
 /// with `DropKind::DuplexClose` (would skip the actor's stop-
-/// protocol). LESSONS: boundary-fail-closed, cleanup-all-exits.
+/// protocol).
+///
+/// The walk covers EVERY exit-path discriminator, not just `Return`:
+///   - `Return` is the canonical Hew exit; carries the function-wide
+///     LIFO drops narrowed by per-block live-set.
+///   - `Panic` and `Cancel` exits transfer to a cleanup block whose
+///     `ElabBlock.drops` carry the same LIFO drops; both the
+///     `DropPlan` and the destination cleanup block's `drops` are
+///     validated.
+///   - `Yield`, `Send`, `Select` exits carry empty `DropPlan`s today
+///     (per-arm cleanup lives in codegen for `Select`; coroutine and
+///     actor-send surfaces have no construction site on the integer
+///     spine) but the walk treats them uniformly — when a future
+///     surface populates a non-empty plan, it is checked the same
+///     way without retrofitting.
+///   - `Goto`, `Branch`, `Call` carry empty `DropPlan`s (intra-CFG
+///     edges that don't fire drops) but are walked for forward
+///     compatibility.
+///
+/// `ElabBlock.drops` are walked symmetrically so a malformed cleanup
+/// block (e.g. a panic-cleanup block with an over-broad close-both-
+/// dirs drop on a half-handle binding) is rejected at the same
+/// boundary.
+///
+/// LESSONS: boundary-fail-closed, cleanup-all-exits.
 #[must_use]
 fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
     let mut findings = Vec::new();
     for (exit, plan) in &elab.drop_plans {
-        let ExitPath::Return { block } = exit else {
-            continue;
-        };
+        let block = exit_block_id(exit);
+        let kind_label = exit_kind_label(exit);
         for drop in &plan.drops {
             let expected = drop_kind_for(drop.place, &drop.ty);
             if drop.kind != expected {
                 findings.push(MirCheck::DropPlanUndetermined {
-                    block: *block,
+                    block,
                     reason: format!(
                         "drop on place {:?} has kind {:?}, but the place \
                          variant selects {:?}; elaborator must use the \
+                         Place-driven kind (exit path: {kind_label})",
+                        drop.place, drop.kind, expected,
+                    ),
+                });
+            }
+        }
+        check_duplex_split_state(block, &plan.drops, &mut findings);
+    }
+    // Cleanup block drops are the panic / cancel landing pad. Validate
+    // the same invariants against ElabBlock.drops so a malformed
+    // cleanup block surfaces at the same boundary as a malformed
+    // DropPlan.
+    for block in &elab.blocks {
+        for drop in &block.drops {
+            let expected = drop_kind_for(drop.place, &drop.ty);
+            if drop.kind != expected {
+                findings.push(MirCheck::DropPlanUndetermined {
+                    block: block.id,
+                    reason: format!(
+                        "cleanup drop on place {:?} has kind {:?}, but the \
+                         place variant selects {:?}; elaborator must use the \
                          Place-driven kind",
                         drop.place, drop.kind, expected,
                     ),
                 });
             }
         }
-        check_duplex_split_state(*block, &plan.drops, &mut findings);
+        check_duplex_split_state(block.id, &block.drops, &mut findings);
     }
     validate_lambda_captures(&elab.lambda_captures, &mut findings);
     findings
@@ -2239,6 +2320,219 @@ mod slice3_invariants {
                 "{label}: legal split state must validate"
             );
         }
+    }
+
+    // ---------- broadened validation: every ExitPath + ElabBlock.drops ----------
+
+    /// Build a synthetic `ElaboratedMirFunction` whose sole `DropPlan`
+    /// is attached to `exit`. Used to exercise non-`Return` `ExitPath`
+    /// validation under the broadened walk.
+    fn make_elab_with_exit_and_drops(
+        exit: ExitPath,
+        drops: Vec<ElabDrop>,
+    ) -> ElaboratedMirFunction {
+        ElaboratedMirFunction {
+            name: "synthetic".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(exit, DropPlan { drops })],
+            coroutine: None,
+            lambda_captures: vec![],
+        }
+    }
+
+    #[test]
+    fn validate_walks_panic_exit_path() {
+        // A Panic exit's DropPlan is the same LIFO sequence as the
+        // Return exit at the same scope. A malformed kind here would
+        // be silently accepted under the Return-only walk; the
+        // broadened walk must reject it.
+        let bad = ElabDrop {
+            place: Place::DuplexHandle(0),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::Resource, // wrong: DuplexHandle wants DuplexClose
+        };
+        let elab = make_elab_with_exit_and_drops(ExitPath::Panic { block: 5 }, vec![bad]);
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1, "Panic-exit plan must be validated");
+        let MirCheck::DropPlanUndetermined { block, reason } = &findings[0] else {
+            unreachable!();
+        };
+        assert_eq!(*block, 5);
+        assert!(
+            reason.contains("Panic"),
+            "diagnostic should name the exit kind: {reason}"
+        );
+    }
+
+    #[test]
+    fn validate_walks_cancel_exit_path() {
+        // Cancel is the scope-structural cancellation exit. Same
+        // shape as Panic for drop-plan purposes.
+        let bad = ElabDrop {
+            place: Place::SendHalf(0),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::DuplexClose, // wrong: SendHalf wants DuplexHalfClose(Send)
+        };
+        let elab = make_elab_with_exit_and_drops(ExitPath::Cancel { block: 9 }, vec![bad]);
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1);
+        let MirCheck::DropPlanUndetermined { block, reason } = &findings[0] else {
+            unreachable!();
+        };
+        assert_eq!(*block, 9);
+        assert!(reason.contains("Cancel"));
+    }
+
+    #[test]
+    fn validate_walks_yield_send_select_exit_paths() {
+        // The three forward-compat exit kinds. Their DropPlans are
+        // empty on the spine, but the validator must still apply the
+        // Place-driven kind check when a future surface populates
+        // them. Use a malformed DuplexHandle drop on each.
+        let bad = ElabDrop {
+            place: Place::DuplexHandle(0),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::Resource,
+        };
+        for exit in [
+            ExitPath::Yield { block: 1, next: 99 },
+            ExitPath::Send {
+                block: 2,
+                actor: String::new(),
+                next: 99,
+            },
+            ExitPath::Select { block: 3, next: 99 },
+        ] {
+            let expected_label = exit_kind_label(&exit);
+            let elab = make_elab_with_exit_and_drops(exit, vec![bad.clone()]);
+            let findings = validate_drop_plan(&elab);
+            assert_eq!(
+                findings.len(),
+                1,
+                "exit {expected_label} must be walked by validator"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_walks_goto_branch_call_exit_paths() {
+        // Intra-CFG edges. Empty DropPlans on the spine, but the
+        // validator walks them uniformly so a future construction
+        // surface can't slip a malformed drop past.
+        let bad = ElabDrop {
+            place: Place::LambdaActorHandle(0),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::DuplexClose, // wrong
+        };
+        for exit in [
+            ExitPath::Goto {
+                block: 1,
+                target: 99,
+            },
+            ExitPath::Branch {
+                block: 2,
+                then_target: 98,
+                else_target: 99,
+            },
+            ExitPath::Call {
+                block: 3,
+                callee: "f".to_string(),
+                next: 99,
+            },
+        ] {
+            let elab = make_elab_with_exit_and_drops(exit, vec![bad.clone()]);
+            let findings = validate_drop_plan(&elab);
+            assert_eq!(findings.len(), 1);
+        }
+    }
+
+    #[test]
+    fn validate_walks_split_state_invariant_on_panic_exit() {
+        // Consume-on-split applies at every exit path, not just
+        // Return. A Panic cleanup with both DuplexHandle + SendHalf
+        // for the same parent must be rejected.
+        let elab = make_elab_with_exit_and_drops(
+            ExitPath::Panic { block: 4 },
+            vec![
+                duplex_drop(Place::DuplexHandle(0)),
+                duplex_drop(Place::SendHalf(0)),
+            ],
+        );
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1, "split-state must apply to Panic exit");
+        assert!(matches!(findings[0], MirCheck::DropPlanUndetermined { .. }));
+    }
+
+    #[test]
+    fn validate_walks_elab_block_drops() {
+        // Cleanup blocks carry drops directly in ElabBlock.drops.
+        // A malformed kind here must be rejected at the same
+        // structural boundary.
+        let bad = ElabDrop {
+            place: Place::RecvHalf(0),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::DuplexHalfClose(Direction::Send), // wrong queue
+        };
+        let elab = ElaboratedMirFunction {
+            name: "synthetic".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![ElabBlock {
+                id: 12,
+                kind: BlockKind::Cleanup,
+                drops: vec![bad],
+                successor: None,
+            }],
+            drop_plans: vec![],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1);
+        let MirCheck::DropPlanUndetermined { block, reason } = &findings[0] else {
+            unreachable!();
+        };
+        assert_eq!(*block, 12);
+        assert!(
+            reason.contains("cleanup drop"),
+            "diagnostic must name the cleanup-block context: {reason}"
+        );
+    }
+
+    #[test]
+    fn validate_walks_elab_block_drops_split_state() {
+        // Consume-on-split applies inside cleanup blocks too. A
+        // cleanup block whose drops list has DuplexHandle + RecvHalf
+        // for the same parent must be rejected.
+        let elab = ElaboratedMirFunction {
+            name: "synthetic".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![ElabBlock {
+                id: 13,
+                kind: BlockKind::Cleanup,
+                drops: vec![
+                    duplex_drop(Place::DuplexHandle(0)),
+                    duplex_drop(Place::RecvHalf(0)),
+                ],
+                successor: None,
+            }],
+            drop_plans: vec![],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1);
     }
 
     // ---------- per-Return live-set narrowing (synthetic) ----------

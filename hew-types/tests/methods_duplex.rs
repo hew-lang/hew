@@ -31,20 +31,64 @@ fn has_rewrite(output: &hew_types::TypeCheckOutput, symbol: &str) -> bool {
 // Accept fixtures — Duplex<S, R> methods
 // ---------------------------------------------------------------------------
 
-/// `d.send(42)` on `Duplex<int, int>` typechecks and records
-/// `hew_duplex_send` in the rewrite table.
+/// `d.send(42)` on tell-shaped `Duplex<int, ()>` returns `Result<(), SendError>`.
 #[test]
-fn duplex_send_int_resolves() {
+fn duplex_send_tell_shaped_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
+            let (d, _) = duplex_pair<int, ()>(16);
             let _: Result<(), SendError> = d.send(42);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "d.send(42) on Duplex<int,int> should typecheck; got: {:#?}",
+        "d.send(42) on tell-shaped Duplex<int,()> should typecheck; got: {:#?}",
+        output.errors
+    );
+    assert!(
+        has_rewrite(&output, "hew_duplex_send"),
+        "expected hew_duplex_send in method_call_rewrites; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+/// `d.send(42)` on ask-shaped `Duplex<int, bool>` returns `Result<bool, AskError>`.
+#[test]
+fn duplex_send_ask_shaped_resolves() {
+    let source = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, bool>(16);
+            let _: Result<bool, AskError> = d.send(42);
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "d.send(42) on ask-shaped Duplex<int,bool> should typecheck; got: {:#?}",
+        output.errors
+    );
+    assert!(
+        has_rewrite(&output, "hew_duplex_send"),
+        "expected hew_duplex_send in method_call_rewrites; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+/// `d.send(42)` on `Duplex<int, int>` (ask-shaped) typechecks and records
+/// `hew_duplex_send` in the rewrite table. Kept for rewrite-table coverage.
+#[test]
+fn duplex_send_int_resolves() {
+    let source = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, int>(16);
+            let _: Result<int, AskError> = d.send(42);
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "d.send(42) on Duplex<int,int> should typecheck (ask-shaped); got: {:#?}",
         output.errors
     );
     assert!(
@@ -269,13 +313,13 @@ fn recv_half_close_resolves_and_consumes() {
 // Accept fixtures — try_send / try_recv on Duplex
 // ---------------------------------------------------------------------------
 
-/// `d.try_send(42)` on `Duplex<int, int>` typechecks and records
+/// `d.try_send(42)` on tell-shaped `Duplex<int, ()>` typechecks and records
 /// `hew_duplex_try_send` in the rewrite table.
 #[test]
 fn duplex_try_send_resolves() {
     let source = r"
         fn main() {
-            let (d, _) = duplex_pair<int, int>(16);
+            let (d, _) = duplex_pair<int, ()>(16);
             let _: Result<(), SendError> = d.try_send(42);
         }
     ";

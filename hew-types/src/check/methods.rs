@@ -1037,7 +1037,15 @@ impl Checker {
                     self.synthesize(expr, sp);
                 }
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
-                Ty::result(Ty::Unit, Ty::send_error())
+                // Return type depends on reply direction, mirroring call-syntax dispatch:
+                //   tell-shaped (R = ())  → Result<(), SendError>
+                //   ask-shaped  (R = R)   → Result<R, AskError>
+                let resolved_r = self.subst.resolve(&r_ty);
+                if matches!(resolved_r, Ty::Unit) {
+                    Ty::result(Ty::Unit, Ty::send_error())
+                } else {
+                    Ty::result(resolved_r, Ty::ask_error())
+                }
             }
             "try_send" => {
                 // Non-blocking send: same argument and Send-bound check as

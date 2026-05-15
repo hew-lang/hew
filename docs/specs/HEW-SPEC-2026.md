@@ -2498,7 +2498,8 @@ forked within the block must complete before the block returns.
 scope {
     fork a = compute_a();   // child task: spawned + name-bound
     fork b = compute_b();   // sibling child task
-    use_results(a?, b?);    // awaits + propagates errors to the enclosing function via ?
+    use_results(a?, b?);    // `?` propagates errors if a/b's return type is Result/Option;
+                            // the scope itself joins children on exit — no `await` needed.
 }
 ```
 
@@ -2538,7 +2539,7 @@ var result;
 scope {
     fork a = compute_a();
     fork b = compute_b();
-    result = combine(a?, b?);   // awaits children; ? propagates errors to the enclosing function
+    result = combine(a?, b?);   // scope joins a and b on exit; `?` propagates Result/Option errors
 };
 result
 ```
@@ -2906,24 +2907,30 @@ actor's mutable state: each runs on its own OS thread, captured values
 move (or clone) across the boundary, and the actor's fields are not
 reachable from inside a child body.
 
+> **§4.8 design unsettled (2026-05-15)** — the dynamic-fork-in-loop
+> idiom shown below is illustrative only. The ratified `fork name = expr;`
+> shape requires a binding name per child; collecting handles into
+> `Vec<Task<T>>` contradicts the `Task<T>` non-nameability rule (§4.3),
+> and `await t` is not a primitive. The settled idiom is one of:
+> (a) `fork[]` array form yielding `[T; N]` on scope exit;
+> (b) a `scope_par_map(items, |x| f(x))` stdlib op;
+> (c) actor-mailbox accumulation via an anonymous `fork _ = …;`.
+> The example below uses an indicative placeholder pending ratification.
+
 ```hew
 actor DataProcessor {
     var cache: HashMap<String, Data> = HashMap::new();
 
     receive fn process_batch(ids: Vec<String>) -> Vec<Data> {
-        var tasks: Vec<Task<Data>> = Vec::new();
+        // Indicative shape; see §4.8 design-unsettled note above.
+        // The scope joins all forks on exit; `data` is populated
+        // via the (unsettled) accumulation mechanism.
         var data: Vec<Data> = Vec::new();
         scope {
             for id in ids {
                 // Captures of `id` move into the child; actor fields
                 // (e.g. `cache`) are not in scope inside the child body.
-                fork task = fetch_data(id);
-                tasks.push(task);
-            }
-
-            // Await all results (back on the actor's thread)
-            for t in tasks {
-                data.push(await t);
+                fork _ = collect_into(&mut data, fetch_data(id));
             }
         };
         data

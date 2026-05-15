@@ -1431,13 +1431,20 @@ fn actor_lambda_self_escape_rejected() {
         }
         ",
     );
-    // Duplex is not user-annotatable as a return type yet (it's checker-synthesised),
-    // so this test verifies that at minimum the actor with a Duplex-typed body is rejected.
-    // The error may be UnknownType (Duplex not in user namespace) or InvalidOperation
-    // (E_LAMBDA_SELF_ESCAPE). Either demonstrates the path is closed.
+    // The outer actor's body synthesises to Duplex<int, ()> because `inner` is a
+    // Duplex. That triggers E_LAMBDA_SELF_ESCAPE (InvalidOperation) before any
+    // return-type-annotation check fires, so the fixture reliably exercises the path.
+    let self_escape_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("E_LAMBDA_SELF_ESCAPE")
+        })
+        .collect();
     assert!(
-        !output.errors.is_empty(),
-        "actor body returning a Duplex handle must be rejected, got no errors"
+        !self_escape_errors.is_empty(),
+        "expected E_LAMBDA_SELF_ESCAPE diagnostic (InvalidOperation), got: {:?}",
+        output.errors
     );
 }
 

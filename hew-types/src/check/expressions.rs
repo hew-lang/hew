@@ -1002,6 +1002,13 @@ impl Checker {
                 // A lambda body that produces a Duplex<...> value is leaking an actor
                 // handle outside the actor boundary — the handle's lifetime is bound to
                 // the let-binding site, not to values the body produces.
+                //
+                // CONSERVATIVE APPROXIMATION (slice 2): any Duplex-typed body is rejected,
+                // including the "factory" pattern (actor body returns a *different* actor's
+                // handle). Slice 3 can narrow this to only reject Duplex values that alias
+                // a capture from the enclosing let-binding, using MIR-level alias analysis.
+                // Until then, returning any Duplex from an actor body is forbidden.
+                //
                 // WHEN-OBSOLETE: slice 3 adds MIR-level self-ref weak capture that covers
                 // the runtime dimension of self-escape; this is the static type-level gate.
                 if body_ret.as_duplex().is_some() {

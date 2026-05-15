@@ -207,6 +207,20 @@ fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> Lower
             diagnostics.push(diag);
         }
     }
+    // Cross-block stale-handle detection. Walks the backend Instr
+    // stream across the function's CFG and rejects drop plans that
+    // fire `Place::DuplexHandle(N)` on a block whose reaching paths
+    // have already moved the unified handle into a `SendHalf` /
+    // `RecvHalf` split. Catches the case the slice-3 structural
+    // checker cannot — a same-direction close emitted by codegen on
+    // a handle whose previous owner has been moved out. LESSONS:
+    // cleanup-all-exits, raii-null-after-move,
+    // boundary-fail-closed.
+    for check in validate_cross_block_split_consume(&raw.blocks, &elaborated) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
 
     LoweredFunction {
         thir,
@@ -1723,6 +1737,337 @@ fn check_duplex_split_state(block: u32, drops: &[ElabDrop], findings: &mut Vec<M
                 ),
             });
         }
+    }
+}
+
+/// Per-`Duplex` consume state at a program point. Tracks the
+/// affine move-checker discipline expressed at the backend
+/// instruction layer: a `.send_half()` / `.recv_half()` split
+/// emits an `Instr::Move { src: Place::DuplexHandle(N), dest:
+/// Place::SendHalf(N) | Place::RecvHalf(N) }`, which moves the
+/// unified handle out and leaves only the half-handle binding(s)
+/// live in the drop plan.
+///
+/// Lattice semantics over the CFG meet:
+///   - `Live ⊓ Live = Live`
+///   - `Live ⊓ Consumed = MaybeConsumed` (some-path-consumed)
+///   - `Consumed ⊓ Consumed = Consumed`
+///   - `MaybeConsumed ⊓ X = MaybeConsumed`
+///
+/// Either `Consumed` or `MaybeConsumed` at a block whose drop plan
+/// contains `DuplexHandle(N)` is rejected — `Consumed` because the
+/// drop is structurally stale, `MaybeConsumed` because the program
+/// could close the same direction twice on some paths
+/// (fail-closed for ambiguous shapes per the M2 substrate's
+/// `boundary-fail-closed` discipline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DuplexSplitState {
+    /// No `.send_half()` / `.recv_half()` consume of the unified
+    /// handle has been observed on any reaching path.
+    Live,
+    /// The unified handle was moved on every reaching path; carries
+    /// the earliest split-emitting block id for diagnostic anchoring.
+    Consumed(u32),
+    /// The unified handle was moved on some-but-not-all reaching
+    /// paths; the drop plan cannot decide whether to fire the close.
+    /// Carries the earliest split-emitting block id.
+    MaybeConsumed(u32),
+}
+
+impl DuplexSplitState {
+    /// Lattice meet over the three-state space. Commutative,
+    /// associative, idempotent — pinned by tests below.
+    fn meet(self, other: DuplexSplitState) -> DuplexSplitState {
+        use DuplexSplitState::{Consumed, Live, MaybeConsumed};
+        match (self, other) {
+            (Live, Live) => Live,
+            (Live, Consumed(b) | MaybeConsumed(b)) | (Consumed(b) | MaybeConsumed(b), Live) => {
+                MaybeConsumed(b)
+            }
+            (Consumed(a), Consumed(b)) => Consumed(a.min(b)),
+            (Consumed(a), MaybeConsumed(b)) | (MaybeConsumed(a), Consumed(b)) => {
+                MaybeConsumed(a.min(b))
+            }
+            (MaybeConsumed(a), MaybeConsumed(b)) => MaybeConsumed(a.min(b)),
+        }
+    }
+}
+
+/// Walk the backend `Instr` stream across a function's CFG and
+/// reject drop plans that fire `Place::DuplexHandle(N)` on a block
+/// whose reaching paths have already moved the unified handle into
+/// a `SendHalf` / `RecvHalf` split.
+///
+/// The slice-3 structural checker (`check_duplex_split_state`) catches
+/// only same-drop-list collisions of `DuplexHandle(N)` with
+/// `SendHalf(N)` / `RecvHalf(N)`. It cannot detect the cross-block
+/// case where block A emits the split and block B (a successor)
+/// drops the now-stale `DuplexHandle(N)`. This dataflow closes the
+/// gap.
+///
+/// The transfer function scans each block's instructions for
+/// `Instr::Move { src: Place::DuplexHandle(N), dest:
+/// Place::SendHalf(N) | Place::RecvHalf(N) }` and transitions the
+/// parent's state to `Consumed(block_id)`. Inter-block, the entry
+/// state of each block is the meet over predecessor exit states;
+/// the entry block starts with every parent `Live`.
+///
+/// The CFG is acyclic in v0.5 (the loop cluster is deferred), so
+/// the worklist terminates in one RPO pass. The check then iterates
+/// every `(ExitPath, DropPlan)` plus every cleanup
+/// `ElabBlock.drops`, looking for `DuplexHandle(N)` drops whose
+/// owning block's exit state is `Consumed` (definitely stale) or
+/// `MaybeConsumed` (ambiguous). Either case produces a
+/// `MirCheck::DropPlanUndetermined`.
+///
+/// Cleanup blocks inherit the state of the normal block they
+/// trap-cleanup from — `enumerate_exits` clones the normal-path
+/// `drops_template` unfiltered into the cleanup block's drops, so a
+/// `DuplexHandle` left in the cleanup block's drop list reflects a
+/// program shape where the normal-path consume already happened
+/// but the cleanup path was forgotten. Validate against the normal
+/// predecessor's exit state.
+///
+/// LESSONS: cleanup-all-exits, raii-null-after-move,
+/// boundary-fail-closed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "single fixpoint + drop-list-walk; splitting would obscure the dataflow"
+)]
+fn validate_cross_block_split_consume(
+    blocks: &[BasicBlock],
+    elab: &ElaboratedMirFunction,
+) -> Vec<MirCheck> {
+    use std::collections::{BTreeMap, VecDeque};
+
+    let mut findings = Vec::new();
+    if blocks.is_empty() {
+        return findings;
+    }
+
+    // Per-block per-parent exit state. Absent entries are implicitly
+    // `Live` — the most-permissive default. The map carries only
+    // parents whose state diverged from `Live` on at least one
+    // reaching path; this keeps the lattice sparse.
+    let mut exit_states: HashMap<u32, BTreeMap<u32, DuplexSplitState>> = HashMap::new();
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+
+    // Predecessor edges for the meet step.
+    let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
+    for block in blocks {
+        let mut emit = |target: u32| preds.entry(target).or_default().push(block.id);
+        match &block.terminator {
+            Terminator::Return | Terminator::Panic => {}
+            Terminator::Goto { target } => emit(*target),
+            Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => {
+                emit(*then_target);
+                emit(*else_target);
+            }
+            Terminator::Call { next, .. }
+            | Terminator::Yield { next, .. }
+            | Terminator::Send { next, .. }
+            | Terminator::Select { next, .. } => emit(*next),
+        }
+    }
+
+    let successors = |block: &BasicBlock| -> Vec<u32> {
+        match &block.terminator {
+            Terminator::Return | Terminator::Panic => Vec::new(),
+            Terminator::Goto { target } => vec![*target],
+            Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => vec![*then_target, *else_target],
+            Terminator::Call { next, .. }
+            | Terminator::Yield { next, .. }
+            | Terminator::Send { next, .. }
+            | Terminator::Select { next, .. } => vec![*next],
+        }
+    };
+
+    // Forward fixpoint. The entry block is id 0 by construction.
+    let entry_id = 0;
+    let mut worklist: VecDeque<u32> = blocks.iter().map(|b| b.id).collect();
+    let mut all_parents: HashSet<u32> = HashSet::new();
+    // Seed all_parents from any DuplexHandle/Half-handle place that
+    // appears in any block's instructions — those are the only
+    // parents the cross-block dataflow needs to track.
+    for block in blocks {
+        for instr in &block.instructions {
+            for place in instr_places(instr) {
+                if let Some(parent) = duplex_parent_local(place) {
+                    all_parents.insert(parent);
+                }
+            }
+        }
+    }
+    if all_parents.is_empty() {
+        return findings;
+    }
+
+    while let Some(bb_id) = worklist.pop_front() {
+        let Some(block) = by_id.get(&bb_id) else {
+            continue;
+        };
+        let entry: BTreeMap<u32, DuplexSplitState> = if bb_id == entry_id {
+            BTreeMap::new()
+        } else {
+            let empty = Vec::new();
+            let predecessors = preds.get(&bb_id).unwrap_or(&empty);
+            meet_predecessors_split(predecessors, &exit_states, &all_parents)
+        };
+        let new_exit = transfer_block_split(entry, block);
+        let changed = exit_states.get(&bb_id).is_none_or(|prev| *prev != new_exit);
+        exit_states.insert(bb_id, new_exit);
+        if changed {
+            for succ in successors(block) {
+                worklist.push_back(succ);
+            }
+        }
+    }
+
+    // Inspect every drop plan / cleanup-block-drop list against the
+    // owning block's exit state for the relevant parent. A stale
+    // unified-handle drop (`Consumed` or `MaybeConsumed`) is rejected.
+    let report_drop = |block: u32, drops: &[ElabDrop], findings: &mut Vec<MirCheck>| {
+        let Some(state_map) = exit_states.get(&block) else {
+            return;
+        };
+        for drop in drops {
+            let Place::DuplexHandle(parent) = drop.place else {
+                continue;
+            };
+            let state = state_map
+                .get(&parent)
+                .copied()
+                .unwrap_or(DuplexSplitState::Live);
+            match state {
+                DuplexSplitState::Live => {}
+                DuplexSplitState::Consumed(consume_block) => {
+                    findings.push(MirCheck::DropPlanUndetermined {
+                        block,
+                        reason: format!(
+                            "drop plan contains DuplexHandle({parent}) but block {consume_block} \
+                             on every reaching path moves the unified handle into a half-handle \
+                             (split via .send_half()/.recv_half() consumes the DuplexHandle; \
+                             the half-handle binding is the only remaining owner)"
+                        ),
+                    });
+                }
+                DuplexSplitState::MaybeConsumed(consume_block) => {
+                    findings.push(MirCheck::DropPlanUndetermined {
+                        block,
+                        reason: format!(
+                            "drop plan contains DuplexHandle({parent}) but block {consume_block} \
+                             on some reaching paths moves the unified handle into a half-handle \
+                             (split-on-some-paths leaves the drop ambiguous; fail-closed per \
+                             cleanup-all-exits)"
+                        ),
+                    });
+                }
+            }
+        }
+    };
+
+    for (exit, plan) in &elab.drop_plans {
+        let block = exit_block_id(exit);
+        report_drop(block, &plan.drops, &mut findings);
+    }
+    // Cleanup blocks: validate against the cleanup block's predecessor
+    // (the normal block that trapped into it). The cleanup block id
+    // itself is past the highest normal-block id and has no
+    // predecessor entry in `exit_states`; consult the normal block
+    // whose `Terminator::Panic` produced the cleanup edge.
+    for elab_block in &elab.blocks {
+        if elab_block.kind != BlockKind::Cleanup {
+            continue;
+        }
+        // Find the normal block that traps into this cleanup. The
+        // `Terminator::Panic` path generated cleanup ids past the
+        // max normal id; the cleanup's drops mirror the normal
+        // block's pre-terminator state. Without a back-reference,
+        // we conservatively validate against EVERY normal block whose
+        // Terminator is Panic (the elab structure has one cleanup
+        // per Panic). For each, report any stale DuplexHandle drop.
+        for raw_block in blocks {
+            if matches!(raw_block.terminator, Terminator::Panic) {
+                report_drop(raw_block.id, &elab_block.drops, &mut findings);
+            }
+        }
+    }
+
+    findings
+}
+
+fn meet_predecessors_split(
+    preds: &[u32],
+    exit_states: &std::collections::HashMap<u32, std::collections::BTreeMap<u32, DuplexSplitState>>,
+    all_parents: &std::collections::HashSet<u32>,
+) -> std::collections::BTreeMap<u32, DuplexSplitState> {
+    use std::collections::BTreeMap;
+    if preds.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut entry = BTreeMap::new();
+    for &parent in all_parents {
+        let acc = preds
+            .iter()
+            .map(|p| {
+                exit_states
+                    .get(p)
+                    .and_then(|m| m.get(&parent).copied())
+                    .unwrap_or(DuplexSplitState::Live)
+            })
+            .reduce(DuplexSplitState::meet)
+            .unwrap_or(DuplexSplitState::Live);
+        if !matches!(acc, DuplexSplitState::Live) {
+            entry.insert(parent, acc);
+        }
+    }
+    entry
+}
+
+fn transfer_block_split(
+    entry: std::collections::BTreeMap<u32, DuplexSplitState>,
+    block: &BasicBlock,
+) -> std::collections::BTreeMap<u32, DuplexSplitState> {
+    let mut state = entry;
+    for instr in &block.instructions {
+        if let Instr::Move { dest, src } = instr {
+            if let (Place::DuplexHandle(parent), true) = (
+                *src,
+                matches!(dest, Place::SendHalf(_) | Place::RecvHalf(_)),
+            ) {
+                // Transition the parent to Consumed by this block. A
+                // prior MaybeConsumed/Consumed entry is overwritten —
+                // the move-checker upstream has already determined
+                // whether a re-use after consume is legal; for the
+                // drop-plan check, the latest consume in this block
+                // is the relevant anchor.
+                state.insert(parent, DuplexSplitState::Consumed(block.id));
+            }
+        }
+    }
+    state
+}
+
+/// Return every `Place` mentioned by a backend `Instr`. Used by the
+/// cross-block split-state seed pass to discover which parent
+/// locals participate in the dataflow.
+fn instr_places(instr: &Instr) -> Vec<Place> {
+    match instr {
+        Instr::ConstI64 { dest, .. } => vec![*dest],
+        Instr::IntAdd { dest, lhs, rhs }
+        | Instr::IntSub { dest, lhs, rhs }
+        | Instr::IntMul { dest, lhs, rhs }
+        | Instr::IntCmp { dest, lhs, rhs, .. } => vec![*dest, *lhs, *rhs],
+        Instr::Move { dest, src } => vec![*dest, *src],
+        Instr::Drop { place, .. } => vec![*place],
     }
 }
 

@@ -2,6 +2,10 @@ use hew_hir::{
     dump_hir, lower_program, verify_hir, HirDiagnosticKind, HirExprKind, HirSelectArmKind,
     HirStmtKind, ResolutionCtx,
 };
+use hew_parser::ast::{
+    Block, Expr, FnDecl, IntRadix, Item, Literal, Pattern, Program, SelectArm, Stmt, TimeoutClause,
+    Visibility,
+};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -764,5 +768,126 @@ fn task_handle_fork_block_passes_verifier() {
     assert!(
         structural_failures.is_empty(),
         "fork block must produce structurally valid HIR: {structural_failures:?}"
+    );
+}
+
+/// Build a minimal `Program` that contains a single `fn main()` whose body
+/// is `let r = <select_expr>;`. Used to drive the HIR lowerer directly with
+/// AST shapes the parser cannot produce (e.g. two `after` arms).
+fn program_with_select(select_expr: Expr) -> Program {
+    let lit_one = (
+        Expr::Literal(Literal::Integer {
+            value: 1,
+            radix: IntRadix::Decimal,
+        }),
+        0..1,
+    );
+    let let_stmt = (
+        Stmt::Let {
+            pattern: (Pattern::Identifier("r".to_string()), 0..1),
+            ty: None,
+            value: Some((select_expr, 0..1)),
+        },
+        0..1,
+    );
+    let main_fn = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Private,
+        is_pure: false,
+        name: "main".to_string(),
+        type_params: None,
+        params: vec![],
+        return_type: None,
+        where_clause: None,
+        body: Block {
+            stmts: vec![let_stmt],
+            trailing_expr: Some(Box::new(lit_one)),
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+    };
+    Program {
+        items: vec![(Item::Function(main_fn), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    }
+}
+#[test]
+fn select_two_after_arms_rejected() {
+    // Positive path: an `Expr::Timeout`-sourced arm in `arms` combined
+    // with the dedicated `timeout` field gives two `after` arms — rejected
+    // with exactly one `SelectMultipleAfterArms` diagnostic.
+    let dur = Box::new((
+        Expr::Literal(Literal::Integer {
+            value: 100,
+            radix: IntRadix::Decimal,
+        }),
+        0..3,
+    ));
+    let body = Box::new((
+        Expr::Literal(Literal::Integer {
+            value: 1,
+            radix: IntRadix::Decimal,
+        }),
+        0..1,
+    ));
+    // Arm in `arms` vec with an `Expr::Timeout` source (second `after`).
+    let timeout_arm = SelectArm {
+        binding: (Pattern::Wildcard, 0..1),
+        source: (
+            Expr::Timeout {
+                expr: Box::new((Expr::Literal(Literal::Bool(false)), 0..1)),
+                duration: dur.clone(),
+            },
+            0..3,
+        ),
+        body: (
+            Expr::Literal(Literal::Integer {
+                value: 1,
+                radix: IntRadix::Decimal,
+            }),
+            0..1,
+        ),
+    };
+    let select_expr = Expr::Select {
+        arms: vec![timeout_arm],
+        timeout: Some(Box::new(TimeoutClause {
+            duration: dur,
+            body,
+        })),
+    };
+    let program = program_with_select(select_expr);
+    let output = lower_program(&program, &ResolutionCtx);
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectMultipleAfterArms)),
+        "two after arms must emit SelectMultipleAfterArms: {:?}",
+        output.diagnostics
+    );
+}
+#[test]
+fn select_one_after_arm_does_not_trigger_multiple_after() {
+    // Negative path: one `after` arm (via `timeout`) plus one non-after arm
+    // must NOT emit `SelectMultipleAfterArms`.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 msg from next(s) => 1, \
+                 after 5ms => 1, \
+             }; \
+         }",
+    );
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectMultipleAfterArms)),
+        "single after arm must not emit SelectMultipleAfterArms: {:?}",
+        output.diagnostics
     );
 }

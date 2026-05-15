@@ -1030,7 +1030,8 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
         // and actor sends.
         MirCheck::Aliasing { .. }
         | MirCheck::GeneratorBorrowAcrossYield { .. }
-        | MirCheck::ActorSendEscape { .. } => None,
+        | MirCheck::ActorSendEscape { .. }
+        | MirCheck::ActorAskEscape { .. } => None,
     }
 }
 
@@ -1363,6 +1364,30 @@ fn enumerate_exits(
                 ExitPath::Send {
                     block: block_id,
                     actor: String::new(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Ask {
+                actor,
+                value: _,
+                channel,
+                reply_dest: _,
+                next,
+            } => (
+                // Declared-only. Spine has no Ask construction surface;
+                // HIR-to-MIR lowers select arms into `Terminator::Select`,
+                // and non-select actor calls remain rejected as
+                // `CutoverUnsupported`. The `ExitPath::Ask` slot carries
+                // the `channel` Place because the loser-cleanup sequence
+                // (`hew_reply_channel_cancel` + `hew_reply_channel_free`)
+                // is what the cleanup CFG needs when the construction
+                // surface lands. Empty drop plan is a placeholder until
+                // the cleanup CFG wires per-arm loser-cleanup blocks.
+                ExitPath::Ask {
+                    block: block_id,
+                    actor: *actor,
+                    channel: *channel,
                     next: *next,
                 },
                 DropPlan::default(),

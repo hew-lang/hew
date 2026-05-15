@@ -633,48 +633,53 @@ impl LowerCtx {
                 // `actor |params| { body }` and the let-pattern is a bare
                 // identifier, the body may reference its own let-name for
                 // recursive self-dispatch (HEW-SPEC §5.9 ratification 2).
-                // Pre-bind the name with the Duplex type computed from the
-                // parameter / return annotations BEFORE lowering the body so
-                // the body's identifier reference resolves to a
+                // Pre-bind the name BEFORE lowering the body so the body's
+                // identifier reference resolves to a
                 // `ResolvedRef::Binding(let_id)` rather than `Unresolved`.
                 // The capture-strength classifier in `lower_expr`'s
                 // `Expr::SpawnLambdaActor` arm checks the resolved id
                 // against this let's id to discriminate Weak (self) from
                 // Strong (every other free-variable capture).
-                if ty.is_none() {
-                    if let (
-                        Pattern::Identifier(name),
-                        Some((
-                            Expr::SpawnLambdaActor {
-                                params: lambda_params,
-                                return_type,
-                                ..
-                            },
-                            _,
-                        )),
-                    ) = (&pattern.0, value.as_ref())
-                    {
-                        let duplex_ty =
-                            self.actor_lambda_duplex_ty(lambda_params, return_type.as_ref());
-                        // Pre-bind in the current scope; record the id so
-                        // we can detect a self-reference inside the body
-                        // walk via builder state.
-                        let pre_binding =
-                            self.bind(name.clone(), duplex_ty.clone(), false, pattern.1.clone());
-                        let prior = self
-                            .current_actor_self
-                            .replace((pre_binding.id, name.clone()));
-                        let lowered_value = self.lower_expr(
-                            value.as_ref().expect("value Some checked above"),
-                            IntentKind::Consume,
-                        );
-                        self.current_actor_self = prior;
-                        return HirStmt {
-                            node: self.ids.node(),
-                            kind: HirStmtKind::Let(pre_binding, Some(lowered_value)),
-                            span,
-                        };
-                    }
+                //
+                // The pre-bind fires for both untyped and typed lets. The
+                // binding type follows the annotation when present (the
+                // type-checker layer reconciles the annotation against the
+                // lambda's synthesised Duplex shape) and falls back to the
+                // synthetic `Duplex<Msg, Reply>` derived from the lambda's
+                // parameter / return annotations otherwise.
+                if let (
+                    Pattern::Identifier(name),
+                    Some((
+                        Expr::SpawnLambdaActor {
+                            params: lambda_params,
+                            return_type,
+                            ..
+                        },
+                        _,
+                    )),
+                ) = (&pattern.0, value.as_ref())
+                {
+                    let binding_ty = match ty.as_ref() {
+                        Some(annotation) => self.lower_type(annotation),
+                        None => self.actor_lambda_duplex_ty(lambda_params, return_type.as_ref()),
+                    };
+                    // Pre-bind in the current scope; record the id so
+                    // we can detect a self-reference inside the body
+                    // walk via builder state.
+                    let pre_binding = self.bind(name.clone(), binding_ty, false, pattern.1.clone());
+                    let prior = self
+                        .current_actor_self
+                        .replace((pre_binding.id, name.clone()));
+                    let lowered_value = self.lower_expr(
+                        value.as_ref().expect("value Some checked above"),
+                        IntentKind::Consume,
+                    );
+                    self.current_actor_self = prior;
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Let(pre_binding, Some(lowered_value)),
+                        span,
+                    };
                 }
                 let value = value
                     .as_ref()

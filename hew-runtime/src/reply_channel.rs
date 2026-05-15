@@ -567,6 +567,49 @@ mod tests {
     }
 
     #[test]
+    fn loser_cleanup_sequence_does_not_leak_channel() {
+        // Pins the ABI sequence codegen will emit when a select{}
+        // actor-ask arm loses: allocate the reply channel, then
+        // (because the ask either failed to dispatch or the arm lost
+        // the race) cancel + free without ever waiting for a reply.
+        // The pair must be a net-zero on `ACTIVE_CHANNELS`: the
+        // single `new` increments it by 1, and the matching `free`
+        // must decrement it by 1 once the last reference drops.
+        //
+        // ACTIVE_CHANNELS is process-wide and other tests in this
+        // module run concurrently against it. The invariant pinned
+        // here is the local-pair: observe the count immediately after
+        // `new` (must be > pre-new), then observe again immediately
+        // after `free` (must be < post-new, by at least one).
+        let pre_new = active_channel_count();
+
+        let ch = hew_reply_channel_new();
+        assert!(!ch.is_null(), "hew_reply_channel_new must not return null");
+        let post_new = active_channel_count();
+        assert!(
+            post_new > pre_new,
+            "hew_reply_channel_new must increment ACTIVE_CHANNELS \
+             (pre={pre_new}, post={post_new})"
+        );
+
+        // SAFETY: ch is a valid channel pointer produced by
+        // hew_reply_channel_new immediately above. No sender was
+        // retained, so `cancel` is a no-op on the refcount and `free`
+        // drops the only outstanding reference.
+        unsafe {
+            hew_reply_channel_cancel(ch);
+            hew_reply_channel_free(ch);
+        }
+
+        let post_free = active_channel_count();
+        assert!(
+            post_free < post_new,
+            "loser-cleanup sequence (cancel + free) must decrement \
+             ACTIVE_CHANNELS (post_new={post_new}, post_free={post_free})"
+        );
+    }
+
+    #[test]
     fn reply_then_cancel_preserves_ready_value_until_owner_releases() {
         let ch = hew_reply_channel_new();
         let value = 42_i32;

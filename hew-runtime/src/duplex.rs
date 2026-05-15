@@ -359,23 +359,61 @@ impl HewDuplex {
     /// budget: callers MUST drop the unified handle after splitting
     /// (the MIR layer enforces this via `Place::SendHalf(parent)`).
     pub fn into_send_half(self) -> HewSendHalf {
-        // Steal the s_queue handle (its sender-cap is already counted
-        // for this Duplex). Release the r_queue's receiver-cap because
-        // SendHalf does not hold one.
-        self.r_queue.release_receiver();
-        let s_queue = Arc::clone(&self.s_queue);
-        // Suppress the unified Drop path so we don't double-release
-        // the s_queue's sender-cap.
-        std::mem::forget(self);
+        // Move both `Arc<Queue>` fields out of `self` *by value* via
+        // `ManuallyDrop`, so the unified handle's `Drop` is suppressed
+        // (it would double-release the s_queue's sender-cap) yet the
+        // moved Arcs still decrement their Arc refcount on drop. A
+        // prior implementation cloned the Arc and `mem::forget`d the
+        // outer handle — that stranded both `Arc<Queue>` refcounts
+        // (each call leaked the inner allocation).
+        let me = std::mem::ManuallyDrop::new(self);
+        // SAFETY:
+        // - Provenance: `&me.s_queue` / `&me.r_queue` are references
+        //   into a `ManuallyDrop<HewDuplex>` we own by value; the
+        //   ManuallyDrop suppresses the outer Drop so the Arcs are
+        //   never freed by it.
+        // - Type tag: each read reconstitutes `Arc<Queue>` from a
+        //   reference of the same type.
+        // - Lifetime owner: ownership transfers into the local
+        //   bindings; `me` is never observed again.
+        // - Aliasing concurrency: exclusive ownership inside this
+        //   function frame.
+        // - Bounds: pointer-aligned reads of `Sized` Arc fields.
+        // - Failure mode: each field is read exactly once; no double
+        //   move.
+        let s_queue = unsafe { std::ptr::read(&raw const me.s_queue) };
+        // SAFETY: identical contract — second of two single reads of
+        // disjoint fields inside the ManuallyDrop-suppressed handle.
+        let r_queue = unsafe { std::ptr::read(&raw const me.r_queue) };
+        // SendHalf does not retain the receiver-cap on r_queue; release
+        // it. The r_queue's Arc refcount decrements when the local
+        // binding drops at function exit.
+        r_queue.release_receiver();
+        drop(r_queue);
         HewSendHalf { s_queue }
     }
 
     /// Split into a `RecvHalf` retaining only R-read capability.
     pub fn into_recv_half(self) -> HewRecvHalf {
-        self.s_queue.release_sender();
-        let r_queue = Arc::clone(&self.r_queue);
-        std::mem::forget(self);
+        // See `into_send_half` for the ManuallyDrop + ptr::read
+        // discipline; mirrored here for the R-direction.
+        let me = std::mem::ManuallyDrop::new(self);
+        // SAFETY: see `into_send_half` — symmetric six-axis profile.
+        let s_queue = unsafe { std::ptr::read(&raw const me.s_queue) };
+        // SAFETY: see `into_send_half` — second of two disjoint reads.
+        let r_queue = unsafe { std::ptr::read(&raw const me.r_queue) };
+        s_queue.release_sender();
+        drop(s_queue);
         HewRecvHalf { r_queue }
+    }
+
+    /// Test-only access to the inner queue Arcs so a test can hold a
+    /// `Weak<Queue>` and verify that splitting and dropping the halves
+    /// frees the underlying queue allocation (regression for the
+    /// pre-`ManuallyDrop` Arc leak in `into_send_half`/`into_recv_half`).
+    #[cfg(test)]
+    pub(crate) fn queue_arcs_for_test(&self) -> (Arc<Queue>, Arc<Queue>) {
+        (Arc::clone(&self.s_queue), Arc::clone(&self.r_queue))
     }
 
     /// Refcount-bump clone. Both directions get a new capability,
@@ -1082,6 +1120,65 @@ mod tests {
     }
 
     // ── C-ABI tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn into_send_half_frees_inner_queues_when_half_drops() {
+        // Regression for the Arc<Queue> leak in the prior `clone +
+        // mem::forget` implementation of into_send_half / into_recv_half:
+        // each split stranded both inner Arcs (the queue allocations
+        // were never freed even after every handle dropped).
+        //
+        // Hold `Weak<Queue>` snapshots; assert the in-use queue stays
+        // alive while a half-handle still holds it, and that every
+        // queue is freed once every handle is dropped — the canonical
+        // Arc-leak diagnostic. The leak in the prior implementation
+        // would have kept *every* Arc alive forever.
+        let (a, b) = HewDuplex::new_pair(2, 2);
+        let (q_ab, q_ba) = a.queue_arcs_for_test();
+        let weak_ab = Arc::downgrade(&q_ab);
+        let weak_ba = Arc::downgrade(&q_ba);
+        drop(q_ab);
+        drop(q_ba);
+
+        // Pre-split: both queues are alive (a and b each hold both).
+        assert!(weak_ab.upgrade().is_some());
+        assert!(weak_ba.upgrade().is_some());
+
+        let a_send = a.into_send_half();
+        // After splitting `a`, a's q_ba Arc binding is dropped; b
+        // still holds q_ba so the Arc strong count > 0.
+        assert!(
+            weak_ab.upgrade().is_some(),
+            "q_ab freed too early after split"
+        );
+        assert!(
+            weak_ba.upgrade().is_some(),
+            "q_ba freed too early after split"
+        );
+
+        let b_recv = b.into_recv_half();
+        // After splitting `b`, b's q_ba Arc binding is dropped. Now
+        // no one holds q_ba — it must be freed. q_ab is held by
+        // both halves.
+        assert!(
+            weak_ab.upgrade().is_some(),
+            "q_ab freed too early after both splits"
+        );
+        assert!(
+            weak_ba.upgrade().is_none(),
+            "q_ba should be freed once unused (leak: into_recv_half kept extra Arc ref)"
+        );
+
+        drop(a_send);
+        drop(b_recv);
+
+        // Every strong handle is gone. If into_send_half / into_recv_half
+        // had leaked, q_ab would still upgrade here.
+        assert!(
+            weak_ab.upgrade().is_none(),
+            "into_send_half / into_recv_half leaked Arc<Queue> refcount on q_ab"
+        );
+    }
 
     #[test]
     fn cabi_new_send_recv_close_loopback() {

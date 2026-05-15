@@ -840,7 +840,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     declareVariable("self", selfPtr);
 
     // Concatenate each `#[on(stop)]` hook body in lexical declaration
-    // order. Per-hook panic isolation is deferred to v0.6 (see comment
+    // order. Per-hook panic isolation is deferred to 0.5.x hardening (see comment
     // in §2a above on `@hook-panic-isolation`).
     for (const auto *hook : on_stop_hooks) {
       generateBlock(hook->body, /*statementPosition=*/true);

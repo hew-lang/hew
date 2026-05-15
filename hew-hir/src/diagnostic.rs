@@ -128,4 +128,26 @@ pub enum HirDiagnosticKind {
     SelectStreamNextArity {
         arg_count: usize,
     },
+
+    // ── Machine static checks ────────────────────────────────────────────
+    /// One or more `(state, event)` pairs have no matching transition and
+    /// the machine does not declare a `default` arm.
+    MachineExhaustivenessViolation {
+        machine_name: String,
+        missing: Vec<(String, String)>,
+    },
+    /// A transition body writes a field that is also written by the target
+    /// state's `entry` block, creating ambiguous initialization order.
+    MachineEffectParityViolation {
+        machine_name: String,
+        state_name: String,
+        field_name: String,
+        transition_event: String,
+    },
+    /// A direct `emit(E)` cycle was detected: a transition's `on E` arm
+    /// contains `emit E`, which would immediately re-trigger the same handler.
+    MachineEmitCycle {
+        machine_name: String,
+        event_name: String,
+    },
 }

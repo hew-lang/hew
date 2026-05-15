@@ -26,6 +26,63 @@ pub struct HirModule {
 pub enum HirItem {
     Function(HirFn),
     TypeDecl(HirTypeDecl),
+    Machine(HirMachineDecl),
+}
+
+// ── Machine declarations ─────────────────────────────────────────────────────
+
+/// Lowered machine declaration. Carries the full structural shape needed for
+/// static checks and visualisation; transition bodies are not lowered to `HirExpr`
+/// in Lane A (codegen/execution is Lane B).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMachineDecl {
+    pub id: ItemId,
+    pub node: HirNodeId,
+    pub name: String,
+    pub states: Vec<HirMachineState>,
+    pub events: Vec<HirMachineEvent>,
+    pub transitions: Vec<HirMachineTransition>,
+    /// Whether an unhandled-event `default` arm is present. When true,
+    /// exhaustiveness checking is satisfied for any `(state, event)` pair
+    /// without an explicit transition.
+    pub has_default: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMachineState {
+    pub name: String,
+    pub fields: Vec<HirField>,
+    /// Whether this state has an `entry { ... }` lifecycle block.
+    pub has_entry: bool,
+    /// Whether this state has an `exit { ... }` lifecycle block.
+    pub has_exit: bool,
+    /// Field names written by the `entry` block (used for effect-parity checking).
+    pub entry_writes: Vec<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMachineEvent {
+    pub name: String,
+    pub fields: Vec<HirField>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirMachineTransition {
+    pub event_name: String,
+    pub source_state: String,
+    pub target_state: String,
+    pub has_guard: bool,
+    /// True when `source_state == target_state` (self-transition). In a
+    /// Moore machine, self-transitions do not re-run entry/exit.
+    pub is_self_transition: bool,
+    /// Field names written by the transition body (used for effect-parity checking).
+    pub body_writes: Vec<String>,
+    /// Event names emitted directly from the transition body (used for emit-cycle checking).
+    pub body_emits: Vec<String>,
+    pub span: Span,
 }
 
 /// Lowered top-level type declaration.

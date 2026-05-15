@@ -391,6 +391,10 @@ pub mod channel;
 #[cfg(any(target_arch = "wasm32", test))]
 mod channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod duplex;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod lambda_actor;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod reply_channel_wasm;

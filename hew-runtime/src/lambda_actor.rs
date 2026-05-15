@@ -675,4 +675,58 @@ mod tests {
             assert_eq!(hew_lambda_actor_release(a), SendError::DoubleClose as i32);
         }
     }
+
+    // ── Concurrent release stress ──────────────────────────────────────────
+    //
+    // Same shape as `cabi_concurrent_close_duplex_returns_single_winner`
+    // in duplex.rs, applied to `hew_lambda_actor_release`. The
+    // raw-pointer flag-read in that entry is what makes concurrent calls
+    // sound — a regression to `&mut *actor` before the swap would alias
+    // multiple winners' `&mut`s simultaneously (formal Rust UB).
+
+    #[test]
+    fn cabi_concurrent_release_lambda_actor_returns_single_winner() {
+        use std::sync::Barrier;
+        use std::thread;
+        const THREADS: usize = 8;
+        const ITERS: usize = 100;
+
+        for iter in 0..ITERS {
+            let actor = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+            assert!(!actor.is_null());
+            let actor_addr = actor as usize;
+            let barrier = Arc::new(Barrier::new(THREADS));
+            let mut handles = Vec::with_capacity(THREADS);
+            for _ in 0..THREADS {
+                let bar = Arc::clone(&barrier);
+                handles.push(thread::spawn(move || {
+                    bar.wait();
+                    // SAFETY: same handle pointer shared across threads;
+                    // implementation linearizes via AtomicBool::swap.
+                    unsafe { hew_lambda_actor_release(actor_addr as *mut HewLambdaActorHandle) }
+                }));
+            }
+            let mut winners = 0;
+            let mut losers = 0;
+            for h in handles {
+                match h.join().unwrap() {
+                    rc if rc == SendError::Ok as i32 => winners += 1,
+                    rc if rc == SendError::DoubleClose as i32 => losers += 1,
+                    rc => panic!(
+                        "iter {iter}: unexpected return {rc} from concurrent hew_lambda_actor_release"
+                    ),
+                }
+            }
+            assert_eq!(
+                winners, 1,
+                "iter {iter}: expected one winner, got {winners}"
+            );
+            assert_eq!(
+                losers,
+                THREADS - 1,
+                "iter {iter}: expected {} losers, got {losers}",
+                THREADS - 1
+            );
+        }
+    }
 }

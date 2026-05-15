@@ -1841,4 +1841,81 @@ mod tests {
             );
         }
     }
+
+    // ── Concurrent close stress ────────────────────────────────────────────
+    //
+    // Race many threads calling `hew_duplex_close` on the same handle.
+    // The raw-pointer flag-read phase in `hew_duplex_close` is what makes
+    // this sound: each thread observes the AtomicBool through
+    // `&*ptr::addr_of!((*d).released)` and only the swap winner builds a
+    // `&mut HewDuplexHandle`. If a refactor regresses to taking
+    // `&mut *d` before the swap, two concurrent winners would briefly
+    // alias the same `&mut`, which is formal Rust UB.
+    //
+    // Asserts every iteration:
+    //   - exactly one thread observes `SendError::Ok` (= 0)
+    //   - every other thread observes `SendError::DoubleClose` (= 4)
+    //
+    // Repeated 100 iterations to widen the race window. Run under
+    // `cargo test --release -p hew-runtime` for the best chance of
+    // surfacing a regression.
+
+    #[test]
+    fn cabi_concurrent_close_duplex_returns_single_winner() {
+        const THREADS: usize = 8;
+        const ITERS: usize = 100;
+
+        for iter in 0..ITERS {
+            let mut a: *mut HewDuplexHandle = ptr::null_mut();
+            let mut b: *mut HewDuplexHandle = ptr::null_mut();
+            // SAFETY: stack out-slots are valid; capacities positive.
+            unsafe {
+                let rc =
+                    hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b));
+                assert_eq!(rc, SendError::Ok as i32);
+            }
+            // Race THREADS callers on the same pointer.
+            let a_addr = a as usize;
+            let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+            let mut handles = Vec::with_capacity(THREADS);
+            for _ in 0..THREADS {
+                let bar = Arc::clone(&barrier);
+                handles.push(thread::spawn(move || {
+                    bar.wait();
+                    // SAFETY: every thread receives the same handle
+                    // produced by hew_duplex_pair above; the
+                    // implementation linearizes them via AtomicBool::swap
+                    // and only the winner constructs a `&mut` into the
+                    // wrapper.
+                    unsafe { hew_duplex_close(a_addr as *mut HewDuplexHandle) }
+                }));
+            }
+            let mut winners = 0;
+            let mut losers = 0;
+            for h in handles {
+                match h.join().unwrap() {
+                    rc if rc == SendError::Ok as i32 => winners += 1,
+                    rc if rc == SendError::DoubleClose as i32 => losers += 1,
+                    rc => panic!(
+                        "iter {iter}: unexpected return {rc} from concurrent hew_duplex_close"
+                    ),
+                }
+            }
+            assert_eq!(
+                winners, 1,
+                "iter {iter}: expected exactly one winner, got {winners}"
+            );
+            assert_eq!(
+                losers,
+                THREADS - 1,
+                "iter {iter}: expected {} losers, got {losers}",
+                THREADS - 1
+            );
+            // Clean up the other side.
+            // SAFETY: b is still live and untouched by the race above.
+            unsafe {
+                assert_eq!(hew_duplex_close(b), SendError::Ok as i32);
+            }
+        }
+    }
 }

@@ -28,7 +28,7 @@ type Ping {
 
 fn main() {
     let tok = Token { id: 7 };
-    let a = spawn (msg: Ping) => {
+    let a = actor |msg: Ping| {
         println(f"pong:{tok.id}");
     };
     a.send(Ping {  });

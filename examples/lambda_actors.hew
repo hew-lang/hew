@@ -2,20 +2,20 @@ fn main() {
     println("=== Lambda Actors ===");
 
     // Basic lambda actor
-    let doubler = spawn (x: int) => {
+    let doubler = actor |x: int| {
         println(x * 2);
     };
     doubler.send(21);
     await close(doubler);
 
     // Multiple lambda actors running concurrently
-    let printer = spawn (msg: int) => {
+    let printer = actor |msg: int| {
         println(f"Got: {msg}");
     };
-    let multiplier = spawn (x: int) => {
+    let multiplier = actor |x: int| {
         println(f"Triple: {x * 3}");
     };
-    let adder = spawn (x: int) => {
+    let adder = actor |x: int| {
         println(f"Plus 10: {x + 10}");
     };
     // Send to all concurrently
@@ -32,14 +32,14 @@ fn main() {
 
     // Lambda actors within scope blocks
     {
-        let scoped_actor = spawn (msg: int) => {
+        let scoped_actor = actor |msg: int| {
             println(f"Scoped: {msg}");
         };
         scoped_actor.send(42);
         await close(scoped_actor);
     };
     // Multiple sends to same actor
-    let counter = spawn (x: int) => {
+    let counter = actor |x: int| {
         println(f"Count: {x}");
     };
     counter.send(1);
@@ -48,7 +48,7 @@ fn main() {
     await close(counter);
 
     // Lambda actor with complex body (if/else, function calls)
-    let complex_actor = spawn (n: int) => {
+    let complex_actor = actor |n: int| {
         if n > 10 {
             println(f"Large number: {n}");
         } else {
@@ -68,7 +68,7 @@ fn main() {
 
 // Actor factory pattern - create and drain a lambda actor from a function
 fn run_multiplier_actor(factor: int, value: int) {
-    let worker = spawn (x: int) => {
+    let worker = actor |x: int| {
         println(f"Multiplied by {factor}: {x * factor}");
     };
     worker.send(value);

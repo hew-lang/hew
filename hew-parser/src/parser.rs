@@ -4334,6 +4334,51 @@ impl<'src> Parser<'src> {
                 break;
             }
 
+            // Detect the removed `<-` send operator: lexer now produces two tokens
+            // `<` (at pos) and `-` (at pos+1) adjacently.  Emit E_OPERATOR_REMOVED,
+            // then skip to the statement boundary (`;` or `}`) so that the caller
+            // does not produce cascading "unexpected token" diagnostics for the
+            // right-hand side tokens.
+            if self.peek() == Some(&Token::Less) {
+                let less_end = self.peek_span().end;
+                if self.peek_at(self.pos + 1) == Some(&Token::Minus) {
+                    let minus_start = self
+                        .tokens
+                        .get(self.pos + 1)
+                        .map_or(usize::MAX, |(_, s)| s.start);
+                    if less_end == minus_start {
+                        let op_span = self.peek_span().start..minus_start + 1;
+                        self.advance(); // consume `<`
+                        self.advance(); // consume `-`
+                        self.error_at_with_hint(
+                            "E_OPERATOR_REMOVED: the `<-` send operator has been removed; \
+                             use `handle(msg)` call syntax instead (HEW-SPEC-2026 §4.x)"
+                                .to_string(),
+                            op_span.clone(),
+                            "replace `target <- msg` with `target(msg)`".to_string(),
+                        );
+                        // Skip tokens through the end of the statement to suppress
+                        // cascading "unexpected token" diagnostics on the RHS.
+                        while !matches!(
+                            self.peek(),
+                            Some(&Token::Semicolon | &Token::RightBrace) | None
+                        ) {
+                            self.advance();
+                        }
+                        // Consume the `;` now so that parse_block treats this as a
+                        // fully consumed expression statement rather than seeing the
+                        // semicolon as unexpected.
+                        if self.peek() == Some(&Token::Semicolon) {
+                            self.advance();
+                        }
+                        // Return a synthetic unit expression so the block parser
+                        // completes the statement without entering the error-recovery path.
+                        lhs = (Expr::Tuple(vec![]), op_span);
+                        break;
+                    }
+                }
+            }
+
             let (op_tok, _) = self.advance()?;
             let Some(op) = token_to_binop(&op_tok) else {
                 self.error(format!("invalid binary operator token: {op_tok:?}"));
@@ -4784,41 +4829,90 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightBrace)?;
                 Expr::Match { scrutinee, arms }
             }
+            // actor [move] |params| [-> Ret] { body }
+            // Lambda actor literal (replaces `spawn (...) => ...`).
+            Token::Actor => {
+                self.advance();
+
+                let is_move = self.eat(&Token::Move);
+
+                if self.peek() != Some(&Token::Pipe) {
+                    self.error_with_hint(
+                        "E_LEGACY_SPAWN_LAMBDA_SYNTAX: expected `|` to begin actor parameter list"
+                            .to_string(),
+                        "use `actor |params| { body }` to declare a lambda actor".to_string(),
+                    );
+                    return None;
+                }
+                self.advance(); // consume `|`
+
+                let params = self.try_parse_lambda_params().unwrap_or_default();
+
+                self.expect(&Token::Pipe)?;
+
+                let return_type = self.parse_opt_return_type()?;
+
+                // Lambda actor body must be a braced block; parse_block consumes the `{`.
+                if self.peek() != Some(&Token::LeftBrace) {
+                    self.error_with_hint(
+                        "E_LEGACY_SPAWN_LAMBDA_SYNTAX: expected `{` to begin actor body"
+                            .to_string(),
+                        "use `actor |params| { body }` — the body must be a braced block"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                let body_block = self.parse_block()?;
+                let body_end = self.peek_span().start;
+                let body = Box::new((Expr::Block(body_block), start..body_end));
+
+                return Some((
+                    Expr::SpawnLambdaActor {
+                        is_move,
+                        params,
+                        return_type,
+                        body,
+                    },
+                    start..self.peek_span().start,
+                ));
+            }
             Token::Spawn => {
                 self.advance();
 
-                // Check for optional `move` keyword before lambda actor
-                let is_move = self.eat(&Token::Move);
+                // Check whether the user wrote the legacy `spawn (params) => body` form.
+                // This form was removed in favour of `actor |params| { body }`.
+                // Consume an optional `move` keyword only to detect legacy syntax; it is not
+                // used in the regular `spawn ActorName(...)` form.
+                let _is_move_legacy = self.eat(&Token::Move);
 
-                // Check for lambda actor: spawn [move] (params) => body
                 if self.peek() == Some(&Token::LeftParen) {
                     let saved_pos = self.save_pos();
                     self.advance();
-                    let is_lambda_actor = self.try_parse_lambda_params().is_some() && {
+                    let is_legacy_lambda = self.try_parse_lambda_params().is_some() && {
                         self.expect(&Token::RightParen).is_some()
-                            && self.peek() == Some(&Token::FatArrow)
+                            && (self.peek() == Some(&Token::FatArrow)
+                                || self.peek() == Some(&Token::Arrow))
                     };
                     self.restore_pos(saved_pos);
 
-                    if is_lambda_actor {
-                        self.advance(); // consume (
-                        let params = self.try_parse_lambda_params()?;
-                        self.expect(&Token::RightParen)?;
-
-                        let return_type = self.parse_opt_return_type()?;
-
-                        self.expect(&Token::FatArrow)?;
-                        let body = Box::new(self.parse_expr()?);
-
-                        return Some((
-                            Expr::SpawnLambdaActor {
-                                is_move,
-                                params,
-                                return_type,
-                                body,
-                            },
+                    if is_legacy_lambda {
+                        // Consume through the entire legacy form so recovery can continue.
+                        self.advance(); // (
+                        self.try_parse_lambda_params();
+                        self.expect(&Token::RightParen);
+                        self.parse_opt_return_type();
+                        if self.eat(&Token::FatArrow) {
+                            self.parse_expr();
+                        }
+                        self.error_at_with_hint(
+                            "E_LEGACY_SPAWN_LAMBDA_SYNTAX: `spawn (...) => ...` has been removed; \
+                             use `actor |...| { ... }` instead (HEW-SPEC-2026 §4.x)"
+                                .to_string(),
                             start..self.peek_span().start,
-                        ));
+                            "replace `spawn (params) => body` with `actor |params| { body }`"
+                                .to_string(),
+                        );
+                        return None;
                     }
                 }
 
@@ -5476,10 +5570,7 @@ impl<'src> Parser<'src> {
 
     fn parse_select_arm(&mut self) -> Option<SelectArm> {
         let binding = self.parse_pattern()?;
-        // Accept either `<-` or `from` for select arms
-        if !self.eat(&Token::LeftArrow) {
-            self.expect(&Token::From)?;
-        }
+        self.expect(&Token::From)?;
         let source = self.parse_expr()?;
         self.expect(&Token::FatArrow)?;
         let body = self.parse_expr()?;
@@ -5501,8 +5592,6 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
     // Precedence follows Rust's ordering: bitwise ops bind tighter than
     // comparisons, which bind tighter than logical ops.
     match op {
-        // Send: lowest
-        Token::LeftArrow => Some((1, 2)), // <- (right-assoc)
         // Range
         Token::DotDot | Token::DotDotEqual => Some((3, 4)),
         // Logical OR
@@ -5556,7 +5645,6 @@ fn token_to_binop(token: &Token) -> Option<BinaryOp> {
         Token::Caret => Some(BinaryOp::BitXor),
         Token::LessLess => Some(BinaryOp::Shl),
         Token::GreaterGreater => Some(BinaryOp::Shr),
-        Token::LeftArrow => Some(BinaryOp::Send),
         Token::DotDot => Some(BinaryOp::Range),
         Token::DotDotEqual => Some(BinaryOp::RangeInclusive),
         _ => None,

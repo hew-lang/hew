@@ -3826,7 +3826,6 @@ void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
       return ifExpr->else_block.has_value();
     if (std::holds_alternative<ast::ExprCall>(expr.kind) ||
         std::holds_alternative<ast::ExprMethodCall>(expr.kind) ||
-        std::holds_alternative<ast::ExprSend>(expr.kind) ||
         std::holds_alternative<ast::ExprJoin>(expr.kind) ||
         std::holds_alternative<ast::ExprTimeout>(expr.kind) ||
         std::holds_alternative<ast::ExprYield>(expr.kind) ||
@@ -3865,7 +3864,6 @@ void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
       return false;
     if (std::holds_alternative<ast::ExprCall>(expr.kind) ||
         std::holds_alternative<ast::ExprMethodCall>(expr.kind) ||
-        std::holds_alternative<ast::ExprSend>(expr.kind) ||
         std::holds_alternative<ast::ExprJoin>(expr.kind) ||
         std::holds_alternative<ast::ExprTimeout>(expr.kind) ||
         std::holds_alternative<ast::ExprYield>(expr.kind) ||

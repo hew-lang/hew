@@ -1,0 +1,10 @@
+// Reject fixture: E_LEGACY_SPAWN_LAMBDA_SYNTAX
+// The `spawn (params) => body` lambda-actor syntax was removed in v0.5.
+// Expected: parse error containing "E_LEGACY_SPAWN_LAMBDA_SYNTAX"
+// Use `actor |params| { body }` instead.
+fn main() {
+    let w = spawn (x: int) => {
+        println(x);
+    };
+    w.send(1);
+}

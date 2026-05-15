@@ -80,8 +80,6 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
           return generateSpawnExpr(node);
         } else if constexpr (std::is_same_v<NodeT, ast::ExprSpawnLambdaActor>) {
           return generateSpawnLambdaActorExpr(node);
-        } else if constexpr (std::is_same_v<NodeT, ast::ExprSend>) {
-          return generateSendExpr(node);
         } else if constexpr (std::is_same_v<NodeT, ast::ExprStructInit>) {
           return generateStructInit(node, expr.span);
         } else if constexpr (std::is_same_v<NodeT, ast::ExprMethodCall>) {

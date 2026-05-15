@@ -595,10 +595,6 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
                 collect_locals_from_spanned_expr(value, offset, locals);
             }
         }
-        Expr::Send { target, message } => {
-            collect_locals_from_spanned_expr(target, offset, locals);
-            collect_locals_from_spanned_expr(message, offset, locals);
-        }
         Expr::Spawn { target, args } => {
             collect_locals_from_spanned_expr(target, offset, locals);
             for (_, arg) in args {
@@ -769,14 +765,14 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
         ),
         ("trait", "trait ${1:Name} {\n\t$0\n}", "trait Name { ... }"),
         (
-            "spawn lambda",
-            "let ${1:handle} = spawn (${2:param}: ${3:Type}) => {\n\t$0\n};",
-            "let handle = spawn (param: Type) => { ... };",
+            "actor lambda",
+            "let ${1:handle} = actor |${2:param}: ${3:Type}| {\n\t$0\n};",
+            "let handle = actor |param: Type| { ... };",
         ),
         (
             "select",
-            "select {\n\t${1:binding} <- ${2:source} => ${3:expr},\n\tafter ${4:duration} => ${0:timeout_expr},\n}",
-            "select { pattern <- source => expr, after duration => expr }",
+            "select {\n\t${1:binding} from ${2:source} => ${3:expr},\n\tafter ${4:duration} => ${0:timeout_expr},\n}",
+            "select { pattern from source => expr, after duration => expr }",
         ),
         (
             "select from",

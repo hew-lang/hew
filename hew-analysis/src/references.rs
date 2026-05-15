@@ -846,10 +846,6 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&elem.0, counts);
             }
         }
-        Expr::Send { target, message } => {
-            count_idents_in_expr(&target.0, counts);
-            count_idents_in_expr(&message.0, counts);
-        }
         Expr::Select {
             arms: sel_arms,
             timeout,

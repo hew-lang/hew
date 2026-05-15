@@ -790,7 +790,6 @@ static ast::BinaryOp parseBinaryOp(const msgpack::object &obj) {
   if (s == "Shr") return ast::BinaryOp::Shr;
   if (s == "Range") return ast::BinaryOp::Range;
   if (s == "RangeInclusive") return ast::BinaryOp::RangeInclusive;
-  if (s == "Send") return ast::BinaryOp::Send;
   fail("unknown BinaryOp: " + s);
 }
 
@@ -1318,14 +1317,6 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
       });
     }
-    return ast::Expr{std::move(e), {}};
-  }
-  if (name == "Send") {
-    ast::ExprSend e;
-    e.target = std::make_unique<ast::Spanned<ast::Expr>>(
-        parseSpanned<ast::Expr>(mapReq(*payload, "target"), parseExpr));
-    e.message = std::make_unique<ast::Spanned<ast::Expr>>(
-        parseSpanned<ast::Expr>(mapReq(*payload, "message"), parseExpr));
     return ast::Expr{std::move(e), {}};
   }
   if (name == "Select") {

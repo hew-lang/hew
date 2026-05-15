@@ -1,5 +1,5 @@
 fn main() {
-    let printer = spawn (x: int) => {
+    let printer = actor |x: int| {
         println(x);
     };
     printer.send(42);

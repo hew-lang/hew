@@ -1754,7 +1754,6 @@ fn describe_select_source_shape(expr: &Expr) -> String {
         Expr::Index { .. } => "index expression".into(),
         Expr::Range { .. } => "range expression".into(),
         Expr::Cast { .. } => "cast expression".into(),
-        Expr::Send { .. } => "actor send".into(),
         Expr::Timeout { .. } => "timeout expression".into(),
         Expr::Unsafe(_) => "unsafe block".into(),
         Expr::Yield(_) => "yield expression".into(),

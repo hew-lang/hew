@@ -91,16 +91,6 @@ impl<'ast> AstVisitor<'ast> for CallCollector {
                     span: span.clone(),
                 });
             }
-            Expr::Send { target, .. } => {
-                let send_name = match &target.0 {
-                    Expr::Identifier(name) => format!("{name}.send"),
-                    _ => "send".to_string(),
-                };
-                self.calls.push(CallSite {
-                    name: send_name,
-                    span: span.clone(),
-                });
-            }
             _ => {}
         }
     }
@@ -234,19 +224,6 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             if let Some(block) = else_body {
                 collect_calls_in_block(block, calls);
             }
-        }
-        Expr::Send { target, message } => {
-            // Actor message sends are treated as call edges.
-            let send_name = match &target.as_ref().0 {
-                Expr::Identifier(name) => format!("{name}.send"),
-                _ => "send".to_string(),
-            };
-            calls.push(CallSite {
-                name: send_name,
-                span: expr_span.clone(),
-            });
-            collect_calls_in_expr(target.as_ref(), calls);
-            collect_calls_in_expr(message.as_ref(), calls);
         }
         Expr::Binary { left, right, .. } => {
             collect_calls_in_expr(left.as_ref(), calls);

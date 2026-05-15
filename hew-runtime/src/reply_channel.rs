@@ -548,6 +548,14 @@ pub(crate) unsafe fn hew_reply_channel_allocation_failed_for_test(
 mod tests {
     use super::*;
 
+    // Serialises tests that take delta measurements on the process-wide
+    // ACTIVE_CHANNELS counter. Any test that reads the counter before and
+    // after a single new/free pair must hold this lock for the entire
+    // measurement window; otherwise a concurrent allocating test can shift
+    // the counter between the two observations and produce a spurious
+    // failure. Tests that do not read the counter do not need this lock.
+    static COUNTER_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn cancel_then_owner_release_leaves_sender_reference_for_late_reply() {
         let ch = hew_reply_channel_new();
@@ -576,11 +584,11 @@ mod tests {
         // single `new` increments it by 1, and the matching `free`
         // must decrement it by 1 once the last reference drops.
         //
-        // ACTIVE_CHANNELS is process-wide and other tests in this
-        // module run concurrently against it. The invariant pinned
-        // here is the local-pair: observe the count immediately after
-        // `new` (must be > pre-new), then observe again immediately
-        // after `free` (must be < post-new, by at least one).
+        // COUNTER_LOCK serialises the measurement window. Without it,
+        // a concurrent test allocating or freeing a channel between the
+        // pre/post observations can shift the counter and produce a
+        // spurious failure.
+        let _guard = COUNTER_LOCK.lock().unwrap();
         let pre_new = active_channel_count();
 
         let ch = hew_reply_channel_new();

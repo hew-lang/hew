@@ -40,7 +40,8 @@ use std::ffi::{c_char, c_void, CStr};
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::ptr;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 
 // ── Re-export sink types from hew-cabi ────────────────────────────────────────
 // These are the shared ABI types that native packages (e.g. HTTP) also use.
@@ -95,6 +96,17 @@ pub struct HewStream {
     inner: Box<dyn StreamBacking>,
     /// Whether `close()` has already been called on the backing.
     closed: bool,
+    /// Active pending-read id, or 0 if none. Set by `hew_stream_poll`,
+    /// cleared by either the park thread on completion or by
+    /// `hew_stream_cancel_pending_read`. The "at most one pending read
+    /// per stream" invariant is enforced by CAS on this field.
+    pending_read: AtomicU64,
+    /// Shared state with the park thread spawned by `hew_stream_poll`.
+    /// `None` when no poll is active. Guarded so cancel can acquire
+    /// the same lock the park thread will check before firing the
+    /// callback (closes the TOCTOU window where an item is received
+    /// but the callback has not yet fired when cancel arrives).
+    pending_state: Mutex<Option<Arc<Mutex<ParkState>>>>,
 }
 
 impl Drop for HewStream {
@@ -104,6 +116,29 @@ impl Drop for HewStream {
         }
     }
 }
+
+/// Park-thread state machine for `hew_stream_poll`.
+///
+/// State machine:
+///   Pending  → Cancelled  by `hew_stream_cancel_pending_read` before `next()` returns
+///   Pending  → Done       by the park thread after `next()` returns; callback fires
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParkState {
+    Pending,
+    Cancelled,
+    Done,
+}
+
+/// Monotonic counter for [`PendingReadId`]; never reuses an id within a process.
+static NEXT_PENDING_READ_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Opaque id identifying a pending read on a stream.
+///
+/// Returned by [`hew_stream_poll`]; passed to
+/// [`hew_stream_cancel_pending_read`] to withdraw a registration. A
+/// value of `0` is the error sentinel and never identifies a live
+/// pending read. Ids are not reused for the lifetime of the process.
+pub type PendingReadId = u64;
 
 // HewSink is defined in hew_cabi::sink and re-exported above.
 
@@ -364,6 +399,8 @@ fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
     Box::into_raw(Box::new(HewStream {
         inner: Box::new(backing),
         closed: false,
+        pending_read: AtomicU64::new(0),
+        pending_state: Mutex::new(None),
     }))
 }
 
@@ -372,6 +409,8 @@ fn into_stream_ptr_dyn(backing: Box<dyn StreamBacking>) -> *mut HewStream {
     Box::into_raw(Box::new(HewStream {
         inner: backing,
         closed: false,
+        pending_read: AtomicU64::new(0),
+        pending_state: Mutex::new(None),
     }))
 }
 
@@ -385,6 +424,18 @@ fn into_stream_ptr_dyn(backing: Box<dyn StreamBacking>) -> *mut HewStream {
 unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking> {
     // SAFETY: stream is a valid HewStream pointer per the function contract.
     let inner = unsafe { ptr::read(&raw const (*stream).inner) };
+    // SAFETY: read+drop the non-Copy auxiliary fields so they release their
+    // resources (the Mutex<Option<Arc<...>>> in particular owns heap state).
+    // `closed` and `pending_read` are POD, but going through ptr::read+drop is
+    // uniform and cheap.
+    unsafe {
+        // closed and pending_read are Copy / POD — reading them is a
+        // no-op release, but we go through ptr::read for layout
+        // uniformity. pending_state owns heap state and must run Drop.
+        let _ = ptr::read(&raw const (*stream).closed);
+        let _ = ptr::read(&raw const (*stream).pending_read);
+        drop(ptr::read(&raw const (*stream).pending_state));
+    }
     // SAFETY: stream was allocated via Box::into_raw(Box::new(HewStream { .. })),
     // so deallocating with Layout::new::<HewStream>() is correct. We use dealloc
     // instead of Box::from_raw to avoid running Drop (which would double-free inner).
@@ -977,6 +1028,287 @@ pub unsafe extern "C" fn hew_stream_next_view(
     {
         len as i64
     }
+}
+
+/// Non-consuming, cancellable poll for the next item of a stream.
+///
+/// Registers a pending read on `stream` and returns a [`PendingReadId`] the
+/// caller can later pass to [`hew_stream_cancel_pending_read`] to withdraw
+/// the registration. When an item arrives (or the stream reaches EOF), the
+/// runtime invokes `callback(userdata, item_ptr)` where `item_ptr` is a
+/// malloc-allocated copy of the item bytes (caller must `free()` it) or
+/// null for EOF. The ownership contract for `item_ptr` matches
+/// [`hew_stream_next`] (`malloc`'d, caller frees).
+///
+/// ## Ownership contract
+///
+/// The caller retains ownership of `stream` across this call: neither a
+/// pending registration nor a successful read drops the stream. The
+/// stream remains usable after either the callback fires or
+/// [`hew_stream_cancel_pending_read`] is called.
+///
+/// ## "At most one pending read" invariant
+///
+/// Calling `hew_stream_poll` on a stream that already has a pending read
+/// (no intervening cancel or completion) is a runtime contract violation
+/// and aborts the process with [`std::process::abort`]. This is reachable
+/// only via a codegen bug — well-formed `select{}` lowering registers at
+/// most one stream poll per arm per select scope, and the loser-cleanup
+/// path runs cancel before the stream binding is reused.
+///
+/// ## Cancel-race semantics (TOCTOU)
+///
+/// The state transitions through `ParkState { Pending, Cancelled, Done }`
+/// under a shared `Mutex`. If `hew_stream_cancel_pending_read` acquires the
+/// lock first, the park thread observes `Cancelled` and discards the item it
+/// just received (one item is lost from the stream — this is the documented
+/// trade-off for a synchronous mpsc backing without a `try_recv` peek path).
+/// If the park thread acquires the lock first, the callback fires and a
+/// subsequent cancel is a no-op.
+///
+/// ## WASM gap
+///
+/// This function is unimplemented on `wasm32` targets (no
+/// `std::thread::spawn`). Tracked as a named v0.5 parity gap; the
+/// `cfg`-gate exposes the gap at compile time rather than as a runtime
+/// fallback.
+///
+/// # Safety
+///
+/// - `stream` must be a valid pointer created by one of the
+///   `hew_stream_*` constructor functions. It must remain valid until
+///   the callback fires or [`hew_stream_cancel_pending_read`] is called
+///   AND the in-flight park thread has observed the cancel.
+/// - While a pending read is registered, no other thread may call
+///   `hew_stream_next`/`hew_stream_next_sized`/`hew_stream_next_view`/
+///   `hew_stream_poll`/`hew_stream_close` on the same `stream`. The
+///   codegen contract for `select{}` arms upholds this.
+/// - `callback` is invoked at most once from an arbitrary worker thread.
+///   It must be re-entrant w.r.t. the rest of the runtime and must not
+///   itself call `hew_stream_poll` on the same `stream` (re-arming the
+///   same stream within the callback re-enters this function — wait
+///   for the callback to return first).
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_poll(
+    stream: *mut HewStream,
+    callback: extern "C" fn(*mut c_void, *mut c_void),
+    userdata: *mut c_void,
+) -> PendingReadId {
+    if stream.is_null() {
+        return 0;
+    }
+
+    let id = NEXT_PENDING_READ_ID.fetch_add(1, Ordering::Relaxed);
+    // 1 is the first valid id; in practice u64 will never wrap during a process.
+
+    // SAFETY: stream is valid per caller contract; we only access the
+    // pending_read atomic and pending_state mutex here, both of which are
+    // designed for cross-thread access.
+    let prev = unsafe {
+        (*stream)
+            .pending_read
+            .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
+    };
+    if let Err(existing) = prev {
+        // Contract violation: a pending read is already in flight.
+        // Aborting (not panicking) is mandatory across `extern "C"`.
+        eprintln!(
+            "hew_stream_poll: at most one pending read per stream \
+             (existing id={existing}, refused id={id})",
+        );
+        std::process::abort();
+    }
+
+    let park_state = Arc::new(Mutex::new(ParkState::Pending));
+    // Publish the Arc into the per-stream slot under its mutex. Holding the
+    // lock here is brief and cancel will not see a stale registration
+    // because pending_read is already set and cancel synchronises on it.
+    // SAFETY: stream is valid per caller contract.
+    unsafe {
+        let mut slot = (*stream)
+            .pending_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = Some(Arc::clone(&park_state));
+    }
+
+    // Cross-thread share: the park thread accesses `stream` (specifically
+    // `(*stream).inner`) exclusively for the duration of `next()`. The
+    // "at most one pending read" contract above guarantees no other
+    // thread touches `inner` while this is in flight.
+    let stream_addr = stream as usize;
+    let userdata_addr = userdata as usize;
+    std::thread::spawn(move || {
+        // SAFETY: the caller contract on hew_stream_poll guarantees no
+        // concurrent access to `stream` until our callback has fired or
+        // cancel has been observed.
+        let stream = stream_addr as *mut HewStream;
+        // SAFETY: see the SAFETY note on the surrounding spawn — the
+        // caller's "at most one pending read" contract guarantees no
+        // concurrent access to `inner` until our callback fires or
+        // cancel observes us.
+        let item = unsafe { (*stream).inner.next() };
+
+        // Marshal the item into a malloc'd buffer (same ABI as
+        // hew_stream_next) before taking the state lock so we minimise
+        // the critical section.
+        let item_ptr: *mut c_void = match item {
+            None => ptr::null_mut(),
+            Some(bytes) => {
+                let len = bytes.len();
+                // SAFETY: libc::malloc returns a valid aligned pointer or null.
+                let buf = unsafe { libc::malloc(len + 1) };
+                if buf.is_null() {
+                    ptr::null_mut()
+                } else {
+                    if len > 0 {
+                        // SAFETY: buf is len+1 bytes allocated above; bytes points to len bytes.
+                        unsafe {
+                            ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), len);
+                        };
+                    }
+                    // SAFETY: buf has len+1 bytes; writing the NUL terminator at offset len.
+                    unsafe { *buf.cast::<u8>().add(len) = 0 };
+                    buf.cast::<c_void>()
+                }
+            }
+        };
+
+        // Acquire the state lock and decide whether to fire the callback.
+        let mut state = park_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match *state {
+            ParkState::Cancelled => {
+                // Cancel won the race. Discard the item bytes; the
+                // cancel path has already cleared pending_read and the
+                // pending_state slot.
+                if !item_ptr.is_null() {
+                    // SAFETY: item_ptr was malloc'd above.
+                    unsafe { libc::free(item_ptr) };
+                }
+            }
+            ParkState::Pending => {
+                *state = ParkState::Done;
+                drop(state);
+
+                // Clear pending_read and the state slot before invoking
+                // the callback so the callback may re-arm the same
+                // stream (subject to "no recursion within callback"
+                // documented above).
+                // SAFETY: stream is still valid per the caller contract.
+                unsafe {
+                    (*stream).pending_read.store(0, Ordering::Release);
+                    let mut slot = (*stream)
+                        .pending_state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    *slot = None;
+                }
+
+                callback(userdata_addr as *mut c_void, item_ptr);
+            }
+            ParkState::Done => {
+                // Park thread observing Done shouldn't happen — only the
+                // park thread itself transitions Pending → Done. Treat
+                // as a no-op (defensive).
+                if !item_ptr.is_null() {
+                    // SAFETY: item_ptr was malloc'd above.
+                    unsafe { libc::free(item_ptr) };
+                }
+            }
+        }
+    });
+
+    id
+}
+
+/// WASM stub for [`hew_stream_poll`] — the `select{}` stream-next arm has
+/// no WASM substrate today. Returns the error sentinel 0 unconditionally.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_poll(
+    _stream: *mut HewStream,
+    _callback: extern "C" fn(*mut c_void, *mut c_void),
+    _userdata: *mut c_void,
+) -> PendingReadId {
+    // WASM-GAP: hew_stream_poll requires std::thread::spawn; tracked for v0.5.
+    0
+}
+
+/// Withdraw a pending read previously registered by [`hew_stream_poll`].
+///
+/// If `id` matches the current pending read, transitions the park
+/// thread's state to `Cancelled` and clears the per-stream registration.
+/// If `id` does not match (either no pending read or a different one),
+/// the call is a silent no-op — this is the documented "cancel after
+/// completion is a no-op" contract.
+///
+/// ## Ownership contract
+///
+/// Does not drop the stream. The stream remains usable after the call.
+///
+/// ## Item-loss caveat
+///
+/// If the park thread has already returned from `next()` but has not
+/// yet acquired the state lock to fire the callback, cancel will win
+/// the race and one item is lost (see [`hew_stream_poll`] for details).
+///
+/// # Safety
+///
+/// `stream` must be a valid pointer created by one of the
+/// `hew_stream_*` constructor functions.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_cancel_pending_read(stream: *mut HewStream, id: PendingReadId) {
+    if stream.is_null() || id == 0 {
+        return;
+    }
+
+    // SAFETY: stream is valid per caller contract.
+    // CAS the id slot down to 0. If we fail, either no poll is in flight,
+    // or it's a different id — either way: silent no-op.
+    let cas = unsafe {
+        (*stream)
+            .pending_read
+            .compare_exchange(id, 0, Ordering::AcqRel, Ordering::Acquire)
+    };
+    if cas.is_err() {
+        return;
+    }
+
+    // Take the shared state out from under the slot and transition
+    // Pending → Cancelled if the park thread has not yet fired.
+    // SAFETY: stream is valid per caller contract.
+    let arc = unsafe {
+        let mut slot = (*stream)
+            .pending_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.take()
+    };
+    if let Some(arc) = arc {
+        let mut state = arc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *state == ParkState::Pending {
+            *state = ParkState::Cancelled;
+        }
+        // If state is Done, the park thread has already published the
+        // callback fire; we lost a race and there is nothing to do.
+    }
+}
+
+/// WASM stub for [`hew_stream_cancel_pending_read`]. No-op because the
+/// poll variant is also a no-op on WASM.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_cancel_pending_read(
+    _stream: *mut HewStream,
+    _id: PendingReadId,
+) {
+    // WASM-GAP: paired with hew_stream_poll; tracked for v0.5.
 }
 
 /// Close (discard) a stream.
@@ -2820,6 +3152,351 @@ mod tests {
             let chunked = hew_stream_chunks(raw, 4);
             let count = hew_stream_count(chunked); // consumes chunked
             assert_eq!(count, 3);
+        }
+    }
+
+    // ── hew_stream_poll / hew_stream_cancel_pending_read ─────────────────────
+    //
+    // These tests exercise the cancellable, non-consuming poll ABI used by
+    // `select{}` stream-next arms. The substrate is documented in
+    // `hew_stream_poll`; the tests cover positive and negative paths per
+    // architecture doc §3.3 (both-path coverage) and §5.7 (no racing polling
+    // loops — we use the channel close signal as the deterministic clock).
+
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering as TestOrdering},
+        Arc as TestArc,
+    };
+    use std::time::Duration as TestDuration;
+
+    /// Shared sink the callbacks below post into. We capture both whether
+    /// the callback fired and the payload bytes so the assertion can
+    /// distinguish None-on-EOF from item-on-win.
+    #[derive(Debug, Default)]
+    struct CallbackSink {
+        fired: AtomicUsize,
+        last_was_null: AtomicUsize,
+        // We record one byte from the item as a deterministic check —
+        // enough to distinguish "stream sent X" from "stream sent Y".
+        last_first_byte: AtomicUsize,
+    }
+
+    extern "C" fn record_callback(userdata: *mut c_void, item: *mut c_void) {
+        // SAFETY: tests construct userdata from `Arc::into_raw(Arc<CallbackSink>)`
+        // and keep that Arc alive for the duration of the test.
+        let sink = unsafe { &*(userdata as *const CallbackSink) };
+        sink.fired.fetch_add(1, TestOrdering::Release);
+        if item.is_null() {
+            sink.last_was_null.store(1, TestOrdering::Release);
+        } else {
+            // SAFETY: item is the malloc'd buffer; we just peek the first byte.
+            let first = unsafe { *(item as *const u8) };
+            sink.last_first_byte
+                .store(first as usize, TestOrdering::Release);
+            // The callback owns the buffer.
+            // SAFETY: item was malloc'd by hew_stream_poll's park thread.
+            unsafe { libc::free(item) };
+        }
+    }
+
+    fn wait_for_callback(sink: &CallbackSink, deadline_ms: u64) -> bool {
+        let start = std::time::Instant::now();
+        while sink.fired.load(TestOrdering::Acquire) == 0 {
+            if start.elapsed() > TestDuration::from_millis(deadline_ms) {
+                return false;
+            }
+            std::thread::sleep(TestDuration::from_millis(1));
+        }
+        true
+    }
+
+    /// Positive path: when an item arrives on the stream, the registered
+    /// callback fires with a non-null payload and the stream remains
+    /// usable (`pending_read` cleared, next poll permitted).
+    #[test]
+    fn stream_poll_invokes_callback_on_item() {
+        let sink = TestArc::new(CallbackSink::default());
+        // SAFETY: test owns all pointers; sink is kept alive for the test.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink_ptr = hew_stream_pair_sink(pair);
+            let stream_ptr = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+
+            // Spawn a writer that delivers one item after a brief delay
+            // so the park thread actually has to wait inside `next()`.
+            let sink_addr = sink_ptr as usize;
+            let writer = std::thread::spawn(move || {
+                std::thread::sleep(TestDuration::from_millis(20));
+                let payload = [0x42_u8];
+                hew_sink_write(
+                    sink_addr as *mut HewSink,
+                    payload.as_ptr().cast::<c_void>(),
+                    1,
+                );
+            });
+
+            let userdata = TestArc::as_ptr(&sink) as *mut c_void;
+            let id = hew_stream_poll(stream_ptr, record_callback, userdata);
+            assert!(id > 0, "poll must return a non-zero id");
+
+            writer.join().unwrap();
+            assert!(
+                wait_for_callback(&sink, 500),
+                "callback must fire once the writer sends an item",
+            );
+            assert_eq!(sink.fired.load(TestOrdering::Acquire), 1);
+            assert_eq!(sink.last_was_null.load(TestOrdering::Acquire), 0);
+            assert_eq!(sink.last_first_byte.load(TestOrdering::Acquire), 0x42);
+
+            // pending_read should have been cleared by the park thread.
+            assert_eq!((*stream_ptr).pending_read.load(Ordering::Acquire), 0);
+
+            hew_stream_close(stream_ptr);
+            // sink_ptr was passed into hew_sink_write; the channel pair's
+            // Drop took care of the surviving side that wasn't extracted —
+            // here we extracted both, so free the sink directly.
+            drop(Box::from_raw(sink_ptr));
+        }
+    }
+
+    /// EOF path: when the stream is closed before any item arrives, the
+    /// callback fires with a null item pointer (the EOF-wins signal).
+    #[test]
+    fn stream_poll_invokes_callback_with_null_on_eof() {
+        let sink = TestArc::new(CallbackSink::default());
+        // SAFETY: standard test ownership; sink survives the test.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink_ptr = hew_stream_pair_sink(pair);
+            let stream_ptr = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+
+            // Drop the sink to signal EOF after the park thread blocks.
+            let sink_addr = sink_ptr as usize;
+            let writer = std::thread::spawn(move || {
+                std::thread::sleep(TestDuration::from_millis(20));
+                drop(Box::from_raw(sink_addr as *mut HewSink));
+            });
+
+            let userdata = TestArc::as_ptr(&sink) as *mut c_void;
+            let id = hew_stream_poll(stream_ptr, record_callback, userdata);
+            assert!(id > 0);
+
+            writer.join().unwrap();
+            assert!(
+                wait_for_callback(&sink, 500),
+                "callback must fire once the sink is dropped (EOF)",
+            );
+            assert_eq!(sink.fired.load(TestOrdering::Acquire), 1);
+            assert_eq!(
+                sink.last_was_null.load(TestOrdering::Acquire),
+                1,
+                "EOF must surface as a null item pointer",
+            );
+
+            hew_stream_close(stream_ptr);
+        }
+    }
+
+    /// Cancel-before-item path: when cancel runs before any item is
+    /// produced, the callback is never fired. The stream remains usable
+    /// — a subsequent direct `hew_stream_next` can still read items that
+    /// arrive afterwards.
+    #[test]
+    fn stream_poll_cancel_before_item_suppresses_callback() {
+        let sink = TestArc::new(CallbackSink::default());
+        // SAFETY: standard test ownership.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink_ptr = hew_stream_pair_sink(pair);
+            let stream_ptr = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+
+            let userdata = TestArc::as_ptr(&sink) as *mut c_void;
+            let id = hew_stream_poll(stream_ptr, record_callback, userdata);
+            assert!(id > 0);
+
+            // Cancel before anyone writes. The park thread is still
+            // blocked inside `next()`; sending an item will unblock it
+            // but the state lock will surface Cancelled and the item is
+            // dropped.
+            hew_stream_cancel_pending_read(stream_ptr, id);
+
+            // pending_read must be cleared by cancel.
+            assert_eq!((*stream_ptr).pending_read.load(Ordering::Acquire), 0);
+
+            // Unblock the park thread by sending one item; this item will
+            // be eaten by the cancel path (the documented item-loss caveat).
+            let payload = [0xAA_u8];
+            hew_sink_write(sink_ptr, payload.as_ptr().cast::<c_void>(), 1);
+
+            // Give the park thread time to observe Cancelled and exit.
+            std::thread::sleep(TestDuration::from_millis(50));
+
+            // The callback must NOT have fired.
+            assert_eq!(
+                sink.fired.load(TestOrdering::Acquire),
+                0,
+                "cancelled poll must not invoke the callback",
+            );
+
+            // The stream is still usable: send another item and read it
+            // directly via the consuming variant.
+            let payload2 = [0xBB_u8];
+            hew_sink_write(sink_ptr, payload2.as_ptr().cast::<c_void>(), 1);
+            let next = hew_stream_next(stream_ptr);
+            assert!(!next.is_null(), "stream must remain readable after cancel");
+            assert_eq!(*(next as *const u8), 0xBB);
+            libc::free(next);
+
+            hew_stream_close(stream_ptr);
+            drop(Box::from_raw(sink_ptr));
+        }
+    }
+
+    /// Cancel-after-completion is a silent no-op: once the callback has
+    /// fired, cancelling with the (now stale) id is harmless.
+    #[test]
+    fn stream_poll_cancel_after_completion_is_noop() {
+        let sink = TestArc::new(CallbackSink::default());
+        // SAFETY: standard test ownership.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink_ptr = hew_stream_pair_sink(pair);
+            let stream_ptr = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+
+            // Send before polling so the item is available immediately.
+            let payload = [0xCC_u8];
+            hew_sink_write(sink_ptr, payload.as_ptr().cast::<c_void>(), 1);
+
+            let userdata = TestArc::as_ptr(&sink) as *mut c_void;
+            let id = hew_stream_poll(stream_ptr, record_callback, userdata);
+            assert!(id > 0);
+
+            assert!(
+                wait_for_callback(&sink, 500),
+                "callback must fire on the queued item",
+            );
+            assert_eq!(sink.fired.load(TestOrdering::Acquire), 1);
+            assert_eq!(sink.last_first_byte.load(TestOrdering::Acquire), 0xCC);
+
+            // Cancel with the stale id — no-op.
+            hew_stream_cancel_pending_read(stream_ptr, id);
+            // Callback count unchanged.
+            assert_eq!(sink.fired.load(TestOrdering::Acquire), 1);
+            // Stream is still usable.
+            assert_eq!((*stream_ptr).pending_read.load(Ordering::Acquire), 0);
+
+            hew_stream_close(stream_ptr);
+            drop(Box::from_raw(sink_ptr));
+        }
+    }
+
+    /// Mismatched-id cancel is a silent no-op even when a poll is in flight.
+    #[test]
+    fn stream_poll_cancel_with_wrong_id_is_noop() {
+        let sink = TestArc::new(CallbackSink::default());
+        // SAFETY: standard test ownership.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink_ptr = hew_stream_pair_sink(pair);
+            let stream_ptr = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+
+            let userdata = TestArc::as_ptr(&sink) as *mut c_void;
+            let id = hew_stream_poll(stream_ptr, record_callback, userdata);
+            assert!(id > 0);
+
+            // Cancel with the wrong id; the live registration must survive.
+            hew_stream_cancel_pending_read(stream_ptr, id.wrapping_add(7));
+            assert_eq!(
+                (*stream_ptr).pending_read.load(Ordering::Acquire),
+                id,
+                "mismatched cancel must not clear the pending_read slot",
+            );
+
+            // Now drop the sink — EOF wakes the park thread and the
+            // callback fires normally.
+            drop(Box::from_raw(sink_ptr));
+            assert!(wait_for_callback(&sink, 500));
+            assert_eq!(sink.fired.load(TestOrdering::Acquire), 1);
+            assert_eq!(sink.last_was_null.load(TestOrdering::Acquire), 1);
+
+            hew_stream_close(stream_ptr);
+        }
+    }
+
+    /// Null-stream poll returns the error sentinel 0.
+    #[test]
+    fn stream_poll_null_stream_returns_zero() {
+        // SAFETY: hew_stream_poll documents null-pointer safety.
+        unsafe {
+            let id = hew_stream_poll(ptr::null_mut(), record_callback, ptr::null_mut());
+            assert_eq!(id, 0);
+        }
+    }
+
+    /// Null-stream cancel is a silent no-op.
+    #[test]
+    fn stream_cancel_null_stream_is_safe() {
+        // SAFETY: hew_stream_cancel_pending_read documents null-pointer safety.
+        unsafe {
+            hew_stream_cancel_pending_read(ptr::null_mut(), 1);
+        }
+    }
+
+    /// Zero-id cancel is a silent no-op (0 is the error sentinel).
+    #[test]
+    fn stream_cancel_zero_id_is_safe() {
+        // SAFETY: standard FFI null/sentinel safety check.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink_ptr = hew_stream_pair_sink(pair);
+            let stream_ptr = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+
+            hew_stream_cancel_pending_read(stream_ptr, 0);
+
+            hew_stream_close(stream_ptr);
+            drop(Box::from_raw(sink_ptr));
+        }
+    }
+
+    /// Pending-read ids are monotonic and unique within a process — the
+    /// codegen contract relies on no id ever repeating for a stream's
+    /// lifetime.
+    #[test]
+    fn stream_poll_assigns_monotonic_ids() {
+        let sink = TestArc::new(CallbackSink::default());
+        // SAFETY: standard test ownership.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink_ptr = hew_stream_pair_sink(pair);
+            let stream_ptr = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+
+            let userdata = TestArc::as_ptr(&sink) as *mut c_void;
+            let id1 = hew_stream_poll(stream_ptr, record_callback, userdata);
+            hew_stream_cancel_pending_read(stream_ptr, id1);
+
+            // Give the park thread a moment to observe Cancelled. Send
+            // an item to unblock it.
+            let payload = [0xEE_u8];
+            hew_sink_write(sink_ptr, payload.as_ptr().cast::<c_void>(), 1);
+            std::thread::sleep(TestDuration::from_millis(50));
+
+            let id2 = hew_stream_poll(stream_ptr, record_callback, userdata);
+            assert!(id2 > id1, "ids must be monotonic ({id2} > {id1})");
+
+            hew_stream_cancel_pending_read(stream_ptr, id2);
+            let payload2 = [0xEF_u8];
+            hew_sink_write(sink_ptr, payload2.as_ptr().cast::<c_void>(), 1);
+            std::thread::sleep(TestDuration::from_millis(50));
+
+            hew_stream_close(stream_ptr);
+            drop(Box::from_raw(sink_ptr));
         }
     }
 }

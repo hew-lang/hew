@@ -37,6 +37,8 @@ fn unit_state(name: &str) -> MachineState {
     MachineState {
         name: name.to_string(),
         fields: vec![],
+        entry: None,
+        exit: None,
     }
 }
 
@@ -58,6 +60,8 @@ fn state_with_fields(name: &str, fields: Vec<(&str, &str)>) -> MachineState {
                 )
             })
             .collect(),
+        entry: None,
+        exit: None,
     }
 }
 

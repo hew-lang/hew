@@ -2399,26 +2399,45 @@ impl<'src> Parser<'src> {
             if self.peek() == Some(&Token::State) {
                 self.advance();
                 let state_name = self.expect_ident()?;
-                let fields = if self.eat(&Token::LeftBrace) {
-                    let mut fields = Vec::new();
+                let mut fields = Vec::new();
+                let mut entry_block: Option<Block> = None;
+                let mut exit_block: Option<Block> = None;
+                if self.eat(&Token::LeftBrace) {
                     while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let ty = self.parse_type()?;
-                        if !self.eat(&Token::Semicolon) {
-                            self.eat(&Token::Comma);
+                        if self.peek() == Some(&Token::Entry) {
+                            self.advance();
+                            let block = self.parse_block()?;
+                            entry_block = Some(block);
+                        } else if self.peek() == Some(&Token::Exit) {
+                            self.advance();
+                            let block = self.parse_block()?;
+                            exit_block = Some(block);
+                        } else if self.peek() == Some(&Token::State) {
+                            // Nested states are reserved for v0.6 hierarchical statecharts.
+                            self.error(
+                                "hierarchical states are reserved for v0.6; \
+                                 nested `state` declarations inside a state body are not permitted"
+                                    .to_string(),
+                            );
+                            self.advance();
+                        } else {
+                            let field_name = self.expect_ident()?;
+                            self.expect(&Token::Colon)?;
+                            let ty = self.parse_type()?;
+                            if !self.eat(&Token::Semicolon) {
+                                self.eat(&Token::Comma);
+                            }
+                            fields.push((field_name, ty));
                         }
-                        fields.push((field_name, ty));
                     }
                     self.expect(&Token::RightBrace)?;
-                    fields
-                } else {
-                    Vec::new()
-                };
+                }
                 self.eat(&Token::Semicolon);
                 states.push(MachineState {
                     name: state_name,
                     fields,
+                    entry: entry_block,
+                    exit: exit_block,
                 });
             } else if self.peek() == Some(&Token::Event) {
                 self.advance();
@@ -4981,6 +5000,27 @@ impl<'src> Parser<'src> {
             Token::This => {
                 self.advance();
                 Expr::This
+            }
+            Token::Emit => {
+                self.advance();
+                let event_name = self.expect_ident()?;
+                let fields = if self.eat(&Token::LeftBrace) {
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let field_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let field_val = self.parse_expr()?;
+                        fields.push((field_name, field_val));
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    fields
+                } else {
+                    Vec::new()
+                };
+                Expr::MachineEmit { event_name, fields }
             }
             // Contextual keywords that can be used as identifiers in expressions
             tok if Self::contextual_keyword_name(tok).is_some() => {

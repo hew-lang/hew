@@ -952,20 +952,35 @@ impl<'a> Formatter<'a> {
             self.write_indent();
             self.write("state ");
             self.write(&state.name);
-            if state.fields.is_empty() {
-                self.write(";\n");
-            } else {
-                self.write(" { ");
-                for (i, (name, ty)) in state.fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(" ");
-                    }
+            let has_body =
+                !state.fields.is_empty() || state.entry.is_some() || state.exit.is_some();
+            if has_body {
+                self.write(" {\n");
+                self.indent += 1;
+                for (name, ty) in &state.fields {
+                    self.write_indent();
                     self.write(name);
                     self.write(": ");
                     self.format_type_expr(&ty.0);
-                    self.write(";");
+                    self.write(";\n");
                 }
-                self.write(" }\n");
+                if let Some(entry) = &state.entry {
+                    self.write_indent();
+                    self.write("entry ");
+                    self.format_block(entry, self.source.len());
+                    self.newline();
+                }
+                if let Some(exit) = &state.exit {
+                    self.write_indent();
+                    self.write("exit ");
+                    self.format_block(exit, self.source.len());
+                    self.newline();
+                }
+                self.indent -= 1;
+                self.write_indent();
+                self.write("}\n");
+            } else {
+                self.write(";\n");
             }
         }
 
@@ -2212,6 +2227,24 @@ impl<'a> Formatter<'a> {
                     f.format_expr(&value.0);
                 });
                 self.write("}");
+            }
+            Expr::MachineEmit { event_name, fields } => {
+                self.write("emit ");
+                self.write(event_name);
+                if fields.is_empty() {
+                    self.write(" {}");
+                } else {
+                    self.write(" { ");
+                    for (i, (name, val)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(name);
+                        self.write(": ");
+                        self.format_expr(&val.0);
+                    }
+                    self.write(" }");
+                }
             }
         }
     }

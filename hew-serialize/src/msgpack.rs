@@ -735,7 +735,7 @@ fn walk_program<V: SideTableVisitor>(
                 collect_expr(receiver, tco, visitor, out);
                 collect_call_args(args, tco, visitor, out);
             }
-            Expr::StructInit { fields, .. } => {
+            Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
                 for (_, value) in fields {
                     collect_expr(value, tco, visitor, out);
                 }
@@ -1691,6 +1691,8 @@ mod tests {
                         MachineState {
                             name: "Red".into(),
                             fields: vec![],
+                            entry: None,
+                            exit: None,
                         },
                         MachineState {
                             name: "Green".into(),
@@ -1704,6 +1706,8 @@ mod tests {
                                     10..13,
                                 ),
                             )],
+                            entry: None,
+                            exit: None,
                         },
                     ],
                     events: vec![MachineEvent {

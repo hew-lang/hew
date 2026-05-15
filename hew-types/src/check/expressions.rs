@@ -2758,7 +2758,8 @@ impl Checker {
             | Expr::ScopeCancel
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
-            | Expr::ByteArrayLiteral(_) => {}
+            | Expr::ByteArrayLiteral(_)
+            | Expr::MachineEmit { .. } => {}
         }
     }
 

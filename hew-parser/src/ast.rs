@@ -264,6 +264,14 @@ pub enum Expr {
     ByteStringLiteral(Vec<u8>),
     /// Byte array literal, e.g. `bytes [0x48, 0x65]`.
     ByteArrayLiteral(Vec<u8>),
+
+    /// `emit EventName { field: expr, ... }` — fire a machine event from a
+    /// transition body, `entry`, or `exit` block. Legality (must appear inside
+    /// a machine context) is checked at HIR lowering, not parsing.
+    MachineEmit {
+        event_name: String,
+        fields: Vec<(String, Spanned<Expr>)>,
+    },
 }
 
 // ── Statements ───────────────────────────────────────────────────────
@@ -1228,6 +1236,12 @@ pub struct MachineDecl {
 pub struct MachineState {
     pub name: String,
     pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    /// Optional `entry { ... }` lifecycle block executed when entering this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<Block>,
+    /// Optional `exit { ... }` lifecycle block executed when leaving this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<Block>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

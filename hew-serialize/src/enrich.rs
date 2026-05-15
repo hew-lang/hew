@@ -1105,7 +1105,8 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
         | Expr::Call { .. }
         | Expr::MethodCall { .. }
         | Expr::Lambda { .. }
-        | Expr::Cast { .. } => {}
+        | Expr::Cast { .. }
+        | Expr::MachineEmit { .. } => {}
     }
 }
 
@@ -5946,6 +5947,8 @@ mod tests {
                             0..0,
                         ),
                     )],
+                    entry: None,
+                    exit: None,
                 }],
                 events: vec![MachineEvent {
                     name: "Toggle".into(),

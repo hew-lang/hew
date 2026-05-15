@@ -155,3 +155,105 @@ machine Noop {
         panic!("expected Machine item");
     }
 }
+
+#[test]
+fn parse_state_with_entry_exit_blocks() {
+    let source = r"
+machine Traffic {
+    state Red {
+        entry { log(entering_red); }
+        exit { log(leaving_red); }
+    }
+
+    state Green;
+
+    event Tick;
+
+    on Tick: Red -> Green;
+    on Tick: Green -> Red;
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
+        assert_eq!(m.states.len(), 2);
+        let red = &m.states[0];
+        assert_eq!(red.name, "Red");
+        assert!(red.entry.is_some(), "Red should have entry block");
+        assert!(red.exit.is_some(), "Red should have exit block");
+        let green = &m.states[1];
+        assert!(green.entry.is_none(), "Green has no entry block");
+        assert!(green.exit.is_none(), "Green has no exit block");
+    } else {
+        panic!("expected Machine item");
+    }
+}
+
+#[test]
+fn parse_emit_in_transition_body() {
+    let source = r"
+machine Counter {
+    state Idle;
+    state Running { count: Int; }
+
+    event Start;
+    event Tick;
+    event Overflow;
+
+    on Start: Idle -> Running {
+        emit Overflow { code: 0 };
+        Running { count: 0 }
+    }
+
+    on Tick: Running -> Running {
+        Running { count: self.count + 1 }
+    }
+}
+";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
+        assert_eq!(m.name, "Counter");
+        assert_eq!(m.transitions.len(), 2);
+    } else {
+        panic!("expected Machine item");
+    }
+}
+
+#[test]
+fn reject_nested_state_in_state_body() {
+    let source = r"
+machine Bad {
+    state Outer {
+        state Inner;
+    }
+
+    event Ping;
+}
+";
+    let result = hew_parser::parse(source);
+    // Must have at least one error about nested state
+    assert!(
+        !result.errors.is_empty(),
+        "expected parse error for nested state, got none"
+    );
+    let has_nested_state_error = result
+        .errors
+        .iter()
+        .any(|e| format!("{e:?}").contains("hierarchical"));
+    assert!(
+        has_nested_state_error,
+        "expected hierarchical-states diagnostic, errors: {:?}",
+        result.errors
+    );
+}

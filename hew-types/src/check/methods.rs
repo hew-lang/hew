@@ -2126,6 +2126,26 @@ impl Checker {
                     Ty::Error
                 }
             }
+            // Duplex<S, R>: lambda-actor handle — `.send()` is rejected (E_LAMBDA_NO_SEND_METHOD).
+            //
+            // Lambda-actor handles use call-syntax only: `handle(msg)` not `handle.send(msg)`.
+            // This arm fires for any method name on Duplex to give a targeted diagnostic.
+            (Ty::Named { name, .. }, _) if name == "Duplex" => {
+                // Still synthesize arguments to surface independent type errors.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!(
+                        "lambda actor handles do not have a `.{method}()` method (E_LAMBDA_NO_SEND_METHOD); \
+                         use call-syntax instead: `handle(msg)`"
+                    ),
+                );
+                Ty::Error
+            }
             // Named types that have built-in methods (Actor<T> from lambda actors)
             (
                 Ty::Named {

@@ -3185,7 +3185,11 @@ mod tests {
         // SAFETY: tests construct userdata from `Arc::into_raw(Arc<CallbackSink>)`
         // and keep that Arc alive for the duration of the test.
         let sink = unsafe { &*(userdata as *const CallbackSink) };
-        sink.fired.fetch_add(1, TestOrdering::Release);
+        // Order: record payload metadata BEFORE the fired counter so any
+        // waiter that observes fired>0 also sees the metadata. The waiter
+        // uses fired as the readiness signal; treating it as a happens-before
+        // release for last_was_null/last_first_byte requires the metadata
+        // store to precede the fired bump.
         if item.is_null() {
             sink.last_was_null.store(1, TestOrdering::Release);
         } else {
@@ -3197,6 +3201,7 @@ mod tests {
             // SAFETY: item was malloc'd by hew_stream_poll's park thread.
             unsafe { libc::free(item) };
         }
+        sink.fired.fetch_add(1, TestOrdering::Release);
     }
 
     fn wait_for_callback(sink: &CallbackSink, deadline_ms: u64) -> bool {

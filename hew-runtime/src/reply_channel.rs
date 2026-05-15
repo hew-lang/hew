@@ -548,16 +548,19 @@ pub(crate) unsafe fn hew_reply_channel_allocation_failed_for_test(
 mod tests {
     use super::*;
 
-    // Serialises tests that take delta measurements on the process-wide
-    // ACTIVE_CHANNELS counter. Any test that reads the counter before and
-    // after a single new/free pair must hold this lock for the entire
-    // measurement window; otherwise a concurrent allocating test can shift
-    // the counter between the two observations and produce a spurious
-    // failure. Tests that do not read the counter do not need this lock.
-    static COUNTER_LOCK: Mutex<()> = Mutex::new(());
+    // All tests that create or free a reply channel must hold
+    // `crate::runtime_test_guard()` for their entire body.  The
+    // `ACTIVE_CHANNELS` counter is process-wide; any concurrent
+    // allocation or free in another test (including actor::tests) shifts
+    // the counter and corrupts delta measurements.  `runtime_test_guard`
+    // is the crate-wide serialisation primitive — shared by actor::tests
+    // — so holding it here excludes all other allocating tests across
+    // every module.  The only exempt test is
+    // `select_first_null_returns_negative_one`, which never allocates.
 
     #[test]
     fn cancel_then_owner_release_leaves_sender_reference_for_late_reply() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
 
         // SAFETY: ch is a valid channel pointer; FFI calls test ref-counting behaviour.
@@ -588,7 +591,7 @@ mod tests {
         // a concurrent test allocating or freeing a channel between the
         // pre/post observations can shift the counter and produce a
         // spurious failure.
-        let _guard = COUNTER_LOCK.lock().unwrap();
+        let _guard = crate::runtime_test_guard();
         let pre_new = active_channel_count();
 
         let ch = hew_reply_channel_new();
@@ -619,6 +622,7 @@ mod tests {
 
     #[test]
     fn reply_then_cancel_preserves_ready_value_until_owner_releases() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let value = 42_i32;
 
@@ -647,6 +651,7 @@ mod tests {
 
     #[test]
     fn send_recv_roundtrip() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let payload = 99_i64;
 
@@ -670,6 +675,7 @@ mod tests {
 
     #[test]
     fn timeout_expires_returns_null() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
 
         // SAFETY: ch is a valid channel pointer; testing timeout with no reply pending.
@@ -696,6 +702,7 @@ mod tests {
 
     #[test]
     fn threaded_send_recv() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let value = 77_i32;
 
@@ -726,6 +733,7 @@ mod tests {
 
     #[test]
     fn reply_wait_surfaces_copy_oom() {
+        let _guard = crate::runtime_test_guard();
         crate::hew_clear_error();
         let ch = hew_reply_channel_new();
         let payload = 55_i32;
@@ -762,6 +770,7 @@ mod tests {
     /// the cancel/timeout legs of the ask seam.
     #[test]
     fn hew_reply_returns_false_when_channel_was_cancelled() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let payload = 42_i32;
 
@@ -792,6 +801,7 @@ mod tests {
     /// and the deep-cloned heap object lifetime transfers to the caller.
     #[test]
     fn hew_reply_returns_true_on_successful_delivery() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let payload = 99_i32;
 
@@ -820,6 +830,7 @@ mod tests {
     /// clone with the matching destructor, and no leak remains.
     #[test]
     fn cancelled_channel_lets_caller_reclaim_deep_cloned_string_payload() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         // Allocate a heap "state-owned" string and the cloned reply, the
         // way codegen does immediately before invoking hew_reply.
@@ -860,6 +871,7 @@ mod tests {
     /// alloc must report `false` so the caller can reclaim its clone.
     #[test]
     fn alloc_failure_lets_caller_reclaim_deep_cloned_payload() {
+        let _guard = crate::runtime_test_guard();
         crate::hew_clear_error();
         let ch = hew_reply_channel_new();
         let original = std::ffi::CString::new("owned-state").unwrap();
@@ -917,6 +929,7 @@ mod tests {
     #[test]
     fn threaded_cancel_races_late_reply() {
         const ITERS: usize = 500;
+        let _guard = crate::runtime_test_guard();
         for _ in 0..ITERS {
             // SAFETY: ch is valid; ref counts are managed explicitly below.
             unsafe {
@@ -955,6 +968,7 @@ mod tests {
     fn threaded_select_cancel_with_late_replies() {
         const ARMS: usize = 3;
         const ITERS: usize = 200;
+        let _guard = crate::runtime_test_guard();
         for _ in 0..ITERS {
             // SAFETY: channel lifetimes are managed through ref counts;
             // all sender threads join before the next iteration.
@@ -1021,6 +1035,7 @@ mod tests {
     fn threaded_parallel_roundtrips() {
         const THREADS: usize = 8;
         const ROUNDS: usize = 64;
+        let _guard = crate::runtime_test_guard();
 
         let handles: Vec<_> = (0..THREADS)
             .map(|t| {

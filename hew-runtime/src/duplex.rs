@@ -460,6 +460,524 @@ impl Drop for HewRecvHalf {
     }
 }
 
+// ── C-ABI entries ──────────────────────────────────────────────────────────
+//
+// These are the symbols slice-5 codegen calls from emitted LLVM IR for
+// `Duplex<S, R>` construction, send, recv, half-extraction, and close
+// (`DropKind::DuplexClose` / `DropKind::DuplexHalfClose(Direction)` in MIR).
+//
+// Payload convention matches the existing `hew_channel_*` ABI: an opaque
+// byte slice `(msg: *const u8, len: usize)` for send; a caller-owned
+// out-buffer `(out: *mut u8, len: usize)` for recv. The receive ABI here
+// reports the actual message length via an `out_len: *mut usize` pointer
+// and signals truncation by returning a separate discriminant; callers
+// (codegen, in slice 5) can round-trip arbitrary value types through this
+// surface. The exact serialization of `S` and `R` payloads is the codegen
+// layer's concern — runtime treats every payload as opaque bytes.
+
+use std::ffi::c_void;
+use std::ptr;
+
+/// Direction selector for `hew_duplex_close_half`. Mirrors the MIR
+/// `hew_mir::Direction` enum from slice 3's `DropKind::DuplexHalfClose`.
+/// Discriminants are stable across the FFI boundary.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HewDuplexDirection {
+    /// S-direction (the queue the unified handle writes into).
+    Send = 0,
+    /// R-direction (the queue the unified handle reads from).
+    Recv = 1,
+}
+
+/// Allocate a self-loopback Duplex with the given per-direction capacities.
+/// `s_cap` and `r_cap` are accepted symmetrically so the ABI also covers
+/// the future split-capacity case; the loopback uses one queue and
+/// honours `s_cap` (R-cap is ignored — they're the same queue).
+///
+/// Returns null on invalid input.
+///
+/// # Safety
+///
+/// The returned pointer is owned by the runtime; callers must release it
+/// with [`hew_duplex_close`] (close-both-dirs) or convert into halves with
+/// [`hew_duplex_send_half`] / [`hew_duplex_recv_half`] before dropping.
+#[no_mangle]
+pub extern "C" fn hew_duplex_new(s_cap: usize, r_cap: usize) -> *mut HewDuplex {
+    if s_cap == 0 || r_cap == 0 {
+        crate::set_last_error(format!(
+            "hew_duplex_new: capacity must be > 0 (got s_cap={s_cap}, r_cap={r_cap})"
+        ));
+        return ptr::null_mut();
+    }
+    let d = HewDuplex::new_loopback(s_cap);
+    Box::into_raw(Box::new(d))
+}
+
+/// Allocate a cross-wired pair. On success writes the two handle
+/// pointers into `out_a` and `out_b`. Both must be non-null.
+///
+/// # Safety
+///
+/// `out_a` and `out_b` must be non-null and writeable; they are
+/// overwritten with handle pointers the caller owns thereafter (release
+/// each via [`hew_duplex_close`]).
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_pair(
+    s_cap: usize,
+    r_cap: usize,
+    out_a: *mut *mut HewDuplex,
+    out_b: *mut *mut HewDuplex,
+) -> i32 {
+    if out_a.is_null() || out_b.is_null() {
+        crate::set_last_error("hew_duplex_pair: out_a / out_b must not be null".to_string());
+        return SendError::Closed as i32;
+    }
+    if s_cap == 0 || r_cap == 0 {
+        crate::set_last_error(format!(
+            "hew_duplex_pair: capacity must be > 0 (got s_cap={s_cap}, r_cap={r_cap})"
+        ));
+        return SendError::Closed as i32;
+    }
+    let (a, b) = HewDuplex::new_pair(s_cap, r_cap);
+    let a_ptr = Box::into_raw(Box::new(a));
+    let b_ptr = Box::into_raw(Box::new(b));
+    // SAFETY:
+    // - Provenance: caller-provided write targets verified non-null above.
+    // - Type tag: target slot is `*mut HewDuplex`, matches what we write.
+    // - Lifetime owner: ownership transfers from this function's Box-allocated
+    //   handles to the caller-supplied slots; no aliasing arises.
+    // - Aliasing concurrency: caller-supplied pointers may not be shared with
+    //   another thread; this is the caller's contract for an FFI out-param.
+    // - Bounds: writing a single pointer-sized value into a non-null slot.
+    // - Failure mode: precondition checked above; if upheld, write cannot fault.
+    unsafe {
+        ptr::write(out_a, a_ptr);
+        ptr::write(out_b, b_ptr);
+    }
+    SendError::Ok as i32
+}
+
+/// Send a payload on the unified Duplex's S-direction. Returns the
+/// `SendError` discriminant as `i32` (0 = Ok, 1 = Closed, ...).
+///
+/// Blocks if the queue is full and at least one receiver remains.
+///
+/// # Safety
+///
+/// `d` must point to a valid Duplex returned by `hew_duplex_new` or
+/// `hew_duplex_pair`. `msg` must be valid for `len` bytes (may be null
+/// if `len == 0`).
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_send(d: *mut HewDuplex, msg: *const u8, len: usize) -> i32 {
+    if d.is_null() {
+        crate::set_last_error("hew_duplex_send: null handle".to_string());
+        return SendError::Closed as i32;
+    }
+    // SAFETY:
+    // - Provenance: `msg` is caller-owned; we copy into an owned Vec, so
+    //   no pointer escapes this frame.
+    // - Type tag: bytes are opaque; we don't reinterpret.
+    // - Lifetime owner: payload becomes owned by the Vec the moment we
+    //   copy, before the function returns.
+    // - Aliasing concurrency: caller must not mutate `msg` concurrently
+    //   with this call (standard FFI immutable-read contract).
+    // - Bounds: `len` bytes read from `msg`; null `msg` is only legal
+    //   when `len == 0`, which is the empty-slice case.
+    // - Failure mode: on null+nonzero we'd UB; rejected above (len == 0
+    //   yields an empty Vec without dereferencing).
+    let payload = if len == 0 {
+        Vec::new()
+    } else if msg.is_null() {
+        crate::set_last_error("hew_duplex_send: null msg with non-zero len".to_string());
+        return SendError::Closed as i32;
+    } else {
+        // SAFETY: see the six-axis breakdown of the `msg` pointer above
+        // the `let payload` binding — null + non-zero rejected; remaining
+        // case is a caller-owned non-null `msg` valid for `len` bytes;
+        // `to_vec` copies before this frame returns.
+        unsafe { std::slice::from_raw_parts(msg, len) }.to_vec()
+    };
+    // SAFETY:
+    // - Provenance: caller guarantees `d` came from hew_duplex_new / pair.
+    // - Type tag: `*mut HewDuplex` matches the originating type.
+    // - Lifetime owner: caller still owns the box; we take only a shared
+    //   reference for the send call.
+    // - Aliasing concurrency: `HewDuplex` is Sync (every field's mutation
+    //   is guarded by an internal Mutex / atomic), so shared access from
+    //   parallel threads is sound.
+    // - Bounds: dereferencing a single non-null aligned pointer to a Sized type.
+    // - Failure mode: dangling handle is the caller's contract violation;
+    //   the runtime cannot detect this and behaviour is UB per FFI norms.
+    let res = unsafe { (*d).send(payload) };
+    res as i32
+}
+
+/// Non-blocking variant of [`hew_duplex_send`]. Returns
+/// `SendError::Full` if the queue is at capacity.
+///
+/// # Safety
+///
+/// Same as `hew_duplex_send`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_try_send(d: *mut HewDuplex, msg: *const u8, len: usize) -> i32 {
+    if d.is_null() {
+        crate::set_last_error("hew_duplex_try_send: null handle".to_string());
+        return SendError::Closed as i32;
+    }
+    let payload = if len == 0 {
+        Vec::new()
+    } else if msg.is_null() {
+        crate::set_last_error("hew_duplex_try_send: null msg with non-zero len".to_string());
+        return SendError::Closed as i32;
+    } else {
+        // SAFETY: see hew_duplex_send for the six-axis breakdown — the
+        // contract is identical (caller-owned immutable slice for `len`
+        // bytes; copied into an owned Vec before return).
+        unsafe { std::slice::from_raw_parts(msg, len) }.to_vec()
+    };
+    // SAFETY: see hew_duplex_send for the six-axis breakdown of
+    // `*mut HewDuplex` dereference. `try_send` does not block, but the
+    // pointer-validity contract is identical.
+    let res = unsafe { (*d).try_send(payload) };
+    res as i32
+}
+
+/// Block until a message is available on the unified Duplex's
+/// R-direction. The payload is allocated by the runtime (malloc'd via
+/// the system allocator) and ownership transfers to the caller, who
+/// must release it with [`hew_duplex_payload_free`]. On success,
+/// `*out_ptr` points at the payload bytes and `*out_len` carries the
+/// length. On closed-or-error, `*out_ptr` is null, `*out_len` is 0,
+/// and the return value carries the error discriminant.
+///
+/// # Safety
+///
+/// `d`, `out_ptr`, and `out_len` must all be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_recv(
+    d: *mut HewDuplex,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if d.is_null() || out_ptr.is_null() || out_len.is_null() {
+        crate::set_last_error("hew_duplex_recv: null pointer argument".to_string());
+        return RecvError::Closed as i32;
+    }
+    // SAFETY: see hew_duplex_send dereference axis-by-axis; identical
+    // (Sync handle, non-null aligned pointer, single shared borrow).
+    let outcome = unsafe { (*d).recv() };
+    match outcome {
+        Ok(bytes) => {
+            let len = bytes.len();
+            let buf = bytes.into_boxed_slice();
+            let ptr = Box::into_raw(buf).cast::<u8>();
+            // SAFETY: `out_ptr` / `out_len` validity checked above; we
+            // write one pointer + one usize into caller-owned slots.
+            unsafe {
+                ptr::write(out_ptr, ptr);
+                ptr::write(out_len, len);
+            }
+            RecvError::Ok as i32
+        }
+        Err(e) => {
+            // SAFETY: out-param slots null-checked above.
+            unsafe {
+                ptr::write(out_ptr, ptr::null_mut());
+                ptr::write(out_len, 0usize);
+            }
+            e as i32
+        }
+    }
+}
+
+/// Non-blocking variant of [`hew_duplex_recv`]. Returns
+/// `RecvError::Empty` if no message is waiting.
+///
+/// # Safety
+///
+/// Same as `hew_duplex_recv`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_try_recv(
+    d: *mut HewDuplex,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if d.is_null() || out_ptr.is_null() || out_len.is_null() {
+        crate::set_last_error("hew_duplex_try_recv: null pointer argument".to_string());
+        return RecvError::Closed as i32;
+    }
+    // SAFETY: see hew_duplex_recv — identical six-axis profile.
+    let outcome = unsafe { (*d).try_recv() };
+    match outcome {
+        Ok(bytes) => {
+            let len = bytes.len();
+            let buf = bytes.into_boxed_slice();
+            let ptr = Box::into_raw(buf).cast::<u8>();
+            // SAFETY: out-param slots null-checked above.
+            unsafe {
+                ptr::write(out_ptr, ptr);
+                ptr::write(out_len, len);
+            }
+            RecvError::Ok as i32
+        }
+        Err(e) => {
+            // SAFETY: out-param slots null-checked above.
+            unsafe {
+                ptr::write(out_ptr, ptr::null_mut());
+                ptr::write(out_len, 0usize);
+            }
+            e as i32
+        }
+    }
+}
+
+/// Release a payload buffer returned by [`hew_duplex_recv`].
+///
+/// # Safety
+///
+/// `ptr` must have come from a successful [`hew_duplex_recv`] (or
+/// `try_recv`) call and `len` must match its reported length. The
+/// buffer is freed in place; the pointer is invalid thereafter.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_payload_free(ptr: *mut u8, len: usize) {
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY:
+    // - Provenance: caller guarantees ptr came from a Box<[u8]> we
+    //   leaked via `Box::into_raw(buf)` where buf was the boxed slice.
+    // - Type tag: reconstituting `*mut [u8]` from the data ptr + len.
+    // - Lifetime owner: ownership returns from the caller to this
+    //   frame; the Box drop reclaims the heap allocation.
+    // - Aliasing concurrency: caller must not retain a live alias to
+    //   the payload past the free call (standard free contract).
+    // - Bounds: slice length matches what `hew_duplex_recv` wrote into
+    //   `*out_len` — caller's responsibility per the docstring.
+    // - Failure mode: a mismatched `len` is UB per Box's contract;
+    //   detection is not possible at this layer.
+    unsafe {
+        let slice = std::slice::from_raw_parts_mut(ptr, len);
+        drop(Box::from_raw(slice as *mut [u8]));
+    }
+}
+
+/// Close-both-directions and free the Duplex handle. Decrements both
+/// sender and receiver caps on the underlying queues; if any cap was
+/// the last alive, that direction's blocked peer wakes with `Closed`.
+///
+/// # Safety
+///
+/// `d` must have been returned by [`hew_duplex_new`] / [`hew_duplex_pair`]
+/// and must not be used after this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_close(d: *mut HewDuplex) {
+    if d.is_null() {
+        return;
+    }
+    // SAFETY:
+    // - Provenance: caller guarantees `d` came from hew_duplex_new /
+    //   hew_duplex_pair, which both call `Box::into_raw`.
+    // - Type tag: `*mut HewDuplex` matches the Box's element type.
+    // - Lifetime owner: ownership returns to this frame for the
+    //   single, final drop. Caller's contract pins exclusivity.
+    // - Aliasing concurrency: this is the destructor — exclusive
+    //   ownership is required by the caller's contract for a final
+    //   close call (cf. close-on-last-drop in the MIR drop plan).
+    // - Bounds: a single fat-aware free; no offset arithmetic.
+    // - Failure mode: double-free is the caller's contract violation;
+    //   detection requires guard pages or a poison flag, neither of
+    //   which the substrate carries today.
+    unsafe {
+        drop(Box::from_raw(d));
+    }
+}
+
+/// Convert a unified Duplex into a `HewSendHalf` (send-only alias).
+/// Consumes the input handle (caller MUST NOT use `d` after this call).
+/// The returned `HewSendHalf` pointer must be released via
+/// [`hew_duplex_send_half_close`] / [`hew_duplex_close_half`] with
+/// `Direction::Send`.
+///
+/// # Safety
+///
+/// `d` must have been returned by `hew_duplex_new` / `hew_duplex_pair`.
+/// On success `d` is consumed and must not be used again.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_send_half(d: *mut HewDuplex) -> *mut HewSendHalf {
+    if d.is_null() {
+        crate::set_last_error("hew_duplex_send_half: null handle".to_string());
+        return ptr::null_mut();
+    }
+    // SAFETY:
+    // - Provenance: caller guarantees Box origin.
+    // - Type tag: `*mut HewDuplex` matches Box element.
+    // - Lifetime owner: this call consumes the Duplex (the API contract
+    //   declares `d` invalid afterwards). We reconstitute the Box,
+    //   call into_send_half (which forgets the Duplex internally), and
+    //   wrap the result in a new Box.
+    // - Aliasing concurrency: exclusive ownership required, as for any
+    //   consuming operation.
+    // - Bounds: single fat-aware reconstitution.
+    // - Failure mode: caller reusing `d` is UB; not detectable here.
+    // SAFETY (Box::from_raw): see above contract — pointer is a
+    // Box<HewDuplex> produced by Box::into_raw with exclusive ownership.
+    let duplex = unsafe { Box::from_raw(d) };
+    // Move out of the Box without re-running Drop: take the inner value.
+    // `into_send_half` handles the cap accounting (drops r_queue
+    // receiver-cap, keeps s_queue sender-cap).
+    let send_half = (*duplex).into_send_half();
+    // The Box itself was zero-sized after the move-out; deallocating it
+    // is a regular Box deallocation — the inner Duplex is gone.
+    Box::into_raw(Box::new(send_half))
+}
+
+/// Convert a unified Duplex into a `HewRecvHalf` (recv-only alias).
+///
+/// # Safety
+///
+/// Same as `hew_duplex_send_half`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_recv_half(d: *mut HewDuplex) -> *mut HewRecvHalf {
+    if d.is_null() {
+        crate::set_last_error("hew_duplex_recv_half: null handle".to_string());
+        return ptr::null_mut();
+    }
+    // SAFETY: see hew_duplex_send_half — symmetric profile, consuming
+    // the input Duplex per the caller contract.
+    // SAFETY (Box::from_raw): see hew_duplex_send_half — symmetric.
+    let duplex = unsafe { Box::from_raw(d) };
+    let recv_half = (*duplex).into_recv_half();
+    Box::into_raw(Box::new(recv_half))
+}
+
+/// Send a payload on a `HewSendHalf`.
+///
+/// # Safety
+///
+/// `half` must point to a valid `HewSendHalf` returned by
+/// [`hew_duplex_send_half`] (or its `*_clone` companion). `msg` must
+/// be valid for `len` bytes (null if `len == 0`).
+#[no_mangle]
+pub unsafe extern "C" fn hew_send_half_send(
+    half: *mut HewSendHalf,
+    msg: *const u8,
+    len: usize,
+) -> i32 {
+    if half.is_null() {
+        crate::set_last_error("hew_send_half_send: null handle".to_string());
+        return SendError::Closed as i32;
+    }
+    let payload = if len == 0 {
+        Vec::new()
+    } else if msg.is_null() {
+        crate::set_last_error("hew_send_half_send: null msg with non-zero len".to_string());
+        return SendError::Closed as i32;
+    } else {
+        // SAFETY: see hew_duplex_send dereference axis; identical contract.
+        unsafe { std::slice::from_raw_parts(msg, len) }.to_vec()
+    };
+    // SAFETY: see hew_duplex_send — pointer-validity contract identical;
+    // HewSendHalf is Sync via its internal Arc<Queue>.
+    let res = unsafe { (*half).send(payload) };
+    res as i32
+}
+
+/// Receive a payload from a `HewRecvHalf`.
+///
+/// # Safety
+///
+/// `half`, `out_ptr`, and `out_len` must all be valid pointers; the
+/// payload is owned by the caller and must be released with
+/// [`hew_duplex_payload_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_recv_half_recv(
+    half: *mut HewRecvHalf,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if half.is_null() || out_ptr.is_null() || out_len.is_null() {
+        crate::set_last_error("hew_recv_half_recv: null pointer argument".to_string());
+        return RecvError::Closed as i32;
+    }
+    // SAFETY: see hew_duplex_recv — symmetric profile.
+    let outcome = unsafe { (*half).recv() };
+    match outcome {
+        Ok(bytes) => {
+            let len = bytes.len();
+            let buf = bytes.into_boxed_slice();
+            let ptr = Box::into_raw(buf).cast::<u8>();
+            // SAFETY: out-param slots null-checked above.
+            unsafe {
+                ptr::write(out_ptr, ptr);
+                ptr::write(out_len, len);
+            }
+            RecvError::Ok as i32
+        }
+        Err(e) => {
+            // SAFETY: out-param slots null-checked above.
+            unsafe {
+                ptr::write(out_ptr, ptr::null_mut());
+                ptr::write(out_len, 0usize);
+            }
+            e as i32
+        }
+    }
+}
+
+/// Close-one-direction on a Duplex. Used by codegen for the MIR
+/// `DropKind::DuplexHalfClose(Direction)` shape: the half-handle's
+/// Drop fires this entry rather than [`hew_duplex_close`].
+///
+/// Behaviour:
+///
+/// - `direction == Send`: treats `half` as a `HewSendHalf*`; frees it
+///   (releasing the `s_queue` sender-cap).
+/// - `direction == Recv`: treats `half` as a `HewRecvHalf*`; frees it
+///   (releasing the `r_queue` receiver-cap).
+///
+/// # Safety
+///
+/// `half` must point to the matching half-handle type for `direction`.
+/// A mismatched direction is UB.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_close_half(half: *mut c_void, direction: i32) {
+    if half.is_null() {
+        return;
+    }
+    match direction {
+        x if x == HewDuplexDirection::Send as i32 => {
+            // SAFETY: per the caller contract, `half` is a `*mut HewSendHalf`.
+            unsafe { drop(Box::from_raw(half.cast::<HewSendHalf>())) };
+        }
+        x if x == HewDuplexDirection::Recv as i32 => {
+            // SAFETY: per the caller contract, `half` is a `*mut HewRecvHalf`.
+            unsafe { drop(Box::from_raw(half.cast::<HewRecvHalf>())) };
+        }
+        _ => {
+            crate::set_last_error(format!(
+                "hew_duplex_close_half: invalid direction discriminant {direction}"
+            ));
+        }
+    }
+}
+
+/// Refcount-bump clone of a unified Duplex handle.
+///
+/// # Safety
+///
+/// `d` must be a valid Duplex handle.
+#[no_mangle]
+pub unsafe extern "C" fn hew_duplex_clone(d: *mut HewDuplex) -> *mut HewDuplex {
+    if d.is_null() {
+        crate::set_last_error("hew_duplex_clone: null handle".to_string());
+        return ptr::null_mut();
+    }
+    // SAFETY: see hew_duplex_send for `*mut HewDuplex` dereference profile.
+    let cloned = unsafe { (*d).clone_handle() };
+    Box::into_raw(Box::new(cloned))
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -561,5 +1079,146 @@ mod tests {
     fn try_recv_empty_when_no_messages() {
         let d = HewDuplex::new_loopback(2);
         assert!(matches!(d.try_recv(), Err(RecvError::Empty)));
+    }
+
+    // ── C-ABI tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn cabi_new_send_recv_close_loopback() {
+        let d = hew_duplex_new(4, 4);
+        assert!(!d.is_null());
+        let msg = b"abi-loop";
+        // SAFETY: d non-null, msg valid for its length, payload-free
+        // contract per docstring.
+        unsafe {
+            let send_rc = hew_duplex_send(d, msg.as_ptr(), msg.len());
+            assert_eq!(send_rc, SendError::Ok as i32);
+            let mut out_ptr: *mut u8 = ptr::null_mut();
+            let mut out_len: usize = 0;
+            let recv_rc = hew_duplex_recv(
+                d,
+                std::ptr::addr_of_mut!(out_ptr),
+                std::ptr::addr_of_mut!(out_len),
+            );
+            assert_eq!(recv_rc, RecvError::Ok as i32);
+            assert_eq!(out_len, msg.len());
+            let recovered = std::slice::from_raw_parts(out_ptr, out_len);
+            assert_eq!(recovered, msg);
+            hew_duplex_payload_free(out_ptr, out_len);
+            hew_duplex_close(d);
+        }
+    }
+
+    #[test]
+    fn cabi_pair_cross_wires() {
+        let mut a: *mut HewDuplex = ptr::null_mut();
+        let mut b: *mut HewDuplex = ptr::null_mut();
+        // SAFETY: out_a / out_b are valid stack slots; capacities positive.
+        let rc =
+            unsafe { hew_duplex_pair(4, 4, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
+        assert_eq!(rc, SendError::Ok as i32);
+        assert!(!a.is_null() && !b.is_null());
+        // SAFETY: handles came from hew_duplex_pair above.
+        unsafe {
+            let payload = b"a-to-b";
+            assert_eq!(
+                hew_duplex_send(a, payload.as_ptr(), payload.len()),
+                SendError::Ok as i32
+            );
+            let mut p: *mut u8 = ptr::null_mut();
+            let mut n: usize = 0;
+            let rc = hew_duplex_recv(b, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n));
+            assert_eq!(rc, RecvError::Ok as i32);
+            let bytes = std::slice::from_raw_parts(p, n).to_vec();
+            assert_eq!(bytes, payload);
+            hew_duplex_payload_free(p, n);
+            hew_duplex_close(a);
+            hew_duplex_close(b);
+        }
+    }
+
+    #[test]
+    fn cabi_close_both_dirs_on_last_drop() {
+        let mut a: *mut HewDuplex = ptr::null_mut();
+        let mut b: *mut HewDuplex = ptr::null_mut();
+        // SAFETY: valid out-params.
+        unsafe {
+            assert_eq!(
+                hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b),),
+                SendError::Ok as i32
+            );
+            // a sends final, then closes; b drains and then sees Closed.
+            let payload = b"bye";
+            hew_duplex_send(a, payload.as_ptr(), payload.len());
+            hew_duplex_close(a);
+            let mut p: *mut u8 = ptr::null_mut();
+            let mut n: usize = 0;
+            assert_eq!(
+                hew_duplex_recv(b, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n)),
+                RecvError::Ok as i32
+            );
+            hew_duplex_payload_free(p, n);
+            // Now no senders remain.
+            assert_eq!(
+                hew_duplex_recv(b, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n)),
+                RecvError::Closed as i32
+            );
+            assert!(p.is_null());
+            // b's send fails closed (a released receiver).
+            let payload2 = b"too-late";
+            assert_eq!(
+                hew_duplex_send(b, payload2.as_ptr(), payload2.len()),
+                SendError::Closed as i32
+            );
+            hew_duplex_close(b);
+        }
+    }
+
+    #[test]
+    fn cabi_half_split_and_close_directions() {
+        let mut a: *mut HewDuplex = ptr::null_mut();
+        let mut b: *mut HewDuplex = ptr::null_mut();
+        // SAFETY: stack out-slots.
+        unsafe {
+            hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b));
+            let a_send = hew_duplex_send_half(a);
+            let b_recv = hew_duplex_recv_half(b);
+            assert!(!a_send.is_null() && !b_recv.is_null());
+            let payload = b"split-abi";
+            assert_eq!(
+                hew_send_half_send(a_send, payload.as_ptr(), payload.len()),
+                SendError::Ok as i32
+            );
+            let mut p: *mut u8 = ptr::null_mut();
+            let mut n: usize = 0;
+            assert_eq!(
+                hew_recv_half_recv(b_recv, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n),),
+                RecvError::Ok as i32
+            );
+            hew_duplex_payload_free(p, n);
+            hew_duplex_close_half(a_send.cast(), HewDuplexDirection::Send as i32);
+            // After a_send closes, b_recv must see Closed (no senders).
+            assert_eq!(
+                hew_recv_half_recv(b_recv, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n),),
+                RecvError::Closed as i32
+            );
+            hew_duplex_close_half(b_recv.cast(), HewDuplexDirection::Recv as i32);
+        }
+    }
+
+    #[test]
+    fn cabi_new_rejects_zero_capacity() {
+        let d = hew_duplex_new(0, 4);
+        assert!(d.is_null());
+        let d2 = hew_duplex_new(4, 0);
+        assert!(d2.is_null());
+    }
+
+    #[test]
+    fn cabi_pair_rejects_null_out_param() {
+        let mut a: *mut HewDuplex = ptr::null_mut();
+        // SAFETY: deliberately exercising the null-out-param branch.
+        let rc = unsafe { hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), ptr::null_mut()) };
+        assert_eq!(rc, SendError::Closed as i32);
     }
 }

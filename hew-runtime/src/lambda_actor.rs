@@ -40,7 +40,9 @@
     reason = "send return-codes are routinely inspected only at the FFI surface; clone_handle is intentionally side-effecting via atomic refcount bumps"
 )]
 
+use std::mem::ManuallyDrop;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use crate::duplex::{HewDuplex, HewRecvHalf, HewSendHalf, RecvError, SendError};
@@ -205,6 +207,45 @@ impl HewLambdaActorWeak {
     }
 }
 
+// ── Double-close guard wrappers ────────────────────────────────────────────
+//
+// See the parallel comment in duplex.rs for the full rationale. Short form:
+// the outer allocation is intentionally never freed so the `released` flag
+// remains readable on any subsequent call, converting a double-free UB into
+// a typed `SendError::DoubleClose` (= 4) return.
+
+/// C-ABI wrapper around [`HewLambdaActor`] with a double-release guard.
+#[derive(Debug)]
+pub struct HewLambdaActorHandle {
+    released: AtomicBool,
+    inner: ManuallyDrop<HewLambdaActor>,
+}
+
+impl HewLambdaActorHandle {
+    fn new(actor: HewLambdaActor) -> Self {
+        Self {
+            released: AtomicBool::new(false),
+            inner: ManuallyDrop::new(actor),
+        }
+    }
+}
+
+/// C-ABI wrapper around [`HewLambdaActorWeak`] with a double-drop guard.
+#[derive(Debug)]
+pub struct HewLambdaActorWeakHandle {
+    released: AtomicBool,
+    inner: ManuallyDrop<HewLambdaActorWeak>,
+}
+
+impl HewLambdaActorWeakHandle {
+    fn new(weak: HewLambdaActorWeak) -> Self {
+        Self {
+            released: AtomicBool::new(false),
+            inner: ManuallyDrop::new(weak),
+        }
+    }
+}
+
 // ── C-ABI entries ──────────────────────────────────────────────────────────
 //
 // Consumed by the codegen lowering for the `Place::LambdaActorHandle`
@@ -220,7 +261,10 @@ impl HewLambdaActorWeak {
 /// The returned pointer is owned by the runtime and must be released
 /// with [`hew_lambda_actor_release`].
 #[no_mangle]
-pub extern "C" fn hew_lambda_actor_new(mailbox_capacity: usize, shape: i32) -> *mut HewLambdaActor {
+pub extern "C" fn hew_lambda_actor_new(
+    mailbox_capacity: usize,
+    shape: i32,
+) -> *mut HewLambdaActorHandle {
     if mailbox_capacity == 0 {
         crate::set_last_error("hew_lambda_actor_new: mailbox_capacity must be > 0".to_string());
         return ptr::null_mut();
@@ -235,34 +279,44 @@ pub extern "C" fn hew_lambda_actor_new(mailbox_capacity: usize, shape: i32) -> *
             return ptr::null_mut();
         }
     };
-    Box::into_raw(Box::new(HewLambdaActor::new(mailbox_capacity, shape)))
+    Box::into_raw(Box::new(HewLambdaActorHandle::new(HewLambdaActor::new(
+        mailbox_capacity,
+        shape,
+    ))))
 }
 
 /// Refcount-bump clone of a strong lambda-actor handle.
 ///
 /// # Safety
 ///
-/// `actor` must point to a valid `HewLambdaActor` returned by
+/// `actor` must point to a valid, open `HewLambdaActorHandle` returned by
 /// [`hew_lambda_actor_new`] or this function.
 #[no_mangle]
-pub unsafe extern "C" fn hew_lambda_actor_clone(actor: *mut HewLambdaActor) -> *mut HewLambdaActor {
+pub unsafe extern "C" fn hew_lambda_actor_clone(
+    actor: *mut HewLambdaActorHandle,
+) -> *mut HewLambdaActorHandle {
     if actor.is_null() {
         crate::set_last_error("hew_lambda_actor_clone: null handle".to_string());
         return ptr::null_mut();
     }
     // SAFETY:
     // - Provenance: caller guarantees `actor` came from `hew_lambda_actor_new`
-    //   or a prior `_clone` call — both Box::into_raw allocations.
-    // - Type tag: `*mut HewLambdaActor` matches the originating Box element type.
-    // - Lifetime owner: caller still owns the box; we take a shared
-    //   borrow only, then heap-allocate the clone via Box::into_raw.
+    //   or a prior `_clone` call.
+    // - Type tag: `*mut HewLambdaActorHandle` matches the originating type.
+    // - Lifetime owner: caller still owns the wrapper; we take a shared
+    //   borrow of the inner actor only, then heap-allocate the clone.
     // - Aliasing concurrency: `HewLambdaActor` is `Clone`-via-Arc; cloning
     //   an Arc is atomic and Send/Sync-safe.
     // - Bounds: single non-null aligned pointer dereference.
     // - Failure mode: caller-supplied dangling pointer is UB; not
     //   detectable at this layer.
-    let cloned = unsafe { (*actor).clone() };
-    Box::into_raw(Box::new(cloned))
+    // ManuallyDrop<HewLambdaActor> derefs to HewLambdaActor; calling
+    // clone_handle() on the deref target returns HewLambdaActor (not
+    // ManuallyDrop<HewLambdaActor>), which is what HewLambdaActorHandle::new
+    // expects. Do NOT use `.clone()` here — ManuallyDrop's own Clone returns
+    // ManuallyDrop<T>, not T.
+    let cloned = unsafe { (*actor).inner.clone_handle() };
+    Box::into_raw(Box::new(HewLambdaActorHandle::new(cloned)))
 }
 
 /// Send a message envelope (tell-shaped dispatch). Returns the
@@ -270,11 +324,11 @@ pub unsafe extern "C" fn hew_lambda_actor_clone(actor: *mut HewLambdaActor) -> *
 ///
 /// # Safety
 ///
-/// `actor` must be a valid `HewLambdaActor` pointer. `msg` must be
+/// `actor` must be a valid, open `HewLambdaActorHandle` pointer. `msg` must be
 /// valid for `len` bytes (may be null when `len == 0`).
 #[no_mangle]
 pub unsafe extern "C" fn hew_lambda_actor_send(
-    actor: *mut HewLambdaActor,
+    actor: *mut HewLambdaActorHandle,
     msg: *const u8,
     len: usize,
 ) -> i32 {
@@ -302,10 +356,10 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
         //   detect at this layer.
         unsafe { std::slice::from_raw_parts(msg, len) }.to_vec()
     };
-    // SAFETY: see hew_lambda_actor_clone for the dereference axes —
-    // identical (caller-supplied valid pointer, shared borrow only,
+    // SAFETY: see hew_lambda_actor_clone for the dereference axes;
+    // identical (caller-supplied valid pointer, shared borrow of inner only,
     // Arc-protected internal state is Sync).
-    let res = unsafe { (*actor).send(payload) };
+    let res = unsafe { (*actor).inner.send(payload) };
     res as i32
 }
 
@@ -313,28 +367,46 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
 /// handle, the inner state (including the embedded `HewDuplex`) is
 /// freed and body-side weak captures will fail their next upgrade.
 ///
+/// Returns `SendError::Ok` (0) on the first call.
+/// Returns `SendError::DoubleClose` (4) on any subsequent call without
+/// invoking undefined behaviour — per design principle D4.
+///
+/// The outer handle allocation intentionally persists after release so
+/// that the double-release guard flag remains readable for subsequent calls.
+///
 /// # Safety
 ///
 /// `actor` must have been returned by [`hew_lambda_actor_new`] or
-/// [`hew_lambda_actor_clone`] and must not be used after this call.
+/// [`hew_lambda_actor_clone`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActor) {
+pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32 {
     if actor.is_null() {
-        return;
+        return SendError::Ok as i32;
     }
     // SAFETY:
-    // - Provenance: caller guarantees `actor` came from a Box::into_raw.
-    // - Type tag: matches Box<HewLambdaActor>.
-    // - Lifetime owner: ownership returns here for the final drop.
-    //   The Arc inside the box decrements its strong count; if it
-    //   reaches zero, LambdaActorInner drops and HewDuplex closes
+    // - Provenance: caller guarantees `actor` came from
+    //   `Box::into_raw(Box::new(HewLambdaActorHandle::new(...)))`.
+    // - Type tag: `*mut HewLambdaActorHandle` matches the originating type.
+    // - Lifetime owner: the outer HewLambdaActorHandle allocation is never
+    //   freed (intentional leak — see wrapper-struct design comment in
+    //   duplex.rs for the full rationale). ManuallyDrop::drop runs the inner
+    //   HewLambdaActor Drop logic (Arc strong-count decrement) on the first
+    //   call; if it reaches zero, LambdaActorInner drops and HewDuplex closes
     //   both directions.
-    // - Aliasing concurrency: caller's contract pins exclusive
-    //   ownership of this final handle.
-    // - Bounds: single fat-aware free.
-    // - Failure mode: double-free is the caller's contract violation;
-    //   undetectable here.
-    unsafe { drop(Box::from_raw(actor)) };
+    // - Aliasing concurrency: AtomicBool::swap with AcqRel ordering provides
+    //   the acquire fence needed before reading the inner state.
+    // - Bounds: single non-null aligned pointer dereference.
+    // - Failure mode: double-release now returns SendError::DoubleClose (4)
+    //   via the atomic-flag guard; no UB on the second call.
+    let h = unsafe { &mut *actor };
+    if h.released.swap(true, Ordering::AcqRel) {
+        return SendError::DoubleClose as i32;
+    }
+    // SAFETY: swap returned false — first release; the inner HewLambdaActor
+    // is still valid. ManuallyDrop::drop decrements the Arc strong count
+    // without freeing the outer HewLambdaActorHandle wrapper.
+    unsafe { ManuallyDrop::drop(&mut h.inner) };
+    SendError::Ok as i32
 }
 
 /// Downgrade a strong handle to a weak one. The returned pointer is
@@ -343,18 +415,18 @@ pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActor) {
 ///
 /// # Safety
 ///
-/// `actor` must be a valid `HewLambdaActor` pointer.
+/// `actor` must be a valid, open `HewLambdaActorHandle` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_lambda_actor_downgrade(
-    actor: *mut HewLambdaActor,
-) -> *mut HewLambdaActorWeak {
+    actor: *mut HewLambdaActorHandle,
+) -> *mut HewLambdaActorWeakHandle {
     if actor.is_null() {
         crate::set_last_error("hew_lambda_actor_downgrade: null handle".to_string());
         return ptr::null_mut();
     }
     // SAFETY: see hew_lambda_actor_clone — identical six-axis profile.
-    let weak = unsafe { (*actor).downgrade() };
-    Box::into_raw(Box::new(weak))
+    let weak = unsafe { (*actor).inner.downgrade() };
+    Box::into_raw(Box::new(HewLambdaActorWeakHandle::new(weak)))
 }
 
 /// Attempt a weak self-send. Upgrades the weak handle just long enough
@@ -364,11 +436,11 @@ pub unsafe extern "C" fn hew_lambda_actor_downgrade(
 ///
 /// # Safety
 ///
-/// `weak` must be a valid `HewLambdaActorWeak` pointer. `msg` must be
+/// `weak` must be a valid, open `HewLambdaActorWeakHandle` pointer. `msg` must be
 /// valid for `len` bytes (may be null when `len == 0`).
 #[no_mangle]
 pub unsafe extern "C" fn hew_lambda_actor_weak_send(
-    weak: *mut HewLambdaActorWeak,
+    weak: *mut HewLambdaActorWeakHandle,
     msg: *const u8,
     len: usize,
 ) -> i32 {
@@ -389,13 +461,13 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_send(
     // SAFETY:
     // - Provenance: caller guarantees `weak` came from
     //   `hew_lambda_actor_downgrade` or `_weak_clone`.
-    // - Type tag: `*mut HewLambdaActorWeak` matches the Box element.
-    // - Lifetime owner: caller still owns the box; shared borrow only.
+    // - Type tag: `*mut HewLambdaActorWeakHandle` matches the originating type.
+    // - Lifetime owner: caller still owns the wrapper; shared borrow of inner only.
     // - Aliasing concurrency: `Weak::upgrade` is atomic-Sync.
     // - Bounds: single non-null aligned pointer dereference.
     // - Failure mode: dangling pointer is the caller's contract
     //   violation; undetectable here.
-    let res = unsafe { (*weak).send(payload) };
+    let res = unsafe { (*weak).inner.send(payload) };
     res as i32
 }
 
@@ -403,40 +475,59 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_send(
 ///
 /// # Safety
 ///
-/// `weak` must be a valid weak-handle pointer.
+/// `weak` must be a valid, open `HewLambdaActorWeakHandle` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_lambda_actor_weak_clone(
-    weak: *mut HewLambdaActorWeak,
-) -> *mut HewLambdaActorWeak {
+    weak: *mut HewLambdaActorWeakHandle,
+) -> *mut HewLambdaActorWeakHandle {
     if weak.is_null() {
         crate::set_last_error("hew_lambda_actor_weak_clone: null weak handle".to_string());
         return ptr::null_mut();
     }
     // SAFETY: see hew_lambda_actor_weak_send for dereference axes.
-    let cloned = unsafe { (*weak).clone() };
-    Box::into_raw(Box::new(cloned))
+    // Use clone_handle() not clone() — ManuallyDrop's own Clone returns
+    // ManuallyDrop<T>; clone_handle() returns HewLambdaActorWeak via Deref.
+    let cloned = unsafe { (*weak).inner.clone_handle() };
+    Box::into_raw(Box::new(HewLambdaActorWeakHandle::new(cloned)))
 }
 
 /// Release a weak handle. Does NOT affect the actor's external strong
 /// refcount; weak handles only contribute to the weak count.
 ///
+/// Returns `SendError::Ok` (0) on the first call.
+/// Returns `SendError::DoubleClose` (4) on any subsequent call without
+/// invoking undefined behaviour — per design principle D4.
+///
 /// # Safety
 ///
 /// `weak` must have been returned by [`hew_lambda_actor_downgrade`] or
-/// [`hew_lambda_actor_weak_clone`] and must not be used afterwards.
+/// [`hew_lambda_actor_weak_clone`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_lambda_actor_weak_drop(weak: *mut HewLambdaActorWeak) {
+pub unsafe extern "C" fn hew_lambda_actor_weak_drop(weak: *mut HewLambdaActorWeakHandle) -> i32 {
     if weak.is_null() {
-        return;
+        return SendError::Ok as i32;
     }
     // SAFETY:
-    // - Provenance: caller guarantees Box origin.
-    // - Type tag: matches Box<HewLambdaActorWeak>.
-    // - Lifetime owner: ownership returns here for final Box::drop.
-    // - Aliasing concurrency: exclusive ownership per the caller contract.
-    // - Bounds: single fat-aware free.
-    // - Failure mode: double-free is undetectable; caller contract.
-    unsafe { drop(Box::from_raw(weak)) };
+    // - Provenance: caller guarantees `weak` came from
+    //   `Box::into_raw(Box::new(HewLambdaActorWeakHandle::new(...)))`.
+    // - Type tag: `*mut HewLambdaActorWeakHandle` matches the originating type.
+    // - Lifetime owner: the outer HewLambdaActorWeakHandle allocation is never
+    //   freed (intentional leak — see wrapper-struct design comment in
+    //   duplex.rs). ManuallyDrop::drop runs the inner HewLambdaActorWeak Drop
+    //   (Arc weak-count decrement) on the first call only.
+    // - Aliasing concurrency: AcqRel swap provides the acquire fence.
+    // - Bounds: single non-null aligned pointer dereference.
+    // - Failure mode: double-drop now returns SendError::DoubleClose (4)
+    //   via the atomic-flag guard; no UB on the second call.
+    let h = unsafe { &mut *weak };
+    if h.released.swap(true, Ordering::AcqRel) {
+        return SendError::DoubleClose as i32;
+    }
+    // SAFETY: swap returned false — first drop; the inner HewLambdaActorWeak
+    // is still valid. ManuallyDrop::drop decrements the Arc weak count
+    // without freeing the outer HewLambdaActorWeakHandle wrapper.
+    unsafe { ManuallyDrop::drop(&mut h.inner) };
+    SendError::Ok as i32
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -514,7 +605,7 @@ mod tests {
         unsafe {
             let rc = hew_lambda_actor_send(a, msg.as_ptr(), msg.len());
             assert_eq!(rc, SendError::Ok as i32);
-            hew_lambda_actor_release(a);
+            assert_eq!(hew_lambda_actor_release(a), SendError::Ok as i32);
         }
     }
 
@@ -525,14 +616,14 @@ mod tests {
         let w = unsafe { hew_lambda_actor_downgrade(a) };
         assert!(!w.is_null());
         // SAFETY: a is a live strong handle; release it.
-        unsafe { hew_lambda_actor_release(a) };
+        unsafe { assert_eq!(hew_lambda_actor_release(a), SendError::Ok as i32) };
         // After release the weak's upgrade fails; send surfaces ActorStopped.
         let payload = b"recurse";
-        // SAFETY: w is still a valid weak-handle Box; payload valid.
+        // SAFETY: w is still a valid weak-handle wrapper; payload valid.
         let rc = unsafe { hew_lambda_actor_weak_send(w, payload.as_ptr(), payload.len()) };
         assert_eq!(rc, SendError::ActorStopped as i32);
         // SAFETY: drop the weak.
-        unsafe { hew_lambda_actor_weak_drop(w) };
+        unsafe { assert_eq!(hew_lambda_actor_weak_drop(w), SendError::Ok as i32) };
     }
 
     #[test]
@@ -546,8 +637,8 @@ mod tests {
         assert_eq!(rc, SendError::Ok as i32);
         // SAFETY: clean up both handles.
         unsafe {
-            hew_lambda_actor_weak_drop(w);
-            hew_lambda_actor_release(a);
+            assert_eq!(hew_lambda_actor_weak_drop(w), SendError::Ok as i32);
+            assert_eq!(hew_lambda_actor_release(a), SendError::Ok as i32);
         }
     }
 
@@ -561,5 +652,22 @@ mod tests {
     fn cabi_new_rejects_zero_capacity() {
         let a = hew_lambda_actor_new(0, LambdaShape::Tell as i32);
         assert!(a.is_null());
+    }
+
+    // ── Double-release guard test ──────────────────────────────────────────
+
+    #[test]
+    fn cabi_double_release_lambda_actor_returns_already_closed() {
+        // Verify that calling hew_lambda_actor_release twice on the same
+        // handle returns DoubleClose on the second call rather than UB.
+        let a = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+        assert!(!a.is_null());
+        // SAFETY: `a` came from hew_lambda_actor_new (non-null per assertion).
+        unsafe {
+            // First release: normal.
+            assert_eq!(hew_lambda_actor_release(a), SendError::Ok as i32);
+            // Second release: double-release guard fires.
+            assert_eq!(hew_lambda_actor_release(a), SendError::DoubleClose as i32);
+        }
     }
 }

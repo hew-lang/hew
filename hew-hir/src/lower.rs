@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    BinaryOp, Block, Expr, FnDecl, Item, Literal, Pattern, Program, ResourceMarker, SelectArm,
-    Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    BinaryOp, Block, Expr, FnDecl, Item, Literal, MachineDecl, Pattern, Program, ResourceMarker,
+    SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::ResolvedTy;
 
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
 use crate::node::{
-    HirBinding, HirBlock, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLiteral, HirModule,
-    HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirTypeDecl,
+    HirBinding, HirBlock, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLiteral,
+    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirModule, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -100,6 +101,11 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
             }
             Item::Function(func) => {
                 items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
+            }
+            Item::Machine(machine) => {
+                if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
+                    items.push(HirItem::Machine(hir_machine));
+                }
             }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
@@ -262,6 +268,289 @@ impl LowerCtx {
             fields,
             span,
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "machine lowering has three distinct phases (structure, checks, assembly) \
+                  that read more clearly as a single function than as multiple helpers"
+    )]
+    fn lower_machine(
+        &mut self,
+        decl: &MachineDecl,
+        span: std::ops::Range<usize>,
+    ) -> Option<HirMachineDecl> {
+        // Lower states.
+        let mut hir_states = Vec::new();
+        for state in &decl.states {
+            let fields: Vec<HirField> = state
+                .fields
+                .iter()
+                .map(|(name, ty)| HirField {
+                    name: name.clone(),
+                    ty: self.lower_type(ty),
+                    span: ty.1.clone(),
+                })
+                .collect();
+
+            // Shallow-scan the entry and exit blocks for field-assignment targets.
+            // Lane A does not fully lower block bodies; this is enough for
+            // effect-parity checking.
+            let entry_writes = state
+                .entry
+                .as_ref()
+                .map(collect_assigned_field_names)
+                .unwrap_or_default();
+            let exit_writes = state
+                .exit
+                .as_ref()
+                .map(collect_assigned_field_names)
+                .unwrap_or_default();
+
+            hir_states.push(HirMachineState {
+                name: state.name.clone(),
+                fields,
+                has_entry: state.entry.is_some(),
+                has_exit: state.exit.is_some(),
+                entry_writes,
+                exit_writes,
+                span: span.clone(),
+            });
+        }
+
+        // Lower events.
+        let hir_events: Vec<HirMachineEvent> = decl
+            .events
+            .iter()
+            .map(|ev| {
+                let fields = ev
+                    .fields
+                    .iter()
+                    .map(|(name, ty)| HirField {
+                        name: name.clone(),
+                        ty: self.lower_type(ty),
+                        span: ty.1.clone(),
+                    })
+                    .collect();
+                HirMachineEvent {
+                    name: ev.name.clone(),
+                    fields,
+                    span: span.clone(),
+                }
+            })
+            .collect();
+
+        // Lower transitions — shallow: record names, guard presence, body writes,
+        // and emitted event names (for static checks). Body expressions are not
+        // lowered to HirExpr in Lane A.
+        let hir_transitions: Vec<HirMachineTransition> = decl
+            .transitions
+            .iter()
+            .map(|tr| {
+                let is_self_transition =
+                    tr.source_state == tr.target_state && tr.source_state != "_";
+                let body_writes = collect_assigned_field_names_expr(&tr.body.0);
+                let body_emits = collect_emitted_events(&tr.body.0);
+                HirMachineTransition {
+                    event_name: tr.event_name.clone(),
+                    source_state: tr.source_state.clone(),
+                    target_state: tr.target_state.clone(),
+                    has_guard: tr.guard.is_some(),
+                    is_self_transition,
+                    reenter: tr.reenter,
+                    body_writes,
+                    body_emits,
+                    span: tr.body.1.clone(),
+                }
+            })
+            .collect();
+
+        // ── Static checks ────────────────────────────────────────────────────
+
+        // 1. Exhaustiveness: every concrete (state, event) pair must have a
+        //    transition, or a `default` arm must exist, or a wildcard source `_`
+        //    covers it.
+        if !decl.has_default {
+            let mut missing: Vec<(String, String)> = Vec::new();
+            for state in &decl.states {
+                for event in &decl.events {
+                    let covered = decl.transitions.iter().any(|tr| {
+                        tr.event_name == event.name
+                            && (tr.source_state == state.name || tr.source_state == "_")
+                    });
+                    if !covered {
+                        missing.push((state.name.clone(), event.name.clone()));
+                    }
+                }
+            }
+            if !missing.is_empty() {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MachineExhaustivenessViolation {
+                        machine_name: decl.name.clone(),
+                        missing,
+                    },
+                    span.clone(),
+                    format!(
+                        "machine `{}` does not handle all (state, event) pairs; \
+                         add the missing transitions or a `default` arm",
+                        decl.name
+                    ),
+                ));
+                return None;
+            }
+        }
+
+        // 2. Self-transition @reenter rule: a non-empty self-loop body without
+        //    @reenter is a compile error. Empty body OR @reenter are both OK.
+        //    "Empty" means the body resolves to `Expr::Identifier(target_state)`
+        //    (the no-body semicolon shorthand) or an `Expr::Block` with no stmts
+        //    and no trailing expression.
+        for tr in decl.transitions.iter().zip(hir_transitions.iter()) {
+            let (ast_tr, hir_tr) = tr;
+            if !hir_tr.is_self_transition || hir_tr.reenter {
+                continue;
+            }
+            let body_is_empty = is_empty_self_body(&ast_tr.body.0, &hir_tr.target_state);
+            if !body_is_empty {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MachineSelfTransitionNeedsReenter {
+                        machine_name: decl.name.clone(),
+                        state_name: hir_tr.source_state.clone(),
+                        event_name: hir_tr.event_name.clone(),
+                    },
+                    hir_tr.span.clone(),
+                    format!(
+                        "self-transition `on {event}` in state `{state}` has a non-empty body \
+                         but is not annotated `@reenter`; annotate with `@reenter` to opt in to \
+                         Mealy re-entry semantics, or remove the body",
+                        event = hir_tr.event_name,
+                        state = hir_tr.source_state,
+                    ),
+                ));
+            }
+        }
+
+        // 3. Effect-parity: a transition body that writes a field also written
+        //    by the *target* state's `entry` block or the *source* state's `exit`
+        //    block creates ambiguous initialization/teardown order.
+        for tr in &hir_transitions {
+            if tr.body_writes.is_empty() {
+                continue;
+            }
+            // Check target entry conflict.
+            if let Some(target) = hir_states.iter().find(|s| s.name == tr.target_state) {
+                for field in &tr.body_writes {
+                    if let Some((_, entry_assign_span)) =
+                        target.entry_writes.iter().find(|(n, _)| n == field)
+                    {
+                        self.diagnostics.push(
+                            HirDiagnostic::new(
+                                HirDiagnosticKind::MachineEffectParityViolation {
+                                    machine_name: decl.name.clone(),
+                                    state_name: tr.target_state.clone(),
+                                    field_name: field.clone(),
+                                    transition_event: tr.event_name.clone(),
+                                    is_entry_conflict: true,
+                                },
+                                tr.span.clone(),
+                                format!(
+                                    "transition `on {}` body and state `{}` entry block both \
+                                     write field `{}`; remove the write from one site",
+                                    tr.event_name, tr.target_state, field
+                                ),
+                            )
+                            .with_secondary_spans(vec![(
+                                entry_assign_span.clone(),
+                                format!(
+                                    "state `{}` entry block assigns `{}` here",
+                                    tr.target_state, field
+                                ),
+                            )]),
+                        );
+                    }
+                }
+            }
+            // Check source exit conflict.
+            if let Some(source) = hir_states.iter().find(|s| s.name == tr.source_state) {
+                for field in &tr.body_writes {
+                    if let Some((_, exit_assign_span)) =
+                        source.exit_writes.iter().find(|(n, _)| n == field)
+                    {
+                        self.diagnostics.push(
+                            HirDiagnostic::new(
+                                HirDiagnosticKind::MachineEffectParityViolation {
+                                    machine_name: decl.name.clone(),
+                                    state_name: tr.source_state.clone(),
+                                    field_name: field.clone(),
+                                    transition_event: tr.event_name.clone(),
+                                    is_entry_conflict: false,
+                                },
+                                tr.span.clone(),
+                                format!(
+                                    "transition `on {}` body and state `{}` exit block both \
+                                     write field `{}`; remove the write from one site",
+                                    tr.event_name, tr.source_state, field
+                                ),
+                            )
+                            .with_secondary_spans(vec![(
+                                exit_assign_span.clone(),
+                                format!(
+                                    "state `{}` exit block assigns `{}` here",
+                                    tr.source_state, field
+                                ),
+                            )]),
+                        );
+                    }
+                }
+            }
+        }
+
+        // 4. Emit-cycle: `on E` transition that directly emits `E` would
+        //    immediately re-trigger its own handler.
+        for tr in &hir_transitions {
+            if tr.body_emits.contains(&tr.event_name) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MachineEmitCycle {
+                        machine_name: decl.name.clone(),
+                        event_name: tr.event_name.clone(),
+                    },
+                    tr.span.clone(),
+                    format!(
+                        "transition `on {}` emits `{}` which immediately re-triggers itself; \
+                         rename the emitted event or remove the emit",
+                        tr.event_name, tr.event_name
+                    ),
+                ));
+            }
+        }
+
+        // Fail-closed: if any diagnostic was pushed for this machine, abort.
+        // (Effect-parity, self-transition, and emit-cycle diagnostics are not
+        // return-None by themselves but we abort to avoid a partially-valid
+        // machine in HIR.)
+        let has_machine_errors = self.diagnostics.iter().any(|d| {
+            matches!(
+                &d.kind,
+                HirDiagnosticKind::MachineSelfTransitionNeedsReenter { machine_name, .. }
+                | HirDiagnosticKind::MachineEffectParityViolation { machine_name, .. }
+                | HirDiagnosticKind::MachineEmitCycle { machine_name, .. }
+                if machine_name == &decl.name
+            )
+        });
+        if has_machine_errors {
+            return None;
+        }
+
+        Some(HirMachineDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            name: decl.name.clone(),
+            states: hir_states,
+            events: hir_events,
+            transitions: hir_transitions,
+            has_default: decl.has_default,
+            span,
+        })
     }
 
     fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
@@ -1371,6 +1660,80 @@ impl LowerCtx {
             },
             span,
         }
+    }
+}
+
+// ── Machine static-check helpers ────────────────────────────────────────────
+
+/// Determine whether a self-transition body is "empty" for the `@reenter` rule.
+///
+/// A body is considered empty when:
+/// - It is `Expr::Identifier(target_state)` — the no-body semicolon shorthand
+///   that the parser synthesises for `on E: S -> S;`.
+/// - It is `Expr::Block` with no statements and no trailing expression.
+///
+/// Any other form (statements, expressions) is non-empty and requires `@reenter`.
+fn is_empty_self_body(body: &Expr, target_state: &str) -> bool {
+    match body {
+        Expr::Identifier(name) => name == target_state,
+        Expr::Block(block) => block.stmts.is_empty() && block.trailing_expr.is_none(),
+        _ => false,
+    }
+}
+
+/// Shallow-scan a `Block` for field names appearing as the left-hand side of
+/// an assignment statement (`self.field = ...`). Used for effect-parity checking
+/// in entry blocks — the scan is intentionally shallow (depth = 1) since a
+/// full walk would require type information we don't have in Lane A.
+fn collect_assigned_field_names(block: &Block) -> Vec<(String, Span)> {
+    let mut names = Vec::new();
+    for (stmt, _) in &block.stmts {
+        if let Stmt::Assign { target, .. } = stmt {
+            if let Expr::FieldAccess { object, field } = &target.0 {
+                if matches!(object.0, Expr::This) {
+                    names.push((field.clone(), target.1.clone()));
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Shallow-scan an `Expr` (transition body) for `self.field = ...` assignments.
+fn collect_assigned_field_names_expr(expr: &Expr) -> Vec<String> {
+    if let Expr::Block(block) = expr {
+        collect_assigned_field_names(block)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Collect event names directly emitted by `emit EventName` expressions within
+/// an expression (transition body). Only direct emits are tracked; deeper nesting
+/// is deferred to runtime (per the plan's "direct cycles only" rule).
+fn collect_emitted_events(expr: &Expr) -> Vec<String> {
+    let mut events = Vec::new();
+    collect_emitted_events_inner(expr, &mut events);
+    events
+}
+
+fn collect_emitted_events_inner(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::MachineEmit { event_name, .. } => out.push(event_name.clone()),
+        Expr::Block(block) => {
+            for (stmt, _) in &block.stmts {
+                if let Stmt::Expression((e, _)) = stmt {
+                    collect_emitted_events_inner(e, out);
+                }
+            }
+            if let Some(tail) = &block.trailing_expr {
+                collect_emitted_events_inner(&tail.0, out);
+            }
+        }
+        _ => {}
     }
 }
 

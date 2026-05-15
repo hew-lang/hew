@@ -204,8 +204,6 @@ pub enum Token<'src> {
     Receive,
     #[token("init")]
     Init,
-    #[token("terminate")]
-    Terminate,
     #[token("type")]
     Type,
     #[token("this")]
@@ -272,6 +270,12 @@ pub enum Token<'src> {
     On,
     #[token("when")]
     When,
+    #[token("entry")]
+    Entry,
+    #[token("exit")]
+    Exit,
+    #[token("emit")]
+    Emit,
 
     // ── Multi-char operators (must precede single-char) ───────────────
     #[token("==")]
@@ -608,7 +612,6 @@ define_keywords! {
     Await      => "await",
     Receive    => "receive",
     Init       => "init",
-    Terminate  => "terminate",
     Type       => "type",
     This       => "this",
     Dyn        => "dyn",
@@ -642,6 +645,9 @@ define_keywords! {
     Event      => "event",
     On         => "on",
     When       => "when",
+    Entry      => "entry",
+    Exit       => "exit",
+    Emit       => "emit",
 }
 
 impl Token<'_> {

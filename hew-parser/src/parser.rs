@@ -1,16 +1,16 @@
 //! Hand-written recursive-descent parser with Pratt precedence for operator expressions.
 
 use crate::ast::{
-    ActorDecl, ActorInit, ActorTerminate, Attribute, AttributeArg, BinaryOp, Block, CallArg,
-    ChildSpec, CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl,
-    FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
-    LambdaParam, Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm,
-    NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program,
-    ReceiveFnDecl, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart,
-    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind,
-    WireFieldDecl, WireFieldMeta, WireMetadata,
+    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
+    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
+    ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
+    Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase,
+    OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
+    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl,
+    WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
@@ -78,6 +78,16 @@ fn unquote_str(s: &str) -> &str {
         .or_else(|| s.strip_prefix('"'))
         .and_then(|s| s.strip_suffix('"'))
         .unwrap_or(s)
+}
+
+/// Returns true if the attribute name designates an actor lifecycle hook.
+/// These attributes are permitted on plain `fn` declarations inside an
+/// actor body; all other attributes on such fns are rejected.
+///
+/// The parameterized form `#[on(start)]` / `#[on(stop)]` uses a single
+/// attribute name `on` with the hook kind as a positional argument.
+pub(crate) fn is_lifecycle_hook_attr(name: &str) -> bool {
+    name == "on"
 }
 
 fn push_unescaped_sequence(
@@ -795,6 +805,11 @@ impl<'src> Parser<'src> {
             Token::On => Some("on"),
             Token::When => Some("when"),
             Token::Join => Some("join"),
+            // Machine-block keywords that can also appear as external function names
+            // or identifiers in other positions.
+            Token::Entry => Some("entry"),
+            Token::Exit => Some("exit"),
+            Token::Emit => Some("emit"),
             _ => None,
         }
     }
@@ -2078,7 +2093,6 @@ impl<'src> Parser<'src> {
         self.expect(&Token::LeftBrace)?;
 
         let mut init = None;
-        let mut terminate = None;
         let mut fields = Vec::new();
         let mut receive_fns = Vec::new();
         let mut methods = Vec::new();
@@ -2103,16 +2117,6 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightParen)?;
                 let body = self.parse_block()?;
                 init = Some(ActorInit { params, body });
-            } else if self.peek() == Some(&Token::Terminate) {
-                if terminate.is_some() {
-                    self.error("duplicate terminate block in actor".to_string());
-                }
-                self.advance();
-                let body = self.parse_block()?;
-                terminate = Some(ActorTerminate {
-                    attributes: attrs,
-                    body,
-                });
             } else if self.peek() == Some(&Token::Pure) || self.peek() == Some(&Token::Receive) {
                 let is_pure = self.eat(&Token::Pure);
                 if self.peek() == Some(&Token::Receive) {
@@ -2156,6 +2160,22 @@ impl<'src> Parser<'src> {
                         doc_comment,
                     });
                 } else if self.peek() == Some(&Token::Fn) {
+                    // `pure fn` inside an actor body: lifecycle-hook
+                    // annotations propagate so the type-checker can
+                    // diagnose `#[on_*]` + `pure` combinations as
+                    // signature violations (HEW-SPEC-2026 §9.1.2).
+                    let mut hook_attrs = Vec::new();
+                    let mut other_attrs = Vec::new();
+                    for attr in attrs {
+                        if is_lifecycle_hook_attr(&attr.name) {
+                            hook_attrs.push(attr);
+                        } else {
+                            other_attrs.push(attr);
+                        }
+                    }
+                    if !other_attrs.is_empty() {
+                        self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
+                    }
                     let fn_start = self.peek_span().start;
                     self.advance();
                     if let Some(mut method) = self.parse_function(
@@ -2164,7 +2184,7 @@ impl<'src> Parser<'src> {
                         false,
                         Visibility::Private,
                         is_pure,
-                        Vec::new(),
+                        hook_attrs,
                     ) {
                         method.doc_comment = doc_comment;
                         methods.push(method);
@@ -2174,7 +2194,20 @@ impl<'src> Parser<'src> {
                     return None;
                 }
             } else if self.peek() == Some(&Token::Fn) {
-                if !attrs.is_empty() {
+                // Lifecycle-hook attributes `#[on(start)]` and `#[on(stop)]` are
+                // permitted on plain `fn` declarations inside an actor body.
+                // All other attributes on actor methods are rejected: they
+                // belong on `receive fn` declarations.
+                let mut hook_attrs = Vec::new();
+                let mut other_attrs = Vec::new();
+                for attr in attrs {
+                    if is_lifecycle_hook_attr(&attr.name) {
+                        hook_attrs.push(attr);
+                    } else {
+                        other_attrs.push(attr);
+                    }
+                }
+                if !other_attrs.is_empty() {
                     self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
                 }
                 let fn_start = self.peek_span().start;
@@ -2185,7 +2218,7 @@ impl<'src> Parser<'src> {
                     false,
                     Visibility::Private,
                     false,
-                    Vec::new(),
+                    hook_attrs,
                 ) {
                     method.doc_comment = doc_comment;
                     methods.push(method);
@@ -2268,7 +2301,6 @@ impl<'src> Parser<'src> {
             name,
             super_traits,
             init,
-            terminate,
             fields,
             receive_fns,
             methods,
@@ -2367,26 +2399,45 @@ impl<'src> Parser<'src> {
             if self.peek() == Some(&Token::State) {
                 self.advance();
                 let state_name = self.expect_ident()?;
-                let fields = if self.eat(&Token::LeftBrace) {
-                    let mut fields = Vec::new();
+                let mut fields = Vec::new();
+                let mut entry_block: Option<Block> = None;
+                let mut exit_block: Option<Block> = None;
+                if self.eat(&Token::LeftBrace) {
                     while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let ty = self.parse_type()?;
-                        if !self.eat(&Token::Semicolon) {
-                            self.eat(&Token::Comma);
+                        if self.peek() == Some(&Token::Entry) {
+                            self.advance();
+                            let block = self.parse_block()?;
+                            entry_block = Some(block);
+                        } else if self.peek() == Some(&Token::Exit) {
+                            self.advance();
+                            let block = self.parse_block()?;
+                            exit_block = Some(block);
+                        } else if self.peek() == Some(&Token::State) {
+                            // Nested states are reserved for v0.6 hierarchical statecharts.
+                            self.error(
+                                "hierarchical states are reserved for v0.6; \
+                                 nested `state` declarations inside a state body are not permitted"
+                                    .to_string(),
+                            );
+                            self.advance();
+                        } else {
+                            let field_name = self.expect_ident()?;
+                            self.expect(&Token::Colon)?;
+                            let ty = self.parse_type()?;
+                            if !self.eat(&Token::Semicolon) {
+                                self.eat(&Token::Comma);
+                            }
+                            fields.push((field_name, ty));
                         }
-                        fields.push((field_name, ty));
                     }
                     self.expect(&Token::RightBrace)?;
-                    fields
-                } else {
-                    Vec::new()
-                };
+                }
                 self.eat(&Token::Semicolon);
                 states.push(MachineState {
                     name: state_name,
                     fields,
+                    entry: entry_block,
+                    exit: exit_block,
                 });
             } else if self.peek() == Some(&Token::Event) {
                 self.advance();
@@ -2419,6 +2470,25 @@ impl<'src> Parser<'src> {
                 let source_state = self.parse_state_pattern()?;
                 self.expect(&Token::Arrow)?;
                 let target_state = self.parse_state_pattern()?;
+
+                // Optional `@reenter` annotation (self-transition Mealy re-entry).
+                // Lexes as `Token::Label("@reenter")` — the label value includes
+                // the leading `@` (consistent with loop-label tokens).
+                // Grammar slot: `on E: Src -> Tgt @reenter [when guard] [body]`.
+                let reenter = if let Some(Token::Label(label)) = self.peek() {
+                    if *label == "@reenter" {
+                        self.advance();
+                        true
+                    } else {
+                        self.error(format!(
+                            "unknown transition annotation `{label}`; \
+                             the only supported annotation here is `@reenter`"
+                        ));
+                        false
+                    }
+                } else {
+                    false
+                };
 
                 // Optional guard: `when <expr>`
                 let guard = if self.peek() == Some(&Token::When) {
@@ -2472,6 +2542,7 @@ impl<'src> Parser<'src> {
                     target_state,
                     guard,
                     body: (body, body_start..body_end),
+                    reenter,
                 });
             } else if self.peek() == Some(&Token::Default) {
                 // `default { self }` — unhandled events stay in current state
@@ -4944,6 +5015,27 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Expr::This
             }
+            Token::Emit => {
+                self.advance();
+                let event_name = self.expect_ident()?;
+                let fields = if self.eat(&Token::LeftBrace) {
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let field_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let field_val = self.parse_expr()?;
+                        fields.push((field_name, field_val));
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    fields
+                } else {
+                    Vec::new()
+                };
+                Expr::MachineEmit { event_name, fields }
+            }
             // Contextual keywords that can be used as identifiers in expressions
             tok if Self::contextual_keyword_name(tok).is_some() => {
                 let name = Self::contextual_keyword_name(tok).unwrap();
@@ -6181,10 +6273,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_actor_terminate_and_receive_attributes() {
+    fn parse_actor_lifecycle_hook_and_receive_attributes() {
+        // The `terminate { }` block surface was removed in favour of the
+        // annotation-based hook surface; cleanup logic is expressed as a
+        // plain `fn` annotated with `#[on(stop)]` (and `#[on(start)]` for
+        // startup logic).
         let source = r"actor Worker {
-    #[cleanup]
-    terminate { shutdown(); }
+    #[on(stop)]
+    fn shutdown() { stop(); }
 
     #[every(50ms)]
     receive fn tick() { work(); }
@@ -6192,9 +6288,9 @@ mod tests {
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         if let Item::Actor(actor) = &result.program.items[0].0 {
-            let terminate = actor.terminate.as_ref().expect("expected terminate block");
-            assert_eq!(terminate.attributes.len(), 1);
-            assert_eq!(terminate.attributes[0].name, "cleanup");
+            assert_eq!(actor.methods.len(), 1);
+            assert_eq!(actor.methods[0].attributes.len(), 1);
+            assert_eq!(actor.methods[0].attributes[0].name, "on");
 
             assert_eq!(actor.receive_fns.len(), 1);
             assert_eq!(actor.receive_fns[0].attributes.len(), 1);

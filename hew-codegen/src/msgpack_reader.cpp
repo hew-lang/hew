@@ -311,15 +311,6 @@ static ast::ActorInit parseActorInit(const msgpack::object &obj) {
   return result;
 }
 
-static ast::ActorTerminate parseActorTerminate(const msgpack::object &obj) {
-  ast::ActorTerminate result;
-  const auto *attributes_ = mapGet(obj, "attributes");
-  if (attributes_ && !isNil(*attributes_))
-    result.attributes = parseVec<ast::Attribute>(*attributes_, parseAttribute);
-  result.body = parseBlock(mapReq(obj, "body"));
-  return result;
-}
-
 static ast::FieldDecl parseFieldDecl(const msgpack::object &obj) {
   ast::FieldDecl result;
   result.name = getString(mapReq(obj, "name"));
@@ -398,9 +389,6 @@ static ast::ActorDecl parseActorDecl(const msgpack::object &obj) {
   const auto *init = mapGet(obj, "init");
   if (init && !isNil(*init))
     result.init = parseActorInit(*init);
-  const auto *terminate = mapGet(obj, "terminate");
-  if (terminate && !isNil(*terminate))
-    result.terminate = parseActorTerminate(*terminate);
   result.fields = parseVec<ast::FieldDecl>(mapReq(obj, "fields"), parseFieldDecl);
   result.receive_fns = parseVec<ast::ReceiveFnDecl>(mapReq(obj, "receive_fns"), parseReceiveFnDecl);
   result.methods = parseVec<ast::FnDecl>(mapReq(obj, "methods"), parseFnDecl);
@@ -515,6 +503,12 @@ static ast::MachineState parseMachineState(const msgpack::object &obj) {
   ast::MachineState result;
   result.name = getString(mapReq(obj, "name"));
   result.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(mapReq(obj, "fields"), [](const msgpack::object &o) { uint32_t sz; const auto *arr = arrayData(o, sz); if (sz != 2) fail("tuple should have 2 elements"); return std::make_pair(getString(arr[0]), parseSpanned<ast::TypeExpr>(arr[1], parseTypeExpr)); });
+  const auto *entry = mapGet(obj, "entry");
+  if (entry && !isNil(*entry))
+    result.entry = parseBlock(*entry);
+  const auto *exit = mapGet(obj, "exit");
+  if (exit && !isNil(*exit))
+    result.exit = parseBlock(*exit);
   return result;
 }
 
@@ -1593,6 +1587,9 @@ static ast::MachineTransition parseMachineTransition(const msgpack::object &obj)
   if (g && !isNil(*g))
     mt.guard = parseSpannedPtr<ast::Expr>(*g, parseExpr);
   mt.body = parseSpanned<ast::Expr>(mapReq(obj, "body"), parseExpr);
+  const auto *r = mapGet(obj, "reenter");
+  if (r && !isNil(*r))
+    mt.reenter = getBool(*r);
   return mt;
 }
 

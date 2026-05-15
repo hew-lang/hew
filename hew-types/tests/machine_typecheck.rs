@@ -37,6 +37,8 @@ fn unit_state(name: &str) -> MachineState {
     MachineState {
         name: name.to_string(),
         fields: vec![],
+        entry: None,
+        exit: None,
     }
 }
 
@@ -58,6 +60,8 @@ fn state_with_fields(name: &str, fields: Vec<(&str, &str)>) -> MachineState {
                 )
             })
             .collect(),
+        entry: None,
+        exit: None,
     }
 }
 
@@ -76,6 +80,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         target_state: target.to_string(),
         guard: None,
         body: (Expr::Literal(Literal::Bool(true)), 0..0),
+        reenter: false,
     }
 }
 
@@ -86,6 +91,7 @@ fn wildcard_transition(event: &str) -> MachineTransition {
         target_state: "_".to_string(),
         guard: None,
         body: (Expr::Identifier("state".to_string()), 0..0),
+        reenter: false,
     }
 }
 

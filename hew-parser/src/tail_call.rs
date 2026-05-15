@@ -155,6 +155,9 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
         | Expr::ForkChild { .. } => false,
+        Expr::MachineEmit { fields, .. } => {
+            fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
+        }
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             items.iter().any(|(expr, _)| expr_contains_defer(expr))
         }
@@ -422,7 +425,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut arg.expr_mut().0, false);
             }
         }
-        Expr::StructInit { fields, .. } => {
+        Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
             for (_, expr) in fields {
                 mark_expr(&mut expr.0, false);
             }

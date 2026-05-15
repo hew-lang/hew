@@ -845,13 +845,6 @@ struct ActorInit {
   Block body;
 };
 
-/// An actor's `terminate { ... }` block, run when the actor is stopped.
-/// Has no parameters — actor fields are in scope.
-struct ActorTerminate {
-  std::vector<Attribute> attributes;
-  Block body;
-};
-
 enum class OverflowFallback { DropNew, DropOld, Block, Fail };
 
 struct OverflowCoalesce {
@@ -873,7 +866,6 @@ struct ActorDecl {
   std::string name;
   std::optional<std::vector<TraitBound>> super_traits;
   std::optional<ActorInit> init;
-  std::optional<ActorTerminate> terminate;
   std::vector<FieldDecl> fields;
   std::vector<ReceiveFnDecl> receive_fns;
   std::vector<FnDecl> methods;
@@ -909,6 +901,8 @@ struct SupervisorDecl {
 struct MachineState {
   std::string name;
   std::vector<std::pair<std::string, Spanned<TypeExpr>>> fields;
+  std::optional<Block> entry; // entry hook — present when the state has an `entry { }` block
+  std::optional<Block> exit;  // exit hook  — present when the state has an `exit  { }` block
 };
 
 struct MachineEvent {
@@ -922,6 +916,7 @@ struct MachineTransition {
   std::string target_state;
   std::unique_ptr<Spanned<Expr>> guard; // nullptr if no guard
   Spanned<Expr> body;
+  bool reenter = false; // @reenter annotation: Mealy re-entry for self-transitions
 };
 
 struct MachineDecl {

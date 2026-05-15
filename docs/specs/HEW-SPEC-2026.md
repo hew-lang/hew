@@ -1492,8 +1492,8 @@ at a safepoint (§4.5) while holding the value:
   obligation" rule.
 
 **Path 2 — Graceful actor drain.** The actor's supervisor or
-`actor.shutdown()` call runs the actor's terminating handler (`on_stop`,
-or the supervised shutdown handler):
+`actor.shutdown()` call runs the actor's terminating handler (`#[on(stop)]`
+hooks, or the supervised shutdown handler):
 
 - `@resource` fields: each field's implicit `close()` runs in
   declaration order after the terminating handler returns. The handler
@@ -2267,6 +2267,16 @@ rely on RAII.
 
 ## 3.11 `machine` Types
 
+> **Implementation status — v0.5.0 (Lane A shipped):**
+>
+> The front-end (lexer keywords, parser, AST, HIR lowering, static checks) and
+> the `hew machine diagram` visualisation subcommand are fully implemented and
+> gate-clean as of v0.5.0.  Code generation (`step()`, tagged-union layout,
+> event enum emission) is deferred to **v0.5.1 (Lane B)** — machines parse,
+> type-check at the HIR layer, and render to Mermaid/Graphviz/JSON, but are
+> not yet executable.  Sections §3.11.6 and §3.11.7 describe the *intended*
+> API and are marked accordingly.
+
 A `machine` is a **value type** that defines a closed set of named states, a
 closed set of named events, and transition rules mapping `(State, Event)` pairs
 to new states.  It compiles to a tagged union with a compiler-generated
@@ -2275,7 +2285,7 @@ with per-state fields and compiler-checked transition logic.
 
 > **Detailed specification:** See [`docs/specs/MACHINE-SPEC.md`](MACHINE-SPEC.md)
 > for the full normative reference.  This section summarises the implemented
-> surface in v0.2.0.
+> surface in v0.5.0.
 
 **Design pillars:**
 
@@ -2316,27 +2326,63 @@ machine Name {
 ```ebnf
 MachineDecl   = "machine" Ident "{" { MachineItem } "}" ;
 MachineItem   = MachineState | MachineEvent | MachineTransition | MachineDefault ;
-MachineState  = "state" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
+MachineState  = "state" Ident ( "{" { StateBodyItem } "}" )? ";"? ;
+StateBodyItem = ( Ident ":" Type (";" | ",") )      (* field declaration *)
+              | ( "entry" Block )                    (* entry hook — v0.5.0 *)
+              | ( "exit"  Block )                    (* exit hook  — v0.5.0 *)
+              ;
 MachineEvent  = "event" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
 MachineTransition = "on" Ident ":" StatePattern "->" StatePattern
                     ("when" Expr)? (Block | "{" FieldInitList "}" | ";") ;
 MachineDefault = "default" (Block | ";") ;
+
+(* Emit expression (usable inside transition bodies and entry/exit blocks): *)
+EmitExpr = "emit" Ident ( "{" FieldInitList "}" )? ;
+```
+
+> **Nested states are reserved** — a `state` declaration inside a state body
+> is a parse error.  Hierarchical states are planned for v0.6.
+
+**Visualisation (v0.5.0):** `hew machine diagram <file.hew>` renders any
+`machine` declaration as a Mermaid state diagram, Graphviz DOT, or JSON
+schema.  The command runs all HIR static checks before rendering, so it
+doubles as a structural validator.
+
+```
+hew machine diagram traffic_light.hew                   # Mermaid (default)
+hew machine diagram traffic_light.hew --format graphviz # Graphviz DOT
+hew machine diagram traffic_light.hew --format json     # JSON schema
+hew machine diagram traffic_light.hew --machine Name    # filter one machine
+hew machine diagram traffic_light.hew --no-check        # skip HIR checks
 ```
 
 ### 3.11.2 Constraints
 
-| Constraint                                  | Error if violated                          |
-| ------------------------------------------- | ------------------------------------------ |
-| At least two states                         | `machine_one_state` negative test          |
-| At least one event                          | `machine_no_events` negative test          |
-| No duplicate explicit transition per (S, E) | `machine_dup_transition` negative test     |
-| No duplicate wildcard for same event        | `machine_dup_wildcard` negative test       |
-| All referenced states/events must be declared | `machine_unknown_state/event` negative tests |
-| All (S, E) pairs covered (exhaustiveness)   | `machine_exhaustive_fail` negative test    |
+| Constraint                                  | Checked at  | Error if violated                             |
+| ------------------------------------------- | ----------- | --------------------------------------------- |
+| At least two states                         | Parse       | `machine_one_state` negative test             |
+| At least one event                          | Parse       | `machine_no_events` negative test             |
+| No nested `state` inside a state body       | Parse       | diagnostic: hierarchical states reserved v0.6 |
+| No duplicate explicit transition per (S, E) | Parse/HIR   | `machine_dup_transition` negative test        |
+| No duplicate wildcard for same event        | Parse/HIR   | `machine_dup_wildcard` negative test          |
+| All referenced states/events must be declared | HIR       | `machine_unknown_state/event` negative tests  |
+| All (S, E) pairs covered (exhaustiveness)   | HIR         | `MachineExhaustivenessViolation` diagnostic   |
+| Effect parity: transition body writes ≡ entry writes | HIR  | `MachineEffectParityViolation` diagnostic     |
+| No direct self-emit (`emit E` in transition for event E) | HIR | `MachineEmitCycle` diagnostic          |
 
-Exhaustiveness can be satisfied by: explicit `on` rules, wildcard `on` rules,
-or a `default` handler.  A `default` handler alone covers all pairs that have
-no other matching rule.
+Exhaustiveness can be satisfied by: explicit `on` rules, wildcard (`_`-source)
+rules, or a `default` handler.  A `default` handler alone covers all pairs that
+have no other matching rule.
+
+**Effect parity** (v0.5.0): when a transition body writes a state field (via
+`self.field = …`) and the target state's `entry` block also writes that same
+field, the compiler emits a `MachineEffectParityViolation` diagnostic.  This
+prevents silent shadowing between transition-side and entry-side field
+initialisation.
+
+**Emit-cycle detection** (v0.5.0): a transition handling event `E` may not
+directly `emit E` — that would form an immediate re-entry cycle.  Indirect
+cycles (A emits B, B emits A) are not checked in v0.5.0.
 
 ### 3.11.3 Transition Bodies
 
@@ -2414,7 +2460,11 @@ Priority order (highest to lowest):
 
 Specific transitions always win over wildcards for the same event.
 
-### 3.11.6 Generated API
+### 3.11.6 Generated API *(v0.5.1 — Lane B, not yet implemented)*
+
+> Code generation for `machine` is deferred to the Lane B follow-up.  The API
+> described here is the *intended* design; `step()` and the companion event
+> enum are not emitted by the v0.5.0 compiler.
 
 The compiler generates the following for every `machine Name { ... }`:
 
@@ -2447,7 +2497,10 @@ match cb {
 }
 ```
 
-### 3.11.7 Using Machines Inside Actors
+### 3.11.7 Using Machines Inside Actors *(v0.5.1 — Lane B, not yet implemented)*
+
+> This section describes the intended runtime embedding pattern.  Machine
+> values are not yet executable in v0.5.0 — `step()` is not generated.
 
 Machines are values — they are commonly embedded as actor fields:
 
@@ -4151,6 +4204,44 @@ void Counter_dispatch(void* state, int msg_type, void* data, size_t data_size) {
     }
 }
 ```
+
+#### 9.1.2 Lifecycle Hooks
+
+Actors expose user-defined startup and cleanup logic through **lifecycle hook annotations** on plain `fn` declarations inside the actor body. The hook surface uses a single annotation `on` with the hook kind as a positional argument, so additional hooks (`#[on(panic)]`, `#[on(pre_restart)]`, …) can be added in later editions without growing the annotation vocabulary.
+
+**Hooks defined in this edition:**
+
+| Annotation      | Signature   | Runs when                                                                                       |
+| --------------- | ----------- | ----------------------------------------------------------------------------------------------- |
+| `#[on(start)]`  | `fn name()` | Once, after the actor's fields are initialized and before any message is dispatched.            |
+| `#[on(stop)]`   | `fn name()` | Once per actor instance, on normal exit, cancellation by an enclosing `fork{}`, or supervisor `Shutdown`. |
+
+Unknown hook kinds (e.g. `#[on(restart)]`) are rejected with a diagnostic listing the valid set.
+
+**Signature rules (normative):**
+
+1. A hook is a plain `fn` declaration inside an actor body carrying exactly one of `#[on(start)]` or `#[on(stop)]`.
+2. A hook takes **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
+3. A hook returns `()`.
+4. A hook is **not** `pure`, **not** generic, and has no `where` clause.
+5. Hook functions are not invocable from message handlers; the runtime is the sole caller.
+6. `#[on(start)]` appears **at most once** per actor. `#[on(stop)]` MAY appear multiple times; lexical declaration order is the run order.
+
+**Cancellation and resource ordering (normative):**
+
+7. Cancellation by an enclosing `fork{}` scope triggers `#[on(stop)]` for each cancelled actor before its task ends. This is the common path under structured concurrency, not an exceptional one.
+8. The runtime sequence at terminal transition is:
+   - (a) actor body exits or is cancelled;
+   - (b) every `#[on(stop)]` hook runs in lexical declaration order with field access live;
+   - (c) `@linear` consumed-checks fire (unconsumed linear values surface as diagnostics);
+   - (d) `@resource` field `close()` methods run in reverse declaration order.
+   Hooks therefore run BEFORE `@resource` `close()`, so user logic in a hook can still use resources for goodbye flushes.
+9. A panic in `#[on(start)]` aborts actor startup. The supervisor is notified; `#[on(stop)]` does NOT run, because the actor never reached the *started* state.
+10. The default `#[on(stop)]` timeout budget is 5 seconds; future editions MAY introduce `#[on(stop, timeout = <duration>)]` to override per actor.
+
+**Compilation:** Multiple `#[on(stop)]` hooks are concatenated by the codegen into a single C-ABI `_terminate` function pointer; the runtime ABI exposes one hook slot per actor regardless of source-level hook count. `#[on(start)]` bodies are appended to the synthesized `_init` function in lexical order, after any `init { ... }` block. Per-hook panic isolation between sibling hooks is reserved for a future edition; in this edition a panic in one `#[on(stop)]` hook short-circuits subsequent hooks of the same actor, while `@resource` `close()` (state-drop) is unaffected.
+
+**Migration from v0.4:** The `terminate { ... }` block surface accepted by the v0.4 parser is removed in this edition. Existing cleanup logic should be rewritten as a `#[on(stop)] fn <name>() { ... }` declaration; the body and field-access semantics are identical.
 
 ### 9.2 Supervisor state machine
 

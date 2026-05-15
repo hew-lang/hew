@@ -512,13 +512,36 @@ pub enum MachineSubcommand {
     List(MachineListArgs),
 }
 
+/// Output format for `hew machine diagram`.
+#[derive(Debug, Clone, PartialEq, ValueEnum)]
+pub enum MachineFormat {
+    /// Mermaid `stateDiagram-v2` (default).
+    Mermaid,
+    /// Graphviz DOT.
+    Graphviz,
+    /// Graphviz DOT (alias for `graphviz`).
+    Dot,
+    /// Stable JSON schema for tooling.
+    Json,
+}
+
 #[derive(Debug, Args)]
 pub struct MachineDiagramArgs {
     /// Input .hew file.
     pub input: PathBuf,
-    /// Output Graphviz DOT format instead of Mermaid.
-    #[arg(long)]
+    /// Output Graphviz DOT format instead of Mermaid (shorthand for `--format graphviz`).
+    #[arg(long, conflicts_with = "format")]
     pub dot: bool,
+    /// Output format. Default: mermaid.
+    #[arg(long, value_enum)]
+    pub format: Option<MachineFormat>,
+    /// Only render the named machine (useful for multi-machine files).
+    #[arg(long = "machine", value_name = "NAME")]
+    pub machine_name: Option<String>,
+    /// Run HIR static checks before rendering and exit with an error if any
+    /// check fails. Enabled by default.
+    #[arg(long = "no-check", action = clap::ArgAction::SetFalse)]
+    pub check: bool,
 }
 
 #[derive(Debug, Args)]

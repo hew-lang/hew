@@ -40,15 +40,6 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                     item_span.start,
                 ));
             }
-            if a.terminate.is_some() {
-                children.push(keyword_symbol(
-                    source,
-                    "terminate",
-                    "terminate",
-                    SymbolKind::Method,
-                    item_span.start,
-                ));
-            }
             for recv in &a.receive_fns {
                 let recv_span = if recv.span.is_empty() {
                     None

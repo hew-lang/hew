@@ -71,6 +71,28 @@ pub fn dump_hir(module: &HirModule) -> String {
                     writeln!(out, "  consuming-method {method}").expect("write to string");
                 }
             }
+            HirItem::Machine(machine) => {
+                writeln!(out, "machine {} {}", machine.id, machine.name).expect("write to string");
+                for state in &machine.states {
+                    writeln!(
+                        out,
+                        "  state {} entry={} exit={}",
+                        state.name, state.has_entry, state.has_exit
+                    )
+                    .expect("write to string");
+                }
+                for event in &machine.events {
+                    writeln!(out, "  event {}", event.name).expect("write to string");
+                }
+                for tr in &machine.transitions {
+                    writeln!(
+                        out,
+                        "  transition on {}: {} -> {} self={}",
+                        tr.event_name, tr.source_state, tr.target_state, tr.is_self_transition
+                    )
+                    .expect("write to string");
+                }
+            }
         }
     }
     out

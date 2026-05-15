@@ -38,6 +38,13 @@ impl Verifier {
                     // `lower_type_decl`.
                     self.node(decl.node, decl.span.clone());
                 }
+                HirItem::Machine(machine) => {
+                    // Machine declarations are structurally verified here.
+                    // Body expressions are not lowered to HirExpr in Lane A,
+                    // so there are no binding or site IDs to verify beyond
+                    // the machine's own node ID.
+                    self.node(machine.node, machine.span.clone());
+                }
             }
         }
     }

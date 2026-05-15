@@ -319,10 +319,6 @@ fn try_spawn_completions(
 }
 
 /// Collect local variable names from function/actor bodies that are in scope at `offset`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "AST scope walk intentionally keeps all item-local cases in one place"
-)]
 fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> Vec<CompletionItem> {
     let mut locals = Vec::new();
 
@@ -349,9 +345,6 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                         locals.push(local_completion(&p.name));
                     }
                     collect_locals_from_block(&init.body, offset, &mut locals);
-                }
-                if let Some(term) = &a.terminate {
-                    collect_locals_from_block(&term.body, offset, &mut locals);
                 }
                 for recv in &a.receive_fns {
                     if span_contains_offset(&recv.span, offset) {

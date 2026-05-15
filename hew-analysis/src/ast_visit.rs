@@ -8,7 +8,6 @@ use hew_parser::ParseResult;
 pub(crate) enum BodyKind {
     Function,
     ActorInit,
-    ActorTerminate,
     ActorReceive,
     ActorMethod,
     TypeMethod,
@@ -194,14 +193,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                         body_info,
                         params_to_bindings(self.source, body_info.span, &init.params),
                     );
-                }
-                if let Some(term) = &actor.terminate {
-                    let body_info = BodyInfo {
-                        kind: BodyKind::ActorTerminate,
-                        name: Some(&actor.name),
-                        span: Some(span),
-                    };
-                    self.walk_block_body(&term.body, body_info, Vec::new());
                 }
                 for recv in &actor.receive_fns {
                     let body_info = BodyInfo {
@@ -773,7 +764,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&expr.0, &expr.1, body);
                 }
             }
-            Expr::StructInit { fields, .. } => {
+            Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
                 for (_, value) in fields {
                     self.walk_expr(&value.0, &value.1, body);
                 }

@@ -4,10 +4,10 @@ use std::fmt::Write as _;
 use std::ops::Range;
 
 use crate::ast::{
-    ActorDecl, ActorInit, ActorTerminate, Attribute, AttributeArg, BinaryOp, Block, CallArg,
-    ChildSpec, CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl,
-    FnDecl, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
-    MatchArm, NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
+    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
+    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
+    ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl, MatchArm,
+    NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
     RestartPolicy, SelectArm, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
     TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
     TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
@@ -830,7 +830,6 @@ impl<'a> Formatter<'a> {
         self.write(";\n");
     }
 
-    #[expect(clippy::too_many_lines, reason = "actor formatting has many sections")]
     fn format_actor(&mut self, decl: &ActorDecl, span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
         self.write_indent();
@@ -903,17 +902,6 @@ impl<'a> Formatter<'a> {
             has_body_item = true;
         }
 
-        if let Some(terminate) = &decl.terminate {
-            if self.has_comments() {
-                let pos = self.find_keyword_after("terminate", self.prev_source_pos);
-                self.flush_comments_before(pos);
-            } else if has_body_item {
-                self.newline();
-            }
-            self.format_actor_terminate(terminate, span_end);
-            has_body_item = true;
-        }
-
         for recv in &decl.receive_fns {
             if self.has_comments() {
                 let kw = if recv.is_generator {
@@ -962,20 +950,46 @@ impl<'a> Formatter<'a> {
             self.write_indent();
             self.write("state ");
             self.write(&state.name);
-            if state.fields.is_empty() {
-                self.write(";\n");
-            } else {
-                self.write(" { ");
-                for (i, (name, ty)) in state.fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(" ");
-                    }
+            let has_entry_exit = state.entry.is_some() || state.exit.is_some();
+            if has_entry_exit {
+                // Multiline: entry/exit blocks require their own lines.
+                self.write(" {\n");
+                self.indent += 1;
+                for (name, ty) in &state.fields {
+                    self.write_indent();
+                    self.write(name);
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                    self.write(";\n");
+                }
+                if let Some(entry) = &state.entry {
+                    self.write_indent();
+                    self.write("entry ");
+                    self.format_block(entry, self.source.len());
+                    self.newline();
+                }
+                if let Some(exit) = &state.exit {
+                    self.write_indent();
+                    self.write("exit ");
+                    self.format_block(exit, self.source.len());
+                    self.newline();
+                }
+                self.indent -= 1;
+                self.write_indent();
+                self.write("}\n");
+            } else if !state.fields.is_empty() {
+                // Compact single-line: `state S { field: Type; }`.
+                self.write(" {");
+                for (name, ty) in &state.fields {
+                    self.write(" ");
                     self.write(name);
                     self.write(": ");
                     self.format_type_expr(&ty.0);
                     self.write(";");
                 }
                 self.write(" }\n");
+            } else {
+                self.write(";\n");
             }
         }
 
@@ -1082,14 +1096,6 @@ impl<'a> Formatter<'a> {
         self.format_params(&init.params);
         self.write(") ");
         self.format_block(&init.body, scope_end);
-        self.newline();
-    }
-
-    fn format_actor_terminate(&mut self, terminate: &ActorTerminate, scope_end: usize) {
-        self.format_attributes(&terminate.attributes);
-        self.write_indent();
-        self.write("terminate ");
-        self.format_block(&terminate.body, scope_end);
         self.newline();
     }
 
@@ -2191,6 +2197,24 @@ impl<'a> Formatter<'a> {
                     f.format_expr(&value.0);
                 });
                 self.write("}");
+            }
+            Expr::MachineEmit { event_name, fields } => {
+                self.write("emit ");
+                self.write(event_name);
+                if fields.is_empty() {
+                    self.write(" {}");
+                } else {
+                    self.write(" { ");
+                    for (i, (name, val)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(name);
+                        self.write(": ");
+                        self.format_expr(&val.0);
+                    }
+                    self.write(" }");
+                }
             }
         }
     }

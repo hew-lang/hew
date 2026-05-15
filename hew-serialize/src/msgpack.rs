@@ -731,7 +731,7 @@ fn walk_program<V: SideTableVisitor>(
                 collect_expr(receiver, tco, visitor, out);
                 collect_call_args(args, tco, visitor, out);
             }
-            Expr::StructInit { fields, .. } => {
+            Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
                 for (_, value) in fields {
                     collect_expr(value, tco, visitor, out);
                 }
@@ -815,9 +815,6 @@ fn walk_program<V: SideTableVisitor>(
             Item::Actor(actor_decl) => {
                 if let Some(init) = &actor_decl.init {
                     collect_block(&init.body, tco, visitor, out);
-                }
-                if let Some(terminate) = &actor_decl.terminate {
-                    collect_block(&terminate.body, tco, visitor, out);
                 }
                 for receive_fn in &actor_decl.receive_fns {
                     collect_block(&receive_fn.body, tco, visitor, out);
@@ -1689,6 +1686,8 @@ mod tests {
                         MachineState {
                             name: "Red".into(),
                             fields: vec![],
+                            entry: None,
+                            exit: None,
                         },
                         MachineState {
                             name: "Green".into(),
@@ -1702,6 +1701,8 @@ mod tests {
                                     10..13,
                                 ),
                             )],
+                            entry: None,
+                            exit: None,
                         },
                     ],
                     events: vec![MachineEvent {
@@ -1713,6 +1714,7 @@ mod tests {
                         source_state: "Red".into(),
                         target_state: "Green".into(),
                         guard: None,
+                        reenter: false,
                         body: (
                             Expr::Block(Block {
                                 stmts: vec![],

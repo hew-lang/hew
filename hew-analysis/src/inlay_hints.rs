@@ -57,9 +57,6 @@ fn collect_inlay_hints_from_item(
             if let Some(init) = &a.init {
                 collect_inlay_hints_from_block(source, &init.body, tc, hints);
             }
-            if let Some(term) = &a.terminate {
-                collect_inlay_hints_from_block(source, &term.body, tc, hints);
-            }
             for recv in &a.receive_fns {
                 collect_inlay_hints_from_block(source, &recv.body, tc, hints);
             }
@@ -444,7 +441,7 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
             }
         }
-        Expr::StructInit { fields, .. } => {
+        Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
             for (_, value) in fields {
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
             }

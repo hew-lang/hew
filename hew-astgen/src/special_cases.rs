@@ -640,6 +640,8 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("Call", VariantDisposition::Parsed),
     ("MethodCall", VariantDisposition::Parsed),
     ("StructInit", VariantDisposition::Parsed),
+    // MachineEmit is a machine-body-only expression; codegen handling is Lane B.
+    ("MachineEmit", VariantDisposition::Rejected),
     ("Send", VariantDisposition::Parsed),
     ("Select", VariantDisposition::Parsed),
     ("Join", VariantDisposition::Parsed),
@@ -1249,6 +1251,9 @@ pub fn machine_transition_parser() -> &'static str {
   if (g && !isNil(*g))
     mt.guard = parseSpannedPtr<ast::Expr>(*g, parseExpr);
   mt.body = parseSpanned<ast::Expr>(mapReq(obj, "body"), parseExpr);
+  const auto *r = mapGet(obj, "reenter");
+  if (r && !isNil(*r))
+    mt.reenter = getBool(*r);
   return mt;
 }"#
 }

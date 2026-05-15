@@ -200,21 +200,100 @@ impl Checker {
         if let Some(init) = &ad.init {
             self.check_actor_init(&ad.name, init, &ad.fields);
         }
-        // Type-check terminate body if present
-        if let Some(term) = &ad.terminate {
-            self.check_actor_terminate(&ad.name, term, &ad.fields);
-        }
 
         for rf in &ad.receive_fns {
             self.check_receive_fn(&ad.name, rf, &ad.fields);
         }
+
+        // Separate lifecycle-hook fns from regular methods. Hooks carry
+        // `#[on(start)]` or `#[on(stop)]` and have a fixed signature;
+        // regular methods carry no attributes and are checked as
+        // ordinary actor methods.
+        //
+        // `#[on(start)]` is at most once per actor; `#[on(stop)]` may
+        // appear multiple times (lexical declaration order is the
+        // run order — see HEW-SPEC-2026 §9.1.2).
+        let mut on_start_seen: Option<Span> = None;
         for method in &ad.methods {
-            self.env.push_scope();
-            // Bind actor fields directly in scope (bare field access)
-            self.bind_actor_fields(&ad.fields);
-            let qualified = format!("{}::{}", ad.name, method.name);
-            self.check_function_as(method, &qualified);
-            self.env.pop_scope();
+            let hook_attrs: Vec<_> = method
+                .attributes
+                .iter()
+                .filter(|a| a.name.as_str() == "on")
+                .collect();
+
+            if hook_attrs.is_empty() {
+                self.env.push_scope();
+                self.bind_actor_fields(&ad.fields);
+                let qualified = format!("{}::{}", ad.name, method.name);
+                self.check_function_as(method, &qualified);
+                self.env.pop_scope();
+                continue;
+            }
+
+            if hook_attrs.len() > 1 {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    hook_attrs[1].span.clone(),
+                    format!(
+                        "function `{}` in actor `{}` cannot carry more than one \
+                         lifecycle-hook annotation; combine the bodies or split into separate fns",
+                        method.name, ad.name
+                    ),
+                ));
+            }
+            let hook_attr = hook_attrs[0];
+
+            // Resolve the hook kind from the first positional arg.
+            let hook_kind = hook_attr.args.first().map(AttributeArg::as_str);
+            match hook_kind {
+                None | Some("") => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        hook_attr.span.clone(),
+                        format!(
+                            "`#[on]` on `{}::{}` requires a hook kind argument; \
+                             valid hook kinds are: start, stop",
+                            ad.name, method.name
+                        ),
+                    ));
+                    continue;
+                }
+                Some("start" | "stop") => {}
+                Some(unknown) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        hook_attr.span.clone(),
+                        format!(
+                            "`#[on({unknown})]` on `{}::{}` is not a recognised lifecycle hook; \
+                             valid hook kinds are: start, stop",
+                            ad.name, method.name
+                        ),
+                    ));
+                    continue;
+                }
+            }
+            let hook_kind_str = hook_kind.unwrap();
+
+            if hook_kind_str == "start" {
+                if let Some(prev) = &on_start_seen {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        hook_attr.span.clone(),
+                        format!(
+                            "actor `{}` declares more than one `#[on(start)]` hook; \
+                             only one is allowed (see prior at {}..{})",
+                            ad.name, prev.start, prev.end
+                        ),
+                    ));
+                } else {
+                    on_start_seen = Some(hook_attr.span.clone());
+                }
+            }
+
+            // Validate signature and body. Hooks bind actor fields in
+            // scope (bare names) and have no parameters beyond `self`.
+            let display_kind = format!("on({hook_kind_str})");
+            self.check_lifecycle_hook(&ad.name, method, &display_kind, &ad.fields);
         }
 
         self.current_actor_type = prev_actor_type;
@@ -265,28 +344,109 @@ impl Checker {
         self.env.pop_scope();
     }
 
-    /// Type-check an actor's `terminate { ... }` block. The terminate body
-    /// runs when the actor is stopped and has access to actor fields (bare
-    /// names) but takes no parameters and cannot return a value.
-    pub(super) fn check_actor_terminate(
+    /// Type-check an actor lifecycle hook (`#[on(start)]` or `#[on(stop)]`).
+    ///
+    /// Required shape (HEW-SPEC-2026 §9.1.2 rules 2-4):
+    /// - no parameters (actor fields are in scope by bare name, same as `init { }`)
+    /// - no type parameters
+    /// - no `where` clause
+    /// - not `pure`
+    /// - return type `()` (omitted or explicitly unit)
+    ///
+    /// Hooks bind actor fields as bare names in scope (mutable) so the
+    /// body can read and modify fields exactly like an `init { }` body.
+    /// Diagnostics emitted here cover both signature shape (rejected
+    /// statically) and body type-checking (delegated to `check_block`).
+    pub(super) fn check_lifecycle_hook(
         &mut self,
         actor_name: &str,
-        term: &ActorTerminate,
+        hook: &FnDecl,
+        hook_kind: &str,
         fields: &[FieldDecl],
     ) {
+        // ── Signature validation ────────────────────────────────────────
+        if hook.is_pure {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot be `pure`",
+                    hook.name
+                ),
+            ));
+        }
+        if hook.type_params.as_ref().is_some_and(|tps| !tps.is_empty()) {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                     have type parameters",
+                    hook.name
+                ),
+            ));
+        }
+        if hook.where_clause.is_some() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                     have a `where` clause",
+                    hook.name
+                ),
+            ));
+        }
+        if let Some(rt) = &hook.return_type {
+            // Only `()` is permitted; reject any explicit return type.
+            // `resolve_type_expr` returns `Ty::Unit` for the unit type
+            // and anything else for everything else.
+            let ty = self.resolve_type_expr(rt);
+            if !matches!(ty, Ty::Unit) {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    rt.1.clone(),
+                    format!(
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must \
+                         return `()` (the unit type); declared return type rejected",
+                        hook.name
+                    ),
+                ));
+            }
+        }
+
+        // Parameter shape: hooks take no explicit parameters. Hew actor
+        // methods bind actor fields as bare names in scope (mirroring
+        // `init { }`); a hook reaches into mutable actor state the same
+        // way. Reject any parameter list — the user's intent is almost
+        // certainly to use a `self`-style receiver, which is not how
+        // Hew actor methods work.
+        if !hook.params.is_empty() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
+                     no parameters; actor fields are in scope by bare name (see \
+                     `init {{ }}` for the same convention)",
+                    hook.name
+                ),
+            ));
+        }
+
+        // ── Body checking ───────────────────────────────────────────────
         self.env.push_scope();
 
-        let qualified_name = format!("{actor_name}::terminate");
+        let qualified_name = format!("{actor_name}::{}", hook.name);
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name);
 
-        // Bind actor fields directly in scope (bare field access, mutable
-        // so the terminate body can read/modify fields for cleanup).
+        // Bind actor fields directly in scope as bare names (mutable so
+        // the hook can read/modify them).
         self.bind_actor_fields(fields);
 
-        // Terminate returns unit — no meaningful return type
         self.current_return_type = Some(Ty::Unit);
-        self.check_block(&term.body, None);
+        self.check_block(&hook.body, None);
         self.current_return_type = None;
 
         self.current_function = prev_function;

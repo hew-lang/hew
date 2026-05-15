@@ -267,6 +267,14 @@ pub enum Expr {
     ByteStringLiteral(Vec<u8>),
     /// Byte array literal, e.g. `bytes [0x48, 0x65]`.
     ByteArrayLiteral(Vec<u8>),
+
+    /// `emit EventName { field: expr, ... }` — fire a machine event from a
+    /// transition body, `entry`, or `exit` block. Legality (must appear inside
+    /// a machine context) is checked at HIR lowering, not parsing.
+    MachineEmit {
+        event_name: String,
+        fields: Vec<(String, Spanned<Expr>)>,
+    },
 }
 
 // ── Statements ───────────────────────────────────────────────────────
@@ -1069,7 +1077,6 @@ pub struct ActorDecl {
     pub name: String,
     pub super_traits: Option<Vec<TraitBound>>,
     pub init: Option<ActorInit>,
-    pub terminate: Option<ActorTerminate>,
     pub fields: Vec<FieldDecl>,
     pub receive_fns: Vec<ReceiveFnDecl>,
     pub methods: Vec<FnDecl>,
@@ -1104,16 +1111,6 @@ pub enum OverflowFallback {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActorInit {
     pub params: Vec<Param>,
-    pub body: Block,
-}
-
-/// An actor's `terminate { ... }` block, run when the actor is stopped.
-/// Has no parameters — actor fields are in scope.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActorTerminate {
-    /// Attributes on the terminate block.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attributes: Vec<Attribute>,
     pub body: Block,
 }
 
@@ -1242,6 +1239,12 @@ pub struct MachineDecl {
 pub struct MachineState {
     pub name: String,
     pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    /// Optional `entry { ... }` lifecycle block executed when entering this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<Block>,
+    /// Optional `exit { ... }` lifecycle block executed when leaving this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<Block>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1258,4 +1261,12 @@ pub struct MachineTransition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
+    /// When true, a self-transition (`source == target`) explicitly opts in to
+    /// Mealy re-entry semantics: the source `exit` block and target `entry` block
+    /// both run even though the state does not change.  Written as `@reenter`
+    /// after the target state name.  Without this annotation, a non-empty self-
+    /// transition body is a compile error (HIR enforces the Moore-style rule that
+    /// self-loops must be annotated or empty).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reenter: bool,
 }

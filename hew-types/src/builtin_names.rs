@@ -263,11 +263,10 @@ builtin_named_types! {
     // S = send direction (msg type), R = receive direction (reply type).
     // @resource: dropping the last handle closes both directions.
     // Send iff S: Send + R: Send (checked in traits.rs implements_marker).
-    // Call-syntax only: `handle(msg)` → `Result<(), SendError>` (tell) or
-    // `Result<R, AskError>` (ask).  `.send()` is rejected with E_LAMBDA_NO_SEND_METHOD.
-    //
-    // Methods are empty for slice 2; runtime dispatch methods land in slice 4.
-    // WHEN-OBSOLETE: slice 4 adds send_half / recv_half / close methods here.
+    // Call-syntax `handle(msg)` is canonical for lambda-actor handles; `.send()` is
+    // accepted as an allowed-secondary surface because lambda-actor handles are
+    // `Duplex<Msg, Reply>` underneath — both surfaces route to the same runtime symbol
+    // (`hew_duplex_send`).  The type system cannot distinguish them at the call site.
     Duplex {
         consts: (DUPLEX, QUALIFIED_DUPLEX),
         methods_const: DUPLEX_METHODS,

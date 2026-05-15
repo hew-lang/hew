@@ -1227,16 +1227,42 @@ fn lambda_actor_capture_must_be_send() {
 }
 
 #[test]
-fn lambda_actor_send_method_requires_send_payload() {
-    // `.send()` on an actor lambda handle must reject non-Send payloads.
+fn lambda_actor_call_rejects_non_send_payload() {
+    // Call-syntax dispatch on a lambda actor rejects non-Send arguments at the call site
+    // (E_DUPLEX_NON_SEND): the message crosses an actor boundary.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let worker = actor |msg: int| {
+                println(msg);
+            };
+            let rc: Rc<int> = Rc::new(1);
+            worker(rc.strong_count());
+        }
+        ",
+    );
+    // rc.strong_count() returns int which IS Send — this should be clean.
+    // The earlier version of this test used a non-Send type as the declared param type,
+    // which is caught at actor-definition time (E_DUPLEX_NON_SEND on the param).
+    // That check is now in actor_lambda_non_send_param_rejected.
+    assert!(
+        output.errors.is_empty(),
+        "call-syntax with Send int payload should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn lambda_actor_non_send_param_rejected() {
+    // A lambda actor whose parameter type is not Send is rejected at definition time
+    // (E_DUPLEX_NON_SEND): the message type must be Send to cross the actor boundary.
     let output = typecheck_inline(
         r"
         fn main() {
             let worker = actor |msg: Rc<int>| {
                 println(msg.strong_count());
             };
-            let rc: Rc<int> = Rc::new(1);
-            worker.send(rc);
+            worker(42);
         }
         ",
     );
@@ -1244,8 +1270,11 @@ fn lambda_actor_send_method_requires_send_payload() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "lambda actor .send() must reject non-Send payloads, got: {:#?}",
+            .any(|e| {
+                e.kind == hew_types::error::TypeErrorKind::InvalidSend
+                    && e.message.contains("E_DUPLEX_NON_SEND")
+            }),
+        "lambda actor with non-Send param type must reject with InvalidSend containing E_DUPLEX_NON_SEND, got: {:#?}",
         output.errors
     );
 }
@@ -1320,10 +1349,135 @@ fn legacy_spawn_lambda_syntax_is_rejected() {
     );
 }
 
-/// Accept path for the new `actor |...| { ... }` syntax.
+/// Accept path for the new `actor |...| { ... }` syntax with call-syntax dispatch.
 /// Replaces the old `lambda_actor_send_operator_allows_send_payload` test.
 #[test]
 fn actor_lambda_new_syntax_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let worker = actor |msg: int| {
+                println(msg);
+            };
+            worker(1);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "`actor |...| {{ ... }}` with call-syntax dispatch should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Ask-shaped lambda actor: accept path — body type matches declared return type.
+#[test]
+fn ask_shaped_actor_return_matches_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let doubler = actor |n: int| -> int {
+                n * 2
+            };
+            doubler(5);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "ask-shaped actor with matching return type should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `E_LAMBDA_RETURN_TYPE_MISMATCH`: ask-shaped actor body return type ≠ declared reply type.
+#[test]
+fn ask_shaped_actor_return_mismatch_rejected() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            let bad = actor |n: int| -> int {
+                "not an int"
+            };
+            bad(1);
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::ReturnTypeMismatch
+                && e.message.contains("E_LAMBDA_RETURN_TYPE_MISMATCH")),
+        "ask-shaped actor with mismatched body type must emit E_LAMBDA_RETURN_TYPE_MISMATCH, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `E_LAMBDA_SELF_ESCAPE`: an actor lambda body that returns a Duplex handle is rejected.
+/// A Duplex (lambda-actor handle) escaping via the body's return value violates the
+/// handle's lifetime bound to the let-binding site.
+#[test]
+fn actor_lambda_self_escape_rejected() {
+    // The inner actor is returned by the outer actor's body, leaking its handle.
+    // The outer actor's body return type would be Duplex<...>, triggering E_LAMBDA_SELF_ESCAPE.
+    let output = typecheck_inline(
+        r"
+        fn helper() {
+            let inner = actor |x: int| {
+                println(x);
+            };
+            // This outer actor's body returns a Duplex handle — the self-escape pattern.
+            let _outer = actor |_n: int| -> Duplex<int, ()> {
+                inner
+            };
+        }
+        ",
+    );
+    // The outer actor's body synthesises to Duplex<int, ()> because `inner` is a
+    // Duplex. That triggers E_LAMBDA_SELF_ESCAPE (InvalidOperation) before any
+    // return-type-annotation check fires, so the fixture reliably exercises the path.
+    let self_escape_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("E_LAMBDA_SELF_ESCAPE")
+        })
+        .collect();
+    assert!(
+        !self_escape_errors.is_empty(),
+        "expected E_LAMBDA_SELF_ESCAPE diagnostic (InvalidOperation), got: {:?}",
+        output.errors
+    );
+}
+
+/// Lambda actor recursive self-call via let-binding name typechecks clean.
+/// The let-binding name is the recursion handle (architecture §5.9 ratification 2).
+#[test]
+fn lambda_actor_recursive_self_call_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let fib = actor |n: int| {
+                if n > 1 {
+                    fib(n - 1);
+                }
+            };
+            fib(10);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "recursive self-call in actor body must typecheck clean, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `E_LAMBDA_NO_SEND_METHOD`: calling `.send()` on a lambda actor handle is rejected.
+/// Use call-syntax `handle(msg)` instead.
+#[test]
+fn lambda_actor_dot_send_rejected_with_e_lambda_no_send_method() {
     let output = typecheck_inline(
         r"
         fn main() {
@@ -1335,8 +1489,49 @@ fn actor_lambda_new_syntax_typechecks() {
         ",
     );
     assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::UndefinedMethod
+                && e.message.contains("E_LAMBDA_NO_SEND_METHOD")
+        ),
+        "`.send()` on a lambda actor handle must emit E_LAMBDA_NO_SEND_METHOD, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Accept path for tell-shaped lambda actor: `actor |s: String| { ... }` + `log("x")`.
+#[test]
+fn tell_shaped_actor_typechecks() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            let log = actor |s: String| {
+                println(s);
+            };
+            log("x");
+        }
+        "#,
+    );
+    assert!(
         output.errors.is_empty(),
-        "`actor |...| {{ ... }}` with Send payload should typecheck cleanly, got: {:#?}",
+        "tell-shaped actor with call-syntax dispatch should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Accept path for ask-shaped lambda actor: `actor |n: int| -> int { n*2 }`.
+#[test]
+fn ask_shaped_actor_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let dbl = actor |n: int| -> int { n * 2 };
+            let _r = dbl(5);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "ask-shaped actor with call-syntax dispatch should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }

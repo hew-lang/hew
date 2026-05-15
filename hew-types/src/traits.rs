@@ -37,6 +37,10 @@ pub enum MarkerTrait {
     Encode,
     /// Contains no `Rc<T>` anywhere in its admissible structure
     RcFree,
+    /// Owns an operating-system or runtime resource whose drop closes it.
+    /// Design contract D3 (@resource) in v0.5. Applies to Duplex, Stream, Sink.
+    /// No consumer in slice 2; queried by drop-elaboration in slice 3.
+    Resource,
 }
 
 impl std::fmt::Display for MarkerTrait {
@@ -56,6 +60,7 @@ impl std::fmt::Display for MarkerTrait {
             MarkerTrait::Decode => write!(f, "Decode"),
             MarkerTrait::Encode => write!(f, "Encode"),
             MarkerTrait::RcFree => write!(f, "RcFree"),
+            MarkerTrait::Resource => write!(f, "Resource"),
         }
     }
 }
@@ -79,6 +84,7 @@ impl MarkerTrait {
             "Decode" => Some(Self::Decode),
             "Encode" => Some(Self::Encode),
             "RcFree" => Some(Self::RcFree),
+            "Resource" => Some(Self::Resource),
             _ => None,
         }
     }
@@ -324,8 +330,13 @@ impl TraitRegistry {
         if marker == MarkerTrait::RcFree {
             return matches!(self.rc_free_status(ty), RcFreeStatus::RcFree);
         }
+        if marker == MarkerTrait::Resource {
+            // Only resource types are Resource; primitives are NOT.
+            // Handled per-type below; fall through to the match.
+        }
         match ty {
-            // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug
+            // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
+            // NOT Resource: primitives own no OS/runtime resource and need no drop close.
             Ty::I8
             | Ty::I16
             | Ty::I32
@@ -340,12 +351,12 @@ impl TraitRegistry {
             | Ty::Duration
             | Ty::Unit
             | Ty::Error
-            | Ty::Never => true,
+            | Ty::Never => !matches!(marker, MarkerTrait::Resource),
 
-            // Floats: most traits but NOT Eq, Ord, Hash (NaN issues)
+            // Floats: most traits but NOT Eq, Ord, Hash (NaN issues), NOT Resource (value type)
             Ty::F32 | Ty::F64 | Ty::FloatLiteral => !matches!(
                 marker,
-                MarkerTrait::Eq | MarkerTrait::Ord | MarkerTrait::Hash
+                MarkerTrait::Eq | MarkerTrait::Ord | MarkerTrait::Hash | MarkerTrait::Resource
             ),
 
             // String: Send + Sync + Clone + Encode + Decode, but NOT Frozen (mutable), NOT Copy
@@ -403,6 +414,22 @@ impl TraitRegistry {
                     _ => false,
                 }
             }
+
+            // Duplex<S, R>: bidirectional lambda-actor handle.
+            // Send/Sync iff BOTH S: Send AND R: Send.
+            // NOT Copy (move-only resource — drop closes both directions).
+            // NOT Clone (split via send_half/recv_half in slice 4, not by cloning).
+            // NOT Frozen (mutable internal queue state).
+            // Resource: yes — dropping the last Duplex handle closes both I/O directions
+            //   (@resource design contract D3; consumed by drop-elaboration in slice 3).
+            Ty::Named { name, args } if name == "Duplex" && args.len() == 2 => match marker {
+                MarkerTrait::Send | MarkerTrait::Sync => {
+                    self.implements_marker(&args[0], MarkerTrait::Send)
+                        && self.implements_marker(&args[1], MarkerTrait::Send)
+                }
+                MarkerTrait::Resource => true,
+                _ => false,
+            },
 
             // Tuple: marker holds if ALL elements have it
             Ty::Tuple(elems) => elems.iter().all(|e| self.implements_marker(e, marker)),

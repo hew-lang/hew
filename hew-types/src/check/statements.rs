@@ -261,6 +261,54 @@ impl Checker {
                 };
                 let deferred_hole_mark = self.deferred_inference_holes.len();
                 let deferred_cast_mark = self.deferred_cast_checks.len();
+                // Forward-bind for actor-lambda RHS: when `let name = actor |params| { body }`,
+                // the body may reference `name` for recursive self-dispatch (architecture §5.9
+                // ratification 2). Pre-bind the name with the Duplex type computed from
+                // param/return annotations BEFORE synthesising the body so that the recursive
+                // call resolves during body synthesis. The real `define_with_span` call below
+                // overwrites this synthetic binding with the user-visible one.
+                //
+                // WHY: statement order synthesises the RHS before inserting the let-binding
+                //   into scope; the actor body would see `fib` as undefined.
+                // WHEN-OBSOLETE: if a general "let-rec" deferred-binding pass is added.
+                // WHAT (real solution): a proper letrec/fix-point binder in the type checker.
+                if ty.is_none() {
+                    if let (
+                        Pattern::Identifier(bind_name),
+                        Some((
+                            Expr::SpawnLambdaActor {
+                                params,
+                                return_type,
+                                ..
+                            },
+                            _,
+                        )),
+                    ) = (&pattern.0, value)
+                    {
+                        let param_types: Vec<Ty> = params
+                            .iter()
+                            .map(|p| {
+                                p.ty.as_ref().map_or_else(
+                                    || Ty::Var(TypeVar::fresh()),
+                                    |ann| self.resolve_type_expr(ann),
+                                )
+                            })
+                            .collect();
+                        let msg_ty = match param_types.len() {
+                            0 => Ty::Unit,
+                            1 => param_types.into_iter().next().unwrap(),
+                            _ => Ty::Tuple(param_types),
+                        };
+                        let reply_ty = return_type
+                            .as_ref()
+                            .map_or(Ty::Unit, |ret| self.resolve_type_expr(ret));
+                        let duplex_ty = Ty::duplex(msg_ty, reply_ty);
+                        // Synthetic binding (no source span) — pre-populated for body lookup.
+                        // Marked as already-used (read_count=1 in `define`) to avoid a
+                        // spurious unused-variable warning at this site.
+                        self.env.define(bind_name.clone(), duplex_ty, false);
+                    }
+                }
                 let val_ty = if let Some((val, vs)) = value {
                     if let Some(annotation) = ty {
                         let expected =

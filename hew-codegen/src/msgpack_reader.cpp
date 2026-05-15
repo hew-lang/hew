@@ -311,15 +311,6 @@ static ast::ActorInit parseActorInit(const msgpack::object &obj) {
   return result;
 }
 
-static ast::ActorTerminate parseActorTerminate(const msgpack::object &obj) {
-  ast::ActorTerminate result;
-  const auto *attributes_ = mapGet(obj, "attributes");
-  if (attributes_ && !isNil(*attributes_))
-    result.attributes = parseVec<ast::Attribute>(*attributes_, parseAttribute);
-  result.body = parseBlock(mapReq(obj, "body"));
-  return result;
-}
-
 static ast::FieldDecl parseFieldDecl(const msgpack::object &obj) {
   ast::FieldDecl result;
   result.name = getString(mapReq(obj, "name"));
@@ -398,9 +389,6 @@ static ast::ActorDecl parseActorDecl(const msgpack::object &obj) {
   const auto *init = mapGet(obj, "init");
   if (init && !isNil(*init))
     result.init = parseActorInit(*init);
-  const auto *terminate = mapGet(obj, "terminate");
-  if (terminate && !isNil(*terminate))
-    result.terminate = parseActorTerminate(*terminate);
   result.fields = parseVec<ast::FieldDecl>(mapReq(obj, "fields"), parseFieldDecl);
   result.receive_fns = parseVec<ast::ReceiveFnDecl>(mapReq(obj, "receive_fns"), parseReceiveFnDecl);
   result.methods = parseVec<ast::FnDecl>(mapReq(obj, "methods"), parseFnDecl);

@@ -10,7 +10,8 @@ actor Worker {
         println(value);
     }
 
-    terminate {
+    #[on(stop)]
+    fn cleanup() {
         println(value);
     }
 }

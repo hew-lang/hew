@@ -304,13 +304,6 @@ fn hover_binding_in_item(
                     return Some(result);
                 }
             }
-            if let Some(term) = &actor.terminate {
-                if let Some(result) =
-                    hover_binding_in_block(&term.body, type_output, word, word_span, offset)
-                {
-                    return Some(result);
-                }
-            }
             for recv in &actor.receive_fns {
                 if let Some(result) =
                     hover_binding_in_block(&recv.body, type_output, word, word_span, offset)

@@ -1,5 +1,5 @@
-// Test: terminate block runs at actor stop, not at process exit
-// Exercises: stop(ref) triggers terminate; output appears before "after stop"
+// Test: on(stop) hook runs at actor stop, not at process exit
+// Exercises: stop(ref) triggers #[on(stop)]; output appears before "after stop"
 actor Worker {
     let id: int;
 
@@ -7,7 +7,8 @@ actor Worker {
         println(f"worker {id} ping");
     }
 
-    terminate {
+    #[on(stop)]
+    fn cleanup() {
         println(f"worker {id} terminated");
     }
 }

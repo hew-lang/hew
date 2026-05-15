@@ -821,9 +821,6 @@ fn walk_program<V: SideTableVisitor>(
                 if let Some(init) = &actor_decl.init {
                     collect_block(&init.body, tco, visitor, out);
                 }
-                if let Some(terminate) = &actor_decl.terminate {
-                    collect_block(&terminate.body, tco, visitor, out);
-                }
                 for receive_fn in &actor_decl.receive_fns {
                     collect_block(&receive_fn.body, tco, visitor, out);
                 }

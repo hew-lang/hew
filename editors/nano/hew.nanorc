@@ -44,7 +44,7 @@ color green "\<(let|var|const|fn|gen|async|pub|import|package|super)\>"
 color green "\<(extern|where|type|indirect|enum|trait|impl|as|struct)\>"
 
 # Actor & concurrency
-color brightgreen "\<(actor|fork|init|move|receive|spawn|terminate|this)\>"
+color brightgreen "\<(actor|fork|init|move|receive|spawn|this)\>"
 
 # Supervisor
 color brightgreen "\<(supervisor|child|restart|budget|strategy)\>"

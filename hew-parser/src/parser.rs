@@ -1,16 +1,16 @@
 //! Hand-written recursive-descent parser with Pratt precedence for operator expressions.
 
 use crate::ast::{
-    ActorDecl, ActorInit, ActorTerminate, Attribute, AttributeArg, BinaryOp, Block, CallArg,
-    ChildSpec, CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl,
-    FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
-    LambdaParam, Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm,
-    NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program,
-    ReceiveFnDecl, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart,
-    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind,
-    WireFieldDecl, WireFieldMeta, WireMetadata,
+    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
+    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
+    ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
+    Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase,
+    OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
+    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl,
+    WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
@@ -78,6 +78,16 @@ fn unquote_str(s: &str) -> &str {
         .or_else(|| s.strip_prefix('"'))
         .and_then(|s| s.strip_suffix('"'))
         .unwrap_or(s)
+}
+
+/// Returns true if the attribute name designates an actor lifecycle hook.
+/// These attributes are permitted on plain `fn` declarations inside an
+/// actor body; all other attributes on such fns are rejected.
+///
+/// The parameterized form `#[on(start)]` / `#[on(stop)]` uses a single
+/// attribute name `on` with the hook kind as a positional argument.
+pub(crate) fn is_lifecycle_hook_attr(name: &str) -> bool {
+    name == "on"
 }
 
 fn push_unescaped_sequence(
@@ -2083,7 +2093,6 @@ impl<'src> Parser<'src> {
         self.expect(&Token::LeftBrace)?;
 
         let mut init = None;
-        let mut terminate = None;
         let mut fields = Vec::new();
         let mut receive_fns = Vec::new();
         let mut methods = Vec::new();
@@ -2108,16 +2117,6 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightParen)?;
                 let body = self.parse_block()?;
                 init = Some(ActorInit { params, body });
-            } else if self.peek() == Some(&Token::Terminate) {
-                if terminate.is_some() {
-                    self.error("duplicate terminate block in actor".to_string());
-                }
-                self.advance();
-                let body = self.parse_block()?;
-                terminate = Some(ActorTerminate {
-                    attributes: attrs,
-                    body,
-                });
             } else if self.peek() == Some(&Token::Pure) || self.peek() == Some(&Token::Receive) {
                 let is_pure = self.eat(&Token::Pure);
                 if self.peek() == Some(&Token::Receive) {
@@ -2161,6 +2160,22 @@ impl<'src> Parser<'src> {
                         doc_comment,
                     });
                 } else if self.peek() == Some(&Token::Fn) {
+                    // `pure fn` inside an actor body: lifecycle-hook
+                    // annotations propagate so the type-checker can
+                    // diagnose `#[on_*]` + `pure` combinations as
+                    // signature violations (HEW-SPEC-2026 §9.1.2).
+                    let mut hook_attrs = Vec::new();
+                    let mut other_attrs = Vec::new();
+                    for attr in attrs {
+                        if is_lifecycle_hook_attr(&attr.name) {
+                            hook_attrs.push(attr);
+                        } else {
+                            other_attrs.push(attr);
+                        }
+                    }
+                    if !other_attrs.is_empty() {
+                        self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
+                    }
                     let fn_start = self.peek_span().start;
                     self.advance();
                     if let Some(mut method) = self.parse_function(
@@ -2169,7 +2184,7 @@ impl<'src> Parser<'src> {
                         false,
                         Visibility::Private,
                         is_pure,
-                        Vec::new(),
+                        hook_attrs,
                     ) {
                         method.doc_comment = doc_comment;
                         methods.push(method);
@@ -2179,7 +2194,20 @@ impl<'src> Parser<'src> {
                     return None;
                 }
             } else if self.peek() == Some(&Token::Fn) {
-                if !attrs.is_empty() {
+                // Lifecycle-hook attributes `#[on(start)]` and `#[on(stop)]` are
+                // permitted on plain `fn` declarations inside an actor body.
+                // All other attributes on actor methods are rejected: they
+                // belong on `receive fn` declarations.
+                let mut hook_attrs = Vec::new();
+                let mut other_attrs = Vec::new();
+                for attr in attrs {
+                    if is_lifecycle_hook_attr(&attr.name) {
+                        hook_attrs.push(attr);
+                    } else {
+                        other_attrs.push(attr);
+                    }
+                }
+                if !other_attrs.is_empty() {
                     self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
                 }
                 let fn_start = self.peek_span().start;
@@ -2190,7 +2218,7 @@ impl<'src> Parser<'src> {
                     false,
                     Visibility::Private,
                     false,
-                    Vec::new(),
+                    hook_attrs,
                 ) {
                     method.doc_comment = doc_comment;
                     methods.push(method);
@@ -2273,7 +2301,6 @@ impl<'src> Parser<'src> {
             name,
             super_traits,
             init,
-            terminate,
             fields,
             receive_fns,
             methods,
@@ -6192,10 +6219,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_actor_terminate_and_receive_attributes() {
+    fn parse_actor_lifecycle_hook_and_receive_attributes() {
+        // The `terminate { }` block surface was removed in favour of the
+        // annotation-based hook surface; cleanup logic is expressed as a
+        // plain `fn` annotated with `#[on(stop)]` (and `#[on(start)]` for
+        // startup logic).
         let source = r"actor Worker {
-    #[cleanup]
-    terminate { shutdown(); }
+    #[on(stop)]
+    fn shutdown() { stop(); }
 
     #[every(50ms)]
     receive fn tick() { work(); }
@@ -6203,9 +6234,9 @@ mod tests {
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         if let Item::Actor(actor) = &result.program.items[0].0 {
-            let terminate = actor.terminate.as_ref().expect("expected terminate block");
-            assert_eq!(terminate.attributes.len(), 1);
-            assert_eq!(terminate.attributes[0].name, "cleanup");
+            assert_eq!(actor.methods.len(), 1);
+            assert_eq!(actor.methods[0].attributes.len(), 1);
+            assert_eq!(actor.methods[0].attributes[0].name, "on");
 
             assert_eq!(actor.receive_fns.len(), 1);
             assert_eq!(actor.receive_fns[0].attributes.len(), 1);

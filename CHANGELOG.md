@@ -29,6 +29,10 @@
 - **`=~` and `!~` regex operators removed:** The `=~` (match) and `!~`
   (non-match) infix operators no longer exist. Use `p.is_match(s)` for a
   boolean match result or `p.matches(s)` to iterate over all matches.
+- **`terminate { }` block removed:** The `terminate { ... }` block syntax
+  accepted by the v0.4 parser has been removed. Migrate cleanup logic to a
+  `#[on(stop)] fn <name>() { ... }` declaration inside the actor body; the
+  field-access semantics are identical (see spec §9.1.2).
 
 ## [0.4.0] - 2026-05-03
 

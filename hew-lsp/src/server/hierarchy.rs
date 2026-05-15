@@ -267,34 +267,6 @@ pub(super) fn find_incoming_calls(
                         });
                     }
                 }
-                // terminate body.
-                if let Some(term) = &a.terminate {
-                    let mut body_calls = Vec::new();
-                    collect_calls_in_block(&term.body, &mut body_calls);
-                    let fn_calls: Vec<_> = body_calls
-                        .iter()
-                        .filter(|c| c.name == target_name)
-                        .collect();
-                    if !fn_calls.is_empty() {
-                        let range = span_to_range(source, lo, item_span);
-                        result.push(CallHierarchyIncomingCall {
-                            from: CallHierarchyItem {
-                                name: format!("{}.terminate", a.name),
-                                kind: SymbolKind::METHOD,
-                                tags: None,
-                                detail: None,
-                                uri: uri.clone(),
-                                range,
-                                selection_range: range,
-                                data: None,
-                            },
-                            from_ranges: fn_calls
-                                .iter()
-                                .map(|c| span_to_range(source, lo, &c.span))
-                                .collect(),
-                        });
-                    }
-                }
                 // Receive functions.
                 for recv in &a.receive_fns {
                     let mut body_calls = Vec::new();

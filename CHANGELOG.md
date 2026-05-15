@@ -26,6 +26,9 @@
 - **`hew_file_last_error` C ABI export removed:** The `hew_file_last_error`
   symbol has been removed from the runtime. The errno value is now surfaced
   through the standard LAST_ERRNO path and does not require a separate query.
+- **`=~` and `!~` regex operators removed:** The `=~` (match) and `!~`
+  (non-match) infix operators no longer exist. Use `p.is_match(s)` for a
+  boolean match result or `p.matches(s)` to iterate over all matches.
 
 ## [0.4.0] - 2026-05-03
 

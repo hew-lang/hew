@@ -39,6 +39,19 @@ fn pattern_is_match_method_call_parses() {
     );
 }
 
+/// `Pattern.matches` (the non-boolean iterator form) also parses cleanly.
+/// Ensures both replacement methods are accepted by the parser.
+#[test]
+fn pattern_matches_method_call_parses() {
+    let source = r#"fn main() { let p = re"a+"; let ms = p.matches("aab"); p.free(); }"#;
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "expected clean parse of `.matches()`, got errors: {:?}",
+        result.errors
+    );
+}
+
 #[test]
 fn missing_param_type_reports_error() {
     let source = r"

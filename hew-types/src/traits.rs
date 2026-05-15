@@ -404,6 +404,19 @@ impl TraitRegistry {
                 }
             }
 
+            // Duplex<S, R>: bidirectional lambda-actor handle.
+            // Send/Sync iff BOTH S: Send AND R: Send.
+            // NOT Copy (move-only resource — drop closes both directions).
+            // NOT Clone (split via send_half/recv_half in slice 4, not by cloning).
+            // NOT Frozen (mutable internal queue state).
+            Ty::Named { name, args } if name == "Duplex" && args.len() == 2 => match marker {
+                MarkerTrait::Send | MarkerTrait::Sync => {
+                    self.implements_marker(&args[0], MarkerTrait::Send)
+                        && self.implements_marker(&args[1], MarkerTrait::Send)
+                }
+                _ => false,
+            },
+
             // Tuple: marker holds if ALL elements have it
             Ty::Tuple(elems) => elems.iter().all(|e| self.implements_marker(e, marker)),
 

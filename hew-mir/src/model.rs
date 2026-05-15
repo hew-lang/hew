@@ -152,10 +152,40 @@ pub enum SelectArmKind {
 /// instruction stream. Cluster 1 needs only `Local(N)` and `ReturnSlot`;
 /// later clusters add `YieldSlot`, enum-payload projection, field
 /// projection, deref, etc.
+///
+/// ## M2 substrate variants (declared scaffold)
+///
+/// `DuplexHandle` and `LambdaActorHandle` are the M2 unified-concurrency
+/// substrate's MIR addressing surface. Each carries only a
+/// discriminator-pointer to a `Local(N)` so the enum stays `Copy`. The
+/// S/R type information lives on the parent local's `ResolvedTy`
+/// (`Named { name: "Duplex", args: [S, R] }`). Half-handle aliases
+/// (`SendHalf` / `RecvHalf`) for direction-isolated drop semantics
+/// land in a sibling commit.
+///
+/// The HIR currently has no construction surface for `LambdaActor` /
+/// `Duplex` (the parser flip lives in slice 1, the HIR-lower for it
+/// lands later). These variants exist so the drop-elaboration plan
+/// and codegen seam don't have to retrofit `Place` when the
+/// construction surface lands. The pattern matches the four other
+/// declared-but-never-constructed scaffold variants already in this
+/// model (`Terminator::Yield`/`Send`, `MirCheck::Aliasing` /
+/// `GeneratorBorrowAcrossYield` / `ActorSendEscape`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Place {
     Local(u32),
     ReturnSlot,
+    /// A `Duplex<S, R>` handle. The carried `u32` is the `Local(N)`
+    /// id whose `locals[N]` is `ResolvedTy::Named { name: "Duplex",
+    /// args: [S, R] }`. Drop semantics: dropping the last surviving
+    /// handle closes both directions (design §7.3).
+    DuplexHandle(u32),
+    /// A lambda-actor handle. The carried `u32` is the `Local(N)` id
+    /// whose `locals[N]` is the lambda-actor's `Duplex<Msg, Reply>`
+    /// (the surface call-syntax dispatches through this Duplex).
+    /// Drop semantics: stop-on-last-handle-drop with weak-ref body
+    /// capture (§5.9 ratification 2).
+    LambdaActorHandle(u32),
 }
 
 /// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The

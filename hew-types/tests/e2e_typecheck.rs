@@ -1270,8 +1270,11 @@ fn lambda_actor_non_send_param_rejected() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "lambda actor with non-Send param type must reject with InvalidSend (E_DUPLEX_NON_SEND), got: {:#?}",
+            .any(|e| {
+                e.kind == hew_types::error::TypeErrorKind::InvalidSend
+                    && e.message.contains("E_DUPLEX_NON_SEND")
+            }),
+        "lambda actor with non-Send param type must reject with InvalidSend containing E_DUPLEX_NON_SEND, got: {:#?}",
         output.errors
     );
 }
@@ -1444,6 +1447,29 @@ fn actor_lambda_self_escape_rejected() {
     assert!(
         !self_escape_errors.is_empty(),
         "expected E_LAMBDA_SELF_ESCAPE diagnostic (InvalidOperation), got: {:?}",
+        output.errors
+    );
+}
+
+/// Lambda actor recursive self-call via let-binding name typechecks clean.
+/// The let-binding name is the recursion handle (architecture §5.9 ratification 2).
+#[test]
+fn lambda_actor_recursive_self_call_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let fib = actor |n: int| {
+                if n > 1 {
+                    fib(n - 1);
+                }
+            };
+            fib(10);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "recursive self-call in actor body must typecheck clean, got: {:#?}",
         output.errors
     );
 }

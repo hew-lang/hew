@@ -21,8 +21,8 @@ use std::ptr;
 use hew_runtime::duplex::{
     hew_duplex_clone, hew_duplex_close, hew_duplex_close_half, hew_duplex_pair,
     hew_duplex_payload_free, hew_duplex_recv, hew_duplex_recv_half, hew_duplex_send,
-    hew_duplex_send_half, hew_recv_half_recv, hew_send_half_send, HewDuplex, HewDuplexDirection,
-    RecvError, SendError,
+    hew_duplex_send_half, hew_recv_half_recv, hew_send_half_send, HewDuplexDirection,
+    HewDuplexHandle, RecvError, SendError,
 };
 use hew_runtime::lambda_actor::{
     hew_lambda_actor_downgrade, hew_lambda_actor_new, hew_lambda_actor_release,
@@ -34,15 +34,14 @@ use hew_runtime::lambda_actor::{
 ///
 /// # Safety
 ///
-/// `d` must point to a valid `HewDuplex` returned by the runtime.
-unsafe fn recv_bytes(d: *mut HewDuplex) -> Result<Vec<u8>, i32> {
+/// `d` must point to a valid `HewDuplexHandle` returned by the runtime.
+unsafe fn recv_bytes(d: *mut HewDuplexHandle) -> Result<Vec<u8>, i32> {
     let mut p: *mut u8 = ptr::null_mut();
     let mut n: usize = 0;
     // SAFETY:
     // - Provenance: `d` valid per caller contract; `p` / `n` are
     //   local stack slots writeable by the FFI call.
-    // - Type tag: passed types match the FFI signature
-    //   (`*mut HewDuplex`, `*mut *mut u8`, `*mut usize`).
+    // - Type tag: passed types match the FFI signature.
     // - Lifetime owner: the recv call transfers payload ownership
     //   into `p`; this helper holds the payload only for the copy.
     // - Aliasing concurrency: `p` / `n` are not shared with other
@@ -55,19 +54,10 @@ unsafe fn recv_bytes(d: *mut HewDuplex) -> Result<Vec<u8>, i32> {
         return Err(rc);
     }
     // SAFETY:
-    // - Provenance: `p` came from a successful `hew_duplex_recv` (rc
-    //   == Ok) which writes a valid heap pointer + length.
-    // - Type tag: the buffer is a `u8` byte slice.
-    // - Lifetime owner: the slice borrow exists only for the
-    //   `to_vec` copy; the heap allocation is then freed below.
-    // - Aliasing concurrency: this frame is the only holder of the
-    //   payload pointer.
-    // - Bounds: `n` matches what `hew_duplex_recv` wrote.
-    // - Failure mode: the rc check above guarantees Ok before the
-    //   slice constructs.
+    // - Provenance: `p` came from a successful `hew_duplex_recv`.
+    // - Lifetime owner: freed below after `to_vec` copy.
     let bytes = unsafe { std::slice::from_raw_parts(p, n) }.to_vec();
-    // SAFETY: `p` came from the matching recv call and is freed
-    // exactly once here; `n` is its reported length.
+    // SAFETY: `p` is freed exactly once here; `n` is its length.
     unsafe { hew_duplex_payload_free(p, n) };
     Ok(bytes)
 }
@@ -80,8 +70,8 @@ unsafe fn recv_bytes(d: *mut HewDuplex) -> Result<Vec<u8>, i32> {
 
 #[test]
 fn duplex_construct_pair() {
-    let mut a: *mut HewDuplex = ptr::null_mut();
-    let mut b: *mut HewDuplex = ptr::null_mut();
+    let mut a: *mut HewDuplexHandle = ptr::null_mut();
+    let mut b: *mut HewDuplexHandle = ptr::null_mut();
     // SAFETY: out_a / out_b are valid stack slots.
     let rc = unsafe { hew_duplex_pair(8, 8, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b)) };
     assert_eq!(rc, SendError::Ok as i32);
@@ -101,8 +91,8 @@ fn duplex_construct_pair() {
             SendError::Ok as i32
         );
         assert_eq!(recv_bytes(a).unwrap(), reply);
-        hew_duplex_close(a);
-        hew_duplex_close(b);
+        assert_eq!(hew_duplex_close(a), SendError::Ok as i32);
+        assert_eq!(hew_duplex_close(b), SendError::Ok as i32);
     }
 }
 
@@ -114,8 +104,8 @@ fn duplex_construct_pair() {
 
 #[test]
 fn duplex_split_halves() {
-    let mut a: *mut HewDuplex = ptr::null_mut();
-    let mut b: *mut HewDuplex = ptr::null_mut();
+    let mut a: *mut HewDuplexHandle = ptr::null_mut();
+    let mut b: *mut HewDuplexHandle = ptr::null_mut();
     // SAFETY: out-slots valid.
     unsafe {
         hew_duplex_pair(4, 4, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b));
@@ -135,10 +125,16 @@ fn duplex_split_halves() {
         assert_eq!(received, payload);
         hew_duplex_payload_free(p, n);
         // Closing the send half should signal the receiver.
-        hew_duplex_close_half(a_send.cast(), HewDuplexDirection::Send as i32);
+        assert_eq!(
+            hew_duplex_close_half(a_send.cast(), HewDuplexDirection::Send as i32),
+            SendError::Ok as i32
+        );
         let rc2 = hew_recv_half_recv(b_recv, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n));
         assert_eq!(rc2, RecvError::Closed as i32);
-        hew_duplex_close_half(b_recv.cast(), HewDuplexDirection::Recv as i32);
+        assert_eq!(
+            hew_duplex_close_half(b_recv.cast(), HewDuplexDirection::Recv as i32),
+            SendError::Ok as i32
+        );
     }
 }
 
@@ -152,14 +148,14 @@ fn duplex_split_halves() {
 
 #[test]
 fn duplex_close_both_dirs() {
-    let mut a: *mut HewDuplex = ptr::null_mut();
-    let mut b: *mut HewDuplex = ptr::null_mut();
+    let mut a: *mut HewDuplexHandle = ptr::null_mut();
+    let mut b: *mut HewDuplexHandle = ptr::null_mut();
     // SAFETY: out-slots valid.
     unsafe {
         hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b));
         let payload = b"final";
         hew_duplex_send(a, payload.as_ptr(), payload.len());
-        hew_duplex_close(a);
+        assert_eq!(hew_duplex_close(a), SendError::Ok as i32);
         // b drains the pending message.
         assert_eq!(recv_bytes(b).unwrap(), payload);
         // After drain, b's recv sees Closed (no remaining sender).
@@ -175,7 +171,7 @@ fn duplex_close_both_dirs() {
             hew_duplex_send(b, p2.as_ptr(), p2.len()),
             SendError::Closed as i32
         );
-        hew_duplex_close(b);
+        assert_eq!(hew_duplex_close(b), SendError::Ok as i32);
     }
 }
 
@@ -208,7 +204,7 @@ fn lambda_self_send_fib_stop_after_external_release() {
     assert_eq!(rc1, SendError::Ok as i32);
     // Drop the external strong handle.
     // SAFETY: actor is a live strong handle.
-    unsafe { hew_lambda_actor_release(actor) };
+    unsafe { assert_eq!(hew_lambda_actor_release(actor), SendError::Ok as i32) };
     // Now the body's self-send must surface ActorStopped — NOT block,
     // NOT enqueue silently, NOT resurrect.
     let arg2 = b"4";
@@ -216,21 +212,21 @@ fn lambda_self_send_fib_stop_after_external_release() {
     let rc2 = unsafe { hew_lambda_actor_weak_send(weak, arg2.as_ptr(), arg2.len()) };
     assert_eq!(rc2, SendError::ActorStopped as i32);
     // SAFETY: clean up weak.
-    unsafe { hew_lambda_actor_weak_drop(weak) };
+    unsafe { assert_eq!(hew_lambda_actor_weak_drop(weak), SendError::Ok as i32) };
 }
 
 // ── Clone keeps directions open ────────────────────────────────────────────
 
 #[test]
 fn duplex_clone_keeps_directions_open_after_original_close() {
-    let mut a: *mut HewDuplex = ptr::null_mut();
-    let mut b: *mut HewDuplex = ptr::null_mut();
+    let mut a: *mut HewDuplexHandle = ptr::null_mut();
+    let mut b: *mut HewDuplexHandle = ptr::null_mut();
     // SAFETY: out-slots valid.
     unsafe {
         hew_duplex_pair(4, 4, std::ptr::addr_of_mut!(a), std::ptr::addr_of_mut!(b));
         let a2 = hew_duplex_clone(a);
         assert!(!a2.is_null());
-        hew_duplex_close(a);
+        assert_eq!(hew_duplex_close(a), SendError::Ok as i32);
         // a2 still alive — b should still see a live sender + receiver.
         let payload = b"via-clone";
         assert_eq!(
@@ -238,7 +234,7 @@ fn duplex_clone_keeps_directions_open_after_original_close() {
             SendError::Ok as i32
         );
         assert_eq!(recv_bytes(b).unwrap(), payload);
-        hew_duplex_close(a2);
-        hew_duplex_close(b);
+        assert_eq!(hew_duplex_close(a2), SendError::Ok as i32);
+        assert_eq!(hew_duplex_close(b), SendError::Ok as i32);
     }
 }

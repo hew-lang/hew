@@ -5,8 +5,10 @@
 //   - States with payload fields (e.g. SynReceived carries the remote port)
 //   - Emit expressions in transition bodies (Mealy outputs)
 //   - Wildcard source `_` covers remaining (state, event) pairs to satisfy
-//     exhaustiveness
-//   - Self-transitions (Closed → Closed on Reset) recorded as is_self_transition
+//     exhaustiveness; the wildcard is preserved in the HIR and JSON output;
+//     diagram renderers expand it but suppress wildcard-derived self-loops
+//   - Named self-transitions (e.g. SynReceived → SynReceived) are recorded as
+//     is_self_transition=true in the HIR
 //
 // Run:
 //   hew machine diagram examples/machine/tcp_handshake.hew

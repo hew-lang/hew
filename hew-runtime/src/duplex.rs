@@ -1079,6 +1079,38 @@ pub unsafe extern "C" fn hew_send_half_send(
     res as i32
 }
 
+/// Non-blocking send on a `HewSendHalfHandle`. Returns `SendError::Full` if
+/// the send queue is at capacity; returns `SendError::Closed` if the channel
+/// is closed. Does not block waiting for space.
+///
+/// # Safety
+///
+/// Same as `hew_send_half_send`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_send_half_try_send(
+    half: *mut HewSendHalfHandle,
+    msg: *const u8,
+    len: usize,
+) -> i32 {
+    if half.is_null() {
+        crate::set_last_error("hew_send_half_try_send: null handle".to_string());
+        return SendError::Closed as i32;
+    }
+    let payload = if len == 0 {
+        Vec::new()
+    } else if msg.is_null() {
+        crate::set_last_error("hew_send_half_try_send: null msg with non-zero len".to_string());
+        return SendError::Closed as i32;
+    } else {
+        // SAFETY: see hew_duplex_send dereference axis; identical contract.
+        unsafe { std::slice::from_raw_parts(msg, len) }.to_vec()
+    };
+    // SAFETY: see hew_send_half_send — pointer-validity contract identical;
+    // try_send does not block but the dereference safety profile is the same.
+    let res = unsafe { (*half).inner.try_send(payload) };
+    res as i32
+}
+
 /// Receive a payload from a `HewRecvHalfHandle`.
 ///
 /// # Safety
@@ -1113,6 +1145,53 @@ pub unsafe extern "C" fn hew_recv_half_recv(
         }
         Err(e) => {
             // SAFETY: see `hew_duplex_recv` Err arm — identical
+            // no-payload signalling shape.
+            unsafe {
+                ptr::write(out_ptr, ptr::null_mut());
+                ptr::write(out_len, 0usize);
+            }
+            e as i32
+        }
+    }
+}
+
+/// Non-blocking variant of [`hew_recv_half_recv`]. Returns
+/// `RecvError::Empty` if no message is waiting; returns `RecvError::Closed`
+/// if the channel is closed.
+///
+/// # Safety
+///
+/// Same as `hew_recv_half_recv`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_recv_half_try_recv(
+    half: *mut HewRecvHalfHandle,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if half.is_null() || out_ptr.is_null() || out_len.is_null() {
+        crate::set_last_error("hew_recv_half_try_recv: null pointer argument".to_string());
+        return RecvError::Closed as i32;
+    }
+    // SAFETY: see hew_recv_half_recv — identical six-axis profile for the
+    // `*half` dereference; try_recv does not block but the pointer-validity
+    // contract is the same.
+    let outcome = unsafe { (*half).inner.try_recv() };
+    match outcome {
+        Ok(bytes) => {
+            let len = bytes.len();
+            let buf = bytes.into_boxed_slice();
+            let ptr = Box::into_raw(buf).cast::<u8>();
+            // SAFETY: see `hew_recv_half_recv` Ok arm — identical out-param
+            // write contract (caller-owned non-null slots, fresh payload
+            // pointer + length).
+            unsafe {
+                ptr::write(out_ptr, ptr);
+                ptr::write(out_len, len);
+            }
+            RecvError::Ok as i32
+        }
+        Err(e) => {
+            // SAFETY: see `hew_recv_half_recv` Err arm — identical
             // no-payload signalling shape.
             unsafe {
                 ptr::write(out_ptr, ptr::null_mut());

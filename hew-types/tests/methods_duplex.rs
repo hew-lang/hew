@@ -266,6 +266,108 @@ fn recv_half_close_resolves_and_consumes() {
 }
 
 // ---------------------------------------------------------------------------
+// Accept fixtures — try_send / try_recv on Duplex
+// ---------------------------------------------------------------------------
+
+/// `d.try_send(42)` on `Duplex<int, int>` typechecks and records
+/// `hew_duplex_try_send` in the rewrite table.
+#[test]
+fn duplex_try_send_resolves() {
+    let source = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, int>(16);
+            let _: Result<(), SendError> = d.try_send(42);
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "d.try_send(42) on Duplex<int,int> should typecheck; got: {:#?}",
+        output.errors
+    );
+    assert!(
+        has_rewrite(&output, "hew_duplex_try_send"),
+        "expected hew_duplex_try_send in method_call_rewrites; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+/// `d.try_recv()` on `Duplex<int, int>` returns `Result<int, RecvError>` and
+/// records `hew_duplex_try_recv`.
+#[test]
+fn duplex_try_recv_resolves() {
+    let source = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, int>(16);
+            let _: Result<int, RecvError> = d.try_recv();
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "d.try_recv() on Duplex<int,int> should typecheck; got: {:#?}",
+        output.errors
+    );
+    assert!(
+        has_rewrite(&output, "hew_duplex_try_recv"),
+        "expected hew_duplex_try_recv in method_call_rewrites; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Accept fixtures — try_send on SendHalf / try_recv on RecvHalf
+// ---------------------------------------------------------------------------
+
+/// `h.try_send(42)` on `SendHalf<int>` typechecks and records
+/// `hew_send_half_try_send` in the rewrite table.
+#[test]
+fn send_half_try_send_resolves() {
+    let source = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, int>(16);
+            let h: SendHalf<int> = d.send_half();
+            let _: Result<(), SendError> = h.try_send(42);
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "h.try_send(42) on SendHalf<int> should typecheck; got: {:#?}",
+        output.errors
+    );
+    assert!(
+        has_rewrite(&output, "hew_send_half_try_send"),
+        "expected hew_send_half_try_send in method_call_rewrites; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+/// `h.try_recv()` on `RecvHalf<int>` typechecks and records
+/// `hew_recv_half_try_recv` in the rewrite table.
+#[test]
+fn recv_half_try_recv_resolves() {
+    let source = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, int>(16);
+            let h: RecvHalf<int> = d.recv_half();
+            let _: Result<int, RecvError> = h.try_recv();
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "h.try_recv() on RecvHalf<int> should typecheck; got: {:#?}",
+        output.errors
+    );
+    assert!(
+        has_rewrite(&output, "hew_recv_half_try_recv"),
+        "expected hew_recv_half_try_recv in method_call_rewrites; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Reject fixtures
 // ---------------------------------------------------------------------------
 

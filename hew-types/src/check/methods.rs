@@ -1021,7 +1021,11 @@ impl Checker {
     ///
     /// Wired methods:
     ///   - `.send(msg: S)` → `Result<(), SendError>`  — verifies `S: @send`.
+    ///   - `.try_send(msg: S)` → `Result<(), SendError>` — non-blocking; same
+    ///     Send bound as `.send()`; returns `SendError::Full` if at capacity.
     ///   - `.recv()` → `Result<R, RecvError>`.
+    ///   - `.try_recv()` → `Result<R, RecvError>` — non-blocking; returns
+    ///     `RecvError::Empty` if no message is waiting.
     ///   - `.send_half()` → `SendHalf<S>`  — consuming; moves the receiver.
     ///   - `.recv_half()` → `RecvHalf<R>`  — consuming; moves the receiver.
     ///   - `.close()` → `Result<(), CloseError>`  — consuming; moves the receiver.
@@ -1032,7 +1036,9 @@ impl Checker {
     /// Unknown methods fall through to a targeted `UndefinedMethod` error.
     #[allow(
         clippy::too_many_arguments,
-        reason = "mirrors check_stream_method arity; all params are load-bearing"
+        clippy::too_many_lines,
+        reason = "mirrors check_stream_method arity; all params are load-bearing; \
+                  the match arms each encode a distinct method contract"
     )]
     pub(super) fn check_duplex_method(
         &mut self,
@@ -1083,6 +1089,29 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
                 Ty::result(Ty::Unit, Ty::send_error())
             }
+            "try_send" => {
+                // Non-blocking send: same argument and Send-bound check as
+                // `.send()`, but routes to hew_duplex_try_send which returns
+                // SendError::Full instead of blocking when at capacity.
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    let ty = self.check_against(expr, sp, &s_ty);
+                    let resolved = self.subst.resolve(&ty);
+                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
+                } else {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        "Duplex::try_send expects one argument (the message)".to_string(),
+                    );
+                }
+                for arg in args.iter().skip(1) {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_try_send");
+                Ty::result(Ty::Unit, Ty::send_error())
+            }
             "recv" => {
                 // No arguments expected.
                 for arg in args {
@@ -1090,6 +1119,17 @@ impl Checker {
                     self.synthesize(expr, sp);
                 }
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_recv");
+                let resolved_r = self.subst.resolve(&r_ty);
+                Ty::result(resolved_r, Ty::recv_error())
+            }
+            "try_recv" => {
+                // Non-blocking recv: returns RecvError::Empty instead of
+                // blocking when no message is waiting.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_try_recv");
                 let resolved_r = self.subst.resolve(&r_ty);
                 Ty::result(resolved_r, Ty::recv_error())
             }
@@ -1148,7 +1188,9 @@ impl Checker {
                     span,
                     format!(
                         "no method `{method}` on `{}`; \
-                         supported methods: send / recv / send_half / recv_half / close",
+                         supported methods: \
+                         send / try_send / recv / try_recv / \
+                         send_half / recv_half / close",
                         receiver_ty.user_facing()
                     ),
                 );
@@ -1161,9 +1203,11 @@ impl Checker {
     ///
     /// Wired methods:
     ///   - `.send(msg: S)` → `Result<(), SendError>`  — verifies `S: @send`.
+    ///   - `.try_send(msg: S)` → `Result<(), SendError>` — non-blocking variant;
+    ///     returns `SendError::Full` if at capacity.
     ///   - `.close()` → `Result<(), CloseError>`  — consuming; moves the receiver.
     ///
-    /// `.recv()` is rejected with a targeted `UndefinedMethod` diagnostic.
+    /// `.recv()` / `.try_recv()` are rejected with targeted `UndefinedMethod` diagnostics.
     pub(super) fn check_send_half_method(
         &mut self,
         type_args: &[Ty],
@@ -1200,6 +1244,28 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_send_half_send");
                 Ty::result(Ty::Unit, Ty::send_error())
             }
+            "try_send" => {
+                // Non-blocking: same Send bound as .send(); routes to
+                // hew_send_half_try_send which returns SendError::Full at capacity.
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    let ty = self.check_against(expr, sp, &s_ty);
+                    let resolved = self.subst.resolve(&ty);
+                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
+                } else {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        "SendHalf::try_send expects one argument (the message)".to_string(),
+                    );
+                }
+                for arg in args.iter().skip(1) {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_send_half_try_send");
+                Ty::result(Ty::Unit, Ty::send_error())
+            }
             "close" => {
                 for arg in args {
                     let (expr, sp) = arg.expr();
@@ -1223,7 +1289,7 @@ impl Checker {
                     span,
                     format!(
                         "no method `{method}` on `{}`; \
-                         `SendHalf` only supports `.send()` and `.close()`",
+                         `SendHalf` only supports `.send()`, `.try_send()`, and `.close()`",
                         receiver_ty.user_facing()
                     ),
                 );
@@ -1236,9 +1302,11 @@ impl Checker {
     ///
     /// Wired methods:
     ///   - `.recv()` → `Result<R, RecvError>`.
+    ///   - `.try_recv()` → `Result<R, RecvError>` — non-blocking; returns
+    ///     `RecvError::Empty` if no message is waiting.
     ///   - `.close()` → `Result<(), CloseError>`  — consuming; moves the receiver.
     ///
-    /// `.send()` is rejected with a targeted `UndefinedMethod` diagnostic.
+    /// `.send()` / `.try_send()` are rejected with targeted `UndefinedMethod` diagnostics.
     pub(super) fn check_recv_half_method(
         &mut self,
         type_args: &[Ty],
@@ -1261,6 +1329,17 @@ impl Checker {
                     self.synthesize(expr, sp);
                 }
                 self.record_runtime_method_call_rewrite(span, "hew_recv_half_recv");
+                let resolved_r = self.subst.resolve(&r_ty);
+                Ty::result(resolved_r, Ty::recv_error())
+            }
+            "try_recv" => {
+                // Non-blocking: returns RecvError::Empty instead of blocking
+                // when no message is waiting.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.record_runtime_method_call_rewrite(span, "hew_recv_half_try_recv");
                 let resolved_r = self.subst.resolve(&r_ty);
                 Ty::result(resolved_r, Ty::recv_error())
             }
@@ -1287,7 +1366,7 @@ impl Checker {
                     span,
                     format!(
                         "no method `{method}` on `{}`; \
-                         `RecvHalf` only supports `.recv()` and `.close()`",
+                         `RecvHalf` only supports `.recv()`, `.try_recv()`, and `.close()`",
                         receiver_ty.user_facing()
                     ),
                 );

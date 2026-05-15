@@ -690,8 +690,23 @@ pub unsafe extern "C" fn hew_duplex_recv(
             let len = bytes.len();
             let buf = bytes.into_boxed_slice();
             let ptr = Box::into_raw(buf).cast::<u8>();
-            // SAFETY: `out_ptr` / `out_len` validity checked above; we
-            // write one pointer + one usize into caller-owned slots.
+            // SAFETY:
+            // - Provenance: `out_ptr` / `out_len` are caller-owned
+            //   slots null-checked at function entry; the heap-allocated
+            //   payload is fresh from `Box::into_raw` above and is not
+            //   aliased elsewhere.
+            // - Type tag: `*mut u8` written to `*mut *mut u8`; `usize`
+            //   written to `*mut usize` — matched element types.
+            // - Lifetime owner: payload ownership transfers from this
+            //   frame to the caller, who must release it via
+            //   `hew_duplex_payload_free`.
+            // - Aliasing concurrency: caller-supplied out-pointers must
+            //   not be shared with another thread for the duration of
+            //   this call (standard FFI out-param contract).
+            // - Bounds: two pointer-sized writes to non-null, aligned
+            //   target slots.
+            // - Failure mode: precondition (non-null) is checked above;
+            //   if upheld, the writes cannot fault.
             unsafe {
                 ptr::write(out_ptr, ptr);
                 ptr::write(out_len, len);
@@ -699,7 +714,11 @@ pub unsafe extern "C" fn hew_duplex_recv(
             RecvError::Ok as i32
         }
         Err(e) => {
-            // SAFETY: out-param slots null-checked above.
+            // SAFETY: see the Ok arm above — identical out-param
+            // contract. Writing null + 0 communicates the no-payload
+            // shape on the error path; the caller must not pass the
+            // null pointer to `hew_duplex_payload_free` (the free
+            // entry short-circuits on null defensively).
             unsafe {
                 ptr::write(out_ptr, ptr::null_mut());
                 ptr::write(out_len, 0usize);
@@ -725,14 +744,20 @@ pub unsafe extern "C" fn hew_duplex_try_recv(
         crate::set_last_error("hew_duplex_try_recv: null pointer argument".to_string());
         return RecvError::Closed as i32;
     }
-    // SAFETY: see hew_duplex_recv — identical six-axis profile.
+    // SAFETY: see hew_duplex_recv — identical six-axis profile for
+    // the `*d` dereference (Sync handle via internal Arc<Queue>,
+    // shared borrow only, single non-null aligned pointer).
     let outcome = unsafe { (*d).try_recv() };
     match outcome {
         Ok(bytes) => {
             let len = bytes.len();
             let buf = bytes.into_boxed_slice();
             let ptr = Box::into_raw(buf).cast::<u8>();
-            // SAFETY: out-param slots null-checked above.
+            // SAFETY: see the corresponding `hew_duplex_recv` Ok arm
+            // for the full six-axis breakdown of the out-param
+            // writes; identical (caller-owned non-null slots,
+            // pointer-sized aligned writes of the fresh payload
+            // pointer + its length).
             unsafe {
                 ptr::write(out_ptr, ptr);
                 ptr::write(out_len, len);
@@ -740,7 +765,8 @@ pub unsafe extern "C" fn hew_duplex_try_recv(
             RecvError::Ok as i32
         }
         Err(e) => {
-            // SAFETY: out-param slots null-checked above.
+            // SAFETY: see the corresponding `hew_duplex_recv` Err arm
+            // — identical no-payload signalling shape.
             unsafe {
                 ptr::write(out_ptr, ptr::null_mut());
                 ptr::write(out_len, 0usize);
@@ -925,7 +951,8 @@ pub unsafe extern "C" fn hew_recv_half_recv(
             let len = bytes.len();
             let buf = bytes.into_boxed_slice();
             let ptr = Box::into_raw(buf).cast::<u8>();
-            // SAFETY: out-param slots null-checked above.
+            // SAFETY: see `hew_duplex_recv` Ok arm for the full
+            // six-axis breakdown of the out-param writes; identical.
             unsafe {
                 ptr::write(out_ptr, ptr);
                 ptr::write(out_len, len);
@@ -933,7 +960,8 @@ pub unsafe extern "C" fn hew_recv_half_recv(
             RecvError::Ok as i32
         }
         Err(e) => {
-            // SAFETY: out-param slots null-checked above.
+            // SAFETY: see `hew_duplex_recv` Err arm — identical
+            // no-payload signalling shape.
             unsafe {
                 ptr::write(out_ptr, ptr::null_mut());
                 ptr::write(out_len, 0usize);
@@ -965,11 +993,28 @@ pub unsafe extern "C" fn hew_duplex_close_half(half: *mut c_void, direction: i32
     }
     match direction {
         x if x == HewDuplexDirection::Send as i32 => {
-            // SAFETY: per the caller contract, `half` is a `*mut HewSendHalf`.
+            // SAFETY:
+            // - Provenance: per the caller contract for
+            //   `direction == Send`, `half` came from
+            //   `hew_duplex_send_half` (Box::into_raw of a
+            //   `Box<HewSendHalf>`) or a clone thereof.
+            // - Type tag: the cast `half.cast::<HewSendHalf>()`
+            //   matches the originating Box's element type.
+            // - Lifetime owner: ownership returns to this frame for
+            //   the single, final Box drop; the half-handle's Drop
+            //   releases its sender-cap.
+            // - Aliasing concurrency: this is the final destructor —
+            //   exclusive ownership is the caller's contract.
+            // - Bounds: single fat-aware free.
+            // - Failure mode: a mismatched direction (Send marker
+            //   over a Recv-half allocation) is UB; the caller
+            //   contract pins the discriminant correctness.
             unsafe { drop(Box::from_raw(half.cast::<HewSendHalf>())) };
         }
         x if x == HewDuplexDirection::Recv as i32 => {
-            // SAFETY: per the caller contract, `half` is a `*mut HewRecvHalf`.
+            // SAFETY: see the Send arm — symmetric six-axis profile
+            // with the Recv-half allocation and its receiver-cap
+            // release in Drop.
             unsafe { drop(Box::from_raw(half.cast::<HewRecvHalf>())) };
         }
         _ => {

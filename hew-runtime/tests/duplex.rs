@@ -39,18 +39,35 @@ unsafe fn recv_bytes(d: *mut HewDuplex) -> Result<Vec<u8>, i32> {
     let mut p: *mut u8 = ptr::null_mut();
     let mut n: usize = 0;
     // SAFETY:
-    // - Provenance: `d` valid per caller contract; out-slots are local
-    //   stack variables and writeable.
-    // - Type tag / lifetime / aliasing / bounds: see the
-    //   `hew_duplex_recv` docstring for the matched discipline.
+    // - Provenance: `d` valid per caller contract; `p` / `n` are
+    //   local stack slots writeable by the FFI call.
+    // - Type tag: passed types match the FFI signature
+    //   (`*mut HewDuplex`, `*mut *mut u8`, `*mut usize`).
+    // - Lifetime owner: the recv call transfers payload ownership
+    //   into `p`; this helper holds the payload only for the copy.
+    // - Aliasing concurrency: `p` / `n` are not shared with other
+    //   threads; this call frame has exclusive access.
+    // - Bounds: single FFI call; the runtime writes one pointer + one
+    //   usize into the provided slots.
     // - Failure mode: dangling `d` is the caller's responsibility.
     let rc = unsafe { hew_duplex_recv(d, std::ptr::addr_of_mut!(p), std::ptr::addr_of_mut!(n)) };
     if rc != RecvError::Ok as i32 {
         return Err(rc);
     }
-    // SAFETY: hew_duplex_recv on Ok writes a valid (ptr, len) pair.
+    // SAFETY:
+    // - Provenance: `p` came from a successful `hew_duplex_recv` (rc
+    //   == Ok) which writes a valid heap pointer + length.
+    // - Type tag: the buffer is a `u8` byte slice.
+    // - Lifetime owner: the slice borrow exists only for the
+    //   `to_vec` copy; the heap allocation is then freed below.
+    // - Aliasing concurrency: this frame is the only holder of the
+    //   payload pointer.
+    // - Bounds: `n` matches what `hew_duplex_recv` wrote.
+    // - Failure mode: the rc check above guarantees Ok before the
+    //   slice constructs.
     let bytes = unsafe { std::slice::from_raw_parts(p, n) }.to_vec();
-    // SAFETY: ptr came from the matching recv call.
+    // SAFETY: `p` came from the matching recv call and is freed
+    // exactly once here; `n` is its reported length.
     unsafe { hew_duplex_payload_free(p, n) };
     Ok(bytes)
 }

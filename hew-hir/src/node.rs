@@ -57,10 +57,14 @@ pub struct HirMachineState {
     pub has_entry: bool,
     /// Whether this state has an `exit { ... }` lifecycle block.
     pub has_exit: bool,
-    /// Field names written by the `entry` block (used for effect-parity checking).
-    pub entry_writes: Vec<String>,
-    /// Field names written by the `exit` block (used for effect-parity checking).
-    pub exit_writes: Vec<String>,
+    /// Field names written by the `entry` block, each paired with the span of
+    /// the specific `self.field = ...` assignment (used for effect-parity
+    /// diagnostics that need to cite the offending entry-block site, not the
+    /// whole state).
+    pub entry_writes: Vec<(String, Span)>,
+    /// Field names written by the `exit` block, each paired with the span of
+    /// the specific `self.field = ...` assignment.
+    pub exit_writes: Vec<(String, Span)>,
     pub span: Span,
 }
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use hew_parser::ast::{
     BinaryOp, Block, Expr, FnDecl, Item, Literal, MachineDecl, Pattern, Program, ResourceMarker,
-    SelectArm, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::ResolvedTy;
 
@@ -440,7 +440,9 @@ impl LowerCtx {
             // Check target entry conflict.
             if let Some(target) = hir_states.iter().find(|s| s.name == tr.target_state) {
                 for field in &tr.body_writes {
-                    if target.entry_writes.contains(field) {
+                    if let Some((_, entry_assign_span)) =
+                        target.entry_writes.iter().find(|(n, _)| n == field)
+                    {
                         self.diagnostics.push(
                             HirDiagnostic::new(
                                 HirDiagnosticKind::MachineEffectParityViolation {
@@ -458,9 +460,9 @@ impl LowerCtx {
                                 ),
                             )
                             .with_secondary_spans(vec![(
-                                target.span.clone(),
+                                entry_assign_span.clone(),
                                 format!(
-                                    "state `{}` entry block writes `{}`",
+                                    "state `{}` entry block assigns `{}` here",
                                     tr.target_state, field
                                 ),
                             )]),
@@ -471,7 +473,9 @@ impl LowerCtx {
             // Check source exit conflict.
             if let Some(source) = hir_states.iter().find(|s| s.name == tr.source_state) {
                 for field in &tr.body_writes {
-                    if source.exit_writes.contains(field) {
+                    if let Some((_, exit_assign_span)) =
+                        source.exit_writes.iter().find(|(n, _)| n == field)
+                    {
                         self.diagnostics.push(
                             HirDiagnostic::new(
                                 HirDiagnosticKind::MachineEffectParityViolation {
@@ -489,9 +493,9 @@ impl LowerCtx {
                                 ),
                             )
                             .with_secondary_spans(vec![(
-                                source.span.clone(),
+                                exit_assign_span.clone(),
                                 format!(
-                                    "state `{}` exit block writes `{}`",
+                                    "state `{}` exit block assigns `{}` here",
                                     tr.source_state, field
                                 ),
                             )]),
@@ -1681,13 +1685,13 @@ fn is_empty_self_body(body: &Expr, target_state: &str) -> bool {
 /// an assignment statement (`self.field = ...`). Used for effect-parity checking
 /// in entry blocks — the scan is intentionally shallow (depth = 1) since a
 /// full walk would require type information we don't have in Lane A.
-fn collect_assigned_field_names(block: &Block) -> Vec<String> {
+fn collect_assigned_field_names(block: &Block) -> Vec<(String, Span)> {
     let mut names = Vec::new();
     for (stmt, _) in &block.stmts {
         if let Stmt::Assign { target, .. } = stmt {
             if let Expr::FieldAccess { object, field } = &target.0 {
                 if matches!(object.0, Expr::This) {
-                    names.push(field.clone());
+                    names.push((field.clone(), target.1.clone()));
                 }
             }
         }
@@ -1699,6 +1703,9 @@ fn collect_assigned_field_names(block: &Block) -> Vec<String> {
 fn collect_assigned_field_names_expr(expr: &Expr) -> Vec<String> {
     if let Expr::Block(block) = expr {
         collect_assigned_field_names(block)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
     } else {
         Vec::new()
     }

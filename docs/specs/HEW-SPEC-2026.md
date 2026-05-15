@@ -88,7 +88,11 @@ Rules:
 
 ### 2.1.1 Actor Message Protocol
 
-Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required:
+Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required.
+
+In pre-2026 editions, Hew borrowed the Akka classic surface: `.send()` for fire-and-forget and `.ask()` for request-reply. The 2026 rewrite eliminated both. The distinguishing axis is now the callee's `receive fn` signature: a `receive fn` without a return type produces a fire-and-forget call (type `()`); a `receive fn` with a return type `R` produces a request-reply call (type `Result<R, AskError>`). The checker derives the call kind from the callee's signature — no caller-side keyword is needed, because `ActorRef<T>` is a distinct nominal type that already encodes the mailbox boundary.
+
+The token `ask` does not appear at actor call sites. Request-reply against a named actor is written `await <ref>.<method>(<args>)` and has result type `Result<R, AskError>`. Fire-and-forget is written `<ref>.<method>(<args>)` (no `await`) and has type `()`. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
 
 ```hew
 actor Counter {
@@ -4386,7 +4390,7 @@ If you want this to be directly executable as an engineering project, the next m
   `@linear` types must be consumed via a declared consuming method and have
   no implicit drop.
 - **Sealed `select{}`.** `select{}` widens from actor-receive-only to a
-  four-form sealed construct over task await, stream `next`, actor ask, and
+  four-form sealed construct over task await, stream `next`, actor request-reply, and
   timer (§4.11). Not user-extensible in this edition.
 - **`fork{}` consolidation.** The `scope |s| { s.launch / s.spawn / s.cancel }`
   surface is removed; `fork {}` is the structured-concurrency block, and

@@ -245,3 +245,29 @@ fn test_actor_terminate_valid_field_access() {
         output.errors
     );
 }
+
+// The `.ask()` method form — `actor_ref.ask(msg)` — is not a recognised
+// receive fn name; actors are called directly by their `receive fn` name.
+// This test pins that such a call fails at type-check (it parses, because
+// method-call syntax is general, but no receive fn named `ask` exists on the
+// actor type so the checker rejects it with an undefined-method error).
+#[test]
+fn ask_method_form_rejected_by_typechecker() {
+    let output = typecheck(
+        r"
+        actor Counter {
+            var count: i32 = 0;
+            receive fn get() -> i32 { count }
+        }
+        fn main() {
+            let c = spawn Counter();
+            let _ = c.ask(1);
+        }
+    ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "`.ask()` on an actor ref should fail type-checking — actors are \
+         called directly by their `receive fn` name, not via an `.ask()` method"
+    );
+}

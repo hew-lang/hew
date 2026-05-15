@@ -692,6 +692,101 @@ fn lower_terminator<'ctx>(
                 "Terminator::Send — actor lowering not yet implemented",
             ));
         }
+        Terminator::Select { arms, .. } => {
+            // Sealed `select{}` construct. The MIR terminator's shape is
+            // fixed (see hew-mir::model::Terminator::Select) and HIR
+            // recognises the four sealed arm forms; the runtime
+            // substrate (`hew_select_wait` heterogeneous-arm dispatch,
+            // `hew_stream_poll` pending-read, `hew_task_scope_cancel_one`
+            // single-task cancel, and actor-call lowering for the ask
+            // arm) is not yet wired. Codegen fails closed per arm
+            // kind with a message naming the substrate the future
+            // implementation must satisfy.
+            //
+            // Each arm kind's TODO marker below records the semantic
+            // invariants the runtime substrate must observe (lifted
+            // from HEW-SPEC-2026 §4.11.1's per-form table). The
+            // markers are intentionally semantic — they tell a future
+            // implementer the contract, not which lane will land it.
+            let first_kind = arms.first().map(|arm| &arm.kind);
+            let msg: String = match first_kind {
+                Some(hew_mir::SelectArmKind::StreamNext { .. }) => {
+                    // TODO: emit pending-read registration for the
+                    // stream arm. The runtime must expose a
+                    // cancellable pending-read primitive distinct
+                    // from the consuming `hew_stream_next`: a losing
+                    // arm withdraws the pending read and the stream
+                    // binding remains usable (no item consumed). On
+                    // win, the binding receives `Option<T>` — `None`
+                    // is the EOF-wins value.
+                    "select{} stream-next arm awaits runtime substrate: \
+                     cancellable pending-read primitive on Stream<T> \
+                     (loser must not consume the stream)"
+                        .to_string()
+                }
+                Some(hew_mir::SelectArmKind::ActorAsk { .. }) => {
+                    // TODO: emit actor-ask lowering for the ask arm.
+                    // The runtime must (a) issue an ask on a reply
+                    // channel, (b) park the current coroutine, (c)
+                    // resume with the reply on win, (d) on loss
+                    // withdraw the envelope from the target mailbox
+                    // by correlation id if not yet dispatched, else
+                    // tombstone the reply sink so a late reply is
+                    // classified as OrphanedAsk and dropped
+                    // silently. Note: `Terminator::Send` is also
+                    // declared-only today; the actor-call surface
+                    // needs full lowering before this arm can ship.
+                    "select{} actor-ask arm awaits runtime substrate: \
+                     actor-call lowering (Terminator::Send) plus \
+                     correlation-id withdraw / reply-sink tombstone \
+                     for losing arms"
+                        .to_string()
+                }
+                Some(hew_mir::SelectArmKind::TaskAwait { .. }) => {
+                    // TODO: emit task-await observer registration for
+                    // the await arm. The runtime must (a) register a
+                    // completion observer on the existing task
+                    // handle, (b) park the current coroutine, (c)
+                    // resume with the task result on win (only
+                    // `Ok(T)` is a winning value; cancellation and
+                    // trap outcomes propagate through the select
+                    // site), (d) on loss cancel the task at its next
+                    // safepoint via a single-task cancel primitive
+                    // (CAS against the task's state field; the
+                    // cancel-after-done path is a no-op). The cancel
+                    // primitive does not exist today as a runtime
+                    // entry distinct from the scope-wide cancel.
+                    "select{} task-await arm awaits runtime substrate: \
+                     single-task cancel primitive \
+                     (hew_task_scope_cancel_one)"
+                        .to_string()
+                }
+                Some(hew_mir::SelectArmKind::AfterTimer { .. }) => {
+                    // TODO: emit timer-arm registration. The runtime
+                    // must (a) schedule a one-shot timer on the
+                    // current task scope's timer list with the
+                    // absolute deadline, (b) park the current
+                    // coroutine, (c) resume the after-arm body on
+                    // expiry. Loser cleanup: hew_timer_cancel
+                    // unregisters the timer from the wheel (the
+                    // timer wheel substrate is complete; only the
+                    // heterogeneous-arm dispatch glue is missing).
+                    "select{} after-timer arm awaits runtime substrate: \
+                     heterogeneous-arm dispatch wiring \
+                     (hew_select_wait) to the existing timer wheel"
+                        .to_string()
+                }
+                None => {
+                    // HIR rejects empty selects with SelectNoArms; a
+                    // zero-arm Terminator::Select is structurally
+                    // unreachable. Fail closed defensively.
+                    "select{} terminator carries zero arms (HIR should \
+                     have rejected with SelectNoArms)"
+                        .to_string()
+                }
+            };
+            return Err(CodegenError::FailClosed(msg));
+        }
     }
     Ok(())
 }
@@ -959,6 +1054,119 @@ mod tests {
         assert!(
             matches!(err, CodegenError::Unsupported(_)),
             "String return must surface as Unsupported, got: {err:?}"
+        );
+    }
+
+    // ── Terminator::Select fail-closed per arm kind ──────────────────
+    //
+    // The four sealed select arm forms each lower through a distinct
+    // codegen match arm that fails closed with a message naming the
+    // runtime substrate the future implementation must wire. These
+    // tests pin the per-arm-kind diagnostic so a regression that
+    // silently swallows a Select terminator is caught immediately.
+
+    fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeline {
+        let main = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: ResolvedTy::I64,
+            locals: vec![ResolvedTy::I64],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Select {
+                    arms: vec![hew_mir::SelectArm {
+                        kind: arm_kind,
+                        body_block: 0,
+                        binding: None,
+                    }],
+                    next: 0,
+                },
+            }],
+            decisions: Vec::new(),
+        };
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![main],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn select_stream_next_arm_fails_closed_with_named_substrate() {
+        let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::StreamNext {
+            stream: Place::Local(0),
+        });
+        let ctx = Context::create();
+        let err = build_module(&ctx, &pipeline, "select_stream_next")
+            .expect_err("Terminator::Select stream-next must fail closed");
+        let msg = match err {
+            CodegenError::FailClosed(s) => s,
+            other => panic!("expected FailClosed, got {other:?}"),
+        };
+        assert!(
+            msg.contains("stream-next") && msg.contains("pending-read"),
+            "stream-next FailClosed must name the missing substrate: {msg}"
+        );
+    }
+
+    #[test]
+    fn select_actor_ask_arm_fails_closed_with_named_substrate() {
+        let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::ActorAsk {
+            actor: Place::Local(0),
+            method: "process".to_string(),
+            args: Vec::new(),
+        });
+        let ctx = Context::create();
+        let err = build_module(&ctx, &pipeline, "select_actor_ask")
+            .expect_err("Terminator::Select actor-ask must fail closed");
+        let msg = match err {
+            CodegenError::FailClosed(s) => s,
+            other => panic!("expected FailClosed, got {other:?}"),
+        };
+        assert!(
+            msg.contains("actor-ask") && msg.contains("Terminator::Send"),
+            "actor-ask FailClosed must name the missing substrate \
+             (Terminator::Send actor-call lowering): {msg}"
+        );
+    }
+
+    #[test]
+    fn select_task_await_arm_fails_closed_with_named_substrate() {
+        let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::TaskAwait {
+            task: Place::Local(0),
+        });
+        let ctx = Context::create();
+        let err = build_module(&ctx, &pipeline, "select_task_await")
+            .expect_err("Terminator::Select task-await must fail closed");
+        let msg = match err {
+            CodegenError::FailClosed(s) => s,
+            other => panic!("expected FailClosed, got {other:?}"),
+        };
+        assert!(
+            msg.contains("task-await") && msg.contains("hew_task_scope_cancel_one"),
+            "task-await FailClosed must name the single-task cancel \
+             primitive: {msg}"
+        );
+    }
+
+    #[test]
+    fn select_after_timer_arm_fails_closed_with_named_substrate() {
+        let pipeline = pipeline_with_select_terminator(hew_mir::SelectArmKind::AfterTimer {
+            duration: Place::Local(0),
+        });
+        let ctx = Context::create();
+        let err = build_module(&ctx, &pipeline, "select_after_timer")
+            .expect_err("Terminator::Select after-timer must fail closed");
+        let msg = match err {
+            CodegenError::FailClosed(s) => s,
+            other => panic!("expected FailClosed, got {other:?}"),
+        };
+        assert!(
+            msg.contains("after-timer") && msg.contains("hew_select_wait"),
+            "after-timer FailClosed must name the dispatch wiring: {msg}"
         );
     }
 }

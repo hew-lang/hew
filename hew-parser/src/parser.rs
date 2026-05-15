@@ -2476,6 +2476,25 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::Arrow)?;
                 let target_state = self.parse_state_pattern()?;
 
+                // Optional `@reenter` annotation (self-transition Mealy re-entry).
+                // Lexes as `Token::Label("@reenter")` — the label value includes
+                // the leading `@` (consistent with loop-label tokens).
+                // Grammar slot: `on E: Src -> Tgt @reenter [when guard] [body]`.
+                let reenter = if let Some(Token::Label(label)) = self.peek() {
+                    if *label == "@reenter" {
+                        self.advance();
+                        true
+                    } else {
+                        self.error(format!(
+                            "unknown transition annotation `{label}`; \
+                             the only supported annotation here is `@reenter`"
+                        ));
+                        false
+                    }
+                } else {
+                    false
+                };
+
                 // Optional guard: `when <expr>`
                 let guard = if self.peek() == Some(&Token::When) {
                     self.advance();
@@ -2528,6 +2547,7 @@ impl<'src> Parser<'src> {
                     target_state,
                     guard,
                     body: (body, body_start..body_end),
+                    reenter,
                 });
             } else if self.peek() == Some(&Token::Default) {
                 // `default { self }` — unhandled events stay in current state

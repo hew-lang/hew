@@ -3,8 +3,9 @@
 //! Usage:
 //!   hew machine diagram <file.hew>                      Mermaid state diagram (with HIR checks)
 //!   hew machine diagram <file.hew> --format graphviz    Graphviz DOT output
+//!   hew machine diagram <file.hew> --format dot         Alias for --format graphviz
 //!   hew machine diagram <file.hew> --format json        JSON schema for tooling
-//!   hew machine diagram <file.hew> --dot                Alias for --format graphviz
+//!   hew machine diagram <file.hew> --dot                Alias for --format graphviz (flag shorthand)
 //!   hew machine diagram <file.hew> --machine `TrafficLight`  Filter to one machine
 //!   hew machine diagram <file.hew> --no-check           Skip HIR static checks
 //!   hew machine list <file.hew>                         List all machines with states/events
@@ -183,7 +184,7 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
         for machine in filtered {
             match format {
                 MachineFormat::Mermaid => print_mermaid_hir(machine),
-                MachineFormat::Graphviz => print_dot_hir(machine),
+                MachineFormat::Graphviz | MachineFormat::Dot => print_dot_hir(machine),
                 MachineFormat::Json => print_json_hir(machine),
             }
         }
@@ -210,7 +211,7 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
         for md in filtered {
             match format {
                 MachineFormat::Mermaid => print_mermaid(md),
-                MachineFormat::Graphviz => print_dot(md),
+                MachineFormat::Graphviz | MachineFormat::Dot => print_dot(md),
                 MachineFormat::Json => print_json_ast(md),
             }
         }

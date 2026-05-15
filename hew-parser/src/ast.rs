@@ -1258,4 +1258,12 @@ pub struct MachineTransition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
+    /// When true, a self-transition (`source == target`) explicitly opts in to
+    /// Mealy re-entry semantics: the source `exit` block and target `entry` block
+    /// both run even though the state does not change.  Written as `@reenter`
+    /// after the target state name.  Without this annotation, a non-empty self-
+    /// transition body is a compile error (HIR enforces the Moore-style rule that
+    /// self-loops must be annotated or empty).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reenter: bool,
 }

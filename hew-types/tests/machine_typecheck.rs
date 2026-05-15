@@ -80,6 +80,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         target_state: target.to_string(),
         guard: None,
         body: (Expr::Literal(Literal::Bool(true)), 0..0),
+        reenter: false,
     }
 }
 
@@ -90,6 +91,7 @@ fn wildcard_transition(event: &str) -> MachineTransition {
         target_state: "_".to_string(),
         guard: None,
         body: (Expr::Identifier("state".to_string()), 0..0),
+        reenter: false,
     }
 }
 

@@ -1719,6 +1719,7 @@ mod tests {
                         source_state: "Red".into(),
                         target_state: "Green".into(),
                         guard: None,
+                        reenter: false,
                         body: (
                             Expr::Block(Block {
                                 stmts: vec![],

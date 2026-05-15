@@ -519,6 +519,8 @@ pub enum MachineFormat {
     Mermaid,
     /// Graphviz DOT.
     Graphviz,
+    /// Graphviz DOT (alias for `graphviz`).
+    Dot,
     /// Stable JSON schema for tooling.
     Json,
 }

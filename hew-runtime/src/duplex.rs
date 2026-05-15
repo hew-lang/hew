@@ -554,11 +554,20 @@ use std::ptr;
 // Allocation protocol:
 //   - Construct `Box::new(HewDuplexHandle::new(duplex))`; hand out
 //     `Box::into_raw(...)` to the C caller.
-//   - On close: swap `released` to `true`. If the old value was already
-//     `true`, return `DoubleClose`. Otherwise call `ManuallyDrop::drop`
-//     on the inner value to run its existing `Drop` impl (which releases
-//     Arc refcounts / queue caps) — but do NOT reconstruct or drop the
-//     outer `Box<HewDuplexHandle>`.
+//   - On close: read `released` through a raw-pointer projection
+//     (`&*ptr::addr_of!((*d).released)`) and `swap` it to `true`. Only
+//     materialise a `&mut HewDuplexHandle` AFTER winning the swap. If
+//     the swap returned `true`, return `DoubleClose` immediately without
+//     ever constructing a reference into the wrapper. Otherwise call
+//     `ManuallyDrop::drop` on the inner value to run its existing `Drop`
+//     impl (which releases Arc refcounts / queue caps) — but do NOT
+//     reconstruct or drop the outer `Box<HewDuplexHandle>`.
+//   - The raw-pointer flag-read phase is required: two concurrent
+//     callers passing the same handle pointer would otherwise each hold
+//     a `&mut *d` simultaneously, which is formal Rust aliasing UB even
+//     though the inner field is not touched twice. The `#[repr(C)]`
+//     guarantee on the wrappers, plus `released` being the leading
+//     field, makes the projection well-defined.
 
 /// C-ABI wrapper around [`HewDuplex`] with a double-close guard.
 #[repr(C)]
@@ -925,28 +934,42 @@ pub unsafe extern "C" fn hew_duplex_close(d: *mut HewDuplexHandle) -> i32 {
     if d.is_null() {
         return SendError::Ok as i32;
     }
-    // SAFETY:
+    // SAFETY: (flag-read phase)
     // - Provenance: caller guarantees `d` came from hew_duplex_pair,
     //   which calls `Box::into_raw(Box::new(HewDuplexHandle::new(...)))`.
     // - Type tag: `*mut HewDuplexHandle` matches the originating Box type.
+    //   `released` is the first field of `#[repr(C)]` HewDuplexHandle, so
+    //   `addr_of!((*d).released)` yields a valid `*const AtomicBool` without
+    //   materialising a `&mut HewDuplexHandle` (which would alias with a
+    //   concurrent caller's `&mut` on the same pointer — formal aliasing
+    //   UB even though the `inner` field is not actually touched twice).
     // - Lifetime owner: the outer HewDuplexHandle allocation is never
     //   freed (intentional leak — see wrapper-struct design comment).
-    //   ManuallyDrop::drop runs the inner HewDuplex Drop logic on the
-    //   first call, transferring ownership of the queue-cap release to
-    //   the Drop impl. Subsequent calls are blocked by the atomic flag.
     // - Aliasing concurrency: AtomicBool::swap with AcqRel ordering
-    //   provides the acquire fence needed to observe any prior writes
-    //   from this or another thread before proceeding.
-    // - Bounds: single non-null aligned pointer dereference.
-    // - Failure mode: double-close now returns SendError::DoubleClose (4)
+    //   provides the acquire fence and linearizes all close/release
+    //   callers; the loser observes `true` and returns before constructing
+    //   any reference into the wrapper.
+    // - Bounds: single in-bounds field read via projection on a non-null
+    //   aligned pointer to a Sized `#[repr(C)]` type.
+    // - Failure mode: double-close returns SendError::DoubleClose (4)
     //   via the atomic-flag guard; no UB on the second call.
-    let h = unsafe { &mut *d };
-    if h.released.swap(true, Ordering::AcqRel) {
+    let released = unsafe { &*ptr::addr_of!((*d).released) };
+    if released.swap(true, Ordering::AcqRel) {
         return SendError::DoubleClose as i32;
     }
-    // SAFETY: the swap above confirmed this is the first close (old value
-    // was false). The inner HewDuplex is still valid at this point; we run
-    // its Drop impl without freeing the outer wrapper allocation.
+    // SAFETY: (drop phase) the swap above linearized close/release callers
+    // and this thread won (old value was false). No other close/release
+    // path can construct a reference into `*d` past its flag check, so the
+    // `&mut *d` below is exclusive against all close/release entries.
+    // (It is not claimed exclusive against in-flight `hew_duplex_send` /
+    // `_recv` callers; those access `inner` through a shared `(*d).inner`
+    // borrow internally synchronised by HewDuplex's Sync impl, and a
+    // caller racing send-then-close on the same pointer is the documented
+    // FFI contract violation.) ManuallyDrop::drop runs the inner Drop
+    // without freeing the outer wrapper.
+    let h = unsafe { &mut *d };
+    // SAFETY: see the drop-phase block immediately above — this thread
+    // owns the wrapper exclusively against all close/release callers.
     unsafe { ManuallyDrop::drop(&mut h.inner) };
     SendError::Ok as i32
 }
@@ -968,28 +991,24 @@ pub unsafe extern "C" fn hew_duplex_send_half(d: *mut HewDuplexHandle) -> *mut H
         crate::set_last_error("hew_duplex_send_half: null handle".to_string());
         return ptr::null_mut();
     }
-    // SAFETY:
-    // - Provenance: caller guarantees `d` came from hew_duplex_pair
-    //   (`Box::into_raw(Box::new(HewDuplexHandle::new(...)))`).
-    // - Type tag: `*mut HewDuplexHandle` matches the originating Box type.
-    // - Lifetime owner: the outer HewDuplexHandle allocation is never
-    //   freed (intentional leak — see wrapper-struct design comment above).
-    //   ManuallyDrop::take moves the inner HewDuplex out by value so we
-    //   can call into_send_half (a consuming operation) without running
-    //   the HewDuplex Drop impl; into_send_half handles cap accounting.
-    // - Aliasing concurrency: AcqRel swap ensures we see all prior writes.
-    // - Bounds: single non-null aligned pointer dereference.
-    // - Failure mode: double-call (consuming an already-consumed handle)
-    //   returns null so the caller observes an error rather than UB.
-    let h = unsafe { &mut *d };
-    if h.released.swap(true, Ordering::AcqRel) {
+    // SAFETY: (flag-read phase) see `hew_duplex_close` — `released` is read
+    // via `addr_of!` to avoid materialising a `&mut HewDuplexHandle` that
+    // would alias against a concurrent close/consume-split caller's
+    // exclusive borrow. The atomic swap linearizes the contenders; the
+    // loser returns null before constructing any reference into the wrapper.
+    let released = unsafe { &*ptr::addr_of!((*d).released) };
+    if released.swap(true, Ordering::AcqRel) {
         crate::set_last_error("hew_duplex_send_half: handle already consumed".to_string());
         return ptr::null_mut();
     }
-    // SAFETY: the swap above confirmed this is the first consume (old value
-    // was false). ManuallyDrop::take moves the inner HewDuplex out by value
-    // without running its Drop; into_send_half takes ownership and handles
-    // the cap accounting itself.
+    // SAFETY: (take phase) the swap above linearized close/release callers
+    // and this thread won; no other path can construct a reference into
+    // `*d` past its flag check. ManuallyDrop::take moves the inner
+    // HewDuplex out by value without running its Drop; into_send_half
+    // takes ownership and handles the cap accounting itself.
+    let h = unsafe { &mut *d };
+    // SAFETY: see the take-phase block above — this thread owns the
+    // wrapper exclusively against all close/release callers.
     let duplex = unsafe { ManuallyDrop::take(&mut h.inner) };
     let send_half = duplex.into_send_half();
     Box::into_raw(Box::new(HewSendHalfHandle::new(send_half)))
@@ -1008,16 +1027,21 @@ pub unsafe extern "C" fn hew_duplex_recv_half(d: *mut HewDuplexHandle) -> *mut H
         crate::set_last_error("hew_duplex_recv_half: null handle".to_string());
         return ptr::null_mut();
     }
-    // SAFETY: see hew_duplex_send_half — symmetric six-axis profile.
-    let h = unsafe { &mut *d };
-    if h.released.swap(true, Ordering::AcqRel) {
+    // SAFETY: (flag-read phase) see `hew_duplex_close` — read via `addr_of!`
+    // so no `&mut HewDuplexHandle` is materialised before the swap; that
+    // avoids aliasing against a concurrent caller on the same pointer.
+    let released = unsafe { &*ptr::addr_of!((*d).released) };
+    if released.swap(true, Ordering::AcqRel) {
         crate::set_last_error("hew_duplex_recv_half: handle already consumed".to_string());
         return ptr::null_mut();
     }
-    // SAFETY: the swap above confirmed this is the first consume (old value
-    // was false). ManuallyDrop::take moves the inner HewDuplex out by value
-    // without running its Drop; into_recv_half takes ownership and handles
-    // the cap accounting itself.
+    // SAFETY: (take phase) the swap linearized close/release callers and
+    // this thread won. ManuallyDrop::take moves the inner HewDuplex out
+    // by value without running its Drop; into_recv_half takes ownership
+    // and handles the cap accounting itself.
+    let h = unsafe { &mut *d };
+    // SAFETY: see the take-phase block above — this thread owns the
+    // wrapper exclusively against all close/release callers.
     let duplex = unsafe { ManuallyDrop::take(&mut h.inner) };
     let recv_half = duplex.into_recv_half();
     Box::into_raw(Box::new(HewRecvHalfHandle::new(recv_half)))
@@ -1129,41 +1153,55 @@ pub unsafe extern "C" fn hew_duplex_close_half(half: *mut c_void, direction: i32
     }
     match direction {
         x if x == HewDuplexDirection::Send as i32 => {
+            let half_send = half.cast::<HewSendHalfHandle>();
             // SAFETY:
             // - Provenance: per the caller contract for `direction == Send`,
             //   `half` came from `hew_duplex_send_half` which produces a
             //   `Box::into_raw(Box::new(HewSendHalfHandle::new(...)))`.
-            // - Type tag: the cast `half.cast::<HewSendHalfHandle>()` matches
-            //   the originating Box's element type.
-            // - Lifetime owner: the outer HewSendHalfHandle allocation is never
+            // - Type tag: the cast above matches the originating Box's
+            //   element type; `released` is the first field of `#[repr(C)]`
+            //   HewSendHalfHandle, so `addr_of!((*half_send).released)`
+            //   yields a valid `*const AtomicBool` without materialising
+            //   `&mut *half_send` — that would alias against a concurrent
+            //   close/release caller on the same pointer (formal Rust UB
+            //   even when the inner field is not actually touched twice).
+            // - Lifetime owner: the outer wrapper allocation is never
             //   freed (intentional leak — see wrapper-struct design comment).
-            //   ManuallyDrop::drop runs the inner HewSendHalf Drop (releasing
-            //   the sender-cap) on the first call only.
-            // - Aliasing concurrency: AcqRel swap ensures this thread sees all
-            //   prior writes before deciding whether to proceed with the drop.
-            // - Bounds: single non-null aligned pointer dereference via cast.
-            // - Failure mode: double-close returns DoubleClose (4) instead of
-            //   invoking UB on the freed inner allocation.
-            let h = unsafe { &mut *half.cast::<HewSendHalfHandle>() };
-            if h.released.swap(true, Ordering::AcqRel) {
+            // - Aliasing concurrency: AtomicBool::swap with AcqRel ordering
+            //   provides the acquire fence and linearizes all close/release
+            //   callers; the loser observes `true` and returns before
+            //   constructing any reference into the wrapper.
+            // - Bounds: single in-bounds field read via projection.
+            // - Failure mode: double-close returns DoubleClose (4) instead
+            //   of invoking UB on the freed inner allocation.
+            let released = unsafe { &*ptr::addr_of!((*half_send).released) };
+            if released.swap(true, Ordering::AcqRel) {
                 return SendError::DoubleClose as i32;
             }
-            // SAFETY: swap returned false — first close; inner HewSendHalf is
-            // still valid. ManuallyDrop::drop runs its Drop (sender-cap release)
-            // without freeing the outer HewSendHalfHandle wrapper.
+            // SAFETY: the swap linearized close/release callers and this
+            // thread won; the `&mut` below is exclusive against all
+            // other close/release entries.
+            let h = unsafe { &mut *half_send };
+            // SAFETY: first close — inner HewSendHalf is still valid.
+            // ManuallyDrop::drop runs its Drop (sender-cap release)
+            // without freeing the outer wrapper.
             unsafe { ManuallyDrop::drop(&mut h.inner) };
             SendError::Ok as i32
         }
         x if x == HewDuplexDirection::Recv as i32 => {
+            let half_recv = half.cast::<HewRecvHalfHandle>();
             // SAFETY: see the Send arm — symmetric six-axis profile with
             // HewRecvHalfHandle and its receiver-cap release in Drop.
-            let h = unsafe { &mut *half.cast::<HewRecvHalfHandle>() };
-            if h.released.swap(true, Ordering::AcqRel) {
+            let released = unsafe { &*ptr::addr_of!((*half_recv).released) };
+            if released.swap(true, Ordering::AcqRel) {
                 return SendError::DoubleClose as i32;
             }
-            // SAFETY: swap returned false — first close; inner HewRecvHalf is
-            // still valid. ManuallyDrop::drop runs its Drop (receiver-cap release)
-            // without freeing the outer HewRecvHalfHandle wrapper.
+            // SAFETY: the swap won — exclusive against all other
+            // close/release callers.
+            let h = unsafe { &mut *half_recv };
+            // SAFETY: first close — inner HewRecvHalf is still valid.
+            // ManuallyDrop::drop runs its Drop (receiver-cap release)
+            // without freeing the outer wrapper.
             unsafe { ManuallyDrop::drop(&mut h.inner) };
             SendError::Ok as i32
         }

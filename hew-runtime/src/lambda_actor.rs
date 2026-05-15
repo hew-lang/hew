@@ -385,28 +385,35 @@ pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActorHand
     if actor.is_null() {
         return SendError::Ok as i32;
     }
-    // SAFETY:
+    // SAFETY: (flag-read phase)
     // - Provenance: caller guarantees `actor` came from
     //   `Box::into_raw(Box::new(HewLambdaActorHandle::new(...)))`.
     // - Type tag: `*mut HewLambdaActorHandle` matches the originating type.
-    // - Lifetime owner: the outer HewLambdaActorHandle allocation is never
-    //   freed (intentional leak — see wrapper-struct design comment in
-    //   duplex.rs for the full rationale). ManuallyDrop::drop runs the inner
-    //   HewLambdaActor Drop logic (Arc strong-count decrement) on the first
-    //   call; if it reaches zero, LambdaActorInner drops and HewDuplex closes
-    //   both directions.
-    // - Aliasing concurrency: AtomicBool::swap with AcqRel ordering provides
-    //   the acquire fence needed before reading the inner state.
-    // - Bounds: single non-null aligned pointer dereference.
-    // - Failure mode: double-release now returns SendError::DoubleClose (4)
+    //   `released` is the first field of `#[repr(C)]` HewLambdaActorHandle;
+    //   `addr_of!((*actor).released)` yields a valid `*const AtomicBool`
+    //   without materialising a `&mut HewLambdaActorHandle` (which would
+    //   alias with a concurrent release caller's `&mut` on the same
+    //   pointer — formal aliasing UB even when `inner` is not touched twice).
+    // - Lifetime owner: the outer wrapper is never freed (intentional leak
+    //   — see wrapper-struct design comment in duplex.rs).
+    // - Aliasing concurrency: AcqRel swap linearizes all release callers;
+    //   the loser observes `true` and returns before constructing any
+    //   reference into the wrapper.
+    // - Bounds: single in-bounds field read on a non-null aligned
+    //   `#[repr(C)]` pointer.
+    // - Failure mode: double-release returns SendError::DoubleClose (4)
     //   via the atomic-flag guard; no UB on the second call.
-    let h = unsafe { &mut *actor };
-    if h.released.swap(true, Ordering::AcqRel) {
+    let released = unsafe { &*ptr::addr_of!((*actor).released) };
+    if released.swap(true, Ordering::AcqRel) {
         return SendError::DoubleClose as i32;
     }
-    // SAFETY: swap returned false — first release; the inner HewLambdaActor
-    // is still valid. ManuallyDrop::drop decrements the Arc strong count
-    // without freeing the outer HewLambdaActorHandle wrapper.
+    // SAFETY: (drop phase) the swap won — exclusive against all other
+    // release callers.
+    let h = unsafe { &mut *actor };
+    // SAFETY: first release — inner HewLambdaActor is still valid.
+    // ManuallyDrop::drop decrements the Arc strong count (and triggers
+    // LambdaActorInner Drop if it reaches zero, which closes the
+    // HewDuplex) without freeing the outer wrapper.
     unsafe { ManuallyDrop::drop(&mut h.inner) };
     SendError::Ok as i32
 }
@@ -509,25 +516,21 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_drop(weak: *mut HewLambdaActorWea
     if weak.is_null() {
         return SendError::Ok as i32;
     }
-    // SAFETY:
-    // - Provenance: caller guarantees `weak` came from
-    //   `Box::into_raw(Box::new(HewLambdaActorWeakHandle::new(...)))`.
-    // - Type tag: `*mut HewLambdaActorWeakHandle` matches the originating type.
-    // - Lifetime owner: the outer HewLambdaActorWeakHandle allocation is never
-    //   freed (intentional leak — see wrapper-struct design comment in
-    //   duplex.rs). ManuallyDrop::drop runs the inner HewLambdaActorWeak Drop
-    //   (Arc weak-count decrement) on the first call only.
-    // - Aliasing concurrency: AcqRel swap provides the acquire fence.
-    // - Bounds: single non-null aligned pointer dereference.
-    // - Failure mode: double-drop now returns SendError::DoubleClose (4)
-    //   via the atomic-flag guard; no UB on the second call.
-    let h = unsafe { &mut *weak };
-    if h.released.swap(true, Ordering::AcqRel) {
+    // SAFETY: (flag-read phase) see `hew_lambda_actor_release` — read
+    // `released` via `addr_of!` so no `&mut HewLambdaActorWeakHandle` is
+    // materialised before the swap; that avoids aliasing UB against a
+    // concurrent weak-drop caller on the same pointer. `released` is the
+    // first field of the `#[repr(C)]` wrapper.
+    let released = unsafe { &*ptr::addr_of!((*weak).released) };
+    if released.swap(true, Ordering::AcqRel) {
         return SendError::DoubleClose as i32;
     }
-    // SAFETY: swap returned false — first drop; the inner HewLambdaActorWeak
-    // is still valid. ManuallyDrop::drop decrements the Arc weak count
-    // without freeing the outer HewLambdaActorWeakHandle wrapper.
+    // SAFETY: (drop phase) the swap won — exclusive against all other
+    // weak-drop callers.
+    let h = unsafe { &mut *weak };
+    // SAFETY: first drop — inner HewLambdaActorWeak is still valid.
+    // ManuallyDrop::drop decrements the Arc weak count without freeing
+    // the outer wrapper.
     unsafe { ManuallyDrop::drop(&mut h.inner) };
     SendError::Ok as i32
 }

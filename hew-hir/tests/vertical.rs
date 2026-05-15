@@ -309,6 +309,25 @@ fn task_handle_ti5_task_annotation_in_let_rejects_task_not_nameable() {
     );
 }
 
+/// TI-4 (reject): `let x = await name` inside a `fork{}` body emits
+/// `AwaitOutOfPosition`. Await is only legal as a statement-expression, never
+/// as a let-value — the result cannot be bound.
+#[test]
+fn task_handle_ti4_await_in_let_value_position_rejects() {
+    let output = lower(
+        "fn compute() -> i64 { return 1; } \
+         fn f() { fork { fork t = compute(); let x = await t; } }",
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
+        "let x = await t inside fork must emit AwaitOutOfPosition: {:?}",
+        output.diagnostics
+    );
+}
+
 /// Verifier stability: a valid `fork { call(); }` program passes `verify_hir`
 /// without dangling-ref or duplicate-id diagnostics.
 #[test]

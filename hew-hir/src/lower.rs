@@ -291,6 +291,33 @@ impl LowerCtx {
     ) -> HirStmt {
         let kind = match stmt {
             Stmt::Let { pattern, ty, value } => {
+                // `await expr` is only legal as a statement-expression inside a
+                // fork{} body (TI-4). Using it as a let-value is always rejected —
+                // the await result is consumed immediately and has no place to bind.
+                if let Some(val_expr) = value {
+                    if matches!(&val_expr.0, Expr::Await(_)) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::AwaitOutOfPosition,
+                            val_expr.1.clone(),
+                            "`await` cannot be used as a let-value; \
+                             it is only legal as a statement-expression inside a `fork{}` body",
+                        ));
+                        let name = self
+                            .pattern_name(pattern)
+                            .unwrap_or_else(|| "_".to_string());
+                        let binding_ty = ty
+                            .as_ref()
+                            .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+                        let binding = self.bind(name, binding_ty, false, pattern.1.clone());
+                        let unsupported =
+                            self.unsupported_expr(val_expr.1.clone(), "`await` in let-value");
+                        return HirStmt {
+                            node: self.ids.node(),
+                            kind: HirStmtKind::Let(binding, Some(unsupported)),
+                            span,
+                        };
+                    }
+                }
                 let value = value
                     .as_ref()
                     .map(|expr| self.lower_expr(expr, IntentKind::Consume));

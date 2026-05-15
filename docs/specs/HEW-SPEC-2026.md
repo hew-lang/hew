@@ -318,6 +318,53 @@ When a `receive fn` message handler returns `Err`, the error is:
 2. Returned to the caller (if request-response pattern)
 3. May cause trap if unhandled and configured to do so
 
+### 2.2.2 Bind-and-Propagate Sugar (`let r? = expr`)
+
+The `?`-suffix on a `let` binding is syntactic sugar for placing `?` on the
+right-hand side:
+
+```
+let r? = expr;          ≡  let r = expr?;
+let r?: T = expr;       ≡  let r: T = expr?;
+```
+
+**Rules:**
+
+- The binding name must be a simple identifier. Complex patterns such as
+  `let (a, b)? = …` or `let Some(x)? = …` are not valid — the sugar requires
+  a single name to anchor the unwrapped value.
+- An initialiser is required. `let r?;` with no `= expr` is a parse error.
+- The expression `expr` must evaluate to `Result<T, E>` or `Option<T>`.
+  Any other type is a type error (`InvalidOperation`), identical to the
+  diagnostic produced by a bare `expr?` on a non-Result/Option expression.
+- The enclosing function must return `Result<_, E>` or `Option<_>` with a
+  compatible error type. If it does not, the checker reports the same
+  "`?` cannot be used in a function returning …`" diagnostic as for bare `?`.
+- The type annotation `T` in `let r?: T = expr` describes the *unwrapped*
+  Ok-payload (type of `r` after propagation), not the Result itself — the
+  same convention as `let r: T = expr?;`.
+
+**Desugaring is canonical.** The form `let r = expr?;` is the lowered
+representation. A formatter may rewrite `let r? = expr;` to the desugared
+form; both representations carry identical semantics.
+
+**Motivation.** The common `let x = (await call())?;` pattern requires
+disambiguating parentheses because `await call()?` would parse as
+`await (call()?)`, yielding a doubly-wrapped type. The sugar eliminates the
+paren cluster and places the propagation marker next to the binding name,
+where the reader's eye is focused:
+
+```hew
+// Before
+let reply = (await server.compute(input))?;
+
+// After
+let reply? = await server.compute(input);
+```
+
+Both `let r? = expr;` and `let r = expr?;` remain valid; existing code is
+unaffected.
+
 ---
 
 ## 3. Types, ownership, and sendability

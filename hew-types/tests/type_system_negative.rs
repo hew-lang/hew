@@ -2041,3 +2041,55 @@ fn empty_type_args_on_generic_enum_variant_init_is_arity_mismatch() {
         output.errors
     );
 }
+
+#[test]
+fn let_propagate_sugar_on_non_result_rejected() {
+    // `let r? = expr;` requires the RHS to be Result<T,E> or Option<T>.
+    // A plain integer RHS must be rejected by the type-checker with the
+    // same diagnostic as a bare `expr?` on a non-Result expression.
+    let output = typecheck(
+        r"
+        fn plain() -> int {
+            let r? = 42;
+            r
+        }
+        fn main() { plain(); }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("requires Result or Option")),
+        "Expected InvalidOperation for `let r? = 42` (non-Result RHS), got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_propagate_sugar_in_non_result_fn_rejected() {
+    // `let r? = result_expr;` inside a function that does not return
+    // Result or Option must be rejected — same rule as bare `?`.
+    let output = typecheck(
+        r"
+        fn make_result(x: int) -> Result<int, String> {
+            Ok(x)
+        }
+        fn plain(x: int) -> int {
+            let r? = make_result(x);
+            r
+        }
+        fn main() { plain(5); }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("enclosing function must return")),
+        "Expected InvalidOperation for `let r?` in non-Result fn, got errors: {:?}",
+        output.errors
+    );
+}

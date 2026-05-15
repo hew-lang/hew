@@ -368,6 +368,20 @@ fn place_pointer<'ctx>(
             CodegenError::FailClosed(format!("local {id} not allocated before use"))
         }),
         Place::ReturnSlot => Ok((fn_ctx.return_slot, fn_ctx.return_ty)),
+        // M2 unified-concurrency substrate Place variants (declared
+        // scaffold; no HIR construction surface yet). Codegen for the
+        // `hew_duplex_*` C-ABI lowering lands in M2 slice 5. Fail
+        // closed at this seam so any reach-through during the M2
+        // ramp-up surfaces immediately rather than emitting a binary
+        // with a misrouted load/store. LESSONS: boundary-fail-closed.
+        Place::DuplexHandle(_)
+        | Place::LambdaActorHandle(_)
+        | Place::SendHalf(_)
+        | Place::RecvHalf(_) => Err(CodegenError::FailClosed(
+            "M2 Duplex / lambda-actor Place lowering is not yet wired; \
+             slice 5 wires the hew_duplex_* C-ABI lowering"
+                .to_string(),
+        )),
     }
 }
 

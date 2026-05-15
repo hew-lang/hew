@@ -1597,6 +1597,9 @@ static ast::MachineTransition parseMachineTransition(const msgpack::object &obj)
   if (g && !isNil(*g))
     mt.guard = parseSpannedPtr<ast::Expr>(*g, parseExpr);
   mt.body = parseSpanned<ast::Expr>(mapReq(obj, "body"), parseExpr);
+  const auto *r = mapGet(obj, "reenter");
+  if (r && !isNil(*r))
+    mt.reenter = getBool(*r);
   return mt;
 }
 

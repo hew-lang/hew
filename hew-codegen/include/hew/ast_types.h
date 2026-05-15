@@ -925,6 +925,7 @@ struct MachineTransition {
   std::string target_state;
   std::unique_ptr<Spanned<Expr>> guard; // nullptr if no guard
   Spanned<Expr> body;
+  bool reenter = false; // @reenter annotation: Mealy re-entry for self-transitions
 };
 
 struct MachineDecl {

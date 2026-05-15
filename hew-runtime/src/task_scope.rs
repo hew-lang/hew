@@ -680,9 +680,23 @@ pub unsafe extern "C" fn hew_task_scope_cancel_one(
     task: *mut HewTask,
 ) -> i32 {
     cabi_guard!(scope.is_null() || task.is_null(), -1);
-    // SAFETY: Caller guarantees both pointers are valid.
+    // SAFETY:
+    // - Provenance: `scope` was returned by a prior `hew_task_scope_new` FFI call.
+    // - Type/tag: caller asserts via FFI contract that the pointer is a `HewTaskScope`.
+    // - Lifetime/owner: caller owns the scope until `hew_task_scope_destroy`; it outlives this call.
+    // - Aliasing/concurrency: `cabi_guard!` above rejects null; the scope is accessed from the
+    //   single actor thread that owns it — no mutable aliases exist concurrently.
+    // - Bounds: pointer is non-null (cabi_guard); struct size is known at compile time.
+    // - Failure mode: `cabi_guard!` returns -1 on null before this point is reached.
     let s = unsafe { &mut *scope };
-    // SAFETY: Caller guarantees task is valid.
+    // SAFETY:
+    // - Provenance: `task` was returned by a prior `hew_task_new` FFI call and spawned into this scope.
+    // - Type/tag: caller asserts via FFI contract that the pointer is a `HewTask`.
+    // - Lifetime/owner: the owning scope keeps the task alive until `hew_task_scope_destroy`.
+    // - Aliasing/concurrency: `cabi_guard!` above rejects null; the task state machine is
+    //   accessed through atomic loads, so concurrent reads from worker threads are safe.
+    // - Bounds: pointer is non-null (cabi_guard); struct size is known at compile time.
+    // - Failure mode: `cabi_guard!` returns -1 on null before this point is reached.
     let t = unsafe { &mut *task };
 
     match t.load_state() {

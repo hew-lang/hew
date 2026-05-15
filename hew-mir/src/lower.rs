@@ -715,6 +715,51 @@ impl Builder {
                 });
                 None
             }
+            HirExprKind::Select(_select) => {
+                // Sealed `select{}` construct. The HIR shape is fixed
+                // (see `HirSelect`/`HirSelectArmKind`) and the MIR
+                // terminator + per-arm shape are declared in
+                // `model::Terminator::Select`, but the runtime
+                // substrate (`hew_select_wait` heterogeneous-arm
+                // dispatch, `hew_stream_poll` pending-read,
+                // `hew_task_scope_cancel_one`, and actor-call
+                // lowering for the ask arm) is not yet wired. MIR
+                // rejects the construct here with a clear diagnostic
+                // so the pipeline fails closed at the earliest seam
+                // that can name the missing substrate; codegen also
+                // fails closed if a `Terminator::Select` ever reaches
+                // it (defence-in-depth).
+                //
+                // TODO: when the runtime substrate lands, replace
+                // this diagnostic with the real construction:
+                //   1. Allocate per-arm setup blocks, winner blocks,
+                //      and a single join block.
+                //   2. Per-arm setup emits the form-specific
+                //      registration runtime call (stream-poll
+                //      registration, ask issue, task observer
+                //      register, timer schedule).
+                //   3. Terminate the select's current basic block
+                //      with `Terminator::Select { arms, next }` where
+                //      `next` is the join block.
+                //   4. The per-arm cleanup blocks consume the
+                //      cleanup-CFG substrate (`BlockKind::Cleanup`,
+                //      `ExitPath::Cancel`) introduced by the
+                //      CFG-construction work that already merged.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: "select-construct: runtime substrate \
+                                 (hew_select_wait dispatch + per-arm \
+                                 cancellable primitives) not yet wired"
+                            .to_string(),
+                    },
+                    note: "select{} construct reached MIR lowering; \
+                           HIR-level Select recognition is in place but \
+                           MIR-to-codegen lowering awaits the runtime \
+                           substrate"
+                        .to_string(),
+                });
+                None
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
                 // CutoverUnsupported and the driver should have stopped
@@ -1409,6 +1454,35 @@ fn enumerate_exits(
                 ExitPath::Send {
                     block: block_id,
                     actor: String::new(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Select { arms: _, next } => (
+                // Declared-only. Codegen rejects `Terminator::Select`
+                // before runtime; the elaboration pass observes a
+                // `Select` exit only on programs that have already
+                // failed codegen. Empty drop plan is a placeholder
+                // until per-arm loser-cleanup blocks are wired through
+                // the cleanup CFG.
+                //
+                // TODO: when the runtime substrate lands, replace this
+                // placeholder with per-arm cleanup drops sourced from
+                // the per-arm body block's cleanup edge. Each arm's
+                // loser-cleanup must observe these invariants:
+                //   - StreamNext loser: withdraw pending read; the
+                //     stream binding remains usable in the enclosing
+                //     scope (no item consumed).
+                //   - ActorAsk loser: withdraw the envelope by
+                //     correlation id if not yet dispatched, otherwise
+                //     tombstone the reply sink; a late reply is
+                //     classified as OrphanedAsk and dropped silently.
+                //   - TaskAwait loser: cancel the task at its next
+                //     safepoint; the awaitable handle is torn down.
+                //   - AfterTimer loser: cancel the timer; no callback
+                //     fires.
+                ExitPath::Select {
+                    block: block_id,
                     next: *next,
                 },
                 DropPlan::default(),

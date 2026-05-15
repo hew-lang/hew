@@ -173,7 +173,65 @@ pub enum HirExprKind {
         /// The `T` from `Task<T>` — the type produced by this await.
         output_ty: ResolvedTy,
     },
+    /// Sealed `select{}` expression.
+    ///
+    /// The HIR shape carries the per-arm sealed-form discriminator and
+    /// the per-arm body. The construct's static type (`HirExpr::ty`) is
+    /// the unique common arm-body type — disagreement is rejected at
+    /// lowering with `SelectArmTypeMismatch`.
+    ///
+    /// The four arm forms are exhaustive per HEW-SPEC-2026 §4.11.1; any
+    /// other surface shape is rejected with `SelectArmNotSealedForm`
+    /// during lowering.
+    Select(HirSelect),
     Unsupported(String),
+}
+
+/// Lowered `select{}` expression. See `HirSelectArmKind` for the four
+/// sealed arm forms.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSelect {
+    pub arms: Vec<HirSelectArm>,
+}
+
+/// One arm of a sealed `select{}` expression. `binding_name` is `None`
+/// for `AfterTimer` arms (timer arms produce no value) and `Some` for
+/// the three value-bearing forms. The `body` runs only when this arm
+/// wins.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSelectArm {
+    pub kind: HirSelectArmKind,
+    pub binding_name: Option<String>,
+    pub body: HirExpr,
+}
+
+/// The four sealed arm forms recognised by HIR lowering. The variants
+/// are intentionally minimal — they carry the discriminator plus the
+/// expression slots a future MIR / codegen pass needs to know about.
+/// The full runtime contracts for each form are documented at the
+/// codegen fail-closed match arms (semantic-invariant TODO markers).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirSelectArmKind {
+    /// `pat from next(<stream-expr>) => body`. The arm waits for a
+    /// pending item on `stream`; the binding receives `Option<T>` where
+    /// `None` is the EOF-wins signal.
+    StreamNext { stream: Box<HirExpr> },
+    /// `pat from <actor-expr>.<method>(<args>) => body`. The arm
+    /// dispatches an ask to `actor.method(args)` and waits for the
+    /// reply; the binding receives the reply value.
+    ActorAsk {
+        actor: Box<HirExpr>,
+        method: String,
+        args: Vec<HirExpr>,
+    },
+    /// `pat from await <task-expr> => body`. The arm waits for `task`
+    /// to complete with `Ok(T)`; the binding receives `T`.
+    /// Cancellation and trap outcomes propagate through the `select`
+    /// site per HEW-SPEC-2026 §4.11.1.
+    TaskAwait { task: Box<HirExpr> },
+    /// `after <duration-expr> => body`. The arm fires when the
+    /// deadline elapses; the body runs with no binding.
+    AfterTimer { duration: Box<HirExpr> },
 }
 
 #[derive(Debug, Clone, PartialEq)]

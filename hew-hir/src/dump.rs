@@ -76,6 +76,11 @@ pub fn dump_hir(module: &HirModule) -> String {
     out
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "single match on HirExprKind variants; each arm renders one variant \
+              and splitting would obscure the dump's per-variant locality"
+)]
 fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
     let pad = " ".repeat(indent);
     writeln!(
@@ -170,6 +175,24 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 output_ty.user_facing()
             )
             .expect("write to string");
+        }
+        HirExprKind::Select(select) => {
+            writeln!(out, "{pad}  select arms={}", select.arms.len()).expect("write to string");
+            for arm in &select.arms {
+                let kind_label = match &arm.kind {
+                    crate::node::HirSelectArmKind::StreamNext { .. } => "stream-next",
+                    crate::node::HirSelectArmKind::ActorAsk { method, .. } => {
+                        // Borrow the method name into the label transiently.
+                        let _ = method;
+                        "actor-ask"
+                    }
+                    crate::node::HirSelectArmKind::TaskAwait { .. } => "task-await",
+                    crate::node::HirSelectArmKind::AfterTimer { .. } => "after-timer",
+                };
+                let binding_label = arm.binding_name.as_deref().unwrap_or("_");
+                writeln!(out, "{pad}    arm {kind_label} bind={binding_label}")
+                    .expect("write to string");
+            }
         }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");

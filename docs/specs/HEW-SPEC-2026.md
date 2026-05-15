@@ -2975,11 +2975,24 @@ implementable `Awaitable` trait — the four forms are exhaustive.
 ```hew
 select {
     msg     from next(events)          => handle(msg),    // Stream<T>::next
-    reply   from ask worker.call(x)    => use(reply),     // actor ask
+    reply   from worker.call(x)        => use(reply),     // actor ask
     done    from await user_task       => use(done),      // Task<T>
     after 5.seconds                    => abort(),        // timer
 }
 ```
+
+The four arm-source discriminators are syntactic markers, recognised at
+HIR lowering:
+
+- `next(<stream-expr>)` — a call where the callee is the bare identifier
+  `next` (sealed in this position; the surface does not look for a
+  user-defined `next` function).
+- `<actor-expr>.<method>(<args>)` — a method-call expression on an actor
+  expression. The `ask` keyword is reserved for a future syntactic marker
+  (see HEW-FUTURE) but is not lexer-recognised in edition 2026; the
+  sealed-form discriminator is the method-call shape itself.
+- `await <task-expr>` — the existing `await` keyword.
+- `after <duration-expr>` — the timer arm; carries no binding.
 
 **The four forms (closed set).** Each form is fully specified by four
 columns: what the winning arm binds, how the winning arm propagates a
@@ -2992,7 +3005,7 @@ cleanup columns; the difference is which side initiates the teardown.
 | Form                       | Winning bind / type             | Winning error or trap at the source                                                                                                                                                                                       | Loser cleanup (a different arm won)                                                                                                                                                                       | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                                                              |
 | -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<id> from next(<stream>)` | `id: Option<T>` for `Stream<T>` | The stream's own error surface — if the stream reports an error on next, the winning arm sees it on the stream's terms. The stream binding remains usable.                                                                | Pending read is withdrawn from the stream; the stream itself is **not consumed** and remains usable in the enclosing scope.                                                                              | Same as loser cleanup: pending read withdrawn, stream binding remains usable for the cancellation handler.                                                  |
-| `<id> from ask <call>`     | `id: <reply-type>` per ask      | `AskError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
+| `<id> from <actor>.<method>(<args>)` | `id: <reply-type>` per ask | `AskError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
 | `<id> from await <task>`   | `id: T` for `Task<T>`           | The awaited task wins **only** when it completes with `Ok(T)`. If the task instead resolves to the unnamed cancellation `Err` per §4.4, that `Err` propagates through the `select` site as if the surrounding scope had taken the `Err` itself; the `select` does not treat the cancelled task as a winning arm. Traps in the awaited task propagate as traps through the `select` site (§4.4). | The task is cancelled at its next safepoint (§4.5). The resulting `Err` is consumed by the `select` site and not surfaced; the awaitable handle is torn down.                                            | The task is cancelled at its next safepoint and the awaitable handle is torn down; the outer cancellation propagates through the `select` site as usual. |
 | `after <duration>`         | no binding; arm type is `()`-shaped at the source | None. Timers cannot fail or trap in edition 2026.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
 
@@ -3030,7 +3043,7 @@ them out of any other safepoint in the enclosing scope.
 ```
 select {
     p1 from next(s1)         => r1,         where s1: Stream<A>, r1: T
-    p2 from ask act.call(x)  => r2,         where act.call(x): B, r2: T
+    p2 from act.call(x)      => r2,         where act.call(x): B, r2: T
     p3 from await t          => r3,         where t: Task<C>, r3: T
     after d                  => r4,         where d: Duration, r4: T
 } : T
@@ -3039,7 +3052,7 @@ select {
 The bound identifiers are in scope only inside their own `=>`
 expression. Their static types follow the table above: `p1: Option<A>`
 for `from next` (so `None` is a legitimate winning value indicating the
-stream observed EOF on that call), `p2: B` for `from ask`, `p3: C` for
+stream observed EOF on that call), `p2: B` for the actor-ask arm, `p3: C` for
 `from await` (the `Ok` payload; cancellation and traps propagate per the
 table), and no binding for `after`.
 
@@ -3051,6 +3064,18 @@ loser-cleanup protocol — all unsettled in edition 2026. The four forms
 above are the workloads `select` exists to serve. A user `Awaitable`
 surface may land in a future edition once trait lowering and generator
 cancellation are proven; see HEW-FUTURE.md.
+
+**Implementation status (informative, not normative).** Edition 2026's
+surface is the construct's contract. The HIR layer recognises all four
+arm forms and rejects non-sealed sources with structural diagnostics;
+the MIR layer carries the per-arm sealed shape on the terminator. The
+runtime substrate that decides the winner and runs each form's loser-
+cleanup is wired separately — codegen fails closed with a per-arm-kind
+message until the substrate lands. Programs whose `select{}` use is
+purely surface-level (parsing, lowering, structural diagnostics) are
+accepted; programs that reach codegen with a `select{}` construct are
+rejected with a clear "runtime substrate not yet wired" error naming
+the missing primitive for the offending arm form.
 
 #### 4.11.2 `join` Expression
 

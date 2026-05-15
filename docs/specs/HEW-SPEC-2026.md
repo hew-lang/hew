@@ -674,7 +674,7 @@ let worker2 = actor move |msg: Msg| {
 let local_ref = get_local_resource();  // returns a non-Send reference
 
 // Compile error: local_ref does not implement Send
-// let worker = spawn move (msg: Msg) => { use(local_ref); };
+// let worker = actor |msg: Msg| { use(local_ref); };
 ```
 
 This is enforced at compile time: any captured value in a `spawn` expression must satisfy the `Send` trait.
@@ -723,7 +723,7 @@ actor Example {
 
         // Capturing non-Send value - ERROR
         let local_handle: RawPointer = get_handle();
-        let worker = spawn move (x: int) => {
+        let worker = actor |x: int| {
             use(local_handle);  // compile error: RawPointer is not Send
         };
     }

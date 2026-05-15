@@ -899,8 +899,9 @@ def fuzz_mutations(ctx: FuzzContext, n: int = 200) -> None:
     ]
     mutations = [
         lambda s: s[: random.randint(0, len(s))],
-        lambda s: s
-        + random.choice(["{", "}", "(", ")", ";", "\n"]) * random.randint(1, 50),
+        lambda s: (
+            s + random.choice(["{", "}", "(", ")", ";", "\n"]) * random.randint(1, 50)
+        ),
         lambda s: (
             s[: (p := random.randint(0, len(s)))]
             + random.choice(
@@ -1759,8 +1760,14 @@ def fuzz_duration_regex(ctx: FuzzContext) -> None:
         ("regex_complex", 'fn main() { let r = re"^[a-z]+\\d{2,4}$"; }'),
         ("regex_empty", 'fn main() { let r = re""; }'),
         ("regex_special", 'fn main() { let r = re"[.*+?()\\[\\]{}|^$]"; }'),
-        ("regex_match_op", 'fn main() { let x = "hello123" =~ re"[a-z]+\\d+"; }'),
-        ("regex_no_match_op", 'fn main() { let x = "hello" !~ re"\\d+"; }'),
+        (
+            "regex_method_match",
+            'fn main() { let p = re"[a-z]+\\d+"; let x = p.is_match("hello123"); p.free(); }',
+        ),
+        (
+            "regex_method_negation",
+            'fn main() { let p = re"\\d+"; let x = !p.is_match("hello"); p.free(); }',
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"durregex/{label}"))
@@ -3843,9 +3850,7 @@ def fuzz_formatter(ctx: FuzzContext, n: int = 200) -> None:
             main_stmts.append("println(d.f0);")
 
         if random.random() < 0.3:
-            main_stmts.append(
-                f'let msg = f"value={{1 + {random.randint(1, 99)}}}";'
-            )
+            main_stmts.append(f'let msg = f"value={{1 + {random.randint(1, 99)}}}";')
             main_stmts.append("println(msg);")
 
         main_stmts.append(f"let x = {random.randint(0, 100)};")

@@ -240,7 +240,7 @@ blank();
 // Operators
 emit('# Operators');
 emit('color white "->|=>|<-|\\.\\.[ =]?"');
-emit('color white "==[^=]|!=|=~|!~|<=|>="');
+emit('color white "==[^=]|!=|<=|>="');
 emit('color white "<<=|>>=|&=|\\|=|\\^=|\\+=|-=|\\*=|/=|%="');
 emit('color white "<<|>>"');
 emit('color white "::"');

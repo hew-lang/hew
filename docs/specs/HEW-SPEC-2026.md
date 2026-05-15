@@ -4199,7 +4199,7 @@ These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.t
 7. Bitwise XOR: `^`
 8. Bitwise OR: `|`
 9. Relational: `<`, `<=`, `>`, `>=`
-10. Equality/Match: `==`, `!=`, `=~`, `!~` (value equality for strings; regex match)
+10. Equality: `==`, `!=` (value equality for strings; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=`

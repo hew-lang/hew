@@ -352,8 +352,12 @@ fn operators(a: i32, b: i32) {
     let shr = a >> 2;
 
     let text = "hello";
-    let pmatch = text =~ r"hel.*";
-    let pnomatch = text !~ r"xyz";
+    let re_yes = re"hel.*";
+    let re_no = re"xyz";
+    let pmatch = re_yes.is_match(text);
+    let pnomatch = !re_no.is_match(text);
+    re_yes.free();
+    re_no.free();
 
     var x = 0;
     x += 1;

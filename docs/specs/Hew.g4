@@ -627,7 +627,7 @@ andExpr
     ;
 
 eqExpr
-    : relExpr ( ( '==' | '!=' | '=~' | '!~' ) relExpr )*
+    : relExpr ( ( '==' | '!=' ) relExpr )*
     ;
 
 relExpr
@@ -932,8 +932,6 @@ SHL_ASSIGN    : '<<=' ;
 SHR_ASSIGN    : '>>=' ;
 EQ            : '==' ;
 NE            : '!=' ;
-MATCH_OP      : '=~' ;
-NOT_MATCH_OP  : '!~' ;
 LE            : '<=' ;
 GE            : '>=' ;
 PLUS_ASSIGN   : '+=' ;

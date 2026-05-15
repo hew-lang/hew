@@ -797,8 +797,6 @@ static ast::BinaryOp parseBinaryOp(const msgpack::object &obj) {
   if (s == "Range") return ast::BinaryOp::Range;
   if (s == "RangeInclusive") return ast::BinaryOp::RangeInclusive;
   if (s == "Send") return ast::BinaryOp::Send;
-  if (s == "RegexMatch") return ast::BinaryOp::RegexMatch;
-  if (s == "RegexNotMatch") return ast::BinaryOp::RegexNotMatch;
   fail("unknown BinaryOp: " + s);
 }
 

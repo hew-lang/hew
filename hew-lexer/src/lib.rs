@@ -296,10 +296,6 @@ pub enum Token<'src> {
     LessEqual,
     #[token(">=")]
     GreaterEqual,
-    #[token("=~")]
-    MatchOp,
-    #[token("!~")]
-    NotMatchOp,
     #[token("&&")]
     AmpAmp,
     #[token("||")]
@@ -501,8 +497,6 @@ impl std::fmt::Display for Token<'_> {
             Token::LeftArrow => f.write_str("`<-`"),
             Token::LessLess => f.write_str("`<<`"),
             Token::GreaterGreater => f.write_str("`>>`"),
-            Token::MatchOp => f.write_str("`=~`"),
-            Token::NotMatchOp => f.write_str("`!~`"),
             // Compound assignment
             Token::PlusEqual => f.write_str("`+=`"),
             Token::MinusEqual => f.write_str("`-=`"),
@@ -694,8 +688,6 @@ impl Token<'_> {
                 | Token::Caret
                 | Token::Tilde
                 | Token::Question
-                | Token::MatchOp
-                | Token::NotMatchOp
         )
     }
 

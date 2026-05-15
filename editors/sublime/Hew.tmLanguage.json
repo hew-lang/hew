@@ -553,11 +553,6 @@
           "match": "\\.\\.=|\\.\\.(?!\\.)"
         },
         {
-          "comment": "Regex match operators",
-          "name": "keyword.operator.regex.hew",
-          "match": "=~|!~"
-        },
-        {
           "comment": "Logical operators",
           "name": "keyword.operator.logical.hew",
           "match": "&&|\\|\\|"

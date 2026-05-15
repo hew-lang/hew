@@ -2498,7 +2498,7 @@ forked within the block must complete before the block returns.
 scope {
     fork a = compute_a();   // child task: spawned + name-bound
     fork b = compute_b();   // sibling child task
-    (a?, b?)                // block result; implicit join before this point
+    use_results(a?, b?);    // awaits + propagates errors to the enclosing function via ?
 }
 ```
 
@@ -2506,9 +2506,22 @@ scope {
 
 1. **Lifetime containment**: Child tasks cannot outlive their enclosing `scope` block.
 2. **Automatic join**: The block waits for every child task before returning.
-3. **Block value**: A `scope` block is an expression; its value is the final expression in the block.
+3. **Block value**: A `scope` block is **Unit-typed**. It is a statement, not a value-producer.
+   `scope` is the lexical-lifetime bracket; the `fork name = expr` children carry the values.
+   Conflating the bracket with a value-producer re-introduces the surface duplication that the
+   2026 edition resolved by splitting the two keywords. Use `await` inside the scope body
+   to resolve child values, bind them to `let` or `var` bindings, and return them from the
+   enclosing function directly.
 4. **Nested scopes**: `scope` blocks may be nested; each manages its own children.
-5. **First-failure-cancels-siblings**: If any child returns `Err(E)` or traps, the runtime cancels the remaining siblings at the next safepoint. The block evaluates to `Err(ScopeError<E>)` for fallible children or propagates the trap.
+5. **First-failure-cancels-siblings**: If any child returns `Err(E)` or traps, the runtime
+   cancels the remaining siblings at the next safepoint. The error surfaces via the `await`
+   expression for that child: `?` on `await task` propagates `Err` to the enclosing function;
+   an unhandled trap unwinds the scope and propagates to the enclosing context.
+
+> **Design note.** `scope` is the lifetime bracket; `fork name = expr` is the value-producer.
+> These are deliberately separate keywords so neither can be confused for the other. See the
+> Historical note in §4.9 for the earlier `scope |s| { s.spawn { … } }` surface that mixed
+> the two roles and was removed in the 2026 edition.
 
 **Child form:**
 
@@ -2521,11 +2534,13 @@ scope-block, a child-form `fork` is a `ForkOutsideScopeBlock` error.
 ### 4.3 Spawning Child Tasks
 
 ```hew
+var result;
 scope {
     fork a = compute_a();
     fork b = compute_b();
-    combine(a?, b?)
-}
+    result = combine(a?, b?);   // awaits children; ? propagates errors to the enclosing function
+};
+result
 ```
 
 **Syntax:**
@@ -2601,9 +2616,11 @@ safepoint before its body reaches a consuming or close call.
 
 **`fork expr` — bare child form:**
 
-A degenerate single-child scope-block: `fork expr` evaluates `expr` as a
-child task whose value is the result of the enclosing scope-block. Useful
-when the surrounding code only needs one structured child.
+A degenerate single-child form: `fork expr` evaluates `expr` as a child
+task. The enclosing scope block is still Unit-typed; to consume the child's
+result, bind it with `fork name = expr` and then `await name` inside the
+scope body, or simply fire-and-forget with the bare form when the value is
+not needed.
 
 **Substrate (informative):**
 
@@ -2677,21 +2694,25 @@ let value = (await task)?;
 **Examples:**
 
 ```hew
-// Simple await
-let value = scope { fork x = expensive_compute(); await x };
+// Simple await — bind result before the scope, assign inside
+var value;
+scope {
+    fork x = expensive_compute();
+    value = await x;
+};
 
 // Concurrent tasks with sequential await
+var merged;
 scope {
     fork a = fetch_user(id1);
     fork b = fetch_user(id2);
 
-    // Both fetches run concurrently
-    // We wait for results in order
+    // Both fetches run concurrently; await resolves them in order
     let user1 = await a;
     let user2 = await b;
-
-    merge_users(user1, user2)
-}
+    merged = merge_users(user1, user2);
+};
+merged
 ```
 
 ### 4.5 Cancellation
@@ -2742,14 +2763,16 @@ When a scope-block is cancelled:
 
 ```hew
 receive fn download_files(urls: Vec<String>) -> Result<Vec<Data>, Error> {
+    var results: Vec<Data> = Vec::new();
     scope {
         for url in urls {
             scope {
                 let data = http::get(url)?;  // Safepoint — cancellation checked here
-                process(data)                // If cancelled, stack unwinds; defer blocks run
+                results.push(process(data)); // If cancelled, stack unwinds; defer blocks run
             };
         }
-    }
+    };
+    Ok(results)
 }
 ```
 
@@ -2762,8 +2785,8 @@ Tasks can fail in two ways:
 
 **Recoverable errors:**
 
-When a child task returns a `Result`, errors can be handled by the awaiter
-directly, or aggregated through `ScopeError<E>` at scope-block exit:
+When a child task returns a `Result`, errors can be handled directly by the
+awaiter inside the scope body:
 
 ```hew
 scope {
@@ -2779,12 +2802,15 @@ scope {
 }
 ```
 
-When scope-block children return `Result<T, E>` and at least one child
-returns `Err`, the block evaluates to `Result<T, ScopeError<E>>` whose
-`primary` is the first observed error. Subsequent errors land in
-`also_failed`; cancellation-driven failures contribute to
-`cancelled_count`. `?` on the block value propagates `primary`. See
-`std/concurrency/scope_error.hew` for the layout.
+The scope block is Unit-typed; `await task` resolves the child's
+`Result<T, E>` inline. If multiple children can fail and you need to
+aggregate their errors, collect the `await` results into a `Vec` inside the
+scope body and inspect it after the scope block completes. `ScopeError<E>`
+(see `std/concurrency/scope_error.hew`) is the layout for aggregated
+per-child errors; it is produced by the `await` expressions, not by the
+scope block itself. Propagating the first error with `?` is written as `?`
+on the `await` expression for that child, which propagates to the enclosing
+function — not to the scope block's "value."
 
 **Traps (unrecoverable errors):**
 
@@ -2822,15 +2848,18 @@ scope {
 ```hew
 scope {
     fork results = {
-        // Inner scope-block isolates failures
+        // Inner scope-block isolates failures; the fork child body is an
+        // ordinary block (not a scope block) that can carry a value.
+        var outcome: Result<Data, Error>;
         scope {
             fork task = risky_operation();
-            await task
-        }
+            outcome = await task;   // captures Ok or Err
+        };
+        outcome                     // fork child returns the Result
     };
 
-    // Outer scope-block continues even if inner block returned Err
-    // (if using ? pattern with ScopeError<E>)
+    // Outer scope-block continues even if results returned Err;
+    // inspect via `await results` inside this body.
 }
 ```
 
@@ -2882,19 +2911,22 @@ actor DataProcessor {
     var cache: HashMap<String, Data> = HashMap::new();
 
     receive fn process_batch(ids: Vec<String>) -> Vec<Data> {
+        var tasks: Vec<Task<Data>> = Vec::new();
+        var data: Vec<Data> = Vec::new();
         scope {
-            var results: Vec<Task<Data>> = Vec::new();
-
             for id in ids {
                 // Captures of `id` move into the child; actor fields
                 // (e.g. `cache`) are not in scope inside the child body.
                 fork task = fetch_data(id);
-                results.push(task);
+                tasks.push(task);
             }
 
             // Await all results (back on the actor's thread)
-            results.iter().map(|t| await t).collect()
-        }
+            for t in tasks {
+                data.push(await t);
+            }
+        };
+        data
     }
 }
 ```

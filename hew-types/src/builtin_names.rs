@@ -208,6 +208,13 @@ builtin_named_types! {
                     bytes_symbol: "hew_stream_next_bytes",
                 }
             },
+            "try_recv" => {
+                signature: ReturnOptionT,
+                runtime: BuiltinMethodRuntime::ElementOverload {
+                    string_symbol: "hew_stream_try_next",
+                    bytes_symbol: "hew_stream_try_next_bytes",
+                }
+            },
             "close" => {
                 signature: ReturnUnit,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_close")
@@ -244,6 +251,13 @@ builtin_named_types! {
                 runtime: BuiltinMethodRuntime::ElementOverload {
                     string_symbol: "hew_sink_write_string",
                     bytes_symbol: "hew_sink_write_bytes",
+                }
+            },
+            "try_send" => {
+                signature: ValueToUnit,
+                runtime: BuiltinMethodRuntime::ElementOverload {
+                    string_symbol: "hew_sink_try_write_string",
+                    bytes_symbol: "hew_sink_try_write_bytes",
                 }
             },
             "close" => {

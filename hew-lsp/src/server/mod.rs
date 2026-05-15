@@ -1076,6 +1076,10 @@ mod tests {
             labels.contains(&"recv"),
             "expected method 'recv' in completions, got: {labels:?}"
         );
+        assert!(
+            labels.contains(&"try_recv"),
+            "expected method 'try_recv' in completions, got: {labels:?}"
+        );
         // .next, .collect, .lines are retired; channel-family naming uses .recv
         assert!(
             !labels.contains(&"next"),

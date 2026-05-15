@@ -894,9 +894,10 @@ impl Checker {
         match method {
             // Channel-family naming: .recv() replaced .next() as the fundamental
             // recv surface (routes to the same hew_stream_next runtime symbol).
+            // .try_recv() routes to hew_stream_try_next (non-blocking variant).
             // .lines() and .collect() are iterator-style ops removed from the
             // fundamental surface; they will land via trait impls in stdlib work.
-            "recv" | "close" => {
+            "recv" | "try_recv" | "close" => {
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
                     BuiltinNamedType::Stream.canonical_name(),
@@ -2567,10 +2568,11 @@ impl Checker {
                 match method {
                     // Channel-family naming: .send() replaced .write() as the
                     // fundamental send surface (routes to the same
-                    // hew_sink_write_* runtime symbols). .flush() is removed
-                    // from the fundamental surface; it may re-surface via an
-                    // I/O-sink trait in stdlib work.
-                    "send" => {
+                    // hew_sink_write_* runtime symbols). .try_send() routes to
+                    // hew_sink_try_write_* (non-blocking variant). .flush() is
+                    // removed from the fundamental surface; it may re-surface
+                    // via an I/O-sink trait in stdlib work.
+                    "send" | "try_send" => {
                         let Some(sig) = self.require_builtin_method_sig(
                             span,
                             &receiver_ty,

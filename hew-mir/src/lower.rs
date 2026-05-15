@@ -1642,3 +1642,386 @@ fn enumerate_exits(
     }
     (elab_blocks, plans)
 }
+
+// ============================================================================
+// Slice 3 (M2 substrate) drop-plan invariant tests.
+//
+// Pin the per-Return live-set narrowing semantics + the Place->DropKind
+// invariants + the weak-ref capture discipline. Built directly against
+// the internal helpers (`drop_kind_for`, `validate_drop_plan`) using
+// synthetic `ElaboratedMirFunction` inputs so the HIR-construction gap
+// (no LambdaActor/Duplex HIR shape yet) doesn't block coverage.
+// ============================================================================
+
+#[cfg(test)]
+mod slice3_invariants {
+    use super::*;
+    use crate::model::{CaptureKind, Direction, LambdaCapture};
+
+    /// A `Duplex<i64, i64>` `ResolvedTy` used as a stand-in payload
+    /// for synthetic `ElabDrop` entries. The body of these tests
+    /// cares about `Place` + `DropKind`, not the inner type detail.
+    fn duplex_int_int_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::I64],
+        }
+    }
+
+    fn make_elab_with_drops(drops: Vec<ElabDrop>) -> ElaboratedMirFunction {
+        ElaboratedMirFunction {
+            name: "synthetic".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan { drops })],
+            coroutine: None,
+            lambda_captures: vec![],
+        }
+    }
+
+    // ---------- drop_kind_for: Place -> DropKind mapping ----------
+
+    #[test]
+    fn drop_kind_for_duplex_handle_selects_duplex_close() {
+        let ty = duplex_int_int_ty();
+        assert_eq!(
+            drop_kind_for(Place::DuplexHandle(0), &ty),
+            DropKind::DuplexClose
+        );
+    }
+
+    #[test]
+    fn drop_kind_for_lambda_actor_handle_selects_lambda_actor_release() {
+        let ty = duplex_int_int_ty();
+        assert_eq!(
+            drop_kind_for(Place::LambdaActorHandle(0), &ty),
+            DropKind::LambdaActorRelease
+        );
+    }
+
+    #[test]
+    fn drop_kind_for_send_half_selects_duplex_half_close_send() {
+        let ty = duplex_int_int_ty();
+        assert_eq!(
+            drop_kind_for(Place::SendHalf(0), &ty),
+            DropKind::DuplexHalfClose(Direction::Send)
+        );
+    }
+
+    #[test]
+    fn drop_kind_for_recv_half_selects_duplex_half_close_recv() {
+        let ty = duplex_int_int_ty();
+        assert_eq!(
+            drop_kind_for(Place::RecvHalf(0), &ty),
+            DropKind::DuplexHalfClose(Direction::Recv)
+        );
+    }
+
+    #[test]
+    fn drop_kind_for_local_selects_resource() {
+        // Pre-M2 path: generic Resource for Local Places. Pinning this
+        // is the regression guard against accidentally routing Local
+        // drops through a Duplex-specific protocol.
+        let ty = duplex_int_int_ty();
+        assert_eq!(drop_kind_for(Place::Local(0), &ty), DropKind::Resource);
+    }
+
+    // ---------- validate_drop_plan: structural invariants ----------
+
+    #[test]
+    fn validate_drop_plan_accepts_consistent_duplex_close() {
+        // A DuplexHandle paired with DuplexClose — the canonical M2
+        // substrate shape. No findings.
+        let drops = vec![ElabDrop {
+            place: Place::DuplexHandle(0),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::DuplexClose,
+        }];
+        let elab = make_elab_with_drops(drops);
+        assert!(
+            validate_drop_plan(&elab).is_empty(),
+            "consistent (DuplexHandle, DuplexClose) must not flag"
+        );
+    }
+
+    #[test]
+    fn validate_drop_plan_rejects_duplex_handle_with_resource_kind() {
+        // A DuplexHandle paired with DropKind::Resource would silently
+        // route through generic Type::close dispatch and miss the
+        // close-both-directions protocol. Must surface as
+        // DropPlanUndetermined.
+        let drops = vec![ElabDrop {
+            place: Place::DuplexHandle(7),
+            ty: duplex_int_int_ty(),
+            drop_fn: Some("Duplex::close".to_string()),
+            kind: DropKind::Resource,
+        }];
+        let elab = make_elab_with_drops(drops);
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1, "exactly one finding expected");
+        let MirCheck::DropPlanUndetermined { block, reason } = &findings[0] else {
+            panic!("expected DropPlanUndetermined, got {:?}", findings[0]);
+        };
+        assert_eq!(*block, 0);
+        assert!(
+            reason.contains("DuplexHandle") && reason.contains("Resource"),
+            "diagnostic must name both the Place and the wrong kind: {reason}"
+        );
+    }
+
+    #[test]
+    fn validate_drop_plan_rejects_lambda_actor_handle_with_duplex_close_kind() {
+        // LambdaActorHandle MUST select LambdaActorRelease (the
+        // stop-protocol with weak-ref body capture). DuplexClose would
+        // skip the actor's stop protocol — silently leaking the actor.
+        let drops = vec![ElabDrop {
+            place: Place::LambdaActorHandle(3),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::DuplexClose,
+        }];
+        let elab = make_elab_with_drops(drops);
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1);
+        assert!(matches!(findings[0], MirCheck::DropPlanUndetermined { .. }));
+    }
+
+    #[test]
+    fn validate_drop_plan_rejects_send_half_with_close_both_kind() {
+        // SendHalf MUST close one direction only; pairing with
+        // DuplexClose (close-both) would over-close the recv side.
+        let drops = vec![ElabDrop {
+            place: Place::SendHalf(1),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::DuplexClose,
+        }];
+        let elab = make_elab_with_drops(drops);
+        assert_eq!(validate_drop_plan(&elab).len(), 1);
+    }
+
+    #[test]
+    fn validate_drop_plan_rejects_recv_half_with_send_direction() {
+        // RecvHalf MUST close Direction::Recv; pairing with
+        // Direction::Send would close the wrong queue.
+        let drops = vec![ElabDrop {
+            place: Place::RecvHalf(2),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::DuplexHalfClose(Direction::Send),
+        }];
+        let elab = make_elab_with_drops(drops);
+        assert_eq!(validate_drop_plan(&elab).len(), 1);
+    }
+
+    #[test]
+    fn validate_drop_plan_accepts_half_handle_pair_closing_both_dirs() {
+        // A SendHalf + RecvHalf pair, each closing its own direction —
+        // the canonical "duplex split via .send_half() / .recv_half()"
+        // shape. Together they close both directions; individually
+        // each is a one-direction drop.
+        let drops = vec![
+            ElabDrop {
+                place: Place::SendHalf(0),
+                ty: duplex_int_int_ty(),
+                drop_fn: None,
+                kind: DropKind::DuplexHalfClose(Direction::Send),
+            },
+            ElabDrop {
+                place: Place::RecvHalf(0),
+                ty: duplex_int_int_ty(),
+                drop_fn: None,
+                kind: DropKind::DuplexHalfClose(Direction::Recv),
+            },
+        ];
+        let elab = make_elab_with_drops(drops);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    // ---------- per-Return live-set narrowing (synthetic) ----------
+
+    #[test]
+    fn per_return_live_set_drops_exactly_match_kept_handles() {
+        // The plan's invariant: at each Return block, the set of
+        // Duplex/lambda-actor places dropped is exactly
+        // (places-defined-in-this-fn) - (places-moved-out). Synthetic
+        // shape: two Duplex handles defined, one moved out, one
+        // dropped. With consistent kinds, validate_drop_plan accepts;
+        // the drop list is exactly the one not-moved place.
+        let kept = ElabDrop {
+            place: Place::DuplexHandle(0),
+            ty: duplex_int_int_ty(),
+            drop_fn: None,
+            kind: DropKind::DuplexClose,
+        };
+        let elab = make_elab_with_drops(vec![kept.clone()]);
+        let return_plan = elab
+            .drop_plans
+            .iter()
+            .find(|(e, _)| matches!(e, ExitPath::Return { .. }))
+            .unwrap();
+        assert_eq!(return_plan.1.drops, vec![kept]);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn per_return_no_spurious_drops_when_all_moved_out() {
+        // If every defined Place was moved out before the Return, the
+        // drop list is empty. (places-defined - places-moved-out = ∅.)
+        // This is the dual of the previous test.
+        let elab = make_elab_with_drops(vec![]);
+        let return_plan = &elab.drop_plans[0];
+        assert!(return_plan.1.drops.is_empty());
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn per_return_no_missed_drops_for_three_live_handles() {
+        // Three live Duplex handles at the Return — all three must
+        // appear in the drop list. Order doesn't matter for this
+        // invariant; codegen consumes the list in LIFO source order
+        // (a separate concern). Verify count + presence.
+        let drops: Vec<ElabDrop> = (0..3u32)
+            .map(|i| ElabDrop {
+                place: Place::DuplexHandle(i),
+                ty: duplex_int_int_ty(),
+                drop_fn: None,
+                kind: DropKind::DuplexClose,
+            })
+            .collect();
+        let elab = make_elab_with_drops(drops.clone());
+        let return_plan = &elab.drop_plans[0];
+        assert_eq!(return_plan.1.drops.len(), 3);
+        for d in &drops {
+            assert!(
+                return_plan.1.drops.contains(d),
+                "missing drop for {:?}",
+                d.place
+            );
+        }
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    // ---------- weak-ref capture invariants ----------
+
+    fn make_elab_with_captures(captures: Vec<LambdaCapture>) -> ElaboratedMirFunction {
+        ElaboratedMirFunction {
+            name: "synthetic".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![],
+            coroutine: None,
+            lambda_captures: captures,
+        }
+    }
+
+    #[test]
+    fn weak_capture_on_lambda_actor_handle_is_accepted() {
+        // The canonical §5.9 ratification 2 shape:
+        //   let fib = actor |n| { ... fib(n-1) ... };
+        // The body's `fib` reference is captured as Weak attached to
+        // the lambda-actor's own LambdaActorHandle. Validation must
+        // accept this.
+        let captures = vec![LambdaCapture {
+            actor_handle: Place::LambdaActorHandle(0),
+            captured: BindingId(7),
+            name: "fib".to_string(),
+            capture_kind: CaptureKind::Weak,
+        }];
+        let elab = make_elab_with_captures(captures);
+        assert!(
+            validate_drop_plan(&elab).is_empty(),
+            "Weak capture on a LambdaActorHandle is the recursive self-case (§5.9 ratification 2)"
+        );
+    }
+
+    #[test]
+    fn weak_capture_on_duplex_handle_is_rejected() {
+        // Weak captures are exclusive to LambdaActorHandle Places.
+        // Attaching a Weak capture to a Duplex handle would silently
+        // relax the refcount discipline on a non-actor resource.
+        let captures = vec![LambdaCapture {
+            actor_handle: Place::DuplexHandle(0),
+            captured: BindingId(7),
+            name: "ch".to_string(),
+            capture_kind: CaptureKind::Weak,
+        }];
+        let elab = make_elab_with_captures(captures);
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1);
+        let MirCheck::DropPlanUndetermined { reason, .. } = &findings[0] else {
+            panic!("expected DropPlanUndetermined, got {:?}", findings[0]);
+        };
+        assert!(
+            reason.contains("weak capture") && reason.contains("ch"),
+            "diagnostic must name the capture and identify the misuse: {reason}"
+        );
+    }
+
+    #[test]
+    fn weak_capture_on_local_place_is_rejected() {
+        // Same invariant for a plain Local — only LambdaActorHandle
+        // can host a Weak capture.
+        let captures = vec![LambdaCapture {
+            actor_handle: Place::Local(5),
+            captured: BindingId(2),
+            name: "x".to_string(),
+            capture_kind: CaptureKind::Weak,
+        }];
+        let elab = make_elab_with_captures(captures);
+        assert_eq!(validate_drop_plan(&elab).len(), 1);
+    }
+
+    #[test]
+    fn strong_capture_is_accepted_on_any_handle_kind() {
+        // Strong captures are unrestricted — they're the default for
+        // every non-self capture and the refcount discipline is
+        // strong everywhere. Pair Strong with Local, DuplexHandle,
+        // and LambdaActorHandle — all should accept.
+        for handle in [
+            Place::Local(0),
+            Place::DuplexHandle(0),
+            Place::LambdaActorHandle(0),
+        ] {
+            let captures = vec![LambdaCapture {
+                actor_handle: handle,
+                captured: BindingId(1),
+                name: "captured".to_string(),
+                capture_kind: CaptureKind::Strong,
+            }];
+            let elab = make_elab_with_captures(captures);
+            assert!(
+                validate_drop_plan(&elab).is_empty(),
+                "Strong capture on {handle:?} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_captures_one_weak_one_strong_validates_correctly() {
+        // Mixed-capture case: the self-binding-name is Weak (on the
+        // actor's own LambdaActorHandle), a non-self captured value
+        // is Strong. Both must coexist without findings.
+        let captures = vec![
+            LambdaCapture {
+                actor_handle: Place::LambdaActorHandle(0),
+                captured: BindingId(1),
+                name: "fib".to_string(),
+                capture_kind: CaptureKind::Weak,
+            },
+            LambdaCapture {
+                actor_handle: Place::LambdaActorHandle(0),
+                captured: BindingId(2),
+                name: "memo".to_string(),
+                capture_kind: CaptureKind::Strong,
+            },
+        ];
+        let elab = make_elab_with_captures(captures);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+}

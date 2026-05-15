@@ -1239,6 +1239,16 @@ fn elaborate(
         blocks: elab_blocks,
         drop_plans,
         coroutine: None,
+        // Lambda-actor capture-set discovery lives at the
+        // HIR-lower seam (the lambda-actor literal carries its
+        // capture list). HIR has no construction surface for
+        // LambdaActor today, so this side-table stays empty on
+        // every function the current ladder produces — the
+        // pattern matches the other declared-scaffold side-tables
+        // (coroutine, Terminator::Yield/Send). Synthetic test
+        // inputs in `hew-mir/tests/` populate it directly to
+        // exercise the weak-ref invariant.
+        lambda_captures: Vec::new(),
     }
 }
 
@@ -1277,6 +1287,28 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
                     ),
                 });
             }
+        }
+    }
+    // Lambda-actor capture invariants. A Weak capture must attach to a
+    // LambdaActorHandle (the self-binding weak-ref discipline only
+    // makes sense for the actor's own handle — §5.9 ratification 2).
+    // A Strong capture may attach to any Place. The weak-ref discipline
+    // exists to break the body-keeps-self-alive cycle; misattributing
+    // a Weak capture to a non-actor handle would silently relax the
+    // refcount discipline on a non-actor resource. Fail-closed.
+    for capture in &elab.lambda_captures {
+        if matches!(capture.capture_kind, crate::model::CaptureKind::Weak)
+            && !matches!(capture.actor_handle, Place::LambdaActorHandle(_))
+        {
+            findings.push(MirCheck::DropPlanUndetermined {
+                block: 0,
+                reason: format!(
+                    "weak capture of `{}` attached to non-lambda-actor handle \
+                     {:?}; weak captures are exclusive to LambdaActorHandle \
+                     places (§5.9 ratification 2)",
+                    capture.name, capture.actor_handle,
+                ),
+            });
         }
     }
     findings

@@ -385,6 +385,67 @@ pub struct ElaboratedMirFunction {
     /// the field is a reserved slot for generator state-machine lowering.
     // DROP-TODO: populate when generator construction surface lands
     pub coroutine: Option<CoroutineSchema>,
+    /// Closure-capture metadata for every lambda-actor body in this
+    /// function. Empty on non-actor functions; one entry per
+    /// captured binding per lambda-actor literal. The codegen layer
+    /// (slice 5) consumes this to emit the right capture-strength
+    /// (strong refcount bump vs weak-handle allocation) so the
+    /// runtime's self-binding weak-ref discipline (§5.9
+    /// ratification 2) holds. Declared scaffold; HIR construction
+    /// surface for lambda-actor capture-set discovery lands later.
+    pub lambda_captures: Vec<LambdaCapture>,
+}
+
+/// One captured binding inside a lambda-actor body. The
+/// `capture_kind` discriminator is the structural fact codegen needs
+/// for the runtime to honour the self-binding weak-ref discipline:
+/// a `Weak` capture must NOT bump the actor's external strong
+/// refcount, so when external handles drop, the actor stops even
+/// though the body still references its own binding name.
+///
+/// See `CaptureKind::Weak` for the §5.9 ratification 2 narrative.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambdaCapture {
+    /// The lambda-actor handle this capture belongs to. The Place
+    /// is the actor's `LambdaActorHandle(N)` — the spawn-site
+    /// binding. Codegen uses this to associate captures with the
+    /// right actor's body frame.
+    pub actor_handle: Place,
+    /// The captured binding's id from the enclosing scope.
+    pub captured: BindingId,
+    /// The captured binding's name (for diagnostics). The name is
+    /// load-bearing for the self-ref case: a `Weak` capture whose
+    /// name matches the lambda-actor's own let-binding-name is the
+    /// recursive-self case (§5.9 ratification 2).
+    pub name: String,
+    /// Capture-strength discriminator (Strong vs Weak).
+    pub capture_kind: CaptureKind,
+}
+
+/// Capture-strength selector for a lambda-actor body capture.
+///
+/// `Strong` is the default for every non-self capture: the captured
+/// value's refcount (for `@resource` types) is bumped so the actor
+/// body keeps the captured handle alive. `Weak` is the self-binding
+/// recursive case (§5.9 ratification 2): the actor's body
+/// references its own binding name, but the reference is held
+/// weakly so the body does NOT keep the actor alive past external
+/// refcount zero. When the last external handle drops, the actor
+/// stops; the body's weak self-ref upgrades fail and recursive
+/// self-sends surface as `SendError::ActorStopped` (the runtime
+/// contract lands in slice 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptureKind {
+    /// Strong capture: bumps the captured value's refcount; the
+    /// body keeps the captured handle alive for as long as the
+    /// body's own frame lives.
+    Strong,
+    /// Weak capture: does NOT bump the captured value's refcount.
+    /// The body holds a weak handle that upgrades only while the
+    /// captured value's strong refcount is non-zero. Used for the
+    /// lambda-actor's own self-binding-name to break the
+    /// body-keeps-self-alive cycle.
+    Weak,
 }
 
 /// A basic-block kind. `Normal` blocks carry user-level statements;

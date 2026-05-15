@@ -910,6 +910,8 @@ struct SupervisorDecl {
 struct MachineState {
   std::string name;
   std::vector<std::pair<std::string, Spanned<TypeExpr>>> fields;
+  std::optional<Block> entry; // entry hook — present when the state has an `entry { }` block
+  std::optional<Block> exit;  // exit hook  — present when the state has an `exit  { }` block
 };
 
 struct MachineEvent {

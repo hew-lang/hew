@@ -503,6 +503,12 @@ static ast::MachineState parseMachineState(const msgpack::object &obj) {
   ast::MachineState result;
   result.name = getString(mapReq(obj, "name"));
   result.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(mapReq(obj, "fields"), [](const msgpack::object &o) { uint32_t sz; const auto *arr = arrayData(o, sz); if (sz != 2) fail("tuple should have 2 elements"); return std::make_pair(getString(arr[0]), parseSpanned<ast::TypeExpr>(arr[1], parseTypeExpr)); });
+  const auto *entry = mapGet(obj, "entry");
+  if (entry && !isNil(*entry))
+    result.entry = parseBlock(*entry);
+  const auto *exit = mapGet(obj, "exit");
+  if (exit && !isNil(*exit))
+    result.exit = parseBlock(*exit);
   return result;
 }
 

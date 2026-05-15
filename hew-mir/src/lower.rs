@@ -520,6 +520,11 @@ impl Builder {
     /// backend-stream `Instr`s, and return the `Place` that holds the
     /// expression's value (or `None` if the construct is outside the
     /// spine subset — a `MirDiagnostic` is recorded in that case).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single large match on HirExprKind variants; each arm is a fail-closed \
+                  boundary rule and splitting would obscure the exhaustiveness requirement"
+    )]
     fn lower_value(&mut self, expr: &HirExpr) -> Option<Place> {
         self.decide(expr);
         match &expr.kind {
@@ -617,6 +622,97 @@ impl Builder {
                 for (_, field) in fields {
                     let _ = self.lower_value(field);
                 }
+                None
+            }
+            HirExprKind::Fork { body } => {
+                // TODO: MIR lowering for fork{} bodies. Required runtime contract:
+                // (a) For each SpawnedCall child: allocate a HewTask slot via
+                //     hew_task_new, bind the closure environment, call
+                //     hew_task_spawn_thread to start the child on the thread pool.
+                // (b) For each named ForkTaskHandle binding (fork name = call):
+                //     same spawn sequence; the task pointer is stored in the
+                //     binding's Place so that a later AwaitTask can load it.
+                // (c) At fork-block exit: iterate the set of anonymous child tasks
+                //     in declaration order; for each call hew_task_await_blocking
+                //     then hew_task_free (lifecycle-symmetry invariant: every
+                //     hew_task_new must be paired with hew_task_free on every
+                //     exit path including panic/cancel).
+                // (d) Named task handles that were explicitly awaited earlier are
+                //     already freed at the AwaitTask site; do NOT double-free.
+                //
+                // Until this is wired, walk the body so nested Unsupported nodes
+                // still surface via the checker stream (fail-closed).
+                for stmt in &body.statements {
+                    self.stmt(stmt);
+                }
+                let _ = body.tail.as_ref().map(|t| self.lower_value(t));
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "fork block".to_string(),
+                        site: expr.site,
+                    },
+                    note: "fork{} MIR lowering is not yet implemented; \
+                           codegen will wire hew_task_new / hew_task_spawn_thread / \
+                           hew_task_await_blocking / hew_task_free"
+                        .to_string(),
+                });
+                None
+            }
+            HirExprKind::SpawnedCall { callee, args, .. } => {
+                // TODO: MIR lowering for a spawned call (task-spawn ABI). Required
+                // runtime contract:
+                // (a) Allocate a HewTask via hew_task_new(parent_scope).
+                // (b) Capture the closure environment for the child function via
+                //     hew_task_set_env — all values the child body closes over must
+                //     be moved into the task's env slot (ownership transferred; the
+                //     parent must not access them after spawn).
+                // (c) Issue hew_task_spawn_thread(task, fn_ptr, stack_size) to
+                //     schedule the child on the thread pool.
+                // (d) Return the HewTask* as the value of this expression so the
+                //     containing fork-block can track it for the implicit join.
+                //
+                // Walk children for checker-stream coverage; fail closed (boundary-fail-closed).
+                let _ = self.lower_value(callee);
+                for arg in args {
+                    let _ = self.lower_value(arg);
+                }
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "spawned call".to_string(),
+                        site: expr.site,
+                    },
+                    note: "SpawnedCall MIR lowering is not yet implemented; \
+                           codegen will emit hew_task_new + hew_task_spawn_thread"
+                        .to_string(),
+                });
+                None
+            }
+            HirExprKind::AwaitTask { .. } => {
+                // TODO: MIR lowering for await-task (task-join ABI). Required
+                // runtime contract:
+                // (a) Load the HewTask* from the binding's Place.
+                // (b) Call hew_task_await_blocking(task) — parks the current
+                //     coroutine until the child task finishes.
+                // (c) Extract the result via hew_task_get_result(task) → Place
+                //     of type T (the inner type of Task<T>).
+                // (d) Call hew_task_free(task) to release the HewTask allocation.
+                //     Null the binding's Place after free so any subsequent
+                //     reference is caught as UseAfterConsume.
+                // (e) Cancelled-task case: hew_task_get_error returns non-null;
+                //     propagate as Err(TaskError::Cancelled) through the Result<T>
+                //     if T is Result, or trap if T is not a Result type.
+                //
+                // Fail closed until the codegen slice implements this (boundary-fail-closed).
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "await task".to_string(),
+                        site: expr.site,
+                    },
+                    note: "AwaitTask MIR lowering is not yet implemented; \
+                           codegen will emit hew_task_await_blocking + hew_task_get_result + \
+                           hew_task_free"
+                        .to_string(),
+                });
                 None
             }
             HirExprKind::Unsupported(reason) => {

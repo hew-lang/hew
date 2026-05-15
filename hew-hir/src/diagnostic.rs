@@ -71,4 +71,26 @@ pub enum HirDiagnosticKind {
     ResourceGenericUnsupported {
         name: String,
     },
+    /// `await` appeared outside a `fork{}` body or `select` arm. In v0.5,
+    /// `await` is a statement-only form inside `fork{}` bodies. Future
+    /// versions additionally permit it inside `select` arm source expressions.
+    AwaitOutOfPosition,
+    /// `await` was applied to an expression that does not have type
+    /// `Task<T>`. Only task handles produced by `fork name = call(...)` are
+    /// awaitable.
+    AwaitNonTask {
+        found_ty: ResolvedTy,
+    },
+    /// The right-hand side of a `fork name = expr` binding was not a call
+    /// expression. Per the specification, the child form requires a call so
+    /// the compiler can spawn a task.
+    ForkChildNotACall,
+    /// The user wrote `Task<T>` as a type annotation in source code. In v0.5,
+    /// `Task<T>` is a compiler-internal value class with no surface syntax;
+    /// use `fork name = call(...)` to create a task handle instead.
+    TaskNotNameable,
+    /// A `Task<T>` handle (inferred or explicit) was used in a `return`
+    /// expression, causing it to escape the `fork{}` body. Task handles are
+    /// fork-body-scoped; await them inside the body with `await name`.
+    TaskCannotEscape,
 }

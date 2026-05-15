@@ -79,7 +79,7 @@ impl Verifier {
                 self.expr(left);
                 self.expr(right);
             }
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
                 self.expr(callee);
                 for arg in args {
                     self.expr(arg);
@@ -103,6 +103,20 @@ impl Verifier {
                 }
             }
             HirExprKind::Literal(_) => {}
+            HirExprKind::Fork { body } => self.block(body),
+            HirExprKind::AwaitTask { binding_id, .. } => {
+                // Verify the binding-id referenced by the await is known to the verifier.
+                // If it's not in `self.bindings`, that indicates a dangling reference.
+                if !self.bindings.contains(binding_id) {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::DanglingRef {
+                            resolved: ResolvedRef::Binding(*binding_id),
+                        },
+                        expr.span.clone(),
+                        "await-task references a binding that was not declared in resolved HIR",
+                    ));
+                }
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior CutoverUnsupported diagnostic.

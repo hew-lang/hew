@@ -119,6 +119,58 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, value, indent + 4);
             }
         }
+        HirExprKind::Fork { body } => {
+            writeln!(out, "{pad}  fork scope={}", body.scope).expect("write to string");
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Let(binding, value) => {
+                        writeln!(
+                            out,
+                            "{pad}    let {} {}: {}",
+                            binding.id,
+                            binding.name,
+                            binding.ty.user_facing()
+                        )
+                        .expect("write to string");
+                        if let Some(value) = value {
+                            dump_expr(out, value, indent + 6);
+                        }
+                    }
+                    HirStmtKind::Expr(expr) => dump_expr(out, expr, indent + 4),
+                    HirStmtKind::Return(Some(expr)) => {
+                        writeln!(out, "{pad}    return").expect("write to string");
+                        dump_expr(out, expr, indent + 6);
+                    }
+                    HirStmtKind::Return(None) => {
+                        writeln!(out, "{pad}    return unit").expect("write to string");
+                    }
+                }
+            }
+        }
+        HirExprKind::SpawnedCall {
+            callee,
+            args,
+            task_ty,
+        } => {
+            writeln!(out, "{pad}  spawned-call task_ty={}", task_ty.user_facing())
+                .expect("write to string");
+            dump_expr(out, callee, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
+        HirExprKind::AwaitTask {
+            binding_name,
+            binding_id,
+            output_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  await-task {binding_name} ({binding_id}) -> {}",
+                output_ty.user_facing()
+            )
+            .expect("write to string");
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

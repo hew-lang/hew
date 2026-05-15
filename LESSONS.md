@@ -253,3 +253,13 @@ Nuance row (table under the core):
 | id | trigger | apply | evidence |
 | --- | --- | --- | --- |
 | `wasm-diagnostic-json-contract` | A new structured field is added to the WASM analysis JSON (e.g. `notes`, `suggestions` on `WasmDiagnostic`). | After adding any field to `WasmDiagnostic` or `AnalysisResult`, add: (1) a field-presence test that checks every diagnostic in both the parse-error and type-error paths, (2) a population test for each field using a Hew input known to trigger a non-empty value. | JOURNEY 2026-04-11 test/wasm-diagnostic-notes-suggestions; PR #967. |
+
+### `actor-surface-no-ask-verb` — actor request-reply is signature-driven, not keyword-driven
+
+- **area**: language surface, actor model, spec review
+- **invariant**: Hew's actor call surface is signature-driven dispatch. A `receive fn` returning `R` is a request-reply; one returning `()` is fire-and-forget. No caller-side keyword (`ask`, `.ask()`, `!`, `?`) is needed or permitted. `ask` is not lexer-recognised at any position in edition 2026; the select-arm actor discriminator is shape-based (`<actor>.<method>(<args>)` at HIR lowering), not a keyword (§4.11.1).
+- **why**: Pre-2026 editions mirrored Akka classic (`.send()`/`.ask()`). The 2026 rewrite eliminated both: the checker derives tell-vs-ask from the callee's `receive fn` return type, and `ActorRef<T>` is already a distinct nominal type that marks the mailbox boundary. Reintroducing a verb would regress per-method type checking and break the signature-driven invariant without adding expressiveness.
+
+| id | trigger | apply | evidence |
+| --- | --- | --- | --- |
+| `reject-ask-revival` | A PR proposes restoring `.send()`, `.ask()`, an `ask` keyword at call sites, or any other explicit verb for actor request-reply. | Reject the proposal. Actor request-reply is `await <ref>.<method>(<args>)` returning `Result<R, AskError>`; fire-and-forget is `<ref>.<method>(<args>)` returning `()`. Cite §2.1.1 (actor surface) and §4.11.1 (select arms) — `ask` is not lexer-recognised in edition 2026; the actor select-arm discriminator is the method-call shape, not a keyword. | 2026-05-15 actor ask surface review; PR #1782 (2026 rewrite); PR #1804 (sealed select, shape-based actor arm). |

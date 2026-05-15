@@ -92,3 +92,27 @@ fn positional_after_named_arg_is_skipped() {
         CallArg::Positional(_) => panic!("expected named argument"),
     }
 }
+
+// `ask` is not lexer-recognised in edition 2026 — it is reserved for a future
+// syntactic marker (HEW-FUTURE) but carries no keyword status today. `ask foo()`
+// is therefore treated as two adjacent expressions: the identifier `ask` followed
+// by the call `foo()`, and the parser reports an unexpected token after `ask`.
+#[test]
+fn ask_prefix_call_form_rejects() {
+    let source = r"fn f() { let x = ask foo(); }";
+    let result = hew_parser::parse(source);
+    assert!(
+        !result.errors.is_empty(),
+        "`ask foo()` should not parse as a valid expression"
+    );
+    // The parser sees `ask` as an identifier expression, then `foo` as an
+    // unexpected next token where `;` was expected.
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("expected `;`") || e.message.contains("unexpected")),
+        "expected a parse error mentioning unexpected token, got: {:?}",
+        result.errors
+    );
+}

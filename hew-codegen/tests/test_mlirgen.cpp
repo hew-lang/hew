@@ -1540,7 +1540,7 @@ static hew::ast::Program makeDiscardedScopeBadTailProgram() {
 
   auto outerSpan = mkSpan();
   Expr outerExpr;
-  outerExpr.kind = ExprScope{std::nullopt, std::move(innerBlock)};
+  outerExpr.kind = ExprScope{std::move(innerBlock)};
   outerExpr.span = outerSpan;
 
   StmtExpression exprStmt;
@@ -1645,7 +1645,7 @@ static hew::ast::Program makeDiscardedIfBadPartProgram(DiscardedIfBadPart badPar
 
   auto scopeSpan = mkSpan();
   Expr expr;
-  expr.kind = ExprScope{std::nullopt, std::move(scopeBlock)};
+  expr.kind = ExprScope{std::move(scopeBlock)};
   expr.span = scopeSpan;
 
   StmtExpression exprStmt;

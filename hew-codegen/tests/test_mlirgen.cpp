@@ -9625,7 +9625,7 @@ static void test_lambda_actor_receive_string_param_drop() {
 
   auto module = generateMLIR(ctx, R"(
 fn main() {
-    let handler = spawn (msg: String) => {
+    let handler = actor |msg: String| {
     };
 }
   )");
@@ -9665,7 +9665,7 @@ static void test_lambda_actor_receive_clears_enclosing_drop_excludes() {
   auto module = generateMLIR(ctx, R"(
 fn make_actor() -> String {
     let kept = int_to_string(7);
-    let worker = spawn (kept: String) => {
+    let worker = actor |kept: String| {
     };
     kept
 }
@@ -11045,7 +11045,7 @@ static void test_nonstructural_actor_send_uses_resolved_metadata() {
   auto module = generateMLIR(ctx, R"(
 fn main() {
     ({
-        let printer = spawn (x: int) => {
+        let printer = actor |x: int| {
             println(x);
         };
         printer
@@ -11092,7 +11092,7 @@ static void test_nonstructural_actor_send_missing_expr_type_fails_closed() {
   if (!loadProgramFromSource(R"(
 fn main() {
     ({
-        let printer = spawn (x: int) => {
+        let printer = actor |x: int| {
             println(x);
         };
         printer

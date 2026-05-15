@@ -179,7 +179,6 @@ private:
   // ── Actor expressions ─────────────────────────────────────────────
   mlir::Value generateSpawnExpr(const ast::ExprSpawn &expr);
   mlir::Value generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActor &expr);
-  mlir::Value generateSendExpr(const ast::ExprSend &expr);
   void generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::string &fnName);
   mlir::Value generateActorMethodSend(mlir::Value actorPtr, const ActorInfo &actorInfo,
                                       const std::string &methodName,

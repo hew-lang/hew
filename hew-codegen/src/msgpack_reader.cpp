@@ -1316,14 +1316,6 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
     }
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "Send") {
-    ast::ExprSend e;
-    e.target = std::make_unique<ast::Spanned<ast::Expr>>(
-        parseSpanned<ast::Expr>(mapReq(*payload, "target"), parseExpr));
-    e.message = std::make_unique<ast::Spanned<ast::Expr>>(
-        parseSpanned<ast::Expr>(mapReq(*payload, "message"), parseExpr));
-    return ast::Expr{std::move(e), {}};
-  }
   if (name == "Select") {
     ast::ExprSelect e;
     e.arms = parseVec<ast::SelectArm>(mapReq(*payload, "arms"), parseSelectArm);

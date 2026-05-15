@@ -854,16 +854,6 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     return hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{lhs, rhs});
   }
 
-  case ast::BinaryOp::Send: {
-    // The type-checker keys actor_send_aliasing on the right operand's span
-    // (`right.1` in `enforce_actor_boundary_send`).
-    ast::Span msgSpan = expr.right->span;
-    auto sendAliasingAttr = aliasingAttrForSpans({msgSpan}, location);
-    hew::ActorSendOp::create(builder, location, lhs, builder.getI32IntegerAttr(0), sendAliasingAttr,
-                             mlir::ValueRange{rhs});
-    return nullptr;
-  }
-
   default:
     ++errorCount_;
     emitError(location) << "unsupported binary operator";
@@ -2516,7 +2506,6 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
         return false;
       if (std::holds_alternative<ast::ExprCall>(expr.value.kind) ||
           std::holds_alternative<ast::ExprMethodCall>(expr.value.kind) ||
-          std::holds_alternative<ast::ExprSend>(expr.value.kind) ||
           std::holds_alternative<ast::ExprJoin>(expr.value.kind) ||
           std::holds_alternative<ast::ExprTimeout>(expr.value.kind) ||
           std::holds_alternative<ast::ExprYield>(expr.value.kind) ||
@@ -5872,9 +5861,6 @@ void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::s
     }
   } else if (auto *awaitE = std::get_if<ast::ExprAwait>(&expr.kind)) {
     collectFreeVarsInExpr(awaitE->inner->value, bound, freeVars);
-  } else if (auto *sendE = std::get_if<ast::ExprSend>(&expr.kind)) {
-    collectFreeVarsInExpr(sendE->target->value, bound, freeVars);
-    collectFreeVarsInExpr(sendE->message->value, bound, freeVars);
   } else if (auto *interp = std::get_if<ast::ExprInterpolatedString>(&expr.kind)) {
     for (const auto &part : interp->parts) {
       if (auto *ep = std::get_if<ast::StringPartExpr>(&part)) {

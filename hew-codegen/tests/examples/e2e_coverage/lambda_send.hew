@@ -1,4 +1,4 @@
-// E2E test: lambda actor .send() exercises generateSendExpr.
+// E2E test: lambda actor .send() method call lowering.
 fn main() {
     let counter = actor |x: int| {
         println(x);

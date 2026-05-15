@@ -138,7 +138,6 @@ enum class BinaryOp {
   Shr,
   Range,
   RangeInclusive,
-  Send,
 };
 
 enum class UnaryOp {
@@ -406,10 +405,6 @@ struct ExprStructInit {
   /// `type_args` key and deserialize to `std::nullopt`).
   std::optional<std::vector<Spanned<TypeExpr>>> type_args;
 };
-struct ExprSend {
-  std::unique_ptr<Spanned<Expr>> target;
-  std::unique_ptr<Spanned<Expr>> message;
-};
 struct ExprSelect {
   std::vector<SelectArm> arms;
   std::optional<std::unique_ptr<TimeoutClause>> timeout;
@@ -484,8 +479,8 @@ struct ExprMapLiteral {
 struct Expr {
   std::variant<ExprBinary, ExprUnary, ExprLiteral, ExprIdentifier, ExprTuple, ExprArray, ExprBlock,
                ExprIf, ExprIfLet, ExprMatch, ExprLambda, ExprSpawn, ExprSpawnLambdaActor, ExprScope,
-               ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSend,
-               ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate, ExprThis,
+               ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSelect,
+               ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate, ExprThis,
                ExprFieldAccess, ExprIndex, ExprCast, ExprPostfixTry, ExprRange, ExprAwait,
                ExprScopeLaunch, ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat,
                ExprByteStringLiteral, ExprByteArrayLiteral, ExprMapLiteral>

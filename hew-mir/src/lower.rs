@@ -3534,3 +3534,389 @@ mod slice3_narrowing_proptests {
         }
     }
 }
+
+// ============================================================================
+// Slice 3.5 cross-block stale-DuplexHandle detection — generative property
+// tests against `validate_cross_block_split_consume` built directly on
+// hand-constructed `BasicBlock` + `Instr` shapes. The full source pipeline
+// can't drive these tests because the parser surface for `.send_half()` /
+// `.recv_half()` is slice-4 work; the synthetic inputs mirror what slice 4
+// will eventually emit.
+// ============================================================================
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod slice35_cross_block_proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn duplex_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Duplex".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::I64],
+        }
+    }
+
+    /// Build a single-block CFG that splits `DuplexHandle(parent)` into
+    /// a `SendHalf(parent)` then attempts to drop the unified handle
+    /// after the split. The structural same-list check already rejects
+    /// this shape; the cross-block check must also catch the
+    /// dataflow-derived stale state on the same block (a Live entry
+    /// followed by a Move-to-half transitions to Consumed before the
+    /// block terminator, but the drop plan was assembled from the
+    /// pre-Move LIFO — fail-closed).
+    fn build_split_block(parent: u32, terminator: Terminator) -> BasicBlock {
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::Move {
+                dest: Place::SendHalf(parent),
+                src: Place::DuplexHandle(parent),
+            }],
+            terminator,
+        }
+    }
+
+    fn elab_with_return_drop(parent: u32) -> ElaboratedMirFunction {
+        ElaboratedMirFunction {
+            name: "f".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![ElabBlock {
+                id: 0,
+                kind: BlockKind::Normal,
+                drops: vec![],
+                successor: None,
+            }],
+            drop_plans: vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::DuplexHandle(parent),
+                        ty: duplex_ty(),
+                        drop_fn: None,
+                        kind: DropKind::DuplexClose,
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        }
+    }
+
+    proptest! {
+        /// Cross-block: A splits DuplexHandle(p) in block 0, a drop on
+        /// it appears in the Return plan. The checker must fire
+        /// DropPlanUndetermined.
+        #[test]
+        fn split_in_predecessor_rejects_stale_unified_drop(
+            parent in 0u32..8,
+        ) {
+            let blocks = vec![build_split_block(parent, Terminator::Return)];
+            let elab = elab_with_return_drop(parent);
+            let findings = validate_cross_block_split_consume(&blocks, &elab);
+            prop_assert!(
+                findings
+                    .iter()
+                    .any(|f| matches!(f, MirCheck::DropPlanUndetermined { .. })),
+                "expected DropPlanUndetermined when DuplexHandle({parent}) is split AND \
+                 still appears in the drop plan; got {findings:?}"
+            );
+        }
+
+        /// Cross-block: block 0 branches into 1 (split path) and 2
+        /// (no-split path), both jump to block 3 whose Return plan
+        /// drops the unified handle. The meet of preds at block 3 is
+        /// `MaybeConsumed` — fail-closed.
+        #[test]
+        fn split_on_some_paths_rejects_unified_drop_at_join(
+            parent in 0u32..8,
+        ) {
+            let blocks = vec![
+                // Entry: branch on a dummy cond (cond Place won't be
+                // evaluated by the validator — only Move shape matters).
+                BasicBlock {
+                    id: 0,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Branch {
+                        cond: Place::Local(99),
+                        then_target: 1,
+                        else_target: 2,
+                    },
+                },
+                // Then: split DuplexHandle(parent) into SendHalf.
+                BasicBlock {
+                    id: 1,
+                    statements: vec![],
+                    instructions: vec![Instr::Move {
+                        dest: Place::SendHalf(parent),
+                        src: Place::DuplexHandle(parent),
+                    }],
+                    terminator: Terminator::Goto { target: 3 },
+                },
+                // Else: no split.
+                BasicBlock {
+                    id: 2,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Goto { target: 3 },
+                },
+                // Join: Return — the drop plan is checked here.
+                BasicBlock {
+                    id: 3,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+            ];
+            // The Return ExitPath references block 3 — point the elab
+            // drop plan at it.
+            let mut elab = elab_with_return_drop(parent);
+            elab.drop_plans = vec![(
+                ExitPath::Return { block: 3 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::DuplexHandle(parent),
+                        ty: duplex_ty(),
+                        drop_fn: None,
+                        kind: DropKind::DuplexClose,
+                    }],
+                },
+            )];
+            elab.blocks = vec![
+                ElabBlock {
+                    id: 0,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+                ElabBlock {
+                    id: 1,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+                ElabBlock {
+                    id: 2,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+                ElabBlock {
+                    id: 3,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                },
+            ];
+
+            let findings = validate_cross_block_split_consume(&blocks, &elab);
+            let has_undetermined = findings
+                .iter()
+                .any(|f| matches!(f, MirCheck::DropPlanUndetermined { .. }));
+            prop_assert!(
+                has_undetermined,
+                "expected DropPlanUndetermined at join block 3 when DuplexHandle({parent}) \
+                 is split on only the then-path; got {findings:?}"
+            );
+            // The reason text should anchor at the split-emitting block (1).
+            let reason_mentions_block_1 = findings.iter().any(|f| match f {
+                MirCheck::DropPlanUndetermined { reason, .. } => reason.contains("block 1"),
+                _ => false,
+            });
+            prop_assert!(
+                reason_mentions_block_1,
+                "diagnostic reason should cite block 1 as the split-emitting block; \
+                 got {findings:?}"
+            );
+        }
+
+        /// Cross-block: split on EVERY path. The meet at the join is
+        /// `Consumed`. The drop on the unified handle at the join
+        /// must be rejected with a Consumed reason (not MaybeConsumed).
+        #[test]
+        fn split_on_every_path_rejects_unified_drop_at_join(
+            parent in 0u32..8,
+        ) {
+            let blocks = vec![
+                BasicBlock {
+                    id: 0,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Branch {
+                        cond: Place::Local(99),
+                        then_target: 1,
+                        else_target: 2,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: vec![],
+                    instructions: vec![Instr::Move {
+                        dest: Place::SendHalf(parent),
+                        src: Place::DuplexHandle(parent),
+                    }],
+                    terminator: Terminator::Goto { target: 3 },
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: vec![],
+                    instructions: vec![Instr::Move {
+                        dest: Place::RecvHalf(parent),
+                        src: Place::DuplexHandle(parent),
+                    }],
+                    terminator: Terminator::Goto { target: 3 },
+                },
+                BasicBlock {
+                    id: 3,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+            ];
+            let mut elab = elab_with_return_drop(parent);
+            elab.drop_plans = vec![(
+                ExitPath::Return { block: 3 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::DuplexHandle(parent),
+                        ty: duplex_ty(),
+                        drop_fn: None,
+                        kind: DropKind::DuplexClose,
+                    }],
+                },
+            )];
+            elab.blocks = (0..=3)
+                .map(|id| ElabBlock {
+                    id,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                })
+                .collect();
+
+            let findings = validate_cross_block_split_consume(&blocks, &elab);
+            prop_assert!(
+                findings
+                    .iter()
+                    .any(|f| matches!(f, MirCheck::DropPlanUndetermined { .. })),
+                "expected DropPlanUndetermined when DuplexHandle({parent}) is split on \
+                 every reaching path; got {findings:?}"
+            );
+        }
+
+        /// Non-regression: no split, no rejection. A drop plan that
+        /// fires the unified DuplexHandle on a block with no
+        /// predecessor split must accept silently — the checker is a
+        /// fail-CLOSED gate, not a fail-OPEN one. (No findings is the
+        /// expected outcome.)
+        #[test]
+        fn no_split_no_rejection(
+            parent in 0u32..8,
+        ) {
+            let blocks = vec![
+                BasicBlock {
+                    id: 0,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+            ];
+            let elab = elab_with_return_drop(parent);
+            let findings = validate_cross_block_split_consume(&blocks, &elab);
+            prop_assert!(
+                findings.is_empty(),
+                "no split observed; the cross-block check must not invent findings; \
+                 got {findings:?}"
+            );
+        }
+
+        /// Multi-return: two Return blocks, the unified DuplexHandle is
+        /// split on the predecessor edge of one Return but not the
+        /// other. The first Return's drop fires legally (no preceding
+        /// split); the second's must be rejected.
+        #[test]
+        fn multi_return_per_path_drops_only_flag_split_path(
+            parent in 0u32..8,
+        ) {
+            let blocks = vec![
+                // Entry branches into two Return blocks.
+                BasicBlock {
+                    id: 0,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Branch {
+                        cond: Place::Local(99),
+                        then_target: 1,
+                        else_target: 2,
+                    },
+                },
+                // Then-arm: split + return.
+                BasicBlock {
+                    id: 1,
+                    statements: vec![],
+                    instructions: vec![Instr::Move {
+                        dest: Place::SendHalf(parent),
+                        src: Place::DuplexHandle(parent),
+                    }],
+                    terminator: Terminator::Return,
+                },
+                // Else-arm: no split, return.
+                BasicBlock {
+                    id: 2,
+                    statements: vec![],
+                    instructions: vec![],
+                    terminator: Terminator::Return,
+                },
+            ];
+            let mut elab = elab_with_return_drop(parent);
+            // Two Return drop plans, one per Return-terminated block.
+            elab.drop_plans = vec![
+                (
+                    ExitPath::Return { block: 1 },
+                    DropPlan {
+                        drops: vec![ElabDrop {
+                            place: Place::DuplexHandle(parent),
+                            ty: duplex_ty(),
+                            drop_fn: None,
+                            kind: DropKind::DuplexClose,
+                        }],
+                    },
+                ),
+                (
+                    ExitPath::Return { block: 2 },
+                    DropPlan {
+                        drops: vec![ElabDrop {
+                            place: Place::DuplexHandle(parent),
+                            ty: duplex_ty(),
+                            drop_fn: None,
+                            kind: DropKind::DuplexClose,
+                        }],
+                    },
+                ),
+            ];
+            elab.blocks = (0..=2)
+                .map(|id| ElabBlock {
+                    id,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                })
+                .collect();
+
+            let findings = validate_cross_block_split_consume(&blocks, &elab);
+            // Exactly one finding: the Return at block 1 (split path).
+            // Block 2's Return drop fires on the unified handle that
+            // was never split on its path — accept.
+            let on_block_1 = findings.iter().filter(|f| {
+                matches!(f, MirCheck::DropPlanUndetermined { block, .. } if *block == 1)
+            }).count();
+            let on_block_2 = findings.iter().filter(|f| {
+                matches!(f, MirCheck::DropPlanUndetermined { block, .. } if *block == 2)
+            }).count();
+            prop_assert_eq!(on_block_1, 1, "block 1 (split path) must reject the unified drop");
+            prop_assert_eq!(on_block_2, 0, "block 2 (no-split path) must accept the unified drop");
+        }
+    }
+}

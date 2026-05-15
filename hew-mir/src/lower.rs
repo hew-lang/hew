@@ -1288,6 +1288,7 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
                 });
             }
         }
+        check_duplex_split_state(*block, &plan.drops, &mut findings);
     }
     // Lambda-actor capture invariants. A Weak capture must attach to a
     // LambdaActorHandle (the self-binding weak-ref discipline only
@@ -1312,6 +1313,133 @@ fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> {
         }
     }
     findings
+}
+
+/// Parent-local id for a Duplex-family Place. `DuplexHandle(N)`,
+/// `SendHalf(N)`, and `RecvHalf(N)` all reference the same parent
+/// Duplex local `N`; the variants only differ in which directions
+/// the drop closes. Returns `None` for non-Duplex-family Places.
+#[must_use]
+fn duplex_parent_local(place: Place) -> Option<u32> {
+    match place {
+        Place::DuplexHandle(n) | Place::SendHalf(n) | Place::RecvHalf(n) => Some(n),
+        Place::LambdaActorHandle(_) | Place::Local(_) | Place::ReturnSlot => None,
+    }
+}
+
+/// Consume-on-split invariant for `Duplex<S, R>` handles.
+///
+/// A `Duplex` may be addressed by either the unified `DuplexHandle`
+/// (close-both-dirs) or by the pair of direction-aliases
+/// `SendHalf` / `RecvHalf` (close-one-dir each). The split operation
+/// (`.send_half()` / `.recv_half()`) MOVES the underlying handle: after
+/// a split, the original `DuplexHandle` binding is uninhabited and only
+/// the half-handle binding(s) remain in the drop plan. If a stale
+/// `DuplexHandle(N)` coexists with `SendHalf(N)` or `RecvHalf(N)` in the
+/// same drop plan, codegen would emit close-both on the unified handle
+/// AND close-one on the half — closing the same direction twice and, in
+/// the runtime's refcount discipline, closing a direction that the
+/// half-handle binding now owns. Same shape if two `SendHalf(N)` or two
+/// `RecvHalf(N)` entries coexist (the half-handle is also a moved
+/// resource; aliased drops would close the same queue twice).
+///
+/// The plan is sound iff, for each parent local `N`, the drop plan
+/// contains at most one of `{DuplexHandle(N), <SendHalf(N) + RecvHalf(N)
+/// pair>, SendHalf(N) alone, RecvHalf(N) alone}` — never a mix and
+/// never duplicates within a half-class.
+///
+/// LESSONS: raii-null-after-move (consume-on-split is the affine
+/// move-checker discipline expressed at the drop-plan layer),
+/// cleanup-all-exits (each direction closes exactly once per exit
+/// path), boundary-fail-closed (a stale-handle drop plan is rejected
+/// before codegen observes it).
+///
+/// NOTE: the HIR construction surface for `.send_half()` /
+/// `.recv_half()` is slice-4 work (`hew-types/src/builtin_names.rs:270`
+/// WHEN-OBSOLETE marker). Until that surface exists, the upstream
+/// lowering never EMITS a drop plan that violates the invariant; this
+/// check is the structural backstop that fails closed when slice 4
+/// wires the split methods through MIR. The synthetic property tests
+/// in `slice3_invariants` exercise every legal and illegal split-state
+/// shape against this checker today.
+fn check_duplex_split_state(block: u32, drops: &[ElabDrop], findings: &mut Vec<MirCheck>) {
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct PerParent {
+        whole: u32,
+        send: u32,
+        recv: u32,
+    }
+
+    let mut per_parent: BTreeMap<u32, PerParent> = BTreeMap::new();
+    for drop in drops {
+        let Some(parent) = duplex_parent_local(drop.place) else {
+            continue;
+        };
+        let entry = per_parent.entry(parent).or_default();
+        match drop.place {
+            Place::DuplexHandle(_) => entry.whole = entry.whole.saturating_add(1),
+            Place::SendHalf(_) => entry.send = entry.send.saturating_add(1),
+            Place::RecvHalf(_) => entry.recv = entry.recv.saturating_add(1),
+            _ => {}
+        }
+    }
+
+    for (parent, counts) in per_parent {
+        // Whole + any half is the "stale unified handle after split"
+        // bug: split would have moved the DuplexHandle out, so its
+        // presence alongside a half means codegen would close the same
+        // direction twice.
+        if counts.whole > 0 && (counts.send > 0 || counts.recv > 0) {
+            findings.push(MirCheck::DropPlanUndetermined {
+                block,
+                reason: format!(
+                    "drop plan contains both DuplexHandle({parent}) and a half-handle \
+                     (send={}, recv={}) for the same parent local; the split \
+                     operation must consume the DuplexHandle (slice-4 HIR seam \
+                     for .send_half() / .recv_half() must MOVE the unified handle)",
+                    counts.send, counts.recv,
+                ),
+            });
+        }
+        // Multiple DuplexHandle entries for the same parent: should be
+        // structurally impossible (one binding per local), but reject
+        // defensively so a duplicated drop emission is caught.
+        if counts.whole > 1 {
+            findings.push(MirCheck::DropPlanUndetermined {
+                block,
+                reason: format!(
+                    "drop plan contains {} DuplexHandle({parent}) entries for the \
+                     same parent local; close-both-dirs must fire exactly once",
+                    counts.whole,
+                ),
+            });
+        }
+        // Aliased halves: two SendHalf(N) or two RecvHalf(N) would
+        // close the same queue twice. The split methods return a
+        // single half per direction, so duplicates are a lowering bug.
+        if counts.send > 1 {
+            findings.push(MirCheck::DropPlanUndetermined {
+                block,
+                reason: format!(
+                    "drop plan contains {} SendHalf({parent}) entries; \
+                     the S-direction must close exactly once",
+                    counts.send,
+                ),
+            });
+        }
+        if counts.recv > 1 {
+            findings.push(MirCheck::DropPlanUndetermined {
+                block,
+                reason: format!(
+                    "drop plan contains {} RecvHalf({parent}) entries; \
+                     the R-direction must close exactly once",
+                    counts.recv,
+                ),
+            });
+        }
+    }
 }
 
 /// Resolve the `DropKind` for an `ElabDrop` given the addressable
@@ -1839,6 +1967,197 @@ mod slice3_invariants {
         ];
         let elab = make_elab_with_drops(drops);
         assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    // ---------- consume-on-split invariant for Duplex<S, R> ----------
+
+    /// Build an `ElabDrop` addressing a Duplex-family `Place` with its
+    /// canonical `DropKind`. Used by every split-state shape below.
+    fn duplex_drop(place: Place) -> ElabDrop {
+        let ty = duplex_int_int_ty();
+        let kind = drop_kind_for(place, &ty);
+        ElabDrop {
+            place,
+            ty,
+            drop_fn: None,
+            kind,
+        }
+    }
+
+    #[test]
+    fn split_state_whole_only_is_accepted() {
+        // Pre-split: only DuplexHandle(N) is in the drop plan. Canonical
+        // "no .send_half() was ever called" shape.
+        let elab = make_elab_with_drops(vec![duplex_drop(Place::DuplexHandle(0))]);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn split_state_both_halves_only_is_accepted() {
+        // Post-full-split: DuplexHandle is gone (consumed by both
+        // split methods), only SendHalf(N) + RecvHalf(N) remain.
+        let elab = make_elab_with_drops(vec![
+            duplex_drop(Place::SendHalf(0)),
+            duplex_drop(Place::RecvHalf(0)),
+        ]);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn split_state_send_half_only_is_accepted() {
+        // .send_half() called, RecvHalf retained on the original (rare
+        // but legal: caller kept the unified handle's recv side via a
+        // .recv_half() that wasn't yet called). The plan-level shape
+        // is one half — codegen closes that direction; the other side
+        // stays open under runtime refcount until its handle drops.
+        let elab = make_elab_with_drops(vec![duplex_drop(Place::SendHalf(0))]);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn split_state_recv_half_only_is_accepted() {
+        let elab = make_elab_with_drops(vec![duplex_drop(Place::RecvHalf(0))]);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn split_state_whole_plus_send_half_is_rejected() {
+        // The stale-unified-handle bug: split would have moved the
+        // DuplexHandle out, so it must NOT coexist with a half.
+        // Without this rejection, codegen emits close-both on the
+        // stale handle AND close-send on the half — the S-direction
+        // closes twice; the R-direction closes once on a half-handle
+        // binding that doesn't own it.
+        let elab = make_elab_with_drops(vec![
+            duplex_drop(Place::DuplexHandle(0)),
+            duplex_drop(Place::SendHalf(0)),
+        ]);
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1, "expected exactly one finding");
+        let MirCheck::DropPlanUndetermined { reason, .. } = &findings[0] else {
+            panic!("expected DropPlanUndetermined, got {:?}", findings[0]);
+        };
+        assert!(
+            reason.contains("DuplexHandle") && reason.contains("half-handle"),
+            "diagnostic must name the stale-handle conflict: {reason}"
+        );
+    }
+
+    #[test]
+    fn split_state_whole_plus_recv_half_is_rejected() {
+        let elab = make_elab_with_drops(vec![
+            duplex_drop(Place::DuplexHandle(0)),
+            duplex_drop(Place::RecvHalf(0)),
+        ]);
+        assert_eq!(validate_drop_plan(&elab).len(), 1);
+    }
+
+    #[test]
+    fn split_state_whole_plus_both_halves_is_rejected() {
+        let elab = make_elab_with_drops(vec![
+            duplex_drop(Place::DuplexHandle(0)),
+            duplex_drop(Place::SendHalf(0)),
+            duplex_drop(Place::RecvHalf(0)),
+        ]);
+        assert_eq!(validate_drop_plan(&elab).len(), 1);
+    }
+
+    #[test]
+    fn split_state_duplicate_send_half_is_rejected() {
+        // Two SendHalf(N) entries would close the S-direction twice
+        // — a lowering bug (the split method returns a single half).
+        let elab = make_elab_with_drops(vec![
+            duplex_drop(Place::SendHalf(0)),
+            duplex_drop(Place::SendHalf(0)),
+        ]);
+        let findings = validate_drop_plan(&elab);
+        assert_eq!(findings.len(), 1);
+        let MirCheck::DropPlanUndetermined { reason, .. } = &findings[0] else {
+            unreachable!();
+        };
+        assert!(reason.contains("SendHalf") && reason.contains("S-direction"));
+    }
+
+    #[test]
+    fn split_state_duplicate_recv_half_is_rejected() {
+        let elab = make_elab_with_drops(vec![
+            duplex_drop(Place::RecvHalf(0)),
+            duplex_drop(Place::RecvHalf(0)),
+        ]);
+        assert_eq!(validate_drop_plan(&elab).len(), 1);
+    }
+
+    #[test]
+    fn split_state_duplicate_whole_is_rejected() {
+        let elab = make_elab_with_drops(vec![
+            duplex_drop(Place::DuplexHandle(0)),
+            duplex_drop(Place::DuplexHandle(0)),
+        ]);
+        assert_eq!(validate_drop_plan(&elab).len(), 1);
+    }
+
+    #[test]
+    fn split_state_independent_parents_do_not_interfere() {
+        // Two distinct Duplex parents (N=0 and N=1). Parent 0 is in
+        // the whole state; parent 1 is in the both-halves state.
+        // Neither should flag — the invariant is per-parent.
+        let elab = make_elab_with_drops(vec![
+            duplex_drop(Place::DuplexHandle(0)),
+            duplex_drop(Place::SendHalf(1)),
+            duplex_drop(Place::RecvHalf(1)),
+        ]);
+        assert!(validate_drop_plan(&elab).is_empty());
+    }
+
+    #[test]
+    fn split_state_each_direction_closes_exactly_once_property() {
+        // Property: for every legal split-state shape on a single
+        // Duplex, the emitted drop plan closes the S-direction at
+        // most once AND the R-direction at most once. The four
+        // legal shapes (Whole, SendOnly, RecvOnly, BothHalves) all
+        // satisfy this; the rejected shapes (Whole+Send, Whole+Recv,
+        // Whole+Both, dup-Send, dup-Recv, dup-Whole) violate it.
+        //
+        // Encoded as exhaustive enumeration matching the project's
+        // existing exhaustive-small-state test style (see
+        // dataflow.rs meet-lattice tests).
+        let parent = 0u32;
+        let candidates: Vec<(&str, Vec<Place>)> = vec![
+            ("Whole", vec![Place::DuplexHandle(parent)]),
+            ("SendOnly", vec![Place::SendHalf(parent)]),
+            ("RecvOnly", vec![Place::RecvHalf(parent)]),
+            (
+                "BothHalves",
+                vec![Place::SendHalf(parent), Place::RecvHalf(parent)],
+            ),
+        ];
+        for (label, places) in candidates {
+            // Count how many times each direction closes under the
+            // canonical Place->DropKind mapping.
+            let mut s_count = 0u32;
+            let mut r_count = 0u32;
+            for p in &places {
+                match drop_kind_for(*p, &duplex_int_int_ty()) {
+                    DropKind::DuplexClose => {
+                        s_count += 1;
+                        r_count += 1;
+                    }
+                    DropKind::DuplexHalfClose(Direction::Send) => s_count += 1,
+                    DropKind::DuplexHalfClose(Direction::Recv) => r_count += 1,
+                    DropKind::Resource | DropKind::LambdaActorRelease => {}
+                }
+            }
+            assert!(
+                s_count <= 1 && r_count <= 1,
+                "{label}: each direction must close at most once (got S={s_count}, R={r_count})"
+            );
+            let drops: Vec<ElabDrop> = places.into_iter().map(duplex_drop).collect();
+            let elab = make_elab_with_drops(drops);
+            assert!(
+                validate_drop_plan(&elab).is_empty(),
+                "{label}: legal split state must validate"
+            );
+        }
     }
 
     // ---------- per-Return live-set narrowing (synthetic) ----------

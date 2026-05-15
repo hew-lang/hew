@@ -800,16 +800,19 @@ joinExpr
 // only once.
 //
 // Notes:
-//   - `fork name = expr` and bare `fork expr` are only legal dynamically
-//     inside a `fork` block; outside one, the checker emits
-//     `ForkOutsideForkBlock`.
+//   - `scope { ... }` is the structured-concurrency block (the lexical-
+//     lifetime boundary). `fork name = expr` and bare `fork expr` are
+//     only legal dynamically inside a `scope` block; outside one, the
+//     checker emits `ForkOutsideScopeBlock`.
 //   - Earlier drafts exposed `scope |s| { s.launch { } / s.spawn { } /
-//     s.cancel() }`; that surface was subsumed by `fork` (HEW-SPEC §4.9
-//     historical note).
-forkExpr
-    : 'fork' block                          // block form: fork { ... }
-    | 'fork' ident '=' expr                 // child binding: fork name = expr
-    | 'fork' expr                           // bare child:   fork expr
+//     s.cancel() }`; that entire surface was removed in the 2026 edition
+//     (HEW-SPEC §4.9 historical note).
+scopeExpr
+    : 'scope' block                         // structured-concurrency block
+    ;
+forkChild
+    : 'fork' ident '=' expr                 // child binding: fork name = expr
+    | 'fork' expr                           // bare child:    fork expr
     ;
 
 cooperateExpr

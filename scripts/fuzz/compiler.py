@@ -899,8 +899,9 @@ def fuzz_mutations(ctx: FuzzContext, n: int = 200) -> None:
     ]
     mutations = [
         lambda s: s[: random.randint(0, len(s))],
-        lambda s: s
-        + random.choice(["{", "}", "(", ")", ";", "\n"]) * random.randint(1, 50),
+        lambda s: (
+            s + random.choice(["{", "}", "(", ")", ";", "\n"]) * random.randint(1, 50)
+        ),
         lambda s: (
             s[: (p := random.randint(0, len(s)))]
             + random.choice(
@@ -1789,13 +1790,13 @@ def fuzz_scope_concurrency(ctx: FuzzContext) -> None:
     """Structured concurrency: scope, select, join, cooperate."""
     cases = [
         ("basic_scope", "fn main() { scope { println(1); }; }"),
-        ("scope_with_binding", "fn main() { scope |s| { println(1); }; }"),
         (
-            "scope_launch",
+            "scope_fork_child",
             (
+                "fn compute() -> int { 42 }\n"
                 "fn main() {\n"
-                "  scope |s| {\n"
-                "    let t = s.launch { 42 };\n"
+                "  scope {\n"
+                "    fork t = compute();\n"
                 "    let r = await t;\n"
                 "    println(r);\n"
                 "  };\n"
@@ -1805,11 +1806,14 @@ def fuzz_scope_concurrency(ctx: FuzzContext) -> None:
         (
             "scope_multiple_tasks",
             (
+                "fn one() -> int { 1 }\n"
+                "fn two() -> int { 2 }\n"
+                "fn three() -> int { 3 }\n"
                 "fn main() {\n"
-                "  scope |s| {\n"
-                "    let t1 = s.launch { 1 };\n"
-                "    let t2 = s.launch { 2 };\n"
-                "    let t3 = s.launch { 3 };\n"
+                "  scope {\n"
+                "    fork t1 = one();\n"
+                "    fork t2 = two();\n"
+                "    fork t3 = three();\n"
                 "  };\n"
                 "}"
             ),
@@ -3843,9 +3847,7 @@ def fuzz_formatter(ctx: FuzzContext, n: int = 200) -> None:
             main_stmts.append("println(d.f0);")
 
         if random.random() < 0.3:
-            main_stmts.append(
-                f'let msg = f"value={{1 + {random.randint(1, 99)}}}";'
-            )
+            main_stmts.append(f'let msg = f"value={{1 + {random.randint(1, 99)}}}";')
             main_stmts.append("println(msg);")
 
         main_stmts.append(f"let x = {random.randint(0, 100)};")

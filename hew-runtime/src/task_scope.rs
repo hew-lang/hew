@@ -909,6 +909,71 @@ mod tests {
     }
 
     #[test]
+    fn scope_cancel_of_ready_task_reclaims_env_ptr_but_runs_no_user_drop() {
+        // Pin the edition-2026 substrate behaviour for cancelling a Ready
+        // (never-spawned) task. The intra-process expectation is:
+        //
+        // 1. Cancellation transitions the task to Done with error Cancelled.
+        // 2. hew_task_scope_destroy reclaims the task's env_ptr through the
+        //    declared Rc drop fn — the captured environment allocation is
+        //    not leaked.
+        //
+        // What this test deliberately does NOT assert: that user-level
+        // @resource close() or @linear consume calls run on the cancel
+        // path. Those calls are emitted inside the task_fn body that the
+        // runtime never invokes for a Ready-cancelled task. Edition 2026
+        // therefore rejects @linear captures into a child whose
+        // cancel-reachable exits don't pass through a consume site (see
+        // LinearCaptureCancellable, HEW-SPEC-2026 §4.3); @resource close
+        // semantics rely on the task body reaching its drop elaboration.
+        // The deeper fix (running per-task drop dispatch on the cancel
+        // path) is tracked alongside the broader cancellation-token
+        // vocabulary in HEW-FUTURE §1.2; this regression test pins the
+        // current contract so a future change either upgrades it or has
+        // to acknowledge it.
+        use std::sync::atomic::AtomicUsize;
+
+        static ENV_DROPS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn count_env_drop(_: *mut u8) {
+            ENV_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        ENV_DROPS.store(0, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_set_env(
+                task,
+                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+            );
+            hew_task_scope_spawn(scope, task);
+
+            // Ready-cancel transitions the task to Done with Cancelled. No
+            // worker thread was spawned, so no user-level task_fn body ran.
+            hew_task_scope_cancel(scope);
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+            assert_eq!(
+                ENV_DROPS.load(Ordering::SeqCst),
+                0,
+                "env_ptr drop must not fire while the task pointer is still owned by the scope"
+            );
+
+            // hew_task_scope_destroy walks the task list and frees each
+            // task; hew_task_free invokes hew_rc_drop on a non-null
+            // env_ptr, which calls the registered count_env_drop hook.
+            hew_task_scope_destroy(scope);
+            assert_eq!(
+                ENV_DROPS.load(Ordering::SeqCst),
+                1,
+                "env_ptr drop must fire exactly once when the scope reclaims the cancelled task"
+            );
+        }
+    }
+
+    #[test]
     fn scope_destroy_after_cancel_stays_bounded_with_live_running_task() {
         use std::sync::atomic::AtomicBool;
         use std::time::{Duration, Instant};

@@ -784,11 +784,6 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
         ),
         ("loop", "loop {\n\t$0\n}", "loop { ... }"),
         (
-            "async fn",
-            "async fn ${1:name}(${2:params}) {\n\t$0\n}",
-            "async fn name(params) { ... }",
-        ),
-        (
             "supervisor",
             "supervisor ${1:Name} {\n\t$0\n}",
             "supervisor Name { ... }",

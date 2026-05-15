@@ -1,4 +1,4 @@
-async fn compute(n: i32) -> i32 {
+fn compute(n: i32) -> i32 {
     let result = fib(n);
     result
 }

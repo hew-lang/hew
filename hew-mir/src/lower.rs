@@ -347,6 +347,23 @@ struct Builder {
     /// MIR lowering so the marker is the single fact about whether a Named
     /// type participates in the ownership-discipline surface.
     type_classes: hew_hir::TypeClassTable,
+    /// Lambda-actor capture ledger collected across every
+    /// `HirExprKind::SpawnLambdaActor` literal in the function body.
+    /// Drained into `ElaboratedMirFunction.lambda_captures` at the
+    /// elaboration boundary; the structural fail-closed checker
+    /// `validate_lambda_captures` runs against the drained list.
+    lambda_captures: Vec<LambdaCapture>,
+    /// `Some(LambdaActorHandle)` while the producer is lowering the
+    /// value of `let <name> = actor |..| { .. }`. The `HirStmtKind::Let`
+    /// arm pre-allocates the actor's local and records the
+    /// `LambdaActorHandle(N)` here BEFORE lowering the value, so
+    /// `lower_spawn_lambda_actor` reuses the slot the binding already
+    /// owns instead of allocating a second local. The HIR forward-bind
+    /// already routed the binding's resolved name to the lambda's own
+    /// `BindingId`; this mirror at MIR keeps the binding's `Place`
+    /// alignment to that same handle so a Weak self-capture's slot
+    /// resolves correctly.
+    pending_lambda_actor_handle: Option<Place>,
 }
 
 impl Builder {
@@ -478,7 +495,35 @@ impl Builder {
     fn stmt(&mut self, stmt: &hew_hir::HirStmt) {
         match &stmt.kind {
             HirStmtKind::Let(binding, Some(value)) => {
+                // Mirror the HIR forward-bind discipline at the MIR
+                // layer for actor-lambda RHS. When the value is
+                // `HirExprKind::SpawnLambdaActor`, pre-allocate the
+                // binding's backend slot as a
+                // `Place::LambdaActorHandle(N)` BEFORE lowering the
+                // value. The body walk then sees a `BindingRef` to
+                // the let-name resolve to a `binding_locals` entry
+                // that already points at the actor's own handle;
+                // the producer reuses this slot via
+                // `pending_lambda_actor_handle` instead of allocating
+                // a second local. Without this pre-allocation, a
+                // Weak self-capture would try to look up a slot for
+                // the let-binding that doesn't exist yet.
+                let pending = if matches!(&value.kind, HirExprKind::SpawnLambdaActor { .. }) {
+                    let slot = self.alloc_local(binding.ty.clone());
+                    let Place::Local(local_id) = slot else {
+                        unreachable!("alloc_local returns Place::Local");
+                    };
+                    let handle = Place::LambdaActorHandle(local_id);
+                    self.binding_locals.insert(binding.id, handle);
+                    self.pending_lambda_actor_handle = Some(handle);
+                    true
+                } else {
+                    false
+                };
                 let value_place = self.lower_value(value);
+                if pending {
+                    self.pending_lambda_actor_handle = None;
+                }
                 self.decide(value);
                 self.statements.push(MirStatement::Bind {
                     binding: binding.id,
@@ -491,8 +536,15 @@ impl Builder {
                         .push((binding.id, binding.name.clone(), binding.ty.clone()));
                 }
                 // Backend stream: the binding owns a fresh local that the
-                // initialiser's value is moved into.
-                if let Some(src) = value_place {
+                // initialiser's value is moved into. The pre-allocated
+                // actor-lambda case already wired `binding_locals` and
+                // does not need a second slot.
+                if pending {
+                    // The lambda-actor case: the producer already
+                    // routed the binding to its `LambdaActorHandle`;
+                    // no Move instruction is required (the handle is
+                    // the value).
+                } else if let Some(src) = value_place {
                     let slot = self.alloc_local(binding.ty.clone());
                     self.instructions.push(Instr::Move { dest: slot, src });
                     self.binding_locals.insert(binding.id, slot);
@@ -775,22 +827,18 @@ impl Builder {
                 None
             }
             HirExprKind::SpawnLambdaActor { .. } => {
-                // The lambda-actor literal's MIR producer (handle Place
-                // allocation + lambda_captures population) lands in a
-                // follow-up commit. Until then the variant is recognised
-                // here and fails closed so a pre-producer landing never
-                // reaches codegen with a half-lowered actor.
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "lambda-actor literal".to_string(),
-                        site: expr.site,
-                    },
-                    note: "SpawnLambdaActor MIR producer is not yet wired; \
-                           codegen will emit a Place::LambdaActorHandle once \
-                           the producer lands"
-                        .to_string(),
-                });
-                None
+                // The lambda-actor literal allocates a fresh local
+                // (typed as the actor's Duplex<Msg, Reply>) and
+                // surfaces it as a Place::LambdaActorHandle so drop
+                // elaboration selects DropKind::LambdaActorRelease.
+                // The HIR's resolved capture set is forwarded into
+                // the function's lambda_captures ledger; the
+                // structural checker validate_lambda_captures pins
+                // the Weak-on-LambdaActorHandle invariants on the
+                // emitted list. Codegen for the lambda body itself
+                // lands in a follow-up slice (it fails closed on a
+                // Place::LambdaActorHandle today).
+                Some(self.lower_spawn_lambda_actor(expr))
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
@@ -1022,6 +1070,77 @@ impl Builder {
         // through the same Place that both arms wrote into).
         self.start_block(join_bb);
         Some(result_place)
+    }
+
+    /// Lower an `HirExprKind::SpawnLambdaActor` literal to a MIR
+    /// `Place::LambdaActorHandle`. The literal allocates a fresh
+    /// local (typed as the actor's `Duplex<Msg, Reply>`) and emits a
+    /// `Place::LambdaActorHandle(local_id)` so drop elaboration
+    /// selects `DropKind::LambdaActorRelease` — the
+    /// stop-on-last-handle-drop protocol with weak-ref body capture
+    /// (§5.9 ratification 2).
+    ///
+    /// Every HIR-resolved capture is forwarded into the function's
+    /// `lambda_captures` ledger with the source binding's MIR
+    /// `Place` looked up via `binding_locals`. A capture whose
+    /// source binding has no backend slot in the enclosing function
+    /// (typically a function parameter that hasn't been wired through
+    /// `binding_locals` yet) is skipped — the structural checker
+    /// never sees a missing entry as a violation, and a future
+    /// surface that populates parameter slots will populate this
+    /// ledger the same way.
+    ///
+    /// Body lowering (the actor's per-message dispatch) is a
+    /// follow-up slice; the MIR shape only needs the handle Place plus
+    /// the capture metadata. Codegen rejects `Place::LambdaActorHandle`
+    /// today (fail-closed) so a runtime substrate is not required for
+    /// the static checks to land.
+    fn lower_spawn_lambda_actor(&mut self, expr: &HirExpr) -> Place {
+        let HirExprKind::SpawnLambdaActor { captures, .. } = &expr.kind else {
+            unreachable!("lower_spawn_lambda_actor called on non-SpawnLambdaActor kind");
+        };
+        // Two paths produce the handle:
+        //   - `let <name> = actor |..| { .. }`: the `stmt` Let arm
+        //     pre-allocates the binding's slot and stashes its
+        //     `LambdaActorHandle` in `pending_lambda_actor_handle`
+        //     so the body's Weak self-capture finds a backend slot
+        //     for the let-binding. Reuse the pre-allocated handle.
+        //   - any non-let position (return-position literal, an
+        //     argument, etc.): allocate a fresh local on the fly.
+        let handle = if let Some(handle) = self.pending_lambda_actor_handle {
+            handle
+        } else {
+            let local = self.alloc_local(expr.ty.clone());
+            let Place::Local(local_id) = local else {
+                unreachable!("alloc_local returns Place::Local");
+            };
+            Place::LambdaActorHandle(local_id)
+        };
+        for capture in captures {
+            // Each captured binding must already have a backend slot
+            // in the enclosing function. The forward-bound recursive
+            // self capture is the let-binding itself, whose
+            // `binding_locals` entry was populated by the `stmt` Let
+            // arm before this producer ran. Captures from outer
+            // bindings with no `binding_locals` entry (typically
+            // function parameters, which the spine doesn't wire) are
+            // silently skipped — `validate_lambda_captures` treats a
+            // missing entry as no-finding rather than as a violation.
+            if !self.binding_locals.contains_key(&capture.binding) {
+                continue;
+            }
+            let capture_kind = match capture.kind {
+                hew_hir::HirCaptureKind::Strong => crate::model::CaptureKind::Strong,
+                hew_hir::HirCaptureKind::Weak => crate::model::CaptureKind::Weak,
+            };
+            self.lambda_captures.push(LambdaCapture {
+                actor_handle: handle,
+                captured: capture.binding,
+                name: capture.name.clone(),
+                capture_kind,
+            });
+        }
+        handle
     }
 
     fn decide(&mut self, expr: &HirExpr) {
@@ -1257,35 +1376,20 @@ fn elaborate(
         blocks: elab_blocks,
         drop_plans,
         coroutine: None,
-        // Lambda-actor capture-set discovery lives at the
-        // HIR-lower seam (the lambda-actor literal carries its
-        // capture list). HIR has no construction surface for
-        // LambdaActor today, so this side-table stays empty on
-        // every function the current ladder produces — the
-        // pattern matches the other declared-scaffold side-tables
-        // (coroutine, Terminator::Yield/Send). Synthetic test
-        // inputs in `hew-mir/tests/` populate it directly to
-        // exercise the weak-ref invariant.
-        //
-        // WHEN-OBSOLETE: when HIR gains a SpawnLambdaActor expression
-        // kind (slice driving the .send_half() / .recv_half() seam),
-        // this side-table is populated by walking the lambda body's
-        // capture list:
-        //   - For each captured binding whose name matches the
-        //     lambda's own let-binding name (the forward-bind case
-        //     pre-bound by hew-types::check::statements at slice 2's
-        //     `forward-bind actor-lambda let name before body
-        //     synthesis` path), emit LambdaCapture { actor_handle:
-        //     LambdaActorHandle(spawn_local), captured, name,
-        //     capture_kind: CaptureKind::Weak }.
-        //   - For every other captured binding, emit a Strong capture
-        //     on the same actor_handle.
-        // The structural fail-closed checker `validate_lambda_captures`
-        // below already rejects the malformed shapes the future HIR
-        // walker could produce (Weak on non-LambdaActorHandle, multiple
-        // Weak captures on the same handle); the walker only needs to
-        // emit captures, not re-check them.
-        lambda_captures: Vec::new(),
+        // Lambda-actor capture set, populated by the MIR producer at
+        // each `HirExprKind::SpawnLambdaActor` site (see
+        // `Builder::lower_spawn_lambda_actor`). The HIR resolver
+        // forward-binds the lambda's own let-name before lowering the
+        // body, so a body-internal reference to that name resolves to
+        // a `BindingRef { resolved: Binding(let_id) }`; the resolver
+        // classifies that capture as `HirCaptureKind::Weak` and every
+        // other free-variable reference as `Strong`. The MIR producer
+        // copies the list through with the source binding's MIR
+        // `Place` attached. The structural fail-closed checker
+        // `validate_lambda_captures` enforces the invariants (Weak
+        // attaches to LambdaActorHandle; at most one Weak per actor
+        // handle) on the emitted ledger.
+        lambda_captures: builder.lambda_captures.clone(),
     }
 }
 

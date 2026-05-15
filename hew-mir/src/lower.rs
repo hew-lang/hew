@@ -1459,28 +1459,42 @@ fn enumerate_exits(
                 DropPlan::default(),
             ),
             Terminator::Select { arms: _, next } => (
-                // Declared-only. Codegen rejects `Terminator::Select`
-                // before runtime; the elaboration pass observes a
-                // `Select` exit only on programs that have already
-                // failed codegen. Empty drop plan is a placeholder
-                // until per-arm loser-cleanup blocks are wired through
-                // the cleanup CFG.
+                // Per-arm select-loser cleanup lives in codegen, not in
+                // the function-wide DropPlan. The DropPlan abstraction
+                // models LIFO `@resource` drops over `place + drop_fn`;
+                // select-loser cleanup needs two operands (the resource
+                // and the runtime-allocated registration id returned by
+                // the substrate primitive) and runs at the select
+                // dispatch site, not the function exit. Keeping it out
+                // of DropPlan avoids stretching the ElabDrop shape to
+                // cover a case it was not designed for.
                 //
-                // TODO: when the runtime substrate lands, replace this
-                // placeholder with per-arm cleanup drops sourced from
-                // the per-arm body block's cleanup edge. Each arm's
-                // loser-cleanup must observe these invariants:
-                //   - StreamNext loser: withdraw pending read; the
-                //     stream binding remains usable in the enclosing
-                //     scope (no item consumed).
+                // The contract codegen must honour for each arm kind:
+                //
+                //   - StreamNext loser: emit
+                //     `hew_stream_cancel_pending_read(stream, id)`
+                //     where `id` is the PendingReadId returned by the
+                //     winning-side `hew_stream_poll`. The stream
+                //     binding remains usable in the enclosing scope
+                //     (no item consumed). See `hew-runtime::stream`
+                //     for the ABI and TOCTOU contract.
+                //
                 //   - ActorAsk loser: withdraw the envelope by
                 //     correlation id if not yet dispatched, otherwise
                 //     tombstone the reply sink; a late reply is
                 //     classified as OrphanedAsk and dropped silently.
+                //
                 //   - TaskAwait loser: cancel the task at its next
-                //     safepoint; the awaitable handle is torn down.
+                //     safepoint via the single-task cancel primitive;
+                //     the awaitable handle is torn down.
+                //
                 //   - AfterTimer loser: cancel the timer; no callback
                 //     fires.
+                //
+                // LESSONS: cleanup-all-exits — every select exit path
+                // gets a non-empty cleanup at the codegen dispatch
+                // site; the function-wide DropPlan is intentionally
+                // empty for ExitPath::Select.
                 ExitPath::Select {
                     block: block_id,
                     next: *next,

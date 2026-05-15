@@ -71,4 +71,39 @@ pub enum HirDiagnosticKind {
     ResourceGenericUnsupported {
         name: String,
     },
+    /// A `select` arm's source expression is not one of the four sealed
+    /// forms (`next(stream)`, `actor.method(args)`, `await task`, or the
+    /// timer arm `after duration`). Per HEW-SPEC-2026 §4.11.1 the four
+    /// forms are exhaustive; arbitrary expressions are rejected.
+    SelectArmNotSealedForm {
+        /// Short description of the offending source shape, e.g.
+        /// `"literal"`, `"binary expression"`, `"identifier"`. The shape
+        /// is recorded for the diagnostic note; no structural data is
+        /// preserved from the rejected expression.
+        source_shape: String,
+    },
+    /// Two or more arm body expressions disagree on type. The `select`
+    /// expression's static type is the unique common arm-body type; if
+    /// arms disagree the construct is rejected (per HEW-SPEC-2026
+    /// §4.11.1 "All arm result expressions must have the same type T").
+    SelectArmTypeMismatch {
+        arm_index: usize,
+        expected: ResolvedTy,
+        actual: ResolvedTy,
+    },
+    /// A `select` expression contains two or more `after` arms. The
+    /// timer arm is degenerate (no source binding, single deadline) and
+    /// is permitted at most once; multiple deadlines would have no
+    /// meaningful join semantics.
+    SelectMultipleAfterArms,
+    /// A `select` expression contains zero arms (neither sealed arms
+    /// nor an `after` timer). An empty select cannot fire and is
+    /// rejected at the surface.
+    SelectNoArms,
+    /// A `select` arm names a `next(...)` call with an arity other
+    /// than one. The sealed stream form is `next(<stream-expr>)` —
+    /// exactly one argument.
+    SelectStreamNextArity {
+        arg_count: usize,
+    },
 }

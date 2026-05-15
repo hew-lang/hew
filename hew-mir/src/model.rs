@@ -97,6 +97,55 @@ pub enum Terminator {
         value: Place,
         next: u32,
     },
+    /// Sealed `select{}` construct. The terminator carries the per-arm
+    /// discriminator and per-arm body block ids; the runtime substrate
+    /// that decides the winner and runs loser-cleanup is supplied by
+    /// codegen + runtime entries that are not yet wired. Declared here
+    /// so the construct's MIR shape is forward-compatible with the
+    /// runtime substrate; codegen rejects this terminator with a
+    /// `FailClosed` error today.
+    ///
+    /// The arm vector is non-empty (HIR enforces) and contains at most
+    /// one `AfterTimer` arm (HIR enforces). The `next` slot is the
+    /// block reached after the winning arm body completes — the join
+    /// edge that converges the per-arm bodies.
+    Select { arms: Vec<SelectArm>, next: u32 },
+}
+
+/// One arm of a sealed `select{}` terminator. Declared-only — the v0.5
+/// pipeline never constructs a `Terminator::Select` with attached body
+/// blocks; codegen fails closed before reaching the per-arm body
+/// dispatch. The per-arm `body_block` is reserved for the cleanup-CFG
+/// wire-up when the runtime substrate lands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectArm {
+    pub kind: SelectArmKind,
+    /// Block id reached when this arm wins. Unused while codegen fails
+    /// closed; reserved for the cleanup-CFG wire-up.
+    pub body_block: u32,
+    /// `Some(place)` for arms that bind a value (stream/ask/await);
+    /// `None` for the `AfterTimer` arm.
+    pub binding: Option<Place>,
+}
+
+/// The four sealed arm forms mirrored from HIR. The MIR layer carries
+/// only the discriminator + the place(s) holding the source operand;
+/// the per-form runtime contract is documented at the codegen
+/// fail-closed match arms.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SelectArmKind {
+    /// `next(<stream>)` — pending read on a stream.
+    StreamNext { stream: Place },
+    /// `<actor>.<method>(<args>)` — actor ask.
+    ActorAsk {
+        actor: Place,
+        method: String,
+        args: Vec<Place>,
+    },
+    /// `await <task>` — task completion.
+    TaskAwait { task: Place },
+    /// `after <duration>` — timer.
+    AfterTimer { duration: Place },
 }
 
 /// An addressable target for a load or store in the backend-authority
@@ -344,6 +393,14 @@ pub enum ExitPath {
     Send {
         block: u32,
         actor: String,
+        next: u32,
+    },
+    /// Sealed `select{}` exit. Mirrors `Terminator::Select`; declared
+    /// so the elaboration pass is exhaustive. The spine never
+    /// constructs this — codegen rejects `Terminator::Select` before
+    /// the elaboration pass would observe a `Select` exit at runtime.
+    Select {
+        block: u32,
         next: u32,
     },
 }

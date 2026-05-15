@@ -1,4 +1,7 @@
-use hew_hir::{dump_hir, lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
+use hew_hir::{
+    dump_hir, lower_program, verify_hir, HirDiagnosticKind, HirExprKind, HirSelectArmKind,
+    HirStmtKind, ResolutionCtx,
+};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -113,5 +116,311 @@ fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
             .iter()
             .any(|d| matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. })),
         "verifier must flag Unsupported HIR node as defense-in-depth: {verify:?}"
+    );
+}
+
+// ── select{} sealed-form recognition ───────────────────────────────────────
+//
+// Per HEW-SPEC-2026 §4.11.1 the four arm forms are exhaustive. These tests
+// drive HIR lowering on each form, and on a sibling near-miss, to verify
+// both the diagnostic-triggering and diagnostic-clean paths
+// (architecture doc §3.3).
+
+/// Locate the unique `HirExprKind::Select` inside the first function body
+/// of the lowered module. The vertical-slice harness wraps every select in
+/// a top-level `fn main()`; the select is always the value of the first
+/// `let`.
+fn find_first_select(output: &hew_hir::LowerOutput) -> &hew_hir::HirSelect {
+    let func = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(f) => Some(f),
+            hew_hir::HirItem::TypeDecl(_) => None,
+        })
+        .expect("expected at least one function in lowered module");
+    for stmt in &func.body.statements {
+        if let HirStmtKind::Let(_, Some(expr)) = &stmt.kind {
+            if let HirExprKind::Select(select) = &expr.kind {
+                return select;
+            }
+        }
+    }
+    panic!("expected a HirExprKind::Select in the first function body");
+}
+
+#[test]
+fn select_stream_next_recognised_as_sealed_form() {
+    // `next(stream)` — sealed form 1.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 msg from next(s) => 1, \
+             }; \
+         }",
+    );
+    let select = find_first_select(&output);
+    assert_eq!(select.arms.len(), 1);
+    assert!(matches!(
+        &select.arms[0].kind,
+        HirSelectArmKind::StreamNext { .. }
+    ));
+    // Path-pair: the sealed form must NOT emit SelectArmNotSealedForm.
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectArmNotSealedForm { .. })),
+        "sealed next(...) must not emit SelectArmNotSealedForm: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn select_actor_ask_recognised_as_sealed_form() {
+    // `actor.method(args)` — sealed form 2 (actor ask).
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 reply from worker.process(1) => 2, \
+             }; \
+         }",
+    );
+    let select = find_first_select(&output);
+    assert_eq!(select.arms.len(), 1);
+    match &select.arms[0].kind {
+        HirSelectArmKind::ActorAsk { method, args, .. } => {
+            assert_eq!(method, "process");
+            assert_eq!(args.len(), 1);
+        }
+        other => panic!("expected ActorAsk arm, got {other:?}"),
+    }
+}
+
+#[test]
+fn select_await_task_recognised_as_sealed_form() {
+    // `await task` — sealed form 3.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 done from await user_task => 1, \
+             }; \
+         }",
+    );
+    let select = find_first_select(&output);
+    assert!(matches!(
+        &select.arms[0].kind,
+        HirSelectArmKind::TaskAwait { .. }
+    ));
+}
+
+#[test]
+fn select_after_timer_recognised_as_sealed_form() {
+    // `after duration => body` — sealed form 4.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 after 100ms => 1, \
+             }; \
+         }",
+    );
+    let select = find_first_select(&output);
+    assert_eq!(select.arms.len(), 1);
+    assert!(matches!(
+        &select.arms[0].kind,
+        HirSelectArmKind::AfterTimer { .. }
+    ));
+    // The after arm has no binding.
+    assert!(select.arms[0].binding_name.is_none());
+}
+
+#[test]
+fn select_heterogeneous_four_arms_all_recognised() {
+    // All four sealed forms in one select. The canonical D2 example.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 msg from next(s) => 1, \
+                 reply from worker.process(2) => 1, \
+                 done from await user_task => 1, \
+                 after 50ms => 1, \
+             }; \
+         }",
+    );
+    let select = find_first_select(&output);
+    assert_eq!(select.arms.len(), 4);
+    assert!(matches!(
+        select.arms[0].kind,
+        HirSelectArmKind::StreamNext { .. }
+    ));
+    assert!(matches!(
+        select.arms[1].kind,
+        HirSelectArmKind::ActorAsk { .. }
+    ));
+    assert!(matches!(
+        select.arms[2].kind,
+        HirSelectArmKind::TaskAwait { .. }
+    ));
+    assert!(matches!(
+        select.arms[3].kind,
+        HirSelectArmKind::AfterTimer { .. }
+    ));
+}
+
+#[test]
+fn select_non_sealed_source_rejected() {
+    // A bare identifier as the arm source is not a sealed form.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 msg from src => 1, \
+             }; \
+         }",
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectArmNotSealedForm { .. })),
+        "bare identifier source must emit SelectArmNotSealedForm: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn select_literal_source_rejected() {
+    // Path-pair sibling for SelectArmNotSealedForm — a literal source.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 msg from 42 => 1, \
+             }; \
+         }",
+    );
+    assert!(
+        output.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            HirDiagnosticKind::SelectArmNotSealedForm { source_shape } if source_shape == "literal"
+        )),
+        "literal source must emit SelectArmNotSealedForm{{\"literal\"}}: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn select_empty_rejected() {
+    let output = lower("fn main() { let r = select { }; }");
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectNoArms)),
+        "empty select must emit SelectNoArms: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn select_non_empty_does_not_trigger_no_arms() {
+    // Path-pair sibling: a populated select must NOT emit SelectNoArms.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 after 1ms => 1, \
+             }; \
+         }",
+    );
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectNoArms)),
+        "populated select must not emit SelectNoArms: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn select_arm_body_type_mismatch_rejected() {
+    // First arm body is `1` (int); second arm body is `true` (bool).
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 a from await t1 => 1, \
+                 b from await t2 => true, \
+             }; \
+         }",
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectArmTypeMismatch { .. })),
+        "arm body type mismatch must emit SelectArmTypeMismatch: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn select_arm_body_types_agree_does_not_trigger_mismatch() {
+    // Path-pair sibling: uniformly-typed arm bodies must NOT emit
+    // SelectArmTypeMismatch.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 a from await t1 => 1, \
+                 b from await t2 => 2, \
+                 after 5ms => 3, \
+             }; \
+         }",
+    );
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectArmTypeMismatch { .. })),
+        "uniformly-typed arms must not emit SelectArmTypeMismatch: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn select_stream_next_arity_rejected() {
+    // `next()` with zero args — sealed form requires exactly one.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 msg from next() => 1, \
+             }; \
+         }",
+    );
+    assert!(
+        output.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            HirDiagnosticKind::SelectStreamNextArity { arg_count: 0 }
+        )),
+        "next() with zero args must emit SelectStreamNextArity: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn select_stream_next_two_args_rejected() {
+    // `next(a, b)` — sealed form requires exactly one.
+    let output = lower(
+        "fn main() { \
+             let r = select { \
+                 msg from next(a, b) => 1, \
+             }; \
+         }",
+    );
+    assert!(
+        output.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            HirDiagnosticKind::SelectStreamNextArity { arg_count: 2 }
+        )),
+        "next(a, b) must emit SelectStreamNextArity{{2}}: {:?}",
+        output.diagnostics
     );
 }

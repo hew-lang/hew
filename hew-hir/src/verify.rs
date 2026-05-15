@@ -103,6 +103,28 @@ impl Verifier {
                 }
             }
             HirExprKind::Literal(_) => {}
+            HirExprKind::Select(select) => {
+                for arm in &select.arms {
+                    match &arm.kind {
+                        crate::node::HirSelectArmKind::StreamNext { stream } => {
+                            self.expr(stream);
+                        }
+                        crate::node::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                            self.expr(actor);
+                            for arg in args {
+                                self.expr(arg);
+                            }
+                        }
+                        crate::node::HirSelectArmKind::TaskAwait { task } => {
+                            self.expr(task);
+                        }
+                        crate::node::HirSelectArmKind::AfterTimer { duration } => {
+                            self.expr(duration);
+                        }
+                    }
+                    self.expr(&arm.body);
+                }
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior CutoverUnsupported diagnostic.

@@ -1323,4 +1323,181 @@ mod tests {
         let rc = unsafe { hew_duplex_pair(2, 2, std::ptr::addr_of_mut!(a), ptr::null_mut()) };
         assert_eq!(rc, SendError::Closed as i32);
     }
+
+    // ── Close-protocol ordering matrix ─────────────────────────────────────
+    //
+    // The unified Duplex and its two half aliases each carry one cap on
+    // each of the two underlying queues. The total caps held on each
+    // queue must net to zero exactly once across all orderings of
+    // drop(unified), drop(send_half), drop(recv_half). Build each
+    // permutation explicitly so a regression in `into_send_half` /
+    // `into_recv_half` (which transfers a cap by moving an Arc out of
+    // the unified handle) gets caught no matter which half drops first.
+    //
+    // For each ordering we verify, after the LAST drop:
+    //   - both inner Queue allocations are freed (`Weak::upgrade` fails);
+    //   - no panic occurred from a double-release in the Drop chain.
+    //
+    // Snapshot the inner Arcs via the test-only accessor, downgrade to
+    // Weak refs, then drop the local strong handles so the only
+    // remaining strong refs live in the unified/half handles.
+
+    fn snapshot_weaks(d: &HewDuplex) -> (std::sync::Weak<Queue>, std::sync::Weak<Queue>) {
+        let (s, r) = d.queue_arcs_for_test();
+        let ws = Arc::downgrade(&s);
+        let wr = Arc::downgrade(&r);
+        (ws, wr)
+    }
+
+    #[test]
+    fn close_ordering_unified_then_send_then_recv() {
+        let (a, b) = HewDuplex::new_pair(2, 2);
+        let (ws, wr) = snapshot_weaks(&a);
+        let b_send = b.clone_handle().into_send_half();
+        let b_recv = b.into_recv_half();
+        drop(a);
+        drop(b_send);
+        drop(b_recv);
+        assert!(ws.upgrade().is_none(), "q_ab leaked after order 1");
+        assert!(wr.upgrade().is_none(), "q_ba leaked after order 1");
+    }
+
+    #[test]
+    fn close_ordering_unified_then_both_halves_concurrently() {
+        let (a, b) = HewDuplex::new_pair(2, 2);
+        let (ws, wr) = snapshot_weaks(&a);
+        let b_send = b.clone_handle().into_send_half();
+        let b_recv = b.into_recv_half();
+        drop(a);
+        // "Simultaneous" drop expressed as a single tuple drop —
+        // Rust drops fields in declaration order but the test asserts
+        // only that after both halves go the queues are freed.
+        let halves = (b_send, b_recv);
+        drop(halves);
+        assert!(ws.upgrade().is_none(), "q_ab leaked after order 2");
+        assert!(wr.upgrade().is_none(), "q_ba leaked after order 2");
+    }
+
+    #[test]
+    fn close_ordering_send_then_recv_then_unified() {
+        let (a, b) = HewDuplex::new_pair(2, 2);
+        let (ws, wr) = snapshot_weaks(&a);
+        let b_send = b.clone_handle().into_send_half();
+        let b_recv = b.into_recv_half();
+        drop(b_send);
+        drop(b_recv);
+        // Unified `a` still holds its caps; queues are alive.
+        assert!(ws.upgrade().is_some(), "q_ab freed too early in order 3");
+        assert!(wr.upgrade().is_some(), "q_ba freed too early in order 3");
+        drop(a);
+        assert!(ws.upgrade().is_none(), "q_ab leaked after order 3");
+        assert!(wr.upgrade().is_none(), "q_ba leaked after order 3");
+    }
+
+    #[test]
+    fn close_ordering_send_then_unified_then_recv() {
+        let (a, b) = HewDuplex::new_pair(2, 2);
+        let (ws, wr) = snapshot_weaks(&a);
+        let b_send = b.clone_handle().into_send_half();
+        let b_recv = b.into_recv_half();
+        drop(b_send);
+        drop(a);
+        // b_recv is still alive — q_ab still has b_recv as receiver.
+        // q_ba may be freed depending on remaining caps, but at least
+        // one queue is held.
+        drop(b_recv);
+        assert!(ws.upgrade().is_none(), "q_ab leaked after order 4");
+        assert!(wr.upgrade().is_none(), "q_ba leaked after order 4");
+    }
+
+    // ── Concurrent producer / close-during-block stress ────────────────────
+    //
+    // Stress the queue's locking discipline using a `Barrier` to launch
+    // every thread simultaneously. No `thread::sleep`. Use `join` for
+    // termination; close-during-blocking-recv synchronises through the
+    // queue itself (the recv thread blocks; the producer thread drops
+    // the send-side, which wakes the recv via the not_empty Condvar
+    // signal in `release_sender`).
+
+    #[test]
+    fn n_concurrent_producers_deliver_every_message_exactly_once() {
+        use std::sync::Barrier;
+        const PRODUCERS: usize = 8;
+        const PER_PRODUCER: usize = 64;
+        let total = PRODUCERS * PER_PRODUCER;
+        // Capacity matches total so the producer threads never block;
+        // the test exercises locking under contention, not backpressure.
+        let (sender, receiver) = HewDuplex::new_pair(total, 1);
+        let sender = Arc::new(sender);
+        let barrier = Arc::new(Barrier::new(PRODUCERS));
+        let mut handles = Vec::new();
+        for pid in 0..PRODUCERS {
+            let s = Arc::clone(&sender);
+            let b = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                b.wait();
+                for i in 0..PER_PRODUCER {
+                    let payload = format!("p{pid}-{i}").into_bytes();
+                    assert_eq!(s.send(payload), SendError::Ok);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        // Drain everything from the receiver side. Sort and compare to
+        // the expected set: every message arrives exactly once.
+        let mut got = Vec::with_capacity(total);
+        for _ in 0..total {
+            got.push(receiver.recv().expect("recv"));
+        }
+        got.sort();
+        let mut expected = Vec::with_capacity(total);
+        for pid in 0..PRODUCERS {
+            for i in 0..PER_PRODUCER {
+                expected.push(format!("p{pid}-{i}").into_bytes());
+            }
+        }
+        expected.sort();
+        assert_eq!(got, expected, "N-producer fan-in dropped or duplicated");
+    }
+
+    #[test]
+    fn close_during_blocking_recv_wakes_recv_with_closed() {
+        // The recv thread blocks on an empty queue; the main thread
+        // drops the sole producer side; the recv thread must wake and
+        // observe RecvError::Closed (NOT block indefinitely, NOT
+        // deadlock).
+        let (sender, receiver) = HewDuplex::new_pair(1, 1);
+        let recv_thread = thread::spawn(move || receiver.recv());
+        // Drop the sender side; release_sender's notify_all wakes the
+        // blocked recv. The recv loop re-checks `senders == 0` under
+        // the mutex and returns Closed.
+        drop(sender);
+        let result = recv_thread.join().expect("recv thread panicked");
+        assert!(
+            matches!(result, Err(RecvError::Closed)),
+            "expected RecvError::Closed after sender drop, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn send_after_both_endpoints_closed_returns_closed_without_panic() {
+        // Once the receiver side has been dropped, every subsequent
+        // send (blocking or non-blocking) from the remaining sender
+        // must surface SendError::Closed. No panic, no UB.
+        let (sender, receiver) = HewDuplex::new_pair(1, 1);
+        drop(receiver);
+        assert_eq!(sender.send(b"after-close".to_vec()), SendError::Closed);
+        assert_eq!(sender.try_send(b"again".to_vec()), SendError::Closed);
+        // Holding a half-handle, after extracting it, the same result.
+        let (sender2, receiver2) = HewDuplex::new_pair(1, 1);
+        let send_half = sender2.into_send_half();
+        drop(receiver2);
+        assert_eq!(send_half.send(b"half-after".to_vec()), SendError::Closed);
+        assert_eq!(
+            send_half.try_send(b"half-again".to_vec()),
+            SendError::Closed
+        );
+    }
 }

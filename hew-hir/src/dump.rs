@@ -216,6 +216,30 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     .expect("write to string");
             }
         }
+        HirExprKind::SpawnLambdaActor {
+            params,
+            reply_ty,
+            body,
+            captures,
+        } => {
+            writeln!(
+                out,
+                "{pad}  spawn-lambda-actor params={} reply_ty={} captures={}",
+                params.len(),
+                reply_ty.user_facing(),
+                captures.len()
+            )
+            .expect("write to string");
+            for capture in captures {
+                writeln!(
+                    out,
+                    "{pad}    capture {} ({}) {:?}",
+                    capture.name, capture.binding, capture.kind
+                )
+                .expect("write to string");
+            }
+            dump_expr(out, body, indent + 4);
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

@@ -146,6 +146,26 @@ impl Verifier {
                     self.expr(&arm.body);
                 }
             }
+            HirExprKind::SpawnLambdaActor { body, captures, .. } => {
+                // The lambda body is a child expression — recurse for
+                // node/site/diagnostic coverage. The capture set is
+                // metadata produced by the resolver; verify each
+                // captured binding id was declared somewhere in the
+                // HIR (catches a resolver bug that records a freed
+                // binding id).
+                self.expr(body);
+                for capture in captures {
+                    if !self.bindings.contains(&capture.binding) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::DanglingRef {
+                                resolved: ResolvedRef::Binding(capture.binding),
+                            },
+                            expr.span.clone(),
+                            "lambda-actor capture references a binding not declared in resolved HIR",
+                        ));
+                    }
+                }
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior CutoverUnsupported diagnostic.

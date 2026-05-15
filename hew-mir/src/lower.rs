@@ -774,6 +774,24 @@ impl Builder {
                 });
                 None
             }
+            HirExprKind::SpawnLambdaActor { .. } => {
+                // The lambda-actor literal's MIR producer (handle Place
+                // allocation + lambda_captures population) lands in a
+                // follow-up commit. Until then the variant is recognised
+                // here and fails closed so a pre-producer landing never
+                // reaches codegen with a half-lowered actor.
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "lambda-actor literal".to_string(),
+                        site: expr.site,
+                    },
+                    note: "SpawnLambdaActor MIR producer is not yet wired; \
+                           codegen will emit a Place::LambdaActorHandle once \
+                           the producer lands"
+                        .to_string(),
+                });
+                None
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
                 // CutoverUnsupported and the driver should have stopped

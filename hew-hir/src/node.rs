@@ -253,7 +253,68 @@ pub enum HirExprKind {
     /// other surface shape is rejected with `SelectArmNotSealedForm`
     /// during lowering.
     Select(HirSelect),
+    /// `actor |params| { body }` — a lambda-actor literal. Produces a
+    /// `Duplex<Msg, Reply>` handle at runtime that addresses the
+    /// spawned actor's message queue (the surface call syntax dispatches
+    /// through this Duplex). The HIR shape carries the parameter
+    /// bindings, the optional reply-type annotation, the lambda body,
+    /// and the resolved capture set with per-capture strength
+    /// (Strong vs Weak).
+    ///
+    /// Capture-strength discipline (§5.9 ratification 2): each free
+    /// variable in the body that resolves to a binding from the
+    /// enclosing scope is recorded as a capture. When the captured
+    /// binding is the lambda's own let-binding name (the forward-bind
+    /// recursive case `let fib = actor |n| { fib(n - 1) }`), the
+    /// capture is `Weak` — the body must NOT keep the actor alive
+    /// past external refcount zero. Every other capture is `Strong`.
+    /// MIR's `LambdaCapture` side-table is populated directly from
+    /// this list at lowering.
+    SpawnLambdaActor {
+        params: Vec<HirBinding>,
+        reply_ty: ResolvedTy,
+        body: Box<HirExpr>,
+        captures: Vec<HirLambdaCapture>,
+    },
     Unsupported(String),
+}
+
+/// One captured binding inside an `HirExprKind::SpawnLambdaActor`
+/// body. The `kind` discriminator selects the runtime refcount
+/// strength: `Strong` bumps the captured value's refcount so the
+/// actor body keeps the captured handle alive; `Weak` is the
+/// self-binding-name recursive case (§5.9 ratification 2) and does
+/// NOT bump the refcount.
+///
+/// The HIR `captures` field is the producer for the MIR
+/// `LambdaCapture` side-table; the structural fail-closed checker in
+/// `hew-mir` rejects malformed shapes (Weak on non-LambdaActorHandle,
+/// multiple Weak captures on the same handle) that would otherwise
+/// reach codegen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirLambdaCapture {
+    /// The captured binding's id in the enclosing scope.
+    pub binding: BindingId,
+    /// The captured binding's source name. Load-bearing for the
+    /// self-binding case — a `Weak` capture's name matches the
+    /// lambda's own let-binding name.
+    pub name: String,
+    /// Capture-strength discriminator.
+    pub kind: HirCaptureKind,
+}
+
+/// Capture-strength selector for an `HirLambdaCapture`. Mirrors
+/// the MIR-layer `CaptureKind` shape — kept HIR-local so the HIR
+/// crate doesn't depend on `hew-mir`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HirCaptureKind {
+    /// Strong capture: bumps the captured value's refcount. Default
+    /// for every non-self capture.
+    Strong,
+    /// Weak capture: does NOT bump the captured value's refcount.
+    /// Reserved for the lambda's own let-binding name (the
+    /// forward-bind recursive case, §5.9 ratification 2).
+    Weak,
 }
 
 /// Lowered `select{}` expression. See `HirSelectArmKind` for the four

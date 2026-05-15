@@ -643,6 +643,80 @@ pub unsafe extern "C" fn hew_task_scope_cancel(scope: *mut HewTaskScope) {
     }
 }
 
+/// Cancel a single task within a scope.
+///
+/// # Contract
+///
+/// - `Ready` / `Suspended`: marks the task `Done(Cancelled)`, notifies the
+///   `done_signal`, and bumps `scope.completed_count`. Returns 0.
+/// - `Running`: notifies the `done_signal` only. The worker thread holds the
+///   task's execution quantum; cooperative finish is required before the task
+///   transitions to `Done`. Returns 0.
+/// - `Done`: no-op. Returns 0.
+/// - Null `scope` or null `task`: returns -1 (`cabi_guard!` sentinel).
+///
+/// Idempotent: double-cancel and cancel-of-Done both return 0.
+///
+/// Does NOT set `scope.cancelled` — that flag is scope-wide-cancel semantics
+/// (`hew_task_scope_cancel`). Per-task cancel must not flip the scope flag.
+///
+/// There is no observable cooperative-cancel flag on `HewTask` today; the
+/// `Running` branch notifies `done_signal` so any parked waiter is woken to
+/// re-check `Done` state. When the multiplex-await primitive
+/// (completion-observer / park / resume) lands, that branch will also set a
+/// task-level cancel flag that the worker checks at its next safepoint.
+///
+/// # Safety
+///
+/// - `scope` must be a valid pointer returned by [`hew_task_scope_new`].
+/// - `task` must be a valid pointer to a task spawned into that scope.
+///
+/// WASM-TODO(#1451): `task_scope` is native-only; this function is excluded
+/// from the WASM build by the same module-level cfg guard as the rest of
+/// `task_scope.rs`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_scope_cancel_one(
+    scope: *mut HewTaskScope,
+    task: *mut HewTask,
+) -> i32 {
+    cabi_guard!(scope.is_null() || task.is_null(), -1);
+    // SAFETY:
+    // - Provenance: `scope` was returned by a prior `hew_task_scope_new` FFI call.
+    // - Type/tag: caller asserts via FFI contract that the pointer is a `HewTaskScope`.
+    // - Lifetime/owner: caller owns the scope until `hew_task_scope_destroy`; it outlives this call.
+    // - Aliasing/concurrency: `cabi_guard!` above rejects null; the scope is accessed from the
+    //   single actor thread that owns it — no mutable aliases exist concurrently.
+    // - Bounds: pointer is non-null (cabi_guard); struct size is known at compile time.
+    // - Failure mode: `cabi_guard!` returns -1 on null before this point is reached.
+    let s = unsafe { &mut *scope };
+    // SAFETY:
+    // - Provenance: `task` was returned by a prior `hew_task_new` FFI call and spawned into this scope.
+    // - Type/tag: caller asserts via FFI contract that the pointer is a `HewTask`.
+    // - Lifetime/owner: the owning scope keeps the task alive until `hew_task_scope_destroy`.
+    // - Aliasing/concurrency: `cabi_guard!` above rejects null; the task state machine is
+    //   accessed through atomic loads, so concurrent reads from worker threads are safe.
+    // - Bounds: pointer is non-null (cabi_guard); struct size is known at compile time.
+    // - Failure mode: `cabi_guard!` returns -1 on null before this point is reached.
+    let t = unsafe { &mut *task };
+
+    match t.load_state() {
+        HewTaskState::Ready | HewTaskState::Suspended => {
+            t.mark_done(HewTaskError::Cancelled);
+            s.completed_count += 1;
+        }
+        HewTaskState::Running => {
+            // Best-effort cooperative cancel: wake any parked waiter so it
+            // can observe the Done transition once the worker finishes its
+            // quantum. Does not force completion.
+            t.notify_done_signal();
+        }
+        HewTaskState::Done => {
+            // Already terminal; no-op.
+        }
+    }
+    0
+}
+
 /// Mark a task as completed.
 ///
 /// # Safety
@@ -1717,6 +1791,146 @@ mod tests {
                 err.contains("failed to spawn hew-task-reaper thread"),
                 "unexpected last error: {err}"
             );
+        }
+    }
+
+    // ── cancel_one tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn cancel_one_ready_marks_done() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+
+            assert_eq!((*task).load_state(), HewTaskState::Ready);
+            let ret = hew_task_scope_cancel_one(scope, task);
+            assert_eq!(ret, 0, "cancel_one must return 0 on success");
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+            assert_eq!(hew_task_scope_is_done(scope), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn cancel_one_suspended_marks_done() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            (*task).store_state(HewTaskState::Suspended, Ordering::Relaxed);
+
+            let ret = hew_task_scope_cancel_one(scope, task);
+            assert_eq!(ret, 0, "cancel_one must return 0 on success");
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+            assert_eq!(hew_task_scope_is_done(scope), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn cancel_one_done_is_noop() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            // Put task into Done state directly (simulates a completed task).
+            (*task).mark_done(HewTaskError::None);
+            (*scope).completed_count += 1;
+
+            let ret = hew_task_scope_cancel_one(scope, task);
+            assert_eq!(
+                ret, 0,
+                "cancel_one of Done task must be a no-op returning 0"
+            );
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+            // Error field must not be overwritten by the no-op cancel.
+            assert_eq!((*task).error, HewTaskError::None);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn cancel_one_double_cancel_idempotent() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+
+            let first = hew_task_scope_cancel_one(scope, task);
+            let second = hew_task_scope_cancel_one(scope, task);
+            assert_eq!(first, 0, "first cancel must return 0");
+            assert_eq!(second, 0, "second cancel must return 0 (idempotent)");
+            // completed_count must only be bumped once — the first cancel
+            // transitions to Done; the second is a Done no-op.
+            assert_eq!((*scope).completed_count, 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn cancel_one_null_scope_returns_sentinel() {
+        // SAFETY: task is valid; scope is intentionally null.
+        unsafe {
+            let task = hew_task_new();
+            let ret = hew_task_scope_cancel_one(ptr::null_mut(), task);
+            assert_eq!(ret, -1, "null scope must return -1 sentinel");
+            hew_task_free(task);
+        }
+    }
+
+    #[test]
+    fn cancel_one_null_task_returns_sentinel() {
+        // SAFETY: scope is valid; task is intentionally null.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let ret = hew_task_scope_cancel_one(scope, ptr::null_mut());
+            assert_eq!(ret, -1, "null task must return -1 sentinel");
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn cancel_one_running_returns_zero_state_unchanged() {
+        // Running-state cancel is best-effort and cooperative. The runtime
+        // notifies done_signal (waking any parked waiter) but does NOT force
+        // the task into Done — the worker thread must finish its quantum and
+        // check for cancellation itself.
+        //
+        // There is no cooperative-cancel flag on HewTask today; observable
+        // effects are limited to the done_signal notification. When the
+        // multiplex-await primitive (completion-observer / park / resume) lands,
+        // a task-level cancel flag will be added and this test updated (§3.7).
+        //
+        // This test verifies the call succeeds and does not alter state.
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            (*task).store_state(HewTaskState::Running, Ordering::Relaxed);
+
+            let ret = hew_task_scope_cancel_one(scope, task);
+            assert_eq!(ret, 0, "cancel_one of Running task must return 0");
+            // State must remain Running: best-effort cancel does not force Done.
+            assert_eq!((*task).load_state(), HewTaskState::Running);
+            // Scope must not be prematurely marked done.
+            assert_eq!(hew_task_scope_is_done(scope), 0);
+
+            // Restore to Done so destroy can clean up cleanly.
+            (*task).mark_done(HewTaskError::None);
+            (*scope).completed_count += 1;
+            hew_task_scope_destroy(scope);
         }
     }
 }

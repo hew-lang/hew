@@ -697,11 +697,12 @@ fn lower_terminator<'ctx>(
             // fixed (see hew-mir::model::Terminator::Select) and HIR
             // recognises the four sealed arm forms; the runtime
             // substrate (`hew_select_wait` heterogeneous-arm dispatch,
-            // `hew_stream_poll` pending-read, `hew_task_scope_cancel_one`
-            // single-task cancel, and actor-call lowering for the ask
-            // arm) is not yet wired. Codegen fails closed per arm
-            // kind with a message naming the substrate the future
-            // implementation must satisfy.
+            // `hew_stream_poll` pending-read, multiplex-await primitive
+            // for task-await win-path, and actor-call lowering for the
+            // ask arm) is not yet wired. `hew_task_scope_cancel_one`
+            // (task-await loss-path) is available. Codegen fails closed
+            // per arm kind with a message naming the remaining substrate
+            // the future implementation must satisfy.
             //
             // Each arm kind's TODO marker below records the semantic
             // invariants the runtime substrate must observe (lifted
@@ -751,14 +752,14 @@ fn lower_terminator<'ctx>(
                     // `Ok(T)` is a winning value; cancellation and
                     // trap outcomes propagate through the select
                     // site), (d) on loss cancel the task at its next
-                    // safepoint via a single-task cancel primitive
-                    // (CAS against the task's state field; the
-                    // cancel-after-done path is a no-op). The cancel
-                    // primitive does not exist today as a runtime
-                    // entry distinct from the scope-wide cancel.
-                    "select{} task-await arm awaits runtime substrate: \
-                     single-task cancel primitive \
-                     (hew_task_scope_cancel_one)"
+                    // safepoint via `hew_task_scope_cancel_one`
+                    // (available; cancel-after-done is a no-op).
+                    // The remaining gap is the completion-observer /
+                    // park / resume primitive for the win-path.
+                    "select{} task-await arm awaits multiplex-await \
+                     substrate: hew_task_scope_cancel_one available; \
+                     missing completion-observer/park/resume primitive \
+                     for winner path"
                         .to_string()
                 }
                 Some(hew_mir::SelectArmKind::AfterTimer { .. }) => {
@@ -1146,9 +1147,11 @@ mod tests {
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("task-await") && msg.contains("hew_task_scope_cancel_one"),
-            "task-await FailClosed must name the single-task cancel \
-             primitive: {msg}"
+            msg.contains("task-await")
+                && msg.contains("hew_task_scope_cancel_one")
+                && msg.contains("multiplex-await"),
+            "task-await FailClosed must name the available cancel ABI \
+             and the missing multiplex-await substrate: {msg}"
         );
     }
 

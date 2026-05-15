@@ -1883,10 +1883,14 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call, const ast::Span
       // requires move semantics in the type system. For now this is
       // the lesser evil vs double-frees from callee-consumed handles.
       const std::unordered_set<std::string> nonConsumingFns = {
-          "hew_sink_write",        "hew_sink_write_string", "hew_sink_write_bytes",
-          "hew_sink_flush",        "hew_stream_is_valid",   "hew_sink_is_valid",
-          "hew_stream_is_closed",  "hew_stream_next",       "hew_stream_next_sized",
-          "hew_stream_next_bytes", "hew_stream_pair_sink",  "hew_stream_pair_stream"};
+          "hew_sink_write", "hew_sink_write_string", "hew_sink_write_bytes", "hew_sink_flush",
+          "hew_stream_is_valid", "hew_sink_is_valid", "hew_stream_is_closed", "hew_stream_next",
+          "hew_stream_next_sized", "hew_stream_next_bytes", "hew_stream_pair_sink",
+          "hew_stream_pair_stream",
+          // hew_stream_poll and hew_stream_cancel_pending_read do not transfer
+          // ownership of the stream — the loser of a `select{}` stream-next arm
+          // must continue to own the binding.
+          "hew_stream_poll", "hew_stream_cancel_pending_read"};
       if (consumedArgIndices.empty() &&
           (calleeName.substr(0, 4) != "hew_" || calleeName.find("stream") != std::string::npos ||
            calleeName.find("sink") != std::string::npos) &&

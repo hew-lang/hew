@@ -59,7 +59,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use hew_mir::{CmpPred, Instr, IrPipeline, Place, RawMirFunction, Terminator};
+use hew_mir::{
+    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place, RawMirFunction,
+    Terminator,
+};
 use hew_types::ResolvedTy;
 
 use inkwell::builder::Builder;
@@ -239,8 +242,12 @@ pub fn emit_module(
 ///
 /// The scan covers:
 /// - `Instr::CallRuntimeAbi` with a symbol that starts with `"hew_duplex_"`.
-/// - `Instr::Drop { drop_fn: Some(fn_name), .. }` where `fn_name` starts with
-///   `"hew_duplex_"` (e.g. `hew_duplex_close`).
+/// - `Instr::Drop { drop_fn: Some(fn_name), .. }` in raw_mir where `fn_name`
+///   starts with `"hew_duplex_"` (e.g. `hew_duplex_close`).
+/// - `ElabDrop { drop_fn: Some(name), .. }` in `elaborated_mir.drop_plans`
+///   where the resolved C-ABI symbol starts with `"hew_duplex_"`. This covers
+///   elaborator-produced `"Duplex::close"` strings that resolve to
+///   `hew_duplex_close` at codegen time.
 fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
     for func in &pipeline.raw_mir {
         for block in &func.blocks {
@@ -258,6 +265,25 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                 };
                 if let Some(sym) = excluded {
                     return Some(sym);
+                }
+            }
+        }
+    }
+    // Also scan elaborated_mir drop_plans: the real close path goes through
+    // here now that codegen consumes drop_plans. Resolve the drop_fn string
+    // to its C-ABI symbol and check for hew_duplex_ exclusion.
+    for elab_func in &pipeline.elaborated_mir {
+        for (_, plan) in &elab_func.drop_plans {
+            for drop in &plan.drops {
+                if let Some(ref drop_fn) = drop.drop_fn {
+                    // Use resolve_drop_fn_to_symbol to get the actual C-ABI
+                    // symbol; skip on FailClosed (unknown names are not wasm
+                    // exclusion candidates — they'll fail at codegen instead).
+                    if let Ok(sym) = resolve_drop_fn_to_symbol(drop_fn) {
+                        if sym.starts_with("hew_duplex_") {
+                            return Some(sym.to_string());
+                        }
+                    }
                 }
             }
         }
@@ -398,10 +424,14 @@ fn intern_runtime_decl<'ctx>(
         // (`hew-runtime/src/duplex.rs:689-693`).
         "hew_duplex_send" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
         // hew_duplex_close(d: *mut HewDuplexHandle) -> i32
-        // (`hew-runtime/src/duplex.rs:932-933`). Result discarded at
-        // the Drop call site; the runtime's AtomicBool double-close
-        // guard at duplex.rs:957 makes re-entry safe.
+        // (`hew-runtime/src/duplex.rs:992`). Result discarded at the
+        // Drop call site; the runtime's AtomicBool double-close guard
+        // makes re-entry safe.
         "hew_duplex_close" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32
+        // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
+        // as hew_duplex_close — one ptr arg, i32 result discarded.
+        "hew_lambda_actor_release" => i32_ty.fn_type(&[ptr_ty.into()], false),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -884,67 +914,151 @@ fn lower_call_runtime_abi(
     Ok(())
 }
 
-/// Lower `Instr::Drop { place, drop_fn: Some(name) }` to the close
-/// ritual: call the named close symbol with `place`'s loaded pointer,
-/// then null-out the alloca so a second drop on the same place hits
-/// null at both the codegen layer and the runtime's AtomicBool guard
-/// (defence in depth per LESSONS `raii-null-after-move`).
+/// Map an elaborator-produced `drop_fn` string to its C-ABI runtime symbol.
 ///
-/// Today the only emitter-known close symbol is `hew_duplex_close`
-/// (literal C-ABI symbol name passed by hand-built test MIR — the
-/// real elaborator at `hew-mir/src/lower.rs::build_lifo_drops`
-/// produces `"<TypeName>::close"` names, but codegen consumes
-/// `raw_mir` which has no `Instr::Drop` producer today, so the
-/// elaborator-string path is structurally unreachable from real
-/// lowering. Wiring `elaborated_mir.drop_plans` is a tracked-gap
-/// follow-on seam. LESSONS: parity-or-tracked-gap.).
+/// The elaborator emits `"<TypeName>::<method>"` strings from
+/// `hew-mir/src/lower.rs::build_lifo_drops` via the `TypeClassTable`.
+/// The C-ABI names in `hew-runtime/` are not always a predictable
+/// transformation of those strings — in particular, `LambdaActorHandle`
+/// uses the method name "close" in the type-class seeding but the
+/// runtime symbol is `hew_lambda_actor_release` (not
+/// `hew_lambda_actor_close`). This table is the authoritative bridge.
 ///
-/// Other drop_fn strings fail-closed loudly so the gap surfaces
-/// immediately rather than leaking the resource.
-fn lower_drop(fn_ctx: &FnCtx<'_, '_>, place: Place, drop_fn: &str) -> CodegenResult<()> {
+/// Accepts literal C-ABI symbol names (e.g. `"hew_duplex_close"`)
+/// as a backward-compatible pass-through so hand-built test MIR can
+/// use either format. Unknown strings fail closed — no wildcard.
+///
+/// LESSONS: producer-bridge-before-codegen (P1), boundary-fail-closed (P0),
+/// lifecycle-symmetry (P0).
+fn resolve_drop_fn_to_symbol(drop_fn: &str) -> Result<&'static str, CodegenError> {
     match drop_fn {
-        "hew_duplex_close" => {
-            // Load the handle pointer from the place's alloca (the
-            // same backing slot a `Place::DuplexHandle(N)` resolves
-            // to — see `place_pointer`). Both `Place::Local(N)` and
-            // `Place::DuplexHandle(N)` are accepted; both resolve to
-            // the same alloca and the underlying LLVM type is `ptr`.
-            let handle = load_duplex_handle(fn_ctx, place, "hew_duplex_close drop")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_duplex_close",
-            )?;
-            let llvm_args: [BasicMetadataValueEnum; 1] = [handle.into()];
-            fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_duplex_close_call")
-                .map_err(|e| CodegenError::Llvm(format!("hew_duplex_close call: {e:?}")))?;
-            // Zero the alloca so any structurally-reachable second
-            // drop on the same place sees a null pointer. The
-            // runtime's AtomicBool guard at duplex.rs:957 already
-            // short-circuits double-close, but defence-in-depth at
-            // the codegen layer is required by LESSONS
-            // `raii-null-after-move`.
-            let (slot, _) = place_pointer(fn_ctx, place)?;
-            let null_ptr = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
-            fn_ctx
-                .builder
-                .build_store(slot, null_ptr)
-                .map_err(|e| CodegenError::Llvm(format!("post-close alloca null-store: {e:?}")))?;
-        }
-        other => {
-            return Err(CodegenError::FailClosed(format!(
-                "Instr::Drop carries drop_fn={other:?}; codegen wires \
-                 hew_duplex_close today, but the elaborator-produced \
-                 \"<TypeName>::close\" path requires codegen to consume \
-                 elaborated_mir.drop_plans (tracked-gap follow-on seam). \
-                 Refusing to silently no-op a resource drop."
-            )));
-        }
+        // Elaborator-produced names (from builtin_type_classes.rs seeding).
+        // Duplex<S, R> — close-both-directions.
+        "Duplex::close" => Ok("hew_duplex_close"),
+        // LambdaActorHandle — NB: the type-class seeding calls the method
+        // "close" but the runtime C-ABI symbol is "release", not "close".
+        // An explicit table entry is required; string-mangling would produce
+        // the wrong symbol.
+        "LambdaActorHandle::close" => Ok("hew_lambda_actor_release"),
+        // Literal C-ABI symbol pass-through (backward compat for hand-built
+        // test MIR that pre-dates elaborated-drop-plan consumption).
+        "hew_duplex_close" => Ok("hew_duplex_close"),
+        "hew_lambda_actor_release" => Ok("hew_lambda_actor_release"),
+        // Remaining elaborator-produced names have no MIR producer today —
+        // SendHalf/RecvHalf place_pointer is fail-closed, Sink/Stream have
+        // no constructor surface. Fail closed here so any future producer
+        // that outpaces codegen surfaces immediately rather than leaking.
+        other => Err(CodegenError::FailClosed(format!(
+            "drop_fn={other:?}: no C-ABI runtime symbol wired for this \
+             drop_fn string. Recognised names today: Duplex::close, \
+             LambdaActorHandle::close (and their hew_* C-ABI literals). \
+             Refusing to silently no-op a resource drop \
+             (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
+        ))),
+    }
+}
+
+/// Lower a drop_fn close ritual for `place`: call the named runtime close
+/// symbol with `place`'s loaded pointer, then null-out the alloca so a
+/// second drop on the same place hits null at both the codegen layer and
+/// the runtime's AtomicBool guard (LESSONS `raii-null-after-move`).
+///
+/// Accepts both elaborator-produced `"<TypeName>::close"` strings and
+/// literal C-ABI symbol names via `resolve_drop_fn_to_symbol`. Unknown
+/// strings fail closed — no wildcard, no silent no-op.
+fn lower_drop(fn_ctx: &FnCtx<'_, '_>, place: Place, drop_fn: &str) -> CodegenResult<()> {
+    let symbol = resolve_drop_fn_to_symbol(drop_fn)?;
+    // Load the handle pointer from the place's alloca. `load_duplex_handle`
+    // resolves both `Place::Local(N)` and `Place::DuplexHandle(N)` to the
+    // same ptr-typed alloca, which is what all ptr-arg close symbols expect.
+    let label = format!("{symbol} drop");
+    let handle = load_duplex_handle(fn_ctx, place, &label)?;
+    let fv = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        symbol,
+    )?;
+    let llvm_args: [BasicMetadataValueEnum; 1] = [handle.into()];
+    fn_ctx
+        .builder
+        .build_call(fv, &llvm_args, &format!("{symbol}_call"))
+        .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+    // Zero the alloca: structurally-reachable second drop must hit null
+    // at the codegen layer. The runtime AtomicBool guard provides
+    // defence-in-depth, but the codegen null-store is required per
+    // LESSONS `raii-null-after-move`.
+    let (slot, _) = place_pointer(fn_ctx, place)?;
+    let null_ptr = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
+    fn_ctx
+        .builder
+        .build_store(slot, null_ptr)
+        .map_err(|e| CodegenError::Llvm(format!("post-{symbol} alloca null-store: {e:?}")))?;
+    Ok(())
+}
+
+/// Emit the LIFO drop ritual for `block_id` from `drop_plans`.
+///
+/// Walks `drop_plans` for the entry whose `ExitPath` block id matches
+/// `block_id`. Each `ElabDrop` with `drop_fn = Some(name)` is lowered
+/// via `lower_drop`; trivial drops (`drop_fn = None`) are no-ops.
+///
+/// The elaborator already emits drops in LIFO order (latest-bound
+/// resource drops first); no re-reversal here. Spine-only functions
+/// carry an empty `DropPlan`; the loop is a no-op in that case.
+///
+/// Called immediately before `lower_terminator` for every block so
+/// every exit path receives its drops regardless of CFG shape.
+/// LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
+fn emit_elab_drops(
+    fn_ctx: &FnCtx<'_, '_>,
+    block_id: u32,
+    drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+) -> CodegenResult<()> {
+    // Find the plan whose owning block matches. `drop_plans` has one entry
+    // per exit terminator; functions with a single block have one entry.
+    // Linear scan is correct and cheap for the number of exits a function
+    // has in the current spine.
+    let plan = drop_plans.iter().find(|(exit, _)| {
+        // Every ExitPath variant carries a `block` field. Match by value.
+        let exit_block = match exit {
+            ExitPath::Return { block }
+            | ExitPath::Goto { block, .. }
+            | ExitPath::Branch { block, .. }
+            | ExitPath::Call { block, .. }
+            | ExitPath::Panic { block }
+            | ExitPath::Cancel { block }
+            | ExitPath::Yield { block, .. }
+            | ExitPath::Send { block, .. }
+            | ExitPath::Select { block, .. } => *block,
+        };
+        exit_block == block_id
+    });
+    let Some((_, plan)) = plan else {
+        // No drop plan for this block — spine-only function or a block
+        // that has no exit in the elaborated plan. No drops to emit.
+        return Ok(());
+    };
+    for drop in &plan.drops {
+        emit_one_elab_drop(fn_ctx, drop)?;
     }
     Ok(())
+}
+
+/// Emit a single `ElabDrop` from `elaborated_mir.drop_plans`.
+///
+/// `drop_fn = None` is a legitimate no-op (trivial drop for a value class
+/// with no side-effecting close). `drop_fn = Some(name)` routes through
+/// `lower_drop` → `resolve_drop_fn_to_symbol` → `intern_runtime_decl`.
+/// Unknown `drop_fn` strings surface `CodegenError::FailClosed` immediately
+/// (LESSONS: boundary-fail-closed).
+fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<()> {
+    let Some(ref drop_fn) = drop.drop_fn else {
+        // Trivial drop: value class with no side-effecting close
+        // (e.g. a moved-but-not-dropped local in a future surface).
+        return Ok(());
+    };
+    lower_drop(fn_ctx, drop.place, drop_fn)
 }
 
 /// Load an integer-typed `Place` and return its value coerced to the
@@ -1363,11 +1477,21 @@ fn declare_function<'ctx>(
     Ok((llvm_fn, return_ty_llvm))
 }
 
+/// Lower one function from `raw_mir`, consuming `elaborated_mir.drop_plans`
+/// to emit LIFO close calls before every exit terminator.
+///
+/// `elab` is the `ElaboratedMirFunction` whose `name` matches `func.name`.
+/// When `pipeline.elaborated_mir` has no matching entry (e.g. in hand-built
+/// test pipelines that predate elaboration), `elab` may be `None`; in that
+/// case `emit_elab_drops` receives an empty slice and emits nothing — the
+/// inline `Instr::Drop` path in `lower_instruction` still fires for any
+/// `Instr::Drop` entries baked into `raw_mir.blocks`.
 fn lower_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     func: &RawMirFunction,
     fn_symbols: &FnSymbolMap<'ctx>,
+    elab: Option<&ElaboratedMirFunction>,
 ) -> CodegenResult<()> {
     let (llvm_fn, return_ty_llvm) = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -1418,12 +1542,24 @@ fn lower_function<'ctx>(
         runtime_decls: RefCell::new(HashMap::new()),
     };
 
+    // Extract drop_plans from the matched elaborated function, or use an
+    // empty slice when no elaborated function is available (hand-built test
+    // pipelines that inline Instr::Drop instead of using drop_plans).
+    let empty_plans: Vec<(ExitPath, hew_mir::DropPlan)> = Vec::new();
+    let drop_plans: &[(ExitPath, hew_mir::DropPlan)] = elab
+        .map(|e| e.drop_plans.as_slice())
+        .unwrap_or(empty_plans.as_slice());
+
     for block in &func.blocks {
         let bb = *blocks.get(&block.id).expect("block in map");
         fn_ctx.builder.position_at_end(bb);
         for instr in &block.instructions {
             lower_instruction(&fn_ctx, instr)?;
         }
+        // Emit LIFO drops from the elaborated drop plan BEFORE the
+        // terminator so the alloca null-stores precede the ret/br.
+        // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
+        emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
         lower_terminator(&fn_ctx, fn_symbols, &block.terminator)?;
     }
 
@@ -1446,7 +1582,12 @@ fn build_module<'ctx>(
         fn_symbols.insert(func.name.clone(), sym);
     }
     for func in &pipeline.raw_mir {
-        lower_function(ctx, &llvm_mod, func, &fn_symbols)?;
+        // Match by name: elaborated_mir is parallel to raw_mir when the
+        // full pipeline runs. Hand-built test pipelines may leave
+        // elaborated_mir empty; `find` returns `None` in that case and
+        // `lower_function` falls back to the inline Instr::Drop path.
+        let elab = pipeline.elaborated_mir.iter().find(|e| e.name == func.name);
+        lower_function(ctx, &llvm_mod, func, &fn_symbols, elab)?;
     }
     llvm_mod
         .verify()

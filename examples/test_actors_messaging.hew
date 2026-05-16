@@ -61,7 +61,7 @@ fn test_lambda_actor() -> int {
     };
     doubler.send(21);
     doubler.send(5);
-    await close(doubler);
+    await doubler.close();
     println("PASS: lambda actor");
     1
 }
@@ -71,12 +71,12 @@ fn test_actor_factory() -> int {
     let m = make_multiplier(3);
     m.send(10);
     m.send(7);
-    await close(m);
+    await m.close();
     println("PASS: actor factory");
     1
 }
 
-fn make_multiplier(factor: int) -> Actor<int> {
+fn make_multiplier(factor: int) -> Duplex<int, ()> {
     actor |x: int| {
         println(f"  multiplied: {x * factor}");
     }
@@ -93,7 +93,7 @@ fn test_complex_lambda() -> int {
     };
     processor.send(5);
     processor.send(15);
-    await close(processor);
+    await processor.close();
     println("PASS: complex lambda actor");
     1
 }

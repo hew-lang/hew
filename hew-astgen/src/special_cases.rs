@@ -644,7 +644,7 @@ const EXPR_VARIANT_COVERAGE: &[(&str, VariantDisposition)] = &[
     ("Select", VariantDisposition::Parsed),
     ("Join", VariantDisposition::Parsed),
     ("Timeout", VariantDisposition::Parsed),
-    ("Unsafe", VariantDisposition::Parsed),
+    ("UnsafeBlock", VariantDisposition::Parsed),
     ("Yield", VariantDisposition::Parsed),
     ("Cooperate", VariantDisposition::Parsed),
     ("This", VariantDisposition::Parsed),
@@ -936,7 +936,7 @@ fn expr_async_dispatcher() -> &'static str {
         parseSpanned<ast::Expr>(mapReq(*payload, "duration"), parseExpr));
     return ast::Expr{std::move(e), {}};
   }
-  if (name == "Unsafe")
+  if (name == "UnsafeBlock")
     return ast::Expr{ast::ExprUnsafe{parseBlock(*payload)}, {}};
   if (name == "Yield") {
     ast::ExprYield e;

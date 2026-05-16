@@ -881,31 +881,27 @@ impl Checker {
         match &obj_ty {
             Ty::Array(elem, _) | Ty::Slice(elem) => (**elem).clone(),
             Ty::Named { name, args } if name == "Vec" && !args.is_empty() => args[0].clone(),
-            // Custom type indexing: desugar obj[key] → obj.get(key)
             Ty::Named { name, args } => {
-                if let Some(sig) = self.lookup_named_method_sig(name, args, "get") {
-                    if let Some(param_ty) = sig.params.first() {
-                        self.check_against(&index.0, &index.1, param_ty);
-                    }
-                    sig.return_type
-                } else if self.lookup_type_def(name).is_some() {
-                    self.report_error(
+                // Bracket indexing via a named type's `.get()` method is no longer
+                // supported. Use the explicit method call instead.
+                if self.lookup_named_method_sig(name, args, "get").is_some() {
+                    self.report_error_with_suggestions(
                         TypeErrorKind::InvalidOperation,
                         span,
                         format!(
-                            "cannot index into `{}`: type has no `get` method",
+                            "cannot index into `{}` with `[]`; use `.get(k)` instead",
                             obj_ty.user_facing()
                         ),
+                        vec![format!("use `.get(k)` on `{}`", obj_ty.user_facing())],
                     );
-                    Ty::Error
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
                         format!("cannot index into `{}`", obj_ty.user_facing()),
                     );
-                    Ty::Error
                 }
+                Ty::Error
             }
             _ => {
                 self.report_error(

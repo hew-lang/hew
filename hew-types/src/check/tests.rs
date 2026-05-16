@@ -9552,7 +9552,9 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
 }
 
 #[test]
-fn custom_index_uses_named_method_get_for_type_def() {
+fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
+    // m[k] on a named type that has a `.get()` method is no longer accepted;
+    // the checker must emit a diagnostic pointing at `.get(k)`.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
     let mut methods = HashMap::new();
@@ -9587,16 +9589,26 @@ fn custom_index_uses_named_method_get_for_type_def() {
     };
 
     let ty = checker.synthesize(&expr, &(0..6));
-    assert_eq!(ty, Ty::String);
+    assert_eq!(
+        ty,
+        Ty::Error,
+        "bracket-index on named type must produce Ty::Error"
+    );
     assert!(
-        checker.errors.is_empty(),
-        "expected type-def get lookup to succeed, got: {:?}",
-        checker.errors
+        !checker.errors.is_empty(),
+        "expected a diagnostic for bracket-index on named type with .get()"
+    );
+    let msg = &checker.errors[0].message;
+    assert!(
+        msg.contains(".get(k)"),
+        "diagnostic should point at .get(k), got: {msg}"
     );
 }
 
 #[test]
-fn custom_index_uses_named_method_get_for_fn_sig_fallback() {
+fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
+    // Same as above but the `get` method is registered via fn_sigs rather than
+    // inline on the type_def (the fn_sig-fallback path in lookup_named_method_sig).
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.type_defs.insert(
         "Wrapper".to_string(),
@@ -9629,11 +9641,78 @@ fn custom_index_uses_named_method_get_for_fn_sig_fallback() {
     };
 
     let ty = checker.synthesize(&expr, &(0..9));
-    assert_eq!(ty, Ty::String);
+    assert_eq!(
+        ty,
+        Ty::Error,
+        "bracket-index on named type must produce Ty::Error"
+    );
     assert!(
-        checker.errors.is_empty(),
-        "expected fn_sigs get fallback to succeed, got: {:?}",
-        checker.errors
+        !checker.errors.is_empty(),
+        "expected a diagnostic for bracket-index on named type with .get() via fn_sigs"
+    );
+    let msg = &checker.errors[0].message;
+    assert!(
+        msg.contains(".get(k)"),
+        "diagnostic should point at .get(k), got: {msg}"
+    );
+}
+
+#[test]
+fn hashmap_bracket_index_is_a_compile_error() {
+    // m[k] on HashMap<String, int> must be a compile error since the
+    // named-type .get() fallback is removed. The explicit m.get(k) is the
+    // correct form (returns Option<int>).
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+
+    // Register HashMap with a String-keyed .get() method (as the stdlib defines it).
+    // Return type is Option<V>, represented as the Named form.
+    let option_v = Ty::Named {
+        name: "Option".to_string(),
+        args: vec![Ty::Named {
+            name: "V".to_string(),
+            args: vec![],
+        }],
+    };
+    let mut methods = HashMap::new();
+    methods.insert(
+        "get".to_string(),
+        FnSig {
+            param_names: vec!["key".to_string()],
+            params: vec![Ty::String],
+            return_type: option_v,
+            ..FnSig::default()
+        },
+    );
+    checker.type_defs.insert(
+        "HashMap".to_string(),
+        make_test_type_def("HashMap", vec!["K".to_string(), "V".to_string()], methods),
+    );
+    checker.env.define(
+        "m".to_string(),
+        Ty::Named {
+            name: "HashMap".to_string(),
+            args: vec![Ty::String, Ty::I64],
+        },
+        false,
+    );
+
+    // Use an i64 index so the only diagnostic comes from the named-type guard,
+    // not from a type mismatch on the index expression itself.
+    let expr = Expr::Index {
+        object: Box::new((Expr::Identifier("m".to_string()), 0..1)),
+        index: Box::new(make_int_literal(0, 2..3)),
+    };
+
+    let ty = checker.synthesize(&expr, &(0..8));
+    assert_eq!(ty, Ty::Error, "m[k] on HashMap must produce Ty::Error");
+    assert!(
+        !checker.errors.is_empty(),
+        "m[k] on HashMap<String, int> must produce a diagnostic"
+    );
+    let msg = &checker.errors[0].message;
+    assert!(
+        msg.contains(".get(k)"),
+        "diagnostic should point at .get(k), got: {msg}"
     );
 }
 

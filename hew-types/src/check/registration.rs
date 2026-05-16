@@ -1225,6 +1225,9 @@ impl Checker {
 
         let mut fields: HashMap<String, Ty> = HashMap::new();
         let mut hole_vars = Vec::new();
+        // Positional field types for tuple records, collected for marker
+        // derivation (A-4). Named-record fields come from `type_def.fields`.
+        let mut tuple_field_types: Vec<Ty> = Vec::new();
 
         match &rd.kind {
             RecordKind::Named(record_fields) => {
@@ -1239,6 +1242,11 @@ impl Checker {
                     .iter()
                     .map(|te| self.resolve_registered_annotation_ty(te, &mut hole_vars))
                     .collect();
+
+                // Capture positional types for marker registration before moving
+                // param_tys into fn_sigs. The `fields` map intentionally stays
+                // empty — `.0`/`.1` access is not permitted on tuple records (A-D2).
+                tuple_field_types.clone_from(&param_tys);
 
                 // Register a constructor function so `R(1, 2)` resolves via
                 // `check_call`.  The `fields` map intentionally stays empty —
@@ -1267,11 +1275,19 @@ impl Checker {
             is_indirect: false,
         };
 
-        // Register field types for Send/Frozen derivation (A-4 computes
-        // Eq/Hash/Clone/Copy from these; no marker computation here).
-        // TODO(A-4): Eq/Hash/Clone/Copy derivation for records.
-        let field_types: Vec<_> = type_def.fields.values().cloned().collect();
+        // Register all field types for marker derivation (Eq/Hash/Send/Frozen/
+        // Clone/Copy). Named-field records use type_def.fields; tuple records
+        // use the positional types captured above (type_def.fields is empty for
+        // tuple records by design — A-D2).
+        let field_types: Vec<Ty> = if tuple_field_types.is_empty() {
+            type_def.fields.values().cloned().collect()
+        } else {
+            tuple_field_types
+        };
         self.registry.register_type(rd.name.clone(), field_types);
+        // Mark this as a record type so implements_marker applies the correct
+        // value-type semantics (Resource always false; all other markers field-driven).
+        self.registry.register_record_type(rd.name.clone());
         self.register_rcfree_members_for_type(&rd.name, &type_def);
 
         self.type_defs.insert(rd.name.clone(), type_def);

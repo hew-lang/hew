@@ -1,6 +1,8 @@
 use hew_hir::{BindingId, IntentKind, SiteId, ValueClass};
 use hew_types::ResolvedTy;
 
+pub use crate::runtime_symbols::UnknownRuntimeSymbol;
+
 /// Distinguishes shared (read-only, may alias) from mutable (unique,
 /// no-alias) borrows for the aliasing check. The check itself is
 /// declared in `MirCheck::Aliasing` but the spine has no construction
@@ -221,6 +223,69 @@ pub enum CmpPred {
     SignedGreaterEq,
 }
 
+/// A validated runtime-ABI call payload carried by `Instr::CallRuntimeAbi`.
+///
+/// Construction is only possible via `RuntimeCall::new`, which enforces that
+/// `symbol` is in the `runtime_symbols::M2_RUNTIME_SYMBOLS` allowlist.
+/// Direct struct construction is impossible because the fields are private,
+/// so the allowlist check cannot be bypassed at any call site — including
+/// release builds (LESSONS P0 `boundary-fail-closed`).
+///
+/// Consumers (codegen, `instr_places`, MIR dump) access fields through the
+/// provided getter methods.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeCall {
+    /// Validated `hew_*` C-ABI symbol name.
+    symbol: String,
+    /// Argument places in C-ABI order.
+    args: Vec<Place>,
+    /// Destination place for the return value, or `None` if discarded.
+    dest: Option<Place>,
+}
+
+impl RuntimeCall {
+    /// Construct a validated runtime-ABI call.
+    ///
+    /// Returns `Err(UnknownRuntimeSymbol)` if `symbol` is not in the
+    /// M2 runtime-ABI allowlist — enforcing the allowlist boundary at
+    /// construction in all build profiles (LESSONS P0 `boundary-fail-closed`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownRuntimeSymbol`] when `symbol` is not recognised by
+    /// `runtime_symbols::is_known_runtime_symbol`.
+    pub fn new(
+        symbol: impl Into<String>,
+        args: Vec<Place>,
+        dest: Option<Place>,
+    ) -> Result<Self, UnknownRuntimeSymbol> {
+        let symbol = symbol.into();
+        if crate::runtime_symbols::is_known_runtime_symbol(&symbol) {
+            Ok(RuntimeCall { symbol, args, dest })
+        } else {
+            Err(UnknownRuntimeSymbol(symbol))
+        }
+    }
+
+    /// The validated C-ABI symbol name.
+    #[must_use]
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    /// Argument places in C-ABI order.
+    #[must_use]
+    pub fn args(&self) -> &[Place] {
+        &self.args
+    }
+
+    /// Destination place for the return value, or `None` if discarded.
+    #[must_use]
+    pub fn dest(&self) -> Option<Place> {
+        self.dest
+    }
+}
+
 /// Minimal machine-level instruction set for the spine subset (integer
 /// literals, integer add, value moves). Each variant maps to a single
 /// inkwell builder call in `hew-codegen-rs::llvm`.
@@ -253,6 +318,50 @@ pub enum Instr {
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
+    /// Call into a `hew_*` runtime-ABI entry by name. The carried
+    /// `symbol` names a `#[no_mangle] extern "C" fn` exported by
+    /// `hew-runtime/` (the M2 substrate set is listed in
+    /// `crate::runtime_symbols::M2_RUNTIME_SYMBOLS`). One variant
+    /// covers every Duplex / lambda-actor / half-handle runtime
+    /// call — codegen disambiguates by the `symbol` string at lower
+    /// time. Aligns with the runtime ABI shape: each symbol IS the
+    /// authoritative discriminator and the variant carries no
+    /// additional structural information beyond the argument
+    /// places and the optional destination.
+    ///
+    /// Construction discipline (LESSONS P0 `boundary-fail-closed`):
+    /// producers MUST validate `symbol` against
+    /// `crate::runtime_symbols::is_known_runtime_symbol` BEFORE
+    /// pushing this instruction. A typo or unrecognised symbol
+    /// surfaces as a `MirDiagnostic::CutoverUnsupported` at MIR
+    /// construction, never as a silent link-time failure.
+    ///
+    /// `dest = None` denotes a runtime call whose return type the
+    /// substrate models as `Result<(), _>` and which the producer
+    /// has decided not to bind into a Place (a discarded `.send()`
+    /// result, or a half-handle `.close()` that consumes the
+    /// receiver). `dest = Some(place)` writes the runtime call's
+    /// return value into `place`; codegen (slice 5) materialises
+    /// the `inkwell` call result into the local backing `place`.
+    ///
+    /// WHY (M2 slice 4.5c): the typecheck→HIR/MIR bridge that maps
+    /// `Duplex<S, R>::send(msg)` (a `MethodCallRewrite` side-table
+    /// entry produced by `hew-types` slice 4.5b) to this variant
+    /// does not yet reach the Rust MIR pipeline (`hew compile-v05`
+    /// never invokes the typechecker). The variant lands first so
+    /// slice 5 codegen can wire a real `inkwell::BuildCall` arm and
+    /// the producer-side bridge work in a follow-up slice does not
+    /// have to retrofit `Instr`. WHEN-OBSOLETE: producers in
+    /// `hew-mir/src/lower.rs` start emitting this variant once the
+    /// bridge lands. WHAT: a single producer arm in `lower_value`
+    /// that walks a Call whose callee resolves to a builtin /
+    /// rewritten symbol and pushes `Instr::CallRuntimeAbi`.
+    /// Call into a `hew_*` runtime-ABI entry by name. The payload is a
+    /// [`RuntimeCall`] whose constructor enforces the symbol allowlist at
+    /// construction in all build profiles — direct struct construction is
+    /// impossible because `RuntimeCall`'s fields are private
+    /// (LESSONS P0 `boundary-fail-closed`).
+    CallRuntimeAbi(RuntimeCall),
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
     /// `drop_fn = Some(name)` calls the `@resource` type's declared
     /// `close(consuming self)` method; `drop_fn = None` is a trivial drop

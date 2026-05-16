@@ -532,6 +532,22 @@ fn lower_instruction(fn_ctx: &FnCtx<'_>, instr: &Instr) -> CodegenResult<()> {
                 .build_store(dest_ptr, loaded)
                 .map_err(|e| CodegenError::Llvm(format!("move store: {e:?}")))?;
         }
+        Instr::CallRuntimeAbi(call) => {
+            // Fail-closed codegen seam. The variant exists so a real
+            // `inkwell::BuildCall` lowering can land in slice 5 (LLVM
+            // IR emission for the runtime substrate); until then,
+            // any producer that emits this instruction surfaces a
+            // loud `FailClosed` rather than a silent no-op that
+            // would skip the runtime call. LESSONS:
+            // boundary-fail-closed (codegen-side P0 row 49).
+            let symbol = call.symbol();
+            return Err(CodegenError::FailClosed(format!(
+                "Instr::CallRuntimeAbi(symbol={symbol:?}): codegen for \
+                 runtime-ABI calls is not yet wired; the slice-5 LLVM \
+                 lowering replaces this fail-closed arm with the real \
+                 inkwell call emission",
+            )));
+        }
         Instr::Drop {
             place: _,
             ty: _,

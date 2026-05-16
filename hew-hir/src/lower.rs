@@ -5,8 +5,9 @@ use hew_parser::ast::{
     ResourceMarker, SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl,
     TypeExpr,
 };
-use hew_types::ResolvedTy;
+use hew_types::{MethodCallRewrite, ResolvedTy, SpanKey, TypeCheckOutput};
 
+use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
 use crate::node::{
@@ -35,8 +36,12 @@ struct FnEntry {
 }
 
 #[must_use]
-pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
-    let mut ctx = LowerCtx::default();
+pub fn lower_program(
+    program: &Program,
+    type_check_output: &TypeCheckOutput,
+    _ctx: &ResolutionCtx,
+) -> LowerOutput {
+    let mut ctx = LowerCtx::new(type_check_output);
 
     // First pass: collect all function signatures so that forward and mutual
     // references in call expressions resolve to the correct return type.
@@ -122,7 +127,7 @@ pub fn lower_program(program: &Program, _ctx: &ResolutionCtx) -> LowerOutput {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct LowerCtx {
     ids: IdGen,
     scopes: Vec<HashMap<String, (BindingId, ResolvedTy)>>,
@@ -131,8 +136,15 @@ struct LowerCtx {
     /// Per-named-type marker + close-method registry. Pre-populated from
     /// every `Item::TypeDecl` before function bodies lower so that
     /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
+    /// Also seeded with M2 substrate types (Duplex, Sink, Stream, etc.) via
+    /// `builtin_type_classes::seed_builtin_type_classes` before the `TypeDecl` loop.
     type_classes: crate::value_class::TypeClassTable,
     diagnostics: Vec<HirDiagnostic>,
+    /// Checker-owned method-call lowering decisions. Keyed by the method-call
+    /// expression span. `Expr::MethodCall` lowering looks up each call site
+    /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
+    /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
+    method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     /// Depth counter for nested `scope{}` bodies. When > 0, statement-expression
     /// calls are inferred as child-task spawns (TI-1); outside any scope body
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
@@ -154,6 +166,27 @@ struct LowerCtx {
     /// `mem::replace` so the outer self-binding doesn't leak into an inner
     /// lambda's classification.
     current_actor_self: Option<(BindingId, String)>,
+}
+
+impl LowerCtx {
+    fn new(tc_output: &TypeCheckOutput) -> Self {
+        let mut type_classes = crate::value_class::TypeClassTable::default();
+        // Seed compiler-known M2 substrate types before source-order TypeDecls.
+        // This ensures `ValueClass::of_ty` resolves Duplex/Sink/Stream as
+        // AffineResource even though they are not user-declared TypeDecl items.
+        seed_builtin_type_classes(&mut type_classes);
+        Self {
+            ids: IdGen::default(),
+            scopes: Vec::new(),
+            fn_registry: HashMap::new(),
+            type_classes,
+            diagnostics: Vec::new(),
+            method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            scope_depth: 0,
+            statement_position: false,
+            current_actor_self: None,
+        }
+    }
 }
 
 impl LowerCtx {
@@ -569,7 +602,7 @@ impl LowerCtx {
         let scope = self.ids.scope();
         let mut statements = Vec::new();
         for (stmt, span) in &block.stmts {
-            statements.push(self.lower_stmt(stmt, span.clone(), expected_ty.clone()));
+            statements.extend(self.lower_stmt_multi(stmt, span.clone(), expected_ty.clone()));
         }
         let tail = block
             .trailing_expr
@@ -588,6 +621,164 @@ impl LowerCtx {
             ty,
             span: 0..0,
         }
+    }
+
+    /// Lower a statement, returning zero or more `HirStmt`s.
+    ///
+    /// Most statements produce exactly one `HirStmt` (delegated to `lower_stmt`).
+    /// `let (a, b) = expr;` (Q33 tuple-let) produces:
+    ///   1. `let __tuple_N = expr;`    — binds the tuple value to a synthetic temp
+    ///   2. `let a = __tuple_N.0;`     — per-element projection (as many as elements)
+    ///   3. `let b = __tuple_N.1;`
+    ///
+    /// The element projections use a synthetic `HirExprKind::TupleIndex` node.
+    /// Downstream MIR lowering handles tuple projections in the `Expr::Call` return
+    /// path for `duplex_pair`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "tuple-let expansion has three phases (validation, temp-bind, per-element loop) \
+                  that read more clearly as a single function; splitting would obscure the \
+                  invariant that temp-bind and per-element refs share the same temp_name"
+    )]
+    fn lower_stmt_multi(
+        &mut self,
+        stmt: &Stmt,
+        span: std::ops::Range<usize>,
+        return_ty: ResolvedTy,
+    ) -> Vec<HirStmt> {
+        // Tuple-let: `let (a, b, ...) = value_expr;`
+        if let Stmt::Let {
+            pattern,
+            ty: annotation,
+            value: Some(value_expr),
+        } = stmt
+        {
+            if let Pattern::Tuple(element_patterns) = &pattern.0 {
+                // Lower the tuple value once into a synthetic temp binding.
+                let tuple_val = self.lower_expr(value_expr, IntentKind::Consume);
+                let tuple_ty = tuple_val.ty.clone();
+
+                // Validate the pattern element count against the inferred tuple type.
+                let element_tys: Vec<ResolvedTy> = if let ResolvedTy::Tuple(elems) = &tuple_ty {
+                    if elems.len() != element_patterns.len() {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "tuple pattern with {} elements for tuple with {} elements",
+                                    element_patterns.len(),
+                                    elems.len()
+                                ),
+                                slice_target: "type-checker".to_string(),
+                            },
+                            span.clone(),
+                            "tuple pattern element count does not match tuple value arity",
+                        ));
+                        return vec![HirStmt {
+                            node: self.ids.node(),
+                            kind: HirStmtKind::Expr(
+                                self.unsupported_expr(span, "tuple arity mismatch"),
+                            ),
+                            span: 0..0,
+                        }];
+                    }
+                    elems.clone()
+                } else if annotation.is_none() {
+                    // Type not yet resolved — use Unit for each element (diagnostic
+                    // already emitted by the checker; HIR does best-effort lowering).
+                    vec![ResolvedTy::Unit; element_patterns.len()]
+                } else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CutoverUnsupported {
+                            construct: "tuple pattern on non-tuple value".to_string(),
+                            slice_target: "type-checker".to_string(),
+                        },
+                        span.clone(),
+                        "tuple-let pattern requires the right-hand side to have a tuple type",
+                    ));
+                    return vec![HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(
+                            self.unsupported_expr(span, "tuple pattern on non-tuple"),
+                        ),
+                        span: 0..0,
+                    }];
+                };
+
+                // Synthetic temp name — unlikely to collide with user identifiers.
+                let temp_name = format!("__tuple_{}", self.ids.binding().0);
+                let temp_binding =
+                    self.bind(temp_name.clone(), tuple_ty.clone(), false, span.clone());
+                let temp_stmt = HirStmt {
+                    node: self.ids.node(),
+                    kind: HirStmtKind::Let(temp_binding, Some(tuple_val)),
+                    span: span.clone(),
+                };
+
+                let mut stmts = vec![temp_stmt];
+
+                // Per-element projection lets.
+                for (idx, (elem_pat, elem_ty)) in
+                    element_patterns.iter().zip(element_tys).enumerate()
+                {
+                    let elem_name = match &elem_pat.0 {
+                        Pattern::Identifier(n) => n.clone(),
+                        Pattern::Wildcard => format!("_{idx}"),
+                        _ => {
+                            // Nested tuple / constructor patterns are out of scope.
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CutoverUnsupported {
+                                    construct: "nested pattern in tuple-let".to_string(),
+                                    slice_target: "pattern-matching".to_string(),
+                                },
+                                elem_pat.1.clone(),
+                                "only identifier and wildcard patterns are supported \
+                                 inside tuple-let in v0.5",
+                            ));
+                            format!("__unsupported_{idx}")
+                        }
+                    };
+
+                    // Build a TupleIndex expression: `__tuple_N.<idx>`.
+                    let temp_ref = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::of_ty(&tuple_ty, &self.type_classes),
+                        ty: tuple_ty.clone(),
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::BindingRef {
+                            name: temp_name.clone(),
+                            // The temp was just bound so it is always resolved.
+                            resolved: ResolvedRef::Unresolved,
+                        },
+                        span: span.clone(),
+                    };
+                    let projection = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::of_ty(&elem_ty, &self.type_classes),
+                        ty: elem_ty.clone(),
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::TupleIndex {
+                            tuple: Box::new(temp_ref),
+                            index: idx,
+                        },
+                        span: elem_pat.1.clone(),
+                    };
+
+                    let elem_binding = self.bind(elem_name, elem_ty, false, elem_pat.1.clone());
+                    stmts.push(HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Let(elem_binding, Some(projection)),
+                        span: elem_pat.1.clone(),
+                    });
+                }
+
+                return stmts;
+            }
+        }
+
+        // Non-tuple statements: delegate to the single-statement path.
+        vec![self.lower_stmt(stmt, span, return_ty)]
     }
 
     #[allow(
@@ -1033,6 +1224,11 @@ impl LowerCtx {
                 body,
                 ..
             } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body),
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => self.lower_method_call(receiver, method, args, span.clone()),
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -1607,6 +1803,99 @@ impl LowerCtx {
         }
     }
 
+    /// Lower `receiver.method(args)` using the checker's `method_call_rewrites` side-table.
+    ///
+    /// Fail-closed per `checker-output-boundary` (LESSONS P0): a missing entry for
+    /// this call site's span is a hard diagnostic — HIR never re-infers the runtime
+    /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
+    /// other rewrite variants are rejected as unsupported (they target the C++/MLIR
+    /// pipeline, not the Rust MIR pipeline).
+    fn lower_method_call(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[hew_parser::ast::CallArg],
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let key = SpanKey::from(&span);
+        let rewrite = self.method_call_rewrites.get(&key).cloned();
+        match rewrite {
+            Some(MethodCallRewrite::RewriteToFunction { c_symbol }) => {
+                // Lower receiver + args, then prepend receiver as first argument.
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                let mut lowered_args = vec![lowered_receiver];
+                for arg in args {
+                    lowered_args.push(self.lower_expr(arg.expr(), IntentKind::Read));
+                }
+                // Synthetic callee: a runtime-symbol reference.  The function type
+                // uses `Unit` return (runtime send/recv return unit in the Rust MIR
+                // pipeline; future slices thread expr_types for richer return types).
+                // `params` is empty — the call arg list carries the real args.
+                let callee_ty = ResolvedTy::Function {
+                    params: Vec::new(),
+                    ret: Box::new(ResolvedTy::Unit),
+                };
+                let callee = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::PersistentShare,
+                    ty: callee_ty,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::BindingRef {
+                        name: c_symbol,
+                        resolved: ResolvedRef::Unresolved,
+                    },
+                    span: span.clone(),
+                };
+                (
+                    HirExprKind::Call {
+                        callee: Box::new(callee),
+                        args: lowered_args,
+                    },
+                    ResolvedTy::Unit,
+                )
+            }
+            Some(
+                MethodCallRewrite::RewriteModuleQualifiedToFunction { .. }
+                | MethodCallRewrite::DeferToLowering,
+            ) => {
+                // These rewrite variants target the C++/MLIR pipeline and are
+                // not consumed by the Rust MIR pipeline.  Fail-closed.
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("method-call rewrite variant for `.{method}`"),
+                        slice_target: "mir-pipeline".to_string(),
+                    },
+                    span,
+                    "this method-call rewrite variant is not supported in the Rust MIR pipeline",
+                ));
+                (
+                    HirExprKind::Unsupported(format!(
+                        "unsupported rewrite variant for method `{method}`"
+                    )),
+                    ResolvedTy::Unit,
+                )
+            }
+            None => {
+                // No rewrite entry — fail closed.  Do not re-infer from the receiver type.
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MethodCallNoRewrite {
+                        method: method.to_string(),
+                    },
+                    span,
+                    "no checker-produced rewrite entry for this method call; \
+                     typecheck must record a rewrite before HIR lowering",
+                ));
+                (
+                    HirExprKind::Unsupported(format!(
+                        "method call `.{method}` has no rewrite entry"
+                    )),
+                    ResolvedTy::Unit,
+                )
+            }
+        }
+    }
+
     fn pattern_name(&mut self, pattern: &Spanned<Pattern>) -> Option<String> {
         if let Pattern::Identifier(name) = &pattern.0 {
             Some(name.clone())
@@ -2010,6 +2299,9 @@ fn collect_captures_walk(
                 }
                 collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
             }
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            collect_captures_walk(tuple, param_ids, seen, captures, self_id);
         }
     }
 }

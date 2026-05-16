@@ -112,6 +112,34 @@ pub struct TypeCheckOutput {
     pub actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
 }
 
+impl Default for TypeCheckOutput {
+    /// Produce an empty `TypeCheckOutput` with no resolved types, rewrites, or
+    /// diagnostics. Useful in tests that exercise HIR lowering without
+    /// invoking the full type-checker (e.g. programs that contain no method
+    /// calls and therefore need no `method_call_rewrites` entries).
+    fn default() -> Self {
+        Self {
+            expr_types: HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            method_call_consumes_receiver: HashSet::default(),
+            lowering_facts: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: Vec::new(),
+            warnings: Vec::new(),
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            handle_bearing_structs: HashSet::default(),
+            cycle_capable_actors: HashSet::default(),
+            user_modules: HashSet::default(),
+            call_type_args: HashMap::new(),
+            stack_hints: Vec::new(),
+            actor_send_aliasing: HashMap::new(),
+        }
+    }
+}
+
 /// Classification of a binding's right-hand-side allocation shape.
 ///
 /// Drives the `HEW-PERF-001` diagnostic. Variants cover the genuine heap

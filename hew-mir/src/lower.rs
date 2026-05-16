@@ -854,6 +854,23 @@ impl Builder {
                 // Place::LambdaActorHandle today).
                 Some(self.lower_spawn_lambda_actor(expr))
             }
+            HirExprKind::TupleIndex { tuple, index } => {
+                // Walk the inner tuple expression so nested Unsupported nodes
+                // still surface via the checker stream (fail-closed / boundary-fail-closed).
+                // Full TupleIndex lowering (emitting a Place projection) is wired
+                // in the MIR producer slice (E2) once Place::DuplexHandle arrives.
+                let _ = self.lower_value(tuple);
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("tuple-index .{index}"),
+                        site: expr.site,
+                    },
+                    note: "TupleIndex MIR lowering is not yet implemented; \
+                           wired in the E2 MIR-producer slice alongside Place::DuplexHandle"
+                        .to_string(),
+                });
+                None
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
                 // CutoverUnsupported and the driver should have stopped

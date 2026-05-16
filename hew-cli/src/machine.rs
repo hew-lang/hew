@@ -12,6 +12,7 @@
 
 use hew_hir::{lower_program, HirDiagnosticKind, HirItem, HirMachineDecl, ResolutionCtx};
 use hew_parser::ast::{Item, MachineDecl};
+use hew_types::TypeCheckOutput;
 
 use crate::args::{MachineDiagramArgs, MachineFormat};
 
@@ -73,7 +74,7 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
         std::process::exit(1);
     }
 
-    let lowered = lower_program(&result.program, &ResolutionCtx);
+    let lowered = lower_program(&result.program, &TypeCheckOutput::default(), &ResolutionCtx);
 
     // Filter out CutoverUnsupported diagnostics from non-machine items —
     // Lane A only lowers machines; functions are also lowered if present.

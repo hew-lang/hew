@@ -1,6 +1,7 @@
 //! Tests for HIR machine lowering and static checks.
 
 use hew_hir::{lower_program, HirDiagnosticKind, HirItem, ResolutionCtx};
+use hew_types::TypeCheckOutput;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -9,7 +10,7 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
         "parse errors: {:?}",
         parsed.errors
     );
-    lower_program(&parsed.program, &ResolutionCtx)
+    lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx)
 }
 
 /// A minimal two-state Moore machine with full coverage.

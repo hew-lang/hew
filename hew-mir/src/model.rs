@@ -99,6 +99,37 @@ pub enum Terminator {
         value: Place,
         next: u32,
     },
+    /// Actor ask: send `value` to `actor` on a caller-owned reply
+    /// channel and resume at `next` once the reply has been received.
+    /// The terminator carries two distinct Places by design:
+    ///
+    /// - `channel` — the `HewReplyChannel*` slot allocated by codegen.
+    ///   Used for the runtime ABI sequence
+    ///   `hew_reply_channel_new` → `hew_actor_ask_with_channel` →
+    ///   `hew_reply_wait` on the winning path, and
+    ///   `hew_reply_channel_cancel` → `hew_reply_channel_free` on
+    ///   loser-cleanup. Codegen-internal; not user-visible.
+    /// - `reply_dest` — the user-visible binding that receives the
+    ///   reply value. Populated from `hew_reply_wait`'s return on win.
+    ///
+    /// Declared variant. The v0.5 integer spine has no construction
+    /// surface today — HIR-to-MIR lowers `select{}` arms into
+    /// `Terminator::Select` with `SelectArmKind::ActorAsk`; per-arm
+    /// body-block construction (the seam that would terminate an arm
+    /// body with `Terminator::Ask`) is the `select-wait-dispatch`
+    /// cluster's responsibility. Non-select `actor.method()` lowering
+    /// is the `actor-method-call-lowering` cluster's responsibility.
+    /// The variant is declared here so the MIR shape is forward-
+    /// compatible with both clusters and so `MirCheck::ActorAskEscape`
+    /// has a construction site to look for when actor-call lowering
+    /// lands.
+    Ask {
+        actor: Place,
+        value: Place,
+        channel: Place,
+        reply_dest: Place,
+        next: u32,
+    },
     /// Sealed `select{}` construct. The terminator carries the per-arm
     /// discriminator and per-arm body block ids; the runtime substrate
     /// that decides the winner and runs loser-cleanup is supplied by
@@ -440,6 +471,13 @@ pub enum MirCheck {
     /// shape, but actor lowering that builds it isn't in the v0.5
     /// integer spine.
     ActorSendEscape { place: Place, send_site: SiteId },
+    /// A non-`Send` value escapes across an actor ask boundary as the
+    /// request payload. Symmetric to `ActorSendEscape`: that variant
+    /// checks the fire-and-forget send boundary, this one checks the
+    /// request side of an ask boundary. Declared variant;
+    /// `Terminator::Ask` exists as the boundary shape, but actor-call
+    /// lowering that constructs it isn't in the v0.5 integer spine.
+    ActorAskEscape { place: Place, ask_site: SiteId },
     /// Structural invariant on the lowering: every value-producing
     /// `SiteId` must have a `DecisionFact` with a concrete `Strategy`
     /// (not `UnknownBlocked`). Violation indicates a lowering bug, not
@@ -622,6 +660,20 @@ pub enum ExitPath {
     Send {
         block: u32,
         actor: String,
+        next: u32,
+    },
+    /// Actor-ask exit. Mirrors `Terminator::Ask`. The `channel` Place
+    /// is what the loser-cleanup sequence needs
+    /// (`hew_reply_channel_cancel` + `hew_reply_channel_free`); the
+    /// `reply_dest` Place is irrelevant in the exit path because the
+    /// reply value is only consumed inside the winner body. Declared
+    /// so the elaboration pass is exhaustive; the spine never
+    /// constructs `Terminator::Ask` today, so this exit is unreachable
+    /// in practice until the construction surface lands.
+    Ask {
+        block: u32,
+        actor: Place,
+        channel: Place,
         next: u32,
     },
     /// Sealed `select{}` exit. Mirrors `Terminator::Select`; declared

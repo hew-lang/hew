@@ -278,6 +278,7 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
+            | Terminator::Ask { next, .. }
             | Terminator::Select { next, .. } => emit_edge(*next),
         }
     }
@@ -296,6 +297,7 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         Terminator::Call { next, .. }
         | Terminator::Yield { next, .. }
         | Terminator::Send { next, .. }
+        | Terminator::Ask { next, .. }
         | Terminator::Select { next, .. } => vec![*next],
     }
 }

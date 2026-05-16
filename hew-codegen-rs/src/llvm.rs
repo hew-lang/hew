@@ -1030,6 +1030,7 @@ fn emit_elab_drops(
             | ExitPath::Cancel { block }
             | ExitPath::Yield { block, .. }
             | ExitPath::Send { block, .. }
+            | ExitPath::Ask { block, .. }
             | ExitPath::Select { block, .. } => *block,
         };
         exit_block == block_id
@@ -1320,6 +1321,23 @@ fn lower_terminator<'ctx>(
                 "Terminator::Send — actor lowering not yet implemented",
             ));
         }
+        Terminator::Ask { .. } => {
+            // Reserved for the non-select actor-ask path. HIR-to-MIR
+            // lowers `select{}` ask arms into `Terminator::Select` with
+            // `SelectArmKind::ActorAsk`, so this arm is currently
+            // unreachable (non-select `actor.method()` is rejected
+            // upstream as `CutoverUnsupported`). When the construction
+            // surface lands, this arm emits the runtime ABI sequence:
+            //   hew_reply_channel_new → hew_actor_ask_with_channel
+            //   → hew_reply_wait
+            // On the loser / cancel leg:
+            //   hew_reply_channel_cancel + hew_reply_channel_free
+            // Late replies to a cancelled channel are silently dropped
+            // by the receiver.
+            return Err(CodegenError::Unsupported(
+                "Terminator::Ask — actor-ask lowering not yet implemented",
+            ));
+        }
         Terminator::Select { arms, .. } => {
             // Sealed `select{}` construct. The MIR terminator's shape is
             // fixed (see hew-mir::model::Terminator::Select) and HIR
@@ -1365,21 +1383,32 @@ fn lower_terminator<'ctx>(
                         .to_string()
                 }
                 Some(hew_mir::SelectArmKind::ActorAsk { .. }) => {
-                    // TODO: emit actor-ask lowering for the ask arm.
-                    // The runtime must (a) issue an ask on a reply
-                    // channel, (b) park the current coroutine, (c)
-                    // resume with the reply on win, (d) on loss
-                    // withdraw the envelope from the target mailbox
-                    // by correlation id if not yet dispatched, else
-                    // tombstone the reply sink so a late reply is
-                    // classified as OrphanedAsk and dropped
-                    // silently. Note: `Terminator::Send` is also
-                    // declared-only today; the actor-call surface
-                    // needs full lowering before this arm can ship.
-                    "select{} actor-ask arm awaits runtime substrate: \
-                     actor-call lowering (Terminator::Send) plus \
-                     correlation-id withdraw / reply-sink tombstone \
-                     for losing arms"
+                    // TODO: emit actor-ask lowering for this select arm.
+                    // The MIR shape is complete: `Terminator::Ask`
+                    // (with distinct `channel` and `reply_dest` Places),
+                    // `ExitPath::Ask` (carrying the `channel` Place for
+                    // loser-cleanup), and `MirCheck::ActorAskEscape`.
+                    // The runtime ABI is present; what remains is
+                    // lowering each select arm into a per-arm body block
+                    // terminated by `Terminator::Ask`.
+                    //
+                    // Runtime ABI invariants:
+                    // - Win path: hew_reply_channel_new →
+                    //     hew_actor_ask_with_channel → hew_reply_wait.
+                    // - Lose / cancel path: hew_reply_channel_cancel +
+                    //     hew_reply_channel_free against the channel
+                    //     slot. The pending ask is withdrawn; the actor
+                    //     handler may still deliver a reply after cancel.
+                    // - Late replies to a cancelled channel are silently
+                    //     dropped by the receiver (OrphanedAsk path);
+                    //     the caller must not interpret a false return
+                    //     from hew_reply as an error.
+                    // - Loser cleanup is best-effort: hew_reply may race
+                    //     cancel; the ref-count prevents use-after-free.
+                    "select{} actor-ask arm: per-arm body-block lowering \
+                     terminated by Terminator::Ask \
+                     (win: hew_reply_channel_new → hew_actor_ask_with_channel \
+                     → hew_reply_wait; lose: cancel + free the channel)"
                         .to_string()
                 }
                 Some(hew_mir::SelectArmKind::TaskAwait { .. }) => {
@@ -1799,9 +1828,10 @@ mod tests {
             other => panic!("expected FailClosed, got {other:?}"),
         };
         assert!(
-            msg.contains("actor-ask") && msg.contains("Terminator::Send"),
+            msg.contains("actor-ask") && msg.contains("Terminator::Ask"),
             "actor-ask FailClosed must name the missing substrate \
-             (Terminator::Send actor-call lowering): {msg}"
+             (per-arm body-block construction terminated by \
+             Terminator::Ask): {msg}"
         );
     }
 

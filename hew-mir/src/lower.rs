@@ -1661,7 +1661,8 @@ fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
         // and actor sends.
         MirCheck::Aliasing { .. }
         | MirCheck::GeneratorBorrowAcrossYield { .. }
-        | MirCheck::ActorSendEscape { .. } => None,
+        | MirCheck::ActorSendEscape { .. }
+        | MirCheck::ActorAskEscape { .. } => None,
     }
 }
 
@@ -1785,6 +1786,7 @@ fn exit_block_id(exit: &ExitPath) -> u32 {
         | ExitPath::Cancel { block }
         | ExitPath::Yield { block, .. }
         | ExitPath::Send { block, .. }
+        | ExitPath::Ask { block, .. }
         | ExitPath::Select { block, .. } => block,
     }
 }
@@ -1802,6 +1804,7 @@ fn exit_kind_label(exit: &ExitPath) -> &'static str {
         ExitPath::Cancel { .. } => "Cancel",
         ExitPath::Yield { .. } => "Yield",
         ExitPath::Send { .. } => "Send",
+        ExitPath::Ask { .. } => "Ask",
         ExitPath::Select { .. } => "Select",
     }
 }
@@ -2234,6 +2237,7 @@ fn validate_cross_block_split_consume(
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
+            | Terminator::Ask { next, .. }
             | Terminator::Select { next, .. } => emit(*next),
         }
     }
@@ -2250,6 +2254,7 @@ fn validate_cross_block_split_consume(
             Terminator::Call { next, .. }
             | Terminator::Yield { next, .. }
             | Terminator::Send { next, .. }
+            | Terminator::Ask { next, .. }
             | Terminator::Select { next, .. } => vec![*next],
         }
     };
@@ -2723,6 +2728,30 @@ fn enumerate_exits(
                 ExitPath::Send {
                     block: block_id,
                     actor: String::new(),
+                    next: *next,
+                },
+                DropPlan::default(),
+            ),
+            Terminator::Ask {
+                actor,
+                value: _,
+                channel,
+                reply_dest: _,
+                next,
+            } => (
+                // Declared-only. Spine has no Ask construction surface;
+                // HIR-to-MIR lowers select arms into `Terminator::Select`,
+                // and non-select actor calls remain rejected as
+                // `CutoverUnsupported`. The `ExitPath::Ask` slot carries
+                // the `channel` Place because the loser-cleanup sequence
+                // (`hew_reply_channel_cancel` + `hew_reply_channel_free`)
+                // is what the cleanup CFG needs when the construction
+                // surface lands. Empty drop plan is a placeholder until
+                // the cleanup CFG wires per-arm loser-cleanup blocks.
+                ExitPath::Ask {
+                    block: block_id,
+                    actor: *actor,
+                    channel: *channel,
                     next: *next,
                 },
                 DropPlan::default(),

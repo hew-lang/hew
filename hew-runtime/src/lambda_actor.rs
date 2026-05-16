@@ -281,10 +281,12 @@ pub extern "C" fn hew_lambda_actor_new(
             return ptr::null_mut();
         }
     };
-    Box::into_raw(Box::new(HewLambdaActorHandle::new(HewLambdaActor::new(
+    let ptr = Box::into_raw(Box::new(HewLambdaActorHandle::new(HewLambdaActor::new(
         mailbox_capacity,
         shape,
-    ))))
+    ))));
+    crate::tracing::record_channel_event(ptr as u64, crate::tracing::SPAN_LAMBDA_SPAWNED);
+    ptr
 }
 
 /// Refcount-bump clone of a strong lambda-actor handle.
@@ -440,6 +442,7 @@ pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActorHand
     // LambdaActorInner Drop if it reaches zero, which closes the
     // HewDuplex) without freeing the outer wrapper.
     unsafe { ManuallyDrop::drop(&mut h.inner) };
+    crate::tracing::record_channel_event(actor as u64, crate::tracing::SPAN_LAMBDA_RELEASED);
     SendError::Ok as i32
 }
 

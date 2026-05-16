@@ -673,6 +673,7 @@ pub unsafe extern "C" fn hew_duplex_pair(
         ptr::write(out_a, a_ptr);
         ptr::write(out_b, b_ptr);
     }
+    crate::tracing::record_channel_event(a_ptr as u64, crate::tracing::SPAN_DUPLEX_CREATED);
     SendError::Ok as i32
 }
 
@@ -1029,6 +1030,7 @@ pub unsafe extern "C" fn hew_duplex_close(d: *mut HewDuplexHandle) -> i32 {
     // SAFETY: see the drop-phase block immediately above — this thread
     // owns the wrapper exclusively against all close/release callers.
     unsafe { ManuallyDrop::drop(&mut h.inner) };
+    crate::tracing::record_channel_event(d as u64, crate::tracing::SPAN_DUPLEX_CLOSED);
     SendError::Ok as i32
 }
 
@@ -1069,7 +1071,9 @@ pub unsafe extern "C" fn hew_duplex_send_half(d: *mut HewDuplexHandle) -> *mut H
     // wrapper exclusively against all close/release callers.
     let duplex = unsafe { ManuallyDrop::take(&mut h.inner) };
     let send_half = duplex.into_send_half();
-    Box::into_raw(Box::new(HewSendHalfHandle::new(send_half)))
+    let result = Box::into_raw(Box::new(HewSendHalfHandle::new(send_half)));
+    crate::tracing::record_channel_event(d as u64, crate::tracing::SPAN_DUPLEX_HALF_SPLIT);
+    result
 }
 
 /// Convert a unified Duplex into a `HewRecvHalfHandle` (recv-only alias).
@@ -1102,7 +1106,9 @@ pub unsafe extern "C" fn hew_duplex_recv_half(d: *mut HewDuplexHandle) -> *mut H
     // wrapper exclusively against all close/release callers.
     let duplex = unsafe { ManuallyDrop::take(&mut h.inner) };
     let recv_half = duplex.into_recv_half();
-    Box::into_raw(Box::new(HewRecvHalfHandle::new(recv_half)))
+    let result = Box::into_raw(Box::new(HewRecvHalfHandle::new(recv_half)));
+    crate::tracing::record_channel_event(d as u64, crate::tracing::SPAN_DUPLEX_HALF_SPLIT);
+    result
 }
 
 /// Send a payload on a `HewSendHalfHandle`.

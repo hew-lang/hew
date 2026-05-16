@@ -1391,6 +1391,7 @@ pub unsafe extern "C" fn hew_stream_cancel_pending_read(
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_close(stream: *mut HewStream) {
     if !stream.is_null() {
+        crate::tracing::record_channel_event(stream as u64, crate::tracing::SPAN_STREAM_CLOSED);
         // SAFETY: stream was allocated with Box::into_raw.
         // Drop impl calls close() on the backing.
         unsafe { drop(Box::from_raw(stream)) };
@@ -1437,6 +1438,7 @@ pub unsafe extern "C" fn hew_sink_flush(sink: *mut HewSink) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
     if !sink.is_null() {
+        crate::tracing::record_channel_event(sink as u64, crate::tracing::SPAN_SINK_CLOSED);
         // SAFETY: sink was allocated with Box::into_raw.
         // Drop impl calls close() on the backing.
         unsafe { drop(Box::from_raw(sink)) };

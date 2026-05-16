@@ -76,6 +76,22 @@ pub const SPAN_SEND: i32 = 5;
 pub const SPAN_IO_ACCEPT: i32 = 6;
 /// I/O recv event: a decoded envelope was received and is being delivered to an actor.
 pub const SPAN_IO_RECV: i32 = 7;
+/// Duplex pair was created (`hew_duplex_pair`). `actor_id` holds the pointer address of handle A.
+pub const SPAN_DUPLEX_CREATED: i32 = 8;
+/// Duplex was split into a half-handle (`hew_duplex_send_half` / `hew_duplex_recv_half`).
+/// `actor_id` holds the pointer address of the originating unified handle.
+pub const SPAN_DUPLEX_HALF_SPLIT: i32 = 9;
+/// Duplex unified handle was closed (`hew_duplex_close`). `actor_id` holds the pointer address.
+pub const SPAN_DUPLEX_CLOSED: i32 = 10;
+/// Sink handle was closed (`hew_sink_close`). `actor_id` holds the pointer address.
+pub const SPAN_SINK_CLOSED: i32 = 11;
+/// Stream handle was closed (`hew_stream_close`). `actor_id` holds the pointer address.
+pub const SPAN_STREAM_CLOSED: i32 = 12;
+/// Lambda-actor was spawned (`hew_lambda_actor_new`). `actor_id` holds the pointer address.
+pub const SPAN_LAMBDA_SPAWNED: i32 = 13;
+/// Lambda-actor strong handle was released (`hew_lambda_actor_release`).
+/// `actor_id` holds the pointer address.
+pub const SPAN_LAMBDA_RELEASED: i32 = 14;
 
 /// A recorded trace event.
 #[repr(C)]
@@ -437,6 +453,29 @@ pub(crate) fn record_send(actor_id: u64, msg_type: i32) {
     record_lifecycle_event(actor_id, SPAN_SEND, msg_type);
 }
 
+/// Record a channel or lambda-actor lifecycle event (created, split, closed, spawned, released).
+///
+/// `handle_addr` is the raw pointer address of the relevant handle cast to `u64`.
+/// It serves as the handle identity — there are no sequential IDs on channel substrate types.
+///
+/// This is the emission point for `SPAN_DUPLEX_*`, `SPAN_SINK_CLOSED`,
+/// `SPAN_STREAM_CLOSED`, `SPAN_LAMBDA_SPAWNED`, and `SPAN_LAMBDA_RELEASED`.
+pub(crate) fn record_channel_event(handle_addr: u64, event_type: i32) {
+    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    record_event(HewTraceEvent {
+        trace_id_hi: 0,
+        trace_id_lo: 0,
+        span_id: 0,
+        parent_span_id: 0,
+        actor_id: handle_addr,
+        event_type,
+        msg_type: 0,
+        timestamp_ns: monotonic_ns(),
+    });
+}
+
 /// Record a single I/O-level event using an explicit `HewTraceContext`.
 ///
 /// Used for `SPAN_IO_ACCEPT` and `SPAN_IO_RECV` which are not bound to any
@@ -677,6 +716,13 @@ pub fn drain_events_json() -> String {
                 SPAN_SEND => "send",
                 SPAN_IO_ACCEPT => "io_accept",
                 SPAN_IO_RECV => "io_recv",
+                SPAN_DUPLEX_CREATED => "duplex_created",
+                SPAN_DUPLEX_HALF_SPLIT => "duplex_half_split",
+                SPAN_DUPLEX_CLOSED => "duplex_closed",
+                SPAN_SINK_CLOSED => "sink_closed",
+                SPAN_STREAM_CLOSED => "stream_closed",
+                SPAN_LAMBDA_SPAWNED => "lambda_spawned",
+                SPAN_LAMBDA_RELEASED => "lambda_released",
                 _ => "unknown",
             };
 
@@ -1265,6 +1311,84 @@ mod tests {
 
         // Second evict is idempotent.
         io_span_evict(33);
+    }
+
+    // ── Channel lifecycle event tests ─────────────────────────────────────
+
+    /// `record_channel_event` emits the expected event type and populates
+    /// `actor_id` with the supplied handle address.
+    #[test]
+    fn channel_event_records_handle_addr_and_type() {
+        let _guard = setup();
+
+        let fake_addr: u64 = 0xDEAD_BEEF_0000_0001;
+        record_channel_event(fake_addr, SPAN_DUPLEX_CREATED);
+
+        assert_eq!(hew_trace_event_count(), 1);
+        let events = drain_events(1);
+        assert_eq!(events[0].event_type, SPAN_DUPLEX_CREATED);
+        assert_eq!(events[0].actor_id, fake_addr);
+        assert_ne!(events[0].timestamp_ns, 0, "timestamp must be populated");
+    }
+
+    /// `drain_events_json` renders all 7 new channel `event_type` strings
+    /// round-trippable through `serde_json`.
+    #[cfg(feature = "profiler")]
+    #[test]
+    fn channel_event_types_round_trip_through_json() {
+        let _guard = setup();
+
+        let new_types = [
+            (SPAN_DUPLEX_CREATED, "duplex_created"),
+            (SPAN_DUPLEX_HALF_SPLIT, "duplex_half_split"),
+            (SPAN_DUPLEX_CLOSED, "duplex_closed"),
+            (SPAN_SINK_CLOSED, "sink_closed"),
+            (SPAN_STREAM_CLOSED, "stream_closed"),
+            (SPAN_LAMBDA_SPAWNED, "lambda_spawned"),
+            (SPAN_LAMBDA_RELEASED, "lambda_released"),
+        ];
+
+        for (span_const, expected_str) in new_types {
+            hew_trace_reset();
+            hew_trace_enable(1);
+
+            record_channel_event(0xCAFE_0000_0000_0001, span_const);
+
+            let json = drain_events_json();
+            let parsed: Vec<serde_json::Value> =
+                serde_json::from_str(&json).expect("drain_events_json must produce valid JSON");
+            assert_eq!(
+                parsed.len(),
+                1,
+                "expected exactly one event for {expected_str}"
+            );
+            assert_eq!(
+                parsed[0]["event_type"].as_str().unwrap_or(""),
+                expected_str,
+                "event_type string must match for constant {span_const}"
+            );
+            // Wire-contract: actor_id field must be present and populated.
+            assert!(
+                parsed[0]["actor_id"].as_u64().is_some(),
+                "actor_id must be a u64 for {expected_str}"
+            );
+            assert_ne!(
+                parsed[0]["actor_id"].as_u64().unwrap(),
+                0,
+                "actor_id must be non-zero for {expected_str}"
+            );
+        }
+    }
+
+    /// `record_channel_event` is a no-op when tracing is disabled.
+    #[test]
+    fn channel_event_skipped_when_tracing_disabled() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        hew_trace_reset();
+        // tracing is disabled after reset
+
+        record_channel_event(0x1234, SPAN_DUPLEX_CREATED);
+        assert_eq!(hew_trace_event_count(), 0);
     }
 
     /// Verify that `hew_trace_reset` also clears the I/O span side table.

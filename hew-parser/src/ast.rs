@@ -233,7 +233,7 @@ pub enum Expr {
         expr: Box<Spanned<Expr>>,
         duration: Box<Spanned<Expr>>,
     },
-    Unsafe(Block),
+    UnsafeBlock(Box<Block>),
     Yield(Option<Box<Spanned<Expr>>>),
     Cooperate,
     This,

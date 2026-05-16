@@ -499,7 +499,8 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
             None
         }
         // Handle blocks or unsafe blocks that wrap a call
-        Expr::Block(block) | Expr::Unsafe(block) => extract_call_target(block),
+        Expr::Block(block) => extract_call_target(block),
+        Expr::UnsafeBlock(block) => extract_call_target(block),
         Expr::Cast { expr, .. } => call_target_from_expr(&expr.0),
         _ => None,
     }

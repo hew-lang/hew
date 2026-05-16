@@ -1088,6 +1088,16 @@ mod tests {
     }
 
     #[test]
+    fn unsafe_keyword_recognised() {
+        // `unsafe` must lex to Token::Unsafe, not an identifier.
+        assert_eq!(tokens("unsafe"), vec![Token::Unsafe]);
+        // Verify keyword_str round-trip.
+        assert_eq!(Token::Unsafe.keyword_str(), Some("unsafe"));
+        // Identifiers that start with "unsafe" must not be mistaken for the keyword.
+        assert_eq!(tokens("unsafe_ptr"), vec![Token::Identifier("unsafe_ptr")]);
+    }
+
+    #[test]
     fn syntax_data_json_matches_all_keywords() {
         let json_str = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

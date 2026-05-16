@@ -3923,7 +3923,7 @@ impl<'src> Parser<'src> {
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
                 | Expr::Scope { .. }
-                | Expr::Unsafe(_)
+                | Expr::UnsafeBlock(_)
                 | Expr::Select { .. }
         )
     }
@@ -5305,7 +5305,14 @@ impl<'src> Parser<'src> {
             }
             Token::Unsafe => {
                 self.advance();
-                Expr::Unsafe(self.parse_block()?)
+                if self.peek() != Some(&Token::LeftBrace) {
+                    self.error(
+                        "expected `{` after `unsafe`; `unsafe` must be followed by a block"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                Expr::UnsafeBlock(Box::new(self.parse_block()?))
             }
             Token::Select => {
                 self.advance();

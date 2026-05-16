@@ -265,7 +265,8 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(&arm.body, calls);
             }
         }
-        Expr::Block(b) | Expr::Unsafe(b) => collect_calls_in_block(b, calls),
+        Expr::Block(b) => collect_calls_in_block(b, calls),
+        Expr::UnsafeBlock(b) => collect_calls_in_block(b, calls),
         Expr::Index { object, index, .. } => {
             collect_calls_in_expr(object.as_ref(), calls);
             collect_calls_in_expr(index.as_ref(), calls);

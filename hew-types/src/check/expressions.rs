@@ -1132,7 +1132,7 @@ impl Checker {
                 self.check_block(block, None);
                 Ty::Unit
             }
-            Expr::Unsafe(block) => {
+            Expr::UnsafeBlock(block) => {
                 let prev = self.in_unsafe;
                 self.in_unsafe = true;
                 let ty = self.check_block(block, None);
@@ -2859,7 +2859,7 @@ impl Checker {
             | Expr::Select { .. }
             | Expr::Join(_)
             | Expr::Timeout { .. }
-            | Expr::Unsafe(_)
+            | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Cooperate
             | Expr::This

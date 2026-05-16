@@ -528,7 +528,10 @@ fn collect_locals_from_stmt(
 )]
 fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
     match expr {
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } => {
+            collect_locals_from_block(block, offset, locals);
+        }
+        Expr::UnsafeBlock(block) => {
             collect_locals_from_block(block, offset, locals);
         }
         Expr::ForkChild { expr, .. } => collect_locals_from_expr(&expr.0, offset, locals),

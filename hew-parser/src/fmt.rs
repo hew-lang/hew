@@ -2156,7 +2156,7 @@ impl<'a> Formatter<'a> {
                 self.write(" | after ");
                 self.format_expr(&duration.0);
             }
-            Expr::Unsafe(block) => {
+            Expr::UnsafeBlock(block) => {
                 self.write("unsafe ");
                 self.format_block(block, self.source.len());
             }

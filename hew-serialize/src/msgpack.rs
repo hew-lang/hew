@@ -668,7 +668,10 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(value, tco, visitor, out);
                 }
             }
-            Expr::Block(block) | Expr::Unsafe(block) => {
+            Expr::Block(block) => {
+                collect_block(block, tco, visitor, out);
+            }
+            Expr::UnsafeBlock(block) => {
                 collect_block(block, tco, visitor, out);
             }
             Expr::If {

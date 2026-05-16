@@ -798,7 +798,10 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&val.0, counts);
             }
         }
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::Scope { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } => {
+            count_idents_in_block(block, counts);
+        }
+        Expr::UnsafeBlock(block) => {
             count_idents_in_block(block, counts);
         }
         Expr::ForkChild { expr, .. } => count_idents_in_expr(&expr.0, counts),

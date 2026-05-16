@@ -11706,7 +11706,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         body: Block {
             stmts: vec![],
             trailing_expr: Some(Box::new((
-                Expr::Unsafe(Block {
+                Expr::UnsafeBlock(Box::new(Block {
                     stmts: vec![],
                     trailing_expr: Some(Box::new((
                         Expr::Call {
@@ -11720,7 +11720,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
                         },
                         0..14,
                     ))),
-                }),
+                })),
                 0..14,
             ))),
         },
@@ -15125,6 +15125,82 @@ mod task_type_surface_rules {
                 .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
             "clean scope {{ fork x = call(); await x; }} must not emit TaskNotNameable; got: {:#?}",
             output.errors
+        );
+    }
+
+    // ── in_unsafe scope flag sentinel ────────────────────────────────────────
+    //
+    // These tests verify that the `in_unsafe` flag is correctly set to `true`
+    // inside an `unsafe { }` block and `false` outside one.  The observable
+    // behaviour is the existing `require_unsafe` gate on extern fn calls:
+    // inside unsafe => no error; outside unsafe => error.
+    //
+    // There are no unsafe *operations* yet (T1-B-* and T1-C-* add them), but
+    // extern fn calls already use `in_unsafe` via `require_unsafe`, making them
+    // a natural fail-closed probe.
+
+    #[test]
+    fn in_unsafe_flag_true_inside_unsafe_block_no_error() {
+        // An extern fn call inside `unsafe { }` must not produce an error:
+        // the `in_unsafe` flag is `true` during the block body.
+        let output = check_source(
+            r#"
+            extern "C" { fn raw_op() -> int; }
+            fn caller() -> int {
+                unsafe { raw_op() }
+            }
+            "#,
+        );
+        let unsafe_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| e.message.contains("unsafe"))
+            .collect();
+        assert!(
+            unsafe_errors.is_empty(),
+            "extern fn call inside unsafe block must not emit unsafe errors; got: {unsafe_errors:#?}"
+        );
+    }
+
+    #[test]
+    fn in_unsafe_flag_false_outside_unsafe_block_emits_error() {
+        // An extern fn call outside `unsafe { }` must produce an error:
+        // the `in_unsafe` flag is `false` in the surrounding function body.
+        let output = check_source(
+            r#"
+            extern "C" { fn raw_op() -> int; }
+            fn caller() -> int {
+                raw_op()
+            }
+            "#,
+        );
+        let has_unsafe_error = output.errors.iter().any(|e| e.message.contains("unsafe"));
+        let errors = &output.errors;
+        assert!(
+            has_unsafe_error,
+            "extern fn call outside unsafe block must emit an unsafe-required error; got: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn in_unsafe_flag_restored_after_unsafe_block_exits() {
+        // After the unsafe block closes, `in_unsafe` reverts to `false`.
+        // A second extern fn call after the block, outside any unsafe context,
+        // must still produce an error.
+        let output = check_source(
+            r#"
+            extern "C" { fn raw_op() -> int; }
+            fn caller() -> int {
+                unsafe { raw_op() };
+                raw_op()
+            }
+            "#,
+        );
+        let has_unsafe_error = output.errors.iter().any(|e| e.message.contains("unsafe"));
+        let errors = &output.errors;
+        assert!(
+            has_unsafe_error,
+            "extern fn call after unsafe block closes must emit an unsafe-required error; got: {errors:#?}"
         );
     }
 }

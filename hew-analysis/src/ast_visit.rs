@@ -687,7 +687,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Block(block) | Expr::Unsafe(block) => {
+            Expr::Block(block) => {
+                self.walk_block(block, body);
+            }
+            Expr::UnsafeBlock(block) => {
                 self.walk_block(block, body);
             }
             Expr::If {

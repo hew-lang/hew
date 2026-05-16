@@ -1343,6 +1343,15 @@ impl LowerCtx {
                 method,
                 args,
             } => self.lower_method_call(receiver, method, args, span.clone()),
+            Expr::UnsafeBlock(block) => {
+                // Unsafe clearance is a checker-only concept; the HIR represents the
+                // body as a plain block.  The `in_unsafe` flag pushed by the type
+                // checker is not carried into HIR or MIR — pointer and FFI safety
+                // obligations are enforced by the checker before lowering.
+                let hir_block = self.lower_block(block, &ResolvedTy::Unit);
+                let ty = hir_block.ty.clone();
+                (HirExprKind::Block(hir_block), ty)
+            }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -2540,7 +2549,7 @@ fn describe_select_source_shape(expr: &Expr) -> String {
         Expr::Range { .. } => "range expression".into(),
         Expr::Cast { .. } => "cast expression".into(),
         Expr::Timeout { .. } => "timeout expression".into(),
-        Expr::Unsafe(_) => "unsafe block".into(),
+        Expr::UnsafeBlock(_) => "unsafe block".into(),
         Expr::Yield(_) => "yield expression".into(),
         Expr::This => "this".into(),
         _ => "expression".into(),

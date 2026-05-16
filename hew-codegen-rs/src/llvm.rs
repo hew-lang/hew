@@ -54,6 +54,7 @@
 //! identity, also not a checker derivative). The probe's audit
 //! (LESSONS `audit-completeness-via-multiple-greps`) carries forward.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
@@ -66,7 +67,8 @@ use inkwell::context::Context;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetMachine;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 
 // ---------------------------------------------------------------------------
@@ -262,7 +264,9 @@ fn locate_emit_helper() -> CodegenResult<std::path::PathBuf> {
 // Per-function lowering state
 // ---------------------------------------------------------------------------
 
-struct FnCtx<'ctx> {
+struct FnCtx<'a, 'ctx> {
+    ctx: &'ctx Context,
+    llvm_mod: &'a LlvmModule<'ctx>,
     builder: Builder<'ctx>,
     return_slot: PointerValue<'ctx>,
     return_ty: BasicTypeEnum<'ctx>,
@@ -272,6 +276,11 @@ struct FnCtx<'ctx> {
     /// Block id → LLVM `BasicBlock`. Populated up front so terminators can
     /// name forward targets.
     blocks: HashMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
+    /// Module-wide runtime-ABI extern declarations interned on first use.
+    /// Carried in a `RefCell` so the per-instruction lowering (which only
+    /// borrows `FnCtx` immutably) can register new declarations lazily
+    /// from inside `Instr::CallRuntimeAbi` and `Instr::Drop` arms.
+    runtime_decls: RefCell<RuntimeDeclMap<'ctx>>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -279,6 +288,72 @@ struct FnCtx<'ctx> {
 /// LLVM function value plus its return type so `Terminator::Call` can
 /// resolve forward without re-deriving anything from the MIR shape.
 type FnSymbolMap<'ctx> = HashMap<String, (FunctionValue<'ctx>, BasicTypeEnum<'ctx>)>;
+
+/// Lazily-interned C-ABI extern function declarations for runtime symbols
+/// referenced by `Instr::CallRuntimeAbi` and `Instr::Drop`. Keyed by the
+/// C-ABI symbol name (already validated by `RuntimeCall::new`'s allowlist
+/// check). One declaration per symbol per module — repeat references at
+/// multiple call sites share the same LLVM `declare` line.
+type RuntimeDeclMap<'ctx> = HashMap<String, FunctionValue<'ctx>>;
+
+/// Intern a runtime-ABI function declaration for `symbol` in `llvm_mod`.
+///
+/// Returns the cached `FunctionValue` on repeat lookups so multiple
+/// `Instr::CallRuntimeAbi` sites share one `declare` line. The signature
+/// table is hard-coded from `hew-runtime/src/duplex.rs` and pinned by the
+/// E4 plan §D1-D3 (revised 2026-05-15). All three signatures use 64-bit
+/// integer widths for `usize`-typed args; the spine subset is 64-bit-only
+/// by design and wasm32 surfaces a width mismatch handled at the E5c
+/// `--no-wasm` seam, not here.
+///
+/// Unknown symbols return `FailClosed`. The `RuntimeCall::new` allowlist
+/// guard ensures construction-time rejection of unknown names, so reaching
+/// this arm for an unknown symbol is an internal-consistency violation,
+/// not a user error — fail loudly. LESSONS: boundary-fail-closed,
+/// exhaustive-coverage.
+fn intern_runtime_decl<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    decls: &mut RuntimeDeclMap<'ctx>,
+    symbol: &str,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    if let Some(fv) = decls.get(symbol) {
+        return Ok(*fv);
+    }
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let fn_ty = match symbol {
+        // hew_duplex_pair(s_cap: usize, r_cap: usize,
+        //                 out_a: *mut *mut HewDuplexHandle,
+        //                 out_b: *mut *mut HewDuplexHandle) -> i32
+        // (`hew-runtime/src/duplex.rs:644-649`). usize ≡ i64 on 64-bit.
+        "hew_duplex_pair" => i32_ty.fn_type(
+            &[i64_ty.into(), i64_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
+        // hew_duplex_send(d: *mut HewDuplexHandle, msg: *const u8,
+        //                 len: usize) -> i32
+        // (`hew-runtime/src/duplex.rs:689-693`).
+        "hew_duplex_send" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
+        // hew_duplex_close(d: *mut HewDuplexHandle) -> i32
+        // (`hew-runtime/src/duplex.rs:932-933`). Result discarded at
+        // the Drop call site; the runtime's AtomicBool double-close
+        // guard at duplex.rs:957 makes re-entry safe.
+        "hew_duplex_close" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "intern_runtime_decl: codegen has no LLVM signature for runtime \
+                 symbol {other:?}; the symbol is on the M2_RUNTIME_SYMBOLS allowlist \
+                 but no codegen arm wires it — extend the signature table or leave \
+                 the producer fail-closed"
+            )));
+        }
+    };
+    let fv = llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External));
+    decls.insert(symbol.to_string(), fv);
+    Ok(fv)
+}
 
 // ---------------------------------------------------------------------------
 // Type mapping
@@ -328,6 +403,17 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::Slice(_) => Err(CodegenError::Unsupported(
             "Slice type — composite lowering is Cluster 2",
         )),
+        ResolvedTy::Named { name, .. } if name == "Duplex" => {
+            // M2 substrate duplex handle. The producer (`hew-mir/src/lower.rs`
+            // `lower_duplex_pair` + `lower_duplex_send`) allocates a
+            // `ResolvedTy::Named { name: "Duplex", .. }` local for every
+            // duplex handle; codegen materialises that slot as a raw opaque
+            // `ptr` (an `*mut HewDuplexHandle` in the runtime C-ABI). The
+            // `hew_duplex_pair` out-param protocol writes through this
+            // alloca; `hew_duplex_send` loads from it. LESSONS:
+            // exhaustive-traversal-and-lowering, boundary-fail-closed.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
             "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"
@@ -360,7 +446,7 @@ fn primitive_to_llvm<'ctx>(
 // ---------------------------------------------------------------------------
 
 fn place_pointer<'ctx>(
-    fn_ctx: &FnCtx<'ctx>,
+    fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
 ) -> CodegenResult<(PointerValue<'ctx>, BasicTypeEnum<'ctx>)> {
     match place {
@@ -368,24 +454,42 @@ fn place_pointer<'ctx>(
             CodegenError::FailClosed(format!("local {id} not allocated before use"))
         }),
         Place::ReturnSlot => Ok((fn_ctx.return_slot, fn_ctx.return_ty)),
-        // M2 unified-concurrency substrate Place variants (declared
-        // scaffold; no HIR construction surface yet). Codegen for the
-        // `hew_duplex_*` C-ABI lowering lands in M2 slice 5. Fail
-        // closed at this seam so any reach-through during the M2
-        // ramp-up surfaces immediately rather than emitting a binary
-        // with a misrouted load/store. LESSONS: boundary-fail-closed.
-        Place::DuplexHandle(_)
-        | Place::LambdaActorHandle(_)
-        | Place::SendHalf(_)
-        | Place::RecvHalf(_) => Err(CodegenError::FailClosed(
-            "M2 Duplex / lambda-actor Place lowering is not yet wired; \
-             slice 5 wires the hew_duplex_* C-ABI lowering"
-                .to_string(),
-        )),
+        // M2 substrate: `Place::DuplexHandle(N)` addresses the same
+        // backing alloca as `Place::Local(N)`. The producer
+        // (`hew-mir/src/lower.rs::lower_duplex_pair` and
+        // `lower_duplex_send`) allocates the underlying local with
+        // `ResolvedTy::Named { name: "Duplex", .. }` and then re-tags
+        // the place as `DuplexHandle(N)` using the same `N` so codegen
+        // can disambiguate the C-ABI shape (`hew_duplex_pair` writes
+        // through `&alloca`, `hew_duplex_send` loads from it) without a
+        // second alloca. The alloca's LLVM type is `ptr` (opaque) per
+        // `primitive_to_llvm`'s Duplex arm. LESSONS:
+        // exhaustive-traversal-and-lowering, dedup-semantic-boundary.
+        Place::DuplexHandle(id) => fn_ctx.locals.get(&id).copied().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "Place::DuplexHandle({id}) references local {id} which was not allocated; \
+                 the producer must allocate a ResolvedTy::Named{{name:\"Duplex\",..}} local before \
+                 re-tagging it as a DuplexHandle"
+            ))
+        }),
+        // The remaining M2 substrate Place variants are declared in
+        // the model but have no construction surface in this lane.
+        // Wiring lands in follow-on slices (Duplex::recv vertebra for
+        // SendHalf/RecvHalf; lambda-actor lane for LambdaActorHandle).
+        // Fail closed here so any reach-through surfaces immediately
+        // rather than emitting a binary with a misrouted load/store.
+        // LESSONS: boundary-fail-closed, parity-or-tracked-gap.
+        Place::LambdaActorHandle(_) | Place::SendHalf(_) | Place::RecvHalf(_) => {
+            Err(CodegenError::FailClosed(
+                "M2 SendHalf / RecvHalf / LambdaActorHandle Place lowering is not yet wired; \
+                 follow-on Duplex::recv + lambda-actor lanes wire the remaining C-ABI surface"
+                    .to_string(),
+            ))
+        }
     }
 }
 
-fn lower_instruction(fn_ctx: &FnCtx<'_>, instr: &Instr) -> CodegenResult<()> {
+fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()> {
     let ctx = fn_ctx
         .builder
         .get_insert_block()
@@ -533,45 +637,43 @@ fn lower_instruction(fn_ctx: &FnCtx<'_>, instr: &Instr) -> CodegenResult<()> {
                 .map_err(|e| CodegenError::Llvm(format!("move store: {e:?}")))?;
         }
         Instr::CallRuntimeAbi(call) => {
-            // Fail-closed codegen seam. The variant exists so a real
-            // `inkwell::BuildCall` lowering can land in slice 5 (LLVM
-            // IR emission for the runtime substrate); until then,
-            // any producer that emits this instruction surfaces a
-            // loud `FailClosed` rather than a silent no-op that
-            // would skip the runtime call. LESSONS:
-            // boundary-fail-closed (codegen-side P0 row 49).
-            let symbol = call.symbol();
-            return Err(CodegenError::FailClosed(format!(
-                "Instr::CallRuntimeAbi(symbol={symbol:?}): codegen for \
-                 runtime-ABI calls is not yet wired; the slice-5 LLVM \
-                 lowering replaces this fail-closed arm with the real \
-                 inkwell call emission",
-            )));
+            // Per-symbol C-ABI lowering. The `RuntimeCall::new`
+            // allowlist guard ensures `call.symbol()` is one of the
+            // M2 substrate symbols; codegen disambiguates the ABI
+            // shape (especially the `Place::DuplexHandle(N)`
+            // address-of vs load-pointer choice) by symbol + arg
+            // index. Symbols on the allowlist but not yet wired
+            // remain fail-closed below — `parity-or-tracked-gap`.
+            // LESSONS: boundary-fail-closed, exhaustive-coverage,
+            // checker-output-boundary, dedup-semantic-boundary.
+            lower_call_runtime_abi(fn_ctx, call)?;
         }
         Instr::Drop {
-            place: _,
+            place,
             ty: _,
             drop_fn,
         } => {
-            // Fail-closed substrate guard. `drop_fn: None` is a
-            // legitimate no-op for `@linear` (no implicit drop) and
-            // for non-Named drops. `drop_fn: Some(_)` means the
-            // elaborator decided a destructor must run — but the
-            // backend dispatch for that destructor has not been
-            // wired yet. Returning `FailClosed` here ensures any
-            // future construction surface that emits a real
-            // `Instr::Drop { drop_fn: Some(_) }` fails the build
-            // loudly rather than silently leaking the resource. The
-            // C4 follow-on PR replaces this with a real call to the
-            // registered close method. LESSONS:
-            // boundary-fail-closed (codegen-side complement to the
-            // checker-output-boundary row).
+            // Drop ritual. `drop_fn: None` is a legitimate no-op for
+            // `@linear` (move-checker proof elsewhere) and for value
+            // classes with no implicit close. `drop_fn: Some(name)`
+            // dispatches on the literal close-symbol string.
+            //
+            // The two emitter-known close protocols today are the
+            // M2 substrate's `hew_duplex_close` (direct C-ABI symbol
+            // name) and the runtime substrate's per-`@resource`
+            // close. The runtime side is wired via the C-ABI symbol
+            // string; the per-`@resource` path (drop_fn shaped like
+            // `"<TypeName>::close"`, produced by the elaborator at
+            // `hew-mir/src/lower.rs::build_lifo_drops` line ~2512)
+            // is **not yet reachable from real lowering** because
+            // codegen consumes `raw_mir`, not `elaborated_mir`;
+            // wiring `drop_plans` is a follow-on seam. Until then,
+            // a `"<TypeName>::close"` drop_fn remains fail-closed
+            // with a tracked-gap message. LESSONS:
+            // boundary-fail-closed, parity-or-tracked-gap,
+            // cleanup-all-exits, raii-null-after-move.
             if let Some(name) = drop_fn {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::Drop carries drop_fn={name:?} but codegen \
-                     dispatch is not wired yet; refusing to silently \
-                     emit a no-op for a resource that must be closed",
-                )));
+                lower_drop(fn_ctx, *place, name)?;
             }
             let _ = ctx;
         }
@@ -579,8 +681,329 @@ fn lower_instruction(fn_ctx: &FnCtx<'_>, instr: &Instr) -> CodegenResult<()> {
     Ok(())
 }
 
+/// Lower `Instr::CallRuntimeAbi(call)` to a `LLVMBuildCall` against the
+/// interned extern declaration for `call.symbol()`. The per-symbol
+/// dispatch encodes the ABI-shape decisions documented in the E4 plan
+/// (SHIM(E4) comment in `hew-mir/src/lower.rs` ~1220):
+///
+/// - `hew_duplex_pair(i64, i64, ptr, ptr) -> i32`: args[0]/args[1] load
+///   capacities; args[2]/args[3] are `Place::DuplexHandle(N)` and pass
+///   the *address of* local-N's alloca (a `*mut *mut HewDuplexHandle`
+///   the runtime writes through). Return discarded.
+/// - `hew_duplex_send(ptr, ptr, i64) -> i32`: args[0] is the receiver
+///   `Place::DuplexHandle(N)` — load the raw `*mut HewDuplexHandle`
+///   from local-N's alloca. args[1] is the message `Place::Local(M)`
+///   — spill its value into a fresh i64 stack slot and pass the slot's
+///   address as `*const u8`. args[2] is the length `Place::Local(L)`
+///   carrying `ConstI64 { value: 8 }` from the producer; load as i64.
+///   Return discarded.
+///
+/// Symbols on the M2 allowlist but not yet wired (e.g.
+/// `hew_lambda_actor_release`) fall through to a fail-closed arm so
+/// the producer surface and the codegen surface stay in lock-step.
+fn lower_call_runtime_abi(
+    fn_ctx: &FnCtx<'_, '_>,
+    call: &hew_mir::RuntimeCall,
+) -> CodegenResult<()> {
+    let symbol = call.symbol();
+    let args = call.args();
+    let dest = call.dest();
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    match symbol {
+        "hew_duplex_pair" => {
+            if args.len() != 4 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_duplex_pair): expected 4 args \
+                     (s_cap, r_cap, out_a, out_b), got {}",
+                    args.len()
+                )));
+            }
+            // arg0 / arg1: capacities. Load from caller-provided
+            // alloca; the producer (`lower_duplex_pair`) wires both
+            // slots from the same capacity expression so types match.
+            let cap0 = load_int_arg(fn_ctx, args[0], i64_ty, "duplex_pair_s_cap")?;
+            let cap1 = load_int_arg(fn_ctx, args[1], i64_ty, "duplex_pair_r_cap")?;
+            // arg2 / arg3: out-params. Must be Place::DuplexHandle(N)
+            // per the E2 producer's SHIM(E4) convention. Pass the
+            // *address of* local-N's alloca so the runtime writes the
+            // pair of handle pointers through. Reject any other Place
+            // kind at this seam (fail-closed; not a silent shim).
+            let out_a = duplex_handle_out_addr(fn_ctx, args[2], "hew_duplex_pair arg2")?;
+            let out_b = duplex_handle_out_addr(fn_ctx, args[3], "hew_duplex_pair arg3")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 4] =
+                [cap0.into(), cap1.into(), out_a.into(), out_b.into()];
+            fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_duplex_pair_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_duplex_pair call: {e:?}")))?;
+            // Producer emits dest: None — i32 return is discarded.
+            // Defence in depth: if a future producer ever wires a
+            // dest, fail-closed rather than silently dropping it.
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_duplex_pair returns i32 (discarded by the runtime contract); \
+                     producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_duplex_send" => {
+            if args.len() != 3 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_duplex_send): expected 3 args \
+                     (handle, msg, len), got {}",
+                    args.len()
+                )));
+            }
+            // arg0: receiver handle. Place::DuplexHandle(N) loads the
+            // raw `*mut HewDuplexHandle` value from local-N's alloca
+            // (non-consuming; alloca persists across the call so the
+            // drop ritual can close it at end-of-scope).
+            let handle = load_duplex_handle(fn_ctx, args[0], "hew_duplex_send arg0")?;
+            // arg1: message. Place::Local(M) holds an i64 today
+            // (single-vertebra exemplar). Spill into a fresh i64
+            // alloca and pass the slot's address as `*const u8`
+            // (opaque-pointer mode bitcasts away the element type).
+            let msg_ptr = spill_int_arg_as_ptr(fn_ctx, args[1], i64_ty, "duplex_send_msg")?;
+            // arg2: byte length. Producer emits `ConstI64 { value: 8 }`
+            // into this local; load it as i64 (== usize on 64-bit).
+            let len = load_int_arg(fn_ctx, args[2], i64_ty, "duplex_send_len")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 3] =
+                [handle.into(), msg_ptr.into(), len.into()];
+            fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_duplex_send_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_duplex_send call: {e:?}")))?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_duplex_send returns i32 (discarded by the runtime contract); \
+                     producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // `hew_duplex_close` is only called from the Drop ritual
+        // (`lower_drop`); reaching it via `Instr::CallRuntimeAbi`
+        // means a producer mis-routed a destructor through the
+        // generic call path. Fail-closed.
+        "hew_duplex_close" => {
+            return Err(CodegenError::FailClosed(
+                "Instr::CallRuntimeAbi(hew_duplex_close): close is the drop \
+                 ritual's responsibility — emit Instr::Drop { drop_fn: \
+                 Some(\"hew_duplex_close\") } instead so the alloca-zero \
+                 ritual fires after the close"
+                    .to_string(),
+            ));
+        }
+        other => {
+            // Allowlisted but not wired. Names a missing follow-on
+            // seam so the next implementer can find the gap quickly
+            // (`parity-or-tracked-gap`).
+            return Err(CodegenError::FailClosed(format!(
+                "Instr::CallRuntimeAbi(symbol={other:?}): codegen has no lowering arm \
+                 for this M2 runtime symbol; wire a per-symbol arm or leave the \
+                 producer fail-closed until the substrate lane lands"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Lower `Instr::Drop { place, drop_fn: Some(name) }` to the close
+/// ritual: call the named close symbol with `place`'s loaded pointer,
+/// then null-out the alloca so a second drop on the same place hits
+/// null at both the codegen layer and the runtime's AtomicBool guard
+/// (defence in depth per LESSONS `raii-null-after-move`).
+///
+/// Today the only emitter-known close symbol is `hew_duplex_close`
+/// (literal C-ABI symbol name passed by hand-built test MIR — the
+/// real elaborator at `hew-mir/src/lower.rs::build_lifo_drops`
+/// produces `"<TypeName>::close"` names, but codegen consumes
+/// `raw_mir` which has no `Instr::Drop` producer today, so the
+/// elaborator-string path is structurally unreachable from real
+/// lowering. Wiring `elaborated_mir.drop_plans` is a tracked-gap
+/// follow-on seam. LESSONS: parity-or-tracked-gap.).
+///
+/// Other drop_fn strings fail-closed loudly so the gap surfaces
+/// immediately rather than leaking the resource.
+fn lower_drop(fn_ctx: &FnCtx<'_, '_>, place: Place, drop_fn: &str) -> CodegenResult<()> {
+    match drop_fn {
+        "hew_duplex_close" => {
+            // Load the handle pointer from the place's alloca (the
+            // same backing slot a `Place::DuplexHandle(N)` resolves
+            // to — see `place_pointer`). Both `Place::Local(N)` and
+            // `Place::DuplexHandle(N)` are accepted; both resolve to
+            // the same alloca and the underlying LLVM type is `ptr`.
+            let handle = load_duplex_handle(fn_ctx, place, "hew_duplex_close drop")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_duplex_close",
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 1] = [handle.into()];
+            fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_duplex_close_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_duplex_close call: {e:?}")))?;
+            // Zero the alloca so any structurally-reachable second
+            // drop on the same place sees a null pointer. The
+            // runtime's AtomicBool guard at duplex.rs:957 already
+            // short-circuits double-close, but defence-in-depth at
+            // the codegen layer is required by LESSONS
+            // `raii-null-after-move`.
+            let (slot, _) = place_pointer(fn_ctx, place)?;
+            let null_ptr = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
+            fn_ctx
+                .builder
+                .build_store(slot, null_ptr)
+                .map_err(|e| CodegenError::Llvm(format!("post-close alloca null-store: {e:?}")))?;
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "Instr::Drop carries drop_fn={other:?}; codegen wires \
+                 hew_duplex_close today, but the elaborator-produced \
+                 \"<TypeName>::close\" path requires codegen to consume \
+                 elaborated_mir.drop_plans (tracked-gap follow-on seam). \
+                 Refusing to silently no-op a resource drop."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Load an integer-typed `Place` and return its value coerced to the
+/// requested `expected` int type. Today every M2 substrate integer arg
+/// is i64 at the C-ABI; this helper rejects type mismatches loudly.
+fn load_int_arg<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    expected: inkwell::types::IntType<'ctx>,
+    label: &str,
+) -> CodegenResult<inkwell::values::IntValue<'ctx>> {
+    let (ptr, ty) = place_pointer(fn_ctx, place)?;
+    let int_ty = match ty {
+        BasicTypeEnum::IntType(i) => i,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{label}: Place {place:?} resolves to non-int type {other:?}; \
+                 expected i64-shaped runtime ABI arg"
+            )));
+        }
+    };
+    if int_ty != expected {
+        return Err(CodegenError::FailClosed(format!(
+            "{label}: Place {place:?} has width {int_ty:?}, expected {expected:?} \
+             (M2 substrate is 64-bit on native; wasm32 widening is E5c territory)"
+        )));
+    }
+    let v = fn_ctx
+        .builder
+        .build_load(int_ty, ptr, label)
+        .map_err(|e| CodegenError::Llvm(format!("{label} load: {e:?}")))?
+        .into_int_value();
+    Ok(v)
+}
+
+/// Spill an integer-typed `Place` into a fresh stack alloca and return
+/// the alloca's pointer (as `ptr`/opaque). The C-ABI seam for
+/// `hew_duplex_send`'s message arg requires a pointer to the byte
+/// payload; the spine subset's single-vertebra exemplar carries i64
+/// payloads, so the spill produces an 8-byte alloca whose address is
+/// the `*const u8` the runtime reads.
+fn spill_int_arg_as_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    expected: inkwell::types::IntType<'ctx>,
+    label: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let v = load_int_arg(fn_ctx, place, expected, label)?;
+    let slot = fn_ctx
+        .builder
+        .build_alloca(expected, &format!("{label}_spill"))
+        .map_err(|e| CodegenError::Llvm(format!("{label} spill alloca: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(slot, v)
+        .map_err(|e| CodegenError::Llvm(format!("{label} spill store: {e:?}")))?;
+    Ok(slot)
+}
+
+/// Materialise a `Place::DuplexHandle(N)` (or `Place::Local(N)` whose
+/// underlying alloca is `ptr`-typed) as a loaded `*mut HewDuplexHandle`.
+/// Used by `hew_duplex_send`'s receiver arg and the `hew_duplex_close`
+/// drop ritual.
+fn load_duplex_handle<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    label: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let (slot, ty) = place_pointer(fn_ctx, place)?;
+    match ty {
+        BasicTypeEnum::PointerType(_) => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "{label}: Place {place:?} resolves to non-pointer type {other:?}; \
+                 expected `ptr` (the Duplex handle alloca)"
+            )));
+        }
+    }
+    let loaded = fn_ctx
+        .builder
+        .build_load(ty, slot, label)
+        .map_err(|e| CodegenError::Llvm(format!("{label} load: {e:?}")))?;
+    match loaded {
+        BasicValueEnum::PointerValue(p) => Ok(p),
+        other => Err(CodegenError::FailClosed(format!(
+            "{label}: loaded value is not a pointer: {other:?}"
+        ))),
+    }
+}
+
+/// Return the address of the alloca backing a `Place::DuplexHandle(N)`.
+/// Used by `hew_duplex_pair`'s two out-param args, which write through
+/// the address into the underlying `ptr` slot. Rejects any non-DuplexHandle
+/// place at this seam (Place::Local has no symmetric runtime contract
+/// today; gate it loudly).
+fn duplex_handle_out_addr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    place: Place,
+    label: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    match place {
+        Place::DuplexHandle(_) => {
+            let (slot, ty) = place_pointer(fn_ctx, place)?;
+            match ty {
+                BasicTypeEnum::PointerType(_) => Ok(slot),
+                other => Err(CodegenError::FailClosed(format!(
+                    "{label}: DuplexHandle alloca has non-pointer slot type {other:?}; \
+                     primitive_to_llvm must map ResolvedTy::Named{{name:\"Duplex\",..}} \
+                     to `ptr`"
+                ))),
+            }
+        }
+        other => Err(CodegenError::FailClosed(format!(
+            "{label}: out-param argument must be Place::DuplexHandle(N), got {other:?}"
+        ))),
+    }
+}
+
 fn lower_terminator<'ctx>(
-    fn_ctx: &FnCtx<'ctx>,
+    fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
     term: &Terminator,
 ) -> CodegenResult<()> {
@@ -891,8 +1314,6 @@ fn lower_function<'ctx>(
             func.name
         ))
     })?;
-    let _ = llvm_mod;
-
     let builder = ctx.create_builder();
 
     // Build every block up front so terminators can name forward targets.
@@ -926,11 +1347,14 @@ fn lower_function<'ctx>(
     }
 
     let fn_ctx = FnCtx {
+        ctx,
+        llvm_mod,
         builder,
         return_slot,
         return_ty: return_ty_llvm,
         locals,
         blocks: blocks.clone(),
+        runtime_decls: RefCell::new(HashMap::new()),
     };
 
     for block in &func.blocks {

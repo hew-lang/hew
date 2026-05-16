@@ -1,18 +1,19 @@
 //! Codegen-side fail-closed coverage for `Instr::CallRuntimeAbi`.
 //!
-//! Slice 4.5c lands the variant + the allowlist + the codegen
-//! match arm. Until slice 5 wires the real `inkwell::BuildCall`
-//! lowering, any function whose instruction stream contains
-//! `Instr::CallRuntimeAbi` must surface `CodegenError::FailClosed`
-//! mentioning the symbol — never a silent no-op that would skip
-//! the runtime call. This test pins that contract by hand-building
-//! a minimal `IrPipeline` and asserting `emit_module` fails closed
-//! with the symbol in the error message.
+//! E4 wires real `LLVMBuildCall` emission for `hew_duplex_pair` and
+//! `hew_duplex_send` (and the close ritual for `hew_duplex_close`
+//! via `Instr::Drop`). The happy-path coverage lives in
+//! `emit_duplex_pair.rs`. This file pins the **remaining**
+//! boundary-fail-closed contracts that must survive every revision:
 //!
-//! LESSONS: boundary-fail-closed (P0 row 49) — every new `Instr`
-//! variant must have a codegen-side fail-closed arm landed in the
-//! same commit (returning `CodegenError::FailClosed` until the
-//! real lowering wires).
+//! 1. A symbol-shape mismatch (wrong arg count for a wired symbol)
+//!    still surfaces `CodegenError::FailClosed` naming the symbol —
+//!    never a silent miscompile of a partially-typed call.
+//! 2. M2-allowlist symbols not yet wired in codegen (today:
+//!    `hew_lambda_actor_release`) remain fail-closed so the producer
+//!    surface cannot outrun the codegen surface.
+//!
+//! LESSONS: boundary-fail-closed (P0 row 49), parity-or-tracked-gap.
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
@@ -70,10 +71,11 @@ fn pipeline_with_call_runtime_abi(symbol: &str) -> IrPipeline {
     }
 }
 
-/// A pipeline whose function emits `Instr::CallRuntimeAbi` must
-/// fail codegen with `CodegenError::FailClosed`. The error message
-/// must include the runtime symbol so the rejection points at the
-/// load-bearing seam (boundary-fail-closed evidence anchor).
+/// A wired symbol (`hew_duplex_send`) called with the wrong arg count
+/// (here 2 instead of 3) must still surface `CodegenError::FailClosed`
+/// naming the symbol — codegen rejects shape mismatches loudly rather
+/// than silently emitting a partial call. The happy-path 3-arg shape
+/// is covered by `emit_duplex_pair.rs`.
 #[test]
 fn call_runtime_abi_fails_closed_with_symbol_in_message() {
     let pipeline = pipeline_with_call_runtime_abi("hew_duplex_send");
@@ -111,10 +113,11 @@ fn call_runtime_abi_fails_closed_with_symbol_in_message() {
     }
 }
 
-/// Repeat for the lambda-actor lifecycle symbol the producer for
-/// `SpawnLambdaActor` will emit at drop time. Pin that the
-/// fail-closed arm is symbol-agnostic — every allowed symbol must
-/// hit the same FailClosed shape, not just `hew_duplex_send`.
+/// `hew_lambda_actor_release` is on the M2 allowlist but has no codegen
+/// lowering arm yet (the lambda-actor lane wires it). Until then, any
+/// `Instr::CallRuntimeAbi` for this symbol must surface
+/// `CodegenError::FailClosed` — the producer surface MUST NOT outrun
+/// the codegen surface (LESSONS `parity-or-tracked-gap`).
 #[test]
 fn call_runtime_abi_fails_closed_for_lambda_actor_release() {
     let pipeline = pipeline_with_call_runtime_abi("hew_lambda_actor_release");

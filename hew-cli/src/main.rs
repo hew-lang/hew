@@ -233,6 +233,19 @@ fn cmd_compile_v05(a: &args::CompileV05Args) {
     };
     let artefacts = match hew_codegen_rs::emit_module(&pipeline, &options) {
         Ok(a) => a,
+        Err(hew_codegen_rs::CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+            // WASM-TODO(#1451): hew_duplex_* symbols are excluded from wasm32
+            // builds via `hew-runtime/src/duplex.rs:54`. Surface a structured
+            // diagnostic so the user knows to pass `--no-wasm` instead of
+            // seeing a raw `wasm-ld: undefined symbol` linker error.
+            eprintln!(
+                "error: WASM target does not support the duplex concurrency \
+                 substrate (symbol: {symbol}; WASM-TODO(#1451))\n\
+                 hint: pass `--no-wasm` to skip WASM emission and produce a \
+                 native binary only"
+            );
+            std::process::exit(1);
+        }
         Err(e) => {
             eprintln!("E_CUTOVER_UNSUPPORTED: {e}");
             std::process::exit(1);

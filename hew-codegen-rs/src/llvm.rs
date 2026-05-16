@@ -96,6 +96,12 @@ pub enum CodegenError {
     Link(String),
     /// File I/O error.
     Io(std::io::Error),
+    /// The program uses a runtime substrate symbol that is excluded from
+    /// the wasm32 build (`hew-runtime/src/duplex.rs:54` gates the entire
+    /// duplex module out via `#![cfg(not(target_arch = "wasm32"))]`).
+    /// WASM-TODO(#1451): duplex WASM parity is tracked in issue #1451.
+    /// Pass `--no-wasm` to skip WASM emission and produce a native binary.
+    WasmUnsupportedSubstrate { symbol: String },
 }
 
 impl std::fmt::Display for CodegenError {
@@ -107,6 +113,12 @@ impl std::fmt::Display for CodegenError {
             Self::LlvmVerify(s) => write!(f, "llvm verify rejected module: {s}"),
             Self::Link(s) => write!(f, "link: {s}"),
             Self::Io(e) => write!(f, "io: {e}"),
+            Self::WasmUnsupportedSubstrate { symbol } => write!(
+                f,
+                "WASM target does not support the duplex concurrency substrate \
+                 (symbol: {symbol}; WASM-TODO(#1451)); pass `--no-wasm` to skip \
+                 WASM emission and produce a native binary only"
+            ),
         }
     }
 }
@@ -189,6 +201,18 @@ pub fn emit_module(
     }
 
     if options.wasm {
+        // Fail-closed before invoking `wasm-ld`: detect any reference to
+        // duplex substrate symbols.  `hew-runtime/src/duplex.rs:54` gates
+        // the entire duplex module out of wasm32 builds via
+        // `#![cfg(not(target_arch = "wasm32"))]`, so `wasm-ld` would fail
+        // with `undefined symbol: hew_duplex_*`.  Surface a structured
+        // diagnostic with a `--no-wasm` pointer rather than a raw linker
+        // error.  WASM-TODO(#1451): duplex WASM parity is tracked there.
+        // LESSONS: boundary-fail-closed (P0), user-surface-correctness (P0).
+        if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
+            return Err(CodegenError::WasmUnsupportedSubstrate { symbol });
+        }
+
         let wasm_obj_path = options
             .out_dir
             .join(format!("{}.wasm.o", options.module_name));
@@ -202,6 +226,43 @@ pub fn emit_module(
     }
 
     Ok(artefacts)
+}
+
+/// Return the first duplex substrate symbol found in `pipeline`'s instruction
+/// stream, or `None` if no such symbol is present.
+///
+/// Duplex symbols (`hew_duplex_*`) are excluded from wasm32 builds via
+/// `hew-runtime/src/duplex.rs:54` (`#![cfg(not(target_arch = "wasm32"))]`).
+/// This scan detects them in the MIR before the `wasm-ld` step so the caller
+/// can return `CodegenError::WasmUnsupportedSubstrate` instead of a confusing
+/// linker error.  WASM-TODO(#1451).
+///
+/// The scan covers:
+/// - `Instr::CallRuntimeAbi` with a symbol that starts with `"hew_duplex_"`.
+/// - `Instr::Drop { drop_fn: Some(fn_name), .. }` where `fn_name` starts with
+///   `"hew_duplex_"` (e.g. `hew_duplex_close`).
+fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
+    for func in &pipeline.raw_mir {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                let excluded = match instr {
+                    Instr::CallRuntimeAbi(call) => {
+                        let sym = call.symbol();
+                        sym.starts_with("hew_duplex_").then(|| sym.to_string())
+                    }
+                    Instr::Drop {
+                        drop_fn: Some(fn_name),
+                        ..
+                    } => fn_name.starts_with("hew_duplex_").then(|| fn_name.clone()),
+                    _ => None,
+                };
+                if let Some(sym) = excluded {
+                    return Some(sym);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Locate the `hew-emit-v05` helper binary sibling to the currently running

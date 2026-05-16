@@ -74,6 +74,7 @@ stable = [
   "hew_arena_free_all",
   "hew_arena_malloc",
   "hew_arena_new",
+  "hew_arena_new_with_cap",
   "hew_arena_reset",
   "hew_arena_set_current",
   "hew_args_count",

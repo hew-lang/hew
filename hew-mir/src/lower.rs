@@ -596,6 +596,13 @@ impl Builder {
                         | Place::LambdaActorHandle(_) => {
                             self.binding_locals.insert(binding.id, src);
                         }
+                        Place::Local(n) if self.tuple_decomp.contains_key(&n) => {
+                            // Tuple-proxy: store the proxy directly so TupleIndex can recover
+                            // element Places via tuple_decomp[n] — the existing Local-Move arm
+                            // would allocate a fresh slot and lose the index that tuple_decomp
+                            // is keyed by, leaving owned_locals entries without binding_locals.
+                            self.binding_locals.insert(binding.id, src);
+                        }
                         Place::Local(_) | Place::ReturnSlot => {
                             let slot = self.alloc_local(binding.ty.clone());
                             self.instructions.push(Instr::Move { dest: slot, src });

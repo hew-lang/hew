@@ -5,7 +5,7 @@ use hew_parser::ast::{
     ResourceMarker, SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl,
     TypeExpr,
 };
-use hew_types::{MethodCallRewrite, ResolvedTy, SpanKey, TypeCheckOutput};
+use hew_types::{MethodCallRewrite, ResolvedTy, SpanKey, Ty, TypeCheckOutput};
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
@@ -145,6 +145,13 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-inferred types for every expression, keyed by expression span.
+    /// Consulted at `Expr::Call` sites to determine the call-result type from
+    /// checker authority rather than re-deriving from the callee's HIR type.
+    /// This is the canonical source of truth for builtin callee result types
+    /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
+    /// `fn_registry` hit.
+    expr_types: HashMap<SpanKey, Ty>,
     /// Depth counter for nested `scope{}` bodies. When > 0, statement-expression
     /// calls are inferred as child-task spawns (TI-1); outside any scope body
     /// all calls are synchronous (TI-3). Using a depth counter rather than a
@@ -182,6 +189,7 @@ impl LowerCtx {
             type_classes,
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            expr_types: tc_output.expr_types.clone(),
             scope_depth: 0,
             statement_position: false,
             current_actor_self: None,
@@ -708,6 +716,12 @@ impl LowerCtx {
                 let temp_name = format!("__tuple_{}", self.ids.binding().0);
                 let temp_binding =
                     self.bind(temp_name.clone(), tuple_ty.clone(), false, span.clone());
+                // Capture the binding id before `temp_binding` is moved into
+                // the `HirStmt` below.  MIR lowering's `TupleIndex` arm needs
+                // `ResolvedRef::Binding(temp_id)` to look up the proxy Place in
+                // `binding_locals`; `Unresolved` would return `None` and break
+                // the `tuple_decomp` lookup for non-BitCopy element types.
+                let temp_id = temp_binding.id;
                 let temp_stmt = HirStmt {
                     node: self.ids.node(),
                     kind: HirStmtKind::Let(temp_binding, Some(tuple_val)),
@@ -739,6 +753,9 @@ impl LowerCtx {
                     };
 
                     // Build a TupleIndex expression: `__tuple_N.<idx>`.
+                    // Use `ResolvedRef::Binding(temp_id)` so MIR can resolve
+                    // the proxy local from `binding_locals` and recover the
+                    // per-element `Place` via `tuple_decomp`.
                     let temp_ref = HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
@@ -747,8 +764,7 @@ impl LowerCtx {
                         intent: IntentKind::Read,
                         kind: HirExprKind::BindingRef {
                             name: temp_name.clone(),
-                            // The temp was just bound so it is always resolved.
-                            resolved: ResolvedRef::Unresolved,
+                            resolved: ResolvedRef::Binding(temp_id),
                         },
                         span: span.clone(),
                     };
@@ -1001,9 +1017,39 @@ impl LowerCtx {
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
                     .collect();
-                // Determine the call result type from the callee's function type.
-                // If the callee is unresolved, the result type is an inference hole.
-                let result_ty = if let ResolvedTy::Function { ret, .. } = &callee.ty {
+                // Checker authority takes precedence: consult expr_types at the
+                // full call-expression span.  The checker records the call result
+                // type here — including for checker-registered builtins like
+                // `duplex_pair` that have no AST `fn` item and therefore no
+                // `fn_registry` hit.  (LESSONS: checker-authority P0)
+                let checker_key = SpanKey::from(&span);
+                let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                    match ResolvedTy::from_ty(&ty) {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            // Fail-closed: checker side-table is poisoned for
+                            // this call.  Emit a diagnostic; never silently
+                            // substitute Unit.  (LESSONS: checker-output-boundary P0)
+                            let callee_name = if let Expr::Identifier(name) = &function.0 {
+                                name.clone()
+                            } else {
+                                "<expr>".to_string()
+                            };
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: callee_name,
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "checker-authoritative call result type failed boundary conversion",
+                            ));
+                            ResolvedTy::Unit
+                        }
+                    }
+                } else if let ResolvedTy::Function { ret, .. } = &callee.ty {
+                    // No checker entry: fall through to the callee's HIR-inferred
+                    // function type (used for calls to functions that are in
+                    // fn_registry or locally resolved).
                     *ret.clone()
                 } else {
                     if matches!(

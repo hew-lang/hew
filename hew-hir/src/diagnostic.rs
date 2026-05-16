@@ -185,4 +185,17 @@ pub enum HirDiagnosticKind {
         /// The method name the user wrote (e.g. `send`).
         method: String,
     },
+    /// A checker-owned `expr_types` entry failed the `ResolvedTy::from_ty`
+    /// boundary conversion.  This means the checker left an unresolved
+    /// inference variable, a `Ty::Error` placeholder, or an unmaterialized
+    /// numeric literal in the side-table — all of which are fail-closed per
+    /// the `checker-output-boundary` invariant.  Never silently substitute
+    /// `Unit`; surface this diagnostic instead so the error is visible.
+    CheckerBoundaryViolation {
+        /// The expression name or description at the failing site (e.g. the
+        /// callee name for a call expression).
+        name: String,
+        /// Human-readable description of the `BoundaryError` discriminant.
+        reason: String,
+    },
 }

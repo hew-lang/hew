@@ -1,11 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hew_parser::ast::{
     BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal, MachineDecl, Pattern, Program,
     ResourceMarker, SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl,
     TypeExpr,
 };
-use hew_types::{MethodCallRewrite, ResolvedTy, SpanKey, Ty, TypeCheckOutput};
+use hew_types::{
+    AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
+    TypeCheckOutput,
+};
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
@@ -173,6 +176,66 @@ struct LowerCtx {
     /// `mem::replace` so the outer self-binding doesn't leak into an inner
     /// lambda's classification.
     current_actor_self: Option<(BindingId, String)>,
+    /// Checker-resolved type arguments for generic function calls that lack
+    /// explicit type annotations.  Keyed by the call expression span.
+    ///
+    /// Passive pass-through: HIR does not yet lower generic monomorphization.
+    /// Future consumer: generic-call lowering in the MIR elaborator or E4
+    /// codegen once generic stdlib calls appear in v0.5 programs.
+    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is generic-call monomorphization in E4 codegen"
+    )]
+    call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Checker-authoritative ABI-selector facts for erased runtime types.
+    /// Currently covers `HashSet` element-type dispatch (`i64`/`u64`/`str`
+    /// → `Int64` or `String` ABI variant).
+    ///
+    /// Passive pass-through: `HashSet` ABI selection lives in MIR/codegen, not
+    /// in HIR lowering.  Future consumer: E4 codegen and slice 4.7 spine
+    /// widening when `HashSet` operations enter the Rust pipeline.
+    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is HashSet ABI selection in E4 codegen"
+    )]
+    lowering_facts: HashMap<SpanKey, LoweringFact>,
+    /// Checker-resolved assignment target classification keyed by the target
+    /// expression span.
+    ///
+    /// Passive pass-through: HIR does not yet lower `Stmt::Assign` (it falls
+    /// through to `unsupported`).  Future consumer: MIR/codegen compound-
+    /// assignment lowering and Machine Lane B actor-field writes.
+    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is Stmt::Assign lowering in MIR/codegen"
+    )]
+    assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
+    /// Checker-resolved assignment target type-shape metadata (signedness flag)
+    /// keyed by the target expression span.  Populated alongside
+    /// `assign_target_kinds` for every accepted assignment.
+    ///
+    /// Passive pass-through: same consumer timeline as `assign_target_kinds`.
+    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
+    )]
+    assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
+    /// Actor type names that participate in reference cycles, computed by the
+    /// checker's cycle-detection pass.
+    ///
+    /// Passive pass-through: no production consumer exists anywhere yet.
+    /// Future consumer: Machine Lane B actor codegen (refcount-cycle-breaking
+    /// strategy selection).
+    /// (LESSONS: producer-bridge-before-codegen P1)
+    #[expect(
+        dead_code,
+        reason = "passive pass-through; future consumer is Machine Lane B actor cycle handling"
+    )]
+    cycle_capable_actors: HashSet<String>,
 }
 
 impl LowerCtx {
@@ -193,6 +256,11 @@ impl LowerCtx {
             scope_depth: 0,
             statement_position: false,
             current_actor_self: None,
+            call_type_args: tc_output.call_type_args.clone(),
+            lowering_facts: tc_output.lowering_facts.clone(),
+            assign_target_kinds: tc_output.assign_target_kinds.clone(),
+            assign_target_shapes: tc_output.assign_target_shapes.clone(),
+            cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
         }
     }
 }

@@ -65,6 +65,8 @@ impl ResolvedTy {
             ResolvedTy::U16 => "u16".into(),
             ResolvedTy::U32 => "u32".into(),
             ResolvedTy::U64 => "u64".into(),
+            ResolvedTy::Isize => "isize".into(),
+            ResolvedTy::Usize => "usize".into(),
             ResolvedTy::F32 => "f32".into(),
             ResolvedTy::F64 => "f64".into(),
             ResolvedTy::Bool => "bool".into(),

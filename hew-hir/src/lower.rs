@@ -1837,6 +1837,11 @@ impl LowerCtx {
                     "u16" => ResolvedTy::U16,
                     "u32" => ResolvedTy::U32,
                     "u64" => ResolvedTy::U64,
+                    // Platform-sized integers: distinct from fixed-width
+                    // int/uint. Codegen branches on target: 32-bit for
+                    // wasm32, 64-bit for native (B-D1 / Q42 ratification).
+                    "isize" => ResolvedTy::Isize,
+                    "usize" => ResolvedTy::Usize,
                     "f32" => ResolvedTy::F32,
                     "f64" | "float" => ResolvedTy::F64,
                     "bool" | "Bool" => ResolvedTy::Bool,

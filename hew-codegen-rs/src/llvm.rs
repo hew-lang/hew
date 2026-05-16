@@ -460,6 +460,28 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::I16 | ResolvedTy::U16 => Ok(ctx.i16_type().into()),
         ResolvedTy::I32 | ResolvedTy::U32 => Ok(ctx.i32_type().into()),
         ResolvedTy::I64 | ResolvedTy::U64 => Ok(ctx.i64_type().into()),
+        // Platform-sized integers: 32-bit on WASM32, 64-bit on native
+        // (Q42 ratification; B-D1).  The spine currently targets native
+        // only (see llvm.rs `intern_runtime_decl` comment at line ~394);
+        // WASM32 lowers separately via the `hew_emit_v05` binary's
+        // `--target wasm32-unknown-unknown` path, which calls back into
+        // this same function.  The target data layout recorded on the
+        // LLVM module by `hew_emit_v05.rs:107` ensures `i32` is
+        // pointer-sized on wasm32 and `i64` on native.
+        //
+        // SHIM: pointer-width selection here is compile-time via the Rust
+        // usize width.  Replace with target-triple inspection once a
+        // multi-target codegen path (E5c) lands and `primitive_to_llvm`
+        // receives target information.
+        // WHY: Rust's usize matches the host pointer size; the LLVM
+        //      backend then maps to the correct machine width.
+        // WHEN: obsolete once E5c supplies explicit target info.
+        // WHAT: query `module.get_target_data().get_pointer_byte_size(None)`
+        //       and branch on `== 4`.
+        #[cfg(target_pointer_width = "32")]
+        ResolvedTy::Isize | ResolvedTy::Usize => Ok(ctx.i32_type().into()),
+        #[cfg(not(target_pointer_width = "32"))]
+        ResolvedTy::Isize | ResolvedTy::Usize => Ok(ctx.i64_type().into()),
         ResolvedTy::Bool => Ok(ctx.i8_type().into()),
         // `Unit` lowers to a zero-sized stand-in (i8); the binary that
         // consumes it never observes the value (returning unit on Unix

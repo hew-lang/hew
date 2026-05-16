@@ -55,6 +55,8 @@ impl ValueClass {
             | ResolvedTy::U16
             | ResolvedTy::U32
             | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
             | ResolvedTy::F32
             | ResolvedTy::F64
             | ResolvedTy::Duration
@@ -152,6 +154,8 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
         | ResolvedTy::U16
         | ResolvedTy::U32
         | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
         | ResolvedTy::F32
         | ResolvedTy::F64
         | ResolvedTy::Bool

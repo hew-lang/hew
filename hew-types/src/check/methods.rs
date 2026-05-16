@@ -2374,13 +2374,16 @@ impl Checker {
                     "to_i8" => Ty::I8,
                     "to_i16" => Ty::I16,
                     "to_i32" => Ty::I32,
-                    // to_isize maps to I64 (platform-dependent, default 64-bit)
-                    "to_i64" | "to_isize" => Ty::I64,
+                    "to_i64" => Ty::I64,
+                    // to_isize returns the platform-sized signed integer
+                    // (Ty::Isize), not fixed-64 Ty::I64. B-D1 / Q42.
+                    "to_isize" => Ty::Isize,
                     "to_u8" => Ty::U8,
                     "to_u16" => Ty::U16,
                     "to_u32" => Ty::U32,
-                    // to_usize maps to U64 (platform-dependent, default 64-bit)
-                    "to_u64" | "to_usize" => Ty::U64,
+                    "to_u64" => Ty::U64,
+                    // to_usize returns the platform-sized unsigned integer.
+                    "to_usize" => Ty::Usize,
                     "to_f32" => Ty::F32,
                     "to_f64" => Ty::F64,
                     _ => {

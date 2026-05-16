@@ -29,7 +29,7 @@ pub enum PrimitiveWireKind {
     I16,
     /// 32-bit signed integer (`i32`).
     I32,
-    /// 64-bit signed integer (`i64` / `int` / `Int` / `isize`).
+    /// 64-bit signed integer (`i64` / `int` / `Int`).
     I64,
     /// 8-bit unsigned integer (`u8` / `byte`).
     U8,
@@ -37,8 +37,16 @@ pub enum PrimitiveWireKind {
     U16,
     /// 32-bit unsigned integer (`u32`).
     U32,
-    /// 64-bit unsigned integer (`u64` / `uint` / `usize`).
+    /// 64-bit unsigned integer (`u64` / `uint`).
     U64,
+    /// Platform-sized signed integer: wire-serialised as `i64` (no WASM32
+    /// actor wire path exists today; the runtime gates wasm32 duplex out).
+    /// This variant exists so the type-checker's `Ty::Isize` can cross the
+    /// codec boundary without being silently aliased to I64.
+    Isize,
+    /// Platform-sized unsigned integer: wire-serialised as `u64` (same
+    /// wasm32 reasoning as `Isize`).
+    Usize,
     /// Unicode scalar (`char` / `Char`).
     Char,
     /// 32-bit float (`f32`).
@@ -144,9 +152,22 @@ mod tests {
             PrimitiveWireKind::from_type_name("Int").unwrap(),
             PrimitiveWireKind::I64
         );
+        // isize is now a distinct platform-sized type, not an alias for i64.
         assert_eq!(
             PrimitiveWireKind::from_type_name("isize").unwrap(),
-            PrimitiveWireKind::I64
+            PrimitiveWireKind::Isize
+        );
+    }
+
+    #[test]
+    fn from_type_name_maps_platform_sized_types() {
+        assert_eq!(
+            PrimitiveWireKind::from_type_name("isize").unwrap(),
+            PrimitiveWireKind::Isize
+        );
+        assert_eq!(
+            PrimitiveWireKind::from_type_name("usize").unwrap(),
+            PrimitiveWireKind::Usize
         );
     }
 

@@ -130,6 +130,8 @@ impl TypeDescriptorWireExt for ResolvedTy {
             ResolvedTy::U16 => Ok(PrimitiveWireKind::U16),
             ResolvedTy::U32 => Ok(PrimitiveWireKind::U32),
             ResolvedTy::U64 => Ok(PrimitiveWireKind::U64),
+            ResolvedTy::Isize => Ok(PrimitiveWireKind::Isize),
+            ResolvedTy::Usize => Ok(PrimitiveWireKind::Usize),
             ResolvedTy::F32 => Ok(PrimitiveWireKind::F32),
             ResolvedTy::F64 => Ok(PrimitiveWireKind::F64),
             ResolvedTy::Char => Ok(PrimitiveWireKind::Char),

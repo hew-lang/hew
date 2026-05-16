@@ -337,6 +337,7 @@ impl TraitRegistry {
         match ty {
             // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
             // NOT Resource: primitives own no OS/runtime resource and need no drop close.
+            // Isize/Usize are platform-sized integers: same marker set as fixed-width ints.
             Ty::I8
             | Ty::I16
             | Ty::I32
@@ -346,6 +347,8 @@ impl TraitRegistry {
             | Ty::U16
             | Ty::U32
             | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
             | Ty::Bool
             | Ty::Char
             | Ty::Duration

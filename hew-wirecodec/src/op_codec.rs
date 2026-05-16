@@ -29,11 +29,15 @@ pub(crate) fn op_for_kind(kind: &PrimitiveWireKind) -> JsonOp {
         PrimitiveWireKind::I8
         | PrimitiveWireKind::I16
         | PrimitiveWireKind::I32
-        | PrimitiveWireKind::I64 => JsonOp::SetInt { unsigned: false },
+        | PrimitiveWireKind::I64
+        // Isize: platform-sized signed integer, serialised as signed varint.
+        | PrimitiveWireKind::Isize => JsonOp::SetInt { unsigned: false },
         PrimitiveWireKind::U8
         | PrimitiveWireKind::U16
         | PrimitiveWireKind::U32
-        | PrimitiveWireKind::U64 => JsonOp::SetInt { unsigned: true },
+        | PrimitiveWireKind::U64
+        // Usize: platform-sized unsigned integer, serialised as unsigned varint.
+        | PrimitiveWireKind::Usize => JsonOp::SetInt { unsigned: true },
         PrimitiveWireKind::F32 => JsonOp::SetFloat { widen: true },
         PrimitiveWireKind::F64 => JsonOp::SetFloat { widen: false },
         PrimitiveWireKind::String => JsonOp::SetString,

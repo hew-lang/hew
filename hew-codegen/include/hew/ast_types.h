@@ -733,9 +733,15 @@ struct Named {
   std::vector<RecordField> fields;
 };
 
-// RecordKind — only Named form is supported in A-1; Tuple form is A-2.
+// Tuple variant payload for RecordKind (positional fields).
+struct Tuple {
+  std::vector<Spanned<TypeExpr>> elements;
+};
+
+// RecordKind — Named + Tuple. C++ subtree slated for M6 deletion; this
+// is the minimum change to keep the msgpack round-trip green until M6.
 struct RecordKind {
-  std::variant<Named> kind;
+  std::variant<Named, Tuple> kind;
 };
 
 struct RecordDecl {

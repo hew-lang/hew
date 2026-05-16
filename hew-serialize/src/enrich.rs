@@ -1309,12 +1309,18 @@ fn normalize_item_types(item: &mut Item, registry: &hew_types::module_registry::
                 }
             }
         }
-        Item::Record(record_decl) => {
-            let hew_parser::ast::RecordKind::Named(fields) = &mut record_decl.kind;
-            for field in fields {
-                normalize_type_expr(&mut field.ty.0, registry);
+        Item::Record(record_decl) => match &mut record_decl.kind {
+            hew_parser::ast::RecordKind::Named(fields) => {
+                for field in fields {
+                    normalize_type_expr(&mut field.ty.0, registry);
+                }
             }
-        }
+            hew_parser::ast::RecordKind::Tuple(field_types) => {
+                for (ty, _) in field_types {
+                    normalize_type_expr(ty, registry);
+                }
+            }
+        },
         Item::Import(_) | Item::Wire(_) => {}
     }
 }

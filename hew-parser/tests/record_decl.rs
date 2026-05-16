@@ -30,7 +30,9 @@ fn expect_parse_error(src: &str) {
 fn record_named_fields_accept() {
     let r = parse_one_record("record Point { x: int, y: int }");
     assert_eq!(r.name, "Point");
-    let hew_parser::ast::RecordKind::Named(fields) = r.kind;
+    let hew_parser::ast::RecordKind::Named(fields) = r.kind else {
+        panic!("expected Named kind");
+    };
     assert_eq!(fields.len(), 2);
     assert_eq!(fields[0].name, "x");
     assert_eq!(fields[1].name, "y");
@@ -41,7 +43,9 @@ fn record_generic_accept() {
     let r = parse_one_record("record Vec3<T> { x: T, y: T, z: T }");
     assert_eq!(r.name, "Vec3");
     assert!(r.type_params.is_some());
-    let hew_parser::ast::RecordKind::Named(fields) = r.kind;
+    let hew_parser::ast::RecordKind::Named(fields) = r.kind else {
+        panic!("expected Named kind");
+    };
     assert_eq!(fields.len(), 3);
 }
 
@@ -49,7 +53,9 @@ fn record_generic_accept() {
 fn record_trailing_comma_accept() {
     let r = parse_one_record("record Point { x: int, y: int, }");
     assert_eq!(r.name, "Point");
-    let hew_parser::ast::RecordKind::Named(fields) = r.kind;
+    let hew_parser::ast::RecordKind::Named(fields) = r.kind else {
+        panic!("expected Named kind");
+    };
     assert_eq!(fields.len(), 2);
 }
 
@@ -74,7 +80,52 @@ fn record_where_clause_accept() {
     let r = parse_one_record("record Pair<T> where T: Display { first: T, second: T }");
     assert_eq!(r.name, "Pair");
     assert!(r.where_clause.is_some());
-    let hew_parser::ast::RecordKind::Named(fields) = r.kind;
+    let hew_parser::ast::RecordKind::Named(fields) = r.kind else {
+        panic!("expected Named kind");
+    };
+    assert_eq!(fields.len(), 2);
+}
+
+// ── Tuple-record accept cases ─────────────────────────────────────────────────
+
+#[test]
+fn record_tuple_single_field_accept() {
+    let r = parse_one_record("record UserId(int);");
+    assert_eq!(r.name, "UserId");
+    let hew_parser::ast::RecordKind::Tuple(fields) = r.kind else {
+        panic!("expected Tuple kind");
+    };
+    assert_eq!(fields.len(), 1);
+}
+
+#[test]
+fn record_tuple_two_fields_accept() {
+    let r = parse_one_record("record Pair(int, int);");
+    assert_eq!(r.name, "Pair");
+    let hew_parser::ast::RecordKind::Tuple(fields) = r.kind else {
+        panic!("expected Tuple kind");
+    };
+    assert_eq!(fields.len(), 2);
+}
+
+#[test]
+fn record_tuple_generic_accept() {
+    let r = parse_one_record("record Wrapper<T>(T);");
+    assert_eq!(r.name, "Wrapper");
+    assert!(r.type_params.is_some());
+    let hew_parser::ast::RecordKind::Tuple(fields) = r.kind else {
+        panic!("expected Tuple kind");
+    };
+    assert_eq!(fields.len(), 1);
+}
+
+#[test]
+fn record_tuple_trailing_comma_accept() {
+    let r = parse_one_record("record Pair(int, int,);");
+    assert_eq!(r.name, "Pair");
+    let hew_parser::ast::RecordKind::Tuple(fields) = r.kind else {
+        panic!("expected Tuple kind");
+    };
     assert_eq!(fields.len(), 2);
 }
 
@@ -98,4 +149,9 @@ fn record_missing_field_name_reject() {
 #[test]
 fn record_missing_comma_between_fields_reject() {
     expect_parse_error("record Bad { x: int y: int }");
+}
+
+#[test]
+fn record_tuple_empty_reject() {
+    expect_parse_error("record Empty();");
 }

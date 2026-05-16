@@ -156,11 +156,20 @@ recordDecl
     ;
 
 recordBody
+    : recordNamedBody
+    | recordTupleBody
+    ;
+
+recordNamedBody
     : '{' recordFieldDecl ( ',' recordFieldDecl )* ','? '}'
     ;
 
 recordFieldDecl
     : ident ':' type_
+    ;
+
+recordTupleBody
+    : '(' type_ ( ',' type_ )* ','? ')' ';'
     ;
 
 wireDecl

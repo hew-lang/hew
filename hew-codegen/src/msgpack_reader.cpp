@@ -541,6 +541,7 @@ static ast::RecordKind parseRecordKind(const msgpack::object &obj) {
   auto [name, payload] = getEnumVariant(obj);
 
   if (name == "Named") return ast::RecordKind{ast::Named{parseVec<ast::RecordField>(*payload, parseRecordField)}};
+  if (name == "Tuple") return ast::RecordKind{ast::Tuple{parseVec<ast::Spanned<ast::TypeExpr>>(*payload, [](const msgpack::object &o) { return parseSpanned<ast::TypeExpr>(o, parseTypeExpr); })}};
   fail("unknown RecordKind variant: " + name);
 }
 

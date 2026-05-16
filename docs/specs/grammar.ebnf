@@ -44,9 +44,11 @@ Item           = Attribute* Visibility? ( Import
 
 TypeAlias      = "type" Ident "=" Type ";" ;
 
-RecordDecl     = "record" Ident TypeParams? WhereClause? RecordBody ;
-RecordBody     = "{" RecordFieldDecl { "," RecordFieldDecl } ","? "}" ;
+RecordDecl      = "record" Ident TypeParams? WhereClause? RecordBody ;
+RecordBody      = RecordNamedBody | RecordTupleBody ;
+RecordNamedBody = "{" RecordFieldDecl { "," RecordFieldDecl } ","? "}" ;
 RecordFieldDecl = Ident ":" Type ;
+RecordTupleBody = "(" Type { "," Type } ","? ")" ";" ;
 
 Visibility     = "pub" ( "(" ( "package" | "super" ) ")" )? ;
 

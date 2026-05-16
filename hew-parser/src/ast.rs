@@ -785,12 +785,15 @@ pub struct RecordDecl {
     pub span: Span,
 }
 
-/// The body of a `record` declaration.  Only named-field form is supported in
-/// A-1; tuple form (`record Pair(T, T)`) is reserved for slice A-2.
+/// The body of a `record` declaration.
+///
+/// - `Named` form: `record Point { x: int, y: int }` — at least one field required.
+/// - `Tuple` form: `record Pair(int, int);` — at least one positional field required;
+///   terminates with `;` like a type alias.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RecordKind {
     Named(Vec<RecordField>),
-    // TODO(A-2): Tuple(Vec<Spanned<TypeExpr>>)
+    Tuple(Vec<Spanned<TypeExpr>>),
 }
 
 /// A single field in a named-form `record` body.

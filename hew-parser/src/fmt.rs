@@ -369,23 +369,36 @@ impl<'a> Formatter<'a> {
         self.write(&decl.name);
         self.format_opt_type_params(decl.type_params.as_ref());
         self.format_opt_where_clause(decl.where_clause.as_ref());
-        self.write(" {\n");
-        self.indent += 1;
-        let RecordKind::Named(fields) = &decl.kind;
-        for (i, field) in fields.iter().enumerate() {
-            self.write_outer_doc(field.doc_comment.as_ref());
-            self.write_indent();
-            self.write(&field.name);
-            self.write(": ");
-            self.format_type_expr(&field.ty.0);
-            if i + 1 < fields.len() {
-                self.write(",");
+        match &decl.kind {
+            RecordKind::Named(fields) => {
+                self.write(" {\n");
+                self.indent += 1;
+                for (i, field) in fields.iter().enumerate() {
+                    self.write_outer_doc(field.doc_comment.as_ref());
+                    self.write_indent();
+                    self.write(&field.name);
+                    self.write(": ");
+                    self.format_type_expr(&field.ty.0);
+                    if i + 1 < fields.len() {
+                        self.write(",");
+                    }
+                    self.write("\n");
+                }
+                self.indent -= 1;
+                self.write_indent();
+                self.write("}\n");
             }
-            self.write("\n");
+            RecordKind::Tuple(field_types) => {
+                self.write("(");
+                for (i, (ty, _)) in field_types.iter().enumerate() {
+                    self.format_type_expr(ty);
+                    if i + 1 < field_types.len() {
+                        self.write(", ");
+                    }
+                }
+                self.write(");\n");
+            }
         }
-        self.indent -= 1;
-        self.write_indent();
-        self.write("}\n");
     }
 
     fn format_type_decl(&mut self, decl: &TypeDecl, _span_end: usize) {

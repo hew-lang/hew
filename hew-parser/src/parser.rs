@@ -1699,11 +1699,13 @@ impl<'src> Parser<'src> {
         })
     }
 
-    /// Parse a `record Name<T>? where...? { field: Type, ... }` declaration.
+    /// Parse a `record` declaration in either named-field or tuple-positional form.
+    ///
+    /// Named form:  `record Name<T>? where...? { field: Type, ... }`
+    /// Tuple form:  `record Name<T>? (Type, ...) ;`
     ///
     /// The `record` keyword must already be consumed before this is called.
-    /// Named-field body is required; empty bodies are rejected.  Tuple-record
-    /// form is reserved for slice A-2.
+    /// Both forms reject empty field lists.
     fn parse_record_decl(&mut self, visibility: Visibility) -> Option<RecordDecl> {
         let start = self.peek_span().start;
 
@@ -1714,61 +1716,97 @@ impl<'src> Parser<'src> {
         let type_params = self.parse_opt_type_params()?;
         let where_clause = self.parse_opt_where_clause()?;
 
-        self.expect(&Token::LeftBrace)?;
+        if self.eat(&Token::LeftParen) {
+            // Tuple-positional form: `record Name(T1, T2, ...) ;`
+            let mut field_types: Vec<Spanned<TypeExpr>> = Vec::new();
 
-        let mut fields: Vec<RecordField> = Vec::new();
-        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-            let field_start = self.peek_span().start;
+            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                let ty = self.parse_type()?;
+                field_types.push(ty);
 
-            // Field name
-            let field_name = if let Some(Token::Identifier(_)) = self.peek() {
-                self.expect_ident()?
-            } else {
-                let found = match self.peek() {
-                    Some(tok) => format!("{tok}"),
-                    None => "end of file".to_string(),
-                };
-                self.error(format!("expected field name, found {found}"));
-                return None;
-            };
-
-            self.expect(&Token::Colon)?;
-
-            let ty = self.parse_type()?;
-            let field_end = self.peek_span().start;
-
-            fields.push(RecordField {
-                name: field_name,
-                ty,
-                doc_comment: None,
-                span: field_start..field_end,
-            });
-
-            // Comma or end of body
-            if self.peek() == Some(&Token::Comma) {
-                self.advance();
-            } else {
-                break;
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
             }
+
+            if field_types.is_empty() {
+                self.error("tuple record must have at least one positional field".to_string());
+                return None;
+            }
+
+            let end = self.peek_span().start;
+            self.expect(&Token::RightParen)?;
+            self.expect(&Token::Semicolon)?;
+
+            Some(RecordDecl {
+                visibility,
+                name,
+                type_params,
+                where_clause,
+                kind: RecordKind::Tuple(field_types),
+                doc_comment: None,
+                span: start..end,
+            })
+        } else {
+            // Named-field form: `record Name { field: Type, ... }`
+            self.expect(&Token::LeftBrace)?;
+
+            let mut fields: Vec<RecordField> = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                let field_start = self.peek_span().start;
+
+                // Field name
+                let field_name = if let Some(Token::Identifier(_)) = self.peek() {
+                    self.expect_ident()?
+                } else {
+                    let found = match self.peek() {
+                        Some(tok) => format!("{tok}"),
+                        None => "end of file".to_string(),
+                    };
+                    self.error(format!("expected field name, found {found}"));
+                    return None;
+                };
+
+                self.expect(&Token::Colon)?;
+
+                let ty = self.parse_type()?;
+                let field_end = self.peek_span().start;
+
+                fields.push(RecordField {
+                    name: field_name,
+                    ty,
+                    doc_comment: None,
+                    span: field_start..field_end,
+                });
+
+                // Comma or end of body
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+
+            if fields.is_empty() {
+                self.error("record body must contain at least one field".to_string());
+                return None;
+            }
+
+            let end = self.peek_span().start;
+            self.expect(&Token::RightBrace)?;
+
+            Some(RecordDecl {
+                visibility,
+                name,
+                type_params,
+                where_clause,
+                kind: RecordKind::Named(fields),
+                doc_comment: None,
+                span: start..end,
+            })
         }
-
-        if fields.is_empty() {
-            self.error("record body must contain at least one field".to_string());
-            return None;
-        }
-
-        let end = self.peek_span().start;
-        self.expect(&Token::RightBrace)?;
-
-        Some(RecordDecl {
-            visibility,
-            name,
-            type_params,
-            where_clause,
-            kind: RecordKind::Named(fields),
-            doc_comment: None,
-            span: start..end,
-        })
     }
 
     /// Extract `ResourceMarker` from a pre-parsed attribute slice.

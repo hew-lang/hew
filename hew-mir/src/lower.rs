@@ -1142,6 +1142,25 @@ impl Builder {
             });
             return Some(dest);
         }
+        // B-4 wrapping arithmetic: `&+` / `&-` / `&*` lower to plain
+        // two's-complement `IntAdd` / `IntSub` / `IntMul` — no overflow
+        // flag, no CFG split, no Trap block. These are the first source-
+        // level producers of `Instr::IntAdd/IntSub/IntMul`; previously
+        // those variants were reachable only from hand-built fixtures.
+        // LESSONS `boundary-fail-closed` (P0): the user has explicitly
+        // opted into modular arithmetic by writing `&+`; no trap is the
+        // correct behaviour here.
+        let wrapping_instr = match op {
+            BinaryOp::WrappingAdd => Some(Instr::IntAdd { dest, lhs, rhs }),
+            BinaryOp::WrappingSub => Some(Instr::IntSub { dest, lhs, rhs }),
+            BinaryOp::WrappingMul => Some(Instr::IntMul { dest, lhs, rhs }),
+            _ => None,
+        };
+        if let Some(instr) = wrapping_instr {
+            self.instructions.push(instr);
+            return Some(dest);
+        }
+
         // B-5 divide / modulo / shift lowering.
         //
         // These operators are handled here with early returns so they

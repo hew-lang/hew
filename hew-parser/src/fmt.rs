@@ -2438,6 +2438,9 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
         BinaryOp::Shr => ">>",
         BinaryOp::Range => "..",
         BinaryOp::RangeInclusive => "..=",
+        BinaryOp::WrappingAdd => "&+",
+        BinaryOp::WrappingSub => "&-",
+        BinaryOp::WrappingMul => "&*",
     }
 }
 
@@ -2454,8 +2457,10 @@ fn binop_precedence(op: BinaryOp) -> u8 {
         BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 15,
         BinaryOp::Range | BinaryOp::RangeInclusive => 17,
         BinaryOp::Shl | BinaryOp::Shr => 19,
-        BinaryOp::Add | BinaryOp::Subtract => 21,
-        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => 23,
+        // Wrapping add/sub at same precedence as plain add/sub
+        BinaryOp::Add | BinaryOp::Subtract | BinaryOp::WrappingAdd | BinaryOp::WrappingSub => 21,
+        // Wrapping mul at same precedence as plain mul
+        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::WrappingMul => 23,
     }
 }
 

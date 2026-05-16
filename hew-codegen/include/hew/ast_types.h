@@ -138,6 +138,9 @@ enum class BinaryOp {
   Shr,
   Range,
   RangeInclusive,
+  WrappingAdd,
+  WrappingSub,
+  WrappingMul,
 };
 
 enum class UnaryOp {

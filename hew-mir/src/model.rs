@@ -396,17 +396,16 @@ pub enum IntSignedness {
 pub enum Instr {
     /// `dest = const <value>` as i64.
     ConstI64 { dest: Place, value: i64 },
-    /// Two's-complement wrapping `dest = lhs + rhs`. Producers: B-3 will
-    /// wire `.wrapping_add` to this variant. Before B-3 lands, the
-    /// variant is reachable only from hand-built fixtures (no source
-    /// surface). The default `+` operator uses
+    /// Two's-complement wrapping `dest = lhs + rhs`. No overflow check.
+    /// Producers: `&+` operator sugar (B-4); `.wrapping_add()` method
+    /// call (B-3, method body lowering). The default `+` operator uses
     /// `Instr::IntArithChecked` (B-2) for trap-on-overflow semantics.
     IntAdd { dest: Place, lhs: Place, rhs: Place },
-    /// Two's-complement wrapping `dest = lhs - rhs`. Producer story
-    /// matches `IntAdd` above.
+    /// Two's-complement wrapping `dest = lhs - rhs`. No overflow check.
+    /// Producers: `&-` operator sugar (B-4); `.wrapping_sub()` (B-3).
     IntSub { dest: Place, lhs: Place, rhs: Place },
-    /// Two's-complement wrapping `dest = lhs * rhs`. Producer story
-    /// matches `IntAdd` above.
+    /// Two's-complement wrapping `dest = lhs * rhs`. No overflow check.
+    /// Producers: `&*` operator sugar (B-4); `.wrapping_mul()` (B-3).
     IntMul { dest: Place, lhs: Place, rhs: Place },
     /// Integer division `dest = lhs / rhs` with no implicit trap guard.
     /// Producers that need trap-on-zero and trap-on-signed-MIN/-1 MUST

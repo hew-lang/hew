@@ -433,6 +433,16 @@ pub enum BinaryOp {
     Shr,
     Range,
     RangeInclusive,
+    /// Two's-complement wrapping add. Parser sugar for `&+`. Lowers to
+    /// `Instr::IntAdd` (plain add, no overflow trap). Integer operands only;
+    /// string concat and duration arithmetic are not allowed.
+    WrappingAdd,
+    /// Two's-complement wrapping subtract. Parser sugar for `&-`. Lowers to
+    /// `Instr::IntSub` (plain sub, no overflow trap).
+    WrappingSub,
+    /// Two's-complement wrapping multiply. Parser sugar for `&*`. Lowers to
+    /// `Instr::IntMul` (plain mul, no overflow trap).
+    WrappingMul,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -458,6 +468,9 @@ impl std::fmt::Display for BinaryOp {
             Self::Shr => write!(f, ">>"),
             Self::Range => write!(f, ".."),
             Self::RangeInclusive => write!(f, "..="),
+            Self::WrappingAdd => write!(f, "&+"),
+            Self::WrappingSub => write!(f, "&-"),
+            Self::WrappingMul => write!(f, "&*"),
         }
     }
 }

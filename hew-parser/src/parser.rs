@@ -5901,10 +5901,10 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
         Token::Ampersand => Some((17, 18)),
         // Shift
         Token::LessLess | Token::GreaterGreater => Some((19, 20)),
-        // Additive
-        Token::Plus | Token::Minus => Some((21, 22)),
-        // Multiplicative
-        Token::Star | Token::Slash | Token::Percent => Some((23, 24)),
+        // Additive: plain `+`/`-` and wrapping `&+`/`&-` share precedence 21.
+        Token::Plus | Token::Minus | Token::AmpPlus | Token::AmpMinus => Some((21, 22)),
+        // Multiplicative: plain `*`/`/`/`%` and wrapping `&*` share precedence 23.
+        Token::Star | Token::Slash | Token::Percent | Token::AmpStar => Some((23, 24)),
         _ => None,
     }
 }
@@ -5938,6 +5938,9 @@ fn token_to_binop(token: &Token) -> Option<BinaryOp> {
         Token::GreaterGreater => Some(BinaryOp::Shr),
         Token::DotDot => Some(BinaryOp::Range),
         Token::DotDotEqual => Some(BinaryOp::RangeInclusive),
+        Token::AmpPlus => Some(BinaryOp::WrappingAdd),
+        Token::AmpMinus => Some(BinaryOp::WrappingSub),
+        Token::AmpStar => Some(BinaryOp::WrappingMul),
         _ => None,
     }
 }
@@ -8246,5 +8249,90 @@ wire type Msg {
         let toks: Vec<Token<'_>> = lex("is").into_iter().map(|(t, _)| t).collect();
         assert_eq!(toks, vec![Token::Is]);
         assert_ne!(toks[0], Token::Identifier("is"));
+    }
+    // ---------------------------------------------------------------------------
+    // Wrapping operator parsing
+    // ---------------------------------------------------------------------------
+
+    fn first_fn_expr(source: &str) -> Expr {
+        let r = parse(source);
+        assert!(r.errors.is_empty(), "parse errors: {:?}", r.errors);
+        let Item::Function(f) = &r.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        // FnDecl.body is a Block struct directly (not wrapped in Spanned<Expr>).
+        let body = &f.body;
+        if let Some(e) = &body.trailing_expr {
+            e.0.clone()
+        } else {
+            panic!("expected trailing expression in function body");
+        }
+    }
+
+    #[test]
+    fn wrapping_binary_ops_parse_correctly() {
+        // `a &+ b` should parse as Binary { op: WrappingAdd, .. }
+        let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &+ b }");
+        let Expr::Binary { op, .. } = expr else {
+            panic!("expected Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingAdd);
+
+        let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &- b }");
+        let Expr::Binary { op, .. } = expr else {
+            panic!("expected Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingSub);
+
+        let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &* b }");
+        let Expr::Binary { op, .. } = expr else {
+            panic!("expected Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingMul);
+    }
+
+    #[test]
+    fn wrapping_add_precedence_matches_plain_add() {
+        // `a &+ b * c` should parse as `a &+ (b * c)` — `*` binds tighter.
+        let expr = first_fn_expr("fn f(a: i64, b: i64, c: i64) -> i64 { a &+ b * c }");
+        let Expr::Binary { op, right, .. } = expr else {
+            panic!("expected outer Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingAdd, "outer op must be &+");
+        // The right sub-expression must be `b * c` (plain multiply).
+        let Expr::Binary { op: inner_op, .. } = right.0 else {
+            panic!("expected inner Binary");
+        };
+        assert_eq!(inner_op, BinaryOp::Multiply, "inner op must be *");
+    }
+
+    #[test]
+    fn wrapping_mul_precedence_matches_plain_mul() {
+        // `a + b &* c` should parse as `a + (b &* c)` — `&*` binds tighter than `+`.
+        let expr = first_fn_expr("fn f(a: i64, b: i64, c: i64) -> i64 { a + b &* c }");
+        let Expr::Binary { op, right, .. } = expr else {
+            panic!("expected outer Binary");
+        };
+        assert_eq!(op, BinaryOp::Add, "outer op must be +");
+        let Expr::Binary { op: inner_op, .. } = right.0 else {
+            panic!("expected inner Binary");
+        };
+        assert_eq!(inner_op, BinaryOp::WrappingMul, "inner op must be &*");
+    }
+
+    #[test]
+    fn wrapping_ops_parse_with_no_errors() {
+        for src in &[
+            "fn f(a: i64, b: i64) -> i64 { a &+ b }",
+            "fn f(a: i64, b: i64) -> i64 { a &- b }",
+            "fn f(a: i64, b: i64) -> i64 { a &* b }",
+        ] {
+            let r = parse(src);
+            assert!(
+                r.errors.is_empty(),
+                "parse errors for `{src}`: {:?}",
+                r.errors
+            );
+        }
     }
 } // mod tests

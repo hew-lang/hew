@@ -1927,6 +1927,10 @@ impl LowerCtx {
             BinaryOp::Add if left == &ResolvedTy::String || right == &ResolvedTy::String => {
                 ResolvedTy::String
             }
+            // Wrapping ops (WrappingAdd/WrappingSub/WrappingMul) fall through
+            // to the wildcard: they return the left operand's integer type,
+            // same as any other integer arithmetic op. The type checker has
+            // already enforced integer-only operands.
             _ => left.clone(),
         }
     }

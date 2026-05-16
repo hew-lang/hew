@@ -832,6 +832,9 @@ static ast::BinaryOp parseBinaryOp(const msgpack::object &obj) {
   if (s == "Shr") return ast::BinaryOp::Shr;
   if (s == "Range") return ast::BinaryOp::Range;
   if (s == "RangeInclusive") return ast::BinaryOp::RangeInclusive;
+  if (s == "WrappingAdd") return ast::BinaryOp::WrappingAdd;
+  if (s == "WrappingSub") return ast::BinaryOp::WrappingSub;
+  if (s == "WrappingMul") return ast::BinaryOp::WrappingMul;
   fail("unknown BinaryOp: " + s);
 }
 

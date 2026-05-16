@@ -174,7 +174,10 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::LessLessEqual
         | Token::GreaterGreaterEqual
         | Token::At
-        | Token::Dot => OP,
+        | Token::Dot
+        | Token::AmpPlus
+        | Token::AmpMinus
+        | Token::AmpStar => OP,
 
         // ── Delimiters, punctuation, errors ──────────────────────────
         Token::LeftParen

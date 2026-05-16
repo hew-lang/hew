@@ -321,6 +321,19 @@ pub enum Token<'src> {
     #[token("#[")]
     HashBracket,
 
+    // ── Wrapping arithmetic operators ─────────────────────────────────
+    // These are SINGLE tokens, not `&` followed by `+`/`-`/`*`.
+    // Logos uses maximal munch: `&+` with no whitespace between the
+    // characters lexes as `AmpPlus` (wrapping add), while `& +` (with
+    // whitespace) lexes as two tokens `Ampersand` + `Plus`. This is the
+    // disambiguation rule: spacing determines operator identity.
+    #[token("&+")]
+    AmpPlus,
+    #[token("&-")]
+    AmpMinus,
+    #[token("&*")]
+    AmpStar,
+
     // ── Compound assignment ───────────────────────────────────────────
     #[token("+=")]
     PlusEqual,
@@ -503,6 +516,10 @@ impl std::fmt::Display for Token<'_> {
 
             Token::LessLess => f.write_str("`<<`"),
             Token::GreaterGreater => f.write_str("`>>`"),
+            // Wrapping arithmetic operators
+            Token::AmpPlus => f.write_str("`&+`"),
+            Token::AmpMinus => f.write_str("`&-`"),
+            Token::AmpStar => f.write_str("`&*`"),
             // Compound assignment
             Token::PlusEqual => f.write_str("`+=`"),
             Token::MinusEqual => f.write_str("`-=`"),
@@ -1088,6 +1105,49 @@ mod tests {
         }
         // Spot-check: starts with a line comment (skipped), then `fn`
         assert_eq!(toks[0].0, Token::Fn);
+    }
+
+    #[test]
+    fn wrapping_ops_single_token() {
+        // `&+`, `&-`, `&*` with no whitespace each lex as a single wrapping-op
+        // token, NOT as `Ampersand` followed by `Plus`/`Minus`/`Star`.
+        assert_eq!(tokens("&+"), vec![Token::AmpPlus]);
+        assert_eq!(tokens("&-"), vec![Token::AmpMinus]);
+        assert_eq!(tokens("&*"), vec![Token::AmpStar]);
+    }
+
+    #[test]
+    fn wrapping_ops_spaced_are_two_tokens() {
+        // `& +` (with whitespace) is `Ampersand` + `Plus` — NOT a wrapping op.
+        // This is the disambiguation rule: spacing determines operator identity.
+        assert_eq!(tokens("& +"), vec![Token::Ampersand, Token::Plus]);
+        assert_eq!(tokens("& -"), vec![Token::Ampersand, Token::Minus]);
+        assert_eq!(tokens("& *"), vec![Token::Ampersand, Token::Star]);
+    }
+
+    #[test]
+    fn wrapping_ops_in_expression_context() {
+        // Verify that `a &+ b` lexes correctly in a typical use position.
+        assert_eq!(
+            tokens("a &+ b"),
+            vec![
+                Token::Identifier("a"),
+                Token::AmpPlus,
+                Token::Identifier("b"),
+            ]
+        );
+        assert_eq!(
+            tokens("x &- 1"),
+            vec![Token::Identifier("x"), Token::AmpMinus, Token::Integer("1"),]
+        );
+        assert_eq!(
+            tokens("m &* n"),
+            vec![
+                Token::Identifier("m"),
+                Token::AmpStar,
+                Token::Identifier("n"),
+            ]
+        );
     }
 
     #[test]

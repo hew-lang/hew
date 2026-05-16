@@ -1875,6 +1875,48 @@ impl Checker {
         let right_resolved = self.subst.resolve(&right_ty);
 
         match op {
+            // Wrapping arithmetic: integer-only. No string concat, no duration,
+            // no float. Both operands must be integer types of the same width.
+            BinaryOp::WrappingAdd | BinaryOp::WrappingSub | BinaryOp::WrappingMul => {
+                if left_resolved.is_integer() && right_resolved.is_integer() {
+                    if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                        common_ty
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &left.1,
+                            format!(
+                                "`{op}` requires compatible integer types; found `{}` and `{}`",
+                                left_resolved.user_facing(),
+                                right_resolved.user_facing()
+                            ),
+                        );
+                        Ty::Error
+                    }
+                } else if matches!(&left_resolved, Ty::Var(_)) && right_resolved.is_integer() {
+                    self.expect_type(&right_ty, &left_ty, &left.1);
+                    right_ty
+                } else if left_resolved.is_integer() && matches!(&right_resolved, Ty::Var(_))
+                    || matches!((&left_resolved, &right_resolved), (Ty::Var(_), Ty::Var(_)))
+                {
+                    // Either only the right is a type variable (constrain it to
+                    // the left's integer type) or both are type variables
+                    // (unify them and leave the result polymorphic).
+                    self.expect_type(&left_ty, &right_ty, &right.1);
+                    left_ty
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &left.1,
+                        format!(
+                            "`{op}` requires integer operands; found `{}` and `{}`",
+                            left_resolved.user_facing(),
+                            right_resolved.user_facing()
+                        ),
+                    );
+                    Ty::Error
+                }
+            }
             BinaryOp::Add
             | BinaryOp::Subtract
             | BinaryOp::Multiply

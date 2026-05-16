@@ -1687,3 +1687,106 @@ fn fmt_contextual_keywords_as_identifiers_roundtrip() {
         "fn test_contextual_keywords_as_identifiers() {\n    let wire = 5;\n    let event = \"hello\";\n    let state = true;\n    let join = 42;\n    let after = 0;\n}\n",
     );
 }
+
+// -----------------------------------------------------------------------
+// v0.5 surface constructs
+// -----------------------------------------------------------------------
+
+// --- actor |params| { body } lambda-actor form --------------------------
+
+#[test]
+fn fmt_actor_lambda_multi_param_roundtrip() {
+    // Multi-parameter lambda-actor with a typed return annotation.
+    exact_roundtrip(
+        "fn main() {\n    let adder = actor |x: int, y: int| {\n        x + y\n    };\n}\n",
+    );
+}
+
+// --- Duplex<S, R> / Sink<T> / Stream<T> type annotations ---------------
+
+#[test]
+fn fmt_duplex_type_annotation_roundtrip() {
+    // Duplex<S, R> in a parameter and return type position.
+    exact_roundtrip("fn make_channel() -> Duplex<int, string> {\n    duplex_pair(16)\n}\n");
+}
+
+#[test]
+fn fmt_sink_stream_type_annotation_roundtrip() {
+    // Sink<T> and Stream<T> in function parameter and return position.
+    exact_roundtrip(
+        "fn pipe(src: Stream<string>, dst: Sink<string>) {\n    forward(src, dst);\n}\n",
+    );
+}
+
+// --- Channel method calls -----------------------------------------------
+
+#[test]
+fn fmt_channel_send_recv_roundtrip() {
+    // .send(), .recv(), .try_send(), .try_recv(), .close() method calls
+    // are plain MethodCall nodes; verify the formatter emits them unchanged.
+    exact_roundtrip(
+        "fn main() {\n    ch.send(42);\n    let v = ch.recv();\n    ch.try_send(1);\n    let r = ch.try_recv();\n    ch.close();\n}\n",
+    );
+}
+
+#[test]
+fn fmt_channel_half_handle_roundtrip() {
+    // .send_half() and .recv_half() split a Duplex into directional halves.
+    exact_roundtrip(
+        "fn main() {\n    let sink = ch.send_half();\n    let stream = ch.recv_half();\n}\n",
+    );
+}
+
+// --- scope { fork name = call(); } structured concurrency ---------------
+
+#[test]
+fn fmt_scope_fork_named_binding_roundtrip() {
+    // scope block with a named fork binding — the canonical structured-concurrency form.
+    exact_roundtrip(
+        "fn main() {\n    let result = scope {\n        fork worker = compute();\n        fork auditor = audit();\n        worker\n    };\n}\n",
+    );
+}
+
+// --- Lifecycle attributes: #[on(start/stop/restart/crash/upgrade)] ------
+
+#[test]
+fn fmt_actor_on_start_hook_roundtrip() {
+    // Canonical order: receive fn before lifecycle-hook fn (methods follow receive fns).
+    exact_roundtrip(
+        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(start)]\n    fn init() {\n        println(f\"[{label}] started\");\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+#[test]
+fn fmt_actor_on_restart_hook_roundtrip() {
+    // #[on(restart)] uses the same Attribute/AttributeArg::Positional path as
+    // #[on(stop)] and #[on(start)]; this test locks in the canonical spelling.
+    // Canonical order: receive fn before lifecycle-hook fn.
+    exact_roundtrip(
+        "actor Worker {\n    receive fn work() {\n        do_work();\n    }\n\n    #[on(restart)]\n    fn handle_restart() {\n        reset();\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+#[test]
+fn fmt_actor_on_crash_hook_roundtrip() {
+    // Canonical order: receive fn before lifecycle-hook fn.
+    exact_roundtrip(
+        "actor Guard {\n    receive fn run() {\n        execute();\n    }\n\n    #[on(crash)]\n    fn on_crash() {\n        log_error();\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+#[test]
+fn fmt_actor_on_upgrade_hook_roundtrip() {
+    // Canonical order: receive fn before lifecycle-hook fn.
+    exact_roundtrip(
+        "actor Service {\n    receive fn handle() {\n        process();\n    }\n\n    #[on(upgrade)]\n    fn migrate() {\n        migrate_state();\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+// --- let (a, b) = duplex_pair<S, R>(N) tuple-destructure + generic call --
+
+#[test]
+fn fmt_tuple_destructure_generic_call_roundtrip() {
+    // Tuple pattern on the left, generic-argument call on the right.
+    exact_roundtrip("fn main() {\n    let (tx, rx) = duplex_pair<int, string>(16);\n}\n");
+}

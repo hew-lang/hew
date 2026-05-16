@@ -102,7 +102,8 @@ fn collect_actor_refs<'a>(
                 if let Some(td) = type_defs.get(name) {
                     let struct_name = td.name.as_str();
                     let key = (struct_name.to_string(), args.clone());
-                    if td.kind == crate::check::TypeDefKind::Struct
+                    if (td.kind == crate::check::TypeDefKind::Struct
+                        || td.kind == crate::check::TypeDefKind::Record)
                         && !visited_structs.contains(&key)
                     {
                         visited_structs.insert(key);

@@ -15283,3 +15283,182 @@ mod task_type_surface_rules {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// record admission (A-3)
+// ---------------------------------------------------------------------------
+
+mod record_admission {
+    use super::*;
+
+    #[test]
+    fn construction_ok_named_record() {
+        // Named-field construction with all required fields and correct types
+        // must produce no errors.
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: 1, y: 2 };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "valid record construction must not produce errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn construction_missing_field_rejected() {
+        // Omitting a required field must produce a missing-field error.
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: 1 };
+            }
+            ",
+        );
+        let has_missing = output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("missing field") && e.message.contains('y'));
+        assert!(
+            has_missing,
+            "omitting a required field must emit a missing-field error; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn construction_extra_field_rejected() {
+        // Providing a field that does not exist in the record must produce an
+        // undefined-field error.
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: 1, y: 2, z: 3 };
+            }
+            ",
+        );
+        let has_extra = output
+            .errors
+            .iter()
+            .any(|e| e.message.contains('z') && e.message.contains("Point"));
+        assert!(
+            has_extra,
+            "extra field must emit an undefined-field error; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn construction_wrong_type_rejected() {
+        // A field initialised with the wrong type must produce a type-mismatch
+        // error.
+        let output = check_source(
+            r#"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: "hello", y: 2 };
+            }
+            "#,
+        );
+        let has_mismatch = output.errors.iter().any(|e| {
+            e.message.contains("String")
+                || e.message.contains("type mismatch")
+                || e.message.contains("expected")
+        });
+        assert!(
+            has_mismatch,
+            "wrong-typed field must emit a type error; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn field_read_ok() {
+        // Field access on a valid record must resolve the field type and
+        // produce no errors.
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                let p = Point { x: 10, y: 20 };
+                let n: int = p.x;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "valid field read must produce no errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn field_write_rejected() {
+        // Assigning to a record field must be rejected unconditionally (A-D3).
+        let output = check_source(
+            r"
+            record Point { x: int, y: int }
+            fn main() {
+                var p: Point = Point { x: 1, y: 2 };
+                p.x = 5;
+            }
+            ",
+        );
+        let has_rejection = output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("record") || e.message.contains("immutable"));
+        assert!(
+            has_rejection,
+            "field assignment on a record must be rejected; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tuple_record_construction_ok() {
+        // Tuple-positional construction `UserId(42)` must resolve to the
+        // declared record type without errors.
+        let output = check_source(
+            r"
+            record UserId(int);
+            fn make() -> UserId {
+                UserId(42)
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "valid tuple-record construction must produce no errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tuple_record_dot_zero_access_rejected() {
+        // `.0` index-style access on a tuple record must be rejected (A-D2).
+        // Fields map is empty; `check_field_access` will report an undefined-field
+        // error for the synthesised field name `"0"`.
+        let output = check_source(
+            r"
+            record UserId(int);
+            fn get_inner(id: UserId) -> int {
+                id.0
+            }
+            ",
+        );
+        let has_error = !output.errors.is_empty();
+        assert!(
+            has_error,
+            "`.0` access on a tuple record must produce an error; got: {:#?}",
+            output.errors
+        );
+    }
+}

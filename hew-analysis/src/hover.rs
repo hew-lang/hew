@@ -1037,6 +1037,7 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
         TypeDefKind::Enum => "enum",
         TypeDefKind::Actor => "actor",
         TypeDefKind::Machine => "machine",
+        TypeDefKind::Record => "record",
     };
     let type_params = if type_def.type_params.is_empty() {
         String::new()

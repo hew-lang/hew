@@ -875,12 +875,18 @@ impl Checker {
                     self.register_machine_decl(md);
                     self.local_type_defs.insert(md.name.clone());
                 }
+                Item::Record(rd) => {
+                    if !self.register_type_namespace_name(&rd.name, span) {
+                        continue;
+                    }
+                    self.register_record_decl(rd);
+                    self.local_type_defs.insert(rd.name.clone());
+                }
                 Item::Import(_)
                 | Item::Const(_)
                 | Item::Impl(_)
                 | Item::Function(_)
-                | Item::ExternBlock(_)
-                | Item::Record(_) => {} // TODO(A-3): record name registration deferred
+                | Item::ExternBlock(_) => {}
             }
         }
     }
@@ -1181,6 +1187,96 @@ impl Checker {
         if all_fields_encodable {
             self.register_encode_methods(&td.name);
         }
+    }
+
+    /// Register a `record` declaration into the type table.
+    ///
+    /// Named-field form: populates `type_defs.fields` so that
+    /// `check_struct_init` and `check_field_access` resolve field types by
+    /// name.
+    ///
+    /// Tuple-positional form: registers a constructor `fn_sig` so that
+    /// `R(1, 2)` resolves as a function call returning `Ty::Named { name: R
+    /// }`.  The `fields` map is left empty — this deliberately prevents
+    /// `.0`/`.1` index-style access (A-D2: positional destructuring only).
+    ///
+    /// In both cases `type_defs` receives a `TypeDef` with
+    /// `kind = TypeDefKind::Record` so the field-write rejection in
+    /// `statements.rs` can identify record types.
+    pub(super) fn register_record_decl(&mut self, rd: &RecordDecl) {
+        let type_param_names: Vec<String> = rd.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+        let type_param_bounds =
+            self.collect_type_param_bounds(rd.type_params.as_ref(), rd.where_clause.as_ref());
+
+        // Build the return type for constructors: `R` or `R<T1, T2, …>`
+        let enum_return_args: Vec<Ty> = type_param_names
+            .iter()
+            .map(|name| Ty::Named {
+                name: name.clone(),
+                args: vec![],
+            })
+            .collect();
+        let return_type = Ty::Named {
+            name: rd.name.clone(),
+            args: enum_return_args,
+        };
+
+        let mut fields: HashMap<String, Ty> = HashMap::new();
+        let mut hole_vars = Vec::new();
+
+        match &rd.kind {
+            RecordKind::Named(record_fields) => {
+                for rf in record_fields {
+                    let field_ty = self.resolve_registered_annotation_ty(&rf.ty, &mut hole_vars);
+                    fields.insert(rf.name.clone(), field_ty);
+                }
+            }
+            RecordKind::Tuple(positional_types) => {
+                // Resolve each positional field type for the constructor signature.
+                let param_tys: Vec<Ty> = positional_types
+                    .iter()
+                    .map(|te| self.resolve_registered_annotation_ty(te, &mut hole_vars))
+                    .collect();
+
+                // Register a constructor function so `R(1, 2)` resolves via
+                // `check_call`.  The `fields` map intentionally stays empty —
+                // `.0`/`.1` access is not permitted on tuple records (A-D2).
+                self.fn_sigs.insert(
+                    rd.name.clone(),
+                    FnSig {
+                        type_params: type_param_names.clone(),
+                        type_param_bounds: type_param_bounds.clone(),
+                        params: param_tys,
+                        return_type: return_type.clone(),
+                        ..FnSig::default()
+                    },
+                );
+            }
+        }
+
+        let type_def = TypeDef {
+            kind: TypeDefKind::Record,
+            name: rd.name.clone(),
+            type_params: type_param_names.clone(),
+            fields,
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: rd.doc_comment.clone(),
+            is_indirect: false,
+        };
+
+        // Register field types for Send/Frozen derivation (A-4 computes
+        // Eq/Hash/Clone/Copy from these; no marker computation here).
+        // TODO(A-4): Eq/Hash/Clone/Copy derivation for records.
+        let field_types: Vec<_> = type_def.fields.values().cloned().collect();
+        self.registry.register_type(rd.name.clone(), field_types);
+        self.register_rcfree_members_for_type(&rd.name, &type_def);
+
+        self.type_defs.insert(rd.name.clone(), type_def);
+        self.record_type_def_inference_holes(&rd.name, hole_vars);
+        self.handle_bearing_dirty = true;
     }
 
     /// Register codec methods for a wire type.
@@ -2279,7 +2375,11 @@ impl Checker {
             | Item::Wire(_)
             | Item::Supervisor(_)
             | Item::Machine(_)
-            | Item::Record(_) => {} // TODO(A-3): record method registration deferred
+            | Item::Record(_) => {
+                // Records have no method body items in v0.5; method registration
+                // is a no-op here.  TODO(A-4): if records gain methods, register
+                // them via a `register_record_methods` pass here.
+            }
         }
     }
 

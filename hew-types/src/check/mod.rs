@@ -9,9 +9,9 @@ use crate::unify::unify;
 use hew_parser::ast::{
     ActorDecl, ActorInit, AttributeArg, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock,
     ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal,
-    MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart,
-    TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantKind, WhereClause, WireDecl, WireDeclKind,
+    MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, Span,
+    Spanned, Stmt, StringPart, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
 };
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::sync::OnceLock;

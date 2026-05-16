@@ -634,6 +634,12 @@ pub enum TypeDefKind {
     Enum,
     Actor,
     Machine,
+    /// Immutable value-type record declared with the `record` keyword.
+    ///
+    /// Named-field form: `record Point { x: int, y: int }`.
+    /// Tuple form: `record UserId(int)` — constructor registered as `fn_sig`;
+    /// fields map is empty (no `.0`/`.1` access; positional destructuring only).
+    Record,
 }
 
 #[derive(Debug, Clone)]

@@ -11,6 +11,70 @@
   `main` pending cutover. See `BREAKING.md` for freeze rules and
   bridge-fix admission criteria.
 
+### Failure model
+
+- **Hew is designed for failure.** Actors are isolated fault domains: a
+  panic inside an actor does not propagate to its siblings or supervisor —
+  it triggers a supervised restart. Typed errors cross actor boundaries
+  explicitly; there are no untyped exceptions. The runtime's default posture
+  is strong supervision with fail-and-restart, not fail-and-abort.
+
+### Added
+
+- **Unified concurrency substrate — `Duplex<S,R>`, `Sink<T>`, `Stream<T>`:**
+  Three typed channel primitives replace the legacy send-operator surface.
+  `Duplex<S,R>` is a full-duplex channel (send `S`, receive `R`); `Sink<T>`
+  and `Stream<T>` are the directional halves. The method API is uniform:
+  `.send(msg)`, `.recv()` (blocking), `.try_send(msg)`, `.try_recv()`
+  (non-blocking), `.close()`, `.send_half()`, `.recv_half()` (split into
+  directional handles). Constructor builtins: `duplex_pair<S,R>()` (creates a
+  matched pair), `channel<T>()` (creates a `(Sink<T>, Stream<T>)` pair).
+- **Lambda-actor form — `actor |params| { body }`:** A lambda-actor literal
+  evaluates to a `Duplex<Msg, Reply>` handle. The actor body runs in a
+  supervised child context; the caller holds both send and receive directions
+  of the channel. Lambda-actor handles accept both bare-call syntax
+  `handle(msg)` and `.send(msg)` — both are equivalent. Replaces the removed
+  `spawn |...|` form.
+- **Structured concurrency — `scope` block + `fork` verb:** `scope { ... }`
+  is the lexical lifetime bracket for child tasks. Inside a scope block,
+  `fork name = call(...)` starts a named child; the scope block does not
+  return until all children complete (or one faults and the rest are
+  cancelled). The `fork` keyword is now exclusively the child-start verb; the
+  `scope` keyword is the lifetime container.
+- **Actor lifecycle hooks — `#[on(start)]` and `#[on(stop)]`:** Actor methods
+  annotated with `#[on(start)]` run before the actor's message loop begins;
+  methods annotated with `#[on(stop)]` run after the loop exits (whether by
+  normal stop or supervised termination). Multiple hooks per kind are allowed
+  and execute in lexical declaration order. The legacy `terminate { }` block
+  is removed; migrate to `#[on(stop)]`.
+- **Bind-and-propagate sugar — `let r? = expr`:** Sugar for `let r = expr?;`.
+  The expression must evaluate to `Result<T, E>` or `Option<T>` with a
+  compatible propagation path from the enclosing scope. The desugared form is
+  the canonical lowering with no semantic difference past the parser.
+- **String methods — `.len()`, `.slice(a,b)`, `.find(needle)`:** String
+  method dispatch now covers `.len()` (codepoint count), `.slice(start, end)`
+  (codepoint-indexed substring), and `.find(needle)` (first-match codepoint
+  offset). These methods operate on Unicode codepoints, not raw bytes.
+- **Record structural `Eq` and `Hash`:** A record type automatically satisfies
+  `Eq` and `Hash` when all its fields do. Using a record as a `HashMap` key
+  or in an equality check without qualifying fields is a compile error rather
+  than a silent runtime failure.
+
+### Changed
+
+- **`fork { ... }` block form removed (BREAKING):** The `fork { ... }`
+  syntax, which treated the fork block as a scope, no longer parses. The
+  parser emits a diagnostic with a migration note. Use `scope { ... }` for
+  the lifetime bracket and `fork name = expr;` for each child inside it.
+- **`scope |s| { s.launch / s.spawn / s.cancel }` removed (BREAKING):** The
+  binding form that exposed a scope handle `s` with imperative launch/spawn/
+  cancel methods no longer parses. Lifecycle management is now handled
+  through `#[on(start)]` and `#[on(stop)]` hook annotations on actor methods.
+- **Lambda-actor handles accept `.send()`:** Prior to v0.5, calling `.send()`
+  on a lambda-actor handle was a type error (`E_LAMBDA_NO_SEND_METHOD`). That
+  restriction is lifted. Both `handle(msg)` (bare call) and `handle.send(msg)`
+  are accepted; actors and channels share a uniform method surface.
+
 ### Removed
 
 - **`fs.read_line` compatibility alias removed:** The `fs.read_line` function,
@@ -42,6 +106,10 @@
   (see HEW-SPEC-2026 §2.1.3): The `spawn`-based lambda-actor literal form is
   no longer accepted. The parser emits `E_LEGACY_SPAWN_LAMBDA_SYNTAX` with a
   fixit note. Use `actor |params| { body }` instead.
+- **`hew_duplex_new` removed from the C ABI:** The `hew_duplex_new` function,
+  which created a self-loopback duplex without a peer, has been removed from
+  the public runtime ABI. Use `hew_duplex_pair` to create a matched
+  bidirectional pair.
 
 ## [0.4.0] - 2026-05-03
 

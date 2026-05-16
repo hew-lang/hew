@@ -15533,3 +15533,302 @@ mod record_admission {
         );
     }
 }
+
+/// Tests for numeric opt-out arithmetic: `.wrapping_*`, `.checked_*`, `.saturating_*`
+/// on every integer width. Slice B-3 of the primitives surface plan.
+#[cfg(test)]
+mod methods {
+    use super::*;
+
+    mod integer_checked_wrapping_saturating {
+        use super::*;
+
+        // --- wrapping_* accepts same-width argument and returns same type ---
+
+        #[test]
+        fn wrapping_add_i32_ok() {
+            let output = check_source(r"fn f(a: i32, b: i32) -> i32 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(i32, i32) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_sub_i64_ok() {
+            let output = check_source(r"fn f(a: i64, b: i64) -> i64 { a.wrapping_sub(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_sub(i64, i64) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_mul_u8_ok() {
+            let output = check_source(r"fn f(a: u8, b: u8) -> u8 { a.wrapping_mul(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_mul(u8, u8) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_u64_ok() {
+            let output = check_source(r"fn f(a: u64, b: u64) -> u64 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(u64, u64) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_isize_ok() {
+            let output = check_source(r"fn f(a: isize, b: isize) -> isize { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(isize, isize) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_sub_usize_ok() {
+            let output = check_source(r"fn f(a: usize, b: usize) -> usize { a.wrapping_sub(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_sub(usize, usize) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_mul_i16_ok() {
+            let output = check_source(r"fn f(a: i16, b: i16) -> i16 { a.wrapping_mul(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_mul(i16, i16) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_u16_ok() {
+            let output = check_source(r"fn f(a: u16, b: u16) -> u16 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(u16, u16) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_i8_ok() {
+            let output = check_source(r"fn f(a: i8, b: i8) -> i8 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(i8, i8) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn wrapping_add_u32_ok() {
+            let output = check_source(r"fn f(a: u32, b: u32) -> u32 { a.wrapping_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "wrapping_add(u32, u32) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        // --- checked_* returns Option<W> ---
+
+        #[test]
+        fn checked_add_i32_returns_option() {
+            let output = check_source(
+                r"
+                fn f(a: i32, b: i32) -> Option<i32> {
+                    a.checked_add(b)
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "checked_add returns Option<i32>: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn checked_sub_u64_returns_option() {
+            let output = check_source(
+                r"
+                fn f(a: u64, b: u64) -> Option<u64> {
+                    a.checked_sub(b)
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "checked_sub returns Option<u64>: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn checked_mul_i64_returns_option() {
+            let output = check_source(
+                r"
+                fn f(a: i64, b: i64) -> Option<i64> {
+                    a.checked_mul(b)
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "checked_mul returns Option<i64>: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn checked_add_usize_returns_option() {
+            let output = check_source(
+                r"
+                fn f(a: usize, b: usize) -> Option<usize> {
+                    a.checked_add(b)
+                }
+                ",
+            );
+            assert!(
+                output.errors.is_empty(),
+                "checked_add(usize) returns Option<usize>: {:#?}",
+                output.errors
+            );
+        }
+
+        // --- saturating_* ---
+
+        #[test]
+        fn saturating_add_i32_ok() {
+            let output = check_source(r"fn f(a: i32, b: i32) -> i32 { a.saturating_add(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "saturating_add(i32) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn saturating_sub_u8_ok() {
+            let output = check_source(r"fn f(a: u8, b: u8) -> u8 { a.saturating_sub(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "saturating_sub(u8) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        #[test]
+        fn saturating_mul_i64_ok() {
+            let output = check_source(r"fn f(a: i64, b: i64) -> i64 { a.saturating_mul(b) }");
+            assert!(
+                output.errors.is_empty(),
+                "saturating_mul(i64) should typecheck: {:#?}",
+                output.errors
+            );
+        }
+
+        // --- Negative: mixed-width argument rejected ---
+
+        #[test]
+        fn wrapping_add_mixed_width_rejected() {
+            let output = check_source(r"fn f(a: i32, b: i64) -> i32 { a.wrapping_add(b) }");
+            assert!(
+                !output.errors.is_empty(),
+                "wrapping_add(i32, i64) must be a type error"
+            );
+        }
+
+        #[test]
+        fn checked_add_mixed_width_rejected() {
+            let output = check_source(
+                r"
+                fn f(a: u8, b: i32) -> Option<u8> {
+                    a.checked_add(b)
+                }
+                ",
+            );
+            assert!(
+                !output.errors.is_empty(),
+                "checked_add(u8, i32) must be a type error"
+            );
+        }
+
+        // --- Negative: float receiver rejected ---
+
+        #[test]
+        fn wrapping_add_float_receiver_rejected() {
+            let output = check_source(r"fn f(a: f32, b: f32) { a.wrapping_add(b); }");
+            assert!(
+                !output.errors.is_empty(),
+                "wrapping_add on f32 must be an error"
+            );
+        }
+
+        #[test]
+        fn saturating_add_f64_receiver_rejected() {
+            let output = check_source(r"fn f(a: f64, b: f64) { a.saturating_add(b); }");
+            assert!(
+                !output.errors.is_empty(),
+                "saturating_add on f64 must be an error"
+            );
+        }
+
+        // --- Negative: unknown op in family rejected ---
+
+        #[test]
+        fn wrapping_div_rejected() {
+            let output = check_source(r"fn f(a: i32, b: i32) { a.wrapping_div(b); }");
+            assert!(
+                !output.errors.is_empty(),
+                "wrapping_div must be rejected (div is out of B-3 scope)"
+            );
+        }
+
+        #[test]
+        fn saturating_neg_rejected() {
+            let output = check_source(r"fn f(a: i32) { a.saturating_neg(); }");
+            assert!(
+                !output.errors.is_empty(),
+                "saturating_neg must be rejected (not in scope)"
+            );
+        }
+
+        // --- Negative: zero args rejected ---
+
+        #[test]
+        fn wrapping_add_no_arg_rejected() {
+            let output = check_source(r"fn f(a: i32) { a.wrapping_add(); }");
+            assert!(
+                !output.errors.is_empty(),
+                "wrapping_add() with no argument must be an arity error"
+            );
+        }
+
+        // --- Negative: checked_add result cannot be used as bare W ---
+
+        #[test]
+        fn checked_add_result_is_not_bare_i32() {
+            let output = check_source(r"fn f(a: i32, b: i32) -> i32 { a.checked_add(b) }");
+            assert!(
+                !output.errors.is_empty(),
+                "checked_add returns Option<i32>, not i32 — must be a type error"
+            );
+        }
+    }
+}

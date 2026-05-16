@@ -2403,6 +2403,57 @@ impl Checker {
                     }
                 }
             }
+            // Numeric opt-out arithmetic methods: .wrapping_*, .checked_*, .saturating_*
+            // for every integer width. Floats are excluded (is_integer() ≠ is_numeric()).
+            // Only add/sub/mul are in scope here; div/mod/shift are separate slices.
+            // Wrapping variants map to non-trapping MIR ops; checked variants return
+            // Option<W>; saturating variants clamp to MAX/MIN (codegen slice pending).
+            (resolved, method)
+                if resolved.is_integer()
+                    && (method.starts_with("wrapping_")
+                        || method.starts_with("checked_")
+                        || method.starts_with("saturating_")) =>
+            {
+                let is_wrapping = method.starts_with("wrapping_");
+                let is_checked = method.starts_with("checked_");
+                let op_name = if is_wrapping {
+                    &method["wrapping_".len()..]
+                } else if is_checked {
+                    &method["checked_".len()..]
+                } else {
+                    &method["saturating_".len()..]
+                };
+                match op_name {
+                    "add" | "sub" | "mul" => {
+                        self.check_arity(args, 1, &format!("`{method}`"), span);
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, resolved);
+                        }
+                        if is_checked {
+                            Ty::option(resolved.clone())
+                        } else {
+                            resolved.clone()
+                        }
+                    }
+                    _ => {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "no method `{method}` on `{}`; only add, sub, mul are supported \
+                                 in this family",
+                                resolved.user_facing()
+                            ),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
             // ActorRef methods
             (resolved, _) if resolved.as_actor_ref().is_some() => {
                 let inner = resolved.as_actor_ref().unwrap();

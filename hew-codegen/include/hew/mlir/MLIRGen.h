@@ -171,9 +171,10 @@ private:
     size_t numUserFields = 0;                 // count of user-declared state fields only
     std::vector<std::string> initParamNames;  // init parameter names (in declaration order)
     std::optional<uint32_t> mailboxCapacity;
-    int8_t overflowPolicy = 0;   // 0=none,1=drop_new,2=drop_old,3=block,4=fail,5=coalesce
-    std::string coalesceKey;     // field name for coalesce key
-    int8_t coalesceFallback = 0; // fallback policy
+    int8_t overflowPolicy = 0;            // 0=none,1=drop_new,2=drop_old,3=block,4=fail,5=coalesce
+    std::string coalesceKey;              // field name for coalesce key
+    int8_t coalesceFallback = 0;          // fallback policy
+    std::optional<uint64_t> maxHeapBytes; // arena cap from #[max_heap(N)]; absent = unbounded
   };
 
   // ── Actor expressions ─────────────────────────────────────────────

@@ -1743,6 +1743,77 @@ fn typecheck_actor_receive_fn_registered() {
     assert!(output.fn_sigs.contains_key("Greeter::greet"));
 }
 
+/// `#[max_heap(N)]` on an actor → `actor_max_heap` side-table entry for that actor.
+#[test]
+fn max_heap_attribute_populates_side_table() {
+    let source = "#[max_heap(4096)] actor Cache { receive fn get() {} }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected type errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.actor_max_heap.get("Cache"),
+        Some(&4096u64),
+        "actor_max_heap must record the parsed cap for Cache"
+    );
+}
+
+/// Actor without `#[max_heap]` must not appear in the side-table.
+#[test]
+fn max_heap_absent_actor_not_in_side_table() {
+    let source = "actor Plain { receive fn tick() {} }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected type errors: {:?}",
+        output.errors
+    );
+    assert!(
+        !output.actor_max_heap.contains_key("Plain"),
+        "actor without #[max_heap] must not appear in actor_max_heap"
+    );
+}
+
+/// `#[max_heap(2 mb)]` — suffix conversion done by the parser, checker sees bytes.
+#[test]
+fn max_heap_mb_suffix_populates_side_table_as_bytes() {
+    let source = "#[max_heap(2 mb)] actor Big { receive fn work() {} }";
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "unexpected type errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.actor_max_heap.get("Big"),
+        Some(&(2u64 * 1024 * 1024)),
+        "2 mb must be recorded as 2_097_152 bytes"
+    );
+}
+
 #[test]
 fn typecheck_empty_function_no_error() {
     let source = "fn noop() {}";

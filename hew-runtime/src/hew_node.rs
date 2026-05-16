@@ -3630,6 +3630,7 @@ mod tests {
             coalesce_key_fn: None,
             coalesce_fallback: 0,
             budget: 0,
+            arena_cap_bytes: 0,
         };
         // SAFETY: opts points to a valid HewActorOpts for the duration of this call.
         let actor = unsafe { crate::actor::hew_actor_spawn_opts(&raw const opts) };

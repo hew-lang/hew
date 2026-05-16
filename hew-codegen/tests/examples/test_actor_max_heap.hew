@@ -1,0 +1,22 @@
+// Smoke test: an actor with #[max_heap] compiles, spawns, and functions
+// correctly.  The cap is set generously so no allocation failure occurs;
+// HeapExceeded behaviour is exercised by runtime-level tests.
+#[max_heap(1 mb)]
+actor Cache {
+    var value: int;
+
+    receive fn set(v: int) {
+        value = v;
+    }
+
+    receive fn get() -> int {
+        value
+    }
+}
+
+fn main() {
+    let c = spawn Cache(value: 0);
+    c.set(42);
+    let v = await c.get();
+    println(v);
+}

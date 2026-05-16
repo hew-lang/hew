@@ -982,6 +982,14 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             coalesce_key_fn: None,
             coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
             budget: 0,
+            // WHY: InternalChildSpec does not yet carry arena_cap_bytes; the
+            // supervisor restart path therefore spawns restarted actors with
+            // an unbounded arena even when the original had #[max_heap].
+            // WHEN: Obsolete once hew_supervisor_add_child_spec carries and
+            // threads the cap through InternalChildSpec.
+            // WHAT: Add arena_cap_bytes to InternalChildSpec + HewChildSpec
+            // and plumb it through hew_supervisor_add_child_spec.
+            arena_cap_bytes: 0,
         };
         (opts, spec.state_drop_fn)
     };

@@ -1196,12 +1196,18 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
     // 5. Call runtime spawn
     mlir::Value result;
 
-    // Check if this actor uses coalesce overflow policy (spawn via opts struct)
-    if (op.getCoalesceKeyFn().has_value()) {
+    // Use hew_actor_spawn_opts whenever coalesce key or a heap cap is specified.
+    // Otherwise fall back to the lighter hew_actor_spawn_bounded / hew_actor_spawn helpers.
+    bool useOptsPath = op.getCoalesceKeyFn().has_value() || op.getArenaCapBytes().has_value();
+    if (useOptsPath) {
       // Use hew_actor_spawn_opts with full options struct
-      // HewActorOpts: { ptr, usize, fn_ptr, i32, i32, fn_ptr, i32, i32 }
+      // HewActorOpts: { ptr, usize, fn_ptr, i32, i32, fn_ptr, i32, i32, usize }
+      //   [0] init_state ptr  [1] state_size  [2] dispatch fn_ptr
+      //   [3] mailbox_capacity i32  [4] overflow_policy i32
+      //   [5] coalesce_key_fn fn_ptr  [6] coalesce_fallback i32
+      //   [7] budget i32  [8] arena_cap_bytes usize
       auto optsStructType = mlir::LLVM::LLVMStructType::getLiteral(
-          ctx, {ptrType, sizeType, ptrType, i32Type, i32Type, ptrType, i32Type, i32Type});
+          ctx, {ptrType, sizeType, ptrType, i32Type, i32Type, ptrType, i32Type, i32Type, sizeType});
 
       auto optsAlloca = emitEntryAlloca(rewriter, loc, optsStructType);
 
@@ -1228,20 +1234,32 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
       storeField(3, capVal);
       // overflow policy (i32) — map from spec encoding to runtime enum
       // Runtime: 0=DropNew, 1=DropOld, 2=Block, 3=Fail, 4=Coalesce
-      int32_t runtimeOverflow = 4; // Coalesce (we only get here for coalesce)
+      // 0xFFFFFFFF (-1 as i32) means "no policy" (runtime uses default)
+      int32_t runtimeOverflow = -1; // no policy (default)
+      if (op.getCoalesceKeyFn().has_value()) {
+        runtimeOverflow = 4; // Coalesce
+      } else if (op.getOverflowPolicy().has_value()) {
+        runtimeOverflow = static_cast<int32_t>(op.getOverflowPolicy().value());
+      }
       auto overflowVal =
           mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, runtimeOverflow);
       storeField(4, overflowVal);
-      // coalesce_key_fn (fn ptr)
-      auto keyFnName = op.getCoalesceKeyFn().value();
-      auto keyFnFuncType = rewriter.getFunctionType({i32Type, ptrType, sizeType}, {sizeType});
-      getOrInsertFuncDecl(module, rewriter, keyFnName, keyFnFuncType);
-      auto keyFuncRef = mlir::func::ConstantOp::create(
-          rewriter, loc, keyFnFuncType, mlir::SymbolRefAttr::get(rewriter.getContext(), keyFnName));
-      auto keyFnPtr =
-          mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType, keyFuncRef.getResult())
-              .getResult(0);
-      storeField(5, keyFnPtr);
+      // coalesce_key_fn (fn ptr) — null when not coalescing
+      if (op.getCoalesceKeyFn().has_value()) {
+        auto keyFnName = op.getCoalesceKeyFn().value();
+        auto keyFnFuncType = rewriter.getFunctionType({i32Type, ptrType, sizeType}, {sizeType});
+        getOrInsertFuncDecl(module, rewriter, keyFnName, keyFnFuncType);
+        auto keyFuncRef = mlir::func::ConstantOp::create(
+            rewriter, loc, keyFnFuncType,
+            mlir::SymbolRefAttr::get(rewriter.getContext(), keyFnName));
+        auto keyFnPtr =
+            mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType, keyFuncRef.getResult())
+                .getResult(0);
+        storeField(5, keyFnPtr);
+      } else {
+        auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+        storeField(5, nullPtr);
+      }
       // coalesce_fallback (i32)
       // Runtime enum: Block=0, DropNew=1, DropOld=2, Fail=3, Coalesce=4
       int32_t runtimeFallback = 1; // DropNew (default)
@@ -1276,6 +1294,12 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
       // budget (i32) — 0 = default
       auto budgetVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 0);
       storeField(7, budgetVal);
+      // arena_cap_bytes (usize) — 0 = unbounded
+      int64_t capBytes = op.getArenaCapBytes().has_value()
+                             ? static_cast<int64_t>(op.getArenaCapBytes().value())
+                             : 0LL;
+      auto arenaCapVal = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, capBytes);
+      storeField(8, arenaCapVal);
 
       auto spawnOptsFuncType = rewriter.getFunctionType({ptrType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_actor_spawn_opts", spawnOptsFuncType);

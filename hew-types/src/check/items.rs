@@ -201,6 +201,15 @@ impl Checker {
             ad.fields.iter().map(|f| f.name.clone()).collect(),
         );
 
+        // Record the per-actor arena cap from `#[max_heap(N)]` if present.
+        // The parser already converted suffixes (kb, mb) to bytes; we record
+        // `None`-absent as "no annotation" (unbounded) and `Some(cap)` as the
+        // caller-supplied cap. Codegen reads `actor_max_heap` to decide between
+        // `hew_arena_new` (unbounded) and `hew_arena_new_with_cap(cap)` (bounded).
+        if let Some(cap) = ad.max_heap_bytes {
+            self.actor_max_heap.insert(ad.name.clone(), cap);
+        }
+
         // Type-check init body if present
         if let Some(init) = &ad.init {
             self.check_actor_init(&ad.name, init, &ad.fields);

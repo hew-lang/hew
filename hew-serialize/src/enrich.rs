@@ -3943,6 +3943,7 @@ mod tests {
             call_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_max_heap: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
             method_call_rewrites: HashMap::new(),

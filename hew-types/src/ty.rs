@@ -753,6 +753,32 @@ impl Ty {
         }
     }
 
+    /// Construct `LinkError` — error type for `link(handle)` calls.
+    ///
+    /// The concrete enum (`AlreadyLinked`, `TargetDead`) is declared in
+    /// `std/link_monitor.hew` and wired in codegen slice B3. At the checker
+    /// layer this is a named-type marker, consistent with `SendError`/`RecvError`.
+    #[must_use]
+    pub fn link_error() -> Ty {
+        Ty::Named {
+            name: "LinkError".to_string(),
+            args: vec![],
+        }
+    }
+
+    /// Construct `MonitorRef` — handle returned by `monitor(handle)`.
+    ///
+    /// The struct is declared in `std/link_monitor.hew` and registered via
+    /// `register_builtin_monitor_ref_surface`. At the checker layer this is a
+    /// named-type marker, consistent with how `SendError`/`AskError` are encoded.
+    #[must_use]
+    pub fn monitor_ref() -> Ty {
+        Ty::Named {
+            name: "MonitorRef".to_string(),
+            args: vec![],
+        }
+    }
+
     /// Construct `CloseError` — error type for `Duplex::close` / half-close calls.
     ///
     /// Distinct from the process-resource `CloseError` registered by the

@@ -1,12 +1,24 @@
-//! Actor monitor handle helpers.
+//! Actor monitor / link handle helpers.
 //!
-//! Import `std::link_monitor` when you want to name `MonitorRef` explicitly.
-//! The `monitor(actor)` builtin returns this handle type.
+//! Import `std::link_monitor` when you want to name `MonitorRef` or
+//! `LinkError` explicitly.  The `monitor(actor)` builtin returns `MonitorRef`;
+//! the `link(actor)` builtin returns `Result<(), LinkError>`.
 
 import std::io::closable;
 
-// WASM-TODO(#1451): `MonitorRef` depends on the native actor monitor runtime.
-// The checker rejects `monitor()` on wasm32 via the existing Link/monitor gate.
+// WASM-TODO(#1451): `MonitorRef` and `LinkError` depend on the native actor
+// monitor / link runtime. The checker rejects `monitor()` and `link()` on
+// wasm32 via the existing Link/monitor gate.
+/// Error returned by `link(handle)`.
+///
+/// `AlreadyLinked` is an idempotent non-fatal condition — callers may
+/// treat it as `Ok(())`.  `TargetDead` is returned when the target actor
+/// has already exited; the caller's exit handler will fire immediately.
+pub enum LinkError {
+    AlreadyLinked;
+    TargetDead;
+}
+
 /// A handle to an active monitor registration.
 pub type MonitorRef {
     ref_id: int;

@@ -22,6 +22,16 @@ pub type MonitorRef {
     ref_id: int;
 }
 
+/// Error returned by `link(handle)`.
+///
+/// `AlreadyLinked` is an idempotent non-fatal condition — callers may
+/// treat it as `Ok(())`.  `TargetDead` is returned when the target actor
+/// has already exited; the caller's exit handler will fire immediately.
+pub enum LinkError {
+    AlreadyLinked;
+    TargetDead;
+}
+
 impl Closable for MonitorRef {
     fn close(monitor_ref: MonitorRef) -> Result<(), CloseError> {
         unsafe {
@@ -259,18 +269,22 @@ impl Checker {
         self.register_builtin_fn("panic", vec![Ty::String], Ty::Never);
 
         // Actor link/monitor (Erlang-style fault propagation)
+        // `link` is idempotent on already-linked actors; `AlreadyLinked` and
+        // `TargetDead` are the error discriminants (declared in std/link_monitor.hew,
+        // B3 slice). `monitor` returns the handle the caller uses to stop watching.
         let link_t = TypeVar::fresh();
-        self.register_builtin_fn("link", vec![Ty::actor_ref(Ty::Var(link_t))], Ty::Unit);
+        self.register_builtin_fn(
+            "link",
+            vec![Ty::actor_ref(Ty::Var(link_t))],
+            Ty::result(Ty::Unit, Ty::link_error()),
+        );
         let unlink_t = TypeVar::fresh();
         self.register_builtin_fn("unlink", vec![Ty::actor_ref(Ty::Var(unlink_t))], Ty::Unit);
         let monitor_t = TypeVar::fresh();
         self.register_builtin_fn(
             "monitor",
             vec![Ty::actor_ref(Ty::Var(monitor_t))],
-            Ty::Named {
-                name: "MonitorRef".to_string(),
-                args: vec![],
-            },
+            Ty::monitor_ref(),
         );
 
         // Supervisor child access

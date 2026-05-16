@@ -289,6 +289,8 @@ pub extern "C" fn hew_lambda_actor_new(
 
 /// Refcount-bump clone of a strong lambda-actor handle.
 ///
+/// Returns null if the handle has already been released.
+///
 /// # Safety
 ///
 /// `actor` must point to a valid, open `HewLambdaActorHandle` returned by
@@ -301,6 +303,15 @@ pub unsafe extern "C" fn hew_lambda_actor_clone(
         crate::set_last_error("hew_lambda_actor_clone: null handle".to_string());
         return ptr::null_mut();
     }
+    // Released-flag guard: cloning a released handle would bump the Arc
+    // strong count on a ManuallyDrop-dropped inner — UB. Consult the flag
+    // before touching inner. See hew_lambda_actor_send for addr_of! rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*actor).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_lambda_actor_clone: handle already released".to_string());
+        return ptr::null_mut();
+    }
     // SAFETY:
     // - Provenance: caller guarantees `actor` came from `hew_lambda_actor_new`
     //   or a prior `_clone` call.
@@ -310,8 +321,8 @@ pub unsafe extern "C" fn hew_lambda_actor_clone(
     // - Aliasing concurrency: `HewLambdaActor` is `Clone`-via-Arc; cloning
     //   an Arc is atomic and Send/Sync-safe.
     // - Bounds: single non-null aligned pointer dereference.
-    // - Failure mode: caller-supplied dangling pointer is UB; not
-    //   detectable at this layer.
+    // - Failure mode: released flag guards against cloning a released handle
+    //   (inner ManuallyDrop is invalid after release).
     // ManuallyDrop<HewLambdaActor> derefs to HewLambdaActor; calling
     // clone_handle() on the deref target returns HewLambdaActor (not
     // ManuallyDrop<HewLambdaActor>), which is what HewLambdaActorHandle::new
@@ -323,6 +334,8 @@ pub unsafe extern "C" fn hew_lambda_actor_clone(
 
 /// Send a message envelope (tell-shaped dispatch). Returns the
 /// `SendError` discriminant as `i32`.
+///
+/// Returns `SendError::DoubleClose` (4) if the handle has already been released.
 ///
 /// # Safety
 ///
@@ -337,6 +350,18 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
     if actor.is_null() {
         crate::set_last_error("hew_lambda_actor_send: null handle".to_string());
         return SendError::Closed as i32;
+    }
+    // Released-flag guard: load with Acquire to synchronise with the AcqRel
+    // store in hew_lambda_actor_release. Catches sequential release-then-send
+    // from native FFI callers. Concurrent release-during-send is still a
+    // caller contract violation — this guard does not serialise them.
+    // SAFETY: `released` is the first field of #[repr(C)] HewLambdaActorHandle;
+    // addr_of! projects without materialising &mut *actor. The outer wrapper is
+    // never freed (intentional leak — see wrapper-struct design comment).
+    let released = unsafe { &*ptr::addr_of!((*actor).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_lambda_actor_send: handle already released".to_string());
+        return SendError::DoubleClose as i32;
     }
     let payload = if len == 0 {
         Vec::new()
@@ -422,6 +447,8 @@ pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActorHand
 /// owned by the caller and must be released with
 /// [`hew_lambda_actor_weak_drop`].
 ///
+/// Returns null if the handle has already been released.
+///
 /// # Safety
 ///
 /// `actor` must be a valid, open `HewLambdaActorHandle` pointer.
@@ -433,6 +460,15 @@ pub unsafe extern "C" fn hew_lambda_actor_downgrade(
         crate::set_last_error("hew_lambda_actor_downgrade: null handle".to_string());
         return ptr::null_mut();
     }
+    // Released-flag guard: downgrading a released handle would call downgrade
+    // on a ManuallyDrop-dropped HewLambdaActor — UB. See
+    // hew_lambda_actor_send for addr_of! rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*actor).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_lambda_actor_downgrade: handle already released".to_string());
+        return ptr::null_mut();
+    }
     // SAFETY: see hew_lambda_actor_clone — identical six-axis profile.
     let weak = unsafe { (*actor).inner.downgrade() };
     Box::into_raw(Box::new(HewLambdaActorWeakHandle::new(weak)))
@@ -442,6 +478,8 @@ pub unsafe extern "C" fn hew_lambda_actor_downgrade(
 /// to dispatch; if the upgrade fails (external strong refcount is zero)
 /// returns `SendError::ActorStopped` discriminant instead of
 /// resurrecting the actor — §5.9 ratification 2 enforcement.
+///
+/// Returns `SendError::DoubleClose` (4) if the weak handle has already been dropped.
 ///
 /// # Safety
 ///
@@ -456,6 +494,14 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_send(
     if weak.is_null() {
         crate::set_last_error("hew_lambda_actor_weak_send: null weak handle".to_string());
         return SendError::Closed as i32;
+    }
+    // Released-flag guard: see hew_lambda_actor_send for rationale; mirrored
+    // here for the weak-handle wrapper.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*weak).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_lambda_actor_weak_send: handle already released".to_string());
+        return SendError::DoubleClose as i32;
     }
     let payload = if len == 0 {
         Vec::new()
@@ -482,6 +528,8 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_send(
 
 /// Refcount-bump clone of a weak handle.
 ///
+/// Returns null if the weak handle has already been dropped.
+///
 /// # Safety
 ///
 /// `weak` must be a valid, open `HewLambdaActorWeakHandle` pointer.
@@ -491,6 +539,15 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_clone(
 ) -> *mut HewLambdaActorWeakHandle {
     if weak.is_null() {
         crate::set_last_error("hew_lambda_actor_weak_clone: null weak handle".to_string());
+        return ptr::null_mut();
+    }
+    // Released-flag guard: cloning a dropped weak handle would call clone
+    // on a ManuallyDrop-dropped HewLambdaActorWeak — UB. See
+    // hew_lambda_actor_send for addr_of! rationale.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    let released = unsafe { &*ptr::addr_of!((*weak).released) };
+    if released.load(Ordering::Acquire) {
+        crate::set_last_error("hew_lambda_actor_weak_clone: handle already released".to_string());
         return ptr::null_mut();
     }
     // SAFETY: see hew_lambda_actor_weak_send for dereference axes.
@@ -728,5 +785,56 @@ mod tests {
                 THREADS - 1
             );
         }
+    }
+
+    // ── Released-flag guard tests ──────────────────────────────────────────
+    //
+    // After hew_lambda_actor_release / hew_lambda_actor_weak_drop, every
+    // non-close entry must return a typed error rather than touching the
+    // freed inner ManuallyDrop. These tests prove the flag is consulted
+    // before the inner borrow.
+
+    #[test]
+    fn cabi_send_after_release_returns_double_close() {
+        // Allocate, release, then try to send — must not SIGSEGV.
+        let actor = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+        assert!(!actor.is_null());
+        // SAFETY: actor came from hew_lambda_actor_new; first release returns Ok.
+        let rc_release = unsafe { hew_lambda_actor_release(actor) };
+        assert_eq!(rc_release, SendError::Ok as i32);
+        let msg = b"post-release";
+        // SAFETY: wrapper persists (intentional leak); released flag is readable;
+        // inner NOT dereferenced.
+        let rc = unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) };
+        assert_eq!(
+            rc,
+            SendError::DoubleClose as i32,
+            "send after release must be DoubleClose"
+        );
+    }
+
+    #[test]
+    fn cabi_weak_send_after_drop_returns_double_close() {
+        // Allocate a strong handle, downgrade to weak, drop the weak, then
+        // try to send through the dropped weak — must not SIGSEGV.
+        let actor = hew_lambda_actor_new(4, LambdaShape::Tell as i32);
+        assert!(!actor.is_null());
+        // SAFETY: actor is valid.
+        let weak = unsafe { hew_lambda_actor_downgrade(actor) };
+        assert!(!weak.is_null());
+        // SAFETY: weak came from hew_lambda_actor_downgrade; first drop returns Ok.
+        let rc_drop = unsafe { hew_lambda_actor_weak_drop(weak) };
+        assert_eq!(rc_drop, SendError::Ok as i32);
+        let msg = b"post-weak-drop";
+        // SAFETY: wrapper persists (intentional leak); released flag is readable;
+        // inner NOT dereferenced.
+        let rc = unsafe { hew_lambda_actor_weak_send(weak, msg.as_ptr(), msg.len()) };
+        assert_eq!(
+            rc,
+            SendError::DoubleClose as i32,
+            "weak_send after drop must be DoubleClose"
+        );
+        // SAFETY: actor is still valid; release it.
+        unsafe { hew_lambda_actor_release(actor) };
     }
 }

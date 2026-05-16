@@ -2868,7 +2868,8 @@ impl Checker {
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
-            | Expr::MachineEmit { .. } => {}
+            | Expr::MachineEmit { .. }
+            | Expr::Is { .. } => {}
         }
     }
 

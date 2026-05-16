@@ -497,6 +497,10 @@ fn collect_inlay_hints_from_expr(
                 }
             }
         }
+        Expr::Is { lhs, rhs } => {
+            collect_inlay_hints_from_expr(source, &lhs.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &rhs.0, tc, hints);
+        }
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::Cooperate

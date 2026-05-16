@@ -1457,6 +1457,14 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         ast::ExprByteArrayLiteral{parseVec<uint8_t>(
             *payload, [](const msgpack::object &o) { return static_cast<uint8_t>(getInt(o)); })},
         {}};
+  if (name == "Is") {
+    ast::ExprIs e;
+    e.lhs = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "lhs"), parseExpr));
+    e.rhs = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "rhs"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
   fail("unknown Expr variant: " + name);
 }
 

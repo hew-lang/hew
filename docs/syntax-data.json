@@ -91,7 +91,8 @@
     "other": [
       "dyn",
       "unsafe",
-      "pure"
+      "pure",
+      "is"
     ],
     "reserved_unused": [
       "try",
@@ -179,7 +180,8 @@
     "when",
     "entry",
     "exit",
-    "emit"
+    "emit",
+    "is"
   ],
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",

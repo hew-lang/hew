@@ -466,6 +466,10 @@ struct ExprMapEntry {
 struct ExprMapLiteral {
   std::vector<ExprMapEntry> entries;
 };
+struct ExprIs {
+  std::unique_ptr<Spanned<Expr>> lhs;
+  std::unique_ptr<Spanned<Expr>> rhs;
+};
 
 struct Expr {
   std::variant<ExprBinary, ExprUnary, ExprLiteral, ExprIdentifier, ExprTuple, ExprArray, ExprBlock,
@@ -474,7 +478,7 @@ struct Expr {
                ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate, ExprThis,
                ExprFieldAccess, ExprIndex, ExprCast, ExprPostfixTry, ExprRange, ExprAwait,
                ExprRegexLiteral, ExprArrayRepeat, ExprByteStringLiteral, ExprByteArrayLiteral,
-               ExprMapLiteral>
+               ExprMapLiteral, ExprIs>
       kind;
   Span span; // Copied from Spanned<Expr> wrapper for codegen convenience
 };

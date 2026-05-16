@@ -122,6 +122,12 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr, std::optional<mli
           return generateAwaitExpr(node);
         } else if constexpr (std::is_same_v<NodeT, ast::ExprRange>) {
           return generateRangeExpr(node);
+        } else if constexpr (std::is_same_v<NodeT, ast::ExprIs>) {
+          // Identity-comparison lowering is deferred to slice D-3.
+          // The checker (D-2) rejects `is` expressions before codegen is
+          // reached; this arm satisfies variant exhaustiveness.
+          (void)node;
+          return mlir::Value{};
         } else {
           static_assert(always_false_v<NodeT>, "unhandled expression kind in generateExpression");
         }

@@ -1088,6 +1088,10 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
                 v.visit_expr(e);
             }
         }
+        Expr::Is { lhs, rhs } => {
+            v.visit_expr(lhs);
+            v.visit_expr(rhs);
+        }
         // Leaf nodes and family-specific variants (caller handles Call/MethodCall/Lambda/Cast)
         Expr::Literal(_)
         | Expr::Identifier(_)

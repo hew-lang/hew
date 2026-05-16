@@ -335,6 +335,10 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(expr.as_ref(), calls);
             collect_calls_in_expr(duration.as_ref(), calls);
         }
+        Expr::Is { lhs, rhs } => {
+            collect_calls_in_expr(lhs.as_ref(), calls);
+            collect_calls_in_expr(rhs.as_ref(), calls);
+        }
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::Cooperate

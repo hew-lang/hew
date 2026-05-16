@@ -2239,6 +2239,13 @@ impl<'a> Formatter<'a> {
                 });
                 self.write("}");
             }
+            Expr::Is { lhs, rhs } => {
+                // Precedence 9 — same as `==`/`!=`; no parens needed around operands
+                // at lower precedence, but we do need them for nested `is`.
+                self.format_expr_prec(&lhs.0, 9, false);
+                self.write(" is ");
+                self.format_expr_prec(&rhs.0, 9, true);
+            }
             Expr::MachineEmit { event_name, fields } => {
                 self.write("emit ");
                 self.write(event_name);

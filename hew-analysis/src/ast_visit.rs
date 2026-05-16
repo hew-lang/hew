@@ -804,6 +804,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&end.0, &end.1, body);
                 }
             }
+            Expr::Is { lhs, rhs } => {
+                self.walk_expr(&lhs.0, &lhs.1, body);
+                self.walk_expr(&rhs.0, &rhs.1, body);
+            }
             Expr::Literal(_)
             | Expr::This
             | Expr::Cooperate

@@ -211,7 +211,7 @@ TimeoutExpr    = RangeExpr ( "|" "after" Expr )? ;  (* Timeout: expr | after dur
 RangeExpr      = OrExpr ( (".." | "..=") OrExpr )? ;
 OrExpr         = AndExpr { "||" AndExpr } ;
 AndExpr        = EqExpr  { "&&" EqExpr } ;
-EqExpr         = RelExpr { ("==" | "!=") RelExpr } ;
+EqExpr         = RelExpr { ("==" | "!=" | "is") RelExpr } ;
 RelExpr        = BitOrExpr { ("<" | "<=" | ">" | ">=") BitOrExpr } ;
 BitOrExpr      = BitXorExpr { "|" BitXorExpr } ;
 BitXorExpr     = BitAndExpr { "^" BitAndExpr } ;

@@ -278,6 +278,8 @@ pub enum Token<'src> {
     Exit,
     #[token("emit")]
     Emit,
+    #[token("is")]
+    Is,
 
     // ── Multi-char operators (must precede single-char) ───────────────
     #[token("==")]
@@ -649,6 +651,7 @@ define_keywords! {
     Entry      => "entry",
     Exit       => "exit",
     Emit       => "emit",
+    Is         => "is",
 }
 
 impl Token<'_> {
@@ -768,12 +771,12 @@ mod tests {
                    one_for_one one_for_all rest_for_one scope fork spawn async await receive \
                    init type this dyn move try true false reserved optional deprecated \
                    default unsafe extern foreign in select race join from after gen yield \
-                   where cooperate catch defer";
+                   where cooperate catch defer is";
         let toks = tokens(src);
-        assert_eq!(toks.len(), 67);
+        assert_eq!(toks.len(), 68);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
-        assert_eq!(toks[66], Token::Defer);
+        assert_eq!(toks[67], Token::Is);
     }
 
     #[test]

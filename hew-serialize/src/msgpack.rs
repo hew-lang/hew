@@ -771,6 +771,10 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(end, tco, visitor, out);
                 }
             }
+            Expr::Is { lhs, rhs } => {
+                collect_expr(lhs, tco, visitor, out);
+                collect_expr(rhs, tco, visitor, out);
+            }
             Expr::Literal(_)
             | Expr::Identifier(_)
             | Expr::Cooperate

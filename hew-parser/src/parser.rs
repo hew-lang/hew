@@ -4647,6 +4647,22 @@ impl<'src> Parser<'src> {
                 }
             }
 
+            // `is` is a keyword token (not a symbol), handled as a special infix form.
+            if self.peek() == Some(&Token::Is) {
+                self.advance(); // consume `is`
+                let rhs = self.parse_expr_bp(rbp)?;
+                let end = rhs.1.end;
+                let lhs_start = lhs.1.start;
+                lhs = (
+                    Expr::Is {
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                    lhs_start..end,
+                );
+                continue;
+            }
+
             let (op_tok, _) = self.advance()?;
             let Some(op) = token_to_binop(&op_tok) else {
                 self.error(format!("invalid binary operator token: {op_tok:?}"));
@@ -5873,8 +5889,8 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
         Token::PipePipe => Some((5, 6)),
         // Logical AND
         Token::AmpAmp => Some((7, 8)),
-        // Equality
-        Token::EqualEqual | Token::NotEqual => Some((9, 10)),
+        // Equality and identity
+        Token::EqualEqual | Token::NotEqual | Token::Is => Some((9, 10)),
         // Relational
         Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual => Some((11, 12)),
         // Bitwise OR
@@ -8119,5 +8135,116 @@ wire type Msg {
             "expected error mentioning max_heap and actor, got: {:?}",
             result.errors
         );
+    }
+    // ── is operator tests ──────────────────────────────────────────────
+
+    /// Helper: extract the trailing expression from the first statement of the
+    /// first function in the parse result.
+    fn first_fn_trailing(source: &str) -> Expr {
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        f.body
+            .trailing_expr
+            .as_ref()
+            .expect("expected trailing expr")
+            .0
+            .clone()
+    }
+
+    #[test]
+    fn is_operator_simple_identifiers() {
+        let expr = first_fn_trailing("fn f() { x is y }");
+        assert!(
+            matches!(expr, Expr::Is { .. }),
+            "expected Expr::Is, got {expr:?}"
+        );
+        if let Expr::Is { lhs, rhs } = expr {
+            assert!(matches!(lhs.0, Expr::Identifier(ref s) if s == "x"));
+            assert!(matches!(rhs.0, Expr::Identifier(ref s) if s == "y"));
+        }
+    }
+
+    #[test]
+    fn is_operator_named_type_rhs() {
+        // Parser admits any expression on the rhs; checker rejects scalars (D-2).
+        let expr = first_fn_trailing("fn f() { value is Point }");
+        assert!(matches!(expr, Expr::Is { .. }));
+    }
+
+    #[test]
+    fn is_operator_scalar_rhs_parses_ok() {
+        // `x is int` — parser admits; checker rejects (slice D-2 / D-3 scope).
+        let result = parse("fn f() { let x = value is int; }");
+        assert!(
+            result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn is_operator_tuple_rhs_parses_ok() {
+        // `x is (a, b)` — parser admits a tuple on the rhs; checker will reject later.
+        let result = parse("fn f() { let x = value is (a, b); }");
+        assert!(
+            result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn is_operator_chained_left_assoc() {
+        // `a is b is c` parses as `(a is b) is c` (left-assoc at equality BP).
+        let expr = first_fn_trailing("fn f() { a is b is c }");
+        // Outer must be Is; its lhs must also be Is.
+        let Expr::Is { lhs, .. } = expr else {
+            panic!("expected outer Expr::Is");
+        };
+        assert!(
+            matches!(lhs.0, Expr::Is { .. }),
+            "expected inner lhs to be Expr::Is (left-assoc), got {:?}",
+            lhs.0
+        );
+    }
+
+    #[test]
+    fn is_operator_equality_precedence_binds_tighter_than_logical_and() {
+        // `a is b && c is d` should parse as `(a is b) && (c is d)`
+        let expr = first_fn_trailing("fn f() { a is b && c is d }");
+        let Expr::Binary { left, op, right } = expr else {
+            panic!("expected Binary at top level");
+        };
+        assert_eq!(op, BinaryOp::And);
+        assert!(matches!(left.0, Expr::Is { .. }), "left should be Is");
+        assert!(matches!(right.0, Expr::Is { .. }), "right should be Is");
+    }
+
+    #[test]
+    fn is_operator_equality_precedence_with_eq() {
+        // `a is b == true` should parse as `(a is b) == true` (same precedence, left-to-right)
+        let expr = first_fn_trailing("fn f() { a is b == true }");
+        let Expr::Binary { left, op, right } = expr else {
+            panic!("expected Binary at top level");
+        };
+        assert_eq!(op, BinaryOp::Equal);
+        assert!(matches!(left.0, Expr::Is { .. }));
+        assert!(matches!(right.0, Expr::Literal(Literal::Bool(true))));
+    }
+
+    #[test]
+    fn is_keyword_reserved_not_identifier() {
+        // `is` must not parse as an identifier (it's a reserved keyword).
+        use hew_lexer::{lex, Token};
+        let toks: Vec<Token<'_>> = lex("is").into_iter().map(|(t, _)| t).collect();
+        assert_eq!(toks, vec![Token::Is]);
+        assert_ne!(toks[0], Token::Identifier("is"));
     }
 } // mod tests

@@ -265,6 +265,17 @@ pub enum Expr {
     /// Byte array literal, e.g. `bytes [0x48, 0x65]`.
     ByteArrayLiteral(Vec<u8>),
 
+    /// Identity comparison: `lhs is rhs`.
+    ///
+    /// Parsed at equality precedence (same as `==`/`!=`). The checker (slice D-2)
+    /// enforces that both operands carry identity (machines, actors, heap-backed
+    /// collections, user named types) and rejects scalars, `String`, and records.
+    /// Parser admits any expression on either side.
+    Is {
+        lhs: Box<Spanned<Expr>>,
+        rhs: Box<Spanned<Expr>>,
+    },
+
     /// `emit EventName { field: expr, ... }` — fire a machine event from a
     /// transition body, `entry`, or `exit` block. Legality (must appear inside
     /// a machine context) is checked at HIR lowering, not parsing.

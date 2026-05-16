@@ -241,6 +241,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
                     .as_ref()
                     .is_some_and(|expr| expr_contains_defer(&expr.0))
         }
+        Expr::Is { lhs, rhs } => expr_contains_defer(&lhs.0) || expr_contains_defer(&rhs.0),
     }
 }
 
@@ -456,6 +457,10 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             if let Some(expr) = end {
                 mark_expr(&mut expr.0, false);
             }
+        }
+        Expr::Is { lhs, rhs } => {
+            mark_expr(&mut lhs.0, false);
+            mark_expr(&mut rhs.0, false);
         }
     }
 }

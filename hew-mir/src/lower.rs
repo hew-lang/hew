@@ -10,10 +10,33 @@ use hew_types::ResolvedTy;
 use crate::dataflow;
 use crate::model::{
     BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, LambdaCapture,
-    MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy,
-    Terminator, ThirFunction,
+    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IntArithOp, IntSignedness,
+    IrPipeline, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    RawMirFunction, Strategy, Terminator, ThirFunction, TrapKind,
 };
+
+/// Classify a resolved integer type as signed or unsigned. Returns
+/// `None` for non-integer types — callers that demand an integer
+/// signedness (the B-2 overflow-trap lowering) fail closed when this
+/// returns `None`. Platform-sized `Isize` / `Usize` are canonicalised
+/// to their pointer-width LLVM type by codegen; here we only need the
+/// signedness discriminator so the intrinsic family selection is
+/// correct regardless of pointer width.
+fn integer_signedness(ty: &ResolvedTy) -> Option<IntSignedness> {
+    match ty {
+        ResolvedTy::I8
+        | ResolvedTy::I16
+        | ResolvedTy::I32
+        | ResolvedTy::I64
+        | ResolvedTy::Isize => Some(IntSignedness::Signed),
+        ResolvedTy::U8
+        | ResolvedTy::U16
+        | ResolvedTy::U32
+        | ResolvedTy::U64
+        | ResolvedTy::Usize => Some(IntSignedness::Unsigned),
+        _ => None,
+    }
+}
 
 /// Run Checked MIR's legality passes over a function's statement
 /// stream. Two real passes ship today (use-after-consume,
@@ -1070,10 +1093,10 @@ impl Builder {
             });
             return Some(dest);
         }
-        let instr = match op {
-            BinaryOp::Add => Instr::IntAdd { dest, lhs, rhs },
-            BinaryOp::Subtract => Instr::IntSub { dest, lhs, rhs },
-            BinaryOp::Multiply => Instr::IntMul { dest, lhs, rhs },
+        let arith_op = match op {
+            BinaryOp::Add => IntArithOp::Add,
+            BinaryOp::Subtract => IntArithOp::Sub,
+            BinaryOp::Multiply => IntArithOp::Mul,
             // The spine subset still rejects Divide / Modulo / logical
             // / shift / range / send / regex / bitwise binops. Previously
             // this arm silently popped the dest local and returned
@@ -1097,7 +1120,65 @@ impl Builder {
                 return None;
             }
         };
-        self.instructions.push(instr);
+        // B-2 overflow-trap lowering. The default `+` / `-` / `*` on
+        // integer types lowers to the checked LLVM intrinsic family
+        // (`llvm.{s,u}{add,sub,mul}.with.overflow.iN`) with a hard
+        // `Terminator::Trap { kind: TrapKind::IntegerOverflow }` on
+        // the overflow path and a continuation block on the success
+        // path. The MIR-level CFG split — current block ends with a
+        // `Branch` on the overflow flag, with a trap block and a
+        // continuation block as successors — is what makes the trap
+        // visible to drop elaboration, the cross-block dataflow pass,
+        // and every other MIR consumer (instead of being a codegen-
+        // only emission). LESSONS `boundary-fail-closed` (P0 —
+        // default arithmetic IS the boundary; trap-on-overflow is
+        // fail-closed for accidental overflow).
+        let Some(signed) = integer_signedness(ty) else {
+            // Non-integer reaching `+` / `-` / `*` would be a B-1
+            // mixed-width or non-integer violation upstream. Fail
+            // closed rather than emit unchecked arithmetic.
+            self.locals.pop();
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("binary operator `{op}` on non-integer type"),
+                    site,
+                },
+                note: "B-2 overflow-trap lowering requires an integer-typed result \
+                       (i8/i16/i32/i64/u8/u16/u32/u64/isize/usize); float arithmetic \
+                       does not use the checked intrinsics and is not yet wired here"
+                    .to_string(),
+            });
+            return None;
+        };
+        // Allocate the overflow-flag local as a bool. Codegen widens
+        // the i1 returned by `extractvalue` to the i8 backing slot.
+        let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntArithChecked {
+            op: arith_op,
+            signed,
+            dest,
+            lhs,
+            rhs,
+            overflow_flag,
+        });
+        // Seal the current block with a Branch on the overflow flag.
+        // Then-target is the trap block; else-target is the
+        // continuation block that subsequent lowering writes into.
+        let trap_bb = self.alloc_block();
+        let cont_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: overflow_flag,
+            then_target: trap_bb,
+            else_target: cont_bb,
+        });
+        // Trap block: a single Terminator::Trap with no instructions.
+        self.start_block(trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IntegerOverflow,
+        });
+        // Continuation block: the cursor lands here so the parent
+        // expression's caller can keep emitting into the success path.
+        self.start_block(cont_bb);
         Some(dest)
     }
 
@@ -2435,6 +2516,13 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
         | Instr::IntCmp { dest, lhs, rhs, .. } => vec![*dest, *lhs, *rhs],
+        Instr::IntArithChecked {
+            dest,
+            lhs,
+            rhs,
+            overflow_flag,
+            ..
+        } => vec![*dest, *lhs, *rhs, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
         Instr::Drop { place, .. } => vec![*place],
         Instr::CallRuntimeAbi(call) => {

@@ -60,8 +60,8 @@ use std::path::Path;
 use std::process::Command;
 
 use hew_mir::{
-    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place, RawMirFunction,
-    Terminator, TrapKind,
+    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IntArithOp, IntSignedness,
+    IrPipeline, Place, RawMirFunction, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -672,6 +672,127 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 .builder
                 .build_store(dest_ptr, result)
                 .map_err(|e| CodegenError::Llvm(format!("arith store: {e:?}")))?;
+        }
+        Instr::IntArithChecked {
+            op,
+            signed,
+            dest,
+            lhs,
+            rhs,
+            overflow_flag,
+        } => {
+            // B-2 overflow-trap lowering. Emit:
+            //   %r = call {iN, i1} @llvm.{s,u}{add,sub,mul}.with.overflow.iN(%a, %b)
+            //   %v = extractvalue {iN, i1} %r, 0    ; store into `dest`
+            //   %of = extractvalue {iN, i1} %r, 1   ; widen + store into `overflow_flag`
+            //
+            // The MIR producer (`lower::lower_binary`) seals the
+            // current block with `Terminator::Branch { cond:
+            // overflow_flag, then_target: trap_bb, else_target:
+            // cont_bb }`; the trap block carries `Terminator::Trap`
+            // and the continuation block is where subsequent
+            // arithmetic continues. The branch and trap terminators
+            // are lowered by the existing `Terminator` arms below;
+            // this arm only emits the intrinsic call + extracts.
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let (flag_ptr, flag_ty) = place_pointer(fn_ctx, *overflow_flag)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntArithChecked lhs is not an int".into(),
+                    ))
+                }
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntArithChecked operands and dest must share the same int type".into(),
+                ));
+            }
+            let flag_int = match flag_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntArithChecked overflow_flag is not an int".into(),
+                    ))
+                }
+            };
+            // Choose the intrinsic family by op + signedness. Six
+            // intrinsics total — three ops × two signednesses. The
+            // overload is per integer width, so `get_declaration`
+            // receives the operand int type.
+            let intrinsic_name = match (op, signed) {
+                (IntArithOp::Add, IntSignedness::Signed) => "llvm.sadd.with.overflow",
+                (IntArithOp::Add, IntSignedness::Unsigned) => "llvm.uadd.with.overflow",
+                (IntArithOp::Sub, IntSignedness::Signed) => "llvm.ssub.with.overflow",
+                (IntArithOp::Sub, IntSignedness::Unsigned) => "llvm.usub.with.overflow",
+                (IntArithOp::Mul, IntSignedness::Signed) => "llvm.smul.with.overflow",
+                (IntArithOp::Mul, IntSignedness::Unsigned) => "llvm.umul.with.overflow",
+            };
+            let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
+                CodegenError::Llvm(format!(
+                    "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
+                ))
+            })?;
+            let intrinsic_fn = intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[lhs_int.into()])
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` declaration failed for width {lhs_int:?}"
+                    ))
+                })?;
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "checked_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("checked lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "checked_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("checked rhs load: {e:?}")))?
+                .into_int_value();
+            let call_site = fn_ctx
+                .builder
+                .build_call(intrinsic_fn, &[lhs_v.into(), rhs_v.into()], "with_overflow")
+                .map_err(|e| CodegenError::Llvm(format!("with-overflow call: {e:?}")))?;
+            let agg = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::Llvm(format!(
+                        "with-overflow intrinsic `{intrinsic_name}` returned void"
+                    ))
+                })?
+                .into_struct_value();
+            let result_v = fn_ctx
+                .builder
+                .build_extract_value(agg, 0, "checked_result")
+                .map_err(|e| CodegenError::Llvm(format!("extractvalue result: {e:?}")))?
+                .into_int_value();
+            let of_bit = fn_ctx
+                .builder
+                .build_extract_value(agg, 1, "checked_overflow")
+                .map_err(|e| CodegenError::Llvm(format!("extractvalue flag: {e:?}")))?
+                .into_int_value();
+            // The overflow flag is an i1; the MIR-allocated slot is a
+            // `ResolvedTy::Bool` (i8 in LLVM lowering). Widen so the
+            // Branch terminator's load reads a non-zero byte when the
+            // flag is set.
+            let of_widened = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(of_bit, flag_int, "checked_overflow_widen")
+                .map_err(|e| CodegenError::Llvm(format!("flag zext: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_v)
+                .map_err(|e| CodegenError::Llvm(format!("checked result store: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(flag_ptr, of_widened)
+                .map_err(|e| CodegenError::Llvm(format!("checked flag store: {e:?}")))?;
+            let _ = ctx;
         }
         Instr::IntCmp {
             dest,

@@ -754,12 +754,18 @@ fn if_no_else_unit_typed_lowers_without_diagnostic() {
 fn sequential_ifs_each_contribute_three_blocks() {
     // Two sequential let-init Ifs in the same function. Each
     // contributes a 3-block split (then + else + join); the second
-    // If's entry block is the first If's join block. So the function
-    // has: entry-block-0 (Branch of If1), then1, else1, join1 (=
-    // entry of If2's Branch), then2, else2, join2. 7 blocks total.
+    // If's entry block is the first If's join block. The trailing
+    // `a + b` is an integer `+` and lowers under B-2 to a checked-
+    // arithmetic instruction plus an extra Branch on the overflow
+    // flag (trap-block + continuation-block successors). So the
+    // function has: entry (Branch of If1), then1, else1, join1 (=
+    // entry of If2's Branch), then2, else2, join2 (which finishes
+    // by emitting the `a + b` checked op and is terminated by the
+    // overflow Branch), trap-bb, cont-bb. 9 blocks total.
     // Pins that the cursor correctly continues lowering into the
-    // join block after one If and that a second alloc_block is
-    // monotone past the first set.
+    // join block after one If and that subsequent `alloc_block`
+    // calls (the trap/cont pair from `+`) remain monotone past the
+    // If chain.
     let p = pipeline(
         "fn main() -> i64 { \
             let a = if 1 == 1 { 7 } else { 8 }; \
@@ -775,27 +781,45 @@ fn sequential_ifs_each_contribute_three_blocks() {
     let func = &p.raw_mir[0];
     assert_eq!(
         func.blocks.len(),
-        7,
-        "sequential Ifs produce 7 blocks: {:#?}",
+        9,
+        "sequential Ifs + trailing `+` produce 9 blocks (2 Ifs × 3 + trap + cont \
+         + the join shared between If2 and the `+`): {:#?}",
         func.blocks
             .iter()
             .map(|b| (b.id, &b.terminator))
             .collect::<Vec<_>>()
     );
-    // Exactly one Return (the last join, which also holds the tail).
+    // Exactly one Return (the post-`+` continuation block, which is
+    // where the function tail value lives now that `+` introduces
+    // its own CFG split).
     let returns = func
         .blocks
         .iter()
         .filter(|b| matches!(b.terminator, Terminator::Return))
         .count();
     assert_eq!(returns, 1, "exactly one Return on linear If chain");
-    // Two Branches (one per If).
+    // Three Branches: one per If, plus the overflow Branch from the
+    // trailing `a + b` under B-2's trap-on-overflow lowering.
     let branches = func
         .blocks
         .iter()
         .filter(|b| matches!(b.terminator, Terminator::Branch { .. }))
         .count();
-    assert_eq!(branches, 2);
+    assert_eq!(branches, 3);
+    // Exactly one IntegerOverflow trap (from the `a + b`).
+    let traps = func
+        .blocks
+        .iter()
+        .filter(|b| {
+            matches!(
+                b.terminator,
+                Terminator::Trap {
+                    kind: hew_mir::TrapKind::IntegerOverflow
+                }
+            )
+        })
+        .count();
+    assert_eq!(traps, 1, "trailing `+` emits one IntegerOverflow trap");
 }
 
 // ---------- Slice 3: per-block dataflow over the 4-state lattice ----------

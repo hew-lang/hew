@@ -220,29 +220,24 @@ fn trap_terminator_produces_panic_exit_path_in_elaboration() {
     // new `Trap` variant) so existing drop-elaboration logic requires
     // no changes in this slice.
     //
-    // We drive this through a source-text pipeline (the integer spine)
-    // so that the full elaboration pass runs. The spine never constructs
-    // `Terminator::Trap` from source yet — this test validates the
-    // exit-path shape from the hand-built fixture path only.
-    //
-    // TODO(B-2): when overflow producers land, add a source-text fixture
-    //   that actually triggers a Trap terminator end-to-end.
+    // B-2 wires the first source-level producer: the default `+`
+    // operator lowers to `Instr::IntArithChecked` plus a CFG split
+    // whose overflow successor terminates with `Terminator::Trap {
+    // kind: TrapKind::IntegerOverflow }`. The pipeline below covers
+    // that producer end-to-end: a source-text `1 + 2` must surface
+    // both a `Return` exit (for the normal continuation) and a
+    // `Panic` exit (for the overflow trap block).
     let p = pipeline("fn main() -> i64 { 1 + 2 }");
-    // Spine function has exactly one Return exit; no Panic exit today.
     let func = &p.elaborated_mir[0];
+    let kinds: Vec<&ExitPath> = func.drop_plans.iter().map(|(ep, _)| ep).collect();
     assert!(
-        func.drop_plans
-            .iter()
-            .all(|(ep, _)| matches!(ep, ExitPath::Return { .. })),
-        "spine-only function has no Panic exit paths yet"
+        kinds.iter().any(|ep| matches!(ep, ExitPath::Return { .. })),
+        "1 + 2 still produces a Return exit on the non-overflow path: {kinds:?}"
     );
-    // Structural invariant: a block with BlockKind::Normal and a
-    // Trap terminator would produce ExitPath::Panic. Covered by the
-    // hand-built RawMirFunction path in lower.rs / producer_drop_elaboration.rs
-    // once B-2 lands; for now verify the ExitPath::Panic variant itself
-    // is reachable from the elaboration output type.
-    let ep = ExitPath::Panic { block: 0 };
-    assert!(matches!(ep, ExitPath::Panic { block: 0 }));
+    assert!(
+        kinds.iter().any(|ep| matches!(ep, ExitPath::Panic { .. })),
+        "1 + 2 must produce a Panic exit for the overflow-trap successor under B-2: {kinds:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

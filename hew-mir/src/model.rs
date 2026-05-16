@@ -365,16 +365,76 @@ impl RuntimeCall {
 /// Variants the emitter cannot lower (Drop on a live heap value, anything
 /// coroutine-shaped) emit a hard error rather than silently no-op; the
 /// per-variant rejection happens at lowering time, not here.
+/// Discriminator for the three integer arithmetic operators that B-2
+/// wires through the checked-overflow lowering. Carried by
+/// `Instr::IntArithChecked` so codegen can select the matching
+/// `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntArithOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+/// Signedness discriminator for `Instr::IntArithChecked`. Selects the
+/// signed-vs-unsigned LLVM with-overflow intrinsic family at codegen
+/// time. Producers read this off the operand's `ResolvedTy` (B-1
+/// canonicalised operands and the destination to the same width and
+/// signedness so a single field is sufficient).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntSignedness {
+    Signed,
+    Unsigned,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
     /// `dest = const <value>` as i64.
     ConstI64 { dest: Place, value: i64 },
-    /// `dest = lhs + rhs` on i64.
+    /// Two's-complement wrapping `dest = lhs + rhs`. Producers: B-3 will
+    /// wire `.wrapping_add` to this variant. Before B-3 lands, the
+    /// variant is reachable only from hand-built fixtures (no source
+    /// surface). The default `+` operator uses
+    /// `Instr::IntArithChecked` (B-2) for trap-on-overflow semantics.
     IntAdd { dest: Place, lhs: Place, rhs: Place },
-    /// `dest = lhs - rhs` on i64.
+    /// Two's-complement wrapping `dest = lhs - rhs`. Producer story
+    /// matches `IntAdd` above.
     IntSub { dest: Place, lhs: Place, rhs: Place },
-    /// `dest = lhs * rhs` on i64.
+    /// Two's-complement wrapping `dest = lhs * rhs`. Producer story
+    /// matches `IntAdd` above.
     IntMul { dest: Place, lhs: Place, rhs: Place },
+    /// Checked integer arithmetic with trap-on-overflow. Lowers to
+    /// `call {iN, i1} @llvm.{s,u}{add,sub,mul}.with.overflow.iN(lhs, rhs)`
+    /// plus two `extractvalue`s: the iN result into `dest` and the i1
+    /// overflow flag into `overflow_flag`. The producing block is
+    /// terminated with `Terminator::Branch { cond: overflow_flag,
+    /// then_target: trap_bb, else_target: cont_bb }` where `trap_bb`
+    /// terminates with `Terminator::Trap { kind:
+    /// TrapKind::IntegerOverflow }` and `cont_bb` is the continuation.
+    ///
+    /// Construction discipline: `dest` and both operands MUST share
+    /// the same `ResolvedTy` integer width (B-1 mixed-width rejection)
+    /// and `signed` MUST agree with the operand type's signedness.
+    /// `overflow_flag` is a fresh local typed as `ResolvedTy::Bool`
+    /// (i8 in LLVM lowering) — codegen zero-extends the i1 flag into
+    /// the i8 slot.
+    ///
+    /// Why a single variant covering all three ops: codegen disambiguates
+    /// by `op` and `signed` to select one of six intrinsics
+    /// (`s{add,sub,mul}` × `u{add,sub,mul}`); a per-op variant would
+    /// duplicate the surrounding extract-and-branch shape three times.
+    /// LESSONS: `boundary-fail-closed` (P0 — default arithmetic is
+    /// the boundary; trap-on-overflow is fail-closed for accidental
+    /// overflow); `exhaustive-coverage` (every integer width × every op
+    /// × every signedness has an explicit lowering arm).
+    IntArithChecked {
+        op: IntArithOp,
+        signed: IntSignedness,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        overflow_flag: Place,
+    },
     /// `dest = (lhs <pred> rhs)` on integers. The result is written into
     /// `dest` as an integer truth value: `1` for true, `0` for false. The
     /// dest's local type controls the result width (today every cmp dest

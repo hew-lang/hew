@@ -662,3 +662,66 @@ fn duplex_use_after_close_fires_use_after_move() {
         output.errors
     );
 }
+
+/// When `UseAfterMove` fires on a `Duplex` binding the diagnostic includes a
+/// note attributing the consume site (`"value was consumed here"`) so the user
+/// can locate the call that moved the handle.
+#[test]
+fn duplex_use_after_move_includes_consumed_here_note() {
+    let source = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, int>(16);
+            let _ = d.close();
+            let _ = d.send(1);
+        }
+    ";
+    let output = typecheck(source);
+    let uam = output
+        .errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::UseAfterMove));
+    assert!(
+        uam.is_some(),
+        "expected UseAfterMove; got: {:#?}",
+        output.errors
+    );
+    let uam = uam.unwrap();
+    assert!(
+        uam.notes
+            .iter()
+            .any(|(_, msg)| msg.contains("consumed here")),
+        "UseAfterMove on Duplex should include a 'consumed here' note; got notes: {:#?}",
+        uam.notes
+    );
+}
+
+/// When `UseAfterMove` fires on a `Duplex` binding the diagnostic includes a
+/// suggestion naming the handle type and its affine-consume semantics.
+#[test]
+fn duplex_use_after_move_includes_substrate_handle_suggestion() {
+    let source = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, int>(16);
+            let _h = d.send_half();
+            let _h2 = d.send_half();
+        }
+    ";
+    let output = typecheck(source);
+    let uam = output
+        .errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::UseAfterMove));
+    assert!(
+        uam.is_some(),
+        "expected UseAfterMove; got: {:#?}",
+        output.errors
+    );
+    let uam = uam.unwrap();
+    assert!(
+        uam.suggestions
+            .iter()
+            .any(|s| s.contains("substrate handle")),
+        "UseAfterMove on Duplex should include a substrate-handle suggestion; got suggestions: {:#?}",
+        uam.suggestions
+    );
+}

@@ -742,13 +742,33 @@ impl Checker {
     pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
         if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
             let is_moved = binding.is_moved;
+            let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
             if is_moved {
-                self.report_error(
+                let mut err = TypeError::new(
                     TypeErrorKind::UseAfterMove,
-                    span,
+                    span.clone(),
                     format!("use of moved value `{name}`"),
                 );
+                if let Some(ref source_module) = self.current_module {
+                    err = err.with_source_module(source_module.clone());
+                }
+                if let Some(moved_span) = moved_at {
+                    err = err.with_note(moved_span, "value was consumed here");
+                }
+                // Substrate handles (Duplex, Sink, Stream, SendHalf, RecvHalf) are
+                // affine: each consuming method (`.close()`, `.send_half()`,
+                // `.recv_half()`, etc.) moves the handle exactly once. Subsequent
+                // uses are rejected here. Name the type so the user knows why.
+                if Self::ty_is_substrate_handle(&ty) {
+                    err = err.with_suggestion(format!(
+                        "`{}` is a substrate handle — consuming methods like `.close()`, \
+                         `.send_half()`, and `.recv_half()` move the handle; \
+                         use a single consuming call per binding",
+                        ty.user_facing()
+                    ));
+                }
+                self.errors.push(err);
             }
             // Track captures: variable from scope below the lambda boundary
             if let Some(capture_depth) = self.lambda_capture_depth {
@@ -3826,5 +3846,21 @@ impl Checker {
             binding_name: binding_name.to_string(),
             alloc_class: class,
         });
+    }
+
+    /// Return `true` if `ty` is a v0.5 substrate handle type (affine — consumed
+    /// by exactly one method call). These are `Duplex<S,R>`, `Sink<T>`,
+    /// `Stream<T>`, `SendHalf<S>`, and `RecvHalf<R>`.
+    ///
+    /// Used by [`synthesize_identifier`](Self::synthesize_identifier) to add a
+    /// targeted suggestion when a `UseAfterMove` fires on a substrate binding.
+    fn ty_is_substrate_handle(ty: &Ty) -> bool {
+        let Ty::Named { name, .. } = ty else {
+            return false;
+        };
+        matches!(
+            name.as_str(),
+            "Duplex" | "Sink" | "Stream" | "SendHalf" | "RecvHalf"
+        )
     }
 }

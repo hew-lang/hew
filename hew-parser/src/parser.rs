@@ -4326,6 +4326,60 @@ impl<'src> Parser<'src> {
                 self.restore_pos(saved);
             }
 
+            // Detect removed `=~` and `!~` regex operators.  The lexer never
+            // produced `EqTilde`/`BangTilde` tokens, so the character sequences
+            // tokenise as adjacent `=`+`~` or `!`+`~`.  Neither `=` nor `!` has
+            // infix binding power, so the loop would break and leave a confusing
+            // "expected `;`" error — check here before the infix break.
+            {
+                let next = self.peek();
+                let is_eq_tilde = next == Some(&Token::Equal)
+                    && self.peek_at(self.pos + 1) == Some(&Token::Tilde)
+                    && {
+                        let eq_end = self.peek_span().end;
+                        self.tokens
+                            .get(self.pos + 1)
+                            .is_some_and(|(_, s)| s.start == eq_end)
+                    };
+                let is_bang_tilde = next == Some(&Token::Bang)
+                    && self.peek_at(self.pos + 1) == Some(&Token::Tilde)
+                    && {
+                        let bang_end = self.peek_span().end;
+                        self.tokens
+                            .get(self.pos + 1)
+                            .is_some_and(|(_, s)| s.start == bang_end)
+                    };
+                if is_eq_tilde || is_bang_tilde {
+                    let op_str = if is_eq_tilde { "=~" } else { "!~" };
+                    let op_start = self.peek_span().start;
+                    self.advance(); // consume `=` or `!`
+                    let op_end = self.peek_span().end;
+                    self.advance(); // consume `~`
+                    let op_span = op_start..op_end;
+                    self.error_at_with_hint(
+                        format!(
+                            "E_REGEX_OP_REMOVED: the `{op_str}` regex operator has been removed; \
+                             use a match arm or `Pattern.is_match()` instead (HEW-SPEC-2026 §5)"
+                        ),
+                        op_span.clone(),
+                        format!(
+                            "replace `expr {op_str} pattern` with `match expr {{ re\"...\" => true, _ => false }}`"
+                        ),
+                    );
+                    while !matches!(
+                        self.peek(),
+                        Some(&Token::Semicolon | &Token::RightBrace) | None
+                    ) {
+                        self.advance();
+                    }
+                    if self.peek() == Some(&Token::Semicolon) {
+                        self.advance();
+                    }
+                    lhs = (Expr::Tuple(vec![]), op_span);
+                    break;
+                }
+            }
+
             // Then try infix
             let Some((lbp, rbp)) = self.peek().and_then(infix_bp) else {
                 break;

@@ -725,3 +725,71 @@ fn duplex_use_after_move_includes_substrate_handle_suggestion() {
         uam.suggestions
     );
 }
+
+// ---------------------------------------------------------------------------
+// PartitionDetected exhaustiveness audit
+// ---------------------------------------------------------------------------
+
+/// Documents the Hew type checker's exhaustiveness behaviour for `RecvError`
+/// match arms.
+///
+/// `RecvError` is registered in the checker as a `Ty::Named` marker
+/// (see `hew-types/src/ty.rs` `Ty::recv_error()`), not as a `TypeDef` with
+/// enumerated variants. Consequently `check_exhaustiveness` (diagnostics.rs)
+/// reaches the `Ty::Named { name, .. }` branch, calls `lookup_type_def(name)`,
+/// and finds `None` — the checker is currently variant-blind to `RecvError`.
+///
+/// **Result**: a Hew `match` on `Result<_, RecvError>` with only `Err(Closed)`
+/// and `Err(Empty)` arms and no wildcard does NOT generate a non-exhaustive
+/// diagnostic today. The `PartitionDetected` variant is therefore not checked
+/// at the Hew-language level.
+///
+/// This is intentional for v0.5: `RecvError` is a Rust `#[repr(i32)]` enum
+/// exposed through the C-ABI surface; its variant list is authoritative in
+/// Rust, not in the Hew type system. Exhaustiveness at the language level
+/// is deferred to the `RecvError`-as-Hew-enum registration lane (M3+).
+///
+/// This test pins the current behaviour so a future lane that DOES register
+/// `RecvError` variants can see that the check now fires.
+#[test]
+fn recv_match_exhaustive_partition() {
+    // A match that covers `Ok`, `Err(RecvError::Closed)`, and
+    // `Err(RecvError::Empty)` but NOT `Err(RecvError::PartitionDetected)`.
+    // Today the checker accepts this (no exhaustiveness error), because
+    // RecvError has no registered TypeDef variants.
+    let source = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, int>(16);
+            let result: Result<int, RecvError> = d.recv();
+            match result {
+                Ok(_) => println(0),
+                Err(_) => println(1),
+            }
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "RecvError match with wildcard Err arm should typecheck; got: {:#?}",
+        output.errors
+    );
+
+    // A match that covers `Ok` and `Err(e)` with a binding — exhaustive
+    // by binding-identifier rule.
+    let source_binding = r"
+        fn main() {
+            let (d, _) = duplex_pair<int, int>(16);
+            let result: Result<int, RecvError> = d.recv();
+            match result {
+                Ok(_) => println(0),
+                Err(e) => println(1),
+            }
+        }
+    ";
+    let output_binding = typecheck(source_binding);
+    assert!(
+        output_binding.errors.is_empty(),
+        "RecvError match with binding arm should typecheck; got: {:#?}",
+        output_binding.errors
+    );
+}

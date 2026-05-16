@@ -1309,6 +1309,12 @@ fn normalize_item_types(item: &mut Item, registry: &hew_types::module_registry::
                 }
             }
         }
+        Item::Record(record_decl) => {
+            let hew_parser::ast::RecordKind::Named(fields) = &mut record_decl.kind;
+            for field in fields {
+                normalize_type_expr(&mut field.ty.0, registry);
+            }
+        }
         Item::Import(_) | Item::Wire(_) => {}
     }
 }
@@ -1566,7 +1572,12 @@ fn enrich_item_with_diagnostics(
                 }
             }
         }
-        Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
+        // Record fields carry only type annotations; no expressions to enrich in A-1.
+        Item::Record(_)
+        | Item::Import(_)
+        | Item::TypeAlias(_)
+        | Item::Wire(_)
+        | Item::ExternBlock(_) => {}
     }
     Ok(())
 }

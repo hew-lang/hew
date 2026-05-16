@@ -527,6 +527,43 @@ static ast::MachineDecl parseMachineDecl(const msgpack::object &obj) {
   return result;
 }
 
+static ast::RecordField parseRecordField(const msgpack::object &obj) {
+  ast::RecordField result;
+  result.name = getString(mapReq(obj, "name"));
+  result.ty = parseSpanned<ast::TypeExpr>(mapReq(obj, "ty"), parseTypeExpr);
+  const auto *doc_comment = mapGet(obj, "doc_comment");
+  if (doc_comment && !isNil(*doc_comment))
+    result.doc_comment = getString(*doc_comment);
+  return result;
+}
+
+static ast::RecordKind parseRecordKind(const msgpack::object &obj) {
+  auto [name, payload] = getEnumVariant(obj);
+
+  if (name == "Named") return ast::RecordKind{ast::Named{parseVec<ast::RecordField>(*payload, parseRecordField)}};
+  fail("unknown RecordKind variant: " + name);
+}
+
+static ast::RecordDecl parseRecordDecl(const msgpack::object &obj) {
+  ast::RecordDecl result;
+  const auto *visibility_ = mapGet(obj, "visibility");
+  if (visibility_ && !isNil(*visibility_))
+    result.visibility = parseVisibility(*visibility_);
+  result.name = getString(mapReq(obj, "name"));
+  const auto *type_params = mapGet(obj, "type_params");
+  if (type_params && !isNil(*type_params))
+    result.type_params = parseVec<ast::TypeParam>(*type_params, parseTypeParam);
+  const auto *where_clause = mapGet(obj, "where_clause");
+  if (where_clause && !isNil(*where_clause))
+    result.where_clause = parseWhereClause(*where_clause);
+  result.kind = parseRecordKind(mapReq(obj, "kind"));
+  const auto *doc_comment = mapGet(obj, "doc_comment");
+  if (doc_comment && !isNil(*doc_comment))
+    result.doc_comment = getString(*doc_comment);
+  result.span = parseSpan(mapReq(obj, "span"));
+  return result;
+}
+
 static ast::RestartPolicy parseRestartPolicy(const msgpack::object &obj) {
   auto s = getString(obj);
   if (s == "Permanent") return ast::RestartPolicy::Permanent;
@@ -744,6 +781,7 @@ static ast::Item parseItem(const msgpack::object &obj) {
   if (name == "Actor") return ast::Item{parseActorDecl(*payload)};
   if (name == "Supervisor") return ast::Item{parseSupervisorDecl(*payload)};
   if (name == "Machine") return ast::Item{parseMachineDecl(*payload)};
+  if (name == "Record") return ast::Item{parseRecordDecl(*payload)};
   fail("unknown Item variant: " + name);
 }
 

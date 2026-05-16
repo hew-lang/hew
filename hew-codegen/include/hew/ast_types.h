@@ -720,6 +720,34 @@ struct TypeAliasDecl {
   std::optional<std::string> doc_comment;
 };
 
+// ── Record declarations ───────────────────────────────────────────────────
+
+struct RecordField {
+  std::string name;
+  Spanned<TypeExpr> ty;
+  std::optional<std::string> doc_comment;
+};
+
+// Named variant payload for RecordKind.
+struct Named {
+  std::vector<RecordField> fields;
+};
+
+// RecordKind — only Named form is supported in A-1; Tuple form is A-2.
+struct RecordKind {
+  std::variant<Named> kind;
+};
+
+struct RecordDecl {
+  Visibility visibility = Visibility::Private;
+  std::string name;
+  std::optional<std::vector<TypeParam>> type_params;
+  std::optional<WhereClause> where_clause;
+  RecordKind kind;
+  std::optional<std::string> doc_comment;
+  Span span;
+};
+
 // ── Traits ────────────────────────────────────────────────────────────────
 
 struct TraitMethod {
@@ -949,7 +977,7 @@ struct FnDecl {
 
 struct Item {
   std::variant<ImportDecl, ConstDecl, TypeDecl, TypeAliasDecl, TraitDecl, ImplDecl, WireDecl,
-               FnDecl, ExternBlock, ActorDecl, SupervisorDecl, MachineDecl>
+               FnDecl, ExternBlock, ActorDecl, SupervisorDecl, MachineDecl, RecordDecl>
       kind;
 };
 

@@ -13,6 +13,19 @@ impl Checker {
             Item::Impl(id) => self.check_impl(id, span),
             Item::Machine(md) => self.check_machine_exhaustiveness(md, span),
             Item::Trait(td) => self.check_trait_defaults(td),
+            Item::Record(_) => {
+                // TODO(A-3): record type checking not yet implemented.
+                // Checker support (resolving RecordDecl into Ty::Record) is
+                // deferred to slice A-3.  Until then we emit a diagnostic so
+                // users get a clear "not yet supported" message rather than
+                // silent acceptance followed by a codegen crash.
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    "record declarations are not yet supported by the type checker (A-3)"
+                        .to_string(),
+                ));
+            }
             Item::Import(_)
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)

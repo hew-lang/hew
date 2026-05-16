@@ -110,7 +110,8 @@ fn collect_item_folding(
         | Item::Wire(_)
         | Item::ExternBlock(_)
         | Item::Supervisor(_)
-        | Item::Machine(_) => {
+        | Item::Machine(_)
+        | Item::Record(_) => {
             add_region(source, lo, span, r);
         }
         Item::Import(_) | Item::Const(_) | Item::TypeAlias(_) => {}

@@ -519,7 +519,8 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
             | Item::Wire(_)
             | Item::ExternBlock(_)
             | Item::Supervisor(_)
-            | Item::Machine(_) => {}
+            | Item::Machine(_)
+            | Item::Record(_) => {} // TODO(A-3): emit doc for record once checker support lands
         }
     }
 

@@ -7,11 +7,11 @@ use crate::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
     ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl, MatchArm,
-    NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
-    RestartPolicy, SelectArm, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
-    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
-    WhereClause, WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
+    NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl,
+    RecordKind, RestartPolicy, SelectArm, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -305,6 +305,7 @@ impl<'a> Formatter<'a> {
             Item::Actor(decl) => self.format_actor(decl, span_end),
             Item::Supervisor(decl) => self.format_supervisor(decl),
             Item::Machine(decl) => self.format_machine(decl, span_end),
+            Item::Record(decl) => self.format_record(decl),
         }
     }
 
@@ -358,6 +359,33 @@ impl<'a> Formatter<'a> {
         self.write(" = ");
         self.format_type_expr(&decl.ty.0);
         self.write(";\n");
+    }
+
+    fn format_record(&mut self, decl: &RecordDecl) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
+        self.write_indent();
+        self.write_visibility(decl.visibility);
+        self.write("record ");
+        self.write(&decl.name);
+        self.format_opt_type_params(decl.type_params.as_ref());
+        self.format_opt_where_clause(decl.where_clause.as_ref());
+        self.write(" {\n");
+        self.indent += 1;
+        let RecordKind::Named(fields) = &decl.kind;
+        for (i, field) in fields.iter().enumerate() {
+            self.write_outer_doc(field.doc_comment.as_ref());
+            self.write_indent();
+            self.write(&field.name);
+            self.write(": ");
+            self.format_type_expr(&field.ty.0);
+            if i + 1 < fields.len() {
+                self.write(",");
+            }
+            self.write("\n");
+        }
+        self.indent -= 1;
+        self.write_indent();
+        self.write("}\n");
     }
 
     fn format_type_decl(&mut self, decl: &TypeDecl, _span_end: usize) {

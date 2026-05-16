@@ -204,6 +204,8 @@ pub enum Token<'src> {
     Receive,
     #[token("init")]
     Init,
+    #[token("record")]
+    Record,
     #[token("type")]
     Type,
     #[token("this")]
@@ -610,6 +612,7 @@ define_keywords! {
     Await      => "await",
     Receive    => "receive",
     Init       => "init",
+    Record     => "record",
     Type       => "type",
     This       => "this",
     Dyn        => "dyn",

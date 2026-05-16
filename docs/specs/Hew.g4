@@ -66,6 +66,7 @@ item
       ( constDecl
       | typeDecl
       | typeAliasDecl
+      | recordDecl
       | traitDecl
       | fnDecl
       | asyncFnDecl
@@ -148,6 +149,18 @@ typeDecl
 
 typeAliasDecl
     : 'type' ident '=' type_ ';'
+    ;
+
+recordDecl
+    : 'record' ident typeParams? whereClause? recordBody
+    ;
+
+recordBody
+    : '{' recordFieldDecl ( ',' recordFieldDecl )* ','? '}'
+    ;
+
+recordFieldDecl
+    : ident ':' type_
     ;
 
 wireDecl

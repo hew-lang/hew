@@ -11,18 +11,16 @@
 // will additionally exercise nullOutAliasedSenderBindings'
 // whole-aggregate invalidation of the struct slot.  Regression for
 // PR #1721 review item 3.
-
 type Greeting {
     head: String;
     body: String;
 }
 
 actor Logger {
-    receive fn record(g: Greeting) {
+    receive fn log_greeting(g: Greeting) {
         println(f"head:{g.head}");
         println(f"body:{g.body}");
     }
-
     receive fn ping() -> int {
         0
     }
@@ -31,6 +29,6 @@ actor Logger {
 fn main() {
     let l = spawn Logger;
     let g = Greeting { head: "hello", body: "world" };
-    l.record(g);
+    l.log_greeting(g);
     await l.ping();
 }

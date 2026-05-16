@@ -80,6 +80,7 @@ pub enum Item {
     Actor(ActorDecl),
     Supervisor(SupervisorDecl),
     Machine(MachineDecl),
+    Record(RecordDecl),
 }
 
 // ── Expressions ──────────────────────────────────────────────────────
@@ -762,6 +763,44 @@ pub struct TypeAliasDecl {
     pub name: String,
     pub ty: Spanned<TypeExpr>,
     pub doc_comment: Option<String>,
+}
+
+/// A `record` named-field declaration.
+///
+/// Records are pure data carriers: they hold named, typed fields and support
+/// generic type parameters and where-clauses.  Methods, variants, and tuple
+/// forms are not permitted (those belong to `TypeDecl`).
+///
+/// Checker support (resolving `RecordDecl` into `Ty::Record`) is deferred to
+/// slice A-3; until then the checker emits an "unsupported" diagnostic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordDecl {
+    #[serde(default)]
+    pub visibility: Visibility,
+    pub name: String,
+    pub type_params: Option<Vec<TypeParam>>,
+    pub where_clause: Option<WhereClause>,
+    pub kind: RecordKind,
+    pub doc_comment: Option<String>,
+    pub span: Span,
+}
+
+/// The body of a `record` declaration.  Only named-field form is supported in
+/// A-1; tuple form (`record Pair(T, T)`) is reserved for slice A-2.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum RecordKind {
+    Named(Vec<RecordField>),
+    // TODO(A-2): Tuple(Vec<Spanned<TypeExpr>>)
+}
+
+/// A single field in a named-form `record` body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordField {
+    pub name: String,
+    pub ty: Spanned<TypeExpr>,
+    pub doc_comment: Option<String>,
+    #[serde(skip)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

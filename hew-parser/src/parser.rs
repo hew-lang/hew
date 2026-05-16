@@ -6,11 +6,11 @@ use crate::ast::{
     ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
     Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase,
     OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
-    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl,
-    WireFieldMeta, WireMetadata,
+    RecordDecl, RecordField, RecordKind, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned,
+    Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
+    WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
@@ -1306,6 +1306,11 @@ impl<'src> Parser<'src> {
                         t.doc_comment = doc_comment;
                         Item::TypeDecl(t)
                     }
+                    Some(Token::Record) => {
+                        let mut r = self.parse_record_decl(vis)?;
+                        r.doc_comment = doc_comment;
+                        Item::Record(r)
+                    }
                     Some(Token::Type) => {
                         if self.is_type_alias_lookahead() {
                             Item::TypeAlias(self.parse_type_alias(vis, doc_comment)?)
@@ -1391,6 +1396,11 @@ impl<'src> Parser<'src> {
                 t.doc_comment = doc_comment;
                 Item::TypeDecl(t)
             }
+            Some(Token::Record) => {
+                let mut r = self.parse_record_decl(Visibility::Private)?;
+                r.doc_comment = doc_comment;
+                Item::Record(r)
+            }
             Some(Token::Type) => {
                 if self.is_type_alias_lookahead() {
                     Item::TypeAlias(self.parse_type_alias(Visibility::Private, doc_comment)?)
@@ -1452,7 +1462,7 @@ impl<'src> Parser<'src> {
                 // Detect common keywords from other languages
                 if let Some(Token::Identifier(id)) = self.peek() {
                     match *id {
-                        "struct" | "record" => {
+                        "struct" => {
                             self.error_with_hint(
                                 format!("unexpected '{id}'"),
                                 "Hew uses 'type' to declare structs: type Name { ... }",
@@ -1686,6 +1696,78 @@ impl<'src> Parser<'src> {
             is_indirect: false,
             resource_marker,
             consuming_methods,
+        })
+    }
+
+    /// Parse a `record Name<T>? where...? { field: Type, ... }` declaration.
+    ///
+    /// The `record` keyword must already be consumed before this is called.
+    /// Named-field body is required; empty bodies are rejected.  Tuple-record
+    /// form is reserved for slice A-2.
+    fn parse_record_decl(&mut self, visibility: Visibility) -> Option<RecordDecl> {
+        let start = self.peek_span().start;
+
+        // Consume `record`
+        self.advance();
+
+        let name = self.expect_ident()?;
+        let type_params = self.parse_opt_type_params()?;
+        let where_clause = self.parse_opt_where_clause()?;
+
+        self.expect(&Token::LeftBrace)?;
+
+        let mut fields: Vec<RecordField> = Vec::new();
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            let field_start = self.peek_span().start;
+
+            // Field name
+            let field_name = if let Some(Token::Identifier(_)) = self.peek() {
+                self.expect_ident()?
+            } else {
+                let found = match self.peek() {
+                    Some(tok) => format!("{tok}"),
+                    None => "end of file".to_string(),
+                };
+                self.error(format!("expected field name, found {found}"));
+                return None;
+            };
+
+            self.expect(&Token::Colon)?;
+
+            let ty = self.parse_type()?;
+            let field_end = self.peek_span().start;
+
+            fields.push(RecordField {
+                name: field_name,
+                ty,
+                doc_comment: None,
+                span: field_start..field_end,
+            });
+
+            // Comma or end of body
+            if self.peek() == Some(&Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        if fields.is_empty() {
+            self.error("record body must contain at least one field".to_string());
+            return None;
+        }
+
+        let end = self.peek_span().start;
+        self.expect(&Token::RightBrace)?;
+
+        Some(RecordDecl {
+            visibility,
+            name,
+            type_params,
+            where_clause,
+            kind: RecordKind::Named(fields),
+            doc_comment: None,
+            span: start..end,
         })
     }
 

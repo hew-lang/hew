@@ -834,7 +834,12 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(&transition.body, tco, visitor, out);
                 }
             }
-            Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
+            // Record fields contain only type expressions; no expressions to collect in A-1.
+            Item::Record(_)
+            | Item::Import(_)
+            | Item::TypeAlias(_)
+            | Item::Wire(_)
+            | Item::ExternBlock(_) => {}
         }
     }
 

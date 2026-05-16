@@ -879,7 +879,8 @@ impl Checker {
                 | Item::Const(_)
                 | Item::Impl(_)
                 | Item::Function(_)
-                | Item::ExternBlock(_) => {}
+                | Item::ExternBlock(_)
+                | Item::Record(_) => {} // TODO(A-3): record name registration deferred
             }
         }
     }
@@ -2277,7 +2278,8 @@ impl Checker {
             | Item::TypeAlias(_)
             | Item::Wire(_)
             | Item::Supervisor(_)
-            | Item::Machine(_) => {}
+            | Item::Machine(_)
+            | Item::Record(_) => {} // TODO(A-3): record method registration deferred
         }
     }
 

@@ -487,7 +487,9 @@ impl Checker {
                 // This arm is intentionally exhaustive so that any future `Item` variant
                 // added to the parser triggers a compile error here, forcing the author
                 // to decide whether hole-reporting is needed.
-                Item::Import(_) | Item::Const(_) | Item::Supervisor(_) => {}
+                // TODO(A-3): Record declarations carry no signature holes until
+                // checker support lands; treat them as a no-op here.
+                Item::Import(_) | Item::Const(_) | Item::Supervisor(_) | Item::Record(_) => {}
             }
         }
 

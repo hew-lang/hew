@@ -103,7 +103,8 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::When
         | Token::Entry
         | Token::Exit
-        | Token::Emit => KW,
+        | Token::Emit
+        | Token::Record => KW,
 
         // ── Constants (strategy values + booleans) ────────────────────
         Token::Permanent

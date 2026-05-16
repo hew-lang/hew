@@ -3343,6 +3343,7 @@ mod rest_for_one_tests {
                     restart_policy: RESTART_PERMANENT,
                     mailbox_capacity: -1,
                     overflow: OVERFLOW_DROP_NEW,
+                    arena_cap_bytes: 0,
                 };
                 assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             }
@@ -3497,6 +3498,7 @@ mod supervisor_escalation_tests {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
         };
 
         if unsafe { hew_supervisor_add_child_spec(child, &raw const spec) } != 0 {
@@ -3548,6 +3550,7 @@ mod supervisor_escalation_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(child, &raw const spec), 0);
 
@@ -3622,6 +3625,7 @@ mod supervisor_escalation_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -3723,6 +3727,7 @@ mod supervisor_escalation_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
             assert_eq!(
                 hew_supervisor_add_child_spec(parent, &raw const sibling_spec),
@@ -3874,6 +3879,7 @@ mod circuit_breaker_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const child_spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -3943,6 +3949,7 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
 
             // Not started yet, so child won't be spawned but slot is allocated.
@@ -3971,6 +3978,7 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
 
             hew_supervisor_add_child_dynamic(sup, &raw const spec);
@@ -4013,6 +4021,7 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
 
             // Add more than the old SUP_MAX_CHILDREN (64) limit.
@@ -4040,6 +4049,7 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
 
             hew_supervisor_add_child_dynamic(sup, &raw const spec);

@@ -2437,19 +2437,20 @@ struct ChildSpecCreateOpLowering : public mlir::OpConversionPattern<hew::ChildSp
 
     // Build the HewChildSpec struct type:
     // { ptr name, ptr init_state, i64 init_state_size,
-    //   ptr dispatch, i32 restart_policy, i32 mailbox_capacity, i32 overflow }
+    //   ptr dispatch, i32 restart_policy, i32 mailbox_capacity, i32 overflow,
+    //   i64 arena_cap_bytes }
     auto structType = mlir::LLVM::LLVMStructType::getLiteral(
-        ctx, {ptrType, ptrType, i64Type, ptrType, i32Type, i32Type, i32Type});
+        ctx, {ptrType, ptrType, i64Type, ptrType, i32Type, i32Type, i32Type, i64Type});
 
     // Alloca the struct on the stack
     auto alloca = emitEntryAlloca(rewriter, loc, structType);
 
     // Store each field via GEP
-    mlir::Value fields[] = {adaptor.getName(),          adaptor.getInitState(),
-                            adaptor.getInitStateSize(), adaptor.getDispatch(),
-                            adaptor.getRestartPolicy(), adaptor.getMailboxCapacity(),
-                            adaptor.getOverflowPolicy()};
-    for (int i = 0; i < 7; ++i) {
+    mlir::Value fields[] = {adaptor.getName(),           adaptor.getInitState(),
+                            adaptor.getInitStateSize(),  adaptor.getDispatch(),
+                            adaptor.getRestartPolicy(),  adaptor.getMailboxCapacity(),
+                            adaptor.getOverflowPolicy(), adaptor.getArenaCapBytes()};
+    for (int i = 0; i < 8; ++i) {
       auto gep = mlir::LLVM::GEPOp::create(rewriter, loc, ptrType, structType, alloca,
                                            llvm::ArrayRef<mlir::LLVM::GEPArg>{0, i});
       mlir::LLVM::StoreOp::create(rewriter, loc, fields[i], gep);

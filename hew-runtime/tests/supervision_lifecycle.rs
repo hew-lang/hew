@@ -276,6 +276,7 @@ fn supervised_actor_crash_and_restart() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -369,6 +370,7 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -760,6 +762,7 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -843,6 +846,7 @@ fn dynamic_child_restart_runs_state_drop() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
         };
 
         let idx = hew_supervisor_add_child_dynamic(sup.as_ptr(), &raw const spec);
@@ -919,6 +923,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec0),
@@ -936,6 +941,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec1),

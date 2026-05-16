@@ -259,6 +259,11 @@ pub struct HewChildSpec {
     pub restart_policy: c_int,
     pub mailbox_capacity: c_int,
     pub overflow: c_int,
+    /// Per-dispatch arena cap in bytes. 0 = unbounded. Mirrors
+    /// `hew_actor_spawn_opts::arena_cap_bytes`; supervisor restart path
+    /// re-applies this cap to every restarted child so `#[max_heap(N)]`
+    /// actors retain their cap across crashes.
+    pub arena_cap_bytes: usize,
 }
 
 /// Child lifecycle event (sent as system message payload).
@@ -387,6 +392,11 @@ struct InternalChildSpec {
     next_restart_time_ns: u64,
     /// Circuit breaker state for this child.
     circuit_breaker: CircuitBreakerState,
+    /// Per-dispatch arena cap in bytes. 0 = unbounded. Copied from
+    /// `HewChildSpec::arena_cap_bytes` at spec-registration time and
+    /// applied by every restart path so restarted actors keep the cap
+    /// originally set by `#[max_heap(N)]`.
+    arena_cap_bytes: usize,
     /// Codegen-emitted drop callback for owned state fields (e.g. `Vec`, `String`).
     /// Registered via [`hew_supervisor_set_child_state_drop`] after the child spec
     /// is added. Every restart path calls this on the newly spawned actor so that
@@ -425,6 +435,7 @@ impl Default for InternalChildSpec {
             max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
             next_restart_time_ns: 0,
             circuit_breaker: CircuitBreakerState::default(),
+            arena_cap_bytes: 0,
             state_drop_fn: None,
         }
     }
@@ -982,14 +993,7 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             coalesce_key_fn: None,
             coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
             budget: 0,
-            // WHY: InternalChildSpec does not yet carry arena_cap_bytes; the
-            // supervisor restart path therefore spawns restarted actors with
-            // an unbounded arena even when the original had #[max_heap].
-            // WHEN: Obsolete once hew_supervisor_add_child_spec carries and
-            // threads the cap through InternalChildSpec.
-            // WHAT: Add arena_cap_bytes to InternalChildSpec + HewChildSpec
-            // and plumb it through hew_supervisor_add_child_spec.
-            arena_cap_bytes: 0,
+            arena_cap_bytes: spec.arena_cap_bytes,
         };
         (opts, spec.state_drop_fn)
     };
@@ -1507,6 +1511,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
+        arena_cap_bytes: sp.arena_cap_bytes,
         // Registered by hew_supervisor_set_child_state_drop after this call.
         state_drop_fn: None,
     });
@@ -1744,6 +1749,7 @@ mod tests {
                 restart_policy: RESTART_TEMPORARY,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -2417,6 +2423,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
         next_restart_time_ns: 0,
         circuit_breaker: CircuitBreakerState::default(),
+        arena_cap_bytes: sp.arena_cap_bytes,
         // Registered by the caller via hew_supervisor_set_child_state_drop
         // immediately after this call returns. See the function doc comment
         // for the race-window analysis and calling contract.

@@ -1037,15 +1037,16 @@ def Hew_ChildSpecCreateOp : Hew_Op<"supervisor.child_spec_create"> {
     Creates a stack-allocated HewChildSpec struct from the given fields.
     The struct layout is:
       { ptr name, ptr init_state, i64 init_state_size,
-        ptr dispatch, i32 restart_policy, i32 mailbox_capacity, i32 overflow }
+        ptr dispatch, i32 restart_policy, i32 mailbox_capacity, i32 overflow,
+        i64 arena_cap_bytes }
 
     Lowers to: alloca + GEP/store for each field.
 
     Example:
     ```mlir
     %spec = hew.supervisor.child_spec_create %name, %state, %size, %dispatch,
-                %restart, %mbcap, %overflow
-              : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr, i32, i32, i32) -> !llvm.ptr
+                %restart, %mbcap, %overflow, %cap
+              : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr, i32, i32, i32, i64) -> !llvm.ptr
     ```
   }];
 
@@ -1056,16 +1057,17 @@ def Hew_ChildSpecCreateOp : Hew_Op<"supervisor.child_spec_create"> {
     AnyType:$dispatch,
     AnyType:$restart_policy,
     AnyType:$mailbox_capacity,
-    AnyType:$overflow_policy
+    AnyType:$overflow_policy,
+    AnyType:$arena_cap_bytes
   );
   let results = (outs AnyType:$result);
 
   let assemblyFormat = [{
     $name `,` $init_state `,` $init_state_size `,` $dispatch `,`
-    $restart_policy `,` $mailbox_capacity `,` $overflow_policy attr-dict
+    $restart_policy `,` $mailbox_capacity `,` $overflow_policy `,` $arena_cap_bytes attr-dict
       `:` `(` type($name) `,` type($init_state) `,` type($init_state_size) `,`
              type($dispatch) `,` type($restart_policy) `,` type($mailbox_capacity) `,`
-             type($overflow_policy) `)` `->` type($result)
+             type($overflow_policy) `,` type($arena_cap_bytes) `)` `->` type($result)
   }];
 }
 

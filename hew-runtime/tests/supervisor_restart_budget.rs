@@ -124,6 +124,7 @@ fn concurrent_crashes_decrement_budget_correctly() {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
             assert_eq!(
                 hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -193,6 +194,7 @@ fn budget_exhaustion_stops_supervisor() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -270,6 +272,7 @@ fn delayed_restart_processed_via_mailbox() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -336,6 +339,7 @@ fn multiple_delayed_restarts_budget_consistent() {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
             };
             assert_eq!(
                 hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),

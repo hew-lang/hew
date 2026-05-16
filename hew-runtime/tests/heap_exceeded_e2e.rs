@@ -16,16 +16,10 @@
 //! ## Arena cap setup
 //!
 //! A Hew-compiled `#[max_heap(N)]` actor uses `hew_actor_spawn_opts` (with
-//! `arena_cap_bytes` set) as the spawn path. The supervisor restart path
-//! (supervisor.rs:985-992) currently hardcodes `arena_cap_bytes: 0` — that is
-//! a documented shim awaiting a follow-on lane. This test therefore:
-//!
-//! - Spawns the actor via `hew_supervisor_add_child_spec` so the supervisor↔actor
-//!   link is established and the restart machinery is exercised.
-//! - After the initial child is available (via `hew_supervisor_get_child_wait`),
-//!   sets `(*arena).cap` directly — simulating what `hew_actor_spawn_opts` with
-//!   `arena_cap_bytes` does during the codegen-emitted spawn path.
-//! - Sends a trigger message whose dispatch allocates over the cap.
+//! `arena_cap_bytes` set) as the spawn path. `arena_cap_bytes` is now carried
+//! through `HewChildSpec` and `InternalChildSpec` so the supervisor restart
+//! path applies it to every restarted actor. This test verifies both the
+//! initial cap and that the cap is preserved across the restart cycle.
 //!
 //! WASM: `try_direct_longjmp_with_code` is a no-op on WASM; the signal-based
 //! crash recovery seam is absent. This test is gated on
@@ -188,8 +182,8 @@ unsafe extern "C" fn capped_dispatch(
 /// `ExitReason::HeapExceeded` and the supervisor restarts the child.
 ///
 /// Steps:
-/// 1. Supervisor spawns a child actor.
-/// 2. Test thread sets the actor arena cap to `ARENA_CAP_BYTES`.
+/// 1. Supervisor spawns a child actor with `arena_cap_bytes = ARENA_CAP_BYTES` in its spec.
+/// 2. Verify the initial actor's arena cap equals `ARENA_CAP_BYTES`.
 /// 3. A normal message confirms the actor is live.
 /// 4. A trigger message allocates `ALLOC_OVER_CAP_BYTES` > cap — the arena
 ///    invokes `try_direct_longjmp_with_code(200)`, unwinding through the
@@ -197,7 +191,8 @@ unsafe extern "C" fn capped_dispatch(
 /// 5. Crash log records `signal == HEW_TRAP_HEAP_EXCEEDED (200)`.
 /// 6. `ExitReason::from_error_code(200)` maps to `ExitReason::HeapExceeded`.
 /// 7. Supervisor completes a restart cycle (restart count ≥ 1).
-/// 8. The restarted child processes a normal message (process stays alive).
+/// 8. Restarted actor's arena cap equals `ARENA_CAP_BYTES` (cap survives restart).
+/// 9. The restarted child processes a normal message (process stays alive).
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -232,6 +227,7 @@ fn max_heap_actor_crash_routes_through_heap_exceeded_supervisor_exit() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: ARENA_CAP_BYTES,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -245,25 +241,17 @@ fn max_heap_actor_crash_routes_through_heap_exceeded_supervisor_exit() {
         assert!(!child.is_null(), "child actor must be spawned within 5s");
         let original_id = (*child).id;
 
-        // Step 2: set the arena cap.
-        //
-        // The supervisor spawns actors via restart_child_from_spec, which
-        // currently hardcodes arena_cap_bytes=0 (documented shim in
-        // supervisor.rs:985-992, pending a follow-on lane). We set the cap
-        // directly here to exercise the cap→longjmp seam without widening the
-        // A3 scope to include the InternalChildSpec plumbing.
-        //
-        // SAFETY: child is valid and not currently dispatching (no message has
-        // been sent yet). arena is a valid ActorArena pointer allocated during
-        // spawn. Setting cap before the first dispatch is a race-free mutation:
-        // the scheduler only installs the arena as the thread-local during
-        // activation, and no activation has occurred yet.
+        // Step 2: verify the arena cap was applied via the child spec.
         let arena: *mut ActorArena = (*child).arena;
         assert!(
             !arena.is_null(),
             "actor arena must be allocated by hew_actor_spawn_opts"
         );
-        (*arena).cap = ARENA_CAP_BYTES;
+        assert_eq!(
+            (*arena).cap,
+            ARENA_CAP_BYTES,
+            "initial actor arena cap must equal ARENA_CAP_BYTES from child spec"
+        );
 
         // Step 3: send a normal message — confirms the actor is live and
         // dispatching correctly before the cap trigger.
@@ -330,9 +318,22 @@ fn max_heap_actor_crash_routes_through_heap_exceeded_supervisor_exit() {
              the crashed actor)"
         );
 
-        // Step 8: the restarted actor processes messages normally.
-        // The restarted actor uses capped_dispatch and its arena has cap=0
-        // (the restart shim), so MSG_NORMAL succeeds unconditionally.
+        // Step 8: verify the restarted actor retains the original arena cap.
+        // The cap must be threaded from the child spec through the supervisor
+        // restart path — this is the regression guard for the arena_cap_bytes
+        // threading fix.
+        let restarted_arena: *mut ActorArena = (*restarted).arena;
+        assert!(
+            !restarted_arena.is_null(),
+            "restarted actor arena must be allocated"
+        );
+        assert_eq!(
+            (*restarted_arena).cap,
+            ARENA_CAP_BYTES,
+            "restarted actor arena cap must equal ARENA_CAP_BYTES (cap must survive restart)"
+        );
+
+        // Step 9: the restarted actor processes messages normally.
         let pre = DISPATCH_COUNT.load(Ordering::SeqCst);
         hew_actor_send(restarted, MSG_NORMAL, std::ptr::null_mut(), 0);
         assert!(

@@ -48,11 +48,22 @@
 /// `stable` is broader (per-actor / per-mailbox / per-IO entries);
 /// the substrate subset that MIR producers can emit today is the
 /// list below.
-// Lexicographically sorted: `hew_duplex_*` < `hew_lambda_actor_*`
+// Lexicographically sorted: `hew_actor_*` < `hew_duplex_*` < `hew_lambda_actor_*`
 // < `hew_recv_half_*` < `hew_send_half_*`. Section comments mark
 // the substrate-grouping for readability; the binary-search
 // invariant is over the flat ordering.
 const M2_RUNTIME_SYMBOLS: &[&str] = &[
+    // --- Actor link/monitor surface (native-only; WASM-TODO(#1451)) --------
+    // `hew_actor_link(parent, child)` — bidirectional link; void return. The
+    // Hew `link()` builtin wraps the call in `Ok(())` unconditionally because
+    // the current runtime does not surface AlreadyLinked as a return code.
+    // Codegen composite-return synthesis (Result<(), LinkError>) requires the
+    // Cluster 2 spine; the codegen arm is a tracked-gap shim until that lands.
+    "hew_actor_link",
+    // `hew_actor_monitor(watcher, target) -> u64` — returns a ref_id. Dead
+    // targets return immediately with a DOWN signal; ref_id is still non-zero.
+    // Codegen struct-wrapping (MonitorRef { ref_id }) requires Cluster 2 spine.
+    "hew_actor_monitor",
     // --- Duplex<S, R> dual-queue substrate ----------------------
     "hew_duplex_clone",
     "hew_duplex_close",
@@ -147,7 +158,13 @@ pub fn user_name_to_c_symbol(name: &str) -> Option<&'static str> {
     // C-ABI counterpart that MIR can emit today.  Extend this table
     // when a new builtin gains a producer arm.
     match name {
+        // Duplex substrate.
         "duplex_pair" => Some("hew_duplex_pair"),
+        // Actor link/monitor builtins. The Hew user-facing name matches the
+        // builtin name registered by `Checker::register_builtins`; the C-ABI
+        // symbol adds the `hew_actor_` prefix.
+        "link" => Some("hew_actor_link"),
+        "monitor" => Some("hew_actor_monitor"),
         _ => None,
     }
 }

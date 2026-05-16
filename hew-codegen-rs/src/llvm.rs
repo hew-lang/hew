@@ -412,6 +412,18 @@ fn intern_runtime_decl<'ctx>(
     let i64_ty = ctx.i64_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let fn_ty = match symbol {
+        // hew_actor_link(a: *mut HewActor, b: *mut HewActor) -> void
+        // (`hew-runtime/src/link.rs:80`). Establishes a bidirectional link.
+        // Actor handles are opaque ptrs on the spine. Return is void — the
+        // Hew `link()` builtin synthesises Ok(()) in Cluster 2.
+        "hew_actor_link" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_actor_monitor(watcher: *mut HewActor, target: *mut HewActor) -> u64
+        // (`hew-runtime/src/monitor.rs:157`). Returns a ref_id; 0 only on
+        // null inputs. Actor handles are opaque ptrs. The u64 is wrapped into
+        // MonitorRef { ref_id } in Cluster 2.
+        "hew_actor_monitor" => i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // hew_duplex_pair(s_cap: usize, r_cap: usize,
         //                 out_a: *mut *mut HewDuplexHandle,
         //                 out_b: *mut *mut HewDuplexHandle) -> i32
@@ -1260,6 +1272,99 @@ fn lower_call_runtime_abi(
                 return Err(CodegenError::FailClosed(format!(
                     "hew_duplex_send returns i32 (discarded by the runtime contract); \
                      producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // Actor link/monitor builtins.
+        //
+        // SHIM(B3→Cluster2): `link()` returns `Result<(), LinkError>` and
+        // `monitor()` returns `MonitorRef { ref_id: int }`. Both require
+        // composite-type construction (enum variant / struct literal) in the
+        // LLVM IR, which the Cluster 1 spine does not yet support.
+        //
+        // WHY this shim exists: the producer (MIR lower.rs) calls
+        // `lower_runtime_call("hew_actor_link", ...)` via
+        // `user_name_to_c_symbol("link")`.  Codegen must not silently discard
+        // the call, but also cannot construct the composite return today.
+        // The FFI call is emitted; return wrapping is deferred.
+        //
+        // WHEN obsolete: when the Cluster 2 spine lands enum-variant and
+        // struct-literal construction in `hew-codegen-rs`.  At that point,
+        // `hew_actor_link` wraps the void return as `Ok(())`, and
+        // `hew_actor_monitor` wraps the u64 ref_id as `MonitorRef { ref_id }`.
+        //
+        // WHAT the real solution looks like:
+        //   hew_actor_link:   call void → alloca Result<(),LinkError> → store
+        //                     discriminant 0 (Ok), zero-length payload.
+        //   hew_actor_monitor: call i64 → alloca MonitorRef → store ref_id.
+        "hew_actor_link" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_actor_link): expected 2 args \
+                     (parent, child), got {}",
+                    args.len()
+                )));
+            }
+            // arg0: parent actor handle (opaque ptr).
+            let parent = load_int_arg(fn_ctx, args[0], i64_ty, "link_parent")?;
+            // arg1: child actor handle (opaque ptr).
+            let child = load_int_arg(fn_ctx, args[1], i64_ty, "link_child")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [parent.into(), child.into()];
+            fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_actor_link_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_actor_link call: {e:?}")))?;
+            // SHIM(B3→Cluster2): `link()` returns Result<(), LinkError>.
+            // Composite-type construction is not yet available in the Cluster 1
+            // spine. Until the Cluster 2 spine lands, producers must not wire a
+            // dest slot for this call — fail-closed if they do.
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_actor_link Result<(),LinkError> return synthesis requires \
+                     Cluster 2 composite-type spine; producer must not supply \
+                     dest={d:?} until that lands"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_actor_monitor" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_actor_monitor): expected 2 args \
+                     (watcher, target), got {}",
+                    args.len()
+                )));
+            }
+            // arg0: watcher actor handle (opaque ptr).
+            let watcher = load_int_arg(fn_ctx, args[0], i64_ty, "monitor_watcher")?;
+            // arg1: target actor handle (opaque ptr).
+            let target = load_int_arg(fn_ctx, args[1], i64_ty, "monitor_target")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let llvm_args: [BasicMetadataValueEnum; 2] = [watcher.into(), target.into()];
+            fn_ctx
+                .builder
+                .build_call(fv, &llvm_args, "hew_actor_monitor_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_actor_monitor call: {e:?}")))?;
+            // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: int }.
+            // Struct-literal construction requires the Cluster 2 spine.
+            // Producers must not wire a dest until that lands.
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_actor_monitor MonitorRef{{ref_id}} struct synthesis requires \
+                     Cluster 2 composite-type spine; producer must not supply \
+                     dest={d:?} until that lands"
                 )));
             }
             let _ = (i32_ty, ptr_ty);

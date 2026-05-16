@@ -56,6 +56,22 @@ pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
         "LambdaActorHandle".to_string(),
         (ResourceMarker::Resource, Some("close".to_string())),
     );
+
+    // SendHalf<T> — the producer-only direction extracted from a Duplex
+    // pair via `.send_half()` (consumes the unified handle). Close method
+    // is "close" → runtime symbol hew_send_half_close which terminates only
+    // the send direction. Per §5.16 transport model, half-handles are
+    // independent owned resources that participate in scope-exit drop.
+    type_classes.insert(
+        "SendHalf".to_string(),
+        (ResourceMarker::Resource, Some("close".to_string())),
+    );
+
+    // RecvHalf<T> — symmetric to SendHalf for the consumer-only direction.
+    type_classes.insert(
+        "RecvHalf".to_string(),
+        (ResourceMarker::Resource, Some("close".to_string())),
+    );
 }
 
 #[cfg(test)]
@@ -102,6 +118,26 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("LambdaActorHandle"),
+            Some(&(ResourceMarker::Resource, Some("close".to_string())))
+        );
+    }
+
+    #[test]
+    fn send_half_is_seeded_as_resource() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+        assert_eq!(
+            table.get("SendHalf"),
+            Some(&(ResourceMarker::Resource, Some("close".to_string())))
+        );
+    }
+
+    #[test]
+    fn recv_half_is_seeded_as_resource() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+        assert_eq!(
+            table.get("RecvHalf"),
             Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }

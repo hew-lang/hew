@@ -1,6 +1,7 @@
 use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
 use hew_mir::{
     lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement, Terminator,
+    TrapKind,
 };
 use hew_types::TypeCheckOutput;
 
@@ -585,10 +586,38 @@ fn lower_all_six_comparison_preds() {
 fn lower_unsupported_binop_fails_closed_with_diagnostic() {
     // Previously `lower_binary` silently popped the dest local and
     // returned None for any non-{Add,Sub,Mul} binop, letting the
-    // caller's `decide` run while the emitter produced no
-    // instruction — a quiet fail-soft. Now the unsupported branch
-    // emits a `CutoverUnsupported` so the CLI rejection surface
-    // catches the construct.
+    // caller's `decide` run while the emitter produced no instruction
+    // — a quiet fail-soft. Now the unsupported branch emits a
+    // `CutoverUnsupported` so the CLI rejection surface catches the
+    // construct.
+    //
+    // B-5 wired `/`, `%`, `<<`, `>>` — use a bitwise `&` which is
+    // still genuinely unsupported in the v0.5 spine to exercise the
+    // fail-closed path.
+    let parsed = hew_parser::parse("fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a & b }");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+    assert!(
+        output.diagnostics.is_empty(),
+        "Bitwise-AND should parse + lower cleanly through HIR: {:?}",
+        output.diagnostics
+    );
+    let pipeline = lower_hir_module(&output.module);
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::CutoverUnsupported { construct, .. }
+                if construct.contains("binary operator")
+        )),
+        "Bitwise `&` must emit CutoverUnsupported at MIR: {:?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn divide_lowers_cleanly_with_trap_edges() {
+    // B-5: integer `/` is now wired — it must lower without a
+    // CutoverUnsupported diagnostic and produce a DivideByZero trap edge.
     let parsed = hew_parser::parse("fn main() -> i64 { let r = 1 / 2; 0 }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
@@ -599,13 +628,22 @@ fn lower_unsupported_binop_fails_closed_with_diagnostic() {
     );
     let pipeline = lower_hir_module(&output.module);
     assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
-                if construct.contains("binary operator")
-        )),
-        "Divide must emit CutoverUnsupported at MIR: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "Divide must lower without CutoverUnsupported after B-5: {:?}",
         pipeline.diagnostics
+    );
+    // At least one DivideByZero trap block must be present.
+    let has_dbz_trap = pipeline.raw_mir[0].blocks.iter().any(|b| {
+        matches!(
+            b.terminator,
+            Terminator::Trap {
+                kind: TrapKind::DivideByZero
+            }
+        )
+    });
+    assert!(
+        has_dbz_trap,
+        "Divide must produce a DivideByZero trap block after B-5"
     );
 }
 

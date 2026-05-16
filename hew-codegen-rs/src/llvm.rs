@@ -673,6 +673,148 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 .build_store(dest_ptr, result)
                 .map_err(|e| CodegenError::Llvm(format!("arith store: {e:?}")))?;
         }
+        // B-5: division and remainder. These are the post-check instructions —
+        // the divisor-zero and signed-MIN/-1 guard branches are emitted by
+        // the MIR producer (`lower_div_rem`); by the time execution reaches
+        // here the divisor is proven non-zero and non-MIN/-1.
+        Instr::IntDiv {
+            signed,
+            dest,
+            lhs,
+            rhs,
+        }
+        | Instr::IntRem {
+            signed,
+            dest,
+            lhs,
+            rhs,
+        } => {
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntDiv/IntRem lhs is not an int".into(),
+                    ))
+                }
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntDiv/IntRem operands and dest must share the same int type".into(),
+                ));
+            }
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "div_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("div lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "div_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("div rhs load: {e:?}")))?
+                .into_int_value();
+            let result = match (instr, signed) {
+                (Instr::IntDiv { .. }, IntSignedness::Signed) => {
+                    fn_ctx.builder.build_int_signed_div(lhs_v, rhs_v, "sdiv")
+                }
+                (Instr::IntDiv { .. }, IntSignedness::Unsigned) => {
+                    fn_ctx.builder.build_int_unsigned_div(lhs_v, rhs_v, "udiv")
+                }
+                (Instr::IntRem { .. }, IntSignedness::Signed) => {
+                    fn_ctx.builder.build_int_signed_rem(lhs_v, rhs_v, "srem")
+                }
+                (Instr::IntRem { .. }, IntSignedness::Unsigned) => {
+                    fn_ctx.builder.build_int_unsigned_rem(lhs_v, rhs_v, "urem")
+                }
+                _ => unreachable!("matched on IntDiv / IntRem above"),
+            }
+            .map_err(|e| CodegenError::Llvm(format!("div/rem: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("div/rem store: {e:?}")))?;
+        }
+        // B-5: shift instructions. The out-of-range guard is emitted by the
+        // MIR producer (`lower_shift`); by the time execution reaches here the
+        // shift count is proven to be in `[0, width)`.
+        Instr::IntShl { dest, lhs, rhs } => {
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => return Err(CodegenError::FailClosed("IntShl lhs is not an int".into())),
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntShl operands and dest must share the same int type".into(),
+                ));
+            }
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "shl_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("shl lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "shl_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("shl rhs load: {e:?}")))?
+                .into_int_value();
+            let result = fn_ctx
+                .builder
+                .build_left_shift(lhs_v, rhs_v, "shl")
+                .map_err(|e| CodegenError::Llvm(format!("shl: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("shl store: {e:?}")))?;
+        }
+        Instr::IntShr {
+            signed,
+            dest,
+            lhs,
+            rhs,
+        } => {
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => return Err(CodegenError::FailClosed("IntShr lhs is not an int".into())),
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntShr operands and dest must share the same int type".into(),
+                ));
+            }
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "shr_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("shr lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "shr_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("shr rhs load: {e:?}")))?
+                .into_int_value();
+            // Arithmetic right shift for signed types (preserves sign),
+            // logical right shift for unsigned types (zero-fills).
+            let result = match signed {
+                IntSignedness::Signed => {
+                    fn_ctx.builder.build_right_shift(lhs_v, rhs_v, true, "ashr")
+                }
+                IntSignedness::Unsigned => fn_ctx
+                    .builder
+                    .build_right_shift(lhs_v, rhs_v, false, "lshr"),
+            }
+            .map_err(|e| CodegenError::Llvm(format!("shr: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("shr store: {e:?}")))?;
+        }
         Instr::IntArithChecked {
             op,
             signed,
@@ -839,6 +981,10 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 CmpPred::SignedLessEq => IntPredicate::SLE,
                 CmpPred::SignedGreater => IntPredicate::SGT,
                 CmpPred::SignedGreaterEq => IntPredicate::SGE,
+                // B-5: shift-range check reinterprets operands as unsigned.
+                // Catches both negative counts (wrap to large unsigned) and
+                // counts ≥ bit-width in one compare.
+                CmpPred::UnsignedGreaterEq => IntPredicate::UGE,
             };
             let bit = fn_ctx
                 .builder

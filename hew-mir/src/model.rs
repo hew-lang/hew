@@ -293,6 +293,11 @@ pub enum CmpPred {
     SignedLessEq,
     SignedGreater,
     SignedGreaterEq,
+    /// Unsigned ≥: reinterprets both operands as unsigned. Used by
+    /// shift-range checking to catch both negative shift counts (which
+    /// become large unsigned values) and counts ≥ bit-width in a single
+    /// compare. B-5 wires this; prior slices had no unsigned predicate.
+    UnsignedGreaterEq,
 }
 
 /// A validated runtime-ABI call payload carried by `Instr::CallRuntimeAbi`.
@@ -403,6 +408,47 @@ pub enum Instr {
     /// Two's-complement wrapping `dest = lhs * rhs`. Producer story
     /// matches `IntAdd` above.
     IntMul { dest: Place, lhs: Place, rhs: Place },
+    /// Integer division `dest = lhs / rhs` with no implicit trap guard.
+    /// Producers that need trap-on-zero and trap-on-signed-MIN/-1 MUST
+    /// emit the divisor checks and branch to a `Terminator::Trap` block
+    /// BEFORE emitting this instruction (B-5 does this). Direct emission
+    /// of `IntDiv` without that guard is a construct-discipline violation
+    /// mirroring `IntAdd`/`IntMul`; no runtime check is added here.
+    /// `signed` selects `sdiv` vs `udiv`. Unsigned division can never
+    /// produce signed-MIN/-1 overflow, but the divisor-zero check is
+    /// still required for both signednesses.
+    IntDiv {
+        signed: IntSignedness,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+    },
+    /// Integer remainder `dest = lhs % rhs` with no implicit trap guard.
+    /// Same guard discipline as `IntDiv`: divisor-zero and
+    /// signed-MIN/-1 checks must precede this instruction.
+    /// `signed` selects `srem` vs `urem`.
+    IntRem {
+        signed: IntSignedness,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+    },
+    /// Left shift `dest = lhs << rhs`. No signedness on the shift
+    /// itself (LLVM `shl`). Producers must check `(rhs as unsigned) >=
+    /// bit_width(dest)` before emitting this instruction and branch to
+    /// a `Terminator::Trap { kind: TrapKind::ShiftOutOfRange }` block
+    /// on the out-of-range path (B-5). No implicit guard here.
+    IntShl { dest: Place, lhs: Place, rhs: Place },
+    /// Right shift `dest = lhs >> rhs`. `signed` selects arithmetic
+    /// shift right (`ashr`) vs logical shift right (`lshr`). Same
+    /// out-of-range guard discipline as `IntShl`: check-and-trap MUST
+    /// precede this instruction.
+    IntShr {
+        signed: IntSignedness,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+    },
     /// Checked integer arithmetic with trap-on-overflow. Lowers to
     /// `call {iN, i1} @llvm.{s,u}{add,sub,mul}.with.overflow.iN(lhs, rhs)`
     /// plus two `extractvalue`s: the iN result into `dest` and the i1

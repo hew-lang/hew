@@ -38,6 +38,55 @@ fn integer_signedness(ty: &ResolvedTy) -> Option<IntSignedness> {
     }
 }
 
+/// Return the statically known bit-width for a concrete integer type.
+///
+/// `Isize` / `Usize` are platform-sized (32-bit on WASM32, 64-bit on
+/// native) — their width is NOT knowable at MIR construction time.
+/// Returns `None` for platform-sized types and all non-integer types.
+/// Callers that require a static width (shift-range check, signed-MIN
+/// constant emission) must fail-closed (`CutoverUnsupported`) when this
+/// returns `None`.
+///
+/// WHY-ISIZE-NONE: the shift-range bound `(count as unsigned) >= W`
+/// requires `W` to be a compile-time constant in the generated
+/// `Instr::ConstI64`. On `isize`/`usize` the correct constant is
+/// target-dependent (32 vs 64); emitting the wrong constant would
+/// silently admit out-of-range shifts on one target. Fail-closed is
+/// the right answer for the v0.5 integer spine.
+/// WHEN-OBSOLETE: when MIR carries target-info (pointer-width in
+/// `IrPipeline` or a `TargetSpec` passed to the builder), re-wire to
+/// emit the correct per-target constant and remove this `None` arm.
+fn integer_bit_width(ty: &ResolvedTy) -> Option<i64> {
+    match ty {
+        ResolvedTy::I8 | ResolvedTy::U8 => Some(8),
+        ResolvedTy::I16 | ResolvedTy::U16 => Some(16),
+        ResolvedTy::I32 | ResolvedTy::U32 => Some(32),
+        ResolvedTy::I64 | ResolvedTy::U64 => Some(64),
+        // Isize / Usize are platform-sized (see doc comment) and all
+        // other types are non-integer — both arms return None.
+        _ => None,
+    }
+}
+
+/// Return the signed minimum value for a concrete signed integer type
+/// as an `i64`. Used to emit the `lhs == iN::MIN` constant in the
+/// signed-MIN/-1 trap check for `/` and `%`.
+///
+/// Returns `None` for unsigned types, `Isize` (platform-sized), and
+/// all non-integer types. Callers must fail-closed when this returns
+/// `None`.
+fn signed_min_value(ty: &ResolvedTy) -> Option<i64> {
+    match ty {
+        ResolvedTy::I8 => Some(i64::from(i8::MIN)),
+        ResolvedTy::I16 => Some(i64::from(i16::MIN)),
+        ResolvedTy::I32 => Some(i64::from(i32::MIN)),
+        ResolvedTy::I64 => Some(i64::MIN),
+        // Isize: platform-sized, not knowable at MIR time.
+        // Unsigned types: no MIN check needed.
+        _ => None,
+    }
+}
+
 /// Run Checked MIR's legality passes over a function's statement
 /// stream. Two real passes ship today (use-after-consume,
 /// initialised-before-use); the aliasing, generator-borrow-across-
@@ -1093,19 +1142,34 @@ impl Builder {
             });
             return Some(dest);
         }
+        // B-5 divide / modulo / shift lowering.
+        //
+        // These operators are handled here with early returns so they
+        // don't fall through to the B-2 overflow-trap `IntArithChecked`
+        // path below (which is only for `+`/`-`/`*`).
+        match op {
+            BinaryOp::Divide | BinaryOp::Modulo => {
+                return self.lower_div_rem(op, dest, lhs, rhs, ty, site);
+            }
+            BinaryOp::Shl | BinaryOp::Shr => {
+                return self.lower_shift(op, dest, lhs, rhs, ty, site);
+            }
+            _ => {}
+        }
+
         let arith_op = match op {
             BinaryOp::Add => IntArithOp::Add,
             BinaryOp::Subtract => IntArithOp::Sub,
             BinaryOp::Multiply => IntArithOp::Mul,
-            // The spine subset still rejects Divide / Modulo / logical
-            // / shift / range / send / regex / bitwise binops. Previously
-            // this arm silently popped the dest local and returned
-            // `None`, letting the parent expression succeed with a
-            // missing producer (quiet fail-soft — caller's `decide`
-            // ran, `MirDiagnostic` did not). Fail closed now: drop the
-            // dest local, emit a `CutoverUnsupported` so the CLI
-            // rejection surface sees the offending construct, and
-            // return `None`. LESSONS `boundary-fail-closed`.
+            // The spine subset still rejects logical / range / send /
+            // regex / bitwise binops. Previously this arm silently
+            // popped the dest local and returned `None`, letting the
+            // parent expression succeed with a missing producer (quiet
+            // fail-soft — caller's `decide` ran, `MirDiagnostic` did
+            // not). Fail closed now: drop the dest local, emit a
+            // `CutoverUnsupported` so the CLI rejection surface sees
+            // the offending construct, and return `None`.
+            // LESSONS `boundary-fail-closed`.
             _ => {
                 self.locals.pop();
                 self.diagnostics.push(MirDiagnostic {
@@ -1179,6 +1243,298 @@ impl Builder {
         // Continuation block: the cursor lands here so the parent
         // expression's caller can keep emitting into the success path.
         self.start_block(cont_bb);
+        Some(dest)
+    }
+
+    /// Lower integer `/` and `%` with divide-by-zero and (for signed
+    /// types) signed-MIN/-1 trap guards.
+    ///
+    /// CFG shape:
+    ///
+    /// ```text
+    /// entry_bb (current)
+    ///   IntCmp { pred: Eq, dest: zero_flag, lhs: rhs, rhs: const_0 }
+    ///   Branch { cond: zero_flag, then: dbz_trap_bb, else: after_zero_bb }
+    ///
+    /// dbz_trap_bb
+    ///   Trap { kind: DivideByZero }
+    ///
+    /// after_zero_bb  [signed only]
+    ///   IntCmp { pred: Eq, dest: min_flag, lhs: lhs, rhs: const_MIN }
+    ///   Branch { cond: min_flag, then: min_check_bb, else: div_bb }
+    ///
+    /// min_check_bb   [signed only]
+    ///   IntCmp { pred: Eq, dest: negone_flag, lhs: rhs, rhs: const_NEG1 }
+    ///   Branch { cond: negone_flag, then: smno_trap_bb, else: div_bb }
+    ///
+    /// smno_trap_bb   [signed only]
+    ///   Trap { kind: SignedMinDivNegOne }
+    ///
+    /// div_bb
+    ///   IntDiv / IntRem { dest, lhs, rhs }
+    ///   [cursor stays here for subsequent lowering]
+    /// ```
+    ///
+    /// For unsigned types the after-zero block is `div_bb` directly.
+    ///
+    /// `dest` must already be allocated by the caller (`lower_binary`
+    /// allocates it before dispatching here).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all arguments are structurally required: the builder state \
+                  (&mut self), the opcode discriminator (op), the pre-allocated \
+                  destination place (dest), both operand places (lhs, rhs), the \
+                  result type (ty) for constant-emission width, and the site id \
+                  for diagnostics. There is no natural grouping that reduces this."
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the function implements a single coherent CFG-emission \
+                  pattern (zero-check → MIN/-1 check → div/rem) that must \
+                  stay in one place for readability; extracting sub-steps \
+                  would require passing more builder state around."
+    )]
+    fn lower_div_rem(
+        &mut self,
+        op: BinaryOp,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let Some(signed) = integer_signedness(ty) else {
+            // Non-integer reaching `/` or `%` — B-1 violation upstream.
+            self.locals.pop();
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("binary operator `{op}` on non-integer type"),
+                    site,
+                },
+                note: "B-5 div/rem trap lowering requires an integer-typed result".to_string(),
+            });
+            return None;
+        };
+
+        // ── divide-by-zero check ────────────────────────────────────
+        let zero_const = self.alloc_local(ty.clone());
+        self.instructions.push(Instr::ConstI64 {
+            dest: zero_const,
+            value: 0,
+        });
+        let zero_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: zero_flag,
+            pred: CmpPred::Eq,
+            lhs: rhs,
+            rhs: zero_const,
+        });
+        let dbz_trap_bb = self.alloc_block();
+        let after_zero_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: zero_flag,
+            then_target: dbz_trap_bb,
+            else_target: after_zero_bb,
+        });
+
+        self.start_block(dbz_trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::DivideByZero,
+        });
+
+        self.start_block(after_zero_bb);
+
+        // ── signed-MIN / -1 check (signed types only) ───────────────
+        if signed == IntSignedness::Signed {
+            let Some(min_val) = signed_min_value(ty) else {
+                // isize: platform-sized, MIN not knowable at MIR time.
+                // Fail closed rather than emit an incorrect guard.
+                self.locals.pop();
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("binary operator `{op}` on `isize`"),
+                        site,
+                    },
+                    note: "B-5 signed-MIN/-1 trap for `isize` requires target-width \
+                           information not available at MIR construction time. \
+                           WHEN-OBSOLETE: when IrPipeline carries a TargetSpec, \
+                           re-wire to emit the correct per-target MIN constant."
+                        .to_string(),
+                });
+                return None;
+            };
+            let min_const = self.alloc_local(ty.clone());
+            self.instructions.push(Instr::ConstI64 {
+                dest: min_const,
+                value: min_val,
+            });
+            let min_flag = self.alloc_local(ResolvedTy::Bool);
+            self.instructions.push(Instr::IntCmp {
+                dest: min_flag,
+                pred: CmpPred::Eq,
+                lhs,
+                rhs: min_const,
+            });
+            let min_check_bb = self.alloc_block();
+            let div_bb = self.alloc_block();
+            self.finish_current_block(Terminator::Branch {
+                cond: min_flag,
+                then_target: min_check_bb,
+                else_target: div_bb,
+            });
+
+            // min_check_bb: check whether rhs == -1
+            self.start_block(min_check_bb);
+            let negone_const = self.alloc_local(ty.clone());
+            self.instructions.push(Instr::ConstI64 {
+                dest: negone_const,
+                value: -1,
+            });
+            let negone_flag = self.alloc_local(ResolvedTy::Bool);
+            self.instructions.push(Instr::IntCmp {
+                dest: negone_flag,
+                pred: CmpPred::Eq,
+                lhs: rhs,
+                rhs: negone_const,
+            });
+            let smno_trap_bb = self.alloc_block();
+            self.finish_current_block(Terminator::Branch {
+                cond: negone_flag,
+                then_target: smno_trap_bb,
+                else_target: div_bb,
+            });
+
+            self.start_block(smno_trap_bb);
+            self.finish_current_block(Terminator::Trap {
+                kind: TrapKind::SignedMinDivNegOne,
+            });
+
+            self.start_block(div_bb);
+        }
+
+        // ── div / rem instruction on the safe path ──────────────────
+        match op {
+            BinaryOp::Divide => self.instructions.push(Instr::IntDiv {
+                signed,
+                dest,
+                lhs,
+                rhs,
+            }),
+            BinaryOp::Modulo => self.instructions.push(Instr::IntRem {
+                signed,
+                dest,
+                lhs,
+                rhs,
+            }),
+            _ => unreachable!("lower_div_rem called only for Divide / Modulo"),
+        }
+        Some(dest)
+    }
+
+    /// Lower `<<` and `>>` with a shift-out-of-range trap guard.
+    ///
+    /// The range check uses an unsigned ≥ compare on the shift count:
+    ///   `(count as unsigned) >= bit_width(T)`
+    /// This single compare catches both negative counts (which become
+    /// large unsigned values after reinterpretation) and counts ≥ the
+    /// type's width.
+    ///
+    /// `isize`/`usize` are rejected with `CutoverUnsupported` because
+    /// the bit-width is not statically known at MIR time (see
+    /// `integer_bit_width` for the documented why / when-obsolete).
+    ///
+    /// CFG shape:
+    /// ```text
+    /// entry_bb (current)
+    ///   ConstI64 { dest: width_const, value: bit_width }
+    ///   IntCmp { pred: UnsignedGreaterEq, dest: oor_flag,
+    ///            lhs: rhs (shift count), rhs: width_const }
+    ///   Branch { cond: oor_flag, then: sor_trap_bb, else: shift_bb }
+    ///
+    /// sor_trap_bb
+    ///   Trap { kind: ShiftOutOfRange }
+    ///
+    /// shift_bb
+    ///   IntShl / IntShr { dest, lhs, rhs }
+    ///   [cursor stays here]
+    /// ```
+    fn lower_shift(
+        &mut self,
+        op: BinaryOp,
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let Some(signed) = integer_signedness(ty) else {
+            self.locals.pop();
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("binary operator `{op}` on non-integer type"),
+                    site,
+                },
+                note: "B-5 shift trap lowering requires an integer-typed operand".to_string(),
+            });
+            return None;
+        };
+
+        let Some(width) = integer_bit_width(ty) else {
+            // isize / usize: width not knowable at MIR time.
+            self.locals.pop();
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: format!("binary operator `{op}` on `isize`/`usize`"),
+                    site,
+                },
+                note: "B-5 shift-range trap for `isize`/`usize` requires target-width \
+                       information not available at MIR construction time. \
+                       WHEN-OBSOLETE: when IrPipeline carries a TargetSpec, \
+                       re-wire to emit the correct per-target width constant."
+                    .to_string(),
+            });
+            return None;
+        };
+
+        // ── out-of-range check: (count as unsigned) >= width ────────
+        let width_const = self.alloc_local(ty.clone());
+        self.instructions.push(Instr::ConstI64 {
+            dest: width_const,
+            value: width,
+        });
+        let oor_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: oor_flag,
+            pred: CmpPred::UnsignedGreaterEq,
+            lhs: rhs, // shift count
+            rhs: width_const,
+        });
+        let sor_trap_bb = self.alloc_block();
+        let shift_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: oor_flag,
+            then_target: sor_trap_bb,
+            else_target: shift_bb,
+        });
+
+        self.start_block(sor_trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::ShiftOutOfRange,
+        });
+
+        self.start_block(shift_bb);
+
+        // ── shift instruction on the safe path ──────────────────────
+        match op {
+            BinaryOp::Shl => self.instructions.push(Instr::IntShl { dest, lhs, rhs }),
+            BinaryOp::Shr => self.instructions.push(Instr::IntShr {
+                signed,
+                dest,
+                lhs,
+                rhs,
+            }),
+            _ => unreachable!("lower_shift called only for Shl / Shr"),
+        }
         Some(dest)
     }
 
@@ -2515,6 +2871,10 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
+        | Instr::IntDiv { dest, lhs, rhs, .. }
+        | Instr::IntRem { dest, lhs, rhs, .. }
+        | Instr::IntShl { dest, lhs, rhs }
+        | Instr::IntShr { dest, lhs, rhs, .. }
         | Instr::IntCmp { dest, lhs, rhs, .. } => vec![*dest, *lhs, *rhs],
         Instr::IntArithChecked {
             dest,

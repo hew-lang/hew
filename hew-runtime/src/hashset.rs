@@ -2,6 +2,10 @@
 //!
 //! Hash set implementation backed by `HashMap<T, ()>` with C ABI.
 //! Uses the existing `HashMap` infrastructure for storage.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use core::ffi::c_char;
 use core::ptr;

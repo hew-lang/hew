@@ -34,6 +34,10 @@
 //! - [`hew_fault_inject_drop`] — Drop next N messages to an actor.
 //! - [`hew_fault_clear`] — Remove all faults for an actor.
 //! - [`hew_fault_clear_all`] — Remove all faults system-wide.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::lifetime::PoisonSafe;
 use std::ffi::c_int;

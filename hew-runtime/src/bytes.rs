@@ -19,6 +19,10 @@
 //! underlying allocation (slicing is O(1)). Mutations (`push`, `append`) use
 //! copy-on-write: if the refcount is > 1 the active region is copied to a fresh
 //! buffer before mutating.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

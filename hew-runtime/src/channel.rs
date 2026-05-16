@@ -9,6 +9,10 @@
 //! All functions use `#[no_mangle] extern "C"` with opaque pointers.
 //! Received strings are malloc-allocated, NUL-terminated, and owned by the
 //! caller (must be freed with `free()`).
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::{c_char, CStr};
 use std::ptr;

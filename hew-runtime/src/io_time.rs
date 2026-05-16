@@ -3,6 +3,10 @@
 //! Provides `hew_read_file`, `hew_sleep_ms`, `hew_now_ms`, duration helpers,
 //! and a platform I/O poller (epoll on Linux, kqueue on FreeBSD/macOS, stub
 //! elsewhere).
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 use std::ffi::c_void;

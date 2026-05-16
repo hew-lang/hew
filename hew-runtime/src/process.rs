@@ -3,6 +3,10 @@
 //! Provides process execution (with shell or explicit arguments), spawning,
 //! waiting, and killing for compiled Hew programs. Stdout/stderr strings in
 //! [`HewProcessResult`] are allocated with `libc::malloc` and NUL-terminated.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::vec::{ElemKind, HewVec};
 use crate::{cabi::str_to_malloc, util::cstr_to_str};

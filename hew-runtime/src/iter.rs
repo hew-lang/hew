@@ -1,3 +1,7 @@
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 //! Iterator protocol for Hew collections.
 
 // Pointer casts from the data buffer are safe because the backing storage

@@ -1,3 +1,7 @@
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 //! Actor pool abstraction with configurable routing strategies.
 
 use std::ffi::c_char;

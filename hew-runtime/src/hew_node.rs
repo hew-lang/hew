@@ -2,6 +2,10 @@
 //!
 //! Integrates transport, connection manager, SWIM membership, and
 //! name/actor registry wiring.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::lifetime::{PoisonSafe, PoisonSafeRw};
 use crate::util::{CondvarExt, MutexExt};

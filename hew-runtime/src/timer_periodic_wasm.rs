@@ -4,6 +4,10 @@
 //! zero-payload self-sends. On wasm32 there is no background ticker thread, so
 //! the host (or [`crate::scheduler_wasm::hew_wasm_sched_tick`]) drives this
 //! queue explicitly.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;

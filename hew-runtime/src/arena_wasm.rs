@@ -41,6 +41,10 @@
 //! Every `alloc` call rounds the cursor up with the standard power-of-two mask:
 //! `(cursor + align - 1) & !(align - 1)`.  **`align` must be a power of two**
 //! — a `debug_assert!` guards this in debug builds.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::cell::Cell;

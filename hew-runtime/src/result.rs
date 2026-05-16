@@ -3,6 +3,10 @@
 //! Tagged union for `Result<T, E>` — either `Ok(value)` (tag=0) or `Err(msg)` (tag=1).
 //! Layout-compatible with the C runtime representation used by MLIR codegen.
 //! Error payloads carry both a numeric code and a heap-allocated message string.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::{c_char, c_void};
 use std::ptr;

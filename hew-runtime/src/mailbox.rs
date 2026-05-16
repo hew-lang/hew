@@ -14,6 +14,10 @@
 //! they require queue traversal or blocking.
 //!
 //! System messages use a separate lock-free MPSC queue.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::util::{CondvarExt, MutexExt};
 #[cfg(test)]

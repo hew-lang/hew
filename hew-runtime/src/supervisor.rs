@@ -3,6 +3,10 @@
 //! Implements event-driven supervision with three restart strategies
 //! (one-for-one, one-for-all, rest-for-one) and sliding-window restart
 //! tracking. Mirrors the C implementation in `hew-codegen/runtime/src/supervisor.c`.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use std::cell::Cell;

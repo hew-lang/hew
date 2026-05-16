@@ -2,6 +2,10 @@
 //!
 //! Provides a simple pool of `HEW_BLOCKING_POOL_SIZE` (4) worker threads that
 //! drain a shared task queue. The pool is opaque to C callers (Box-allocated).
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::c_void;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};

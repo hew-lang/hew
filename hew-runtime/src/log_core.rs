@@ -3,6 +3,10 @@
 //! These are the functions that back `std::log` in Hew programs.
 //! They use only the Rust standard library (atomics, stderr, `SystemTime`)
 //! so they can be unconditionally linked without pulling in external crates.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::cabi::cstr_to_str;
 use std::os::raw::c_char;

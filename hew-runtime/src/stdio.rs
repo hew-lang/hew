@@ -4,6 +4,10 @@
 //!
 //! All functions that return `*mut c_char` allocate via `libc::malloc`. The
 //! caller owns the returned pointer and must free it with `libc::free`.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::cabi::str_to_malloc;
 use std::ffi::{c_char, CStr};

@@ -2,6 +2,10 @@
 //!
 //! Maps remote node IDs (high 16 bits of a PID) to active transport
 //! connection handles.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::util::RwLockExt;
 use std::collections::HashMap;

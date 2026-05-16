@@ -4,6 +4,10 @@
 //! sender calls [`hew_reply`] to deposit a value, and the receiver
 //! blocks in [`hew_reply_wait`] (or [`hew_reply_wait_timeout`]) until
 //! the value is ready.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;

@@ -16,6 +16,10 @@
 //! 4. When the body returns, the thread sends a `GenValue { is_done: true }`
 //!    "done" sentinel and exits.
 //! 5. [`hew_gen_free`] cancels (if running) and joins the thread.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::c_void;
 use std::ptr;

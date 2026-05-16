@@ -2,6 +2,10 @@
 //!
 //! CPython-compatible MT19937 Mersenne Twister PRNG with `#[no_mangle]
 //! extern "C"` FFI functions. State is thread-local (one generator per thread).
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::cell::RefCell;
 use std::mem;

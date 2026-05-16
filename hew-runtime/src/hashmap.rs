@@ -2,7 +2,10 @@
 //!
 //! Open-addressing hash map (`HewHashMap`) with C ABI, matching the C runtime
 //! layout exactly. Uses FNV-1a hashing and linear probing with tombstones.
-
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 // Internal `find_entry` returns isize (-1 for not-found), matching C semantics.
 // The value is always checked before use as a usize index.
 #![expect(

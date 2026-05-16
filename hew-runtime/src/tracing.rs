@@ -26,6 +26,10 @@
 //! - [`hew_trace_enable`] — Enable/disable tracing globally.
 //! - [`hew_trace_event_count`] — Number of recorded events.
 //! - [`hew_trace_drain`] — Drain recorded events into a buffer.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::lifetime::PoisonSafe;
 use crate::util::MutexExt;

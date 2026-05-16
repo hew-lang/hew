@@ -13,6 +13,10 @@
 //!
 //! - [`sched_enqueue`] — submit an actor for scheduling.
 //! - [`sched_try_wake`] — wake a parked worker thread.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};

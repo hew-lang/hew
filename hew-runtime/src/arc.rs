@@ -6,6 +6,10 @@
 //!
 //! Layout: `[HewArcInner header | data bytes...]`
 //! Same pointer convention as Rc: returned pointer is to the data region.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;

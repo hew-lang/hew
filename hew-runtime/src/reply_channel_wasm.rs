@@ -15,6 +15,10 @@
 //!
 //! Finite-timeout select (`timeout_ms >= 0`) uses the same monotonic
 //! deadline-loop pattern as single-arm timed ask on `wasm32-wasip1`.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::c_void;
 use std::ptr;

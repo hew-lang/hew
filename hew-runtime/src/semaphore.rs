@@ -1,3 +1,7 @@
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 //! Hew runtime: counting semaphore for concurrency control.
 
 use crate::util::{CondvarExt, MutexExt};

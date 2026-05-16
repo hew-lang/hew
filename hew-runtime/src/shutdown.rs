@@ -12,6 +12,10 @@
 //!
 //! 3. **Terminate** — Force-stop any remaining actors and shut down the
 //!    scheduler.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::lifetime::poison_safe::PoisonSafe;
 use std::ffi::c_int;

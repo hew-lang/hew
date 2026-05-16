@@ -3,6 +3,10 @@
 //! Provides access to environment variables, command-line arguments, and basic
 //! process/system information for compiled Hew programs. All returned strings
 //! are allocated with `libc::malloc` so callers can free them with `libc::free`.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::cabi::malloc_cstring;
 use crate::lifetime::PoisonSafeRw;

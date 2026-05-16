@@ -10,6 +10,10 @@
 //! - [`CrashStats`] — per-actor crash statistics with sliding window
 //! - [`RECENT_CRASHES`] — global ring buffer of recent crashes (64 entries)
 //! - C ABI functions for allocating/managing crash statistics
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::lifetime::PoisonSafe;
 use std::collections::VecDeque;

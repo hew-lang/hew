@@ -16,6 +16,10 @@
 //!
 //! - `HEW_QUIC_CERT` — PEM file path for the server certificate chain
 //! - `HEW_QUIC_KEY` — PEM file path for the server private key
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::Arc;

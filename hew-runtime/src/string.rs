@@ -3,6 +3,10 @@
 //! String operations exposed with C ABI for use by compiled Hew programs.
 //! All returned strings are allocated with `libc::malloc` so callers can free
 //! them with `libc::free`.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::cabi::{cstr_to_str, malloc_cstring};
 use std::ffi::CStr;

@@ -34,6 +34,10 @@
 //!
 //! A channel's Sink and Stream may live in different actors / threads. All
 //! other stream types are single-owner and may not be shared across threads.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CStr};

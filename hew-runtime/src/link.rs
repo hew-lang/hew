@@ -3,6 +3,10 @@
 //! In Erlang-style actor systems, links are bidirectional: when one linked
 //! actor crashes, all linked actors also crash (unless they are trapping exits).
 //! This module implements the link table and crash propagation logic.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;

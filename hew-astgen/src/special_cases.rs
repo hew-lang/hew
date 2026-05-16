@@ -908,6 +908,10 @@ fn expr_call_dispatcher() -> &'static str {
         return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
       });
     }
+    const auto *ba = mapGet(*payload, "base");
+    if (ba && !isNil(*ba)) {
+      e.base = std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*ba, parseExpr));
+    }
     return ast::Expr{std::move(e), {}};
   }
 "#
@@ -1941,7 +1945,7 @@ mod tests {
     #[test]
     fn struct_init_dispatcher_includes_type_args_field() {
         // The generated C++ parser for StructInit must optionally read `type_args`
-        // (backward-compatible: absent key → std::nullopt).
+        // and `base` (backward-compatible: absent key → std::nullopt).
         let src = expr_call_dispatcher();
         // Confirm the StructInit branch exists.
         assert!(
@@ -1963,6 +1967,12 @@ mod tests {
             src.contains(r#"mapReq(*payload, "name")"#)
                 && src.contains(r#"mapReq(*payload, "fields")"#),
             "name and fields must still be read"
+        );
+        // Confirm the functional-update base is read with mapGet (optional — absent for
+        // plain struct literals; present for `R { x: 5, ..base }` forms).
+        assert!(
+            src.contains(r#"mapGet(*payload, "base")"#),
+            "StructInit parser must use mapGet (optional) for functional-update base"
         );
     }
 }

@@ -2111,6 +2111,7 @@ impl<'a> Formatter<'a> {
                 name,
                 fields,
                 type_args,
+                base,
             } => {
                 self.write(name);
                 if let Some(type_args) = type_args {
@@ -2124,6 +2125,13 @@ impl<'a> Formatter<'a> {
                     f.write(": ");
                     f.format_expr(&fval.0);
                 });
+                if let Some(base_expr) = base {
+                    if !fields.is_empty() {
+                        self.write(", ");
+                    }
+                    self.write("..");
+                    self.format_expr(&base_expr.0);
+                }
                 self.write(" }");
             }
             Expr::Select { arms, timeout } => {

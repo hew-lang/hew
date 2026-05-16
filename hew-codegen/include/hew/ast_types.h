@@ -406,6 +406,11 @@ struct ExprStructInit {
   /// Absent when the user omits them (backward-compatible: old wire payloads have no
   /// `type_args` key and deserialize to `std::nullopt`).
   std::optional<std::vector<Spanned<TypeExpr>>> type_args;
+  /// Functional-update base: `R { x: 5, ..base }`.
+  /// Absent for plain struct literals (most payloads). When present the base
+  /// expression supplies values for any field not listed explicitly.
+  /// C++ codegen handles this field starting from the A-6/A-7 HIR/codegen slice.
+  std::optional<std::unique_ptr<Spanned<Expr>>> base;
 };
 struct ExprSelect {
   std::vector<SelectArm> arms;

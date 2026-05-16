@@ -238,7 +238,8 @@ impl Checker {
                 name,
                 fields,
                 type_args,
-            } => self.check_struct_init(name, fields, type_args.as_deref(), span),
+                base,
+            } => self.check_struct_init(name, fields, type_args.as_deref(), base.as_deref(), span),
 
             // Spawn
             Expr::Spawn { target, args } => {
@@ -1548,6 +1549,7 @@ impl Checker {
                     name,
                     fields,
                     type_args,
+                    ..
                 },
                 Ty::Named {
                     name: expected_name,
@@ -1680,6 +1682,7 @@ impl Checker {
                     name,
                     fields,
                     type_args,
+                    ..
                 },
                 Ty::Named {
                     name: expected_enum_name,
@@ -3370,6 +3373,7 @@ impl Checker {
         name: &str,
         fields: &[(String, Spanned<Expr>)],
         type_args: Option<&[Spanned<TypeExpr>]>,
+        base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
         if let Some(td) = self.lookup_type_def(name) {
@@ -3448,15 +3452,37 @@ impl Checker {
                     );
                 }
             }
-            // Check for missing required fields
-            let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
-            for declared in td.fields.keys() {
-                if !provided.contains(declared.as_str()) {
-                    self.report_error(
-                        TypeErrorKind::UndefinedField,
-                        span,
-                        format!("missing field `{declared}` in initializer of `{name}`"),
-                    );
+            // Functional-update base: `R { x: 5, ..base }`.
+            // The base must evaluate to the same named record/struct type.
+            // When base is present, fields not listed explicitly are filled from base,
+            // so the missing-field check is skipped.
+            if let Some((base_expr, base_span)) = base {
+                let base_ty = self.synthesize(base_expr, base_span);
+                match &base_ty {
+                    Ty::Named {
+                        name: base_name, ..
+                    } if base_name == name => {}
+                    _ => {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "functional-update base must be of type `{name}`, found `{base_ty}`"
+                            ),
+                        );
+                    }
+                }
+            } else {
+                // No base: all fields must be explicitly provided.
+                let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                for declared in td.fields.keys() {
+                    if !provided.contains(declared.as_str()) {
+                        self.report_error(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!("missing field `{declared}` in initializer of `{name}`"),
+                        );
+                    }
                 }
             }
             // Build type args from inferred bindings

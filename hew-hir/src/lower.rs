@@ -1178,6 +1178,13 @@ impl LowerCtx {
                 // slice rejects user types at the MIR boundary anyway, so
                 // dropping the args here cannot widen an accepted program.
                 type_args: _,
+                // Functional-update base: the checker has already validated
+                // type-compatibility and coverage; HIR lowers the base the
+                // same as if all its fields were listed explicitly.
+                // Full HIR/MIR lowering of functional-update (reading base
+                // fields not overridden by the explicit list) is deferred to
+                // the A-6 HIR slice.
+                base: _,
             } => {
                 let fields = fields
                     .iter()

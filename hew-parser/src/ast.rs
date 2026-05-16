@@ -223,6 +223,11 @@ pub enum Expr {
         /// Absent when the user omits them and inference fills the gap.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         type_args: Option<Vec<Spanned<TypeExpr>>>,
+        /// Functional-update base expression: `R { x: 5, ..base }`.
+        /// When `Some`, the base is required to have the same record type as
+        /// the literal; unspecified fields are filled from the base value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<Box<Spanned<Expr>>>,
     },
     Select {
         arms: Vec<SelectArm>,

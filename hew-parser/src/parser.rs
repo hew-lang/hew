@@ -2741,6 +2741,7 @@ impl<'src> Parser<'src> {
                         name: target_state.clone(),
                         fields,
                         type_args: None,
+                        base: None,
                     };
                     (struct_init, bs, be)
                 } else {
@@ -4866,6 +4867,9 @@ impl<'src> Parser<'src> {
                         let probe = if self.peek() == Some(&Token::RightBrace) {
                             // Empty struct literal: Foo {}
                             true
+                        } else if self.peek() == Some(&Token::DotDot) {
+                            // Functional-update-only form: `Foo { ..base }`.
+                            true
                         } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
                             self.advance();
                             self.peek() == Some(&Token::Colon)
@@ -4879,7 +4883,22 @@ impl<'src> Parser<'src> {
                     if is_struct_init {
                         self.advance(); // consume {
                         let mut fields = Vec::new();
+                        let mut base: Option<Box<Spanned<Expr>>> = None;
                         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                            if self.peek() == Some(&Token::DotDot) {
+                                // `..base_expr` — must be the last item in the list.
+                                self.advance(); // consume `..`
+                                let base_expr = self.parse_expr()?;
+                                base = Some(Box::new(base_expr));
+                                // Allow an optional trailing comma before `}`.
+                                self.eat(&Token::Comma);
+                                if self.peek() != Some(&Token::RightBrace) {
+                                    self.error(
+                                        "functional-update `..base` must be the last item in the field list".to_string(),
+                                    );
+                                }
+                                break;
+                            }
                             let field_name = self.expect_ident()?;
                             self.expect(&Token::Colon)?;
                             let value = self.parse_expr()?;
@@ -4894,6 +4913,7 @@ impl<'src> Parser<'src> {
                             name,
                             fields,
                             type_args: explicit_type_args,
+                            base,
                         }
                     } else {
                         Expr::Identifier(name)
@@ -8334,5 +8354,137 @@ wire type Msg {
                 r.errors
             );
         }
+    }
+
+    // ── functional_update: `R { x: 5, ..base }` ───────────────────────────
+
+    #[test]
+    fn functional_update_basic_parses() {
+        // `Point { x: 1, ..old }` must parse as a StructInit with base = Some(old).
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { x: 1, ..old }; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "functional update must parse without errors; got: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { fields, base, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert_eq!(fields.len(), 1, "one explicit field expected");
+        let base = base.as_ref().expect("base should be Some");
+        assert!(
+            matches!(&base.0, Expr::Identifier(name) if name == "old"),
+            "base should be Identifier 'old', got {:?}",
+            base.0
+        );
+    }
+
+    #[test]
+    fn functional_update_no_explicit_fields_parses() {
+        // `Point { ..old }` (zero explicit fields, only base) must also parse.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { ..old }; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "functional update with no explicit fields must parse; got: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { fields, base, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert_eq!(fields.len(), 0, "no explicit fields expected");
+        assert!(base.is_some(), "base should be Some");
+    }
+
+    #[test]
+    fn functional_update_mid_list_base_is_rejected() {
+        // `Point { ..base, x: 1 }` — base is not last; must produce a parse error.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { ..old, x: 1 }; }
+        ";
+        let result = parse(src);
+        assert!(
+            !result.errors.is_empty(),
+            "functional-update base not at end must produce a parse error"
+        );
+    }
+
+    #[test]
+    fn functional_update_base_is_none_for_regular_struct_init() {
+        // A plain struct literal must have base = None.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f() { let p = Point { x: 1, y: 2 }; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "plain struct init must parse without errors; got: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { base, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert!(base.is_none(), "plain struct init must have base = None");
+    }
+
+    #[test]
+    fn functional_update_double_base_is_rejected() {
+        // `R { ..a, ..b }` must be a parse error — only one base allowed.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(a: Point, b: Point) { let p = Point { ..a, ..b }; }
+        ";
+        let result = parse(src);
+        let has_expected_error = result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("must be the last item"));
+        assert!(
+            has_expected_error,
+            "double base `..a, ..b` must produce a 'must be the last item' error; got: {:?}",
+            result.errors
+        );
     }
 } // mod tests

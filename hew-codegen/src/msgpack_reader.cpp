@@ -1362,6 +1362,10 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
       });
     }
+    const auto *ba = mapGet(*payload, "base");
+    if (ba && !isNil(*ba)) {
+      e.base = std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*ba, parseExpr));
+    }
     return ast::Expr{std::move(e), {}};
   }
   if (name == "Select") {

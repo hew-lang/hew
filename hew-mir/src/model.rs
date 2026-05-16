@@ -493,6 +493,28 @@ pub enum Instr {
         lhs: Place,
         rhs: Place,
     },
+    /// `dest = (lhs is rhs)` — pointer/handle identity comparison.
+    ///
+    /// Produced exclusively from `HirExprKind::IdentityCompare`, which the
+    /// HIR lowering emits for `Expr::Is` once the checker (D-2) has
+    /// validated that both operands are identity-bearing types (actor refs,
+    /// `Vec`, `HashMap`, `HashSet`, `bytes`, machine instances, user named
+    /// `type` declarations). The result is a boolean (`1` = same identity,
+    /// `0` = distinct identities), stored in `dest`.
+    ///
+    /// Codegen (D-3): for pointer-shaped LLVM values (`ptr` alloca, i.e.
+    /// `ResolvedTy::Named { name: "Duplex", .. }` and future heap-backed
+    /// types), `ptrtoint` both operands to `i64`, compare with `icmp eq`,
+    /// then `zext` the `i1` result to the dest's stored width. For
+    /// machine-id integers (encoded as stable `i64` identifiers by the
+    /// machine runtime), the `ptrtoint` step is skipped and `icmp eq` is
+    /// applied directly to the loaded integer values.
+    ///
+    /// LESSONS: `checker-authority` (P0) — codegen reads the operand's
+    /// `ResolvedTy` to select between the pointer-path and the integer-path.
+    /// The identity allowance set is the checker's sole responsibility; MIR
+    /// and codegen never re-check which types are allowed.
+    IdentityCompare { dest: Place, lhs: Place, rhs: Place },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
     /// Call into a `hew_*` runtime-ABI entry by name. The carried

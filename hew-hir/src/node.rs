@@ -286,6 +286,18 @@ pub enum HirExprKind {
         /// Zero-based element index.
         index: usize,
     },
+    /// `lhs is rhs` — identity comparison on handle-typed or machine-typed
+    /// operands. The checker (D-2) validates that both operands are allowable
+    /// identity-bearing types and sets the expression type to `ResolvedTy::Bool`.
+    ///
+    /// MIR lowering emits `Instr::IdentityCompare { dest, lhs, rhs }`, which
+    /// codegen lowers to `ptrtoint` + `icmp eq` + `zext` for pointer-shaped
+    /// types (LESSONS: `checker-authority` P0 — codegen reads the operand type
+    /// from the HIR, never re-infers the identity rule).
+    IdentityCompare {
+        left: Box<HirExpr>,
+        right: Box<HirExpr>,
+    },
     Unsupported(String),
 }
 

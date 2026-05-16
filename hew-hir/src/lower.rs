@@ -1359,6 +1359,22 @@ impl LowerCtx {
                 let ty = hir_block.ty.clone();
                 (HirExprKind::Block(hir_block), ty)
             }
+            Expr::Is { lhs, rhs } => {
+                // Identity comparison: `lhs is rhs`. The checker (D-2) has already
+                // validated that both operands carry identity-bearing types and
+                // that neither is a scalar/String/record. The result is `bool`.
+                // LESSONS: `checker-authority` P0 — we do not re-validate the
+                // allowance set here; that is the checker's sole responsibility.
+                let left = self.lower_expr(lhs, IntentKind::Read);
+                let right = self.lower_expr(rhs, IntentKind::Read);
+                (
+                    HirExprKind::IdentityCompare {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ResolvedTy::Bool,
+                )
+            }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -2368,7 +2384,7 @@ fn collect_captures_walk(
         | HirExprKind::Literal(_)
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Unsupported(_) => {}
-        HirExprKind::Binary { left, right, .. } => {
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_captures_walk(left, param_ids, seen, captures, self_id);
             collect_captures_walk(right, param_ids, seen, captures, self_id);
         }

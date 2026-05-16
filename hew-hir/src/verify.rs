@@ -88,7 +88,8 @@ impl Verifier {
                     ));
                 }
             }
-            HirExprKind::Binary { left, right, .. } => {
+            HirExprKind::Binary { left, right, .. }
+            | HirExprKind::IdentityCompare { left, right } => {
                 self.expr(left);
                 self.expr(right);
             }

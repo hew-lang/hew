@@ -1000,6 +1000,93 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 .map_err(|e| CodegenError::Llvm(format!("cmp store: {e:?}")))?;
             let _ = ctx;
         }
+        Instr::IdentityCompare { dest, lhs, rhs } => {
+            // Emit pointer/handle identity comparison for `lhs is rhs`.
+            //
+            // The operands are pointer-shaped allocas (`ptr` LLVM type) —
+            // the checker (D-2) has already validated that only identity-
+            // bearing types reach this instruction. We load the `ptr`
+            // value from each operand's alloca, convert both to `i64` via
+            // `ptrtoint`, compare with `icmp eq` to get an `i1`, then
+            // zero-extend to the dest width (matching the `IntCmp` path).
+            //
+            // LESSONS: `checker-authority` (P0) — the type is read from
+            // the operand's LLVM type at codegen time; we do not re-derive
+            // the identity allowance set here.
+            let i64_ty = fn_ctx.ctx.i64_type();
+            let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let dest_int = match dest_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IdentityCompare dest is not an int".into(),
+                    ))
+                }
+            };
+            // Load the pointer/handle value from each alloca.
+            let lhs_val = fn_ctx
+                .builder
+                .build_load(lhs_ty, lhs_ptr, "is_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("is lhs load: {e:?}")))?;
+            let rhs_val = fn_ctx
+                .builder
+                .build_load(rhs_ty, rhs_ptr, "is_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("is rhs load: {e:?}")))?;
+            // Convert both operands to i64 integers for comparison.
+            // Pointer operands: `ptrtoint ptr to i64`.
+            // Integer operands (machine-id, already i64): bitcast or no-op.
+            let lhs_int = match lhs_val {
+                inkwell::values::BasicValueEnum::PointerValue(p) => fn_ctx
+                    .builder
+                    .build_ptr_to_int(p, i64_ty, "is_lhs_int")
+                    .map_err(|e| CodegenError::Llvm(format!("is lhs ptrtoint: {e:?}")))?,
+                inkwell::values::BasicValueEnum::IntValue(v) => {
+                    // Machine-id or other integer-shaped handle: extend/truncate
+                    // to i64 so the icmp operands are uniform width.
+                    fn_ctx
+                        .builder
+                        .build_int_z_extend_or_bit_cast(v, i64_ty, "is_lhs_i64")
+                        .map_err(|e| CodegenError::Llvm(format!("is lhs cast: {e:?}")))?
+                }
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IdentityCompare lhs must be a pointer or integer value".into(),
+                    ))
+                }
+            };
+            let rhs_int = match rhs_val {
+                inkwell::values::BasicValueEnum::PointerValue(p) => fn_ctx
+                    .builder
+                    .build_ptr_to_int(p, i64_ty, "is_rhs_int")
+                    .map_err(|e| CodegenError::Llvm(format!("is rhs ptrtoint: {e:?}")))?,
+                inkwell::values::BasicValueEnum::IntValue(v) => fn_ctx
+                    .builder
+                    .build_int_z_extend_or_bit_cast(v, i64_ty, "is_rhs_i64")
+                    .map_err(|e| CodegenError::Llvm(format!("is rhs cast: {e:?}")))?,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IdentityCompare rhs must be a pointer or integer value".into(),
+                    ))
+                }
+            };
+            let _ = (ptr_ty, lhs_ty, rhs_ty);
+            let bit = fn_ctx
+                .builder
+                .build_int_compare(inkwell::IntPredicate::EQ, lhs_int, rhs_int, "is_bit")
+                .map_err(|e| CodegenError::Llvm(format!("is icmp: {e:?}")))?;
+            let widened = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(bit, dest_int, "is_zext")
+                .map_err(|e| CodegenError::Llvm(format!("is zext: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .map_err(|e| CodegenError::Llvm(format!("is store: {e:?}")))?;
+            let _ = ctx;
+        }
         Instr::Move { dest, src } => {
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
             let (src_ptr, src_ty) = place_pointer(fn_ctx, *src)?;

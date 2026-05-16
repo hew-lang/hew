@@ -1033,6 +1033,21 @@ impl Builder {
                 });
                 None
             }
+            HirExprKind::IdentityCompare { left, right } => {
+                // `lhs is rhs` — emit `Instr::IdentityCompare` so codegen can
+                // select `ptrtoint` + `icmp eq` for pointer-shaped handles or
+                // plain `icmp eq` for machine-id integers.  The dest is typed
+                // `ResolvedTy::Bool` (inherited from `expr.ty`) so the i1
+                // result widening path in codegen works the same as `IntCmp`.
+                // LESSONS: `checker-authority` (P0) — the allowance set was
+                // validated by the checker; we just lower the node.
+                let lhs = self.lower_value(left)?;
+                let rhs = self.lower_value(right)?;
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions
+                    .push(Instr::IdentityCompare { dest, lhs, rhs });
+                Some(dest)
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
                 // CutoverUnsupported and the driver should have stopped
@@ -2894,7 +2909,8 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntRem { dest, lhs, rhs, .. }
         | Instr::IntShl { dest, lhs, rhs }
         | Instr::IntShr { dest, lhs, rhs, .. }
-        | Instr::IntCmp { dest, lhs, rhs, .. } => vec![*dest, *lhs, *rhs],
+        | Instr::IntCmp { dest, lhs, rhs, .. }
+        | Instr::IdentityCompare { dest, lhs, rhs } => vec![*dest, *lhs, *rhs],
         Instr::IntArithChecked {
             dest,
             lhs,

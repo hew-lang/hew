@@ -127,6 +127,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             dump_expr(out, left, indent + 4);
             dump_expr(out, right, indent + 4);
         }
+        HirExprKind::IdentityCompare { left, right } => {
+            writeln!(out, "{pad}  identity-compare").expect("write to string");
+            dump_expr(out, left, indent + 4);
+            dump_expr(out, right, indent + 4);
+        }
         HirExprKind::Call { callee, args } => {
             writeln!(out, "{pad}  call").expect("write to string");
             dump_expr(out, callee, indent + 4);

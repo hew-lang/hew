@@ -391,6 +391,21 @@ impl Checker {
                 ty: type_expr,
             } => self.synthesize_cast(inner, type_expr, span),
 
+            // Identity comparison: `lhs is rhs` (slice D-2).
+            //
+            // Allowed receivers per plan §D-D2: machines, actors/actor refs,
+            // heap-backed `Vec`/`HashMap`/`HashSet`/`bytes`, and user `type`
+            // declarations (`TypeDefKind::Struct`/`Enum`, both Rc-backed in
+            // the runtime). Rejected with `E_IS_VALUE_TYPE`: scalars, `String`,
+            // `record` types, tuples, ranges, fn/closures.
+            //
+            // Result is always `bool`. Cross-class mismatches (e.g.
+            // `ActorRef<T> is Vec<int>`) collapse into a single
+            // `TypeErrorKind::Mismatch` diagnostic that requires the operands
+            // share the same resolved type. Move/consumed-self semantics
+            // follow the existing use-after-move rule (plan §D-D4, Q-N3).
+            Expr::Is { lhs, rhs } => self.synthesize_is(lhs, rhs, span),
+
             _ => self.synthesize_concurrency(expr, span),
         };
 
@@ -3885,6 +3900,132 @@ impl Checker {
             binding_name: binding_name.to_string(),
             alloc_class: class,
         });
+    }
+
+    /// Type-check `lhs is rhs` (identity comparison, slice D-2).
+    ///
+    /// See the doc comment on the `Expr::Is` arm in [`Self::synthesize_inner`]
+    /// for the allowance set, rejection rules, and cross-class behaviour.
+    ///
+    /// Always returns `Ty::Bool` (even after reporting errors); the operator
+    /// is total at the type level so downstream uses (`if (a is b) { ... }`)
+    /// don't double-poison.
+    fn synthesize_is(&mut self, lhs: &Spanned<Expr>, rhs: &Spanned<Expr>, span: &Span) -> Ty {
+        let lhs_ty = self.synthesize(&lhs.0, &lhs.1);
+        let rhs_ty = self.synthesize(&rhs.0, &rhs.1);
+        let lhs_resolved = self.subst.resolve(&lhs_ty);
+        let rhs_resolved = self.subst.resolve(&rhs_ty);
+
+        // Don't double-report when either side is already poisoned by an
+        // upstream diagnostic (`Ty::Error`) or still under inference
+        // (`Ty::Var`). The operator still produces `bool` so enclosing
+        // expressions see a stable type.
+        if matches!(lhs_resolved, Ty::Error | Ty::Var(_))
+            || matches!(rhs_resolved, Ty::Error | Ty::Var(_))
+        {
+            return Ty::Bool;
+        }
+
+        let lhs_ok = self.is_identity_capable(&lhs_resolved);
+        let rhs_ok = self.is_identity_capable(&rhs_resolved);
+
+        if !lhs_ok {
+            self.report_is_value_type(&lhs.1, &lhs_resolved);
+        }
+        if !rhs_ok {
+            self.report_is_value_type(&rhs.1, &rhs_resolved);
+        }
+
+        // Cross-class / cross-instantiation mismatch (e.g. `Vec<int> is Vec<String>`
+        // or `ActorRef<Foo> is Vec<int>`) — only reported when both sides are
+        // independently identity-capable; otherwise the value-type rejection
+        // above carries the diagnostic.
+        if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
+            self.report_error(
+                TypeErrorKind::Mismatch {
+                    expected: lhs_resolved.user_facing().to_string(),
+                    actual: rhs_resolved.user_facing().to_string(),
+                },
+                span,
+                format!(
+                    "`is` operands must have the same type; found `{}` and `{}`",
+                    lhs_resolved.user_facing(),
+                    rhs_resolved.user_facing()
+                ),
+            );
+        }
+
+        Ty::Bool
+    }
+
+    /// Report `E_IS_VALUE_TYPE` for a value-type operand of `is`.
+    fn report_is_value_type(&mut self, span: &Span, ty: &Ty) {
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "`is` requires an identity-bearing operand; `{}` is a value type \
+                 (E_IS_VALUE_TYPE) — use `==` for value comparison; `is` checks \
+                 identity for heap-backed types only",
+                ty.user_facing()
+            ),
+        );
+    }
+
+    /// Classify a resolved type as identity-bearing per plan §D-D2.
+    ///
+    /// Returns `true` when `is` is valid on values of this type:
+    ///
+    /// * Machines (`TypeDefKind::Machine`).
+    /// * Actors and actor handles: `TypeDefKind::Actor` named types,
+    ///   `ActorRef<T>`, and `Actor<T>`.
+    /// * Heap-backed collections: `Vec<T>`, `HashMap<K,V>`, `HashSet<T>`.
+    /// * `bytes`.
+    /// * User `type Foo { ... }` declarations (`TypeDefKind::Struct` and
+    ///   `TypeDefKind::Enum`), which are Rc-backed in the runtime.
+    ///
+    /// Returns `false` for value types: scalars, `String`, `record` types,
+    /// tuples, arrays, slices, ranges, durations, functions, closures, and
+    /// trait objects. Caller is responsible for handling `Ty::Var` / `Ty::Error`
+    /// before invoking this predicate.
+    fn is_identity_capable(&self, ty: &Ty) -> bool {
+        match ty {
+            // Heap-backed builtin handles.
+            Ty::Bytes => true,
+
+            // Named types: actor handles, collection builtins, and any user
+            // `TypeDef` whose kind carries heap/reference identity.
+            Ty::Named { name, .. } => {
+                // Actor handles (`ActorRef<T>` / `Actor<T>`).
+                if ty.as_actor_handle().is_some() {
+                    return true;
+                }
+                // Heap-backed builtin collections — kept name-keyed since they
+                // have no `TypeDef` entry.
+                if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
+                    return true;
+                }
+                // User type declarations: machines, actors, and user
+                // `type Foo { ... }` (Struct/Enum, Rc-backed). `Record` is
+                // explicitly rejected as a value type.
+                if let Some(td) = self.type_defs.get(name) {
+                    return matches!(
+                        td.kind,
+                        TypeDefKind::Machine
+                            | TypeDefKind::Actor
+                            | TypeDefKind::Struct
+                            | TypeDefKind::Enum
+                    );
+                }
+                false
+            }
+
+            // Everything else is a value type for `is` purposes: scalars,
+            // `String`, tuples, arrays, slices, function/closure types,
+            // pointers, trait objects, durations, unit, never, tasks,
+            // type vars (handled by caller), and the error sentinel.
+            _ => false,
+        }
     }
 
     /// Return `true` if `ty` is a v0.5 substrate handle type (affine — consumed

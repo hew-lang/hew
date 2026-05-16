@@ -61,12 +61,13 @@ use std::process::Command;
 
 use hew_mir::{
     CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place, RawMirFunction,
-    Terminator,
+    Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetMachine;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
@@ -1297,13 +1298,30 @@ fn lower_terminator<'ctx>(
                 .build_unconditional_branch(next_bb)
                 .map_err(|e| CodegenError::Llvm(format!("call br: {e:?}")))?;
         }
-        Terminator::Panic => {
-            // Cluster 1 never constructs Panic. If it ever surfaces here,
-            // fail closed rather than emit a no-op terminator that LLVM
-            // would reject anyway.
-            return Err(CodegenError::Unsupported(
-                "Terminator::Panic — panic lowering is Cluster 3 work",
-            ));
+        Terminator::Trap { kind } => {
+            // Emit `llvm.trap` followed by `unreachable`. The `kind`
+            // discriminant is carried only in the MIR; at the LLVM IR
+            // level all trap causes lower identically to a hard abort
+            // (LLVM will remove the block if it proves it unreachable;
+            // on the taken path the trap fires before the unreachable).
+            //
+            // `llvm.trap` is a non-overloaded void intrinsic so
+            // `get_declaration` takes an empty type slice.
+            let _kind: TrapKind = *kind; // exhaustiveness: future arms may discriminate
+            let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
+                CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
+            })?;
+            let trap_fn = trap_intrinsic
+                .get_declaration(fn_ctx.llvm_mod, &[])
+                .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+            fn_ctx
+                .builder
+                .build_call(trap_fn, &[], "trap")
+                .map_err(|e| CodegenError::Llvm(format!("llvm.trap call: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::Llvm(format!("trap unreachable: {e:?}")))?;
         }
         Terminator::Yield { .. } => {
             // The variant is declared so Checked MIR's borrow-liveness

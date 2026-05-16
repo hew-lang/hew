@@ -16,6 +16,6 @@ pub use model::{
     DecisionFact, Direction, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction,
     ExitPath, Instr, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind,
     MirStatement, Place, RawMirFunction, RuntimeCall, SelectArm, SelectArmKind, Strategy,
-    Terminator, ThirFunction,
+    Terminator, ThirFunction, TrapKind,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;

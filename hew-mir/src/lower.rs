@@ -2224,7 +2224,7 @@ fn validate_cross_block_split_consume(
     for block in blocks {
         let mut emit = |target: u32| preds.entry(target).or_default().push(block.id);
         match &block.terminator {
-            Terminator::Return | Terminator::Panic => {}
+            Terminator::Return | Terminator::Trap { .. } => {}
             Terminator::Goto { target } => emit(*target),
             Terminator::Branch {
                 then_target,
@@ -2244,7 +2244,7 @@ fn validate_cross_block_split_consume(
 
     let successors = |block: &BasicBlock| -> Vec<u32> {
         match &block.terminator {
-            Terminator::Return | Terminator::Panic => Vec::new(),
+            Terminator::Return | Terminator::Trap { .. } => Vec::new(),
             Terminator::Goto { target } => vec![*target],
             Terminator::Branch {
                 then_target,
@@ -2364,7 +2364,7 @@ fn validate_cross_block_split_consume(
         // Terminator is Panic (the elab structure has one cleanup
         // per Panic). For each, report any stale DuplexHandle drop.
         for raw_block in blocks {
-            if matches!(raw_block.terminator, Terminator::Panic) {
+            if matches!(raw_block.terminator, Terminator::Trap { .. }) {
                 report_drop(raw_block.id, &elab_block.drops, &mut findings);
             }
         }
@@ -2691,7 +2691,7 @@ fn enumerate_exits(
                 },
                 DropPlan::default(),
             ),
-            Terminator::Panic => {
+            Terminator::Trap { .. } => {
                 // Cleanup block: same LIFO drop plan as the normal exit
                 // at this scope depth; no successor (trap is terminal).
                 let cleanup_id = next_cleanup_id;

@@ -58,6 +58,38 @@ pub struct BasicBlock {
     pub terminator: Terminator,
 }
 
+/// Failure class carried by `Terminator::Trap`. The discriminant lets
+/// diagnostics, tests, and runtime-trap handlers distinguish the five
+/// trap causes without re-walking the IR or re-inferring from context.
+///
+/// All five variants are declared here; producer bridges land in later
+/// slices:
+/// - `IntegerOverflow`     — wired by B-2 (overflow-trap lowering)
+/// - `IndexOutOfBounds`    — wired by C-2 (Vec/array OOB formalisation)
+/// - `DivideByZero`        — wired by B-5 (divide-by-zero trap)
+/// - `SignedMinDivNegOne`  — wired by B-5 (signed-MIN/-1 trap)
+/// - `ShiftOutOfRange`     — wired by B-5 (shift-range trap)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrapKind {
+    /// Integer arithmetic overflow on `+`, `-`, or `*`. Fires on signed
+    /// and unsigned overflow when the default (non-wrapping) operators
+    /// are used. Producer: B-2.
+    IntegerOverflow,
+    /// Array or `Vec<T>` index out of bounds. Fires when `xs[i]` has
+    /// `i >= xs.len()` or `i < 0`. Producer: C-2.
+    IndexOutOfBounds,
+    /// Integer division by zero. Fires when the divisor of `/` or `%`
+    /// is zero. Producer: B-5.
+    DivideByZero,
+    /// Signed integer division of the minimum value by -1 (`i64::MIN /
+    /// -1`), which would overflow the result width. Producer: B-5.
+    SignedMinDivNegOne,
+    /// Shift count outside `[0, width)`. Fires when `<<` or `>>` has a
+    /// shift amount that is negative or ≥ the operand's bit-width.
+    /// Producer: B-5.
+    ShiftOutOfRange,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
     /// Return whatever has been written into `Place::ReturnSlot`. The
@@ -80,9 +112,18 @@ pub enum Terminator {
         dest: Place,
         next: u32,
     },
-    /// Hard abort: emit a trap or `unreachable`. Used by future panic
-    /// lowering; Cluster 1 doesn't construct this.
-    Panic,
+    /// Hard abort: emit `llvm.trap` followed by `unreachable`. The
+    /// `kind` discriminant identifies the failure class so diagnostics,
+    /// tests, and future runtime-trap handlers can distinguish overflow
+    /// from OOB from divide-by-zero without re-walking the IR.
+    ///
+    /// Construction discipline: producers that wire arithmetic overflow
+    /// (sub-area B), OOB indexing (sub-area C), divide-by-zero, and
+    /// shift-range traps each emit this terminator with the appropriate
+    /// `TrapKind`. No producer exists yet for any variant — this slice
+    /// introduces the consumer-side primitive; the per-variant producer
+    /// bridges land in slices B-2, B-5, C-2, and C-3 respectively.
+    Trap { kind: TrapKind },
     /// Generator suspension: yield `value` to the resumer and continue
     /// at `next` on resume. The presence of this terminator in a
     /// function's CFG is what makes `MirCheck::GeneratorBorrowAcrossYield`

@@ -6,11 +6,12 @@ use hew_parser::ast::{
     Block, Expr, FnDecl, IntRadix, Item, Literal, Pattern, Program, SelectArm, Stmt, TimeoutClause,
     Visibility,
 };
+use hew_types::TypeCheckOutput;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    lower_program(&parsed.program, &ResolutionCtx)
+    lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx)
 }
 
 #[test]
@@ -861,7 +862,7 @@ fn select_two_after_arms_rejected() {
         })),
     };
     let program = program_with_select(select_expr);
-    let output = lower_program(&program, &ResolutionCtx);
+    let output = lower_program(&program, &TypeCheckOutput::default(), &ResolutionCtx);
     assert!(
         output
             .diagnostics

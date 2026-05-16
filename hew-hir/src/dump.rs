@@ -240,6 +240,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             }
             dump_expr(out, body, indent + 4);
         }
+        HirExprKind::TupleIndex { tuple, index } => {
+            writeln!(out, "{pad}  tuple-index .{index}").expect("write to string");
+            dump_expr(out, tuple, indent + 4);
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

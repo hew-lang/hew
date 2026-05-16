@@ -276,6 +276,16 @@ pub enum HirExprKind {
         body: Box<HirExpr>,
         captures: Vec<HirLambdaCapture>,
     },
+    /// Project one element out of a tuple value: `expr.<index>`.
+    ///
+    /// Produced exclusively by tuple-let lowering (`let (a, b) = …`) — not a
+    /// surface syntax node.  `index` is the zero-based element position.
+    TupleIndex {
+        /// The tuple expression being projected.
+        tuple: Box<HirExpr>,
+        /// Zero-based element index.
+        index: usize,
+    },
     Unsupported(String),
 }
 

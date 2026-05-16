@@ -12,6 +12,7 @@
 
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
 use hew_mir::{lower_hir_module, CaptureKind, ElaboratedMirFunction, IrPipeline, Place};
+use hew_types::TypeCheckOutput;
 
 /// Run the full source → HIR → MIR pipeline. Asserts parser cleanliness
 /// and `verify_hir` cleanliness; tolerates `CutoverUnsupported` HIR
@@ -28,7 +29,7 @@ fn pipeline(source: &str) -> IrPipeline {
         "parse errors: {:?}",
         parsed.errors
     );
-    let output = lower_program(&parsed.program, &ResolutionCtx);
+    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
     // Allow CutoverUnsupported diagnostics — the actor-body call
     // surface is deferred work in the spine. Reject everything else.
     let non_cutover: Vec<_> = output

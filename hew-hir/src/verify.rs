@@ -69,6 +69,12 @@ impl Verifier {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive match on all HirExprKind variants; splitting would \
+                  obscure the exhaustiveness requirement and scatter the fail-closed \
+                  Unsupported arm away from the variants it guards"
+    )]
     fn expr(&mut self, expr: &HirExpr) {
         self.node(expr.node, expr.span.clone());
         self.site(expr.site, expr.span.clone());
@@ -165,6 +171,9 @@ impl Verifier {
                         ));
                     }
                 }
+            }
+            HirExprKind::TupleIndex { tuple, .. } => {
+                self.expr(tuple);
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive

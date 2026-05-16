@@ -177,4 +177,12 @@ pub enum HirDiagnosticKind {
         machine_name: String,
         event_name: String,
     },
+    /// A method call expression has no entry in `TypeCheckOutput.method_call_rewrites`
+    /// for its span.  Fail-closed per the `checker-output-boundary` invariant:
+    /// HIR lowering never re-infers a runtime symbol from the receiver type; every
+    /// lowerable method call must be backed by a checker-produced rewrite entry.
+    MethodCallNoRewrite {
+        /// The method name the user wrote (e.g. `send`).
+        method: String,
+    },
 }

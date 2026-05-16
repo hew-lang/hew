@@ -1,12 +1,13 @@
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
 use hew_mir::MirDiagnosticKind;
+use hew_types::TypeCheckOutput;
 
 #[test]
 fn v05_pipeline_rejects_nested_named_type_before_codegen() {
     let parsed = hew_parser::parse("fn f(x: (Foo, i64)) -> (Foo, i64) { return x; }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let output = lower_program(&parsed.program, &ResolutionCtx);
+    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 
     let verify = verify_hir(&output.module);
@@ -34,7 +35,7 @@ fn v05_pipeline_accepts_bool_literal_return() {
     let parsed = hew_parser::parse("fn main() -> bool { true }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let output = lower_program(&parsed.program, &ResolutionCtx);
+    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),
@@ -58,7 +59,7 @@ fn v05_pipeline_rejects_float_literal_return_before_codegen() {
     let parsed = hew_parser::parse("fn main() -> f64 { 1.5 }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let output = lower_program(&parsed.program, &ResolutionCtx);
+    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),
@@ -92,7 +93,7 @@ fn v05_pipeline_rejects_call_expression_before_codegen() {
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let output = lower_program(&parsed.program, &ResolutionCtx);
+    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),

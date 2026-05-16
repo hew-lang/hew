@@ -4,6 +4,7 @@
 //! value-bearing expression a stable identity before later THIR/MIR ownership
 //! analysis attaches value-model decisions.
 
+pub mod builtin_type_classes;
 pub mod diagnostic;
 pub mod dump;
 pub mod ids;

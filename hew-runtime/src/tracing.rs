@@ -790,28 +790,62 @@ pub fn drain_events_json() -> String {
     })
 }
 
+// ── Test serialisation ─────────────────────────────────────────────────
+//
+// `TRACING_ENABLED` and `TRACE_EVENTS` are process-level statics shared by
+// every test thread in the binary.  Any test that reads or writes them must
+// hold `TRACING_TEST_LOCK` for its entire duration.  This includes tests
+// outside this module (e.g. `scheduler::tests::activate_records_dispatch_span_events`)
+// — which is why the lock and guard constructor are `pub(crate)` rather than
+// confined to `mod tests`.
+
+/// Single serialisation mutex for all tests that touch tracing global state.
+///
+/// Hold this for the **entire** duration of any test that calls
+/// `hew_trace_enable`, `hew_trace_reset`, `hew_trace_begin`, `hew_trace_end`,
+/// `hew_trace_drain`, `record_channel_event`, or reads `TRACE_EVENTS` /
+/// `TRACING_ENABLED`.  Failing to hold it against a concurrent test that does
+/// the same causes `TRACING_ENABLED`/`TRACE_EVENTS` to race.
+#[cfg(test)]
+pub(crate) static TRACING_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the tracing serialisation lock.
+///
+/// Returns a guard that releases the lock on drop.  Recovers from a poisoned
+/// lock (a panicking test left it poisoned) so subsequent tests are not
+/// permanently blocked.
+#[cfg(test)]
+pub(crate) fn tracing_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    TRACING_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Serialize tracing tests since they share global state
-    /// (`TRACE_EVENTS`, `TRACING_ENABLED`, `CURRENT_CONTEXT`).
-    // INTENTIONAL: TEST_LOCK uses .lock().unwrap() — short-lived test
-    // serialisation barrier; closure API adds no value here.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
     fn setup() -> std::sync::MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.lock().unwrap();
+        let guard = tracing_test_guard();
         hew_trace_reset();
         hew_trace_enable(1);
+        // Prime the monotonic clock EPOCH before any events are recorded.
+        // On the first call to `monotonic_ns`, `OnceLock::get_or_init` sets
+        // EPOCH to `Instant::now()` and then immediately calls `elapsed()` on
+        // that same instant.  On fast hardware the two calls can land within the
+        // same nanosecond tick, causing `elapsed().as_nanos() as u64 == 0` and
+        // making the first recorded `timestamp_ns` equal to 0.  Calling
+        // `trace_now_ns()` here ensures EPOCH is already set before any
+        // assertions on `timestamp_ns` are made.
+        let _ = trace_now_ns();
         guard
     }
 
     #[test]
     fn enable_disable() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = tracing_test_guard();
         hew_trace_reset();
         assert_eq!(hew_trace_is_enabled(), 0);
         hew_trace_enable(1);
@@ -928,7 +962,7 @@ mod tests {
 
     #[test]
     fn disabled_noop() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = tracing_test_guard();
         hew_trace_reset();
         // Tracing disabled — events should not be recorded.
         hew_trace_begin(100, 1);
@@ -983,9 +1017,7 @@ mod tests {
         let _bridge_guard = BRIDGE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _trace_guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _trace_guard = tracing_test_guard();
 
         // Full reset of both subsystems.
         reset_bridge_full();
@@ -1042,9 +1074,7 @@ mod tests {
     #[cfg(feature = "profiler")]
     #[test]
     fn drain_events_json_includes_actor_type_fields() {
-        let _guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = tracing_test_guard();
 
         hew_trace_reset();
         hew_trace_enable(1);
@@ -1085,9 +1115,7 @@ mod tests {
         let _runtime_guard = crate::runtime_test_guard();
         // Acquire session lock first, tracing lock second (consistent order).
         let _session_guard = crate::session::reset_hooks_for_test();
-        let _trace_guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _trace_guard = tracing_test_guard();
 
         // Reset tracing state to a known baseline.
         hew_trace_reset();
@@ -1268,7 +1296,7 @@ mod tests {
     /// and stashes nothing, and `io_recv_span_begin` returns `None`.
     #[test]
     fn io_span_disabled_path_emits_nothing() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = tracing_test_guard();
         hew_trace_reset();
         // Tracing is disabled after reset.
 
@@ -1383,7 +1411,7 @@ mod tests {
     /// `record_channel_event` is a no-op when tracing is disabled.
     #[test]
     fn channel_event_skipped_when_tracing_disabled() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = tracing_test_guard();
         hew_trace_reset();
         // tracing is disabled after reset
 

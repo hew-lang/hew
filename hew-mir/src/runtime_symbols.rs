@@ -91,6 +91,20 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // --- SendHalf<T> ---------------------------------------------
     "hew_send_half_send",
     "hew_send_half_try_send",
+    // --- Vec<T> indexing (C-2) ----------------------------------
+    // hew_vec_get_T(v: *mut HewVec, index: i64) -> T — one per element type.
+    // Element types supported: i32, i64, f64, ptr (handle/opaque), str (returns
+    // strdup copy — caller owns; deferred to a follow-on slice for managed drop).
+    // String (hew_vec_get_str) is allowlisted but not emitted by this slice's
+    // MIR producer; the caller would need to manage the strdup return.
+    // Lexicographic note: hew_vec_get_* < hew_vec_len (g < l).
+    "hew_vec_get_f64",
+    "hew_vec_get_i32",
+    "hew_vec_get_i64",
+    "hew_vec_get_ptr",
+    "hew_vec_get_str",
+    // hew_vec_len(v: *mut HewVec) -> i64
+    "hew_vec_len",
 ];
 
 /// Error returned when a `RuntimeCall` is constructed with a symbol that

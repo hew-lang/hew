@@ -176,6 +176,10 @@ impl Verifier {
             HirExprKind::TupleIndex { tuple, .. } => {
                 self.expr(tuple);
             }
+            HirExprKind::Index { container, index } => {
+                self.expr(container);
+                self.expr(index);
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior CutoverUnsupported diagnostic.

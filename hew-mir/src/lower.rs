@@ -1033,6 +1033,9 @@ impl Builder {
                 });
                 None
             }
+            HirExprKind::Index { container, index } => {
+                self.lower_vec_index(container, index, &expr.ty, expr.site)
+            }
             HirExprKind::IdentityCompare { left, right } => {
                 // `lhs is rhs` — emit `Instr::IdentityCompare` so codegen can
                 // select `ptrtoint` + `icmp eq` for pointer-shaped handles or
@@ -1661,6 +1664,129 @@ impl Builder {
         // expression's value Place is the result_local (loads happen
         // through the same Place that both arms wrote into).
         self.start_block(join_bb);
+        Some(result_place)
+    }
+
+    /// Lower `xs[i]` (`HirExprKind::Index`) for a `Vec<T>` container.
+    ///
+    /// CFG shape (C-2 OOB trap pattern, mirrors B-2/B-5 bounds-check
+    /// discipline):
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   CallRuntimeAbi { symbol: "hew_vec_len", args: [vec_place], dest: len_place }
+    ///   IntCmp { pred: UnsignedGreaterEq, dest: oob_flag,
+    ///            lhs: index_place, rhs: len_place }
+    ///   Branch { cond: oob_flag, then: trap_bb, else: cont_bb }
+    ///
+    /// trap_bb:
+    ///   Trap { kind: IndexOutOfBounds }
+    ///
+    /// cont_bb:
+    ///   CallRuntimeAbi { symbol: "hew_vec_get_T",
+    ///                    args: [vec_place, index_place], dest: result_place }
+    /// ```
+    ///
+    /// The `UnsignedGreaterEq` predicate catches both negative indices
+    /// (which wrap to values > `i64::MAX` when reinterpreted as unsigned)
+    /// and indices ≥ `len` in a single compare — the same technique used
+    /// by B-5's shift-range check. LESSONS: `boundary-fail-closed` (P0) —
+    /// the trap is always emitted; the compiler never relies on the runtime's
+    /// own bounds check.
+    ///
+    /// Element-type dispatch (`hew_vec_get_T`):
+    /// - `i32` → `hew_vec_get_i32`
+    /// - `i64` → `hew_vec_get_i64`
+    /// - `f64` → `hew_vec_get_f64`
+    /// - ptr-shaped (`Duplex`, `LambdaActorHandle`, Named heap types) → `hew_vec_get_ptr`
+    ///
+    /// Unsupported element types emit `MirDiagnostic::CutoverUnsupported`
+    /// and return `None` (tracked gap, not silent shim).
+    fn lower_vec_index(
+        &mut self,
+        container: &HirExpr,
+        index: &HirExpr,
+        elem_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Lower the container and index sub-expressions.
+        let vec_place = self.lower_value(container)?;
+        let index_place = self.lower_value(index)?;
+
+        // Step 1: Call hew_vec_len(vec) -> i64 to get the length.
+        let len_place = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
+                .expect("hew_vec_len is an allowlisted runtime symbol"),
+        ));
+
+        // Step 2: Bounds check via UnsignedGreaterEq. A signed i64 index
+        // that is negative will wrap to a value > i64::MAX when treated
+        // as unsigned, which is ≥ any valid len. This catches both negative
+        // and out-of-bounds indices in one compare.
+        let oob_flag = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: oob_flag,
+            pred: CmpPred::UnsignedGreaterEq,
+            lhs: index_place,
+            rhs: len_place,
+        });
+
+        // Seal current block with Branch → trap or continue.
+        let trap_bb = self.alloc_block();
+        let cont_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: oob_flag,
+            then_target: trap_bb,
+            else_target: cont_bb,
+        });
+
+        // Trap block: hard-abort with IndexOutOfBounds.
+        self.start_block(trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IndexOutOfBounds,
+        });
+
+        // Continuation block: emit the actual element load.
+        self.start_block(cont_bb);
+
+        // Dispatch to the typed runtime getter based on element type.
+        let get_symbol = match elem_ty {
+            ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
+            ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_get_i64",
+            ResolvedTy::F64 => "hew_vec_get_f64",
+            // Pointer-shaped heap handles: Duplex, LambdaActorHandle, and
+            // Named types that are resource/linear (their heap-backing is
+            // opaque to the element-load ABI). hew_vec_get_ptr returns a
+            // *mut c_void which codegen casts to the appropriate pointer.
+            ResolvedTy::Named { .. } => "hew_vec_get_ptr",
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("Vec<{other:?}> element type for xs[i]"),
+                        site,
+                    },
+                    note: "hew_vec_get_T dispatch: element types supported by this \
+                           slice are i32/u32, i64/u64, f64, and Named heap types. \
+                           String (hew_vec_get_str strdup ownership) is a follow-on \
+                           slice. bool/char and other scalars map to i32/i64 in a \
+                           future width-normalisation slice."
+                        .to_string(),
+                });
+                return None;
+            }
+        };
+
+        let result_place = self.alloc_local(elem_ty.clone());
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                get_symbol,
+                vec![vec_place, index_place],
+                Some(result_place),
+            )
+            .expect("hew_vec_get_T is an allowlisted runtime symbol"),
+        ));
+
         Some(result_place)
     }
 

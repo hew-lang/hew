@@ -1359,6 +1359,50 @@ impl LowerCtx {
                 let ty = hir_block.ty.clone();
                 (HirExprKind::Block(hir_block), ty)
             }
+            Expr::Index { object, index } => {
+                // Integer-indexed element access on Vec<T>: `xs[i]`.
+                // The checker (`synthesize_index`) has already validated that
+                // `object` is `Vec<T>` and `index` is i64; the expression type
+                // (the element type T) is recorded in `expr_types` at this span.
+                // Consult `expr_types` as the authority for the result type.
+                // LESSONS: `checker-authority` P0 — we never re-derive the
+                // element type from the container; the checker is the sole owner.
+                let container = self.lower_expr(object, IntentKind::Read);
+                let index_expr = self.lower_expr(index, IntentKind::Read);
+                // The checker records the element type at the whole index
+                // expression's span.
+                let checker_key = SpanKey::from(&span);
+                let elem_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                    match ResolvedTy::from_ty(&ty) {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "xs[i]".to_string(),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "checker-authoritative index element type failed boundary conversion",
+                            ));
+                            ResolvedTy::Unit
+                        }
+                    }
+                } else {
+                    // Fall through: no checker entry. This can happen when the
+                    // checker emitted an error for this expression (e.g. indexing
+                    // into a non-Vec) and skipped recording the type. The
+                    // CutoverUnsupported diagnostic from the checker covers the
+                    // user-facing error; emit Unit to stay well-formed.
+                    ResolvedTy::Unit
+                };
+                (
+                    HirExprKind::Index {
+                        container: Box::new(container),
+                        index: Box::new(index_expr),
+                    },
+                    elem_ty,
+                )
+            }
             Expr::Is { lhs, rhs } => {
                 // Identity comparison: `lhs is rhs`. The checker (D-2) has already
                 // validated that both operands carry identity-bearing types and
@@ -2457,6 +2501,10 @@ fn collect_captures_walk(
         }
         HirExprKind::TupleIndex { tuple, .. } => {
             collect_captures_walk(tuple, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::Index { container, index } => {
+            collect_captures_walk(container, param_ids, seen, captures, self_id);
+            collect_captures_walk(index, param_ids, seen, captures, self_id);
         }
     }
 }

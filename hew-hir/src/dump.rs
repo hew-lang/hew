@@ -249,6 +249,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  tuple-index .{index}").expect("write to string");
             dump_expr(out, tuple, indent + 4);
         }
+        HirExprKind::Index { container, index } => {
+            writeln!(out, "{pad}  vec-index").expect("write to string");
+            dump_expr(out, container, indent + 4);
+            dump_expr(out, index, indent + 4);
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

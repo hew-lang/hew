@@ -445,6 +445,32 @@ fn intern_runtime_decl<'ctx>(
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.
         "hew_lambda_actor_release" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_vec_len(v: *mut HewVec) -> i64
+        // (`hew-runtime/src/vec.rs:649`). Returns the element count as i64.
+        "hew_vec_len" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32
+        // (`hew-runtime/src/vec.rs:394`). Bounds-checked by the MIR emitter
+        // before this call; the runtime also aborts on OOB as defence-in-depth.
+        "hew_vec_get_i32" => i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64
+        // (`hew-runtime/src/vec.rs:411`).
+        "hew_vec_get_i64" => i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // hew_vec_get_f64(v: *mut HewVec, index: i64) -> double
+        // (`hew-runtime/src/vec.rs:456`).
+        "hew_vec_get_f64" => ctx
+            .f64_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void
+        // (`hew-runtime/src/vec.rs:473`). For pointer-shaped elements
+        // (Duplex handles, Named heap types). The caller casts the returned
+        // opaque pointer to the appropriate concrete pointer type.
+        "hew_vec_get_ptr" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char
+        // (`hew-runtime/src/vec.rs:430`). Returns a strdup'd copy; the
+        // caller owns and must free the returned string. Allowlisted but
+        // not emitted by this slice's MIR producer — Vec<String> indexing
+        // deferred to a follow-on slice that wires the drop for the copy.
+        "hew_vec_get_str" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -537,6 +563,17 @@ fn primitive_to_llvm<'ctx>(
             // `ptr` (an `*mut HewDuplexHandle` in the runtime C-ABI). The
             // `hew_duplex_pair` out-param protocol writes through this
             // alloca; `hew_duplex_send` loads from it. LESSONS:
+            // exhaustive-traversal-and-lowering, boundary-fail-closed.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
+        ResolvedTy::Named { name, .. } if name == "Vec" => {
+            // C-2 Vec<T> handle. A Vec<T> local is a `*mut HewVec` pointer.
+            // The producer (`lower_vec_index`) allocates the result local
+            // with the element type (i32/i64/f64/ptr); the vec-handle locals
+            // themselves are function parameters at this stage (ptr-sized).
+            // We represent the Vec handle as an opaque `ptr` in the alloca
+            // so `load_ptr_arg` can load the raw pointer from the slot and
+            // pass it to `hew_vec_len` / `hew_vec_get_T`. LESSONS:
             // exhaustive-traversal-and-lowering, boundary-fail-closed.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
@@ -1381,6 +1418,96 @@ fn lower_call_runtime_abi(
                  ritual fires after the close"
                     .to_string(),
             ));
+        }
+        // ── Vec<T> indexing (C-2) ────────────────────────────────────────
+        //
+        // hew_vec_len(v: *mut HewVec) -> i64
+        // args[0]: Place::Local(N) holding a `*mut HewVec` pointer — load the
+        // ptr from the alloca. dest: Place::Local(M) of type i64 — store result.
+        "hew_vec_len" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_vec_len): expected 1 arg (vec), got {}",
+                    args.len()
+                )));
+            }
+            let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_len arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[vec_ptr.into()], "hew_vec_len_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_len call: {e:?}")))?;
+            let len_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_vec_len returned void".into()))?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_len: producer must supply a dest place for the length".into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, len_val)
+                .map_err(|e| CodegenError::Llvm(format!("hew_vec_len store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32
+        // hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64
+        // hew_vec_get_f64(v: *mut HewVec, index: i64) -> f64
+        // hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void
+        // hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char
+        //
+        // All five share the same ABI shape: load vec ptr from arg0, load
+        // index i64 from arg1, call, store result into dest. The result type
+        // differs per variant and is encoded in the function return type from
+        // `intern_runtime_decl`.
+        "hew_vec_get_i32" | "hew_vec_get_i64" | "hew_vec_get_f64" | "hew_vec_get_ptr"
+        | "hew_vec_get_str" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 2 args (vec, index), got {}",
+                    args.len()
+                )));
+            }
+            // arg0: Vec pointer. `load_duplex_handle` loads a `ptr`-typed
+            // value from any `ptr`-alloca — correct for Vec handles too.
+            let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{symbol} arg0"))?;
+            // arg1: index as i64.
+            let index_val = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{symbol} arg1"))?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index_val.into()],
+                    &format!("{symbol}_call"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+            let result_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(format!("{symbol}: producer must supply a dest place"))
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
         }
         other => {
             // Allowlisted but not wired. Names a missing follow-on

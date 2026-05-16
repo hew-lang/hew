@@ -286,6 +286,23 @@ pub enum HirExprKind {
         /// Zero-based element index.
         index: usize,
     },
+    /// `xs[i]` — integer-indexed element access on a `Vec<T>` container.
+    ///
+    /// The checker (`synthesize_index`) validates that `container` is `Vec<T>`
+    /// and `index` is `i64`; the expression type is `T`. The HIR node carries
+    /// the container and index sub-expressions; MIR lowering emits a
+    /// bounds-check CFG (`hew_vec_len` + `IntCmp` + `Branch → Trap/cont`) and
+    /// then a `CallRuntimeAbi(hew_vec_get_T)` on the success path.
+    ///
+    /// LESSONS: `checker-authority` (P0) — the allowance set (Vec<T> only, i64
+    /// index) is validated by the checker; this node is produced only when the
+    /// checker has already confirmed the shape.
+    Index {
+        /// The container expression (type `Vec<T>`).
+        container: Box<HirExpr>,
+        /// The index expression (type `i64`).
+        index: Box<HirExpr>,
+    },
     /// `lhs is rhs` — identity comparison on handle-typed or machine-typed
     /// operands. The checker (D-2) validates that both operands are allowable
     /// identity-bearing types and sets the expression type to `ResolvedTy::Bool`.

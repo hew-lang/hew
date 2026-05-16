@@ -915,6 +915,7 @@ fn test_receive_gen_fn_returns_stream() {
         overflow_policy: None,
         is_isolated: false,
         doc_comment: None,
+        max_heap_bytes: None,
     };
     let program = Program {
         module_graph: None,
@@ -1730,6 +1731,7 @@ fn typecheck_actor_receive_fn_registered() {
         overflow_policy: None,
         is_isolated: false,
         doc_comment: None,
+        max_heap_bytes: None,
     };
     let program = Program {
         module_graph: None,

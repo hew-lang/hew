@@ -63,6 +63,11 @@ static uint32_t getUint32(const msgpack::object &obj, std::string_view context) 
   return static_cast<uint32_t>(value);
 }
 
+/// Get an exact uint64_t from msgpack object.
+static uint64_t getUint64(const msgpack::object &obj, std::string_view /*context*/) {
+  return getUint(obj);
+}
+
 /// Get float from msgpack object.
 static double getFloat(const msgpack::object &obj) {
   if (obj.type == msgpack::type::FLOAT32 || obj.type == msgpack::type::FLOAT64)
@@ -402,6 +407,9 @@ static ast::ActorDecl parseActorDecl(const msgpack::object &obj) {
   const auto *doc_comment = mapGet(obj, "doc_comment");
   if (doc_comment && !isNil(*doc_comment))
     result.doc_comment = getString(*doc_comment);
+  const auto *max_heap_bytes = mapGet(obj, "max_heap_bytes");
+  if (max_heap_bytes && !isNil(*max_heap_bytes))
+    result.max_heap_bytes = getUint64(*max_heap_bytes, "max_heap_bytes");
   return result;
 }
 

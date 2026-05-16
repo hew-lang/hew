@@ -902,6 +902,9 @@ struct ActorDecl {
   std::optional<OverflowPolicy> overflow_policy;
   bool is_isolated = false;
   std::optional<std::string> doc_comment;
+  // `#[max_heap(N)]` annotation: bytes cap for the actor's arena.
+  // None = no annotation (unbounded). Populated by A2 codegen lowering.
+  std::optional<uint64_t> max_heap_bytes;
 };
 
 // ── Supervisor ────────────────────────────────────────────────────────────

@@ -5538,6 +5538,7 @@ mod tests {
                 overflow_policy: None,
                 is_isolated: false,
                 doc_comment: None,
+                max_heap_bytes: None,
             }),
             0..0,
         )];
@@ -6924,6 +6925,7 @@ mod tests {
                     overflow_policy: None,
                     is_isolated: false,
                     doc_comment: None,
+                    max_heap_bytes: None,
                 }),
                 0..0,
             )],

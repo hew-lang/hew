@@ -70,6 +70,48 @@ fn parse_duration_literal(s: &str) -> Option<i64> {
     }
 }
 
+/// Resolve a `#[max_heap(…)]` attribute's argument(s) to a byte count.
+///
+/// Accepted forms and their `args` representation after `parse_attributes`:
+/// - `#[max_heap(1024)]`  → `[Positional("1024")]`               → 1024 bytes
+/// - `#[max_heap(512 b)]` → `[Positional("512"), Positional("b")]`   → 512 bytes
+/// - `#[max_heap(2 kb)]`  → `[Positional("2"),   Positional("kb")]`  → 2048 bytes
+/// - `#[max_heap(1 mb)]`  → `[Positional("1"),   Positional("mb")]`  → 1 048 576 bytes
+///
+/// Returns `Ok(bytes)` on success, `Err(message)` on unsupported suffix or bad integer.
+fn resolve_max_heap_args(args: &[AttributeArg]) -> Result<u64, String> {
+    match args {
+        // Bare integer: `#[max_heap(1024)]`
+        [AttributeArg::Positional(n)] => n
+            .parse::<u64>()
+            .map_err(|_| format!("invalid integer in `#[max_heap]`: `{n}`")),
+        // Integer + unit suffix: `#[max_heap(2 kb)]`
+        [AttributeArg::Positional(n), AttributeArg::Positional(unit)] => {
+            let base: u64 = n
+                .parse::<u64>()
+                .map_err(|_| format!("invalid integer in `#[max_heap]`: `{n}`"))?;
+            match unit.as_str() {
+                "b" => Ok(base),
+                "kb" => base
+                    .checked_mul(1024)
+                    .ok_or_else(|| format!("`#[max_heap]` value overflows u64: {n} kb")),
+                "mb" => base
+                    .checked_mul(1024 * 1024)
+                    .ok_or_else(|| format!("`#[max_heap]` value overflows u64: {n} mb")),
+                other => Err(format!(
+                    "unsupported unit `{other}` in `#[max_heap]`; accepted suffixes: b, kb, mb \
+                     (gb and larger are not supported in v0.5)"
+                )),
+            }
+        }
+        _ => Err(
+            "`#[max_heap]` requires exactly one argument: a byte count optionally followed by \
+             a unit (b, kb, mb)"
+                .to_string(),
+        ),
+    }
+}
+
 /// Strip surrounding quotes from a `StringLit` or `RawString` token value.
 ///
 /// Handles `r"..."` (raw) and `"..."` (regular) forms, returning the inner content.
@@ -1149,6 +1191,22 @@ impl<'src> Parser<'src> {
                         } else {
                             self.error(format!("invalid duration literal: {s}"));
                         }
+                    } else if let Some(Token::Integer(n)) = self.peek() {
+                        // Bare integer positional, e.g. `#[max_heap(1024)]`.
+                        let n_str = n.to_string();
+                        self.advance();
+                        args.push(AttributeArg::Positional(n_str));
+                        // Consume an immediately following identifier as a unit suffix
+                        // (no comma required), e.g. `#[max_heap(1 kb)]`.  Only ident
+                        // tokens are valid unit suffixes; anything else is left for the
+                        // outer loop's comma-or-break check.
+                        if self.peek().is_some_and(|tok| {
+                            Self::is_ident_token(tok)
+                                && !matches!(tok, Token::RightParen | Token::Comma)
+                        }) {
+                            let unit = self.expect_ident().unwrap_or_default();
+                            args.push(AttributeArg::Positional(unit));
+                        }
                     } else {
                         break;
                     }
@@ -1270,6 +1328,17 @@ impl<'src> Parser<'src> {
         let start = self.peek_span().start;
         // Pre-compute attribute span before attrs is moved into the item.
         let attr_start = attrs.first().map(|a| a.span.start);
+
+        // Extract `#[max_heap]` before dispatch so we can set it on the actor
+        // and reject it on any non-actor item.  We pull both the result and the
+        // diagnostic span out as owned values so `attrs` can be moved freely
+        // into the match arms below.
+        let (max_heap_result, max_heap_attr_span): (Option<Result<u64, String>>, Option<Span>) =
+            if let Some(a) = attrs.iter().find(|a| a.name == "max_heap") {
+                (Some(resolve_max_heap_args(&a.args)), Some(a.span.clone()))
+            } else {
+                (None, None)
+            };
 
         let item = match self.peek() {
             Some(Token::Import) => {
@@ -1498,6 +1567,30 @@ impl<'src> Parser<'src> {
                 ));
                 return None;
             }
+        };
+
+        // Wire `#[max_heap]` into the actor, or emit a diagnostic if it appears
+        // on a non-actor item.
+        let item = match (item, max_heap_result) {
+            (Item::Actor(mut actor), Some(Ok(bytes))) => {
+                actor.max_heap_bytes = Some(bytes);
+                Item::Actor(actor)
+            }
+            (Item::Actor(actor), Some(Err(msg))) => {
+                let span = max_heap_attr_span.unwrap_or(start..start);
+                self.error_at(msg, span);
+                Item::Actor(actor)
+            }
+            (Item::Actor(actor), None) => Item::Actor(actor),
+            (other_item, Some(_)) => {
+                let span = max_heap_attr_span.unwrap_or(start..start);
+                self.error_at(
+                    "#[max_heap] is only allowed on actor declarations".to_string(),
+                    span,
+                );
+                other_item
+            }
+            (other_item, None) => other_item,
         };
 
         let end = self.peek_span().start;
@@ -2428,6 +2521,7 @@ impl<'src> Parser<'src> {
             overflow_policy,
             is_isolated: false,
             doc_comment: None,
+            max_heap_bytes: None, // set by parse_item from outer #[max_heap] attr
         })
     }
 
@@ -7908,6 +8002,114 @@ wire type Msg {
                 .iter()
                 .all(|e| !e.message.contains("E_UNKNOWN_TYPE_MARKER")),
             "deprecated attr triggered unknown-marker diagnostic: {:?}",
+            result.errors
+        );
+    }
+    // ── #[max_heap] attribute tests ──────────────────────────────────────────
+
+    #[test]
+    fn max_heap_attribute_bare_integer_bytes() {
+        let source = "#[max_heap(1024)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(1024));
+    }
+
+    #[test]
+    fn max_heap_attribute_kb_suffix() {
+        let source = "#[max_heap(2 kb)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(2 * 1024));
+    }
+
+    #[test]
+    fn max_heap_attribute_mb_suffix() {
+        let source = "#[max_heap(1 mb)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(1024 * 1024));
+    }
+
+    #[test]
+    fn max_heap_attribute_b_suffix() {
+        let source = "#[max_heap(512 b)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(512));
+    }
+
+    #[test]
+    fn max_heap_attribute_zero_accepted_as_unbounded() {
+        // cap=0 means unbounded (same as the legacy default); accepted explicitly.
+        let source = "#[max_heap(0)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(0));
+    }
+
+    #[test]
+    fn max_heap_attribute_gb_suffix_rejected() {
+        let source = "#[max_heap(1 gb)] actor Demo {}";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error for unsupported `gb` suffix"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("gb")),
+            "expected error mentioning `gb`, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn max_heap_attribute_on_fn_rejected() {
+        let source = "#[max_heap(1024)] fn foo() {}";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error: #[max_heap] only allowed on actor declarations"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
+            "expected error mentioning max_heap and actor, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn max_heap_attribute_on_type_rejected() {
+        let source = "#[max_heap(1 kb)] type Bar { x: i32; }";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error: #[max_heap] only allowed on actor declarations"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
+            "expected error mentioning max_heap and actor, got: {:?}",
             result.errors
         );
     }

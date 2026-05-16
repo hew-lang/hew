@@ -1120,6 +1120,16 @@ pub struct ActorDecl {
     pub overflow_policy: Option<OverflowPolicy>,
     pub is_isolated: bool,
     pub doc_comment: Option<String>,
+    /// Maximum heap bytes this actor may allocate from its arena.
+    ///
+    /// `None` = no `#[max_heap]` annotation (unbounded, legacy default).
+    /// `Some(0)` = explicit zero, treated as unbounded by the runtime (same as
+    /// arena cap=0 in `hew_arena_new_with_cap`). `Some(N)` for N > 0 = hard cap.
+    ///
+    /// Parse-time byte conversion: bare integer = bytes; `N kb` = N × 1024;
+    /// `N mb` = N × 1024²; `N b` = N. `gb` and larger are rejected in v0.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_heap_bytes: Option<u64>,
 }
 
 /// Mailbox overflow policy.

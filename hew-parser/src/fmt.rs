@@ -871,8 +871,13 @@ impl<'a> Formatter<'a> {
         self.write(";\n");
     }
 
+    #[expect(clippy::too_many_lines, reason = "actor formatting has many sections")]
     fn format_actor(&mut self, decl: &ActorDecl, span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
+        if let Some(bytes) = decl.max_heap_bytes {
+            self.write_indent();
+            self.write(&format!("#[max_heap({bytes})]\n"));
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("actor ");

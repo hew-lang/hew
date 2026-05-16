@@ -180,6 +180,20 @@ impl Verifier {
                 self.expr(container);
                 self.expr(index);
             }
+            HirExprKind::Slice {
+                container,
+                start,
+                end,
+                inclusive: _,
+            } => {
+                self.expr(container);
+                if let Some(s) = start {
+                    self.expr(s);
+                }
+                if let Some(e) = end {
+                    self.expr(e);
+                }
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior CutoverUnsupported diagnostic.

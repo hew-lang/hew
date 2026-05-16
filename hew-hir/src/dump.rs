@@ -254,6 +254,30 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             dump_expr(out, container, indent + 4);
             dump_expr(out, index, indent + 4);
         }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            inclusive,
+        } => {
+            let kind = if *inclusive {
+                "vec-slice-inclusive"
+            } else {
+                "vec-slice"
+            };
+            writeln!(out, "{pad}  {kind}").expect("write to string");
+            dump_expr(out, container, indent + 4);
+            if let Some(s) = start {
+                dump_expr(out, s, indent + 4);
+            } else {
+                writeln!(out, "{pad}    start (open)").expect("write to string");
+            }
+            if let Some(e) = end {
+                dump_expr(out, e, indent + 4);
+            } else {
+                writeln!(out, "{pad}    end (open)").expect("write to string");
+            }
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

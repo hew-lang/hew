@@ -1036,6 +1036,19 @@ impl Builder {
             HirExprKind::Index { container, index } => {
                 self.lower_vec_index(container, index, &expr.ty, expr.site)
             }
+            HirExprKind::Slice {
+                container,
+                start,
+                end,
+                inclusive,
+            } => self.lower_vec_slice(
+                container,
+                start.as_deref(),
+                end.as_deref(),
+                *inclusive,
+                &expr.ty,
+                expr.site,
+            ),
             HirExprKind::IdentityCompare { left, right } => {
                 // `lhs is rhs` — emit `Instr::IdentityCompare` so codegen can
                 // select `ptrtoint` + `icmp eq` for pointer-shaped handles or
@@ -1785,6 +1798,234 @@ impl Builder {
                 Some(result_place),
             )
             .expect("hew_vec_get_T is an allowlisted runtime symbol"),
+        ));
+
+        Some(result_place)
+    }
+
+    /// Lower `xs[a..b]` / `xs[a..=b]` / `xs[..b]` / `xs[a..]` / `xs[..]`
+    /// (`HirExprKind::Slice`) for a `Vec<T>` container (C-3).
+    ///
+    /// CFG shape (extends C-2's OOB pattern with a two-stage bounds check
+    /// and an optional integer-overflow trap for the inclusive form):
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   [start open?]     start_place := ConstI64(0)
+    ///   [end open?]       end_place := CallRuntimeAbi("hew_vec_len", [vec])
+    ///   [inclusive?]      one := ConstI64(1)
+    ///                     end_place := IntArithChecked(Add, signed, end_place, one)
+    ///                       → on overflow → trap_overflow_bb { TrapKind::IntegerOverflow }
+    ///                       → on success → cont1_bb (subsequent emission)
+    ///   IntCmp { pred: SignedGreater, dest: bad1, lhs: start, rhs: end }
+    ///   Branch { cond: bad1, then: trap_oob_bb, else: cont2_bb }
+    ///
+    /// cont2_bb:
+    ///   [end_place already holds end; reuse]
+    ///   len := CallRuntimeAbi("hew_vec_len", [vec])    -- second probe so
+    ///                                                    inclusive +1 is not
+    ///                                                    compared to the
+    ///                                                    pre-Add len
+    ///   IntCmp { pred: SignedGreater, dest: bad2, lhs: end_place, rhs: len }
+    ///   Branch { cond: bad2, then: trap_oob_bb, else: cont3_bb }
+    ///
+    /// trap_oob_bb:
+    ///   Trap { kind: IndexOutOfBounds }
+    ///
+    /// cont3_bb:
+    ///   CallRuntimeAbi { hew_vec_slice_range_T, args: [vec, start, end],
+    ///                    dest: result }
+    /// ```
+    ///
+    /// `SignedGreater` is the right predicate for `start > end` and
+    /// `end > len` because both endpoints are checker-validated i64. The
+    /// inclusive overflow guard runs BEFORE the bounds check so an
+    /// `i64::MAX..=i64::MAX` form traps as `IntegerOverflow` (not
+    /// `IndexOutOfBounds`), matching B-2's discipline that each trap
+    /// reports its true cause.
+    ///
+    /// Element-type dispatch (`hew_vec_slice_range_T`) covers the same
+    /// set as `hew_vec_get_T` (C-2) plus `str`: i32/u32, i64/u64, f64,
+    /// Named heap (ptr), and `String`. For Vec<String> the runtime
+    /// strdups each element into the fresh vec and sets `elem_kind ==
+    /// String` so the existing free-on-drop path frees them.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "explicit CFG construction: each block + bounds-check branch is its own \
+                  step; splitting would obscure the trap-graph shape"
+    )]
+    fn lower_vec_slice(
+        &mut self,
+        container: &HirExpr,
+        start: Option<&HirExpr>,
+        end: Option<&HirExpr>,
+        inclusive: bool,
+        result_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Resolve element type from the result Vec<T> for runtime dispatch.
+        let elem_ty = match result_ty {
+            ResolvedTy::Named { name, args } if name == "Vec" && !args.is_empty() => {
+                args[0].clone()
+            }
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!(
+                            "Vec range-slice result type must be Vec<T>; got {other:?}"
+                        ),
+                        site,
+                    },
+                    note: "C-3 range-slice expects the checker to record `Vec<T>` as the \
+                           expression type; receiving anything else indicates a checker/HIR \
+                           boundary violation upstream"
+                        .to_string(),
+                });
+                return None;
+            }
+        };
+
+        let slice_symbol = match &elem_ty {
+            ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_slice_range_i32",
+            ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_slice_range_i64",
+            ResolvedTy::F64 => "hew_vec_slice_range_f64",
+            ResolvedTy::String => "hew_vec_slice_range_str",
+            // Pointer-shaped heap handles (Duplex/LambdaActor/Named types).
+            ResolvedTy::Named { .. } => "hew_vec_slice_range_ptr",
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: format!("Vec<{other:?}> element type for xs[a..b]"),
+                        site,
+                    },
+                    note: "hew_vec_slice_range_T dispatch: element types supported are \
+                           i32/u32, i64/u64, f64, str (String), and Named heap types. \
+                           bool/char and other scalars map to i32/i64 in a future \
+                           width-normalisation slice."
+                        .to_string(),
+                });
+                return None;
+            }
+        };
+
+        let vec_place = self.lower_value(container)?;
+
+        // Resolve start. Open `start` materialises as ConstI64(0).
+        let start_place = if let Some(s) = start {
+            self.lower_value(s)?
+        } else {
+            let p = self.alloc_local(ResolvedTy::I64);
+            self.instructions
+                .push(Instr::ConstI64 { dest: p, value: 0 });
+            p
+        };
+
+        // Resolve end. Open `end` materialises as `hew_vec_len(vec)`.
+        // For inclusive `a..=b`, lower `b` first then add 1 with overflow trap.
+        let end_place = if let Some(e) = end {
+            let base = self.lower_value(e)?;
+            if inclusive {
+                // b + 1 via IntArithChecked(Add, Signed). The endpoint is i64
+                // per the checker; overflow on i64::MAX traps as
+                // TrapKind::IntegerOverflow.
+                let one_place = self.alloc_local(ResolvedTy::I64);
+                self.instructions.push(Instr::ConstI64 {
+                    dest: one_place,
+                    value: 1,
+                });
+                let bumped = self.alloc_local(ResolvedTy::I64);
+                let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+                self.instructions.push(Instr::IntArithChecked {
+                    op: IntArithOp::Add,
+                    signed: IntSignedness::Signed,
+                    dest: bumped,
+                    lhs: base,
+                    rhs: one_place,
+                    overflow_flag,
+                });
+                let overflow_trap_bb = self.alloc_block();
+                let after_inc_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: overflow_flag,
+                    then_target: overflow_trap_bb,
+                    else_target: after_inc_bb,
+                });
+                self.start_block(overflow_trap_bb);
+                self.finish_current_block(Terminator::Trap {
+                    kind: TrapKind::IntegerOverflow,
+                });
+                self.start_block(after_inc_bb);
+                bumped
+            } else {
+                base
+            }
+        } else {
+            // Open end: probe length via hew_vec_len.
+            let p = self.alloc_local(ResolvedTy::I64);
+            self.instructions.push(Instr::CallRuntimeAbi(
+                crate::model::RuntimeCall::new("hew_vec_len", vec![vec_place], Some(p))
+                    .expect("hew_vec_len is an allowlisted runtime symbol"),
+            ));
+            p
+        };
+
+        // Bounds check 1: start <= end. Implemented as `start > end` ?
+        // → trap_oob.
+        let oob_trap_bb = self.alloc_block();
+        let after_check1_bb = self.alloc_block();
+        let bad1 = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: bad1,
+            pred: CmpPred::SignedGreater,
+            lhs: start_place,
+            rhs: end_place,
+        });
+        self.finish_current_block(Terminator::Branch {
+            cond: bad1,
+            then_target: oob_trap_bb,
+            else_target: after_check1_bb,
+        });
+
+        // Bounds check 2 (in the success-of-check-1 block): end <= len.
+        // Re-probe len here so the comparison uses the post-inclusive-bump
+        // end against the current container length.
+        self.start_block(after_check1_bb);
+        let len_place = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
+                .expect("hew_vec_len is an allowlisted runtime symbol"),
+        ));
+        let bad2 = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            dest: bad2,
+            pred: CmpPred::SignedGreater,
+            lhs: end_place,
+            rhs: len_place,
+        });
+        let after_check2_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: bad2,
+            then_target: oob_trap_bb,
+            else_target: after_check2_bb,
+        });
+
+        // Single shared OOB trap block for both bounds-check branches.
+        self.start_block(oob_trap_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IndexOutOfBounds,
+        });
+
+        // Success path: emit the runtime slice call. The result is a fresh
+        // `*mut HewVec<T>` handle (ptr-shaped local typed as Vec<T>).
+        self.start_block(after_check2_bb);
+        let result_place = self.alloc_local(result_ty.clone());
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                slice_symbol,
+                vec![vec_place, start_place, end_place],
+                Some(result_place),
+            )
+            .expect("hew_vec_slice_range_T is an allowlisted runtime symbol"),
         ));
 
         Some(result_place)

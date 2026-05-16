@@ -105,6 +105,20 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_vec_get_str",
     // hew_vec_len(v: *mut HewVec) -> i64
     "hew_vec_len",
+    // --- Vec<T> range-slice (C-3) -------------------------------
+    // hew_vec_slice_range_T(v, start, end) -> *mut HewVec<T> — allocates
+    // a fresh Vec<T> populated from [start, end) on `v`. The MIR emitter
+    // bounds-checks `start <= end` and `end <= len(v)` with trap-on-OOB
+    // before calling; runtime defends-in-depth with the same checks.
+    // Element types covered: i32, i64, f64, ptr (handle/opaque), str
+    // (strdup copy per element; result vec owns and frees via existing
+    // ElemKind::String free-on-drop path in hew_vec_free).
+    // Lexicographic note: hew_vec_len < hew_vec_slice_range_* (l < s).
+    "hew_vec_slice_range_f64",
+    "hew_vec_slice_range_i32",
+    "hew_vec_slice_range_i64",
+    "hew_vec_slice_range_ptr",
+    "hew_vec_slice_range_str",
 ];
 
 /// Error returned when a `RuntimeCall` is constructed with a symbol that

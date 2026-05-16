@@ -5643,7 +5643,108 @@ impl<'src> Parser<'src> {
         let start = lhs.1.start;
         self.advance(); // consume [
 
-        let index = self.parse_expr()?;
+        // C-3 range-slice support: detect the five range forms in index
+        // position and emit `Expr::Range` (with the inclusive flag) so the
+        // checker/HIR can route to slice lowering. Forms:
+        //   xs[..]      — both endpoints open
+        //   xs[..b]     — open start, closed end (also `..=b`)
+        //   xs[a..]     — closed start, open end
+        //   xs[a..b]    — both endpoints closed
+        //   xs[a..=b]   — closed start, inclusive end
+        // All other contents (e.g. `xs[i]`, `xs[f()]`) remain `Expr::Index`.
+
+        let bracket_start_span = self.peek_span();
+
+        // Form 1: leading `..` or `..=` — open start.
+        if matches!(self.peek(), Some(Token::DotDot | Token::DotDotEqual)) {
+            let inclusive = matches!(self.peek(), Some(Token::DotDotEqual));
+            let dotdot_span = self.peek_span();
+            self.advance(); // consume `..` or `..=`
+                            // After the `..`, either `]` (xs[..] / xs[..=] — the latter is
+                            // ill-formed but we accept it as `..` with a closed inclusive flag
+                            // and let the checker complain about the missing endpoint via
+                            // type inference) or an expression for the closed end.
+            let end_expr = if self.peek() == Some(&Token::RightBracket) {
+                None
+            } else {
+                Some(Box::new(self.parse_expr()?))
+            };
+            self.expect(&Token::RightBracket)?;
+            let end_pos = self.peek_span().start;
+            let range_span = dotdot_span.start..end_pos;
+            let range_expr = (
+                Expr::Range {
+                    start: None,
+                    end: end_expr,
+                    inclusive,
+                },
+                range_span,
+            );
+            return Some((
+                Expr::Index {
+                    object: Box::new(lhs),
+                    index: Box::new(range_expr),
+                },
+                start..end_pos,
+            ));
+        }
+
+        // Parse the start sub-expression with `min_bp = 5` — above the
+        // range precedence (3, 4) — so the Pratt loop does NOT fold a
+        // trailing `..` / `..=` into a binary range. We then inspect the
+        // next token to discriminate `xs[a]` (single-element index) from
+        // `xs[a..]` (open-end slice) and `xs[a..b]` / `xs[a..=b]` (closed
+        // slice). This lets `xs[a..]` succeed even though the normal
+        // Pratt loop would demand a RHS after `..` and bail.
+        let first = self.parse_expr_bp(5)?;
+
+        let (inclusive, has_range_op) = match self.peek() {
+            Some(Token::DotDot) => (false, true),
+            Some(Token::DotDotEqual) => (true, true),
+            _ => (false, false),
+        };
+
+        if has_range_op {
+            // `xs[a..]` / `xs[a..b]` / `xs[a..=b]`.
+            let range_start_pos = first.1.start;
+            self.advance(); // consume `..` or `..=`
+            let end_expr = if self.peek() == Some(&Token::RightBracket) {
+                None
+            } else {
+                // Parse the upper bound at full `parse_expr` precedence
+                // so nested expressions (`xs[a..b+1]`) work.
+                Some(Box::new(self.parse_expr()?))
+            };
+            self.expect(&Token::RightBracket)?;
+            let end_pos = self.peek_span().start;
+            let range_span = range_start_pos..end_pos;
+            let range_expr = (
+                Expr::Range {
+                    start: Some(Box::new(first)),
+                    end: end_expr,
+                    inclusive,
+                },
+                range_span,
+            );
+            return Some((
+                Expr::Index {
+                    object: Box::new(lhs),
+                    index: Box::new(range_expr),
+                },
+                start..end_pos,
+            ));
+        }
+
+        // No range operator after the start expression: this is a single-
+        // element index (`xs[i]`, `xs[a + b]`, etc.). `parse_expr_bp(5)`
+        // already absorbed every infix operator above range precedence,
+        // which is the right closure for single-element indexing — range
+        // operators in index position go through the branch above.
+        let index = first;
+        // Silence unused-binding warning: `bracket_start_span` is consulted
+        // only by the leading-`..` branch above.
+        let _ = bracket_start_span;
+
         self.expect(&Token::RightBracket)?;
         let end = self.peek_span().start;
 

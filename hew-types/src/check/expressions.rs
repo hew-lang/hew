@@ -893,6 +893,45 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let obj_ty = self.synthesize(&object.0, &object.1);
+
+        // C-3 range-slice (`xs[a..b]`, `xs[a..=b]`, `xs[..b]`, `xs[a..]`,
+        // `xs[..]`): when the index is a range expression, the result type
+        // is `Vec<T>` (a freshly-allocated copy) for `Vec<T>` receivers.
+        // Each present endpoint must check against `i64`. Open endpoints
+        // contribute no constraint; MIR fills them at lowering.
+        // Other receivers (`Array<T, N>`, `Slice<T>`) are not supported by
+        // this slice — the checker rejects with a typed-receiver diagnostic
+        // that names Vec as the only supported receiver, mirroring C-2's
+        // narrow surface.
+        if let Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } = &index.0
+        {
+            if let Some(s) = start.as_deref() {
+                self.check_against(&s.0, &s.1, &Ty::I64);
+            }
+            if let Some(e) = end.as_deref() {
+                self.check_against(&e.0, &e.1, &Ty::I64);
+            }
+            return match &obj_ty {
+                Ty::Named { name, args } if name == "Vec" && !args.is_empty() => obj_ty.clone(),
+                _ => {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "cannot range-slice `{}`; range-slice syntax `xs[a..b]` is \
+                             supported only for `Vec<T>` receivers",
+                            obj_ty.user_facing()
+                        ),
+                    );
+                    Ty::Error
+                }
+            };
+        }
+
         self.check_against(&index.0, &index.1, &Ty::I64);
         match &obj_ty {
             Ty::Array(elem, _) | Ty::Slice(elem) => (**elem).clone(),

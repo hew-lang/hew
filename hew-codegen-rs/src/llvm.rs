@@ -471,6 +471,17 @@ fn intern_runtime_decl<'ctx>(
         // not emitted by this slice's MIR producer — Vec<String> indexing
         // deferred to a follow-on slice that wires the drop for the copy.
         "hew_vec_get_str" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // C-3 Vec<T> range-slice: hew_vec_slice_range_T(v, start, end) ->
+        // *mut HewVec<T>. Caller owns the freshly-allocated result; drop
+        // elaboration frees it via the existing hew_vec_free path.
+        // (`hew-runtime/src/vec.rs` — added in this slice.)
+        "hew_vec_slice_range_i32"
+        | "hew_vec_slice_range_i64"
+        | "hew_vec_slice_range_f64"
+        | "hew_vec_slice_range_ptr"
+        | "hew_vec_slice_range_str" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
+        }
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -1492,6 +1503,57 @@ fn lower_call_runtime_abi(
                 .build_call(
                     fv,
                     &[vec_ptr.into(), index_val.into()],
+                    &format!("{symbol}_call"),
+                )
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+            let result_val = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(format!("{symbol}: producer must supply a dest place"))
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // ── Vec<T> range-slice (C-3) ──────────────────────────────────────
+        //
+        // hew_vec_slice_range_{i32,i64,f64,ptr,str}(v: *mut HewVec,
+        //   start: i64, end: i64) -> *mut HewVec
+        //
+        // All five share the same ABI shape: load vec ptr from arg0, load
+        // start/end i64 from args 1..2, call, store the returned `*mut
+        // HewVec` into dest (a ptr-typed Vec<T> alloca). The element type
+        // is encoded in the suffix and selected by the MIR producer.
+        "hew_vec_slice_range_i32"
+        | "hew_vec_slice_range_i64"
+        | "hew_vec_slice_range_f64"
+        | "hew_vec_slice_range_ptr"
+        | "hew_vec_slice_range_str" => {
+            if args.len() != 3 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 3 args (vec, start, end), got {}",
+                    args.len()
+                )));
+            }
+            let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{symbol} arg0"))?;
+            let start_val = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{symbol} arg1"))?;
+            let end_val = load_int_arg(fn_ctx, args[2], i64_ty, &format!("{symbol} arg2"))?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), start_val.into(), end_val.into()],
                     &format!("{symbol}_call"),
                 )
                 .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;

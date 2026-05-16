@@ -1360,48 +1360,73 @@ impl LowerCtx {
                 (HirExprKind::Block(hir_block), ty)
             }
             Expr::Index { object, index } => {
-                // Integer-indexed element access on Vec<T>: `xs[i]`.
-                // The checker (`synthesize_index`) has already validated that
-                // `object` is `Vec<T>` and `index` is i64; the expression type
-                // (the element type T) is recorded in `expr_types` at this span.
-                // Consult `expr_types` as the authority for the result type.
-                // LESSONS: `checker-authority` P0 — we never re-derive the
-                // element type from the container; the checker is the sole owner.
-                let container = self.lower_expr(object, IntentKind::Read);
-                let index_expr = self.lower_expr(index, IntentKind::Read);
-                // The checker records the element type at the whole index
-                // expression's span.
+                // The checker records the element/result type at the whole
+                // index expression's span. LESSONS: `checker-authority` P0 —
+                // we never re-derive the element type from the container;
+                // the checker is the sole owner.
                 let checker_key = SpanKey::from(&span);
-                let elem_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
                     match ResolvedTy::from_ty(&ty) {
                         Ok(resolved) => resolved,
                         Err(err) => {
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: "xs[i]".to_string(),
+                                    name: "xs[..]".to_string(),
                                     reason: err.to_string(),
                                 },
                                 span.clone(),
-                                "checker-authoritative index element type failed boundary conversion",
+                                "checker-authoritative index/slice result type failed boundary conversion",
                             ));
                             ResolvedTy::Unit
                         }
                     }
                 } else {
                     // Fall through: no checker entry. This can happen when the
-                    // checker emitted an error for this expression (e.g. indexing
-                    // into a non-Vec) and skipped recording the type. The
-                    // CutoverUnsupported diagnostic from the checker covers the
+                    // checker emitted an error for this expression (e.g.
+                    // indexing into a non-Vec) and skipped recording the
+                    // type. The diagnostic from the checker covers the
                     // user-facing error; emit Unit to stay well-formed.
                     ResolvedTy::Unit
                 };
-                (
-                    HirExprKind::Index {
-                        container: Box::new(container),
-                        index: Box::new(index_expr),
-                    },
-                    elem_ty,
-                )
+
+                // Distinguish range-slice (`xs[a..b]` and the four open-end
+                // forms) from single-element indexing (`xs[i]`). The parser
+                // emits `Expr::Range` only when the bracket contents are a
+                // range; all other expressions remain as `Expr::Index`.
+                let container = self.lower_expr(object, IntentKind::Read);
+                if let Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = &index.0
+                {
+                    // C-3 range-slice: result type is Vec<T> (checker-authoritative).
+                    let lowered_start = start
+                        .as_ref()
+                        .map(|s| Box::new(self.lower_expr(s, IntentKind::Read)));
+                    let lowered_end = end
+                        .as_ref()
+                        .map(|e| Box::new(self.lower_expr(e, IntentKind::Read)));
+                    (
+                        HirExprKind::Slice {
+                            container: Box::new(container),
+                            start: lowered_start,
+                            end: lowered_end,
+                            inclusive: *inclusive,
+                        },
+                        result_ty,
+                    )
+                } else {
+                    // C-2 single-element indexing: result type is element type T.
+                    let index_expr = self.lower_expr(index, IntentKind::Read);
+                    (
+                        HirExprKind::Index {
+                            container: Box::new(container),
+                            index: Box::new(index_expr),
+                        },
+                        result_ty,
+                    )
+                }
             }
             Expr::Is { lhs, rhs } => {
                 // Identity comparison: `lhs is rhs`. The checker (D-2) has already
@@ -2386,6 +2411,10 @@ impl LowerCtx {
 /// outer body referencing a name that the inner lambda also referenced;
 /// but `BindingRef` lives only in the outer body's expression tree, so
 /// this falls out naturally from not descending into the inner body.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single-pass HIR walker; one arm per HirExprKind variant by design"
+)]
 fn collect_captures_walk(
     expr: &HirExpr,
     param_ids: &std::collections::HashSet<BindingId>,
@@ -2505,6 +2534,20 @@ fn collect_captures_walk(
         HirExprKind::Index { container, index } => {
             collect_captures_walk(container, param_ids, seen, captures, self_id);
             collect_captures_walk(index, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            inclusive: _,
+        } => {
+            collect_captures_walk(container, param_ids, seen, captures, self_id);
+            if let Some(s) = start {
+                collect_captures_walk(s, param_ids, seen, captures, self_id);
+            }
+            if let Some(e) = end {
+                collect_captures_walk(e, param_ids, seen, captures, self_id);
+            }
         }
     }
 }

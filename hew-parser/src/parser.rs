@@ -126,8 +126,11 @@ fn unquote_str(s: &str) -> &str {
 /// These attributes are permitted on plain `fn` declarations inside an
 /// actor body; all other attributes on such fns are rejected.
 ///
-/// The parameterized form `#[on(start)]` / `#[on(stop)]` uses a single
-/// attribute name `on` with the hook kind as a positional argument.
+/// The parameterized form `#[on(<event>)]` uses a single attribute name
+/// `on` with the hook kind as a positional argument. Recognised events
+/// in v0.5 are `start`, `stop`, `crash`, and `upgrade`. Validation of
+/// the event identifier and per-event signature shape lives in the
+/// type-checker (`hew-types::check::items`).
 pub(crate) fn is_lifecycle_hook_attr(name: &str) -> bool {
     name == "on"
 }
@@ -6700,6 +6703,49 @@ mod tests {
         } else {
             panic!("expected actor");
         }
+    }
+
+    #[test]
+    fn parse_actor_on_crash_hook_attaches_to_method() {
+        // E1: `#[on(crash)]` parses on an actor method. Signature shape
+        // (params/return type) is owned by E2 — parser just attaches
+        // the attribute to the FnDecl.
+        let source = r"actor Worker {
+    #[on(crash)]
+    fn on_crash() { }
+}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.methods.len(), 1);
+        assert_eq!(actor.methods[0].attributes.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].name, "on");
+        assert_eq!(actor.methods[0].attributes[0].args.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].args[0].as_str(), "crash");
+    }
+
+    #[test]
+    fn parse_actor_on_upgrade_hook_attaches_to_method() {
+        // E1: `#[on(upgrade)]` parses on an actor method. v0.5 emits a
+        // reserved-marker only; runtime invocation is deferred.
+        // WASM-TODO(#1817): wire `#[on(upgrade)]` to a live runtime
+        // invocation path (E3 of the failure-philosophy plan).
+        let source = r"actor Worker {
+    #[on(upgrade)]
+    fn on_upgrade() { }
+}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.methods.len(), 1);
+        assert_eq!(actor.methods[0].attributes.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].name, "on");
+        assert_eq!(actor.methods[0].attributes[0].args.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].args[0].as_str(), "upgrade");
     }
 
     #[test]

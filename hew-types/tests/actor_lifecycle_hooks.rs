@@ -1,5 +1,5 @@
 //! Type-checker fixtures for actor lifecycle hooks
-//! (`#[on(start)]` / `#[on(stop)]`).
+//! (`#[on(start)]` / `#[on(stop)]` / `#[on(crash)]` / `#[on(upgrade)]`).
 //!
 //! These exercise the §9.1.2 surface defined in
 //! `docs/specs/HEW-SPEC-2026.md`. The accept fixtures pin the
@@ -208,8 +208,125 @@ fn reject_unknown_hook_kind() {
             .iter()
             .any(|e| e.message.contains("on(restart)")
                 && e.message.contains("start")
-                && e.message.contains("stop")),
-        "`#[on(restart)]` should be rejected with valid-kinds list: {:?}",
+                && e.message.contains("stop")
+                && e.message.contains("crash")
+                && e.message.contains("upgrade")),
+        "`#[on(restart)]` should be rejected with valid-kinds list \
+         (start, stop, crash, upgrade): {:?}",
+        output.errors
+    );
+}
+
+// ── E1: `#[on(crash)]` / `#[on(upgrade)]` recognition ───────────────
+//
+// Phase 1 slice E1 of the failure-philosophy plan adds two new event
+// names to the `#[on(<event>)]` family. v0.5 only needs the parser/
+// checker to *recognise* them; signature shape (params, return type,
+// body) and the reserved-marker emission for `upgrade` are owned by
+// E2. These fixtures pin recognition: well-formed declarations are
+// accepted, malformed ones produce a hook-specific diagnostic.
+
+#[test]
+fn accept_on_crash_recognised_as_hook() {
+    // E1: `#[on(crash)]` is a recognised hook event. Signature shape is
+    // E2's responsibility — here we only verify the checker does not
+    // emit "not a recognised lifecycle hook" for this event name.
+    let output = typecheck(
+        r"
+        actor Worker {
+            let count: i32;
+
+            #[on(crash)]
+            fn on_crash() {
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("not a recognised lifecycle hook")),
+        "`#[on(crash)]` must not be rejected as an unknown hook in E1: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn accept_on_upgrade_recognised_as_hook() {
+    // E1: `#[on(upgrade)]` is a recognised hook event. The v0.5 runtime
+    // emits a reserved-marker only — E2 owns that codegen + signature
+    // shape. Here we only verify the checker accepts the event name.
+    let output = typecheck(
+        r"
+        actor Worker {
+            let count: i32;
+
+            #[on(upgrade)]
+            fn on_upgrade() {
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("not a recognised lifecycle hook")),
+        "`#[on(upgrade)]` must not be rejected as an unknown hook in E1: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reject_on_crash_with_extra_args() {
+    // `#[on(crash, foo)]` is malformed — the event slot takes exactly
+    // one identifier. start/stop reach this through `check_lifecycle_hook`,
+    // but crash/upgrade bypass that signature checker in E1, so the
+    // attribute-shape check lives in the event dispatch itself.
+    let output = typecheck(
+        r"
+        actor Worker {
+            #[on(crash, foo)]
+            fn on_crash() {
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| e.message.contains("on(crash)")
+            && e.message.contains("does not accept extra arguments")),
+        "`#[on(crash, …)]` with extra args should be rejected: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn reject_on_upgrade_with_extra_args() {
+    let output = typecheck(
+        r"
+        actor Worker {
+            #[on(upgrade, v2)]
+            fn on_upgrade() {
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("on(upgrade)")
+                && e.message.contains("does not accept extra arguments")),
+        "`#[on(upgrade, …)]` with extra args should be rejected: {:?}",
         output.errors
     );
 }

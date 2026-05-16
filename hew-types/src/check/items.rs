@@ -220,13 +220,27 @@ impl Checker {
         }
 
         // Separate lifecycle-hook fns from regular methods. Hooks carry
-        // `#[on(start)]` or `#[on(stop)]` and have a fixed signature;
-        // regular methods carry no attributes and are checked as
-        // ordinary actor methods.
+        // one of `#[on(start)]`, `#[on(stop)]`, `#[on(crash)]`, or
+        // `#[on(upgrade)]`. The start/stop variants have a fixed
+        // signature checked here; the crash/upgrade variants are
+        // recognised in E1 but their signature shape is owned by E2
+        // (failure-philosophy phase 2). Regular methods carry no
+        // attributes and are checked as ordinary actor methods.
         //
         // `#[on(start)]` is at most once per actor; `#[on(stop)]` may
         // appear multiple times (lexical declaration order is the
         // run order — see HEW-SPEC-2026 §9.1.2).
+        self.check_actor_methods(ad);
+
+        self.current_actor_type = prev_actor_type;
+        self.current_actor_fields = prev_actor_fields;
+    }
+
+    /// Walk an actor's `methods` list, dispatching each fn to either the
+    /// lifecycle-hook validator or the regular-method validator based on
+    /// its `#[on(<event>)]` annotation. Tracks `#[on(start)]` uniqueness
+    /// across the loop.
+    fn check_actor_methods(&mut self, ad: &ActorDecl) {
         let mut on_start_seen: Option<Span> = None;
         for method in &ad.methods {
             let hook_attrs: Vec<_> = method
@@ -257,36 +271,10 @@ impl Checker {
             }
             let hook_attr = hook_attrs[0];
 
-            // Resolve the hook kind from the first positional arg.
-            let hook_kind = hook_attr.args.first().map(AttributeArg::as_str);
-            match hook_kind {
-                None | Some("") => {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
-                        hook_attr.span.clone(),
-                        format!(
-                            "`#[on]` on `{}::{}` requires a hook kind argument; \
-                             valid hook kinds are: start, stop",
-                            ad.name, method.name
-                        ),
-                    ));
-                    continue;
-                }
-                Some("start" | "stop") => {}
-                Some(unknown) => {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
-                        hook_attr.span.clone(),
-                        format!(
-                            "`#[on({unknown})]` on `{}::{}` is not a recognised lifecycle hook; \
-                             valid hook kinds are: start, stop",
-                            ad.name, method.name
-                        ),
-                    ));
-                    continue;
-                }
-            }
-            let hook_kind_str = hook_kind.unwrap();
+            let Some(hook_kind_str) = self.resolve_on_hook_kind(&ad.name, &method.name, hook_attr)
+            else {
+                continue;
+            };
 
             if hook_kind_str == "start" {
                 if let Some(prev) = &on_start_seen {
@@ -304,14 +292,75 @@ impl Checker {
                 }
             }
 
+            // E1 scope: `#[on(crash)]` and `#[on(upgrade)]` are recognised at
+            // parse/check time but their signature shape (params, return type,
+            // body type-checking, reserved-marker emission for `upgrade`) is
+            // owned by E2. Skip the start/stop signature checker for them.
+            if matches!(hook_kind_str, "crash" | "upgrade") {
+                continue;
+            }
+
             // Validate signature and body. Hooks bind actor fields in
             // scope (bare names) and have no parameters beyond `self`.
             let display_kind = format!("on({hook_kind_str})");
             self.check_lifecycle_hook(&ad.name, method, &display_kind, &ad.fields);
         }
+    }
 
-        self.current_actor_type = prev_actor_type;
-        self.current_actor_fields = prev_actor_fields;
+    /// Resolve and validate the event identifier inside `#[on(<event>)]`.
+    /// Pushes a diagnostic and returns `None` if the event is missing,
+    /// unknown, or carries extra arguments that the event does not accept.
+    fn resolve_on_hook_kind<'a>(
+        &mut self,
+        actor_name: &str,
+        method_name: &str,
+        hook_attr: &'a hew_parser::ast::Attribute,
+    ) -> Option<&'a str> {
+        let hook_kind = hook_attr.args.first().map(AttributeArg::as_str);
+        match hook_kind {
+            None | Some("") => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    hook_attr.span.clone(),
+                    format!(
+                        "`#[on]` on `{actor_name}::{method_name}` requires a hook kind argument; \
+                         valid hook kinds are: start, stop, crash, upgrade"
+                    ),
+                ));
+                return None;
+            }
+            Some("start" | "stop" | "crash" | "upgrade") => {}
+            Some(unknown) => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    hook_attr.span.clone(),
+                    format!(
+                        "`#[on({unknown})]` on `{actor_name}::{method_name}` is not a recognised \
+                         lifecycle hook; valid hook kinds are: start, stop, crash, upgrade"
+                    ),
+                ));
+                return None;
+            }
+        }
+        let hook_kind_str = hook_kind.unwrap();
+
+        // Reject `#[on(crash, …)]` / `#[on(upgrade, …)]` with extra arguments.
+        // start/stop already reject extra args via `check_lifecycle_hook`'s
+        // signature checks; for crash/upgrade we validate the attribute
+        // shape here because their signature/body checking is owned by E2.
+        if matches!(hook_kind_str, "crash" | "upgrade") && hook_attr.args.len() > 1 {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook_attr.span.clone(),
+                format!(
+                    "`#[on({hook_kind_str})]` on `{actor_name}::{method_name}` does not accept \
+                     extra arguments"
+                ),
+            ));
+            return None;
+        }
+
+        Some(hook_kind_str)
     }
 
     pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {

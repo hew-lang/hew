@@ -1,13 +1,21 @@
 //! Scope lifecycle integration tests.
 //!
 //! Tests structured concurrency scopes: creation, actor tracking,
-//! cancellation propagation, and cleanup behaviour.  The scope module
+//! cancellation propagation, and cleanup behaviour. The scope module
 //! has only ~40 % line coverage — these tests target the gaps.
+//!
+//! Scope and actor handle lifecycle is funnelled through
+//! `hew_runtime_testkit::{TestScope, TestActor}`. `TestScope::adopt`
+//! consumes a `TestActor` and transfers ownership to the scope's actor
+//! list; `wait_all` and `Drop` then close + free everything.
+//!
+//! Remaining `unsafe` blocks are confined to the two tests that exercise
+//! the heap-allocated `hew_scope_create` form, and the one test that
+//! pokes raw fields to validate destroy semantics.
 
-// FFI test harness — safety invariants documented per-test.
 #![expect(
     clippy::undocumented_unsafe_blocks,
-    reason = "FFI test harness — safety invariants are documented per-test"
+    reason = "FFI test harness — hew_scope_create form is kept raw"
 )]
 #![expect(
     clippy::cast_possible_truncation,
@@ -21,21 +29,11 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use hew_runtime::actor::{hew_actor_free, hew_actor_send, hew_actor_spawn};
 use hew_runtime::scope::{
-    hew_scope_cancel, hew_scope_create, hew_scope_destroy, hew_scope_free, hew_scope_is_cancelled,
-    hew_scope_new, hew_scope_spawn, hew_scope_wait_all, HEW_SCOPE_MAX_ACTORS,
+    hew_scope_cancel, hew_scope_create, hew_scope_free, hew_scope_is_cancelled, hew_scope_spawn,
+    hew_scope_wait_all, HEW_SCOPE_MAX_ACTORS,
 };
-
-// ── Global scheduler init ───────────────────────────────────────────────
-
-static SCHED_INIT: std::sync::Once = std::sync::Once::new();
-
-fn ensure_scheduler() {
-    SCHED_INIT.call_once(|| {
-        hew_runtime::scheduler::hew_sched_init();
-    });
-}
+use hew_runtime_testkit::{ensure_scheduler, TestActor, TestScope};
 
 // ── Condvar helper ──────────────────────────────────────────────────────
 
@@ -80,8 +78,6 @@ impl Signal {
     }
 }
 
-// ── Shared dispatch functions ───────────────────────────────────────────
-
 unsafe extern "C" fn noop_dispatch(
     _state: *mut c_void,
     _msg_type: i32,
@@ -97,31 +93,16 @@ unsafe extern "C" fn noop_dispatch(
 /// Spawning actors into a scope increments the actor count.
 #[test]
 fn scope_spawn_tracks_actors() {
-    unsafe {
-        let mut scope = hew_scope_new();
-        let a = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        let b = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+    let mut scope = TestScope::new();
 
-        assert_eq!(
-            hew_scope_spawn(&raw mut scope, a.cast()),
-            0,
-            "spawn should succeed"
-        );
-        assert_eq!(scope.actor_count, 1);
+    assert_eq!(scope.adopt(TestActor::spawn(noop_dispatch)), 0);
+    assert_eq!(scope.actor_count(), 1);
 
-        assert_eq!(
-            hew_scope_spawn(&raw mut scope, b.cast()),
-            0,
-            "spawn should succeed"
-        );
-        assert_eq!(scope.actor_count, 2);
+    assert_eq!(scope.adopt(TestActor::spawn(noop_dispatch)), 0);
+    assert_eq!(scope.actor_count(), 2);
 
-        // Clean up: close actors so wait_all can proceed.
-        hew_runtime::actor::hew_actor_close(a);
-        hew_runtime::actor::hew_actor_close(b);
-        hew_scope_wait_all(&raw mut scope);
-        hew_scope_destroy(&raw mut scope);
-    }
+    scope.wait_all();
+    // TestScope::Drop runs destroy.
 }
 
 /// Filling the scope to `HEW_SCOPE_MAX_ACTORS` succeeds.
@@ -129,26 +110,20 @@ fn scope_spawn_tracks_actors() {
 fn scope_spawn_accepts_at_limit() {
     ensure_scheduler();
 
-    unsafe {
-        let mut scope = hew_scope_new();
+    let mut scope = TestScope::new();
 
-        let mut actors = Vec::new();
-        for index in 0..HEW_SCOPE_MAX_ACTORS {
-            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-            assert!(!actor.is_null());
-            let rc = hew_scope_spawn(&raw mut scope, actor.cast());
-            assert_eq!(rc, 0, "spawn {index} should succeed at or below capacity");
-            actors.push(actor);
-        }
-
-        assert_eq!(
-            scope.actor_count, HEW_SCOPE_MAX_ACTORS as i32,
-            "scope should hold exactly HEW_SCOPE_MAX_ACTORS actors",
-        );
-
-        hew_scope_wait_all(&raw mut scope);
-        hew_scope_destroy(&raw mut scope);
+    for index in 0..HEW_SCOPE_MAX_ACTORS {
+        let rc = scope.adopt(TestActor::spawn(noop_dispatch));
+        assert_eq!(rc, 0, "spawn {index} should succeed at or below capacity");
     }
+
+    assert_eq!(
+        scope.actor_count(),
+        HEW_SCOPE_MAX_ACTORS as i32,
+        "scope should hold exactly HEW_SCOPE_MAX_ACTORS actors"
+    );
+
+    scope.wait_all();
 }
 
 /// Exceeding `HEW_SCOPE_MAX_ACTORS` returns -1.
@@ -156,29 +131,20 @@ fn scope_spawn_accepts_at_limit() {
 fn scope_spawn_rejects_when_full() {
     ensure_scheduler();
 
-    unsafe {
-        let mut scope = hew_scope_new();
+    let mut scope = TestScope::new();
 
-        // Fill the scope to capacity with real actor spawns.
-        let mut actors = Vec::new();
-        for _ in 0..HEW_SCOPE_MAX_ACTORS {
-            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-            assert!(!actor.is_null());
-            let rc = hew_scope_spawn(&raw mut scope, actor.cast());
-            assert_eq!(rc, 0, "spawn should succeed while under capacity");
-            actors.push(actor);
-        }
-        assert_eq!(scope.actor_count, HEW_SCOPE_MAX_ACTORS as i32);
-
-        // The (MAX+1)th spawn must be rejected.
-        let extra = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        let rc = hew_scope_spawn(&raw mut scope, extra.cast());
-        assert_eq!(rc, -1, "scope should reject when full");
-
-        hew_actor_free(extra);
-        hew_scope_wait_all(&raw mut scope);
-        hew_scope_destroy(&raw mut scope);
+    for _ in 0..HEW_SCOPE_MAX_ACTORS {
+        let rc = scope.adopt(TestActor::spawn(noop_dispatch));
+        assert_eq!(rc, 0, "spawn should succeed while under capacity");
     }
+    assert_eq!(scope.actor_count(), HEW_SCOPE_MAX_ACTORS as i32);
+
+    // The (MAX+1)th adopt must be rejected.  TestScope::adopt re-wraps the
+    // actor on rejection so it gets close+free'd here, not by the scope.
+    let rc = scope.adopt(TestActor::spawn(noop_dispatch));
+    assert_eq!(rc, -1, "scope should reject when full");
+
+    scope.wait_all();
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -188,36 +154,25 @@ fn scope_spawn_rejects_when_full() {
 /// Setting the cancellation flag is visible via `hew_scope_is_cancelled`.
 #[test]
 fn scope_cancel_sets_flag() {
-    unsafe {
-        let mut scope = hew_scope_new();
-        assert_eq!(hew_scope_is_cancelled(&raw mut scope), 0);
+    let mut scope = TestScope::new();
+    assert!(!scope.is_cancelled());
 
-        hew_scope_cancel(&raw mut scope);
-        assert_eq!(
-            hew_scope_is_cancelled(&raw mut scope),
-            1,
-            "cancellation flag should be set"
-        );
-
-        hew_scope_destroy(&raw mut scope);
-    }
+    scope.cancel();
+    assert!(scope.is_cancelled(), "cancellation flag should be set");
 }
 
 /// Cancelling a null scope is a safe no-op.
 #[test]
 fn scope_cancel_null_is_noop() {
-    unsafe {
-        hew_scope_cancel(ptr::null_mut());
-        // Reaching here without a crash is the assertion.
-    }
+    // SAFETY: hew_scope_cancel is documented as a no-op on null input.
+    unsafe { hew_scope_cancel(ptr::null_mut()) };
 }
 
 /// `hew_scope_is_cancelled` returns 0 for a null pointer.
 #[test]
 fn scope_is_cancelled_null_returns_zero() {
-    unsafe {
-        assert_eq!(hew_scope_is_cancelled(ptr::null_mut()), 0);
-    }
+    // SAFETY: hew_scope_is_cancelled returns 0 on null input.
+    unsafe { assert_eq!(hew_scope_is_cancelled(ptr::null_mut()), 0) };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -244,47 +199,35 @@ fn scope_wait_all_cleans_up_actors() {
     ensure_scheduler();
     SCOPE_SIGNAL.reset();
 
-    unsafe {
-        let mut scope = hew_scope_new();
-        let mut state: i32 = 0;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(scope_dispatch),
-        );
-        assert!(!actor.is_null());
+    let mut scope = TestScope::new();
+    let mut state: i32 = 0;
+    let actor = TestActor::spawn_with_state(&mut state, scope_dispatch);
 
-        hew_scope_spawn(&raw mut scope, actor.cast());
+    // Send a message so the actor has work to do, before transferring
+    // ownership into the scope.
+    actor.send_empty(1);
+    assert!(
+        SCOPE_SIGNAL.wait_for(1, Duration::from_secs(10)),
+        "dispatch not invoked"
+    );
 
-        // Send a message so the actor has work to do.
-        hew_actor_send(actor, 1, ptr::null_mut(), 0);
-        assert!(
-            SCOPE_SIGNAL.wait_for(1, Duration::from_secs(10)),
-            "dispatch not invoked"
-        );
+    scope.adopt(actor);
 
-        // wait_all should: drain mailbox → close → wait for Stopped → free.
-        hew_scope_wait_all(&raw mut scope);
+    // wait_all should: drain mailbox → close → wait for Stopped → free.
+    scope.wait_all();
 
-        // After wait_all, the scope's actor slots should be nulled out.
-        assert!(
-            scope.actors[0].is_null(),
-            "wait_all should null out actor slots after freeing"
-        );
-
-        hew_scope_destroy(&raw mut scope);
-    }
+    // After wait_all, the scope's actor slots should be nulled out.
+    assert!(
+        scope.actor_slot(0).is_null(),
+        "wait_all should null out actor slots after freeing"
+    );
 }
 
 /// `hew_scope_wait_all` on an empty scope is a safe no-op.
 #[test]
 fn scope_wait_all_empty_is_noop() {
-    unsafe {
-        let mut scope = hew_scope_new();
-        hew_scope_wait_all(&raw mut scope);
-        // Reaching here without a crash proves the empty-scope path works.
-        hew_scope_destroy(&raw mut scope);
-    }
+    let mut scope = TestScope::new();
+    scope.wait_all();
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -310,40 +253,35 @@ fn scope_wait_all_multiple_actors() {
     ensure_scheduler();
     MULTI_SIGNAL.reset();
 
-    unsafe {
-        let mut scope = hew_scope_new();
+    let mut scope = TestScope::new();
 
-        // Spawn 3 actors into the scope.
-        let mut actors = Vec::new();
-        for _ in 0..3 {
-            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(multi_dispatch));
-            assert!(!actor.is_null());
-            hew_scope_spawn(&raw mut scope, actor.cast());
-            actors.push(actor);
-        }
-        assert_eq!(scope.actor_count, 3);
+    // Spawn 3 actors into the scope. Capture the raw pointers so we can
+    // send messages to them after the scope has adopted ownership.
+    let mut actors_raw = Vec::new();
+    for _ in 0..3 {
+        let actor = TestActor::spawn(multi_dispatch);
+        actors_raw.push(actor.as_ptr());
+        scope.adopt(actor);
+    }
+    assert_eq!(scope.actor_count(), 3);
 
-        // Send one message to each actor.
-        for &actor in &actors {
-            hew_actor_send(actor, 1, ptr::null_mut(), 0);
-        }
+    // Send one message to each actor.
+    for &actor in &actors_raw {
+        // SAFETY: each actor pointer is alive — the scope hasn't yet run
+        // wait_all and we kept the raw addresses for messaging.
+        unsafe { hew_runtime::actor::hew_actor_send(actor, 1, ptr::null_mut(), 0) };
+    }
+    assert!(
+        MULTI_SIGNAL.wait_for(3, Duration::from_secs(10)),
+        "all 3 dispatches should complete"
+    );
+
+    scope.wait_all();
+    for i in 0..3 {
         assert!(
-            MULTI_SIGNAL.wait_for(3, Duration::from_secs(10)),
-            "all 3 dispatches should complete"
+            scope.actor_slot(i).is_null(),
+            "actor slot {i} should be null after wait_all"
         );
-
-        // Clean up all actors via scope.
-        hew_scope_wait_all(&raw mut scope);
-
-        // All slots should be nulled out.
-        for i in 0..3 {
-            assert!(
-                scope.actors[i].is_null(),
-                "actor slot {i} should be null after wait_all"
-            );
-        }
-
-        hew_scope_destroy(&raw mut scope);
     }
 }
 
@@ -356,7 +294,7 @@ static CANCEL_OBSERVED: AtomicI32 = AtomicI32::new(0);
 static CANCEL_SIGNAL: Signal = Signal::new();
 static CANCEL_LOCK: Mutex<()> = Mutex::new(());
 
-/// Dispatch that checks a scope's cancellation flag.  The scope pointer
+/// Dispatch that checks a scope's cancellation flag. The scope pointer
 /// is passed as the actor's state.
 unsafe extern "C" fn cancel_checking_dispatch(
     state: *mut c_void,
@@ -377,6 +315,10 @@ unsafe extern "C" fn cancel_checking_dispatch(
 
 /// Cancel a parent scope before the actor dispatches and verify the
 /// actor can observe the cancellation.
+///
+/// This test uses the heap-allocated `hew_scope_create` form because the
+/// scope pointer is shipped to the actor's state. The lifetime contract
+/// here is too custom to wrap; keep it raw with a per-call SAFETY note.
 #[test]
 fn scope_cancellation_visible_to_actors() {
     let _guard = CANCEL_LOCK.lock().unwrap();
@@ -384,6 +326,8 @@ fn scope_cancellation_visible_to_actors() {
     CANCEL_SIGNAL.reset();
     CANCEL_OBSERVED.store(0, Ordering::Release);
 
+    // SAFETY: hew_scope_create returns a heap-allocated scope; this test
+    // explicitly frees it at the end after wait_all has drained actors.
     unsafe {
         let scope = hew_scope_create();
         assert!(!scope.is_null());
@@ -391,20 +335,16 @@ fn scope_cancellation_visible_to_actors() {
         // Store the scope pointer as the actor's state so the dispatch
         // function can read the cancellation flag.
         let mut scope_addr: usize = scope as usize;
-        let actor = hew_actor_spawn(
-            (&raw mut scope_addr).cast(),
-            size_of::<usize>(),
-            Some(cancel_checking_dispatch),
-        );
-        assert!(!actor.is_null());
-        hew_scope_spawn(scope, actor.cast());
+        let actor_raw =
+            TestActor::spawn_with_state(&mut scope_addr, cancel_checking_dispatch).into_raw();
+        hew_scope_spawn(scope, actor_raw.cast());
 
         // Cancel the scope BEFORE sending the message.
         hew_scope_cancel(scope);
         assert_eq!(hew_scope_is_cancelled(scope), 1);
 
         // Send a message — the dispatch function should see cancellation = 1.
-        hew_actor_send(actor, 1, ptr::null_mut(), 0);
+        hew_runtime::actor::hew_actor_send(actor_raw, 1, ptr::null_mut(), 0);
         assert!(
             CANCEL_SIGNAL.wait_for(1, Duration::from_secs(10)),
             "dispatch was not invoked"
@@ -426,6 +366,7 @@ fn scope_cancellation_visible_to_actors() {
 /// cooperative cancellation — the parent propagates to child scopes).
 #[test]
 fn nested_scopes_cancellation_propagation() {
+    // SAFETY: hew_scope_create / hew_scope_free pairs explicitly here.
     unsafe {
         let parent = hew_scope_create();
         let child = hew_scope_create();
@@ -435,12 +376,9 @@ fn nested_scopes_cancellation_propagation() {
         assert_eq!(hew_scope_is_cancelled(parent), 0);
         assert_eq!(hew_scope_is_cancelled(child), 0);
 
-        // Cancel parent.
         hew_scope_cancel(parent);
         assert_eq!(hew_scope_is_cancelled(parent), 1);
 
-        // Propagate to child (cooperative — the runtime expects user code
-        // or generated code to propagate cancellation down the scope tree).
         if hew_scope_is_cancelled(parent) != 0 {
             hew_scope_cancel(child);
         }
@@ -462,24 +400,24 @@ fn nested_scopes_cancellation_propagation() {
 /// After `hew_scope_destroy`, `actor_count` is 0 and actor slots are null.
 #[test]
 fn scope_destroy_resets_fields() {
+    let mut scope = TestScope::new();
+
+    // SAFETY: writing internal fields manually simulates a populated scope
+    // without actually spawning actors; the dummy pointers are never
+    // dereferenced. hew_scope_destroy is idempotent so TestScope::Drop is fine.
     unsafe {
-        let mut scope = hew_scope_new();
+        let p = scope.as_mut_ptr();
+        (*p).actor_count = 3;
+        (*p).actors[0] = 0x1234 as *mut c_void;
+        (*p).actors[1] = 0x5678 as *mut c_void;
+        (*p).actors[2] = 0x9abc as *mut c_void;
 
-        // Simulate adding actors by incrementing count manually.
-        scope.actor_count = 3;
-        scope.actors[0] = 0x1234 as *mut c_void; // dummy non-null pointer
-        scope.actors[1] = 0x5678 as *mut c_void;
-        scope.actors[2] = 0x9abc as *mut c_void;
+        hew_runtime::scope::hew_scope_destroy(p);
 
-        hew_scope_destroy(&raw mut scope);
-
-        assert_eq!(
-            scope.actor_count, 0,
-            "destroy should reset actor_count to 0"
-        );
+        assert_eq!((*p).actor_count, 0, "destroy should reset actor_count to 0");
         for i in 0..3 {
             assert!(
-                scope.actors[i].is_null(),
+                (*p).actors[i].is_null(),
                 "destroy should null out actor slot {i}"
             );
         }
@@ -492,8 +430,6 @@ fn scope_destroy_resets_fields() {
 
 #[test]
 fn scope_free_null_is_noop() {
-    unsafe {
-        hew_scope_free(ptr::null_mut());
-        // Reaching here without a crash is the assertion.
-    }
+    // SAFETY: hew_scope_free is documented as a no-op on null input.
+    unsafe { hew_scope_free(ptr::null_mut()) };
 }

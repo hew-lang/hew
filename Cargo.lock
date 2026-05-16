@@ -1637,6 +1637,7 @@ dependencies = [
  "crossbeam-utils",
  "flate2",
  "hew-cabi",
+ "hew-runtime-testkit",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1657,6 +1658,14 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "zeroize",
+]
+
+[[package]]
+name = "hew-runtime-testkit"
+version = "0.5.0-pre"
+dependencies = [
+ "hew-runtime",
+ "libc",
 ]
 
 [[package]]

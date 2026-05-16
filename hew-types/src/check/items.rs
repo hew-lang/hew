@@ -292,12 +292,21 @@ impl Checker {
                 }
             }
 
-            // E1 scope: `#[on(crash)]` and `#[on(upgrade)]` are recognised at
-            // parse/check time but their signature shape (params, return type,
-            // body type-checking, reserved-marker emission for `upgrade`) is
-            // owned by E2. Skip the start/stop signature checker for them.
-            if matches!(hook_kind_str, "crash" | "upgrade") {
-                continue;
+            // `#[on(crash)]` and `#[on(upgrade)]` diverge from start/stop
+            // signature-wise: crash takes a `PanicInfo` parameter and returns
+            // `CrashAction`; upgrade is a reserved marker with the same
+            // no-params/unit shape as stop but no runtime invocation in v0.5
+            // (tracked in #1817).
+            match hook_kind_str {
+                "crash" => {
+                    self.check_crash_hook(&ad.name, method, &ad.fields);
+                    continue;
+                }
+                "upgrade" => {
+                    self.check_upgrade_hook(&ad.name, method, &ad.fields);
+                    continue;
+                }
+                _ => {}
             }
 
             // Validate signature and body. Hooks bind actor fields in
@@ -514,6 +523,207 @@ impl Checker {
 
         self.current_function = prev_function;
         self.env.pop_scope();
+    }
+
+    /// Type-check an actor `#[on(crash)]` hook.
+    ///
+    /// Signature shape (failure-philosophy plan E2, Q45/A22, Q46/A23):
+    /// - exactly one parameter `info: PanicInfo` (the runtime supplies
+    ///   the int-tag payload — string fields wait on the spine-widening
+    ///   lane).
+    /// - return type `CrashAction` (variants `Restart | Escalate | Kill`;
+    ///   the supervisor consults but honours its own budget rules).
+    /// - not `pure`, no type parameters, no `where` clause.
+    ///
+    /// `PanicInfo` and `CrashAction` are provided by `std/failure.hew`
+    /// (also pre-bound via `register_builtin_failure_surface` for inline
+    /// tests).  Body type-checking binds actor fields as bare names in
+    /// scope, same idiom as `init { }` / `#[on(start)]` / `#[on(stop)]`.
+    ///
+    /// Runtime invocation of this hook is owned by failure-philosophy
+    /// slice E3.  This slice validates the signature shape so the
+    /// compiled actor method symbol (`<Actor>::on_crash`, emitted via
+    /// the existing actor-method serialize path) has the contract the
+    /// runtime will rely on.
+    /// Reject `pure`, generic, and `where`-clause modifiers shared by every
+    /// `#[on(<event>)]` lifecycle hook.  Extracted from `check_crash_hook`
+    /// because the same triad applies to future event-specific validators
+    /// and keeps the per-event entry under the clippy `too_many_lines`
+    /// threshold.
+    fn reject_hook_modifier_set(&mut self, actor_name: &str, hook: &FnDecl, hook_kind: &str) {
+        if hook.is_pure {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot be `pure`",
+                    hook.name
+                ),
+            ));
+        }
+        if hook.type_params.as_ref().is_some_and(|tps| !tps.is_empty()) {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                     have type parameters",
+                    hook.name
+                ),
+            ));
+        }
+        if hook.where_clause.is_some() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` cannot \
+                     have a `where` clause",
+                    hook.name
+                ),
+            ));
+        }
+    }
+
+    /// Validate the parameter list of a `#[on(crash)]` hook: exactly one
+    /// parameter typed `PanicInfo`.  Diagnostics live here rather than in
+    /// `check_crash_hook` to keep that entry under the clippy line limit.
+    fn check_crash_hook_param(&mut self, actor_name: &str, hook: &FnDecl, hook_kind: &str) {
+        match hook.params.as_slice() {
+            [p] => {
+                let pty = self.resolve_type_expr(&p.ty);
+                let is_panic_info = matches!(
+                    &pty,
+                    Ty::Named { name, args } if name == "PanicInfo" && args.is_empty()
+                );
+                if !is_panic_info {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        p.ty.1.clone(),
+                        format!(
+                            "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` parameter \
+                             must have type `PanicInfo` (from `std::failure`)",
+                            hook.name
+                        ),
+                    ));
+                }
+            }
+            other => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    hook.decl_span.clone(),
+                    format!(
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must take \
+                         exactly one parameter `info: PanicInfo`; got {} parameter(s)",
+                        hook.name,
+                        other.len()
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// Validate and resolve the declared return type of a `#[on(crash)]`
+    /// hook.  Returns the resolved `Ty` (falling back to a bare
+    /// `Ty::Named("CrashAction")` when the user omitted the return type)
+    /// so the body checker has a target type for the trailing expression.
+    fn check_crash_hook_return_type(
+        &mut self,
+        actor_name: &str,
+        hook: &FnDecl,
+        hook_kind: &str,
+    ) -> Ty {
+        if let Some(rt) = &hook.return_type {
+            let ty = self.resolve_type_expr(rt);
+            if !matches!(&ty, Ty::Named { name, args } if name == "CrashAction" && args.is_empty())
+            {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    rt.1.clone(),
+                    format!(
+                        "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must \
+                         return `CrashAction` (from `std::failure`)",
+                        hook.name
+                    ),
+                ));
+            }
+            ty
+        } else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                hook.decl_span.clone(),
+                format!(
+                    "lifecycle hook `#[{hook_kind}]` on `{actor_name}::{}` must declare \
+                     a return type of `CrashAction` (from `std::failure`)",
+                    hook.name
+                ),
+            ));
+            Ty::Named {
+                name: "CrashAction".to_string(),
+                args: vec![],
+            }
+        }
+    }
+
+    pub(super) fn check_crash_hook(
+        &mut self,
+        actor_name: &str,
+        hook: &FnDecl,
+        fields: &[FieldDecl],
+    ) {
+        let hook_kind = "on(crash)";
+
+        self.reject_hook_modifier_set(actor_name, hook, hook_kind);
+        self.check_crash_hook_param(actor_name, hook, hook_kind);
+        let return_ty = self.check_crash_hook_return_type(actor_name, hook, hook_kind);
+
+        // ── Body checking ───────────────────────────────────────────────
+        self.env.push_scope();
+
+        let qualified_name = format!("{actor_name}::{}", hook.name);
+        let prev_function = self.current_function.take();
+        self.current_function = Some(qualified_name);
+
+        // Bind actor fields as bare names (mutable), then the `info`
+        // parameter on top of them.  Field-shadowing by the param name
+        // is intentionally permitted — same precedent as `init` and
+        // receive fn parameters (HEW-SPEC-2026 §9.1.1).
+        self.bind_actor_fields(fields);
+        if let Some(p) = hook.params.first() {
+            let pty = self.resolve_type_expr(&p.ty);
+            self.env.define(p.name.clone(), pty, p.is_mutable);
+        }
+
+        self.current_return_type = Some(return_ty);
+        self.check_block(&hook.body, None);
+        self.current_return_type = None;
+
+        self.current_function = prev_function;
+        self.env.pop_scope();
+    }
+
+    /// Type-check an actor `#[on(upgrade)]` hook.
+    ///
+    /// v0.5 reserves the surface but defers runtime invocation. The hook
+    /// must therefore have the minimal shape that the runtime can ignore
+    /// safely: no parameters, return type `()` — identical to the
+    /// `#[on(stop)]` shape today.  Runtime invocation, state-handoff,
+    /// and WASM hot-reload land later; tracked in #1817.
+    ///
+    /// `WASM-TODO(#1817)`: `#[on(upgrade)]` codegen and runtime
+    /// invocation are deferred to a follow-up slice (failure-philosophy
+    /// E3+).  The actor method serializes as a regular function symbol
+    /// through the existing actor-method path; no invocation site exists
+    /// in the v0.5 runtime or WASM scheduler.
+    pub(super) fn check_upgrade_hook(
+        &mut self,
+        actor_name: &str,
+        hook: &FnDecl,
+        fields: &[FieldDecl],
+    ) {
+        // Same shape constraints as `#[on(stop)]`, expressed inline so the
+        // diagnostic carries the `on(upgrade)` kind string.
+        self.check_lifecycle_hook(actor_name, hook, "on(upgrade)", fields);
     }
 
     /// Validate `#[every(duration)]` attributes on a receive fn.

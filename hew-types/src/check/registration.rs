@@ -54,6 +54,29 @@ extern "C" {
 }
 "#;
 
+/// Embedded source for `std/failure.hew`.
+///
+/// Parsed at import-registration time for `std::failure` so the
+/// `PanicInfo` struct and `CrashAction` enum used in `#[on(crash)]` hook
+/// signatures are visible in the checker even in programs that were not
+/// loaded through the module-graph path (e.g. inline programs in tests).
+///
+/// Mirrors the on-disk `std/failure.hew` byte-for-byte modulo the same
+/// `import` line elision applied to `MONITOR_REF_HEW`: inline tests do
+/// not flow through the import resolver, so the embedded snippet omits
+/// any top-of-file imports the file itself does not need (none today).
+const FAILURE_HEW: &str = r"
+pub type PanicInfo {
+    code: int;
+}
+
+pub enum CrashAction {
+    Restart;
+    Escalate;
+    Kill;
+}
+";
+
 impl Checker {
     fn refresh_handle_bearing_structs(&mut self) {
         // Tracked for testing: callers can assert this stays O(1) after the
@@ -572,6 +595,7 @@ impl Checker {
         if !self.module_registry.has_search_paths() {
             self.register_builtin_closable_surface();
             self.register_builtin_monitor_ref_surface();
+            self.register_builtin_failure_surface();
         }
     }
 
@@ -711,6 +735,30 @@ impl Checker {
             self.consume_receiver_methods
                 .insert("MonitorRef::close".to_string());
             self.registry.register_drop_type("MonitorRef".to_string());
+        }
+    }
+
+    /// Register the built-in `PanicInfo` / `CrashAction` surface so
+    /// `#[on(crash)]` lifecycle hooks can name them in their signatures
+    /// without `import std::failure;`.  Inline tests (no stdlib search
+    /// path) rely on this; on-disk programs reach the same types via
+    /// the module graph.
+    fn register_builtin_failure_surface(&mut self) {
+        let identity = "module:std::failure";
+        if self.registered_stdlib_hew_sources.contains(identity) {
+            return;
+        }
+        self.registered_stdlib_hew_sources
+            .insert(identity.to_string());
+        let parsed = hew_parser::parse(FAILURE_HEW);
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/failure.hew failed to parse: {:?}",
+            parsed.errors
+        );
+        if parsed.errors.is_empty() {
+            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            self.register_stdlib_hew_items("failure", &items);
         }
     }
 

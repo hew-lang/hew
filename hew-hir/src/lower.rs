@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use hew_parser::ast::{
-    BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal, MachineDecl, Pattern, Program,
-    ResourceMarker, SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl,
-    TypeExpr,
+    ActorDecl, AttributeArg, BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal,
+    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, ResourceMarker, SelectArm, Span, Spanned,
+    Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
     AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
@@ -14,10 +14,11 @@ use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
 use crate::node::{
-    HirBinding, HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem,
-    HirLambdaCapture, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
-    HirMachineTransition, HirModule, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
-    HirStmtKind, HirTypeDecl,
+    HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
+    HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
+    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
+    HirMachineState, HirMachineTransition, HirModule, HirSelect, HirSelectArm, HirSelectArmKind,
+    HirStmt, HirStmtKind, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -116,6 +117,9 @@ pub fn lower_program(
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
                     items.push(HirItem::Machine(hir_machine));
                 }
+            }
+            Item::Actor(actor) => {
+                items.push(HirItem::Actor(ctx.lower_actor(actor, span.clone())));
             }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
@@ -225,16 +229,10 @@ struct LowerCtx {
     )]
     assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     /// Actor type names that participate in reference cycles, computed by the
-    /// checker's cycle-detection pass.
-    ///
-    /// Passive pass-through: no production consumer exists anywhere yet.
-    /// Future consumer: Machine Lane B actor codegen (refcount-cycle-breaking
-    /// strategy selection).
+    /// checker's cycle-detection pass. Consumed by `lower_actor` to populate
+    /// `HirActorDecl.cycle_capable`. Future runtime consumer: actor codegen
+    /// (refcount-cycle-breaking strategy selection).
     /// (LESSONS: producer-bridge-before-codegen P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is Machine Lane B actor cycle handling"
-    )]
     cycle_capable_actors: HashSet<String>,
 }
 
@@ -671,6 +669,133 @@ impl LowerCtx {
             has_default: decl.has_default,
             span,
         })
+    }
+
+    /// Lower an `actor` declaration into `HirActorDecl`. Structural-only:
+    /// `init`, `receive fn`, method, and lifecycle-hook bodies are NOT lowered
+    /// to `HirBlock` in Lane A — they remain on the parser AST and are
+    /// consumed by the C++ MLIR pipeline today. The next M6 slice will
+    /// promote bodies to `HirBlock`. See `HirActorDecl` doc comment.
+    fn lower_actor(&mut self, decl: &ActorDecl, span: Span) -> HirActorDecl {
+        let state_fields: Vec<HirField> = decl
+            .fields
+            .iter()
+            .map(|f| HirField {
+                name: f.name.clone(),
+                ty: self.lower_type(&f.ty),
+                span: f.ty.1.clone(),
+            })
+            .collect();
+
+        let init = decl.init.as_ref().map(|init| HirActorInit {
+            params: self.lower_actor_params(&init.params),
+        });
+
+        let receive_handlers: Vec<HirActorReceiveFn> = decl
+            .receive_fns
+            .iter()
+            .map(|rf| self.lower_actor_receive_fn(rf))
+            .collect();
+
+        let (methods, lifecycle_hooks) = self.partition_actor_methods(&decl.methods);
+
+        HirActorDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            name: decl.name.clone(),
+            state_fields,
+            init,
+            receive_handlers,
+            methods,
+            lifecycle_hooks,
+            max_heap_bytes: decl.max_heap_bytes,
+            is_isolated: decl.is_isolated,
+            mailbox_capacity: decl.mailbox_capacity,
+            overflow_policy: decl.overflow_policy.clone(),
+            cycle_capable: self.cycle_capable_actors.contains(&decl.name),
+            span,
+        }
+    }
+
+    fn lower_actor_params(&mut self, params: &[Param]) -> Vec<HirActorParam> {
+        params
+            .iter()
+            .map(|p| HirActorParam {
+                name: p.name.clone(),
+                ty: self.lower_type(&p.ty),
+                mutable: p.is_mutable,
+                span: p.ty.1.clone(),
+            })
+            .collect()
+    }
+
+    fn lower_actor_receive_fn(&mut self, rf: &ReceiveFnDecl) -> HirActorReceiveFn {
+        let params = self.lower_actor_params(&rf.params);
+        let return_ty = rf
+            .return_type
+            .as_ref()
+            .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        let every_ns = rf
+            .attributes
+            .iter()
+            .find(|a| a.name == "every")
+            .and_then(|a| a.args.first())
+            .and_then(AttributeArg::as_duration_ns);
+        HirActorReceiveFn {
+            name: rf.name.clone(),
+            params,
+            return_ty,
+            every_ns,
+            span: rf.span.clone(),
+        }
+    }
+
+    /// Partition an actor's `methods` vec into plain methods and lifecycle
+    /// hooks (`#[on(start|stop|crash|upgrade)]`). The checker has already
+    /// validated hook-kind spellings and uniqueness; HIR consumes the
+    /// post-validation shape and silently ignores methods whose `#[on(...)]`
+    /// attribute is malformed (the checker has emitted a diagnostic and the
+    /// HIR consumer should not see the entry as a lifecycle hook).
+    fn partition_actor_methods(
+        &mut self,
+        methods: &[FnDecl],
+    ) -> (Vec<HirActorMethod>, Vec<HirLifecycleHook>) {
+        let mut plain = Vec::new();
+        let mut hooks = Vec::new();
+        for method in methods {
+            let params = self.lower_actor_params(&method.params);
+            let return_ty = method
+                .return_type
+                .as_ref()
+                .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+            let hook_attr = method.attributes.iter().find(|a| a.name == "on");
+            let hook_kind = hook_attr
+                .and_then(|a| a.args.first())
+                .map(AttributeArg::as_str)
+                .and_then(|k| match k {
+                    "start" => Some(HirLifecycleHookKind::Start),
+                    "stop" => Some(HirLifecycleHookKind::Stop),
+                    "crash" => Some(HirLifecycleHookKind::Crash),
+                    "upgrade" => Some(HirLifecycleHookKind::Upgrade),
+                    _ => None,
+                });
+            match hook_kind {
+                Some(kind) => hooks.push(HirLifecycleHook {
+                    kind,
+                    name: method.name.clone(),
+                    params,
+                    return_ty,
+                    span: method.fn_span.clone(),
+                }),
+                None => plain.push(HirActorMethod {
+                    name: method.name.clone(),
+                    params,
+                    return_ty,
+                    span: method.fn_span.clone(),
+                }),
+            }
+        }
+        (plain, hooks)
     }
 
     fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {

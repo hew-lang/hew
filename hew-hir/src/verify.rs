@@ -52,6 +52,15 @@ impl Verifier {
                     // guard fires upstream in `lower_record_decl`.
                     self.node(record.node, record.span.clone());
                 }
+                HirItem::Actor(actor) => {
+                    // Actor declarations contribute only their HirNodeId
+                    // uniqueness to the verifier in Lane A — method, receive,
+                    // and lifecycle-hook bodies are not lowered to HirExpr in
+                    // this slice (see `HirActorDecl` doc comment). Lifecycle
+                    // hook uniqueness (`#[on(start)]` at most once, etc.) is
+                    // enforced upstream by the checker.
+                    self.node(actor.node, actor.span.clone());
+                }
             }
         }
     }

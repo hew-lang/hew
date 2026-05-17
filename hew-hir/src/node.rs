@@ -1,4 +1,4 @@
-use hew_parser::ast::{BinaryOp, ResourceMarker, Span};
+use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
 use hew_types::ResolvedTy;
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
@@ -28,6 +28,150 @@ pub enum HirItem {
     TypeDecl(HirTypeDecl),
     Machine(HirMachineDecl),
     Record(HirRecordDecl),
+    Actor(HirActorDecl),
+}
+
+// ── Actor declarations ───────────────────────────────────────────────────────
+
+/// Lowered actor declaration.
+///
+/// Carries the structural shape of an `actor` item — state fields, optional
+/// `init { ... }` block, receive handlers (`receive fn`), regular methods, and
+/// `#[on(start|stop|crash|upgrade)]` lifecycle hooks — together with the
+/// runtime-configuration metadata lifted from the parser surface and the
+/// checker side-tables (`#[max_heap(N)]` arena cap).
+///
+/// Method, receive-handler, and init bodies are **not** lowered to `HirBlock`
+/// in this slice (Lane A). Mirrors `HirMachineDecl`: bodies stay on the parser
+/// AST and are consumed by the C++ MLIR pipeline today; the next M6 slice
+/// (HIR-MIR actor-body lowering) will populate them. The Rust MIR producer
+/// treats `HirItem::Actor` as a no-op tier alongside `Record`/`TypeDecl`/
+/// `Machine` for now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirActorDecl {
+    pub id: ItemId,
+    pub node: HirNodeId,
+    pub name: String,
+    /// `let <name>: <ty>;` state fields declared in the actor body. Field
+    /// ordering is source order; the runtime layout follows the same order.
+    pub state_fields: Vec<HirField>,
+    /// `init(params) { body }` — runs once when the actor is spawned. `None`
+    /// when the actor has no explicit init block.
+    pub init: Option<HirActorInit>,
+    /// `receive fn name(params) -> ret { body }` — message handlers. Each
+    /// handler corresponds to one variant of the actor's auto-generated
+    /// message enum. May carry an `#[every(<duration>)]` attribute for
+    /// periodic scheduling (validated by the checker; recorded here as a
+    /// structural flag plus the duration in nanoseconds).
+    pub receive_handlers: Vec<HirActorReceiveFn>,
+    /// Plain methods on the actor (not lifecycle hooks). Methods are
+    /// dispatched through the actor's mailbox at the codegen layer; their
+    /// bodies are not lowered to HIR in Lane A.
+    pub methods: Vec<HirActorMethod>,
+    /// `#[on(start|stop|crash|upgrade)]` lifecycle hooks, exhaustively
+    /// bucketed by `kind`. The checker (`check_actor_methods`) enforces
+    /// uniqueness rules (at most one `#[on(start)]`, etc.); HIR mirrors
+    /// the post-validation shape.
+    pub lifecycle_hooks: Vec<HirLifecycleHook>,
+    /// Per-actor arena cap in bytes, lifted from the checker's
+    /// `actor_max_heap` side-table when present. `None` means no
+    /// `#[max_heap]` annotation (unbounded arena); `Some(0)` is an explicit
+    /// zero which the runtime treats as unbounded; `Some(N)` for `N > 0` is
+    /// a hard cap. Codegen reads this to select
+    /// `hew_arena_new` vs `hew_arena_new_with_cap`.
+    pub max_heap_bytes: Option<u64>,
+    /// `actor isolated <name> { ... }` — true when this actor is isolated
+    /// (no shared-heap captures admitted at spawn sites). Pass-through from
+    /// the parser AST; codegen consumes it.
+    pub is_isolated: bool,
+    /// `mailbox <N>` — fixed mailbox capacity. `None` means the runtime
+    /// default applies.
+    pub mailbox_capacity: Option<u32>,
+    /// `overflow <policy>` — mailbox overflow policy. `None` means the
+    /// runtime default (`Block`) applies. The `Coalesce` variant carries
+    /// the keying field name and its fallback policy.
+    pub overflow_policy: Option<OverflowPolicy>,
+    /// Whether this actor participates in a reference cycle, lifted from
+    /// the checker's `cycle_capable_actors` side-table. Codegen consumes
+    /// this to select a refcount-cycle-breaking strategy at spawn sites.
+    pub cycle_capable: bool,
+    pub span: Span,
+}
+
+/// One parameter on an actor `init` / `receive fn` / `method`. Carries the
+/// resolved parameter type but not a `BindingId` — Lane A does not lower
+/// actor bodies, so no scope is opened over these parameters yet. The
+/// next slice (body lowering) will replace this with full `HirBinding`s.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirActorParam {
+    pub name: String,
+    pub ty: ResolvedTy,
+    pub mutable: bool,
+    pub span: Span,
+}
+
+/// Lowered `init` block on an actor. The body is not lowered to `HirBlock`
+/// in Lane A; the next slice will populate it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirActorInit {
+    pub params: Vec<HirActorParam>,
+}
+
+/// Lowered `receive fn` on an actor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirActorReceiveFn {
+    pub name: String,
+    pub params: Vec<HirActorParam>,
+    pub return_ty: ResolvedTy,
+    /// `#[every(<duration>)]` periodic scheduling annotation. `None` if the
+    /// receiver is purely message-driven; `Some(ns)` with the duration in
+    /// nanoseconds when the checker has validated the attribute.
+    pub every_ns: Option<i64>,
+    /// Source span of the `receive fn` declaration (from the parser's
+    /// `ReceiveFnDecl.span`).
+    pub span: Span,
+}
+
+/// Lowered plain method on an actor (not a lifecycle hook).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirActorMethod {
+    pub name: String,
+    pub params: Vec<HirActorParam>,
+    pub return_ty: ResolvedTy,
+    /// Source span of the `fn` declaration (from the parser's
+    /// `FnDecl.fn_span`).
+    pub span: Span,
+}
+
+/// Lowered `#[on(<kind>)]` lifecycle hook on an actor. The `kind`
+/// discriminator was validated upstream by the checker
+/// (`resolve_on_hook_kind`); unknown / malformed kinds never reach HIR.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirLifecycleHook {
+    pub kind: HirLifecycleHookKind,
+    pub name: String,
+    pub params: Vec<HirActorParam>,
+    pub return_ty: ResolvedTy,
+    /// Source span of the `fn` declaration (from the parser's
+    /// `FnDecl.fn_span`).
+    pub span: Span,
+}
+
+/// The four lifecycle-hook kinds recognised by HEW-SPEC-2026 §9.1.2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HirLifecycleHookKind {
+    /// `#[on(start)]` — runs once after the actor is spawned and its
+    /// `init` block has completed. At most one per actor.
+    Start,
+    /// `#[on(stop)]` — runs during actor shutdown. May appear multiple
+    /// times per actor; runs in lexical declaration order.
+    Stop,
+    /// `#[on(crash)]` — runs when the actor body traps. Takes a
+    /// `PanicInfo` parameter and returns `CrashAction`.
+    Crash,
+    /// `#[on(upgrade)]` — reserved marker for hot-upgrade flows. No
+    /// runtime invocation in v0.5.
+    Upgrade,
 }
 
 // ── Machine declarations ─────────────────────────────────────────────────────

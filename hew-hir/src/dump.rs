@@ -3,6 +3,11 @@ use std::fmt::Write as _;
 use crate::node::{HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
 
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single match on HirItem variants; each arm renders one item kind \
+              and splitting would obscure per-variant locality"
+)]
 pub fn dump_hir(module: &HirModule) -> String {
     let mut out = String::new();
     for item in &module.items {
@@ -98,6 +103,58 @@ pub fn dump_hir(module: &HirModule) -> String {
                 for field in &record.fields {
                     writeln!(out, "  field {}: {}", field.name, field.ty.user_facing())
                         .expect("write to string");
+                }
+            }
+            HirItem::Actor(actor) => {
+                writeln!(
+                    out,
+                    "actor {} {} isolated={} max_heap={:?} mailbox={:?} cycle_capable={}",
+                    actor.id,
+                    actor.name,
+                    actor.is_isolated,
+                    actor.max_heap_bytes,
+                    actor.mailbox_capacity,
+                    actor.cycle_capable
+                )
+                .expect("write to string");
+                for field in &actor.state_fields {
+                    writeln!(out, "  field {}: {}", field.name, field.ty.user_facing())
+                        .expect("write to string");
+                }
+                if let Some(init) = &actor.init {
+                    writeln!(out, "  init params={}", init.params.len()).expect("write to string");
+                }
+                for rf in &actor.receive_handlers {
+                    writeln!(
+                        out,
+                        "  receive {} params={} -> {} every_ns={:?}",
+                        rf.name,
+                        rf.params.len(),
+                        rf.return_ty.user_facing(),
+                        rf.every_ns
+                    )
+                    .expect("write to string");
+                }
+                for m in &actor.methods {
+                    writeln!(
+                        out,
+                        "  method {} params={} -> {}",
+                        m.name,
+                        m.params.len(),
+                        m.return_ty.user_facing()
+                    )
+                    .expect("write to string");
+                }
+                for h in &actor.lifecycle_hooks {
+                    writeln!(
+                        out,
+                        "  on({:?}) {} params={} -> {}",
+                        h.kind,
+                        h.name,
+                        h.params.len(),
+                        h.return_ty.user_facing()
+                    )
+                    .expect("write to string");
                 }
             }
         }

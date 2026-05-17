@@ -434,6 +434,20 @@ pub enum TypeErrorKind {
         /// Short identifier for the unsafe operation, e.g. `"raw pointer dereference"`.
         operation: String,
     },
+    /// A trait is used in `dyn` position but violates the v0.5 object-safety
+    /// predicate.  Object safety in v0.5 rejects traits with generic methods
+    /// (`fn foo<U>(self, u: U)`) and traits with `Self`-returning methods
+    /// (`fn clone(self) -> Self`) at every `T → dyn Trait` coercion site.
+    ///
+    /// Envelope code: `E_TRAIT_NOT_OBJECT_SAFE`.
+    TraitNotObjectSafe {
+        /// Trait whose dyn-coercion was rejected.
+        trait_name: String,
+        /// Method name that broke object safety.
+        method_name: String,
+        /// Short reason: `"generic method"` or `"Self-returning method"`.
+        reason: &'static str,
+    },
 }
 
 impl TypeErrorKind {
@@ -480,6 +494,7 @@ impl TypeErrorKind {
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
             Self::TaskNotNameable => "TaskNotNameable",
             Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
+            Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
         }
     }
 }

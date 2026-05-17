@@ -653,7 +653,12 @@ impl Checker {
     /// * Each non-receiver parameter type matches after substituting `Self` → concrete type.
     /// * Return type matches after the same substitution.
     ///
-    /// `dyn Trait` / vtable / codegen is explicitly out of scope.
+    /// `dyn Trait` coercion is handled by `Checker::try_record_dyn_trait_coercion`
+    /// in `coerce.rs`, which calls this structural-satisfaction predicate as
+    /// part of the fallback path. Vtable static emission itself is owned by
+    /// the LLVM emitter; the checker populates `TypeCheckOutput::dyn_trait_coercions`
+    /// at every accepted coercion site and rejects non-object-safe traits
+    /// (generic methods, `Self`-returning methods) with `E_TRAIT_NOT_OBJECT_SAFE`.
     pub(super) fn type_structurally_satisfies(
         &mut self,
         type_name: &str,

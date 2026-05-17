@@ -154,6 +154,59 @@ pub struct TypeCheckOutput {
     /// Missing entry means the checker could not resolve the child (e.g. unknown
     /// field); MIR lowering must fail closed on a missing entry.
     pub supervisor_child_slots: HashMap<SpanKey, ChildSlot>,
+    /// Per-call-site `T → dyn Trait` coercion metadata used by the MIR
+    /// trait-object lowering and the LLVM vtable emitter.
+    ///
+    /// Keyed by the `SpanKey` of the argument expression coerced into a
+    /// trait-object position. Each entry names the trait the coercion targets,
+    /// the resolved concrete `Self` type at that site, and the per-impl
+    /// method resolution that codegen will turn into vtable slots. Object
+    /// safety is enforced at insertion time: traits with generic methods or
+    /// `Self`-returning methods produce a [`TypeErrorKind::TraitNotObjectSafe`]
+    /// diagnostic and no entry is inserted for that site.
+    ///
+    /// Multi-bound `dyn (A + B)` coercion sites flatten into a single
+    /// [`DynCoercion`] whose `trait_name` joins the bound names with `+` and
+    /// whose `method_table` concatenates the per-bound entries in declaration
+    /// order; each entry's method name is prefixed by the originating trait
+    /// (`Trait::method`) so downstream consumers can recover the binding.
+    pub dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+}
+
+/// Checker-resolved metadata for a `T → dyn Trait` coercion call site.
+///
+/// Populated by the checker for every accepted coercion of a concrete
+/// receiver into a trait-object argument. Downstream MIR construction and
+/// LLVM vtable emission consume this fail-closed: missing entry at a known
+/// coercion span is a hard error during lowering.
+///
+/// The `method_table` is ordered: vtable slot index `i` (after the
+/// runtime-fixed `drop_in_place`/`size_of`/`align_of` prefix triple defined
+/// in `hew-runtime/src/trait_object.rs`) maps to the i-th entry in
+/// `method_table`. For multi-bound coercions the order is the trait bounds'
+/// declaration order, with each bound contributing its trait's methods in
+/// the trait declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynCoercion {
+    /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
+    pub trait_name: String,
+    /// Resolved concrete `Self` type at the coercion site.
+    pub concrete_type: Ty,
+    /// Ordered `(method_name, impl_fn_key)` pairs naming the impl-side
+    /// resolution for each trait method.
+    ///
+    /// * `method_name` is the trait method's declared name. For multi-bound
+    ///   coercions it is prefixed by `Trait::` so the originating trait is
+    ///   recoverable.
+    /// * `impl_fn_key` is the implementer-side identifier in the shape
+    ///   `<Type>::<method>` for user types (matches the key under which
+    ///   the impl method is registered in [`Checker::fn_sigs`]). For
+    ///   primitive and compiler-builtin receivers the key is
+    ///   `<canonical>::<method>` where `<canonical>` is
+    ///   [`Ty::canonical_lowering_name`] / the builtin-generic name; the
+    ///   impl signature itself lives in
+    ///   [`Checker::primitive_trait_impls`].
+    pub method_table: Vec<(String, String)>,
 }
 
 /// Compile-time slot descriptor for a supervisor child access.
@@ -225,6 +278,7 @@ impl Default for TypeCheckOutput {
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
         }
     }
 }
@@ -935,6 +989,12 @@ pub struct Checker {
     /// Keyed by the `SpanKey` of the field-access expression. Moved into
     /// `TypeCheckOutput::supervisor_child_slots` at the end of `check_program`.
     pub(super) supervisor_child_slots: HashMap<SpanKey, ChildSlot>,
+    /// Side-table populated during `T → dyn Trait` coercion checking.
+    ///
+    /// Keyed by the `SpanKey` of the call-site argument expression. Moved
+    /// into `TypeCheckOutput::dyn_trait_coercions` at the end of
+    /// `check_program`.
+    pub(super) dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
     /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
     ///
     /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
@@ -1107,6 +1167,7 @@ impl Checker {
             primitive_trait_impls: HashMap::new(),
             supervisor_children: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),

@@ -658,6 +658,7 @@ mod tests {
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),

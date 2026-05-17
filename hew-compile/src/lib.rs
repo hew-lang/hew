@@ -2345,6 +2345,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             actor_max_heap: std::collections::HashMap::new(),
             supervisor_child_slots: std::collections::HashMap::new(),
+            dyn_trait_coercions: std::collections::HashMap::new(),
         };
 
         let err = enrich_program_ast(

@@ -32,7 +32,7 @@ trait GlobResultMethods {
     fn count(res: GlobResult) -> int;
 
     /// Return the matched path at the given index.
-    fn get(res: GlobResult, index: int) -> String;
+    fn get(res: GlobResult, index: int) -> string;
 
     /// Release the glob result resources.
     fn free(res: GlobResult);
@@ -46,7 +46,7 @@ impl GlobResultMethods for GlobResult {
         }
     }
     /// Return the matched path at the given index.
-    fn get(res: GlobResult, index: int) -> String {
+    fn get(res: GlobResult, index: int) -> string {
         unsafe {
             hew_glob_get(res, index as i32)
         }
@@ -67,7 +67,7 @@ impl GlobResultMethods for GlobResult {
 /// ```
 /// let files = path.glob("src/**/*.hew");
 /// ```
-pub fn glob(pattern: String) -> GlobResult {
+pub fn glob(pattern: string) -> GlobResult {
     unsafe {
         hew_glob(pattern)
     }
@@ -80,7 +80,7 @@ pub fn glob(pattern: String) -> GlobResult {
 /// ```
 /// path.combine("/home/user", "file.txt")  // "/home/user/file.txt"
 /// ```
-pub fn combine(a: String, b: String) -> String {
+pub fn combine(a: string, b: string) -> string {
     if b.starts_with("/") {
         // Force a fresh heap allocation so the caller and this scope each own
         // their own copy. Returning `b` directly would alias the caller's
@@ -104,7 +104,7 @@ pub fn combine(a: String, b: String) -> String {
 /// ```
 /// path.dirname("/home/user/file.txt")  // "/home/user"
 /// ```
-pub fn dirname(p: String) -> String {
+pub fn dirname(p: string) -> string {
     let s = strip_trailing_slash(p);
     let pos = last_slash_pos(s);
     if pos < 0 {
@@ -123,7 +123,7 @@ pub fn dirname(p: String) -> String {
 /// ```
 /// path.basename("/home/user/file.txt")  // "file.txt"
 /// ```
-pub fn basename(p: String) -> String {
+pub fn basename(p: string) -> string {
     let s = strip_trailing_slash(p);
     if s == "/" {
         return "";
@@ -147,7 +147,7 @@ pub fn basename(p: String) -> String {
 /// ```
 /// path.extension("photo.jpg")  // "jpg"
 /// ```
-pub fn extension(p: String) -> String {
+pub fn extension(p: string) -> string {
     let base = basename(p);
     let dot_pos = last_dot_pos(base);
     if dot_pos <= 0 {
@@ -157,28 +157,28 @@ pub fn extension(p: String) -> String {
 }
 
 /// Test whether a path exists on the filesystem.
-pub fn exists(p: String) -> bool {
+pub fn exists(p: string) -> bool {
     unsafe {
         hew_path_exists(p)
     }
 }
 
 /// Test whether a path refers to a regular file.
-pub fn is_file(p: String) -> bool {
+pub fn is_file(p: string) -> bool {
     unsafe {
         hew_path_is_file(p)
     }
 }
 
 /// Test whether a path refers to a directory.
-pub fn is_dir(p: String) -> bool {
+pub fn is_dir(p: string) -> bool {
     unsafe {
         hew_path_is_dir(p)
     }
 }
 
 /// Return the absolute form of a path.
-pub fn absolute(p: String) -> String {
+pub fn absolute(p: string) -> string {
     unsafe {
         hew_path_absolute(p)
     }
@@ -186,7 +186,7 @@ pub fn absolute(p: String) -> String {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 /// Strip a single trailing slash from a path, preserving the root `/`.
-fn strip_trailing_slash(p: String) -> String {
+fn strip_trailing_slash(p: string) -> string {
     if p == "/" {
         // Force a fresh heap allocation; returning `p` directly aliases the
         // caller's drop slot and causes a double-free on heap-allocated inputs.
@@ -200,7 +200,7 @@ fn strip_trailing_slash(p: String) -> String {
 }
 
 /// Return the index of the last `/` in `s`, or `-1` if none.
-fn last_slash_pos(s: String) -> int {
+fn last_slash_pos(s: string) -> int {
     let first = s.find("/");
     if first < 0 {
         return -1;
@@ -220,7 +220,7 @@ fn last_slash_pos(s: String) -> int {
 }
 
 /// Return the index of the last `.` in `s`, or `-1` if none.
-fn last_dot_pos(s: String) -> int {
+fn last_dot_pos(s: string) -> int {
     let first = s.find(".");
     if first < 0 {
         return -1;
@@ -241,12 +241,12 @@ fn last_dot_pos(s: String) -> int {
 
 // ── FFI bindings (filesystem operations only) ────────────────────────
 extern "C" {
-    fn hew_glob(pattern: String) -> GlobResult;
+    fn hew_glob(pattern: string) -> GlobResult;
     fn hew_glob_count(result: GlobResult) -> i32;
-    fn hew_glob_get(result: GlobResult, index: i32) -> String;
+    fn hew_glob_get(result: GlobResult, index: i32) -> string;
     fn hew_glob_free(result: GlobResult);
-    fn hew_path_exists(path: String) -> bool;
-    fn hew_path_is_file(path: String) -> bool;
-    fn hew_path_is_dir(path: String) -> bool;
-    fn hew_path_absolute(path: String) -> String;
+    fn hew_path_exists(path: string) -> bool;
+    fn hew_path_is_file(path: string) -> bool;
+    fn hew_path_is_dir(path: string) -> bool;
+    fn hew_path_absolute(path: string) -> string;
 }

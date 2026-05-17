@@ -1,4 +1,4 @@
-// String escape sequences
+// string escape sequences
 // Demonstrates tab, newline, quote, and backslash escapes.
 //
 // Expected output:

@@ -2,25 +2,25 @@
 // Verifies vtable lookup works after flowing through monomorphized code.
 
 trait Describable {
-    fn describe(val: Self) -> String;
+    fn describe(val: Self) -> string;
 }
 
 type Dog {
-    name: String;
+    name: string;
 }
 
 type Cat {
-    name: String;
+    name: string;
 }
 
 impl Describable for Dog {
-    fn describe(d: Dog) -> String {
+    fn describe(d: Dog) -> string {
         "Dog: " + d.name
     }
 }
 
 impl Describable for Cat {
-    fn describe(c: Cat) -> String {
+    fn describe(c: Cat) -> string {
         "Cat: " + c.name
     }
 }

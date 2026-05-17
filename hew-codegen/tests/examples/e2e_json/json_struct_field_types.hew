@@ -2,7 +2,7 @@
 // returns Err(...), not a struct with a null pointer.
 
 type Record {
-    name: String;
+    name: string;
     value: int;
 }
 

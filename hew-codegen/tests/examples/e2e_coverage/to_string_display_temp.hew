@@ -3,11 +3,11 @@
 // and its drop slot is nulled after Display::fmt consumes the receiver, so the
 // scope-exit drop does not double-free the struct fields.
 pub type Greeting {
-    who: String;
+    who: string;
 }
 
 impl Display for Greeting {
-    fn fmt(val: Greeting) -> String {
+    fn fmt(val: Greeting) -> string {
         "hello, " + val.who
     }
 }

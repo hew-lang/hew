@@ -7,8 +7,8 @@ wire type MetricYaml {
 }
 
 extern "C" {
-    fn MetricYaml_to_yaml(user_id: i32, event_type: i32) -> String;
-    fn MetricYaml_from_yaml(yaml: String) -> MetricYaml;
+    fn MetricYaml_to_yaml(user_id: i32, event_type: i32) -> string;
+    fn MetricYaml_from_yaml(yaml: string) -> MetricYaml;
 }
 
 fn main() {

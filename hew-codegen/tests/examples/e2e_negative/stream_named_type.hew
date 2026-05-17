@@ -1,4 +1,4 @@
-// Stream<T> should reject named types that are not String or bytes.
+// Stream<T> should reject named types that are not string or bytes.
 import std::stream;
 
 type Colour {

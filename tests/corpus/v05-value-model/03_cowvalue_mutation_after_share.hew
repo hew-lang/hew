@@ -29,7 +29,7 @@ fn alias_then_mutate() {
 }
 
 struct User {
-    name: String,
+    name: string,
     score: int,
 }
 

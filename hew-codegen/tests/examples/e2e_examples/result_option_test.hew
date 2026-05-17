@@ -16,7 +16,7 @@ fn test_option_none() -> int {
     }
 }
 
-fn divide(a: int, b: int) -> Result<int, String> {
+fn divide(a: int, b: int) -> Result<int, string> {
     if b == 0 {
         Err("division by zero")
     } else {
@@ -40,7 +40,7 @@ fn test_result_err() -> int {
     }
 }
 
-fn try_divide(a: int, b: int) -> Result<int, String> {
+fn try_divide(a: int, b: int) -> Result<int, string> {
     let x = divide(a, b)?;
     Ok(x * 2)
 }

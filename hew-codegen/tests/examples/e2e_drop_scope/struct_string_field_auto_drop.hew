@@ -1,13 +1,13 @@
-// Regression test: struct with String field and no Drop impl must not leak.
-// The String field must be freed by auto-field-drop when the struct goes out of scope.
+// Regression test: struct with string field and no Drop impl must not leak.
+// The string field must be freed by auto-field-drop when the struct goes out of scope.
 // (This test proves correctness without ASAN; use ASAN to verify no leak.)
 
 type Config {
-    name: String;
+    name: string;
     level: int;
 }
 
-fn make_config(name: String, level: int) -> Config {
+fn make_config(name: string, level: int) -> Config {
     Config { name: name, level: level }
 }
 

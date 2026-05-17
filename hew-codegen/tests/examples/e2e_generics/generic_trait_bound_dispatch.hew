@@ -2,7 +2,7 @@
 // and extracted from generic structs (monomorphization + trait dispatch).
 
 trait Describable {
-    fn describe(val: Self) -> String;
+    fn describe(val: Self) -> string;
 }
 
 type Circle {
@@ -15,13 +15,13 @@ type Rect {
 }
 
 impl Describable for Circle {
-    fn describe(c: Circle) -> String {
+    fn describe(c: Circle) -> string {
         "Circle(" + int_to_string(c.radius) + ")"
     }
 }
 
 impl Describable for Rect {
-    fn describe(r: Rect) -> String {
+    fn describe(r: Rect) -> string {
         "Rect(" + int_to_string(r.width) + "x" + int_to_string(r.height) + ")"
     }
 }

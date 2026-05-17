@@ -24,11 +24,11 @@ fn main() {
     let p2 = make_pair<int>(3, 7);
     println(first_of<int>(p2));
 
-    let p3 = make_pair<String>("hello", "world");
-    let s3 = swap<String>(p3);
+    let p3 = make_pair<string>("hello", "world");
+    let s3 = swap<string>(p3);
     println(s3.first);
     println(s3.second);
 
-    let p4 = make_pair<String>("foo", "bar");
-    println(first_of<String>(p4));
+    let p4 = make_pair<string>("foo", "bar");
+    println(first_of<string>(p4));
 }

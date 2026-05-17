@@ -1,16 +1,16 @@
 // Test: JSON serialization of all scalar wire field types
-// bool→i32, i32, i64, f64, String with default (Preserve) naming.
+// bool→i32, i32, i64, f64, string with default (Preserve) naming.
 // JSON keys are alphabetically sorted by serde_json.
 wire type Scalars {
     big: i64 @1;
     count: i32 @2;
     flag: bool @3;
-    label: String @4;
+    label: string @4;
     ratio: f64 @5;
 }
 
 extern "C" {
-    fn Scalars_to_json(big: i64, count: i32, flag: i32, label: String, ratio: f64) -> String;
+    fn Scalars_to_json(big: i64, count: i32, flag: i32, label: string, ratio: f64) -> string;
 }
 
 fn main() {

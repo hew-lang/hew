@@ -18,7 +18,7 @@ fn area(s: Shape) -> int {
     }
 }
 
-fn describe(s: Shape) -> String {
+fn describe(s: Shape) -> string {
     match s {
         Circle(_) => "circle",
         Rectangle(_, _) => "rectangle",

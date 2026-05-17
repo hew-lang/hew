@@ -216,7 +216,7 @@ fn map_type(ty: &syn::Type) -> Result<String, HewEmitError> {
             if let syn::Type::Path(tp) = ptr.elem.as_ref() {
                 let ident = last_path_ident(&tp.path, ptr.elem.as_ref())?;
                 if ident == "c_char" {
-                    return Ok("String".to_string());
+                    return Ok("string".to_string());
                 }
             }
             // Other pointer types: emit as unknown annotation
@@ -356,7 +356,7 @@ mod tests {
         assert_eq!(fns.len(), 1);
         assert_eq!(fns[0].name, "hew_uuid_v4");
         assert!(fns[0].params.is_empty());
-        assert_eq!(fns[0].return_ty.as_deref(), Some("String"));
+        assert_eq!(fns[0].return_ty.as_deref(), Some("string"));
     }
 
     #[test]
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(fns.len(), 1);
         assert_eq!(fns[0].params.len(), 1);
         assert_eq!(fns[0].params[0].0, "s");
-        assert_eq!(fns[0].params[0].1, "String");
+        assert_eq!(fns[0].params[0].1, "string");
     }
 
     #[test]
@@ -463,24 +463,24 @@ mod tests {
             ExternFn {
                 name: "hew_uuid_v4".to_string(),
                 params: vec![],
-                return_ty: Some("String".to_string()),
+                return_ty: Some("string".to_string()),
             },
             ExternFn {
                 name: "hew_uuid_v7".to_string(),
                 params: vec![],
-                return_ty: Some("String".to_string()),
+                return_ty: Some("string".to_string()),
             },
             ExternFn {
                 name: "hew_uuid_parse".to_string(),
-                params: vec![("s".to_string(), "String".to_string())],
+                params: vec![("s".to_string(), "string".to_string())],
                 return_ty: Some("bool".to_string()),
             },
         ];
         let out = generate_hew_module(&fns, "hew_uuid_");
         assert!(out.contains(r#"extern "C" {"#));
-        assert!(out.contains("fn hew_uuid_v4() -> String;"));
-        assert!(out.contains("fn hew_uuid_v7() -> String;"));
-        assert!(out.contains("fn hew_uuid_parse(s: String) -> bool;"));
+        assert!(out.contains("fn hew_uuid_v4() -> string;"));
+        assert!(out.contains("fn hew_uuid_v7() -> string;"));
+        assert!(out.contains("fn hew_uuid_parse(s: string) -> bool;"));
     }
 
     #[test]
@@ -488,10 +488,10 @@ mod tests {
         let fns = vec![ExternFn {
             name: "hew_uuid_v4".to_string(),
             params: vec![],
-            return_ty: Some("String".to_string()),
+            return_ty: Some("string".to_string()),
         }];
         let out = generate_hew_module(&fns, "hew_uuid_");
-        assert!(out.contains("pub fn v4() -> String {"));
+        assert!(out.contains("pub fn v4() -> string {"));
         assert!(out.contains("unsafe { hew_uuid_v4() }"));
     }
 

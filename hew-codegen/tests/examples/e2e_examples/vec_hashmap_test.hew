@@ -21,7 +21,7 @@ fn test_vec() -> int {
 }
 
 fn test_hashmap() -> int {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);

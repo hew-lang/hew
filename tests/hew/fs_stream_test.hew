@@ -4,7 +4,7 @@ import std::fs;
 import std::stream;
 import std::testing;
 
-fn cleanup_file(file_path: String) {
+fn cleanup_file(file_path: string) {
     if fs.exists(file_path) {
         fs.delete(file_path);
     }

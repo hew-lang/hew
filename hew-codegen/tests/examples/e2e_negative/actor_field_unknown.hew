@@ -1,6 +1,6 @@
 // Negative test: accessing a nonexistent actor field.
 actor Worker {
-    let name: String;
+    let name: string;
 
     receive fn work() {
         println(f"{missing_field}");

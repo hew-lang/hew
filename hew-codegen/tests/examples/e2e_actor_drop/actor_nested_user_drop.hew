@@ -2,13 +2,13 @@
 // struct must (1) invoke the user's drop callback, then (2) recurse
 // into the nested struct's owned subfields. The original open-coded
 // per-actor state-drop only emitted (1) and stopped, so any owned
-// subfield (here, `String` inside `Wrapper`) leaked at teardown.
+// subfield (here, `string` inside `Wrapper`) leaked at teardown.
 //
 // Routing through `emitFieldDropsForUserStruct` (which calls the user
 // drop op then recurses via the same helper at MLIRGen.cpp:6814-6815)
 // produces both prints below.
 type Wrapper {
-    name: String;
+    name: string;
 }
 
 impl Drop for Wrapper {
@@ -28,7 +28,7 @@ actor Holder {
 }
 
 fn main() {
-    let s: String = f"alpha";
+    let s: string = f"alpha";
     let starter = Wrapper { name: s };
     let h = spawn Holder(arg: starter);
     let n = await h.ping();

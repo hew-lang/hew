@@ -398,7 +398,7 @@ impl BuiltinMethodRuntime {
                 string_symbol,
                 bytes_symbol,
             } => match element_name {
-                Some("String") => Some(string_symbol),
+                Some("string") => Some(string_symbol),
                 Some("bytes") => Some(bytes_symbol),
                 _ => None,
             },

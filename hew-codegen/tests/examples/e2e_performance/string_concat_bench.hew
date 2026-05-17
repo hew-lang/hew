@@ -1,7 +1,7 @@
-// Test: String Concatenation Benchmark
-// Exercises: String creation at scale
+// Test: string Concatenation Benchmark
+// Exercises: string creation at scale
 fn main() {
-    println("=== String Concat Bench ===");
+    println("=== string Concat Bench ===");
 
     // Print many lines
     var i: int = 0;

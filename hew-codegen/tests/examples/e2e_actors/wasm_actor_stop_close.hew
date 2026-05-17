@@ -1,7 +1,7 @@
 // Test: Actor stop/close prevents message processing
 // Exercises: stop(ref) and close(ref) on WASM
 actor Worker {
-    receive fn greet(label: String) {
+    receive fn greet(label: string) {
         println(label);
     }
 }

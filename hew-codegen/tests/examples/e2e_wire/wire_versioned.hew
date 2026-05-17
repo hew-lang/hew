@@ -1,7 +1,7 @@
 // Test: versioned wire struct with since modifier
 #[wire(version = 2)]
 struct Config {
-    host: String,
+    host: string,
     port: i32,
     tls: bool since 2,
 }

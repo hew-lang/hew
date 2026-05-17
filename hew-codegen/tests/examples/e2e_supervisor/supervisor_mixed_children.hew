@@ -16,9 +16,9 @@
 // it because the supervisor is processed last and never affects an actor's
 // index.
 //
-// Workers carry a `String` field (heap-owned) so that state-drop matters: a
+// Workers carry a `string` field (heap-owned) so that state-drop matters: a
 // wrong index leaves the state-drop callback at the wrong child_specs slot,
-// which on restart either leaks the String or reads from a freed pointer.
+// which on restart either leaks the string or reads from a freed pointer.
 //
 // Inner has one Worker child for structural completeness.
 //
@@ -27,7 +27,7 @@
 // heap-owned state requires that state-drop was registered at the correct index.
 actor Worker {
     let id: int;
-    let name: String;
+    let name: string;
     receive fn ping() -> int {
         print("ping ");
         println(name);

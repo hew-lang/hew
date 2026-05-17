@@ -6,8 +6,8 @@
 // (MLIRGen.cpp) — previously only StmtIf chains were recursed, not StmtIfLet.
 
 type Wrapper {
-    name: String;
-    extra: String;
+    name: string;
+    extra: string;
 }
 
 impl Drop for Wrapper {
@@ -16,7 +16,7 @@ impl Drop for Wrapper {
     }
 }
 
-fn extract_name(w: Wrapper, flag: bool, opt: Option<int>) -> String {
+fn extract_name(w: Wrapper, flag: bool, opt: Option<int>) -> string {
     if flag {
         "safe"
     } else if let Some(_v) = opt {

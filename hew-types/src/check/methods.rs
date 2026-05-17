@@ -330,7 +330,7 @@ impl Checker {
                         "cannot resolve channel method `{}`: inner type of \
                          {}<T> is still unknown after inference — \
                          add an explicit type annotation, e.g. \
-                         `Sender<int>` or `Receiver<String>`",
+                         `Sender<int>` or `Receiver<string>`",
                         entry.method, entry.handle_kind,
                     ),
                 );
@@ -351,7 +351,7 @@ impl Checker {
                     span_key.start..span_key.end,
                     format!(
                         "Channel<{resolved}> is not supported; \
-                         only Channel<String> and Channel<int> are currently supported"
+                         only Channel<string> and Channel<int> are currently supported"
                     ),
                 );
                 if let Some(module) = &entry.source_module {
@@ -663,7 +663,7 @@ impl Checker {
 
     fn runtime_stream_element_name(ty: &Ty) -> Option<&'static str> {
         match ty {
-            Ty::String => Some("String"),
+            Ty::String => Some("string"),
             Ty::Bytes => Some("bytes"),
             _ => None,
         }
@@ -2946,7 +2946,7 @@ impl Checker {
                                 span,
                                 format!(
                                     "Channel<{resolved_inner}> is not supported; \
-                                     only Channel<String> and Channel<int> are currently supported"
+                                     only Channel<string> and Channel<int> are currently supported"
                                 ),
                             );
                             return Ty::Error;
@@ -3032,7 +3032,7 @@ impl Checker {
                         span,
                         format!(
                             "Channel<{resolved_inner}> is not supported; \
-                             only Channel<String> and Channel<int> are currently supported"
+                             only Channel<string> and Channel<int> are currently supported"
                         ),
                     );
                     return Ty::Error;
@@ -3397,7 +3397,7 @@ mod tests {
     fn runtime_stream_element_name_stays_canonical() {
         assert_eq!(
             Checker::runtime_stream_element_name(&Ty::String),
-            Some("String")
+            Some("string")
         );
         assert_eq!(
             Checker::runtime_stream_element_name(&Ty::Bytes),

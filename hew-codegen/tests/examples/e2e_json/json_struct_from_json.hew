@@ -1,4 +1,4 @@
-// Regression: non-wire struct.from_json() returns Result<Self, String>.
+// Regression: non-wire struct.from_json() returns Result<Self, string>.
 // Covers four cases:
 //   1. Valid JSON with all fields present             -> Ok(struct)
 //   2. Unparseable JSON                               -> Err (parse failure)

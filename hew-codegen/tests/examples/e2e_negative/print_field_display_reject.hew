@@ -4,11 +4,11 @@
 // owning struct.  This must be rejected at codegen until field-alias
 // ownership tracking is implemented.
 type Greeting {
-    text: String;
+    text: string;
 }
 
 impl Display for Greeting {
-    fn fmt(val: Greeting) -> String {
+    fn fmt(val: Greeting) -> string {
         val.text
     }
 }

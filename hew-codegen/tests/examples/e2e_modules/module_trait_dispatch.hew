@@ -1,13 +1,13 @@
 import "trait_lib.hew";
 
 impl Describable for Circle {
-    fn describe(circ: Circle) -> String {
+    fn describe(circ: Circle) -> string {
         string_concat("Circle: ", circ.name)
     }
 }
 
 impl Describable for Square {
-    fn describe(sq: Square) -> String {
+    fn describe(sq: Square) -> string {
         string_concat("Square: ", sq.name)
     }
 }

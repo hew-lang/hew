@@ -1,5 +1,5 @@
-// String rotation check: s2 is a rotation of s1 if (s1+s1).contains(s2)
-fn is_rotation(s1: String, s2: String) -> bool {
+// string rotation check: s2 is a rotation of s1 if (s1+s1).contains(s2)
+fn is_rotation(s1: string, s2: string) -> bool {
     if s1.len() != s2.len() {
         return false;
     }

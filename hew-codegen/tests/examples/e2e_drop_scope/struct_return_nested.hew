@@ -3,7 +3,7 @@
 // This exercises the lazy returnSlot creation for aggregate types.
 
 type Resource {
-    name: String;
+    name: string;
 }
 
 impl Drop for Resource {

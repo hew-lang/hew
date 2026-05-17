@@ -23,7 +23,7 @@
 /// Common `Value` methods implemented by stdlib encodings with opaque handles.
 trait CanonicalValueMethods {
     /// Serialize the value back to its source encoding.
-    fn stringify(val: Self) -> String;
+    fn stringify(val: Self) -> string;
 
     /// Return the canonical shared type tag.
     fn type_of(val: Self) -> i32; // INTERNAL-ABI: opaque C-level kind enum; planned enum migration
@@ -36,10 +36,10 @@ trait CanonicalValueMethods {
     fn get_float(val: Self) -> f64;
 
     /// Extract the string value.
-    fn get_string(val: Self) -> String;
+    fn get_string(val: Self) -> string;
 
     /// Look up a field by key in an object-like value.
-    fn get_field(val: Self, key: String) -> Self;
+    fn get_field(val: Self, key: string) -> Self;
 
     /// Return the number of elements in an array-like value.
     fn array_len(val: Self) -> int;
@@ -52,19 +52,19 @@ trait CanonicalValueMethods {
 
     // ── Fluent builders shared across JSON/TOML/YAML ───────────────────────
     /// Set a string field on an object-like value. Returns the object for chaining.
-    fn with_string(obj: Self, key: String, val: String) -> Self;
+    fn with_string(obj: Self, key: string, val: string) -> Self;
 
     /// Set an integer field. Returns the object for chaining.
-    fn with_int(obj: Self, key: String, val: int) -> Self;
+    fn with_int(obj: Self, key: string, val: int) -> Self;
 
     /// Set a float field. Returns the object for chaining.
-    fn with_float(obj: Self, key: String, val: f64) -> Self;
+    fn with_float(obj: Self, key: string, val: f64) -> Self;
 
     /// Set a boolean field. Returns the object for chaining.
-    fn with_bool(obj: Self, key: String, val: bool) -> Self;
+    fn with_bool(obj: Self, key: string, val: bool) -> Self;
 
     /// Set a child value on an object-like value. The child is consumed.
-    fn with(obj: Self, key: String, child: Self) -> Self;
+    fn with(obj: Self, key: string, child: Self) -> Self;
 
     /// Push a child value onto an array-like value. The child is consumed.
     fn push(arr: Self, child: Self) -> Self;
@@ -73,7 +73,7 @@ trait CanonicalValueMethods {
     fn push_int(arr: Self, val: int) -> Self;
 
     /// Push a string onto an array-like value.
-    fn push_string(arr: Self, val: String) -> Self;
+    fn push_string(arr: Self, val: string) -> Self;
 
     /// Push a float onto an array-like value.
     fn push_float(arr: Self, val: f64) -> Self;

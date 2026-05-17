@@ -61,20 +61,20 @@ fn main() {
         println("FAIL: is_some mismatch");
     }
 
-    // ── String variants ─────────────────────────────────────────
+    // ── string variants ─────────────────────────────────────────
     let some_s = Some("hello");
-    let none_s: Option<String> = None;
+    let none_s: Option<string> = None;
 
     println(option.is_some_str(some_s));
     println(option.is_none_str(none_s));
     println(option.unwrap_str(some_s));
     println(option.unwrap_or_str(none_s, "default"));
-    let excited_s = option.map_str(some_s, (s: String) => s + "!");
+    let excited_s = option.map_str(some_s, (s: string) => s + "!");
     match excited_s {
         Some(v) => println(v),
         None => println("FAIL"),
     }
-    let mapped_none_s = option.map_str(none_s, (s: String) => s + "!");
+    let mapped_none_s = option.map_str(none_s, (s: string) => s + "!");
     match mapped_none_s {
         Some(_) => println("FAIL"),
         None => println("none"),

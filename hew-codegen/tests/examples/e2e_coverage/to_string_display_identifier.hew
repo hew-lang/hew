@@ -2,11 +2,11 @@
 // Verifies ownership transfer — after to_string(g) the Display::fmt call consumes
 // g; the caller must not attempt a second drop of the same binding.
 pub type Greeting {
-    who: String;
+    who: string;
 }
 
 impl Display for Greeting {
-    fn fmt(val: Greeting) -> String {
+    fn fmt(val: Greeting) -> string {
         "hello, " + val.who
     }
 }

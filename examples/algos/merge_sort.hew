@@ -71,7 +71,7 @@ fn make_vec_5(a: int, b: int, c: int, d: int, e: int) -> Vec<int> {
     v
 }
 
-fn run_test(name: String, input: Vec<int>, expected: Vec<int>) -> int {
+fn run_test(name: string, input: Vec<int>, expected: Vec<int>) -> int {
     merge_sort(input);
     let pass = vec_eq(input, expected);
     if pass == 1 {

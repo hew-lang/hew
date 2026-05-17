@@ -27,12 +27,12 @@ fn main() {
     println(vec.contains_f64(v3, 0.0));
 
     println("=== vec.contains_str ===");
-    let v4: Vec<String> = Vec::new();
+    let v4: Vec<string> = Vec::new();
     v4.push("hello");
     v4.push("world");
     println(vec.contains_str(v4, "hello"));
     println(vec.contains_str(v4, "world"));
     println(vec.contains_str(v4, "missing"));
-    let empty4: Vec<String> = Vec::new();
+    let empty4: Vec<string> = Vec::new();
     println(vec.contains_str(empty4, "x"));
 }

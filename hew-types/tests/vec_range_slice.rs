@@ -57,10 +57,10 @@ fn fully_open_slice_on_vec_typechecks_clean() {
 
 #[test]
 fn slice_on_vec_string_typechecks_clean() {
-    // Vec<String> range-slice is supported; the runtime strdups each
+    // Vec<string> range-slice is supported; the runtime strdups each
     // element into the fresh vec. Element-type dispatch is by the MIR
     // emitter.
-    assert_clean("fn f(xs: Vec<String>, a: i64, b: i64) -> Vec<String> { xs[a..b] }");
+    assert_clean("fn f(xs: Vec<string>, a: i64, b: i64) -> Vec<string> { xs[a..b] }");
 }
 
 #[test]
@@ -77,11 +77,11 @@ fn slice_on_int_rejected_as_invalid_operation() {
 
 #[test]
 fn slice_on_string_rejected_as_invalid_operation() {
-    // `String[a..b]` is not supported by this slice — the checker rejects.
-    let kind = first_error_kind("fn f(s: String) -> String { s[0..1] }");
+    // `string[a..b]` is not supported by this slice — the checker rejects.
+    let kind = first_error_kind("fn f(s: string) -> string { s[0..1] }");
     assert!(
         matches!(kind, TypeErrorKind::InvalidOperation),
-        "String range-slice must surface InvalidOperation; got {kind:?}"
+        "string range-slice must surface InvalidOperation; got {kind:?}"
     );
 }
 

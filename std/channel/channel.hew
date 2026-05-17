@@ -8,7 +8,7 @@
 //! indicates the channel is closed (all senders dropped) or empty
 //! (for `try_recv` only).
 //!
-//! Supported element types: `String`, `int`.
+//! Supported element types: `string`, `int`.
 //!
 //! # Examples
 //!
@@ -54,7 +54,7 @@ trait SenderMethods {
     /// Send a message through the channel.
     ///
     /// Blocks if the channel is full (backpressure).
-    fn send(tx: Sender, data: String);
+    fn send(tx: Sender, data: string);
 
     /// Clone this sender for multi-producer use.
     fn clone(tx: Sender) -> Sender;
@@ -67,7 +67,7 @@ trait SenderMethods {
 
 impl SenderMethods for Sender {
     /// Send a string message through the channel.
-    fn send(tx: Sender, data: String) {
+    fn send(tx: Sender, data: string) {
         unsafe {
             hew_channel_send(tx, data)
         };
@@ -93,13 +93,13 @@ trait ReceiverMethods {
     ///
     /// Returns `Some(value)` if a message was received, or `None` when the
     /// channel is closed (all senders dropped).
-    fn recv(rx: Receiver) -> Option<String>;
+    fn recv(rx: Receiver) -> Option<string>;
 
     /// Try to receive a message without blocking.
     ///
     /// Returns `Some(value)` if a message was available, or `None` if
     /// the channel is empty or closed.
-    fn try_recv(rx: Receiver) -> Option<String>;
+    fn try_recv(rx: Receiver) -> Option<string>;
 
     /// Close this receiver and release resources.
     fn close(rx: Receiver);
@@ -107,13 +107,13 @@ trait ReceiverMethods {
 
 impl ReceiverMethods for Receiver {
     /// Block until a string message is available and return it.
-    fn recv(rx: Receiver) -> Option<String> {
+    fn recv(rx: Receiver) -> Option<string> {
         unsafe {
             hew_channel_recv(rx)
         }
     }
     /// Try to receive a string without blocking.
-    fn try_recv(rx: Receiver) -> Option<String> {
+    fn try_recv(rx: Receiver) -> Option<string> {
         unsafe {
             hew_channel_try_recv(rx)
         }
@@ -136,8 +136,8 @@ impl ReceiverMethods for Receiver {
 ///
 /// ```
 /// let (tx, rx) = channel.new(16);
-/// tx.send("hello");       // infers Sender<String>
-/// println(rx.recv());     // infers Receiver<String>
+/// tx.send("hello");       // infers Sender<string>
+/// println(rx.recv());     // infers Receiver<string>
 /// ```
 pub fn new(capacity: int) -> (Sender, Receiver) {
     unsafe {
@@ -159,7 +159,7 @@ extern "C" {
     fn hew_channel_pair_sender(pair: ChannelPair) -> Sender;
     fn hew_channel_pair_receiver(pair: ChannelPair) -> Receiver;
     fn hew_channel_pair_free(pair: ChannelPair);
-    fn hew_channel_send(tx: Sender, data: String);
+    fn hew_channel_send(tx: Sender, data: string);
     fn hew_channel_send_int(tx: Sender, data: int);
     // hew_channel_recv, hew_channel_recv_int, hew_channel_try_recv, and
     // hew_channel_try_recv_int use an out-parameter ABI for Option<T> and

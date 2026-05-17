@@ -1,5 +1,5 @@
 // Probe for F1: explicit type arguments on a struct literal.
-// Before the fix, `Wrapper<String> { ... }` caused a parse error because
+// Before the fix, `Wrapper<string> { ... }` caused a parse error because
 // the parser did not accept `<T>` between the struct path and `{`.
 // After the fix, this must parse, type-check, and run successfully.
 type Wrapper<T> {
@@ -7,6 +7,6 @@ type Wrapper<T> {
 }
 
 fn main() {
-    let w = Wrapper<String> { value: "hello" };
+    let w = Wrapper<string> { value: "hello" };
     println(w.value);
 }

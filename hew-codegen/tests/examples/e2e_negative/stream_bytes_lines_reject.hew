@@ -1,8 +1,8 @@
 import std::stream;
 
-// lines() is only valid on Stream<String>, not Stream<bytes>.
+// lines() is only valid on Stream<string>, not Stream<bytes>.
 // Calling lines() on Stream<bytes> should produce a type error.
-fn process(input: Stream<bytes>) -> Stream<String> {
+fn process(input: Stream<bytes>) -> Stream<string> {
     input.lines()
 }
 

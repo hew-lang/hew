@@ -1,6 +1,6 @@
 // Simplified Suffix Array for integer sequences
 // Build suffix array (sorted suffix indices), compute LCP, search for patterns.
-// Uses integer sequences instead of strings to avoid Vec<String>.
+// Uses integer sequences instead of strings to avoid Vec<string>.
 
 // Compare suffixes starting at positions a and b in text
 // Returns: negative if suffix_a < suffix_b, 0 if equal, positive if suffix_a > suffix_b

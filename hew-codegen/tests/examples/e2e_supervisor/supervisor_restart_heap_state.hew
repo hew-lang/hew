@@ -1,18 +1,18 @@
 // Regression: supervisor restart must not corrupt or leak heap-owned actor
-// state (e.g. String fields) across crash/restart cycles.
+// state (e.g. string fields) across crash/restart cycles.
 //
 // `hew_supervisor_add_child_spec` byte-copies the init_state into the spec.
 // On restart `restart_child_from_spec` passes that byte-copy as the init_state
 // for the fresh spawn.  The runtime skips `state_drop_fn` for crashed actors
 // (actor.rs: `if !actor_is_crashed`) so there is no double-free on the
-// original instance's String field.  The fresh spawn deep-copies the spec's
-// byte-copy, so post-restart the new actor owns a valid String.
+// original instance's string field.  The fresh spawn deep-copies the spec's
+// byte-copy, so post-restart the new actor owns a valid string.
 //
 // This test confirms that after a crash/restart cycle the restarted actor can
-// still return its original String field value without corruption or SIGSEGV.
+// still return its original string field value without corruption or SIGSEGV.
 actor Greeter {
-    let greeting: String;
-    receive fn greet() -> String {
+    let greeting: string;
+    receive fn greet() -> string {
         greeting
     }
     receive fn crash_now() {

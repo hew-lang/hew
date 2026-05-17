@@ -10,7 +10,7 @@ pub fn area(s: Shape) -> int {
     }
 }
 
-pub fn describe(s: Shape) -> String {
+pub fn describe(s: Shape) -> string {
     match s {
         Circle(_) => "circle",
         Square(_) => "square",

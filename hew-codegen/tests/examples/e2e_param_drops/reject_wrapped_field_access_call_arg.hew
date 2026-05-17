@@ -3,7 +3,7 @@
 // if/else wrapper but still aliases param.field → same double-free hazard.
 
 type Inner {
-    value: String;
+    value: string;
 }
 
 impl Drop for Inner {
@@ -14,7 +14,7 @@ impl Drop for Inner {
 
 type Outer {
     inner: Inner;
-    tag: String;
+    tag: string;
 }
 
 fn consume(i: Inner) {

@@ -94,9 +94,9 @@ pub fn contains_int(r: Result<int, int>, needle: int) -> bool {
     }
 }
 
-// ── String variants ────────────────────────────────────────────────
+// ── string variants ────────────────────────────────────────────────
 /// Returns `true` if the result contains an `Ok` value.
-pub fn is_ok_str(r: Result<String, String>) -> bool {
+pub fn is_ok_str(r: Result<string, string>) -> bool {
     match r {
         Ok(_) => true,
         Err(_) => false,
@@ -104,7 +104,7 @@ pub fn is_ok_str(r: Result<String, String>) -> bool {
 }
 
 /// Returns `true` if the result contains an `Err` value.
-pub fn is_err_str(r: Result<String, String>) -> bool {
+pub fn is_err_str(r: Result<string, string>) -> bool {
     match r {
         Ok(_) => false,
         Err(_) => true,
@@ -112,7 +112,7 @@ pub fn is_err_str(r: Result<String, String>) -> bool {
 }
 
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
-pub fn unwrap_str(r: Result<String, String>) -> String {
+pub fn unwrap_str(r: Result<string, string>) -> string {
     match r {
         Ok(v) => v,
         Err(e) => {
@@ -123,7 +123,7 @@ pub fn unwrap_str(r: Result<String, String>) -> String {
 }
 
 /// Unwrap the `Err` value.  Panics if the result is `Ok`.
-pub fn unwrap_err_str(r: Result<String, String>) -> String {
+pub fn unwrap_err_str(r: Result<string, string>) -> string {
     match r {
         Ok(v) => {
             panic(f"result: unwrap_err called on Ok({v})");
@@ -134,7 +134,7 @@ pub fn unwrap_err_str(r: Result<String, String>) -> String {
 }
 
 /// Unwrap the `Ok` value, or return `fallback` if `Err`.
-pub fn unwrap_or_str(r: Result<String, String>, fallback: String) -> String {
+pub fn unwrap_or_str(r: Result<string, string>, fallback: string) -> string {
     match r {
         Ok(v) => v,
         Err(_) => fallback,
@@ -142,7 +142,7 @@ pub fn unwrap_or_str(r: Result<String, String>, fallback: String) -> String {
 }
 
 /// Returns `true` if the result is `Ok` and contains `needle`.
-pub fn contains_str(r: Result<String, String>, needle: String) -> bool {
+pub fn contains_str(r: Result<string, string>, needle: string) -> bool {
     match r {
         Ok(v) => v == needle,
         Err(_) => false,
@@ -151,7 +151,7 @@ pub fn contains_str(r: Result<String, String>, needle: String) -> bool {
 
 // ── Float variants ─────────────────────────────────────────────────
 /// Returns `true` if the result contains an `Ok` value.
-pub fn is_ok_f64(r: Result<f64, String>) -> bool {
+pub fn is_ok_f64(r: Result<f64, string>) -> bool {
     match r {
         Ok(_) => true,
         Err(_) => false,
@@ -159,7 +159,7 @@ pub fn is_ok_f64(r: Result<f64, String>) -> bool {
 }
 
 /// Returns `true` if the result contains an `Err` value.
-pub fn is_err_f64(r: Result<f64, String>) -> bool {
+pub fn is_err_f64(r: Result<f64, string>) -> bool {
     match r {
         Ok(_) => false,
         Err(_) => true,
@@ -167,7 +167,7 @@ pub fn is_err_f64(r: Result<f64, String>) -> bool {
 }
 
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
-pub fn unwrap_f64(r: Result<f64, String>) -> f64 {
+pub fn unwrap_f64(r: Result<f64, string>) -> f64 {
     match r {
         Ok(v) => v,
         Err(e) => {
@@ -178,7 +178,7 @@ pub fn unwrap_f64(r: Result<f64, String>) -> f64 {
 }
 
 /// Unwrap the `Ok` value, or return `fallback` if `Err`.
-pub fn unwrap_or_f64(r: Result<f64, String>, fallback: f64) -> f64 {
+pub fn unwrap_or_f64(r: Result<f64, string>, fallback: f64) -> f64 {
     match r {
         Ok(v) => v,
         Err(_) => fallback,

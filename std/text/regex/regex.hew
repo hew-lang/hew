@@ -35,18 +35,18 @@ trait PatternMethods {
     /// assert(re.is_match("hello"));
     /// re.free();
     /// ```
-    fn is_match(pat: Pattern, input: String) -> bool;
+    fn is_match(pat: Pattern, input: string) -> bool;
 
     /// Ergonomic alias for `is_match`. Returns `true` when the pattern matches
     /// anywhere in `input`. Provided so call sites can read as
     /// `pattern.matches(text)` — a one-to-one replacement for the removed
     /// `text =~ pattern` operator.
-    fn matches(pat: Pattern, input: String) -> bool;
+    fn matches(pat: Pattern, input: string) -> bool;
 
     /// Find the first match of the pattern in the input string.
     ///
     /// Returns the matched substring, or an empty string if no match.
-    fn find(pat: Pattern, input: String) -> String;
+    fn find(pat: Pattern, input: string) -> string;
 
     /// Replace all occurrences of the pattern with the replacement string.
     ///
@@ -58,7 +58,7 @@ trait PatternMethods {
     /// // result == "abcNdefN"
     /// re.free();
     /// ```
-    fn replace(pat: Pattern, input: String, replacement: String) -> String;
+    fn replace(pat: Pattern, input: string, replacement: string) -> string;
 
     /// Clone the compiled pattern, producing an independent copy.
     ///
@@ -74,25 +74,25 @@ trait PatternMethods {
 
 impl PatternMethods for Pattern {
     /// Test whether the pattern matches anywhere in the input string.
-    fn is_match(pat: Pattern, input: String) -> bool {
+    fn is_match(pat: Pattern, input: string) -> bool {
         unsafe {
             hew_regex_is_match(pat, input)
         }
     }
     /// Ergonomic alias for `is_match`.
-    fn matches(pat: Pattern, input: String) -> bool {
+    fn matches(pat: Pattern, input: string) -> bool {
         unsafe {
             hew_regex_is_match(pat, input)
         }
     }
     /// Find the first match of the pattern in the input string.
-    fn find(pat: Pattern, input: String) -> String {
+    fn find(pat: Pattern, input: string) -> string {
         unsafe {
             hew_regex_find(pat, input)
         }
     }
     /// Replace all occurrences of the pattern with the replacement string.
-    fn replace(pat: Pattern, input: String, replacement: String) -> String {
+    fn replace(pat: Pattern, input: string, replacement: string) -> string {
         unsafe {
             hew_regex_replace(pat, input, replacement)
         }
@@ -125,7 +125,7 @@ impl PatternMethods for Pattern {
 /// let email_re = regex.new("[a-z]+@[a-z]+\\.[a-z]+");
 /// email_re.free();
 /// ```
-pub fn new(pattern: String) -> Pattern {
+pub fn new(pattern: string) -> Pattern {
     unsafe {
         hew_regex_new(pattern)
     }
@@ -133,10 +133,10 @@ pub fn new(pattern: String) -> Pattern {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_regex_new(pattern: String) -> Pattern;
-    fn hew_regex_is_match(re: Pattern, input: String) -> bool;
-    fn hew_regex_find(re: Pattern, input: String) -> String;
-    fn hew_regex_replace(re: Pattern, input: String, replacement: String) -> String;
+    fn hew_regex_new(pattern: string) -> Pattern;
+    fn hew_regex_is_match(re: Pattern, input: string) -> bool;
+    fn hew_regex_find(re: Pattern, input: string) -> string;
+    fn hew_regex_replace(re: Pattern, input: string, replacement: string) -> string;
     fn hew_regex_clone(re: Pattern) -> Pattern;
     fn hew_regex_free(re: Pattern);
 }

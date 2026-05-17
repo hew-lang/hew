@@ -3,14 +3,14 @@ import std::string;
 
 import std::testing;
 
-fn assert_string_vec_eq(actual: Vec<String>, expected: Vec<String>) {
+fn assert_string_vec_eq(actual: Vec<string>, expected: Vec<string>) {
     testing.assert_eq(actual.len(), expected.len());
     for i in 0 .. expected.len() {
         testing.assert_eq_str(actual.get(i), expected.get(i));
     }
 }
 
-fn assert_int_result_eq(actual: Result<int, String>, expected: int) {
+fn assert_int_result_eq(actual: Result<int, string>, expected: int) {
     match actual {
         Ok(value) => testing.assert_eq(value, expected),
         Err(message) => {
@@ -20,7 +20,7 @@ fn assert_int_result_eq(actual: Result<int, String>, expected: int) {
     }
 }
 
-fn assert_int_result_string_eq(actual: Result<int, String>, expected: String) {
+fn assert_int_result_string_eq(actual: Result<int, string>, expected: string) {
     match actual {
         Ok(value) => testing.assert_eq_str(string.from_int(value), expected),
         Err(message) => {
@@ -30,7 +30,7 @@ fn assert_int_result_string_eq(actual: Result<int, String>, expected: String) {
     }
 }
 
-fn assert_int_result_err(actual: Result<int, String>, expected: String) {
+fn assert_int_result_err(actual: Result<int, string>, expected: string) {
     match actual {
         Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
@@ -40,7 +40,7 @@ fn assert_int_result_err(actual: Result<int, String>, expected: String) {
     }
 }
 
-fn assert_float_result_eq(actual: Result<f64, String>, expected: f64) {
+fn assert_float_result_eq(actual: Result<f64, string>, expected: f64) {
     match actual {
         Ok(value) => testing.assert_true(value == expected),
         Err(message) => {
@@ -50,7 +50,7 @@ fn assert_float_result_eq(actual: Result<f64, String>, expected: f64) {
     }
 }
 
-fn assert_float_result_err(actual: Result<f64, String>, expected: String) {
+fn assert_float_result_err(actual: Result<f64, string>, expected: string) {
     match actual {
         Ok(value) => {
             panic(f"expected Err(\"{expected}\"), got Ok({value})");
@@ -187,7 +187,7 @@ fn test_count_counts_non_overlapping_occurrences() {
 
 #[test]
 fn test_split_splits_and_keeps_trailing_empty_segment() {
-    let expected: Vec<String> = Vec::new();
+    let expected: Vec<string> = Vec::new();
     expected.push("a");
     expected.push("b");
     expected.push("");
@@ -196,14 +196,14 @@ fn test_split_splits_and_keeps_trailing_empty_segment() {
 
 #[test]
 fn test_split_empty_separator_returns_original_string() {
-    let expected: Vec<String> = Vec::new();
+    let expected: Vec<string> = Vec::new();
     expected.push("abc");
     assert_string_vec_eq(string.split("abc", ""), expected);
 }
 
 #[test]
 fn test_lines_splits_lf_and_preserves_trailing_empty_line() {
-    let expected: Vec<String> = Vec::new();
+    let expected: Vec<string> = Vec::new();
     expected.push("alpha");
     expected.push("beta");
     expected.push("");
@@ -212,7 +212,7 @@ fn test_lines_splits_lf_and_preserves_trailing_empty_line() {
 
 #[test]
 fn test_lines_normalizes_crlf_sequences() {
-    let expected: Vec<String> = Vec::new();
+    let expected: Vec<string> = Vec::new();
     expected.push("alpha");
     expected.push("beta");
     assert_string_vec_eq(string.lines("alpha\r\nbeta"), expected);
@@ -220,23 +220,23 @@ fn test_lines_normalizes_crlf_sequences() {
 
 #[test]
 fn test_lines_returns_single_empty_line_for_empty_input() {
-    let expected: Vec<String> = Vec::new();
+    let expected: Vec<string> = Vec::new();
     expected.push("");
     assert_string_vec_eq(string.lines(""), expected);
 }
 
 #[test]
 fn test_join_handles_empty_and_single_element_inputs() {
-    let empty: Vec<String> = Vec::new();
+    let empty: Vec<string> = Vec::new();
     testing.assert_eq_str(string.join(empty, ","), "");
-    let single: Vec<String> = Vec::new();
+    let single: Vec<string> = Vec::new();
     single.push("solo");
     testing.assert_eq_str(string.join(single, ","), "solo");
 }
 
 #[test]
 fn test_join_inserts_separator_between_elements() {
-    let parts: Vec<String> = Vec::new();
+    let parts: Vec<string> = Vec::new();
     parts.push("red");
     parts.push("green");
     parts.push("blue");

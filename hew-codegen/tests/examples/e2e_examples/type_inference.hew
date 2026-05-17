@@ -30,7 +30,7 @@ fn main() {
     if flag {
         println("flag is true");
     }
-    // String inference
+    // string inference
     let msg = "hello world";
     println(msg);
 

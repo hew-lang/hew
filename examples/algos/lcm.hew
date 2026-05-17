@@ -15,7 +15,7 @@ fn lcm(a: int, b: int) -> int {
     a / g * b
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: int, expected: int) -> int {
     if got == expected {
         println("PASS: " + name);
         1

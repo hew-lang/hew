@@ -51,17 +51,17 @@ pub fn contains_f64(v: Vec<f64>, val: f64) -> bool {
     false
 }
 
-/// Check if a `Vec<String>` contains `val`. Uses string equality.
+/// Check if a `Vec<string>` contains `val`. Uses string equality.
 ///
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("hello");
 /// println(vec.contains_str(v, "hello"));  // true
 /// println(vec.contains_str(v, "world"));  // false
 /// ```
-pub fn contains_str(v: Vec<String>, val: String) -> bool {
+pub fn contains_str(v: Vec<string>, val: string) -> bool {
     var i = 0;
     let n = v.len();
     while i < n {
@@ -129,13 +129,13 @@ pub fn index_of_f64(v: Vec<f64>, val: f64) -> int {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("a");
 /// v.push("b");
 /// println(vec.index_of_str(v, "b"));   // 1
 /// println(vec.index_of_str(v, "z"));   // -1
 /// ```
-pub fn index_of_str(v: Vec<String>, val: String) -> int {
+pub fn index_of_str(v: Vec<string>, val: string) -> int {
     var i = 0;
     let n = v.len();
     while i < n {
@@ -167,7 +167,7 @@ pub fn first_f64(v: Vec<f64>) -> Option<f64> {
 }
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
-pub fn first_str(v: Vec<String>) -> Option<String> {
+pub fn first_str(v: Vec<string>) -> Option<string> {
     var i = 0;
     let n = v.len();
     if n == 0 {
@@ -199,7 +199,7 @@ pub fn last_f64(v: Vec<f64>) -> Option<f64> {
 }
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
-pub fn last_str(v: Vec<String>) -> Option<String> {
+pub fn last_str(v: Vec<string>) -> Option<string> {
     var i = 0;
     let n = v.len();
     if n == 0 {

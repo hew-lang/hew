@@ -23,18 +23,18 @@
 
 // Coordinator — merges replica counts into a global total.
 actor Coordinator {
-    let replica_names: Vec<String>;
+    let replica_names: Vec<string>;
     let replica_totals: Vec<int>;
     let global_total: int;
     let sync_count: int;
-    receive fn register_replica(name: String) {
+    receive fn register_replica(name: string) {
         replica_names.push(name);
         replica_totals.push(0);
         println(f"[coordinator] registered replica: {name}");
     }
 
     // Replica reports its local count for merging.
-    receive fn sync(name: String, local_count: int) {
+    receive fn sync(name: string, local_count: int) {
         sync_count = sync_count + 1;
         // Find the replica and update its known total
         for i in 0 .. replica_names.len() {
@@ -59,7 +59,7 @@ actor Coordinator {
 
 // Replica — maintains a local counter and syncs with the coordinator.
 actor Replica {
-    let name: String;
+    let name: string;
     let coordinator: ActorRef<Coordinator>;
     let local_count: int;
     init() {
@@ -86,7 +86,7 @@ fn main() {
     println("");
 
     // Create coordinator
-    let empty_names: Vec<String> = Vec::new();
+    let empty_names: Vec<string> = Vec::new();
     let empty_totals: Vec<int> = Vec::new();
     let coord = spawn Coordinator(replica_names: empty_names, replica_totals: empty_totals, global_total: 0, sync_count: 0);
     // Create replicas (in production these would be on separate nodes)

@@ -1492,7 +1492,7 @@ mod tests {
                         },
                         TypeBodyItem::Field {
                             name: "payload_body".into(),
-                            ty: named_type("String"),
+                            ty: named_type("string"),
                             attributes: vec![],
                             doc_comment: None,
                             span: 0..0,
@@ -1942,7 +1942,7 @@ mod tests {
                 ),
                 (
                     TypeExpr::Named {
-                        name: "String".to_string(),
+                        name: "string".to_string(),
                         type_args: None,
                     },
                     0..0,
@@ -4018,7 +4018,7 @@ mod tests {
                     where_clause: None,
                     body: vec![TypeBodyItem::Variant(VariantDecl {
                         name: "Data".into(),
-                        kind: VariantKind::Tuple(vec![named_type("i32"), named_type("String")]),
+                        kind: VariantKind::Tuple(vec![named_type("i32"), named_type("string")]),
                         doc_comment: None,
                         span: 0..0,
                     })],
@@ -4044,7 +4044,7 @@ mod tests {
                 wire_field("id", "i32", 1, None, None, None),
                 WireFieldDecl {
                     is_optional: true,
-                    ..wire_field("payload", "String", 2, Some("body"), None, Some(2))
+                    ..wire_field("payload", "string", 2, Some("body"), None, Some(2))
                 },
             ],
         ));
@@ -4059,7 +4059,7 @@ mod tests {
                 wire_field("requestId", "i32", 1, None, Some("request_id"), None),
                 WireFieldDecl {
                     is_optional: true,
-                    ..wire_field("payloadBody", "String", 2, Some("body"), None, Some(2))
+                    ..wire_field("payloadBody", "string", 2, Some("body"), None, Some(2))
                 },
             ],
         ));
@@ -4217,7 +4217,7 @@ mod tests {
                     wire_field("id", "i32", 1, None, None, None),
                     WireFieldDecl {
                         is_optional: true,
-                        ..wire_field("payload", "String", 2, Some("body"), None, Some(2))
+                        ..wire_field("payload", "string", 2, Some("body"), None, Some(2))
                     },
                 ],
             ));
@@ -4298,7 +4298,7 @@ mod tests {
                 ty: (
                     TypeExpr::Named {
                         name: "Option".into(),
-                        type_args: Some(vec![named_type("String")]),
+                        type_args: Some(vec![named_type("string")]),
                     },
                     0..0,
                 ),
@@ -4307,7 +4307,7 @@ mod tests {
 
         let json = serde_json::to_string(&serialize_to_value(&program, expr_types))
             .expect("value should serialize to json");
-        for name in ["Vec", "Option", "i32", "String"] {
+        for name in ["Vec", "Option", "i32", "string"] {
             assert!(
                 json.contains(&format!("\"name\":\"{name}\"")),
                 "missing {name}: {json}"
@@ -4403,13 +4403,13 @@ mod tests {
 
     #[test]
     fn struct_init_type_args_roundtrip_with_type_arg() {
-        // A program containing `Wrapper<String> { value: "hello" }`.
+        // A program containing `Wrapper<string> { value: "hello" }`.
         // The `type_args` field must survive a msgpack serialize → deserialize cycle.
         // We use `parse()` to build the program so the type_args field is populated
         // by the actual parser path, then verify it survives the wire encode/decode.
         use hew_parser::ast::{Expr, Stmt, TypeExpr};
         let source = r#"type Wrapper<T> { value: T }
-fn main() { let w = Wrapper<String> { value: "hello" }; }"#;
+fn main() { let w = Wrapper<string> { value: "hello" }; }"#;
         let program = hew_parser::parse(source).program;
 
         let bytes = serialize_to_msgpack(
@@ -4453,8 +4453,8 @@ fn main() { let w = Wrapper<String> { value: "hello" }; }"#;
             .expect("type_args must survive the wire round-trip");
         assert_eq!(args.len(), 1, "one type arg expected");
         assert!(
-            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "String"),
-            "type arg should be String, got {:?}",
+            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "string"),
+            "type arg should be string, got {:?}",
             args[0].0
         );
     }

@@ -1,4 +1,4 @@
-// Regression: HashSet<String> passed via ask must not be double-freed.
+// Regression: HashSet<string> passed via ask must not be double-freed.
 //
 // Before the ask-path unregisterDroppable fix (PR #459), the sender's
 // DropScope retained a DropEntry for `hs`, so hew_hashset_free was called
@@ -10,7 +10,7 @@
 // immediately after the ask, so only the receiver (Checker.check) drops it.
 
 actor Checker {
-    receive fn check(hs: HashSet<String>) -> int {
+    receive fn check(hs: HashSet<string>) -> int {
         hs.len()
         // `hs` freed here by receive-handler drop scope (hew_hashset_free)
     }
@@ -18,7 +18,7 @@ actor Checker {
 
 fn main() {
     let c = spawn Checker;
-    let hs: HashSet<String> = HashSet::new();
+    let hs: HashSet<string> = HashSet::new();
     hs.insert("hello");
     hs.insert("world");
     // Ownership of `hs` transfers to Checker.check; sender must NOT drop.

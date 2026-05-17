@@ -1,7 +1,7 @@
 // Error handling with Result types
 import std::result;
 
-fn parse_number(s: String) -> Result<int, String> {
+fn parse_number(s: string) -> Result<int, string> {
     if s == "42" {
         Ok(42)
     } else {
@@ -12,7 +12,7 @@ fn parse_number(s: String) -> Result<int, String> {
 fn main() {
     let parsed = parse_number("42");
     let failed = parse_number("oops");
-    // match is the clearest way to handle a String error message.
+    // match is the clearest way to handle a string error message.
     match parsed {
         Ok(n) => println(n),
         Err(msg) => println(msg),

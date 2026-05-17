@@ -22,7 +22,7 @@ machine Door {
     on Pull: _ -> _ { state }
 }
 
-fn describe(d: Door) -> String {
+fn describe(d: Door) -> string {
     match d {
         Locked => "The door is locked",
         Unlocked => "The door is unlocked",

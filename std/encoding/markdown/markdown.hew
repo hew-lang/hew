@@ -22,7 +22,7 @@
 /// ```
 /// let html = markdown.to_html("**bold** text");
 /// ```
-pub fn to_html(md: String) -> String {
+pub fn to_html(md: string) -> string {
     unsafe {
         hew_markdown_to_html(md)
     }
@@ -38,7 +38,7 @@ pub fn to_html(md: String) -> String {
 /// ```
 /// let safe = markdown.to_html_safe("Click <script>alert(1)</script>");
 /// ```
-pub fn to_html_safe(md: String) -> String {
+pub fn to_html_safe(md: string) -> string {
     unsafe {
         hew_markdown_to_html_safe(md)
     }
@@ -46,6 +46,6 @@ pub fn to_html_safe(md: String) -> String {
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_markdown_to_html(md: String) -> String;
-    fn hew_markdown_to_html_safe(md: String) -> String;
+    fn hew_markdown_to_html(md: string) -> string;
+    fn hew_markdown_to_html_safe(md: string) -> string;
 }

@@ -1,5 +1,5 @@
 // Test: Valid Parentheses (LeetCode #20)
-// Exercises: Vec as stack, String character comparison, match
+// Exercises: Vec as stack, string character comparison, match
 fn is_valid(s: Vec<int>) -> int {
     // Encode chars as ints: ( = 1, ) = 2, [ = 3, ] = 4, { = 5, } = 6
     let stack: Vec<int> = Vec::new();

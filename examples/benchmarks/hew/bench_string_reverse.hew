@@ -1,4 +1,4 @@
-fn reverse_string(s: String) -> int {
+fn reverse_string(s: string) -> int {
     let n = s.len();
     let result: Vec<int> = Vec::new();
     for i in 0 .. n {

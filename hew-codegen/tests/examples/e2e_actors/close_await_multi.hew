@@ -1,5 +1,5 @@
 actor Printer {
-    receive fn say(msg: String) {
+    receive fn say(msg: string) {
         println(msg);
     }
 }

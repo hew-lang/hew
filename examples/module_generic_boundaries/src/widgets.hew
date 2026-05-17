@@ -1,17 +1,17 @@
 pub trait Describable {
-    fn describe(val: Self) -> String;
+    fn describe(val: Self) -> string;
 }
 
 pub type Label {
-    text: String;
+    text: string;
 }
 
 impl Describable for Label {
-    fn describe(label: Label) -> String {
+    fn describe(label: Label) -> string {
         label.text
     }
 }
 
-pub fn describe<T: Describable>(item: T) -> String {
+pub fn describe<T: Describable>(item: T) -> string {
     item.describe()
 }

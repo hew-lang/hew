@@ -1,7 +1,7 @@
 // Test: Two Sum (LeetCode #1)
 // Exercises: HashMap lookup, iteration, function returns
 fn two_sum(nums: Vec<int>, target: int) -> int {
-    let seen: HashMap<String, int> = HashMap::new();
+    let seen: HashMap<string, int> = HashMap::new();
     var i: int = 0;
     var found = 0;
     let len = nums.len();

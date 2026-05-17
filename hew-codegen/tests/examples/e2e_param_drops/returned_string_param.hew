@@ -1,7 +1,7 @@
-// Returned String parameter: the callee returns its param — the param must
+// Returned string parameter: the callee returns its param — the param must
 // NOT be dropped at scope exit (the caller takes ownership).
 
-fn identity(s: String) -> String {
+fn identity(s: string) -> string {
     s
 }
 

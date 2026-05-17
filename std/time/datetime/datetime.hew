@@ -37,13 +37,13 @@ pub fn now_secs() -> int {
 /// ```
 /// let s = datetime.format(now, "%Y-%m-%d");
 /// ```
-pub fn format(epoch_ms: int, fmt: String) -> String {
+pub fn format(epoch_ms: int, fmt: string) -> string {
     unsafe {
         hew_datetime_format(epoch_ms as i64, fmt)
     }
 }
 
-fn parse_error_message() -> String {
+fn parse_error_message() -> string {
     unsafe {
         hew_datetime_last_error()
     }
@@ -52,9 +52,9 @@ fn parse_error_message() -> String {
 /// Parse a datetime string using the given format and return epoch milliseconds.
 ///
 /// Panics if the input does not match the format. Use `try_parse` for a
-/// structured `Result<int, String>` failure surface.
+/// structured `Result<int, string>` failure surface.
 ///
-pub fn parse(s: String, fmt: String) -> int {
+pub fn parse(s: string, fmt: string) -> int {
     match try_parse(s, fmt) {
         Ok(epoch_ms) => epoch_ms,
         Err(err) => {
@@ -67,8 +67,8 @@ pub fn parse(s: String, fmt: String) -> int {
 /// Parse a datetime string using the given format and return epoch
 /// milliseconds.
 ///
-/// Returns `Err(String)` with the native parser message when parsing fails.
-pub fn try_parse(s: String, fmt: String) -> Result<int, String> {
+/// Returns `Err(string)` with the native parser message when parsing fails.
+pub fn try_parse(s: string, fmt: string) -> Result<int, string> {
     let epoch_ms = unsafe {
         hew_datetime_parse(s, fmt) as int
     };
@@ -152,7 +152,7 @@ pub fn diff_secs(a: int, b: int) -> int {
 /// let iso = datetime.to_iso8601(datetime.now_ms());
 /// // e.g. "2025-07-10T14:30:00Z"
 /// ```
-pub fn to_iso8601(epoch_ms: int) -> String {
+pub fn to_iso8601(epoch_ms: int) -> string {
     format(epoch_ms, "%Y-%m-%dT%H:%M:%SZ")
 }
 
@@ -170,9 +170,9 @@ pub fn now_nanos() -> int {
 extern "C" {
     fn hew_datetime_now_ms() -> i64;
     fn hew_datetime_now_nanos() -> i64;
-    fn hew_datetime_format(epoch_ms: i64, fmt: String) -> String;
-    fn hew_datetime_parse(s: String, fmt: String) -> i64;
-    fn hew_datetime_last_error() -> String;
+    fn hew_datetime_format(epoch_ms: i64, fmt: string) -> string;
+    fn hew_datetime_parse(s: string, fmt: string) -> i64;
+    fn hew_datetime_last_error() -> string;
     fn hew_datetime_year(epoch_ms: i64) -> int;
     fn hew_datetime_month(epoch_ms: i64) -> int;
     fn hew_datetime_day(epoch_ms: i64) -> int;

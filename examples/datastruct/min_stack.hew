@@ -1,6 +1,6 @@
 // Min Stack - Stack that tracks minimum in O(1)
 // Uses two Vecs: main stack and min-tracking stack
-fn run_test(name: String, passed: int) -> int {
+fn run_test(name: string, passed: int) -> int {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

@@ -3,7 +3,7 @@
 // and fires the drop when its own scope exits.
 
 type Handle {
-    name: String;
+    name: string;
 }
 
 impl Drop for Handle {

@@ -13,7 +13,7 @@ fn fast_pow(base: int, exp: int) -> int {
     result
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: int, expected: int) -> int {
     if got == expected {
         println("PASS: " + name);
         1

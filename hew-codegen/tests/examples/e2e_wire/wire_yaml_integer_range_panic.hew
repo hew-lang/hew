@@ -5,7 +5,7 @@ wire type Limits {
 }
 
 extern "C" {
-    fn Limits_from_yaml(yaml: String) -> Limits;
+    fn Limits_from_yaml(yaml: string) -> Limits;
 }
 
 fn main() {

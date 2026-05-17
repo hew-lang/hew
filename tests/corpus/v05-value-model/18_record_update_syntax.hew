@@ -24,7 +24,7 @@
 //   - chained record updates (two updates from the same source)
 
 struct User {
-    name: String,
+    name: string,
     score: int,
 }
 

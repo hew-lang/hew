@@ -20,10 +20,10 @@ impl Drop for Handle {
 // No Drop impl — relies on auto-field-drop to clean up the Handle field.
 type Container {
     handle: Handle;
-    label: String;
+    label: string;
 }
 
-fn make_container(id: int, label: String) -> Container {
+fn make_container(id: int, label: string) -> Container {
     Container { handle: Handle { id: id }, label: label }
 }
 

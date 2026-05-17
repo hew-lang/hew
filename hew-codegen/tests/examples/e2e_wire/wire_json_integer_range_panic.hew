@@ -5,7 +5,7 @@ wire type Limits {
 }
 
 extern "C" {
-    fn Limits_from_json(json: String) -> Limits;
+    fn Limits_from_json(json: string) -> Limits;
 }
 
 fn main() {

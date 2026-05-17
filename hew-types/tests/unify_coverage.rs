@@ -580,7 +580,7 @@ fn resolve_three_var_chain() {
     let v1 = TypeVar::fresh();
     let v2 = TypeVar::fresh();
     let v3 = TypeVar::fresh();
-    // v1 -> v2 -> v3 -> String
+    // v1 -> v2 -> v3 -> string
     subst.insert(v1, &Ty::Var(v2)).unwrap();
     subst.insert(v2, &Ty::Var(v3)).unwrap();
     subst.insert(v3, &Ty::String).unwrap();

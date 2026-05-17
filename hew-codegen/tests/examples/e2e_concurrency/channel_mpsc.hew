@@ -1,13 +1,13 @@
 import std::channel::channel;
 
-fn producer(tx: Sender, label: String) {
+fn producer(tx: Sender, label: string) {
     tx.send(label + ":alpha");
     tx.send(label + ":beta");
     tx.close();
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender, channel.Receiver<String>) = channel.new(8);
+    let (tx, rx): (channel.Sender, channel.Receiver<string>) = channel.new(8);
 
     // Clone the sender for a second producer.
     let tx2 = tx.clone();

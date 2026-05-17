@@ -5,7 +5,7 @@ import std::io;
 import std::os;
 
 extern "C" {
-    fn hew_bytes_to_string(data: bytes) -> String;
+    fn hew_bytes_to_string(data: bytes) -> string;
 }
 
 actor ServerReader {
@@ -29,8 +29,8 @@ actor ServerReader {
 }
 
 fn main() {
-    var port: String = "9000";
-    var name: String = "guest";
+    var port: string = "9000";
+    var name: string = "guest";
     let argc = os.args_count();
     if argc > 1 {
         port = os.args(1);

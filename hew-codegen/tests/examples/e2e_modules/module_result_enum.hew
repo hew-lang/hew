@@ -6,7 +6,7 @@
 import "result_enum_lib.hew";
 
 fn main() {
-    // Result<String, IoError> — inline nested match without block braces
+    // Result<string, IoError> — inline nested match without block braces
     match try_read("myfile.txt") {
         Ok(content) => println(f"read: {content}"),
         Err(e) => match e {

@@ -1,1 +1,1 @@
-pub fn greet() -> String { "hello from A" }
+pub fn greet() -> string { "hello from A" }

@@ -50,7 +50,7 @@ fn handle_wrapper_methods_can_use_inner_handle_without_exposing_it() {
         }
 
         impl PatternWrapper {
-            fn matches(wrapper: PatternWrapper, text: String) -> bool {
+            fn matches(wrapper: PatternWrapper, text: string) -> bool {
                 wrapper.pattern.is_match(text)
             }
         }

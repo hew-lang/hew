@@ -807,7 +807,7 @@ mod tests {
         let err = TypeError::return_type_mismatch(0..10, &Ty::String, &Ty::I32);
         assert_eq!(
             err.to_string(),
-            "return type mismatch: expected `String`, found `i32`"
+            "return type mismatch: expected `string`, found `i32`"
         );
         assert_eq!(err.kind, TypeErrorKind::ReturnTypeMismatch);
     }
@@ -991,7 +991,7 @@ mod tests {
         let err = TypeError::mismatch(0..20, &expected, &actual);
         assert!(err
             .to_string()
-            .contains("expected `fn(i32, bool) -> String`"));
+            .contains("expected `fn(i32, bool) -> string`"));
         assert!(err.to_string().contains("found `(i32, bool)`"));
     }
 
@@ -1017,7 +1017,7 @@ mod tests {
         let err = TypeError::undefined_field(0..10, &ty, "colour");
         assert_eq!(
             err.to_string(),
-            "no field `colour` on type `HashMap<String, i32>`"
+            "no field `colour` on type `HashMap<string, i32>`"
         );
     }
 }

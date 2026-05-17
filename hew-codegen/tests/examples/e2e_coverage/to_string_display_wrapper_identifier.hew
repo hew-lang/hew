@@ -2,11 +2,11 @@
 // The block wrapper yields the owned identifier; Display::fmt consumes it, so
 // caller-side drop registration for `g` must be removed after the call.
 pub type Greeting {
-    who: String;
+    who: string;
 }
 
 impl Display for Greeting {
-    fn fmt(val: Greeting) -> String {
+    fn fmt(val: Greeting) -> string {
         "hello, " + val.who
     }
 }

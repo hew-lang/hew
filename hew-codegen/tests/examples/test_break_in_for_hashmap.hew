@@ -1,6 +1,6 @@
 // Regression: break inside for-in-hashmap must work with nested loops.
 fn main() {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("a", 10);
     m.insert("b", 20);
     m.insert("c", 30);

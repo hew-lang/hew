@@ -2,13 +2,13 @@
 #[wire]
 #[json(camelCase)]
 struct UserEvent {
-    user_name: String,
+    user_name: string,
     event_type: i32 @5,
     is_active: i32,
 }
 
 extern "C" {
-    fn UserEvent_to_json(user_name: String, event_type: i32, is_active: i32) -> String;
+    fn UserEvent_to_json(user_name: string, event_type: i32, is_active: i32) -> string;
 }
 
 fn main() {

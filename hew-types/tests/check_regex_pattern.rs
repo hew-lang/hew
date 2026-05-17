@@ -41,7 +41,7 @@ fn regex_pattern_is_match_rejects_non_string_argument_via_registry_fallback() {
     assert!(
         output.errors.iter().any(|error| matches!(
             &error.kind,
-            TypeErrorKind::Mismatch { expected, .. } if expected == "String"
+            TypeErrorKind::Mismatch { expected, .. } if expected == "string"
         )),
         "expected regex.Pattern::is_match to reject non-String arg via fallback, got: {:#?}",
         output.errors
@@ -64,7 +64,7 @@ fn regex_pattern_replace_rejects_non_string_replacement_via_registry_fallback() 
     assert!(
         output.errors.iter().any(|error| matches!(
             &error.kind,
-            TypeErrorKind::Mismatch { expected, .. } if expected == "String"
+            TypeErrorKind::Mismatch { expected, .. } if expected == "string"
         )),
         "expected regex.Pattern::replace to reject non-String replacement via fallback, got: {:#?}",
         output.errors

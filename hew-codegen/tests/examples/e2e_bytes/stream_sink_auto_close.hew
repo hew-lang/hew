@@ -4,7 +4,7 @@ import std::stream;
 // Without RAII auto-close, the consumer deadlocks waiting for EOF.
 fn main() {
     let input = {
-        let (sink, input): (Sink<String>, Stream<String>) = stream.pipe(8);
+        let (sink, input): (Sink<string>, Stream<string>) = stream.pipe(8);
         sink.write("hello");
         sink.write("world");
         // sink goes out of scope here — should auto-close

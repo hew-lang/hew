@@ -1,18 +1,18 @@
 // Regression for #1698: HashMap::insert must transfer ownership of both the
-// key and value String identifiers. Previously, neither source identifier's
+// key and value string identifiers. Previously, neither source identifier's
 // drop slot was nulled after HashMapInsertOp, so on inner scope exit the
-// runtime freed the String buffers that the map's storage now pointed at,
+// runtime freed the string buffers that the map's storage now pointed at,
 // leaving the map's slots with dangling pointers.
-fn make_map() -> HashMap<String, String> {
-    let m: HashMap<String, String> = HashMap::new();
+fn make_map() -> HashMap<string, string> {
+    let m: HashMap<string, string> = HashMap::new();
     var i: i32 = 0;
     while i < 2 {
-        let k: String = if i == 0 {
+        let k: string = if i == 0 {
             "greeting"
         } else {
             "farewell"
         };
-        let v: String = if i == 0 {
+        let v: string = if i == 0 {
             "hello"
         } else {
             "goodbye"
@@ -23,7 +23,7 @@ fn make_map() -> HashMap<String, String> {
     m
 }
 
-fn check(m: HashMap<String, String>) -> bool {
+fn check(m: HashMap<string, string>) -> bool {
     m.contains_key("greeting") && m.contains_key("farewell") && m.len() == 2
 }
 

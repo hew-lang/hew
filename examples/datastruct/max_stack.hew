@@ -1,6 +1,6 @@
 // Max Stack - Stack that tracks maximum in O(1)
 // Uses two Vecs: main stack and max-tracking stack
-fn run_test(name: String, passed: int) -> int {
+fn run_test(name: string, passed: int) -> int {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

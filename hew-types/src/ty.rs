@@ -272,9 +272,9 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("f64", &["f64", "float", "Float"]),
     ("bool", &["bool", "Bool"]),
     ("char", &["char", "Char"]),
-    ("string", &["string", "String", "str"]),
+    ("string", &["string", "str"]),
     ("bytes", &["bytes", "Bytes"]),
-    ("duration", &["duration", "Duration"]),
+    ("duration", &["duration"]),
     // Unit's type-system spelling is `()`, while wirecodec also accepts `unit`.
     ("()", &["()"]),
     // Not in wirecodec: Never has no wire representation.
@@ -430,7 +430,7 @@ impl Ty {
             Ty::FloatLiteral => write!(f, "<float literal>"),
             Ty::Bool => write!(f, "bool"),
             Ty::Char => write!(f, "char"),
-            Ty::String => write!(f, "String"),
+            Ty::String => write!(f, "string"),
             Ty::Bytes => write!(f, "bytes"),
             Ty::Duration => write!(f, "duration"),
             Ty::Unit => write!(f, "()"),
@@ -1489,7 +1489,7 @@ mod tests {
                     ret: Box::new(Ty::String),
                 }
             ),
-            "fn(i32, bool) -> String"
+            "fn(i32, bool) -> string"
         );
         assert_eq!(
             format!(
@@ -1542,11 +1542,11 @@ mod tests {
 
         assert_eq!(
             ty.user_facing().to_string(),
-            "fn(Vec<int>, (bool, int)) -> Result<int, HashMap<String, int>>"
+            "fn(Vec<int>, (bool, int)) -> Result<int, HashMap<string, int>>"
         );
         assert_eq!(
             ty.to_string(),
-            "fn(Vec<i64>, (bool, i64)) -> Result<i64, HashMap<String, i64>>"
+            "fn(Vec<i64>, (bool, i64)) -> Result<i64, HashMap<string, i64>>"
         );
     }
 
@@ -1605,7 +1605,7 @@ mod tests {
     fn test_display_result() {
         assert_eq!(
             format!("{}", Ty::result(Ty::I32, Ty::String)),
-            "Result<i32, String>"
+            "Result<i32, string>"
         );
     }
 
@@ -1613,7 +1613,7 @@ mod tests {
     fn test_display_tuple() {
         assert_eq!(
             format!("{}", Ty::Tuple(vec![Ty::I32, Ty::Bool, Ty::String])),
-            "(i32, bool, String)"
+            "(i32, bool, string)"
         );
     }
 

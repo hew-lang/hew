@@ -75,9 +75,9 @@ pub fn contains_int(opt: Option<int>, needle: int) -> bool {
     }
 }
 
-// ── String variants ────────────────────────────────────────────────
+// ── string variants ────────────────────────────────────────────────
 /// Returns `true` if the option contains a value.
-pub fn is_some_str(opt: Option<String>) -> bool {
+pub fn is_some_str(opt: Option<string>) -> bool {
     match opt {
         Some(_) => true,
         None => false,
@@ -85,15 +85,15 @@ pub fn is_some_str(opt: Option<String>) -> bool {
 }
 
 /// Returns `true` if the option is `None`.
-pub fn is_none_str(opt: Option<String>) -> bool {
+pub fn is_none_str(opt: Option<string>) -> bool {
     match opt {
         Some(_) => false,
         None => true,
     }
 }
 
-/// Unwrap the `String` value.  Panics if the option is `None`.
-pub fn unwrap_str(opt: Option<String>) -> String {
+/// Unwrap the `string` value.  Panics if the option is `None`.
+pub fn unwrap_str(opt: Option<string>) -> string {
     match opt {
         Some(v) => v,
         None => {
@@ -103,16 +103,16 @@ pub fn unwrap_str(opt: Option<String>) -> String {
     }
 }
 
-/// Unwrap the `String` value, or return `fallback` if `None`.
-pub fn unwrap_or_str(opt: Option<String>, fallback: String) -> String {
+/// Unwrap the `string` value, or return `fallback` if `None`.
+pub fn unwrap_or_str(opt: Option<string>, fallback: string) -> string {
     match opt {
         Some(v) => v,
         None => fallback,
     }
 }
 
-/// Apply `f` to the contained `String` value, or return `None` if empty.
-pub fn map_str(opt: Option<String>, f: fn(String) -> String) -> Option<String> {
+/// Apply `f` to the contained `string` value, or return `None` if empty.
+pub fn map_str(opt: Option<string>, f: fn(string) -> string) -> Option<string> {
     match opt {
         Some(v) => Some(f(v)),
         None => None,
@@ -120,7 +120,7 @@ pub fn map_str(opt: Option<String>, f: fn(String) -> String) -> Option<String> {
 }
 
 /// Returns `true` if the option contains `needle`.
-pub fn contains_str(opt: Option<String>, needle: String) -> bool {
+pub fn contains_str(opt: Option<string>, needle: string) -> bool {
     match opt {
         Some(v) => v == needle,
         None => false,

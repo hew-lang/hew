@@ -1,6 +1,6 @@
 import std::channel::channel;
 
-fn drain(rx: channel.Receiver<String>) {
+fn drain(rx: channel.Receiver<string>) {
     for await msg in rx {
         println(msg);
     }

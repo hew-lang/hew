@@ -1,6 +1,6 @@
 import std::channel::channel;
 
-fn keep(rx: channel.Receiver<String>) {
+fn keep(rx: channel.Receiver<string>) {
     rx.close();
 }
 

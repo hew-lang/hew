@@ -21,8 +21,8 @@ fn make_pair<T>(a: T, b: T) -> Pair<T> {
 }
 
 fn main() {
-    // String type arg
-    let bs = box_new<String>("hello");
+    // string type arg
+    let bs = box_new<string>("hello");
     println(bs.value);
 
     // User-defined struct type arg

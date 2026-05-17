@@ -1,12 +1,12 @@
-// Regression test: generator receive fn with String param must drop the param
+// Regression test: generator receive fn with string param must drop the param
 // when the generator body is exhausted (hew_string_drop at body exit).
-// Before this fix the String was leaked; with ASan this surfaces as a leak;
+// Before this fix the string was leaked; with ASan this surfaces as a leak;
 // without it the allocation silently escapes.
 //
-// Yields int (not String) to stay within LLVM-compatible wrapper types.
+// Yields int (not string) to stay within LLVM-compatible wrapper types.
 
 actor Echo {
-    receive gen fn count_up(greeting: String) -> int {
+    receive gen fn count_up(greeting: string) -> int {
         var i: int = 0;
         while i < 3 {
             yield i;

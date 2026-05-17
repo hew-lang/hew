@@ -2,8 +2,8 @@
 // if-expression (no trailing_expr — the if is the final statement's value).
 
 type Wrapper {
-    name: String;
-    extra: String;
+    name: string;
+    extra: string;
 }
 
 impl Drop for Wrapper {
@@ -12,7 +12,7 @@ impl Drop for Wrapper {
     }
 }
 
-fn extract_name(w: Wrapper, flag: bool) -> String {
+fn extract_name(w: Wrapper, flag: bool) -> string {
     unsafe {
         if flag {
             w.name

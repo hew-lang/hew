@@ -1,13 +1,13 @@
 trait Greetable {
-    fn greet(val: Self) -> String;
+    fn greet(val: Self) -> string;
 }
 
 type Person {
-    name: String;
+    name: string;
 }
 
 impl Greetable for Person {
-    fn greet(p: Person) -> String {
+    fn greet(p: Person) -> string {
         string_concat("Hello, ", p.name)
     }
 }

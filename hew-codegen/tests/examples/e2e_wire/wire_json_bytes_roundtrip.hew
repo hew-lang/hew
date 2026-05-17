@@ -1,7 +1,7 @@
 // Test: JSON round-trip preserves bytes fields via base64 strings.
 extern "C" {
-    fn Packet_to_json(payload: bytes) -> String;
-    fn Packet_from_json(json: String) -> Packet;
+    fn Packet_to_json(payload: bytes) -> string;
+    fn Packet_from_json(json: string) -> Packet;
 }
 
 wire type Packet {

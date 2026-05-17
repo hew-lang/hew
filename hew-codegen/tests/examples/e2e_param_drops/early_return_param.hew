@@ -1,4 +1,4 @@
-// Early-return path: a String param is returned on the early path and
+// Early-return path: a string param is returned on the early path and
 // consumed (dropped) on the fallthrough path.  Each path must fire the
 // correct cleanup exactly once.
 //
@@ -6,7 +6,7 @@
 // transfer path cleanly: the caller unregisters its drop for the args and
 // the callee takes over, preventing double-frees in all branches.
 
-fn pick(flag: bool, a: String, b: String) -> String {
+fn pick(flag: bool, a: string, b: string) -> string {
     if flag {
         return a;  // a returned, b dropped at scope exit
     }

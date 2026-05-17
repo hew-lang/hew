@@ -13,7 +13,7 @@ pub fn make_circle(radius: int) -> Circle {
 }
 
 impl Drawable for Circle {
-    fn draw(c: Circle) -> String {
+    fn draw(c: Circle) -> string {
         f"Circle(r={c.radius})"
     }
 }

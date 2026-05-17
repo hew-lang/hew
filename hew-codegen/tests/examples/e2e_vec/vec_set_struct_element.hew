@@ -4,7 +4,7 @@
 // Mirrors the Vec::push gap: nullOutDropSlot is a no-op for __auto_field_drop
 // entries; the fix calls unregisterDroppable instead.  Fixes #1699.
 type Pair {
-    key: String;
+    key: string;
     count: int;
 }
 

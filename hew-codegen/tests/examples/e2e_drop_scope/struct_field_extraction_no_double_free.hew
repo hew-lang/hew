@@ -1,4 +1,4 @@
-// Regression test: extracting a String field from a user struct with owned
+// Regression test: extracting a string field from a user struct with owned
 // fields must not cause a double-free.
 //
 // Patterns exercised:
@@ -16,11 +16,11 @@
 //       where the type checker does not record expression types.
 
 type Config {
-    name: String;
+    name: string;
     level: int;
 }
 
-fn make_config(name: String, level: int) -> Config {
+fn make_config(name: string, level: int) -> Config {
     Config { name: name, level: level }
 }
 
@@ -28,7 +28,7 @@ fn make_config(name: String, level: int) -> Config {
 // by the type checker (only signatures are checked for imports), so the
 // AST-based path would miss this.  The MLIR-based path traces the field_get
 // back through bitcasts to identify the struct type.
-fn print_config_name(cfg: Config) -> String {
+fn print_config_name(cfg: Config) -> string {
     let n = cfg.name;   // field extraction from fn param — MLIR path handles this
     n
 }

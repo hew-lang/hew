@@ -2826,7 +2826,7 @@ impl Checker {
 
     /// Same as [`Self::canonical_primitive_or_builtin_key`] but accepts the
     /// raw type-name string seen at impl-block registration (e.g. `"int"`,
-    /// `"String"`, `"Vec"`).  Returns `None` for names that aren't primitive
+    /// `"string"`, `"Vec"`).  Returns `None` for names that aren't primitive
     /// aliases or compiler-builtin generics.
     #[must_use]
     pub(super) fn canonical_primitive_or_builtin_key_from_name(name: &str) -> Option<String> {

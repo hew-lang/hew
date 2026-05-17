@@ -1,7 +1,7 @@
 // Test: non-exhaustive match panics at runtime
 // Match on int without wildcard arm should panic at runtime.
 
-fn classify(n: int) -> String {
+fn classify(n: int) -> string {
     match n {
         0 => "zero",
         1 => "one",

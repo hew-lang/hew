@@ -3,7 +3,7 @@
 // the observer's metrics, actor list, and message tracing views.
 
 actor Counter {
-    let name: String;
+    let name: string;
     let count: Int;
 
     receive fn tick() {

@@ -1,10 +1,10 @@
-fn log_value(label: String, value: String) -> String {
+fn log_value(label: string, value: string) -> string {
     println(label);
     value
 }
 
 fn main() {
-    let s: HashSet<String> = HashSet::new();
+    let s: HashSet<string> = HashSet::new();
     s.insert(log_value("insert arg", "item"));
     println(s.contains(log_value("contains arg", "item")));
     println(s.remove(log_value("remove arg", "item")));

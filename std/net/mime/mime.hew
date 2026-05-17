@@ -30,7 +30,7 @@
 /// mime.from_path("style.css")   // "text/css"
 /// mime.from_path("data.json")   // "application/json"
 /// ```
-pub fn from_path(path: String) -> String {
+pub fn from_path(path: string) -> string {
     let ext = extract_extension(path);
     from_ext(ext)
 }
@@ -43,7 +43,7 @@ pub fn from_path(path: String) -> String {
 /// mime.from_ext("html")  // "text/html"
 /// mime.from_ext("png")   // "image/png"
 /// ```
-pub fn from_ext(ext: String) -> String {
+pub fn from_ext(ext: string) -> string {
     // Text
     if ext == "html" {
         "text/html"
@@ -169,27 +169,27 @@ pub fn from_ext(ext: String) -> String {
 }
 
 /// Test whether a MIME type is a text type (e.g. `text/*`).
-pub fn is_text(mime_type: String) -> bool {
+pub fn is_text(mime_type: string) -> bool {
     mime_type.starts_with("text/")
 }
 
 /// Test whether a MIME type is an image type (e.g. `image/*`).
-pub fn is_image(mime_type: String) -> bool {
+pub fn is_image(mime_type: string) -> bool {
     mime_type.starts_with("image/")
 }
 
 /// Test whether a MIME type is an audio type (e.g. `audio/*`).
-pub fn is_audio(mime_type: String) -> bool {
+pub fn is_audio(mime_type: string) -> bool {
     mime_type.starts_with("audio/")
 }
 
 /// Test whether a MIME type is a video type (e.g. `video/*`).
-pub fn is_video(mime_type: String) -> bool {
+pub fn is_video(mime_type: string) -> bool {
     mime_type.starts_with("video/")
 }
 
 /// Extract the file extension from a path, returning the substring after the last dot.
-fn extract_extension(path: String) -> String {
+fn extract_extension(path: string) -> string {
     let dot_pos = path.find(".");
     if dot_pos < 0 {
         return "";

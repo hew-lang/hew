@@ -5,8 +5,8 @@
 // Both outcomes are unsound, so reject at compile time.
 
 type Wrapper {
-    name: String;
-    extra: String;
+    name: string;
+    extra: string;
 }
 
 impl Drop for Wrapper {
@@ -15,7 +15,7 @@ impl Drop for Wrapper {
     }
 }
 
-fn extract_name(w: Wrapper) -> String {
+fn extract_name(w: Wrapper) -> string {
     w.name  // rejected: returning field of callee-dropped param
 }
 

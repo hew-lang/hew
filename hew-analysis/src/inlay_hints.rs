@@ -850,7 +850,7 @@ fn main() {
                     !type_hints.is_empty(),
                     "unannotated let should get type hint"
                 );
-                assert!(type_hints[0].contains("String"));
+                assert!(type_hints[0].contains("string"));
             } else {
                 panic!("expected let statement with value");
             }

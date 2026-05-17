@@ -28,7 +28,7 @@ fn stack_is_empty(s: Vec<int>) -> int {
     }
 }
 
-fn run_test(name: String, passed: int) -> int {
+fn run_test(name: string, passed: int) -> int {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

@@ -2,11 +2,11 @@
 // Use the canonical primitive spelling directly; the `int`↔`i64` alias case is
 // tracked separately.
 trait Display {
-    fn fmt(val: Self) -> String;
+    fn fmt(val: Self) -> string;
 }
 
 impl Display for i64 {
-    fn fmt(val: i64) -> String {
+    fn fmt(val: i64) -> string {
         "i64"
     }
 }

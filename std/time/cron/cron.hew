@@ -26,9 +26,9 @@ type Expr {
 
 /// Structured cron scheduling errors surfaced by the native ABI.
 pub enum CronError {
-    NoNextOccurrence(String);
-    InvalidInput(String);
-    InvalidEpoch(String);
+    NoNextOccurrence(string);
+    InvalidInput(string);
+    InvalidEpoch(string);
 }
 
 type CronNextResult {
@@ -36,13 +36,13 @@ type CronNextResult {
     timestamp: i64;
 }
 
-fn cron_last_error_message() -> String {
+fn cron_last_error_message() -> string {
     unsafe {
         hew_cron_last_error()
     }
 }
 
-fn cron_error_message(err: CronError) -> String {
+fn cron_error_message(err: CronError) -> string {
     match err {
         CronError::NoNextOccurrence(message) => message,
         CronError::InvalidInput(message) => message,
@@ -72,7 +72,7 @@ trait ExprMethods {
     fn try_next(expr: Expr, after_epoch_secs: int) -> Result<int, CronError>;
 
     /// Return the cron expression as a string.
-    fn to_string(expr: Expr) -> String;
+    fn to_string(expr: Expr) -> string;
 
     /// Release the parsed expression resources.
     fn free(expr: Expr);
@@ -101,7 +101,7 @@ impl ExprMethods for Expr {
         }
     }
     /// Return the cron expression as a string.
-    fn to_string(expr: Expr) -> String {
+    fn to_string(expr: Expr) -> string {
         unsafe {
             hew_cron_to_string(expr)
         }
@@ -125,7 +125,7 @@ impl ExprMethods for Expr {
 /// let every_minute = cron.parse("* * * * *");
 /// let weekdays_9am = cron.parse("0 9 * * 1-5");
 /// ```
-pub fn parse(expr: String) -> Expr {
+pub fn parse(expr: string) -> Expr {
     unsafe {
         hew_cron_parse(expr)
     }
@@ -133,10 +133,10 @@ pub fn parse(expr: String) -> Expr {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_cron_parse(expr: String) -> Expr;
+    fn hew_cron_parse(expr: string) -> Expr;
     fn hew_cron_next(expr: Expr, after_epoch_secs: i64, out_ts: *var i64) -> i32;
     fn hew_cron_next_hew(expr: Expr, after_epoch_secs: i64) -> CronNextResult;
-    fn hew_cron_last_error() -> String;
-    fn hew_cron_to_string(expr: Expr) -> String;
+    fn hew_cron_last_error() -> string;
+    fn hew_cron_to_string(expr: Expr) -> string;
     fn hew_cron_free(expr: Expr);
 }

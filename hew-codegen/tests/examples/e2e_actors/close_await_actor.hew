@@ -1,5 +1,5 @@
 actor Worker {
-    receive fn greet(label: String) {
+    receive fn greet(label: string) {
         println(label);
     }
 }

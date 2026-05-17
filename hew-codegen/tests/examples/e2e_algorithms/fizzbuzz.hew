@@ -1,5 +1,5 @@
 // Test: FizzBuzz
-// Exercises: Modulo, String output, control flow
+// Exercises: Modulo, string output, control flow
 fn fizzbuzz(n: int) {
     var i = 1;
     while i <= n {

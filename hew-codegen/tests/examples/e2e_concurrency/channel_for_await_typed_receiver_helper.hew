@@ -1,6 +1,6 @@
 import std::channel::channel;
 
-fn consume(rx: channel.Receiver<String>) {
+fn consume(rx: channel.Receiver<string>) {
     for await msg in rx {
         println(f"helper: [{msg}]");
     }

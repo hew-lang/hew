@@ -263,9 +263,9 @@ impl StructSpec {
         for i in 0..count {
             let ty = match i % 4 {
                 0 => "int",
-                1 => "String",
+                1 => "string",
                 2 => "Vec<int>",
-                _ => "HashMap<String, int>",
+                _ => "HashMap<string, int>",
             };
             out.push_str(&format!("    field{i}: {ty};\n"));
         }

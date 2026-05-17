@@ -3932,9 +3932,9 @@ impl Checker {
 
     fn classify_ty(ty: &Ty) -> AllocationClass {
         match ty {
+            Ty::String => AllocationClass::String,
             Ty::Named { name, .. } => match name.as_str() {
                 "Vec" => AllocationClass::Vec,
-                "String" => AllocationClass::String,
                 "HashMap" => AllocationClass::HashMap,
                 "HashSet" => AllocationClass::HashSet,
                 "Rc" => AllocationClass::Rc,

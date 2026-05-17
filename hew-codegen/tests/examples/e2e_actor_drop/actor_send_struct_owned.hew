@@ -1,4 +1,4 @@
-// Test: identified struct containing owned String fields sent to an
+// Test: identified struct containing owned string fields sent to an
 // actor.  The actor-send alias path is currently disabled in
 // codegen (see codegen.cpp:1432, `useAliasPath = false && ...`),
 // so this exercises the legacy copy path: deepCopyOwnedArgs walks
@@ -12,8 +12,8 @@
 // whole-aggregate invalidation of the struct slot.  Regression for
 // PR #1721 review item 3.
 type Greeting {
-    head: String;
-    body: String;
+    head: string;
+    body: string;
 }
 
 actor Logger {

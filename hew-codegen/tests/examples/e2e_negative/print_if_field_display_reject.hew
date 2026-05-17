@@ -4,11 +4,11 @@
 // tracking, Display::fmt would consume the field, then the caller's scope-exit
 // drop of holder would drop greeting a second time → double-free.
 type Greeting {
-    text: String;
+    text: string;
 }
 
 impl Display for Greeting {
-    fn fmt(val: Greeting) -> String {
+    fn fmt(val: Greeting) -> string {
         val.text
     }
 }

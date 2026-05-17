@@ -1,5 +1,5 @@
 // Test: Basic Types and Variables
-// Exercises: int, f64, String, bool, let/var, compound assignment, arithmetic
+// Exercises: int, f64, string, bool, let/var, compound assignment, arithmetic
 fn test_integers() -> int {
     let x: int = 42;
     let y: int = -10;
@@ -41,8 +41,8 @@ fn test_float() -> int {
 }
 
 fn test_string() -> int {
-    let name: String = "hello";
-    let world: String = "world";
+    let name: string = "hello";
+    let world: string = "world";
     let combined = string_concat(name, world);
     let len = string_length(name);
     let eq = string_equals(name, name);
@@ -110,7 +110,7 @@ fn test_let_immutable() -> int {
 
 fn test_type_inference() -> int {
     let a = 100; // inferred int
-    let b = "inferred"; // inferred String
+    let b = "inferred"; // inferred string
     let c = true; // inferred bool
     if a == 100 {
         println("PASS: type inference");

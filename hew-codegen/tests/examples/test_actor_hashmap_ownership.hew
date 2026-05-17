@@ -1,7 +1,7 @@
 actor Holder {
-    let data: HashMap<String, i64>;
+    let data: HashMap<string, i64>;
 
-    receive fn set(m: HashMap<String, i64>) {
+    receive fn set(m: HashMap<string, i64>) {
         data = m;
     }
 
@@ -14,8 +14,8 @@ actor Holder {
     }
 }
 
-fn make_spawn_map() -> HashMap<String, i64> {
-    let m: HashMap<String, i64> = HashMap::new();
+fn make_spawn_map() -> HashMap<string, i64> {
+    let m: HashMap<string, i64> = HashMap::new();
     m.insert("spawned", 11);
     m
 }
@@ -25,7 +25,7 @@ fn main() {
     holder.print_spawned();
     sleep_ms(100);
     {
-        let m: HashMap<String, i64> = HashMap::new();
+        let m: HashMap<string, i64> = HashMap::new();
         m.insert("sent", 22);
         holder.set(m);
     };

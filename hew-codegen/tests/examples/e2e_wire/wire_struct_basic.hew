@@ -7,7 +7,7 @@ struct Coord {
 }
 
 extern "C" {
-    fn Coord_to_json(x: i32, y: i32, z: i32) -> String;
+    fn Coord_to_json(x: i32, y: i32, z: i32) -> string;
 }
 
 fn main() {

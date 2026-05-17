@@ -14,7 +14,7 @@ enum Colour {
 }
 
 // === Helper Functions ===
-fn run_test(name: String, result: int) -> int {
+fn run_test(name: string, result: int) -> int {
     if result == 1 {
         println(string_concat(string_concat("Test ", name), " ... PASS"));
     } else {
@@ -177,7 +177,7 @@ fn test_functions() -> int {
     }
 }
 
-// === Test 7: String Operations ===
+// === Test 7: string Operations ===
 fn test_strings() -> int {
     let hello = "Hello";
     let world = "World";

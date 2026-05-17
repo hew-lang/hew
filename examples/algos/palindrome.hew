@@ -1,5 +1,5 @@
 // Palindrome check using char_at comparison from both ends
-fn is_palindrome(s: String) -> bool {
+fn is_palindrome(s: string) -> bool {
     let n = s.len();
     if n < 2 {
         return true;

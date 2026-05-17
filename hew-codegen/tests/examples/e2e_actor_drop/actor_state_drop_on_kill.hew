@@ -5,7 +5,7 @@
 // callbacks and leak any handles the state owns.
 //
 // `Token` carries a custom `impl Drop` that prints "drop_state:<id>". The
-// actor holds one `Token` and one `Vec<String>` in its state. After the
+// actor holds one `Token` and one `Vec<string>` in its state. After the
 // program awaits a ping (proving the actor is alive and the Token has been
 // stored), the cleanup at program exit closes the actor, runs its terminate
 // path, and the state-drop function fires `impl Drop` on the `Token` field.
@@ -25,10 +25,10 @@ impl Drop for Token {
 
 actor Holder {
     let tok: Token;
-    let labels: Vec<String>;
+    let labels: Vec<string>;
     init(t: Token) {
         tok = t;
-        let v: Vec<String> = [];
+        let v: Vec<string> = [];
         v.push("alpha");
         v.push("beta");
         labels = v;

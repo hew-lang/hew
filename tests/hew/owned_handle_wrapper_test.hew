@@ -6,7 +6,7 @@ type PatternWrapper {
 }
 
 impl PatternWrapper {
-    fn matches(wrapper: PatternWrapper, text: String) -> bool {
+    fn matches(wrapper: PatternWrapper, text: string) -> bool {
         wrapper.pattern.is_match(text)
     }
 }

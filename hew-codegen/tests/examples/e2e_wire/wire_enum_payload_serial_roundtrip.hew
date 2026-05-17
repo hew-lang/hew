@@ -10,7 +10,7 @@ wire enum SharedReading {
 wire enum WireEvent {
     Idle;
     Count(i32);
-    Note { value: String };
+    Note { value: string };
 }
 
 fn main() {

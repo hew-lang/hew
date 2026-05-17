@@ -1,5 +1,5 @@
 /// A helper function in a user module.
-pub fn greet(name: String) -> String {
+pub fn greet(name: string) -> string {
     "hello " + name
 }
 

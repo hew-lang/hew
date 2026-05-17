@@ -10,15 +10,15 @@
 //   - no actor message can reach the captured value
 //
 // This fixture shows the safe case: a generator yields values derived from a
-// captured String; the String is read-only across every yield point.
+// captured string; the string is read-only across every yield point.
 //
 // Value-model rules exercised:
-//   - CowValue (String) captured by a generator → borrow_read across yield
+//   - CowValue (string) captured by a generator → borrow_read across yield
 //   - yield suspends the generator; the read is held across suspension
 //   - Checked MIR proves frame safety: no alias, no actor path → accepted
 //   - report shows YieldUse: borrow_read
 
-fn generate_greetings(names: Vec<String>) -> generator String {
+fn generate_greetings(names: Vec<string>) -> generator string {
     let prefix = "hello, ";
     for name in names {
         // prefix is held across yield: immutable read across suspend.

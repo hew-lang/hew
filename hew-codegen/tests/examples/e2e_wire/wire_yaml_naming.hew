@@ -8,14 +8,14 @@ wire type CamelYaml {
 
 #[yaml(camelCase)]
 wire type OverrideYaml {
-    internal_ref: String @1 yaml("ref");
+    internal_ref: string @1 yaml("ref");
     created_by: i32 @2 yaml("owner");
     version: i32 @3;
 }
 
 extern "C" {
-    fn CamelYaml_to_yaml(user_id: i32, event_type: i32) -> String;
-    fn OverrideYaml_to_yaml(internal_ref: String, created_by: i32, version: i32) -> String;
+    fn CamelYaml_to_yaml(user_id: i32, event_type: i32) -> string;
+    fn OverrideYaml_to_yaml(internal_ref: string, created_by: i32, version: i32) -> string;
 }
 
 fn main() {

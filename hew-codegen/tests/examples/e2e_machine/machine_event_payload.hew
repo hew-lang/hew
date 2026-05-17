@@ -3,7 +3,7 @@ machine Logger {
     state Active { count: Int; }
 
     event Start;
-    event Log { message: String; }
+    event Log { message: string; }
     event Stop;
 
     on Start: Idle -> Active { Active { count: 0 } }

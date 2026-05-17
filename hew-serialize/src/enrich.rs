@@ -230,7 +230,7 @@ fn ty_has_ownership_sensitive_bindings(
         // but explicit here so the sweep is honest.
         Ty::String | Ty::Bytes | Ty::Task(_) => true,
         Ty::Named { name, args } => {
-            matches!(name.as_str(), "String" | "string" | "bytes")
+            matches!(name.as_str(), "string" | "bytes")
                 || registry.is_drop_type(name)
                 || registry.is_handle_type(name)
                 || registry.qualify_handle_type(name).is_some()
@@ -300,13 +300,13 @@ fn convert_callable_type(
 
 /// Extract a short element-type name from a `Ty` for stream method dispatch.
 ///
-/// Returns `"bytes"` for `Ty::Bytes`, `"String"` for `Ty::String`, or the
+/// Returns `"bytes"` for `Ty::Bytes`, `"string"` for `Ty::String`, or the
 /// `name` for `Ty::Named`.  Used by the enricher to select the correct
 /// runtime C symbol (e.g. `hew_stream_next` vs `hew_stream_next_bytes`).
 fn ty_element_name(ty: &Ty) -> Option<&str> {
     match ty {
         Ty::Bytes => Some("bytes"),
-        Ty::String => Some("String"),
+        Ty::String => Some("string"),
         Ty::Named { name, .. } => Some(name),
         _ => None,
     }

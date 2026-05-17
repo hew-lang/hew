@@ -1,9 +1,9 @@
-// String operations test
+// string operations test
 // Exercises all string builtins
 import std::string;
 
 fn main() {
-    println("=== String Basics ===");
+    println("=== string Basics ===");
     let s = "hello world";
     let len = string_length(s);
     println(len); // 11

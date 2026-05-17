@@ -9,7 +9,7 @@
 //!
 //! ## `PanicInfo` is int-tag only for v0.5
 //!
-//! WHY: the codegen-rs spine does not yet accept `String` / `Function` /
+//! WHY: the codegen-rs spine does not yet accept `string` / `Function` /
 //! `Closure` types as struct fields (S9 in the spine-widening registry).
 //! WHEN: replace `code` with a richer payload after the spine-widening
 //! lane (Q20 (c) of the failure-philosophy plan) lands.

@@ -3,7 +3,7 @@
 // same double-free hazard applies.
 
 type Inner {
-    value: String;
+    value: string;
 }
 
 impl Drop for Inner {
@@ -14,7 +14,7 @@ impl Drop for Inner {
 
 type Outer {
     inner: Inner;
-    tag: String;
+    tag: string;
 }
 
 fn consume(i: Inner) {

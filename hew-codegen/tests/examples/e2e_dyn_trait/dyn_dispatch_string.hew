@@ -1,23 +1,23 @@
 trait Describable {
-    fn describe(val: Self) -> String;
+    fn describe(val: Self) -> string;
 }
 
 type Dog {
-    name: String;
+    name: string;
 }
 
 type Cat {
-    name: String;
+    name: string;
 }
 
 impl Describable for Dog {
-    fn describe(d: Dog) -> String {
+    fn describe(d: Dog) -> string {
         string_concat("Dog: ", d.name)
     }
 }
 
 impl Describable for Cat {
-    fn describe(cat: Cat) -> String {
+    fn describe(cat: Cat) -> string {
         string_concat("Cat: ", cat.name)
     }
 }

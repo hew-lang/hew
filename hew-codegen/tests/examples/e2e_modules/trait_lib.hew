@@ -1,19 +1,19 @@
 pub trait Describable {
-    fn describe(val: Self) -> String;
+    fn describe(val: Self) -> string;
 }
 
 pub type Circle {
-    name: String;
+    name: string;
 }
 
 pub type Square {
-    name: String;
+    name: string;
 }
 
-pub fn new_circle(n: String) -> Circle {
+pub fn new_circle(n: string) -> Circle {
     Circle { name: n }
 }
 
-pub fn new_square(n: String) -> Square {
+pub fn new_square(n: string) -> Square {
     Square { name: n }
 }

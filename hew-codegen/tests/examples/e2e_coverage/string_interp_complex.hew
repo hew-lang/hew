@@ -1,4 +1,4 @@
-// Test: String interpolation with complex expressions inside braces.
+// Test: string interpolation with complex expressions inside braces.
 // Exercises: f-string with arithmetic, comparisons, method calls,
 // field access, and nested function calls in interpolation braces.
 

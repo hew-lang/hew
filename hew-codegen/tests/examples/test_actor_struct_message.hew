@@ -1,9 +1,9 @@
-// Regression test: struct with owned (String) fields passed as actor
+// Regression test: struct with owned (string) fields passed as actor
 // receive fn parameter.  Exercises deep-copy of owned struct fields
 // across the actor boundary and correct drop on the receiver side.
 type WorkItem {
     id: int;
-    label: String;
+    label: string;
     value: int;
 }
 

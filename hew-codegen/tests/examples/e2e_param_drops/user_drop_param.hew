@@ -2,7 +2,7 @@
 // The Drop output is used as a correctness signal.
 
 type Widget {
-    label: String;
+    label: string;
 }
 
 impl Drop for Widget {

@@ -8,7 +8,7 @@ fn print_ints(v: Vec<int>) {
     }
 }
 
-fn print_strings(v: Vec<String>) {
+fn print_strings(v: Vec<string>) {
     var i = 0;
     while i < v.len() {
         println(v.get(i));
@@ -59,24 +59,24 @@ fn main() {
     println(nums.get(1));
 
     // ── Sort strings: empty, singleton, ordering, original unchanged ──────
-    let empty_words: Vec<String> = Vec::new();
+    let empty_words: Vec<string> = Vec::new();
     println(sort.sort_strings(empty_words).len());
 
-    let one_word: Vec<String> = Vec::new();
+    let one_word: Vec<string> = Vec::new();
     one_word.push("solo");
     print_strings(sort.sort_strings(one_word));
 
-    let words: Vec<String> = Vec::new();
+    let words: Vec<string> = Vec::new();
     words.push("banana");
     words.push("apple");
     words.push("cherry");
     print_strings(sort.sort_strings(words));
 
     // ── Reverse strings: empty, singleton, ordering, original unchanged ────
-    let empty_rev_words: Vec<String> = Vec::new();
+    let empty_rev_words: Vec<string> = Vec::new();
     println(sort.reverse_strings(empty_rev_words).len());
 
-    let one_rev_word: Vec<String> = Vec::new();
+    let one_rev_word: Vec<string> = Vec::new();
     one_rev_word.push("solo");
     print_strings(sort.reverse_strings(one_rev_word));
 

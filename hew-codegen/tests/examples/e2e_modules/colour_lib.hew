@@ -4,7 +4,7 @@ pub enum Colour {
     Blue;
 }
 
-pub fn colour_name(c: Colour) -> String {
+pub fn colour_name(c: Colour) -> string {
     match c {
         Red => "red",
         Green => "green",

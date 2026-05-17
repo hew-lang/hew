@@ -1,5 +1,5 @@
 fn main() {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("alpha", 10);
     m.insert("beta", 20);
     m.insert("gamma", 30);

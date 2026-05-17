@@ -14,7 +14,7 @@ fn print_option_f64(value: Option<f64>) {
     }
 }
 
-fn print_option_str(value: Option<String>) {
+fn print_option_str(value: Option<string>) {
     match value {
         Some(s) => println(s),
         None => println("none"),
@@ -46,7 +46,7 @@ fn main() {
     println(vec.index_of_f64(v_f64, 2.5));
     println(vec.index_of_f64(v_f64, 9.9));
     println("=== vec.index_of_str ===");
-    let v_str: Vec<String> = Vec::new();
+    let v_str: Vec<string> = Vec::new();
     v_str.push("alpha");
     v_str.push("beta");
     v_str.push("gamma");
@@ -73,13 +73,13 @@ fn main() {
     print_option_f64(vec.first_f64(empty_f64));
     print_option_f64(vec.last_f64(empty_f64));
     println("=== vec.first_last_str ===");
-    let first_last_str: Vec<String> = Vec::new();
+    let first_last_str: Vec<string> = Vec::new();
     first_last_str.push("alpha");
     first_last_str.push("beta");
     first_last_str.push("gamma");
     print_option_str(vec.first_str(first_last_str));
     print_option_str(vec.last_str(first_last_str));
-    let empty_str: Vec<String> = Vec::new();
+    let empty_str: Vec<string> = Vec::new();
     print_option_str(vec.first_str(empty_str));
     print_option_str(vec.last_str(empty_str));
     println("=== vec.min_max_i32 ===");

@@ -265,7 +265,7 @@ fn stack_hint_alloc_class_label(class: &hew_types::check::AllocationClass) -> &'
     // but we render them defensively rather than panicking.
     match class {
         AllocationClass::Vec => "Vec",
-        AllocationClass::String => "String",
+        AllocationClass::String => "string",
         AllocationClass::HashMap => "HashMap",
         AllocationClass::HashSet => "HashSet",
         AllocationClass::Rc => "Rc",

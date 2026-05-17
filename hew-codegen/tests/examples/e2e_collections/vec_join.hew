@@ -1,5 +1,5 @@
 fn main() {
-    var words: Vec<String> = Vec::new();
+    var words: Vec<string> = Vec::new();
     words.push("hello");
     words.push("world");
     words.push("foo");
@@ -7,10 +7,10 @@ fn main() {
     println(words.join("-"));
     println(words.join(""));
 
-    var empty: Vec<String> = Vec::new();
+    var empty: Vec<string> = Vec::new();
     println(empty.join(","));
 
-    var single: Vec<String> = Vec::new();
+    var single: Vec<string> = Vec::new();
     single.push("only");
     println(single.join(","));
 }

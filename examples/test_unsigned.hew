@@ -9,7 +9,7 @@ fn main() {
     let total: u32 = x * y + bonus;
     println(sum8);
     println(total);
-    let m: HashMap<String, i32> = HashMap::new();
+    let m: HashMap<string, i32> = HashMap::new();
     m.insert("left", 10);
     m.insert("right", 32);
     let values = m.values();

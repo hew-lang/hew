@@ -39,7 +39,7 @@ fn warn_receiver_recv_inside_receive_fn() {
         import std::channel;
 
         actor Worker {
-            receive fn process(rx: channel.Receiver<String>) {
+            receive fn process(rx: channel.Receiver<string>) {
                 let msg = rx.recv();
             }
         }
@@ -99,7 +99,7 @@ fn no_warn_receiver_recv_outside_actor() {
         r"
         import std::channel;
 
-        fn process(rx: channel.Receiver<String>) -> Option<String> {
+        fn process(rx: channel.Receiver<string>) -> Option<string> {
             rx.recv()
         }
 
@@ -125,7 +125,7 @@ fn no_warn_try_recv_inside_receive_fn() {
         import std::channel;
 
         actor Worker {
-            receive fn poll(rx: channel.Receiver<String>) {
+            receive fn poll(rx: channel.Receiver<string>) {
                 let msg = rx.try_recv();
             }
         }
@@ -153,7 +153,7 @@ fn multiple_blocking_calls_each_warned() {
         import std::net;
 
         actor Combo {
-            receive fn handle(rx: channel.Receiver<String>, conn: net.Connection) {
+            receive fn handle(rx: channel.Receiver<string>, conn: net.Connection) {
                 let msg = rx.recv();
                 let data = conn.read();
             }
@@ -183,7 +183,7 @@ fn warning_message_mentions_scheduler_with_suggestion() {
         import std::channel;
 
         actor Worker {
-            receive fn process(rx: channel.Receiver<String>) {
+            receive fn process(rx: channel.Receiver<string>) {
                 let _ = rx.recv();
             }
         }

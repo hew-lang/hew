@@ -8,7 +8,7 @@
 //!
 //! ## Available operations
 //!
-//! | Function        | `Vec<int>`    | `Vec<String>` | `Vec<f64>`    |
+//! | Function        | `Vec<int>`    | `Vec<string>` | `Vec<f64>`    |
 //! |-----------------|---------------|---------------|---------------|
 //! | map             | `map_int`     | `map_str`     | `map_f64`     |
 //! | filter          | `filter_int`  | `filter_str`  | `filter_f64`  |
@@ -161,20 +161,20 @@ pub fn sum(v: Vec<int>) -> int {
     total
 }
 
-// ── String helpers ────────────────────────────────────────────────────────
+// ── string helpers ────────────────────────────────────────────────────────
 /// Apply `f` to every element and return a new vector of results.
 ///
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("hello");
 /// v.push("world");
-/// let shouted = iter.map_str(v, (s: String) => s + "!");
+/// let shouted = iter.map_str(v, (s: string) => s + "!");
 /// // shouted == ["hello!", "world!"]
 /// ```
-pub fn map_str(v: Vec<String>, f: fn(String) -> String) -> Vec<String> {
-    let out: Vec<String> = Vec::new();
+pub fn map_str(v: Vec<string>, f: fn(string) -> string) -> Vec<string> {
+    let out: Vec<string> = Vec::new();
     for i in 0 .. v.len() {
         out.push(f(v.get(i)));
     }
@@ -186,15 +186,15 @@ pub fn map_str(v: Vec<String>, f: fn(String) -> String) -> Vec<String> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("foo");
 /// v.push("bar");
 /// v.push("baz");
-/// let bs = iter.filter_str(v, (s: String) => s.starts_with("b"));
+/// let bs = iter.filter_str(v, (s: string) => s.starts_with("b"));
 /// // bs == ["bar", "baz"]
 /// ```
-pub fn filter_str(v: Vec<String>, f: fn(String) -> bool) -> Vec<String> {
-    let out: Vec<String> = Vec::new();
+pub fn filter_str(v: Vec<string>, f: fn(string) -> bool) -> Vec<string> {
+    let out: Vec<string> = Vec::new();
     for i in 0 .. v.len() {
         let val = v.get(i);
         if f(val) {
@@ -209,14 +209,14 @@ pub fn filter_str(v: Vec<String>, f: fn(String) -> bool) -> Vec<String> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("a");
 /// v.push("b");
 /// v.push("c");
-/// let joined = iter.fold_str(v, "", (acc: String, s: String) => acc + s);
+/// let joined = iter.fold_str(v, "", (acc: string, s: string) => acc + s);
 /// // joined == "abc"
 /// ```
-pub fn fold_str(v: Vec<String>, init: String, f: fn(String, String) -> String) -> String {
+pub fn fold_str(v: Vec<string>, init: string, f: fn(string, string) -> string) -> string {
     var acc = init;
     for i in 0 .. v.len() {
         acc = f(acc, v.get(i));
@@ -229,13 +229,13 @@ pub fn fold_str(v: Vec<String>, init: String, f: fn(String, String) -> String) -
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("foo");
 /// v.push("bar");
-/// println(iter.any_str(v, (s: String) => s == "bar"));  // true
-/// println(iter.any_str(v, (s: String) => s == "baz"));  // false
+/// println(iter.any_str(v, (s: string) => s == "bar"));  // true
+/// println(iter.any_str(v, (s: string) => s == "baz"));  // false
 /// ```
-pub fn any_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
+pub fn any_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
     for i in 0 .. v.len() {
         if f(v.get(i)) {
             return true;
@@ -249,13 +249,13 @@ pub fn any_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("foo");
 /// v.push("bar");
-/// println(iter.all_str(v, (s: String) => s.len() == 3));  // true
-/// println(iter.all_str(v, (s: String) => s == "foo"));    // false
+/// println(iter.all_str(v, (s: string) => s.len() == 3));  // true
+/// println(iter.all_str(v, (s: string) => s == "foo"));    // false
 /// ```
-pub fn all_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
+pub fn all_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
     for i in 0 .. v.len() {
         if f(v.get(i)) == false {
             return false;
@@ -388,7 +388,7 @@ pub fn sum_f64(v: Vec<f64>) -> f64 {
     total
 }
 
-// ── take / skip (int, String, f64) ────────────────────────────────────────
+// ── take / skip (int, string, f64) ────────────────────────────────────────
 /// Return the first `n` elements of `v`. If `n` exceeds the length, the
 /// whole vector is returned.
 ///
@@ -466,13 +466,13 @@ pub fn count_int(v: Vec<int>, f: fn(int) -> bool) -> int {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("a"); v.push("b"); v.push("c");
 /// let t = iter.take_str(v, 2);
 /// // t == ["a", "b"]
 /// ```
-pub fn take_str(v: Vec<String>, n: int) -> Vec<String> {
-    let out: Vec<String> = Vec::new();
+pub fn take_str(v: Vec<string>, n: int) -> Vec<string> {
+    let out: Vec<string> = Vec::new();
     var limit = n;
     if n < 0 {
         limit = 0;
@@ -492,13 +492,13 @@ pub fn take_str(v: Vec<String>, n: int) -> Vec<String> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("a"); v.push("b"); v.push("c");
 /// let s = iter.skip_str(v, 1);
 /// // s == ["b", "c"]
 /// ```
-pub fn skip_str(v: Vec<String>, n: int) -> Vec<String> {
-    let out: Vec<String> = Vec::new();
+pub fn skip_str(v: Vec<string>, n: int) -> Vec<string> {
+    let out: Vec<string> = Vec::new();
     var start = n;
     if n < 0 {
         start = 0;
@@ -517,11 +517,11 @@ pub fn skip_str(v: Vec<String>, n: int) -> Vec<String> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("foo"); v.push("bar"); v.push("baz");
-/// println(iter.count_str(v, (s: String) => s.starts_with("b")));  // 2
+/// println(iter.count_str(v, (s: string) => s.starts_with("b")));  // 2
 /// ```
-pub fn count_str(v: Vec<String>, f: fn(String) -> bool) -> int {
+pub fn count_str(v: Vec<string>, f: fn(string) -> bool) -> int {
     var n: int = 0;
     for i in 0 .. v.len() {
         if f(v.get(i)) {

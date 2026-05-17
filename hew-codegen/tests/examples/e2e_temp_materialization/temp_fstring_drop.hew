@@ -1,9 +1,9 @@
-// Test: User-defined Drop wrapper around String verifies f-string temporaries
+// Test: User-defined Drop wrapper around string verifies f-string temporaries
 // are cleaned up. The Drop impl prints on cleanup so the test is falsifiable:
 // removing materialization would remove the "freed:" lines from output.
 
 type Label {
-    text: String;
+    text: string;
 }
 
 impl Drop for Label {
@@ -16,7 +16,7 @@ fn show(l: Label) {
     println(f"show: {l.text}");
 }
 
-fn make_label(s: String) -> Label {
+fn make_label(s: string) -> Label {
     return Label { text: s };
 }
 

@@ -8,7 +8,7 @@ wire type PascalYaml {
 
 #[yaml(SCREAMING_SNAKE)]
 wire type ScreamYaml {
-    first_name: String @1;
+    first_name: string @1;
     age: i32 @2;
 }
 
@@ -19,9 +19,9 @@ wire type KebabYaml {
 }
 
 extern "C" {
-    fn PascalYaml_to_yaml(max_size: i32, min_count: i32) -> String;
-    fn ScreamYaml_to_yaml(first_name: String, age: i32) -> String;
-    fn KebabYaml_to_yaml(start_time: i64, is_done: i32) -> String;
+    fn PascalYaml_to_yaml(max_size: i32, min_count: i32) -> string;
+    fn ScreamYaml_to_yaml(first_name: string, age: i32) -> string;
+    fn KebabYaml_to_yaml(start_time: i64, is_done: i32) -> string;
 }
 
 fn main() {

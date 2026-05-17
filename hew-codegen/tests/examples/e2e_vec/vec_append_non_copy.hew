@@ -3,11 +3,11 @@
 // after hew_vec_append, so on inner scope exit the runtime freed the source
 // Vec's backing store that the destination Vec now owned, leaving the
 // destination's newly appended elements with dangling pointers.
-fn make_combined() -> Vec<String> {
-    let dst: Vec<String> = [];
+fn make_combined() -> Vec<string> {
+    let dst: Vec<string> = [];
     var i: i32 = 0;
     while i < 2 {
-        let batch: Vec<String> = [];
+        let batch: Vec<string> = [];
         batch.push("hello");
         batch.push("world");
         dst.append(batch);

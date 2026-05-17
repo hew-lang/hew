@@ -3,7 +3,7 @@
 // Some/None patterns, HashMap.contains_key, and remove success/failure.
 
 fn main() {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
 
     // Insert and retrieve
     m.insert("alpha", 1);

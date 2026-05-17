@@ -4,12 +4,12 @@
 // Value-model target: hand-written companion report checked in; the v0.5 value-model checker must reproduce it.
 //
 // CowValue (diagnostics: "Value") values have value semantics with a COW
-// implementation.  String, Vec<T>, Map<K,V>, Set<T>, and user structs whose
+// implementation.  string, Vec<T>, Map<K,V>, Set<T>, and user structs whose
 // fields are all Copy or Value default to this class.
 //
 // When a Value is *read* at multiple sites without mutation, the compiler
 // uses cow_share (refcount bump) — never a deep copy.  This fixture
-// documents that case: a String is passed to two read-only callees and
+// documents that case: a string is passed to two read-only callees and
 // then sent to an actor, all without mutation.  The chosen strategy at
 // every site must be cow_share or borrow_read; no ensure_unique or
 // materialize should appear.
@@ -21,21 +21,21 @@
 //   - actor send of a CowValue → share mode (safe: COW guarantees isolation)
 
 actor Logger {
-    receive fn log(msg: String) {
+    receive fn log(msg: string) {
     }
 }
 
-fn print_greeting(s: String) {
+fn print_greeting(s: string) {
     // Immutable read receiver; s is not consumed.
     let _ = s;
 }
 
-fn measure_len(s: String) -> int {
+fn measure_len(s: string) -> int {
     s.len()
 }
 
 fn main() {
-    let greeting = "hello, world";   // String is CowValue
+    let greeting = "hello, world";   // string is CowValue
     print_greeting(greeting);        // read-only callee; cow_share
     let n = measure_len(greeting);   // read-only callee; borrow_read (len)
     let logger = spawn Logger;

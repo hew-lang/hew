@@ -1,7 +1,7 @@
 // Test: HashMap Complete
 // Exercises: insert, len, contains_key, overwrite, remove
 fn test_hashmap_len() -> int {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     let empty_len = m.len();
     m.insert("x", 10);
     m.insert("y", 20);
@@ -20,7 +20,7 @@ fn test_hashmap_len() -> int {
 }
 
 fn test_hashmap_contains_key() -> int {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("x", 10);
     let has_x = m.contains_key("x");
     let has_y = m.contains_key("y");
@@ -37,7 +37,7 @@ fn test_hashmap_contains_key() -> int {
 }
 
 fn test_hashmap_overwrite() -> int {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("key", 100);
     m.insert("key", 200);
     let len = m.len();
@@ -51,7 +51,7 @@ fn test_hashmap_overwrite() -> int {
 }
 
 fn test_hashmap_insert_many() -> int {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("a", 1);
     m.insert("b", 2);
     m.insert("c", 3);
@@ -82,7 +82,7 @@ fn test_hashmap_insert_many() -> int {
 }
 
 fn test_hashmap_remove() -> int {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("a", 1);
     m.insert("b", 2);
     m.insert("c", 3);

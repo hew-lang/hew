@@ -1,7 +1,7 @@
 // Test: string (lowercase) alias fields in a new-style #[wire] struct are
 // correctly encoded in binary and serialized in JSON.
 //
-// The old-style wire parser normalises "string"/"str" → "String", so this bug
+// The old-style wire parser normalises "string"/"str" → "string", so this bug
 // only manifested through the new-style #[wire] struct syntax where field types
 // are taken verbatim from the TypeExpr.
 //

@@ -100,8 +100,8 @@ fn main() {
     println(f"  divide(10,3) = {r1}");
     println(f"  divide(10,0) = {r2}");
 
-    // 7. String basics
-    println("7. String basics:");
+    // 7. string basics
+    println("7. string basics:");
     let name = "Hew";
     let version = 1;
     println(f"  {name}");

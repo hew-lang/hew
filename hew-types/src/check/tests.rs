@@ -1060,7 +1060,7 @@ fn typecheck_generator_yield_mismatch_reports_element_type() {
             matches!(
                 &e.kind,
                 TypeErrorKind::Mismatch { expected, actual }
-                if expected == "int" && actual == "String"
+                if expected == "int" && actual == "string"
             )
         }),
         "expected element-type mismatch, got: {:?}",
@@ -1604,7 +1604,7 @@ fn typecheck_let_type_annotation_mismatch() {
     );
     assert!(output.errors.iter().any(|e| {
         e.message.contains("expected `int`")
-            && e.message.contains("found `String`")
+            && e.message.contains("found `string`")
             && !e.message.contains("i64")
     }));
 }
@@ -2073,7 +2073,7 @@ fn typecheck_or_pattern_symmetric_bindings_ok() {
 #[test]
 fn typecheck_or_pattern_incompatible_binding_types_error() {
     let (errors, _) = parse_and_check(concat!(
-        "fn unwrap(result: Result<int, String>) -> int {\n",
+        "fn unwrap(result: Result<int, string>) -> int {\n",
         "    match result {\n",
         "        Ok(x) | Err(x) => x,\n",
         "    }\n",
@@ -2092,7 +2092,7 @@ fn typecheck_or_pattern_incompatible_binding_types_error() {
     assert!(
         err.notes
             .iter()
-            .any(|(_, note)| note.contains("right branch binds `x` as `String`")),
+            .any(|(_, note)| note.contains("right branch binds `x` as `string`")),
         "expected right-branch type note, got: {err:?}"
     );
 }
@@ -2494,7 +2494,7 @@ fn ok_unit_match_pattern_accepted() {
     // `Ok(())` as a match arm pattern against `Result<(), E>` must not error.
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",
-        "    let r: Result<(), String> = Ok(());\n",
+        "    let r: Result<(), string> = Ok(());\n",
         "    let _ = match r {\n",
         "        Ok(()) => 0,\n",
         "        Err(_) => 1,\n",
@@ -2548,7 +2548,7 @@ fn ok_unit_pattern_rejected_against_non_unit_ok_payload() {
     // type is `int`, not unit, so the empty-tuple pattern is a mismatch.
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",
-        "    let r: Result<int, String> = Ok(1);\n",
+        "    let r: Result<int, string> = Ok(1);\n",
         "    let _ = match r {\n",
         "        Ok(()) => 0,\n",
         "        Err(_) => 1,\n",
@@ -2851,7 +2851,7 @@ fn display_impl_satisfies_bounded_magic_builtins() {
         }
 
         impl Display for Widget {
-            fn fmt(widget: Widget) -> String {
+            fn fmt(widget: Widget) -> string {
                 "widget"
             }
         }
@@ -3872,17 +3872,17 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     let root_source = r"
         import std::string;
 
-        fn main() -> String {
+        fn main() -> string {
             string.describe(string.make_label())
         }
     ";
     let module_source = r#"
         pub trait Describable {
-            fn describe(val: Self) -> String;
+            fn describe(val: Self) -> string;
         }
 
         pub type Label {
-            text: String;
+            text: string;
         }
 
         pub fn make_label() -> Label {
@@ -3890,12 +3890,12 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         }
 
         impl Describable for Label {
-            fn describe(label: Label) -> String {
+            fn describe(label: Label) -> string {
                 label.text
             }
         }
 
-        pub fn describe<T: Describable>(item: T) -> String {
+        pub fn describe<T: Describable>(item: T) -> string {
             item.describe()
         }
 
@@ -3976,11 +3976,11 @@ fn impl_for_primitive_int_populates_primitive_trait_impl_table() {
     // dispatch site, which only ever sees a resolved `Ty`.
     let source = r#"
         pub trait Display {
-            fn fmt(val: Self) -> String;
+            fn fmt(val: Self) -> string;
         }
 
         impl Display for int {
-            fn fmt(n: int) -> String {
+            fn fmt(n: int) -> string {
                 ""
             }
         }
@@ -4016,11 +4016,11 @@ fn impl_for_builtin_vec_populates_primitive_trait_impl_table() {
     // impls on Vec must reach the side table the same way primitives do.
     let source = r#"
         pub trait Display {
-            fn fmt(val: Self) -> String;
+            fn fmt(val: Self) -> string;
         }
 
         impl Display for Vec<i32> {
-            fn fmt(v: Vec<i32>) -> String {
+            fn fmt(v: Vec<i32>) -> string {
                 ""
             }
         }
@@ -4051,7 +4051,7 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
     // paths if the helper accepted them.
     let source = r#"
         pub trait Display {
-            fn fmt(val: Self) -> String;
+            fn fmt(val: Self) -> string;
         }
 
         pub type MyType {
@@ -4059,7 +4059,7 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
         }
 
         impl Display for MyType {
-            fn fmt(m: MyType) -> String {
+            fn fmt(m: MyType) -> string {
                 ""
             }
         }
@@ -4142,9 +4142,9 @@ fn assert_primitive_trait_dispatch_records_metadata(
 fn primitive_impl_dispatch_resolves_int_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> String; }
+            pub trait Display { fn fmt(val: Self) -> string; }
             impl Display for int {
-                fn fmt(n: int) -> String { "" }
+                fn fmt(n: int) -> string { "" }
             }
             fn main() {
                 let x: int = 42;
@@ -4160,9 +4160,9 @@ fn primitive_impl_dispatch_resolves_int_receiver() {
 fn primitive_impl_dispatch_resolves_bool_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> String; }
+            pub trait Display { fn fmt(val: Self) -> string; }
             impl Display for bool {
-                fn fmt(b: bool) -> String { "" }
+                fn fmt(b: bool) -> string { "" }
             }
             fn main() {
                 let b: bool = true;
@@ -4178,9 +4178,9 @@ fn primitive_impl_dispatch_resolves_bool_receiver() {
 fn primitive_impl_dispatch_resolves_char_receiver() {
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> String; }
+            pub trait Display { fn fmt(val: Self) -> string; }
             impl Display for char {
-                fn fmt(c: char) -> String { "" }
+                fn fmt(c: char) -> string { "" }
             }
             fn main() {
                 let c: char = 'a';
@@ -4198,9 +4198,9 @@ fn primitive_impl_dispatch_resolves_i32_receiver() {
     // as their `Ty::I32` variant — `i32` here, not `i64`.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> String; }
+            pub trait Display { fn fmt(val: Self) -> string; }
             impl Display for i32 {
-                fn fmt(n: i32) -> String { "" }
+                fn fmt(n: i32) -> string { "" }
             }
             fn main() {
                 let n: i32 = 7;
@@ -4214,20 +4214,20 @@ fn primitive_impl_dispatch_resolves_i32_receiver() {
 
 #[test]
 fn primitive_impl_dispatch_resolves_string_receiver_via_method_using_trait_method() {
-    // String routes through `check_string_method`'s not-found arm, not the
+    // string routes through `check_string_method`'s not-found arm, not the
     // wildcard.  This sentinel guarantees that path consults the side table
-    // for a method name that does NOT collide with a builtin String method
+    // for a method name that does NOT collide with a builtin string method
     // (so the not-found branch is the one that runs).  We use a Display
-    // method named `to_display_string` to avoid the impl-on-String body
+    // method named `to_display_string` to avoid the impl-on-string body
     // type-check issue tracked separately (see issue #1565 follow-ups).
     assert_primitive_trait_dispatch_records_metadata(
         r#"
             pub trait MyShow { fn show(val: Self) -> i64; }
-            impl MyShow for String {
-                fn show(s: String) -> i64 { 0 }
+            impl MyShow for string {
+                fn show(s: string) -> i64 { 0 }
             }
             fn main() {
-                let s: String = "hi";
+                let s: string = "hi";
                 let _: i64 = s.show();
             }
         "#,
@@ -4241,9 +4241,9 @@ fn primitive_impl_dispatch_resolves_vec_receiver() {
     // Vec routes through `check_vec_method`'s not-found arm.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> String; }
+            pub trait Display { fn fmt(val: Self) -> string; }
             impl Display for Vec<i32> {
-                fn fmt(v: Vec<i32>) -> String { "" }
+                fn fmt(v: Vec<i32>) -> string { "" }
             }
             fn main() {
                 let v: Vec<i32> = Vec::new();
@@ -4268,9 +4268,9 @@ fn primitive_impl_dispatch_preserves_builtin_numeric_conversion() {
     // tested `int.to_i32()` (i64→i32 narrowing), which now requires
     // `.try_to_i32()` under the B-1c strict-width rules.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> String; }
+        pub trait Display { fn fmt(val: Self) -> string; }
         impl Display for i32 {
-            fn fmt(n: i32) -> String { "" }
+            fn fmt(n: i32) -> string { "" }
         }
         fn main() {
             let n: i32 = 7;
@@ -4301,9 +4301,9 @@ fn primitive_impl_dispatch_resolves_ufcs_form_for_int_receiver() {
     // The UFCS dispatcher intercepts before that lookup.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> String; }
+            pub trait Display { fn fmt(val: Self) -> string; }
             impl Display for int {
-                fn fmt(n: int) -> String { "" }
+                fn fmt(n: int) -> string { "" }
             }
             fn main() {
                 let x: int = 42;
@@ -4318,18 +4318,18 @@ fn primitive_impl_dispatch_resolves_ufcs_form_for_int_receiver() {
 #[test]
 fn primitive_impl_dispatch_resolves_ufcs_form_with_extra_args() {
     // UFCS receiver-and-trailing-args case: `Trait::method(receiver,
-    // arg1, arg2)`.  The receiver-stripped sig has params=[String], so
+    // arg1, arg2)`.  The receiver-stripped sig has params=[string], so
     // the call takes 2 args total (receiver + arg1) and the sig is
     // applied to the trailing args after the receiver is consumed.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Show { fn show(val: Self, suffix: String) -> String; }
+            pub trait Show { fn show(val: Self, suffix: string) -> string; }
             impl Show for int {
-                fn show(n: int, suffix: String) -> String { suffix }
+                fn show(n: int, suffix: string) -> string { suffix }
             }
             fn main() {
                 let x: int = 42;
-                let _: String = Show::show(x, "!");
+                let _: string = Show::show(x, "!");
             }
         "#,
         "i64",
@@ -4346,16 +4346,16 @@ fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
     // `type_defs` cannot reach).  The receiver-kind metadata for the
     // call must be `NamedTypeInstance`, not `PrimitiveTraitImpl`.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> String; }
+        pub trait Display { fn fmt(val: Self) -> string; }
         pub type Foo {
             value: int;
         }
         impl Display for Foo {
-            fn fmt(f: Foo) -> String { "" }
+            fn fmt(f: Foo) -> string { "" }
         }
         fn main() {
             let f: Foo = Foo { value: 1 };
-            let _: String = f.fmt();
+            let _: string = f.fmt();
         }
     "#;
     let parsed = hew_parser::parse(source);
@@ -4419,14 +4419,14 @@ fn ufcs_on_pub_type_receiver_does_not_record_primitive_trait_impl_metadata() {
     // `PrimitiveTraitImpl` metadata is recorded — the call is handled
     // entirely by the receiver-form dispatch path.
     let source = r#"
-        pub trait UserDisplay { fn show(val: Self) -> String; }
+        pub trait UserDisplay { fn show(val: Self) -> string; }
         pub type Widget { value: int; }
         impl UserDisplay for Widget {
-            fn show(w: Widget) -> String { "" }
+            fn show(w: Widget) -> string { "" }
         }
         fn main() {
             let w: Widget = Widget { value: 1 };
-            let _: String = w.show();
+            let _: string = w.show();
         }
     "#;
     let parsed = hew_parser::parse(source);
@@ -4469,9 +4469,9 @@ fn ufcs_over_applied_call_emits_exactly_one_arity_diagnostic() {
     // The fix removes the redundant outer check_arity, leaving only the
     // inner one, matching the receiver-form path's behaviour.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> String; }
+        pub trait Display { fn fmt(val: Self) -> string; }
         impl Display for int {
-            fn fmt(n: int) -> String { "" }
+            fn fmt(n: int) -> string { "" }
         }
         fn main() {
             let x: int = 42;
@@ -4506,9 +4506,9 @@ fn primitive_impl_dispatch_unknown_method_still_emits_error() {
     // "no method `<name>` on <kind>" diagnostic must still fire — the
     // helper returns None so the existing reporter runs.
     let source = r#"
-        pub trait Display { fn fmt(val: Self) -> String; }
+        pub trait Display { fn fmt(val: Self) -> string; }
         impl Display for int {
-            fn fmt(n: int) -> String { "" }
+            fn fmt(n: int) -> string { "" }
         }
         fn main() {
             let x: int = 42;
@@ -4546,9 +4546,9 @@ fn primitive_trait_dispatch_int_literal_receiver() {
     // `canonical_primitive_or_builtin_key` short-circuited on the literal.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> String; }
+            pub trait Display { fn fmt(val: Self) -> string; }
             impl Display for int {
-                fn fmt(n: int) -> String { "" }
+                fn fmt(n: int) -> string { "" }
             }
             fn main() {
                 let _ = (42).fmt();
@@ -4566,9 +4566,9 @@ fn primitive_trait_dispatch_float_literal_receiver() {
     // before canonical-key lookup.
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> String; }
+            pub trait Display { fn fmt(val: Self) -> string; }
             impl Display for f64 {
-                fn fmt(x: f64) -> String { "" }
+                fn fmt(x: f64) -> string { "" }
             }
             fn main() {
                 let _ = (3.14).fmt();
@@ -4587,9 +4587,9 @@ fn primitive_trait_dispatch_ufcs_int_literal() {
     // and the trait-qualified path mis-arities (sig.params=[] vs args=[42]).
     assert_primitive_trait_dispatch_records_metadata(
         r#"
-            pub trait Display { fn fmt(val: Self) -> String; }
+            pub trait Display { fn fmt(val: Self) -> string; }
             impl Display for int {
-                fn fmt(n: int) -> String { "" }
+                fn fmt(n: int) -> string { "" }
             }
             fn main() {
                 let _ = Display::fmt(42);
@@ -4662,7 +4662,7 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
     // do not pollute `trait_defs` or hijack user names.
     let source = r"
         pub trait Display {
-            fn render(val: Self) -> String;
+            fn render(val: Self) -> string;
         }
         fn main() {
             let x: i64 = 42;
@@ -4733,7 +4733,7 @@ fn print_user_struct_without_display_impl_is_rejected_by_checker() {
     // relying on PrintOpLowering's unsupported-aggregate terminal.
     let source = r#"
         pub type Foo {
-            label: String;
+            label: string;
         }
 
         fn main() {
@@ -4793,7 +4793,7 @@ fn primitive_trait_dispatch_builtins_blanket_populates_side_table_at_register_bu
         assert_eq!(
             fmt_sig.return_type,
             Ty::String,
-            "fmt for `{key}` must return String, got: {:?}",
+            "fmt for `{key}` must return string, got: {:?}",
             fmt_sig.return_type
         );
     }
@@ -5123,7 +5123,7 @@ fn glob_import_registers_unqualified_names() {
         "other",
         vec![],
         Some(TypeExpr::Named {
-            name: "String".to_string(),
+            name: "string".to_string(),
             type_args: None,
         }),
     );
@@ -5500,7 +5500,7 @@ fn two_modules_same_fn_name_no_collision() {
         "run",
         vec![],
         Some(TypeExpr::Named {
-            name: "String".to_string(),
+            name: "string".to_string(),
             type_args: None,
         }),
     );
@@ -5605,7 +5605,7 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     assert_eq!(
         stream_from_file.return_type,
         Ty::result(Ty::stream(Ty::String), Ty::String),
-        "std::stream import should keep from_file() typed as Result<Stream<String>, String>"
+        "std::stream import should keep from_file() typed as Result<Stream<string>, string>"
     );
 }
 
@@ -7070,7 +7070,7 @@ fn typecheck_await_actor_ref_returns_unit() {
     let output = check_source(
         r#"
         actor Greeter {
-            receive fn greet(name: String) {
+            receive fn greet(name: string) {
                 println(name);
             }
         }
@@ -7094,7 +7094,7 @@ fn named_actor_receive_dispatch_reports_bad_arg_once() {
     let result = hew_parser::parse(
         r"
         actor Greeter {
-            receive fn greet(name: String) {}
+            receive fn greet(name: string) {}
         }
 
         fn main() {
@@ -7264,26 +7264,26 @@ fn bool_does_not_coerce_to_i32() {
 #[test]
 fn handle_type_does_not_coerce_to_string() {
     let (errors, _warnings) = parse_and_check_with_stdlib(
-        "import std::encoding::json;\nfn foo(value: json.Value) -> String { value }",
+        "import std::encoding::json;\nfn foo(value: json.Value) -> string { value }",
     );
     assert!(
         errors
             .iter()
             .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
-        "json.Value where String expected must be rejected: {errors:?}"
+        "json.Value where string expected must be rejected: {errors:?}"
     );
 }
 
 #[test]
 fn string_does_not_coerce_to_handle_type() {
     let (errors, _warnings) = parse_and_check_with_stdlib(
-        "import std::encoding::json;\nfn foo(text: String) -> json.Value { text }",
+        "import std::encoding::json;\nfn foo(text: string) -> json.Value { text }",
     );
     assert!(
         errors
             .iter()
             .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
-        "String where json.Value expected must be rejected: {errors:?}"
+        "string where json.Value expected must be rejected: {errors:?}"
     );
 }
 
@@ -8155,12 +8155,12 @@ fn struct_init_overflow_in_expected_type() {
 
 #[test]
 fn struct_init_explicit_type_arg_seeds_substitution() {
-    // `Wrapper<String> { value: "hello" }` — explicit type arg must constrain
-    // field checking against String, not an unbound param.
+    // `Wrapper<string> { value: "hello" }` — explicit type arg must constrain
+    // field checking against string, not an unbound param.
     let source = r#"
         type Wrapper<T> { value: T }
         fn main() {
-            let w = Wrapper<String> { value: "hello" };
+            let w = Wrapper<string> { value: "hello" };
         }
     "#;
     let tco = check_source(source);
@@ -8173,7 +8173,7 @@ fn struct_init_explicit_type_arg_seeds_substitution() {
 
 #[test]
 fn struct_init_explicit_type_arg_wrong_field_type_errors() {
-    // `Wrapper<int> { value: "hello" }` — explicit arg is int, field is String: error.
+    // `Wrapper<int> { value: "hello" }` — explicit arg is int, field is string: error.
     let source = r#"
         type Wrapper<T> { value: T }
         fn main() {
@@ -8196,7 +8196,7 @@ fn struct_init_explicit_type_arg_wrong_field_type_errors() {
 
 #[test]
 fn struct_init_explicit_type_arg_arity_mismatch_errors() {
-    // `Wrapper<int, String>` on a one-param struct should report arity mismatch.
+    // `Wrapper<int, string>` on a one-param struct should report arity mismatch.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     register_generic_wrapper(&mut checker);
 
@@ -8211,7 +8211,7 @@ fn struct_init_explicit_type_arg_arity_mismatch_errors() {
         ),
         (
             TypeExpr::Named {
-                name: "String".to_string(),
+                name: "string".to_string(),
                 type_args: None,
             },
             4..10_usize,
@@ -8239,13 +8239,13 @@ fn struct_init_explicit_type_arg_arity_mismatch_errors() {
 
 #[test]
 fn struct_init_explicit_type_arg_roundtrip_via_parse() {
-    // Parser + checker integration: `Wrapper<String> { value: "hello" }` must
-    // parse *and* type-check with the synthesised type `Wrapper<String>`.
+    // Parser + checker integration: `Wrapper<string> { value: "hello" }` must
+    // parse *and* type-check with the synthesised type `Wrapper<string>`.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     register_generic_wrapper(&mut checker);
 
     let source = r#"type Wrapper<T> { value: T }
-fn main() { let w = Wrapper<String> { value: "hello" }; }"#;
+fn main() { let w = Wrapper<string> { value: "hello" }; }"#;
     let parse_result = hew_parser::parse(source);
     assert!(
         parse_result.errors.is_empty(),
@@ -8264,13 +8264,13 @@ fn main() { let w = Wrapper<String> { value: "hello" }; }"#;
 
 #[test]
 fn struct_init_explicit_type_arg_conflicts_with_binding_type_errors() {
-    // `let w: Wrapper<int> = Wrapper<String> { value: 1 };`
-    // The explicit `String` annotation conflicts with the expected `int`.
+    // `let w: Wrapper<int> = Wrapper<string> { value: 1 };`
+    // The explicit `string` annotation conflicts with the expected `int`.
     // The checker must reject this rather than silently ignoring it.
     let source = r"
         type Wrapper<T> { value: T }
         fn main() {
-            let w: Wrapper<int> = Wrapper<String> { value: 1 };
+            let w: Wrapper<int> = Wrapper<string> { value: 1 };
         }
     ";
     let parse_result = hew_parser::parse(source);
@@ -8288,7 +8288,7 @@ fn struct_init_explicit_type_arg_conflicts_with_binding_type_errors() {
     let has_mismatch = tco.errors.iter().any(|e| {
         matches!(e.kind, TypeErrorKind::Mismatch { .. })
             || e.message.contains("conflicts")
-            || e.message.contains("String")
+            || e.message.contains("string")
     });
     assert!(
         has_mismatch,
@@ -8616,10 +8616,10 @@ fn trailing_type_mismatch_reports_exactly_one_error() {
 
 #[test]
 fn trailing_identifier_mismatch_reports_exactly_one_error() {
-    // fn foo(s: String) -> i32 { s }
+    // fn foo(s: string) -> i32 { s }
     // The identifier arm in check_against matched before the default arm,
     // so without the guard it fired a second duplicate error.
-    let source = "fn foo(s: String) -> i32 { s }";
+    let source = "fn foo(s: string) -> i32 { s }";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -8641,7 +8641,7 @@ fn error_return_type_does_not_suppress_match_arm_diagnostics() {
     // fn foo() -> UnknownType { match true { true => "hello", false => 42 } }
     // UnknownType resolves to Ty::Error. Without the Ty::Error guard in
     // check_match_expr, the error type pre-seeds all arms via check_against,
-    // silently accepting the String/int mismatch between arms.
+    // silently accepting the string/int mismatch between arms.
     let source = r#"fn foo() -> UnknownType { match true { true => "hello", false => 42 } }"#;
     let result = hew_parser::parse(source);
     assert!(
@@ -8652,7 +8652,7 @@ fn error_return_type_does_not_suppress_match_arm_diagnostics() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     // We expect at least two errors: one for UnknownType and one for the
-    // arm type mismatch (String vs int). Before the fix only the
+    // arm type mismatch (string vs int). Before the fix only the
     // UnknownType error appeared.
     let arm_mismatch = output.errors.iter().any(|e| {
         let msg = format!("{e:?}");
@@ -8669,13 +8669,13 @@ fn error_return_type_does_not_suppress_match_arm_diagnostics() {
 #[test]
 fn nonwire_from_json_returns_result_self_string() {
     // Regression: non-wire struct.from_json(s) must type-check as
-    // Result<Self, String>, not Self.  The SHIM that returned Self directly
+    // Result<Self, string>, not Self.  The SHIM that returned Self directly
     // was removed; this test pins the correct surface type.
     let source = r#"
 type Point { x: i32; y: i32; }
 fn main() {
 let s = "{\"x\":1,\"y\":2}";
-let r: Result<Point, String> = Point.from_json(s);
+let r: Result<Point, string> = Point.from_json(s);
 }
 "#;
     let result = hew_parser::parse(source);
@@ -8688,7 +8688,7 @@ let r: Result<Point, String> = Point.from_json(s);
     let output = checker.check_program(&result.program);
     assert!(
         output.errors.is_empty(),
-        "from_json should return Result<Self, String> with no type errors; got: {:?}",
+        "from_json should return Result<Self, string> with no type errors; got: {:?}",
         output.errors
     );
 }
@@ -8718,19 +8718,19 @@ let p: Point = Point.from_json(s);
     });
     assert!(
         has_mismatch,
-        "assigning Result<Point, String> to Point must be a type error; got: {:?}",
+        "assigning Result<Point, string> to Point must be a type error; got: {:?}",
         output.errors
     );
 }
 
 #[test]
 fn nonwire_from_yaml_and_from_toml_return_result() {
-    // Both from_yaml and from_toml should also return Result<Self, String>.
+    // Both from_yaml and from_toml should also return Result<Self, string>.
     let source = r#"
 type Cfg { n: i32; }
 fn main() {
-let _a: Result<Cfg, String> = Cfg.from_yaml("n: 1");
-let _b: Result<Cfg, String> = Cfg.from_toml("n = 1");
+let _a: Result<Cfg, string> = Cfg.from_yaml("n: 1");
+let _b: Result<Cfg, string> = Cfg.from_toml("n = 1");
 }
 "#;
     let result = hew_parser::parse(source);
@@ -8743,7 +8743,7 @@ let _b: Result<Cfg, String> = Cfg.from_toml("n = 1");
     let output = checker.check_program(&result.program);
     assert!(
         output.errors.is_empty(),
-        "from_yaml / from_toml should return Result<Self, String>; got: {:?}",
+        "from_yaml / from_toml should return Result<Self, string>; got: {:?}",
         output.errors
     );
 }
@@ -9740,12 +9740,12 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
 
 #[test]
 fn hashmap_bracket_index_is_a_compile_error() {
-    // m[k] on HashMap<String, int> must be a compile error since the
+    // m[k] on HashMap<string, int> must be a compile error since the
     // named-type .get() fallback is removed. The explicit m.get(k) is the
     // correct form (returns Option<int>).
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
-    // Register HashMap with a String-keyed .get() method (as the stdlib defines it).
+    // Register HashMap with a string-keyed .get() method (as the stdlib defines it).
     // Return type is Option<V>, represented as the Named form.
     let option_v = Ty::Named {
         name: "Option".to_string(),
@@ -9788,7 +9788,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
     assert_eq!(ty, Ty::Error, "m[k] on HashMap must produce Ty::Error");
     assert!(
         !checker.errors.is_empty(),
-        "m[k] on HashMap<String, int> must produce a diagnostic"
+        "m[k] on HashMap<string, int> must produce a diagnostic"
     );
     let msg = &checker.errors[0].message;
     assert!(
@@ -11507,7 +11507,7 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
             name: "math".to_string(),
             ty: (
                 TypeExpr::Named {
-                    name: "String".to_string(),
+                    name: "string".to_string(),
                     type_args: None,
                 },
                 0..6,
@@ -11704,7 +11704,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         type_args: None,
     };
     let string_ty = TypeExpr::Named {
-        name: "String".to_string(),
+        name: "string".to_string(),
         type_args: None,
     };
 
@@ -11839,7 +11839,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         type_args: None,
     };
     let string_ty = TypeExpr::Named {
-        name: "String".to_string(),
+        name: "string".to_string(),
         type_args: None,
     };
 
@@ -13079,14 +13079,14 @@ actor MyActor {
 
     #[test]
     fn error_return_type_question_mark_on_result_no_false_context_error() {
-        // fn foo() -> UnknownType { let r: Result<i64, String> = Ok(1); r? }
+        // fn foo() -> UnknownType { let r: Result<i64, string> = Ok(1); r? }
         //
         // When the return annotation is unresolvable (Ty::Error) and `?` is
         // used on a valid Result, the *context* diagnostic ("? cannot be used
         // in a function returning <error>") must NOT fire — we cannot know
         // whether the intended return type would have supported `?`.  Only the
         // annotation-resolution error should appear.
-        let source = r"fn foo() -> UnknownType { let r: Result<i64, String> = Ok(1); r? }";
+        let source = r"fn foo() -> UnknownType { let r: Result<i64, string> = Ok(1); r? }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -13109,12 +13109,12 @@ actor MyActor {
 
     #[test]
     fn builtin_named_return_type_still_reports_question_mark_context_error() {
-        // fn foo() -> Vec<i32> { let r: Result<i64, String> = Ok(1); let x: i64 = r?; Vec::new() }
+        // fn foo() -> Vec<i32> { let r: Result<i64, string> = Ok(1); let x: i64 = r?; Vec::new() }
         //
         // PR #923 bypasses the `?` context diagnostic for genuinely unknown named
         // return annotations. Builtin named types like Vec must still report the
         // context error even though they are not registered in type_defs/type_aliases.
-        let source = r"fn foo() -> Vec<i32> { let r: Result<i64, String> = Ok(1); let x: i64 = r?; Vec::new() }";
+        let source = r"fn foo() -> Vec<i32> { let r: Result<i64, string> = Ok(1); let x: i64 = r?; Vec::new() }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -13137,13 +13137,13 @@ actor MyActor {
 
     #[test]
     fn error_return_type_question_mark_in_lambda_no_false_context_error() {
-        // fn foo() { let r: Result<i64, String> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }
+        // fn foo() { let r: Result<i64, string> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }
         //
         // Same invariant as the plain-function case but inside a lambda whose
         // return annotation is Ty::Error.  The `?` context check sees the
         // lambda's own `current_return_type` (Ty::Error), so the Ty::Error
         // bypass must apply there too.
-        let source = r"fn foo() { let r: Result<i64, String> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }";
+        let source = r"fn foo() { let r: Result<i64, string> = Ok(1); let f = (x: i64) -> UnknownType => { r? }; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -13767,7 +13767,7 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_rejects_stream_method() {
-        // Use a function that accepts a Stream<String> and calls .next().
+        // Use a function that accepts a Stream<string> and calls .next().
         // The stream module must be imported to register Stream types.
         let source = concat!(
             "import std::stream;\n",
@@ -14439,7 +14439,7 @@ mod wasm_rejects {
         //   - "undefined variable `undefined_arg`"
         // Before the fix, only the first error was reported.
         let kinds =
-            check_error_cascade(r"fn foo(s: String) { s.nonexistent_method(undefined_arg) }");
+            check_error_cascade(r"fn foo(s: string) { s.nonexistent_method(undefined_arg) }");
         assert!(
             kinds.contains(&TypeErrorKind::UndefinedMethod),
             "expected UndefinedMethod; got: {kinds:?}",
@@ -14469,7 +14469,7 @@ mod wasm_rejects {
     fn bad_hashmap_method_with_bad_arg_reports_both_errors() {
         // `m.nonexistent_method(undefined_arg)` on a HashMap must report both errors.
         let kinds = check_error_cascade(
-            r"fn foo(m: HashMap<String, i64>) { m.nonexistent_method(undefined_arg) }",
+            r"fn foo(m: HashMap<string, i64>) { m.nonexistent_method(undefined_arg) }",
         );
         assert!(
             kinds.contains(&TypeErrorKind::UndefinedMethod),
@@ -14504,7 +14504,7 @@ mod wasm_rejects {
         // already synthesizes args for chained calls, so `undefined_arg` SHOULD be
         // reported.  This test guards that the chained-call path is not regressed.
         let kinds = check_error_cascade(
-            r"fn foo(s: String) { let _ = s.bad_method().another_method(undefined_arg); }",
+            r"fn foo(s: string) { let _ = s.bad_method().another_method(undefined_arg); }",
         );
         assert!(
             kinds.contains(&TypeErrorKind::UndefinedMethod),
@@ -14522,7 +14522,7 @@ mod wasm_rejects {
         // is correctly suppressed (not a new error). The (Ty::Error, _) arm must
         // NOT emit a duplicate diagnostic for the chained method.
         let kinds =
-            check_error_cascade(r"fn foo(s: String) { let _ = s.bad_method().to_string(); }");
+            check_error_cascade(r"fn foo(s: string) { let _ = s.bad_method().to_string(); }");
         assert_eq!(
             kinds,
             vec![TypeErrorKind::UndefinedMethod],
@@ -15452,7 +15452,7 @@ mod record_admission {
             "#,
         );
         let has_mismatch = output.errors.iter().any(|e| {
-            e.message.contains("String")
+            e.message.contains("string")
                 || e.message.contains("type mismatch")
                 || e.message.contains("expected")
         });

@@ -8,9 +8,9 @@
 //! helpers built on the same request path.
 //!
 //! Response accessors: `status()`, `body()`, `header(name)`, `content_type()`,
-//! `headers()` (all headers as `Vec<(String, String)>`), and `free()`.
+//! `headers()` (all headers as `Vec<(string, string)>`), and `free()`.
 //! The `_string` convenience helpers (`request_string`, `get_string`,
-//! `post_string`) return `Option<String>` — `None` on transport failure.
+//! `post_string`) return `Option<string>` — `None` on transport failure.
 //!
 //! # Examples
 //!
@@ -23,7 +23,7 @@
 //!         None => println("request failed"),
 //!     }
 //!
-//!     let headers: Vec<(String, String)> = Vec::new();
+//!     let headers: Vec<(string, string)> = Vec::new();
 //!     headers.push(("Accept", "application/json"));
 //!     let resp = http_client.request("GET", "https://api.example.com/data", "", headers);
 //!     println(resp.status());
@@ -48,24 +48,24 @@ trait ResponseMethods {
     fn status(resp: Response) -> int;
 
     /// Return a copy of the response body as a string.
-    fn body(resp: Response) -> String;
+    fn body(resp: Response) -> string;
 
     /// Look up a response header by name (case-insensitive).
     ///
     /// Returns an empty string if the header is not present.
-    fn header(resp: Response, name: String) -> String;
+    fn header(resp: Response, name: string) -> string;
 
     /// Return the `Content-Type` response header.
     ///
     /// Returns an empty string if not present.
-    fn content_type(resp: Response) -> String;
+    fn content_type(resp: Response) -> string;
 
     /// Return all response headers as a list of `(name, value)` pairs.
     ///
     /// The returned vector is owned by the caller; Hew frees it automatically
     /// when it goes out of scope. Returns an empty vector if no headers were
     /// captured or the response is invalid.
-    fn headers(resp: Response) -> Vec<(String, String)>;
+    fn headers(resp: Response) -> Vec<(string, string)>;
 
     /// Release the response resources.
     fn free(resp: Response);
@@ -79,25 +79,25 @@ impl ResponseMethods for Response {
         }
     }
     /// Return a copy of the response body as a string.
-    fn body(resp: Response) -> String {
+    fn body(resp: Response) -> string {
         unsafe {
             hew_http_response_body(resp)
         }
     }
     /// Look up a response header by name (case-insensitive).
-    fn header(resp: Response, name: String) -> String {
+    fn header(resp: Response, name: string) -> string {
         unsafe {
             hew_http_response_header(resp, name)
         }
     }
     /// Return the `Content-Type` response header.
-    fn content_type(resp: Response) -> String {
+    fn content_type(resp: Response) -> string {
         unsafe {
             hew_http_response_content_type(resp)
         }
     }
     /// Return all response headers as a list of `(name, value)` pairs.
-    fn headers(resp: Response) -> Vec<(String, String)> {
+    fn headers(resp: Response) -> Vec<(string, string)> {
         unsafe {
             hew_http_response_headers(resp)
         }
@@ -111,13 +111,13 @@ impl ResponseMethods for Response {
 }
 
 // ── Module-level helpers ──────────────────────────────────────────────
-fn empty_headers() -> Vec<(String, String)> {
-    let headers: Vec<(String, String)> = Vec::new();
+fn empty_headers() -> Vec<(string, string)> {
+    let headers: Vec<(string, string)> = Vec::new();
     headers
 }
 
-fn content_type_headers(content_type: String) -> Vec<(String, String)> {
-    let headers: Vec<(String, String)> = Vec::new();
+fn content_type_headers(content_type: string) -> Vec<(string, string)> {
+    let headers: Vec<(string, string)> = Vec::new();
     headers.push(("Content-Type", content_type));
     headers
 }
@@ -130,13 +130,13 @@ fn content_type_headers(content_type: String) -> Vec<(String, String)> {
 /// # Examples
 ///
 /// ```
-/// let headers: Vec<(String, String)> = Vec::new();
+/// let headers: Vec<(string, string)> = Vec::new();
 /// headers.push(("Accept", "application/json"));
 /// let resp = http_client.request("GET", "https://example.com", "", headers);
 /// println(resp.status());
 /// resp.free();
 /// ```
-pub fn request(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Response {
+pub fn request(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Response {
     unsafe {
         hew_http_request_hew(method, url, body, headers)
     }
@@ -152,13 +152,13 @@ pub fn request(method: String, url: String, body: String, headers: Vec<(String, 
 /// # Examples
 ///
 /// ```
-/// let headers: Vec<(String, String)> = Vec::new();
+/// let headers: Vec<(string, string)> = Vec::new();
 /// match http_client.request_string("GET", "https://example.com", "", headers) {
 ///     Some(body) => println(body),
 ///     None => println("request failed"),
 /// }
 /// ```
-pub fn request_string(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Option<String> {
+pub fn request_string(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Option<string> {
     let resp = unsafe {
         hew_http_request_hew(method, url, body, headers)
     };
@@ -193,7 +193,7 @@ pub fn set_timeout(timeout_ms: int) {
 ///
 /// Accessors that return null on allocation failure update this string.
 /// Successful accessor calls clear it.
-pub fn last_error() -> String {
+pub fn last_error() -> string {
     unsafe {
         hew_http_last_error()
     }
@@ -208,7 +208,7 @@ pub fn last_error() -> String {
 /// println(resp.status());
 /// resp.free();
 /// ```
-pub fn get(url: String) -> Response {
+pub fn get(url: string) -> Response {
     request("GET", url, "", empty_headers())
 }
 
@@ -220,7 +220,7 @@ pub fn get(url: String) -> Response {
 /// let resp = http_client.post("https://api.example.com/data", "application/json", "{}");
 /// resp.free();
 /// ```
-pub fn post(url: String, content_type: String, body: String) -> Response {
+pub fn post(url: string, content_type: string, body: string) -> Response {
     request("POST", url, body, content_type_headers(content_type))
 }
 
@@ -241,7 +241,7 @@ pub fn post(url: String, content_type: String, body: String) -> Response {
 ///     None => println("request failed"),
 /// }
 /// ```
-pub fn get_string(url: String) -> Option<String> {
+pub fn get_string(url: string) -> Option<string> {
     request_string("GET", url, "", empty_headers())
 }
 
@@ -263,19 +263,19 @@ pub fn get_string(url: String) -> Option<String> {
 ///     None => println("request failed"),
 /// }
 /// ```
-pub fn post_string(url: String, content_type: String, body: String) -> Option<String> {
+pub fn post_string(url: string, content_type: string, body: string) -> Option<string> {
     request_string("POST", url, body, content_type_headers(content_type))
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_http_request_hew(method: String, url: String, body: String, headers: Vec<(String, String)>) -> Response;
+    fn hew_http_request_hew(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Response;
     fn hew_http_set_timeout(timeout_ms: i32);
-    fn hew_http_last_error() -> String;
+    fn hew_http_last_error() -> string;
     fn hew_http_response_free(resp: Response);
     fn hew_http_response_status(resp: Response) -> i32;
-    fn hew_http_response_body(resp: Response) -> String;
-    fn hew_http_response_header(resp: Response, name: String) -> String;
-    fn hew_http_response_content_type(resp: Response) -> String;
-    fn hew_http_response_headers(resp: Response) -> Vec<(String, String)>;
+    fn hew_http_response_body(resp: Response) -> string;
+    fn hew_http_response_header(resp: Response, name: string) -> string;
+    fn hew_http_response_content_type(resp: Response) -> string;
+    fn hew_http_response_headers(resp: Response) -> Vec<(string, string)>;
 }

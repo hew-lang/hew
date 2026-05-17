@@ -1,4 +1,4 @@
-fn classify(input: String) {
+fn classify(input: string) {
     let foo_number_re = re"^foo[0-9]+$";
     let alpha_re = re"^[a-z]+$";
     match input {

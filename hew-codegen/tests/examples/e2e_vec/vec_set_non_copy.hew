@@ -1,13 +1,13 @@
-// Regression for #1698: Vec::set of a non-Copy element (String) must
+// Regression for #1698: Vec::set of a non-Copy element (string) must
 // transfer ownership to the slot. Previously, the source identifier's
 // drop slot was not nulled after VecSetOp, so on inner scope exit the
-// runtime freed the String buffer that the Vec's slot now pointed at,
+// runtime freed the string buffer that the Vec's slot now pointed at,
 // leaving the slot with a dangling pointer.
-fn make_vec() -> Vec<String> {
-    let v: Vec<String> = ["", ""];
+fn make_vec() -> Vec<string> {
+    let v: Vec<string> = ["", ""];
     var i: i32 = 0;
     while i < 2 {
-        let s: String = if i == 0 {
+        let s: string = if i == 0 {
             "hello"
         } else {
             "world"

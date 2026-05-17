@@ -7,7 +7,7 @@ wire type Event {
 }
 
 extern "C" {
-    fn Event_to_json(event_id: i32, user_age: i32) -> String;
+    fn Event_to_json(event_id: i32, user_age: i32) -> string;
 }
 
 fn main() {

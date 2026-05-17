@@ -1,4 +1,4 @@
-fn main() -> String {
+fn main() -> string {
   let s = "hello";
   let t = s;
   return s;

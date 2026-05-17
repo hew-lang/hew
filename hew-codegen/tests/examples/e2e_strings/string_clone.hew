@@ -1,6 +1,6 @@
-// Test: String.clone() produces a distinct owned copy
+// Test: string.clone() produces a distinct owned copy
 fn main() {
-    println("=== String Clone ===");
+    println("=== string Clone ===");
 
     // Basic clone of a literal
     let original = "hello";
@@ -13,12 +13,12 @@ fn main() {
     println(cat_copy);
 
     // Clone in a loop (each iteration gets an independent copy)
-    let words: Vec<String> = Vec::new();
+    let words: Vec<string> = Vec::new();
     words.push("alpha");
     words.push("beta");
     words.push("gamma");
 
-    let clones: Vec<String> = Vec::new();
+    let clones: Vec<string> = Vec::new();
     for i in 0..words.len() {
         clones.push(words[i].clone());
     }
@@ -27,7 +27,7 @@ fn main() {
     }
 
     // Clone used in insertion sort (proper replacement for "" + s)
-    var names: Vec<String> = Vec::new();
+    var names: Vec<string> = Vec::new();
     names.push("charlie");
     names.push("bravo");
     names.push("alpha");

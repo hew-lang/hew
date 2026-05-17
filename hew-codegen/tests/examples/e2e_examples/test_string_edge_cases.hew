@@ -1,4 +1,4 @@
-// Test: String Edge Cases
+// Test: string Edge Cases
 // Exercises: empty strings, find boundaries, starts/ends/contains, trim, replace, int-string roundtrip
 
 fn test_empty_string_length() -> int {
@@ -188,7 +188,7 @@ fn test_string_to_int_bounds() -> int {
 }
 
 fn main() -> int {
-    println("=== Test: String Edge Cases ===");
+    println("=== Test: string Edge Cases ===");
     var passed = 0;
     let total = 11;
     passed = passed + test_empty_string_length();

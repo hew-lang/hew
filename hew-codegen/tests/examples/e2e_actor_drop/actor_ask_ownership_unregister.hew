@@ -1,5 +1,5 @@
 // Regression: actor ask with an identifier arg whose type is NOT in the
-// deep-copy set (String/Vec/HashMap/Closure) must call unregisterDroppable
+// deep-copy set (string/Vec/HashMap/Closure) must call unregisterDroppable
 // so the sender's scope does NOT fire the user drop after ownership has
 // transferred to the receive handler.
 //

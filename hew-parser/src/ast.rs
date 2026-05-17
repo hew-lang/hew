@@ -1286,7 +1286,7 @@ mod tests {
                 },
                 WireFieldDecl {
                     name: "added".to_string(),
-                    ty: "String".to_string(),
+                    ty: "string".to_string(),
                     field_number: 2,
                     is_optional: true,
                     is_repeated: false,

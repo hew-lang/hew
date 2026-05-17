@@ -7,8 +7,8 @@ wire type Metric {
 }
 
 extern "C" {
-    fn Metric_to_yaml(name: String, value: i64, active: i32) -> String;
-    fn Metric_from_yaml(yaml: String) -> Metric;
+    fn Metric_to_yaml(name: string, value: i64, active: i32) -> string;
+    fn Metric_from_yaml(yaml: string) -> Metric;
 }
 
 fn main() {

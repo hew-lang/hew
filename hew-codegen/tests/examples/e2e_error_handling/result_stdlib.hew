@@ -66,9 +66,9 @@ fn main() {
         println("FAIL: is_ok mismatch");
     }
 
-    // ── String variants ─────────────────────────────────────────
-    let ok_s: Result<String, String> = Ok("success");
-    let err_s: Result<String, String> = Err("failure");
+    // ── string variants ─────────────────────────────────────────
+    let ok_s: Result<string, string> = Ok("success");
+    let err_s: Result<string, string> = Err("failure");
 
     println(result.is_ok_str(ok_s));
     println(result.is_err_str(err_s));

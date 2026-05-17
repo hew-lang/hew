@@ -8,7 +8,7 @@ import std::fs;
 
 import std::string;
 
-fn search_file(filename: String, pattern: String, nl: String) -> i32 {
+fn search_file(filename: string, pattern: string, nl: string) -> i32 {
     if !fs.exists(filename) {
         println(f"hew_grep: {filename}: No such file");
         return 0;

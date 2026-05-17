@@ -1,8 +1,8 @@
-// Test: wire encode/decode roundtrip with String fields survives buf free
+// Test: wire encode/decode roundtrip with string fields survives buf free
 #[wire]
 struct Greeting {
-    name: String,
-    message: String,
+    name: string,
+    message: string,
 }
 
 fn main() {

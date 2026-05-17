@@ -207,7 +207,7 @@ fn tuple_variant_pattern_binds_concrete_payload_for_bound_resolution() {
         }
 
         fn main() -> int {
-            let e: Either<int, String> = Either::Left(42);
+            let e: Either<int, string> = Either::Left(42);
             match e {
                 Either::Left(n) => println(n),
                 Either::Right(s) => println(s),

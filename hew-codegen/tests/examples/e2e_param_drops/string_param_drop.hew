@@ -1,8 +1,8 @@
-// Callee-side drop of a String parameter: the callee must free the string
+// Callee-side drop of a string parameter: the callee must free the string
 // exactly once at scope exit when it is consumed (not returned).
 // Caller-side ownership transfer: the caller must not attempt a second drop.
 
-fn consume(s: String) {
+fn consume(s: string) {
     println(s);
     // s is dropped here — callee owns it
 }

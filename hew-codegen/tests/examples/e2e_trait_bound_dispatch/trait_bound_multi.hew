@@ -1,6 +1,6 @@
 // Test: multiple trait bounds on a single type parameter.
 trait Named {
-    fn name(n: Self) -> String;
+    fn name(n: Self) -> string;
 }
 
 trait Measured {
@@ -8,12 +8,12 @@ trait Measured {
 }
 
 type Box {
-    label: String,
+    label: string,
     width: int,
 }
 
 impl Named for Box {
-    fn name(b: Box) -> String {
+    fn name(b: Box) -> string {
         return b.label;
     }
 }

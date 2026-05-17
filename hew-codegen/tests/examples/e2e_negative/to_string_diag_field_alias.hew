@@ -4,11 +4,11 @@
 // it again — a double-free.  Binding the field to a local variable first
 // is the supported workaround.
 type Greeting {
-    text: String;
+    text: string;
 }
 
 impl Display for Greeting {
-    fn fmt(val: Greeting) -> String {
+    fn fmt(val: Greeting) -> string {
         val.text
     }
 }

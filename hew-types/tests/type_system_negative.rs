@@ -610,7 +610,7 @@ fn duplicate_definition_same_wire_type() {
             id: i32 @1;
         }
         wire type Packet {
-            name: String @1;
+            name: string @1;
         }
         fn main() {}
     ",
@@ -1957,7 +1957,7 @@ fn bounds_not_satisfied_missing_trait_impl() {
     );
 }
 
-// ── String::chars() typechecks and arity-guards ─────────────────────────────
+// ── string::chars() typechecks and arity-guards ─────────────────────────────
 
 #[test]
 fn string_chars_returns_vec_char() {
@@ -1972,7 +1972,7 @@ fn string_chars_returns_vec_char() {
     );
     assert!(
         output.errors.is_empty(),
-        "String::chars() should typecheck without errors; got: {:?}",
+        "string::chars() should typecheck without errors; got: {:?}",
         output.errors
     );
 }
@@ -1989,7 +1989,7 @@ fn string_chars_rejects_extra_args() {
     );
     assert!(
         !output.errors.is_empty(),
-        "String::chars(arg) should produce a typecheck error"
+        "string::chars(arg) should produce a typecheck error"
     );
 }
 
@@ -2075,7 +2075,7 @@ fn let_propagate_sugar_in_non_result_fn_rejected() {
     // Result or Option must be rejected — same rule as bare `?`.
     let output = typecheck(
         r"
-        fn make_result(x: int) -> Result<int, String> {
+        fn make_result(x: int) -> Result<int, string> {
             Ok(x)
         }
         fn plain(x: int) -> int {

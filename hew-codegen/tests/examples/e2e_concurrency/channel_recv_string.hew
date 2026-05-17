@@ -1,7 +1,7 @@
 import std::channel::channel;
 
-fn drain(rx: channel.Receiver<String>) -> Vec<String> {
-    var msgs: Vec<String> = Vec::new();
+fn drain(rx: channel.Receiver<string>) -> Vec<string> {
+    var msgs: Vec<string> = Vec::new();
     var done = false;
     while !done {
         match rx.recv() {

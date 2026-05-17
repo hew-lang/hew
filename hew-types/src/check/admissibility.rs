@@ -566,7 +566,7 @@ impl Checker {
                 span,
                 format!(
                     "`{type_name}<{}>` is not supported; \
-                     {type_name}<T> is currently only implemented for String and bytes",
+                     {type_name}<T> is currently only implemented for string and bytes",
                     inner.user_facing()
                 ),
             );
@@ -677,8 +677,8 @@ impl Checker {
             span,
             format!(
                 "HashMap<{}, {}> is not supported; HashMap currently requires \
-                 String keys and scalar/string values (bool, char, integer, \
-                 float, duration, or String)",
+                 string keys and scalar/string values (bool, char, integer, \
+                 float, duration, or string)",
                 resolved_key.user_facing(),
                 resolved_val.user_facing()
             ),

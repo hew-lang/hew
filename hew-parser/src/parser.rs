@@ -3355,9 +3355,9 @@ impl<'src> Parser<'src> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let raw_ty = self.expect_ident()?;
-                    // Normalize legacy lowercase aliases to canonical type names
+                    // Normalize legacy aliases to canonical lowercase type names
                     let ty = match raw_ty.as_str() {
-                        "string" | "str" => "String".to_string(),
+                        "str" => "string".to_string(),
                         _ => raw_ty,
                     };
 
@@ -7945,7 +7945,7 @@ wire type Msg {
     fn struct_init_explicit_single_type_arg_parses() {
         let src = r#"
             type Wrapper<T> { value: T }
-            fn main() { let w = Wrapper<String> { value: "hello" }; }
+            fn main() { let w = Wrapper<string> { value: "hello" }; }
         "#;
         let result = parse(src);
         assert!(
@@ -7975,8 +7975,8 @@ wire type Msg {
         let args = type_args.as_ref().expect("type_args should be Some");
         assert_eq!(args.len(), 1, "expected one type arg");
         assert!(
-            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "String"),
-            "expected String type arg, got {:?}",
+            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "string"),
+            "expected string type arg, got {:?}",
             args[0].0
         );
     }
@@ -8014,7 +8014,7 @@ wire type Msg {
     fn struct_init_explicit_multi_type_arg_parses() {
         let src = r#"
             type Pair<A, B> { first: A, second: B }
-            fn main() { let p = Pair<int, String> { first: 1, second: "x" }; }
+            fn main() { let p = Pair<int, string> { first: 1, second: "x" }; }
         "#;
         let result = parse(src);
         assert!(
@@ -8043,8 +8043,8 @@ wire type Msg {
             "first type arg should be int"
         );
         assert!(
-            matches!(&args[1].0, TypeExpr::Named { name, .. } if name == "String"),
-            "second type arg should be String"
+            matches!(&args[1].0, TypeExpr::Named { name, .. } if name == "string"),
+            "second type arg should be string"
         );
     }
 

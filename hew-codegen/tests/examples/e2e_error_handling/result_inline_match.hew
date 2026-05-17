@@ -8,7 +8,7 @@ enum FsError {
     Io;
 }
 
-fn open_path(path: String) -> Result<String, FsError> {
+fn open_path(path: string) -> Result<string, FsError> {
     if path == "" {
         Err(NotFound)
     } else if path == "/secret" {
@@ -18,7 +18,7 @@ fn open_path(path: String) -> Result<String, FsError> {
     }
 }
 
-fn save_path(path: String) -> Result<int, FsError> {
+fn save_path(path: string) -> Result<int, FsError> {
     if path == "/secret" {
         Err(PermissionDenied)
     } else {

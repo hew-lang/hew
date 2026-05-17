@@ -26,7 +26,7 @@
 /// let id = uuid.v4();
 /// // e.g. "550e8400-e29b-41d4-a716-446655440000"
 /// ```
-pub fn v4() -> String {
+pub fn v4() -> string {
     unsafe {
         hew_uuid_v4()
     }
@@ -41,7 +41,7 @@ pub fn v4() -> String {
 /// ```
 /// let id = uuid.v7();
 /// ```
-pub fn v7() -> String {
+pub fn v7() -> string {
     unsafe {
         hew_uuid_v7()
     }
@@ -55,7 +55,7 @@ pub fn v7() -> String {
 /// uuid.is_valid("550e8400-e29b-41d4-a716-446655440000")  // true
 /// uuid.is_valid("not-a-uuid")                             // false
 /// ```
-pub fn is_valid(s: String) -> bool {
+pub fn is_valid(s: string) -> bool {
     unsafe {
         hew_uuid_parse(s)
     }
@@ -63,7 +63,7 @@ pub fn is_valid(s: String) -> bool {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_uuid_v4() -> String;
-    fn hew_uuid_v7() -> String;
-    fn hew_uuid_parse(s: String) -> bool;
+    fn hew_uuid_v4() -> string;
+    fn hew_uuid_v7() -> string;
+    fn hew_uuid_parse(s: string) -> bool;
 }

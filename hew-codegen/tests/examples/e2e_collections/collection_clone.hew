@@ -1,5 +1,5 @@
 fn main() {
-    let words: Vec<String> = Vec::new();
+    let words: Vec<string> = Vec::new();
     words.push("ant");
     words.push("bee");
     let cloned_words = words.clone();
@@ -8,7 +8,7 @@ fn main() {
     println(cloned_words.get(0));
     println(cloned_words.get(1));
 
-    let map: HashMap<String, String> = HashMap::new();
+    let map: HashMap<string, string> = HashMap::new();
     map.insert("alpha", "one");
     let cloned_map = map.clone();
     map.insert("beta", "two");
@@ -19,7 +19,7 @@ fn main() {
     }
     println(cloned_map.contains_key("beta"));
 
-    let set: HashSet<String> = HashSet::new();
+    let set: HashSet<string> = HashSet::new();
     set.insert("red");
     set.insert("blue");
     let cloned_set = set.clone();

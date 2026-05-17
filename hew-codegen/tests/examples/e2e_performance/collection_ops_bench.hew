@@ -24,7 +24,7 @@ fn main() -> int {
     println(f"Vec sum: {sum}");
 
     // HashMap: 1000 inserts and lookups
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
     m.insert("key0", 0);
     m.insert("key1", 1);
     m.insert("key2", 2);

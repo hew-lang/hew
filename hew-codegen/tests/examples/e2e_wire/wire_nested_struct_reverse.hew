@@ -8,7 +8,7 @@ struct Envelope {
 #[wire]
 struct Payload {
     value: i32,
-    label: String,
+    label: string,
 }
 
 fn main() {

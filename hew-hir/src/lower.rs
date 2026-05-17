@@ -2210,9 +2210,9 @@ impl LowerCtx {
                     "f64" | "float" => ResolvedTy::F64,
                     "bool" | "Bool" => ResolvedTy::Bool,
                     "char" | "Char" => ResolvedTy::Char,
-                    "String" | "str" => ResolvedTy::String,
+                    "string" | "str" => ResolvedTy::String,
+                    "duration" => ResolvedTy::Duration,
                     "Bytes" => ResolvedTy::Bytes,
-                    "Duration" => ResolvedTy::Duration,
                     "Unit" | "()" => ResolvedTy::Unit,
                     // `Task` is a compiler-internal value class with no user-source
                     // syntax. Writing `Task<T>` in any annotation position is a

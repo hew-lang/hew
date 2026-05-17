@@ -2,7 +2,7 @@
 // Exercises: HashMapNewOp, HashMapInsertOp, HashMapGetOp, HashMapContainsKeyOp,
 //            HashMapRemoveOp, HashMapLenOp, HashMapFreeOp
 fn main() {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, int> = HashMap::new();
 
     // insert + len
     m.insert("x", 10);

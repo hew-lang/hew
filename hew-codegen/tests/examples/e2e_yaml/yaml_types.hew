@@ -2,7 +2,7 @@
 import std::encoding::yaml;
 
 fn main() {
-    // String
+    // string
     let s = yaml.from_string("hello");
     println(s.type_of());
     println(s.get_string());

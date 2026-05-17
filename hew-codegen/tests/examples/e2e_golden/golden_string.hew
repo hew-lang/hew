@@ -2,11 +2,11 @@
 // Exercises: StringConcatOp, StringMethodOp, GlobalStringOp, ToStringOp
 
 fn main() {
-    // String concat
+    // string concat
     let cat = "foo" + "bar";
     println(cat);
 
-    // String length
+    // string length
     let s = "hello world";
     println(s.len());
 
@@ -32,7 +32,7 @@ fn main() {
     // replace
     println("aabbcc".replace("bb", "XX"));
 
-    // String interpolation
+    // string interpolation
     let x = 42;
     println(f"x is {x}");
 

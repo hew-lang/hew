@@ -23,8 +23,8 @@
 //   - hew.scope op carries actor-cleanup edges; the scope cannot return while
 //     children are alive.
 
-fn process_batch(items: Vec<String>) -> Vec<String> {
-    var results: Vec<String> = [];
+fn process_batch(items: Vec<string>) -> Vec<string> {
+    var results: Vec<string> = [];
 
     actor_scope {
         // Workers are child actors bounded by this scope.
@@ -44,7 +44,7 @@ fn process_batch(items: Vec<String>) -> Vec<String> {
 }
 
 actor Worker {
-    receive fn process(item: String) {
+    receive fn process(item: string) {
         // Process item; in real code, send result back via a channel.
         let _ = item;
     }

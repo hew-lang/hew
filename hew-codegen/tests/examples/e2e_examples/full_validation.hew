@@ -46,7 +46,7 @@ fn test_loops() {
     }
 }
 
-// 5. String operations
+// 5. string operations
 fn test_strings() {
     println("PASS: strings")
 }

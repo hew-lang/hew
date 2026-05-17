@@ -2,8 +2,8 @@
 // Same hazard as the trailing-expr case — either double-free or leak.
 
 type Config {
-    primary: String;
-    fallback: String;
+    primary: string;
+    fallback: string;
 }
 
 impl Drop for Config {
@@ -12,7 +12,7 @@ impl Drop for Config {
     }
 }
 
-fn pick_primary(c: Config, flag: bool) -> String {
+fn pick_primary(c: Config, flag: bool) -> string {
     if flag {
         return c.primary;  // rejected: returning field of callee-dropped param
     }

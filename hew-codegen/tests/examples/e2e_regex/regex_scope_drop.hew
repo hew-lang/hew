@@ -3,7 +3,7 @@
 
 import std::text::regex;
 
-fn check_digit(s: String) -> bool {
+fn check_digit(s: string) -> bool {
     let re = regex.new("[0-9]+");
     let matched = re.is_match(s);
     re.free();

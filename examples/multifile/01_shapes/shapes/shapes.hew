@@ -7,12 +7,12 @@
 // Traits and the common rendering helper live here; concrete types live in
 // the peer files so each shape is self-contained.
 pub trait Drawable {
-    fn draw(val: Self) -> String;
+    fn draw(val: Self) -> string;
 }
 
 // render() accepts any Drawable via dynamic dispatch.  Peer-file types
 // (Circle, Rectangle) satisfy this trait, so callers can pass them here
 // even though those types are defined in different .hew files.
-pub fn render(item: dyn Drawable) -> String {
+pub fn render(item: dyn Drawable) -> string {
     item.draw()
 }

@@ -2,7 +2,7 @@
 // Verifies that the sender-side copy is dropped at scope exit.
 
 type Resource {
-    name: String;
+    name: string;
 }
 
 impl Drop for Resource {

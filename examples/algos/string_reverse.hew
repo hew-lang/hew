@@ -1,5 +1,5 @@
-// String reverse by building new string char by char
-fn reverse(s: String) -> String {
+// string reverse by building new string char by char
+fn reverse(s: string) -> string {
     let n = s.len();
     var result = "";
     var i = n;

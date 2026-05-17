@@ -14,8 +14,8 @@
 // even when the outer break is safe.
 
 type Wrapper {
-    name: String;
-    extra: String;
+    name: string;
+    extra: string;
 }
 
 impl Drop for Wrapper {
@@ -24,7 +24,7 @@ impl Drop for Wrapper {
     }
 }
 
-fn extract_name(w: Wrapper) -> String {
+fn extract_name(w: Wrapper) -> string {
     unsafe {
         @outer: loop {
             @outer: loop {

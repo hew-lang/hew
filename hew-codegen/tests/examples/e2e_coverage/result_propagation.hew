@@ -2,7 +2,7 @@
 // Exercises: Result<T,E>, Ok/Err construction, ? operator,
 // chained fallible functions, match destructuring, error message flow.
 
-fn parse_input(s: String) -> Result<int, String> {
+fn parse_input(s: string) -> Result<int, string> {
     if s == "one" {
         Ok(1)
     } else {
@@ -18,7 +18,7 @@ fn parse_input(s: String) -> Result<int, String> {
     }
 }
 
-fn validate(n: int) -> Result<int, String> {
+fn validate(n: int) -> Result<int, string> {
     if n > 0 {
         if n <= 100 {
             Ok(n)
@@ -30,7 +30,7 @@ fn validate(n: int) -> Result<int, String> {
     }
 }
 
-fn safe_divide(a: int, b: int) -> Result<int, String> {
+fn safe_divide(a: int, b: int) -> Result<int, string> {
     if b == 0 {
         Err("division by zero")
     } else {
@@ -39,14 +39,14 @@ fn safe_divide(a: int, b: int) -> Result<int, String> {
 }
 
 // Uses ? to propagate errors through three steps
-fn parse_validate_divide(s: String, divisor: int) -> Result<int, String> {
+fn parse_validate_divide(s: string, divisor: int) -> Result<int, string> {
     let n = parse_input(s)?;
     let v = validate(n)?;
     let r = safe_divide(v * 10, divisor)?;
     Ok(r)
 }
 
-fn show_result(r: Result<int, String>) {
+fn show_result(r: Result<int, string>) {
     match r {
         Ok(v) => println(f"ok: {v}"),
         Err(e) => println(f"err: {e}"),

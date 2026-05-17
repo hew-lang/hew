@@ -3,8 +3,8 @@
 // param.field → same use-after-free / sibling-leak hazard.
 
 type Wrapper {
-    name: String;
-    extra: String;
+    name: string;
+    extra: string;
 }
 
 impl Drop for Wrapper {
@@ -13,7 +13,7 @@ impl Drop for Wrapper {
     }
 }
 
-fn extract_name(w: Wrapper, flag: bool) -> String {
+fn extract_name(w: Wrapper, flag: bool) -> string {
     if flag {
         w.name
     } else {

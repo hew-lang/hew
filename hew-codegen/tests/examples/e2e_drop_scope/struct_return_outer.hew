@@ -3,7 +3,7 @@
 // Exercises path-specific drop exclusion in the function epilogue.
 
 type Resource {
-    name: String;
+    name: string;
 }
 
 impl Drop for Resource {

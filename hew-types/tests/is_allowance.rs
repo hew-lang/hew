@@ -5,7 +5,7 @@
 //! * Allowed: machines, actors/actor refs, `Vec`/`HashMap`/`HashSet`, `bytes`,
 //!   user `type Foo { ... }` declarations.
 //! * Rejected with `E_IS_VALUE_TYPE`: scalars (`int`, `bool`, `char`, floats),
-//!   `String`, `record` instances, tuples.
+//!   `string`, `record` instances, tuples.
 //! * Cross-type mismatches collapse into `TypeErrorKind::Mismatch`.
 //! * Move/consumed-self follows the existing use-after-move rule (plan §D-D4).
 //!
@@ -93,8 +93,8 @@ fn hashmap_is_hashmap_accepted() {
     assert_clean(
         r"
             fn main() {
-                let m1: HashMap<String, int> = HashMap::new();
-                let m2: HashMap<String, int> = HashMap::new();
+                let m1: HashMap<string, int> = HashMap::new();
+                let m2: HashMap<string, int> = HashMap::new();
                 let _eq: bool = m1 is m2;
             }
         ",
@@ -168,7 +168,7 @@ fn is_result_typed_as_bool() {
 }
 
 // ---------------------------------------------------------------------------
-// REJECTED: scalars, String, record, tuples (E_IS_VALUE_TYPE)
+// REJECTED: scalars, string, record, tuples (E_IS_VALUE_TYPE)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -202,8 +202,8 @@ fn string_is_string_rejected() {
     assert_has_e_is_value_type(
         r#"
             fn main() {
-                let a: String = "x";
-                let b: String = "x";
+                let a: string = "x";
+                let b: string = "x";
                 let _eq: bool = a is b;
             }
         "#,
@@ -268,7 +268,7 @@ fn vec_int_is_vec_string_rejected_as_mismatch() {
         r"
             fn main() {
                 let a: Vec<int> = Vec::new();
-                let b: Vec<String> = Vec::new();
+                let b: Vec<string> = Vec::new();
                 let _eq: bool = a is b;
             }
         ",
@@ -286,7 +286,7 @@ fn is_after_actor_send_emits_use_after_move() {
     // non-Copy payloads. After `s.consume(h)` moves `h`, evaluating `h is q`
     // re-uses the moved binding and must trip `UseAfterMove`.
     let src = r#"
-        type Payload { data: String; }
+        type Payload { data: string; }
 
         actor Sink {
             let _id: int;

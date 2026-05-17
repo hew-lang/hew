@@ -5,11 +5,11 @@
 // registered for caller-side drop -> double-free.
 // Supported workaround: bind the match result to a local variable first.
 type Greeting {
-    text: String;
+    text: string;
 }
 
 impl Display for Greeting {
-    fn fmt(val: Greeting) -> String {
+    fn fmt(val: Greeting) -> string {
         val.text
     }
 }

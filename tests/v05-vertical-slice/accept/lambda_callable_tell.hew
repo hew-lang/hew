@@ -1,9 +1,9 @@
 // Accept fixture: tell-shaped lambda actor with call-syntax dispatch.
-// `actor |s: String| { ... }` produces `Duplex<String, ()>`.
+// `actor |s: string| { ... }` produces `Duplex<string, ()>`.
 // Call `log("x")` returns `Result<(), SendError>` at the type level.
 // WASM-PASS: type-check level only for slice 2; runtime landing is slice 4.
 fn main() {
-    let log = actor |s: String| {
+    let log = actor |s: string| {
         println(s);
     };
     log("hello");

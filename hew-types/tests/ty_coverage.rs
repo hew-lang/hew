@@ -32,7 +32,7 @@ fn display_all_primitives() {
     assert_eq!(Ty::F64.to_string(), "f64");
     assert_eq!(Ty::Bool.to_string(), "bool");
     assert_eq!(Ty::Char.to_string(), "char");
-    assert_eq!(Ty::String.to_string(), "String");
+    assert_eq!(Ty::String.to_string(), "string");
     assert_eq!(Ty::Bytes.to_string(), "bytes");
     assert_eq!(Ty::Duration.to_string(), "duration");
     assert_eq!(Ty::Unit.to_string(), "()");
@@ -71,7 +71,7 @@ fn display_named_multiple_args() {
         name: "HashMap".to_string(),
         args: vec![Ty::String, Ty::I64],
     };
-    assert_eq!(ty.to_string(), "HashMap<String, i64>");
+    assert_eq!(ty.to_string(), "HashMap<string, i64>");
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn display_function_multiple_params() {
         params: vec![Ty::I32, Ty::Bool, Ty::String],
         ret: Box::new(Ty::F64),
     };
-    assert_eq!(ty.to_string(), "fn(i32, bool, String) -> f64");
+    assert_eq!(ty.to_string(), "fn(i32, bool, string) -> f64");
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn display_trait_object_single_with_multiple_args() {
             args: vec![Ty::I32, Ty::String],
         }],
     };
-    assert_eq!(ty.to_string(), "dyn Converter<i32, String>");
+    assert_eq!(ty.to_string(), "dyn Converter<i32, string>");
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn display_trait_object_multi_trait_with_args() {
             },
         ],
     };
-    assert_eq!(ty.to_string(), "dyn (Into<String> + Clone)");
+    assert_eq!(ty.to_string(), "dyn (Into<string> + Clone)");
 }
 
 #[test]
@@ -250,12 +250,12 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("char"), Some(Ty::Char));
     assert_eq!(Ty::from_name("Char"), Some(Ty::Char));
     assert_eq!(Ty::from_name("string"), Some(Ty::String));
-    assert_eq!(Ty::from_name("String"), Some(Ty::String));
+    assert_eq!(Ty::from_name("String"), None); // uppercase removed per Q57/R14
     assert_eq!(Ty::from_name("str"), Some(Ty::String));
     assert_eq!(Ty::from_name("bytes"), Some(Ty::Bytes));
     assert_eq!(Ty::from_name("Bytes"), Some(Ty::Bytes));
     assert_eq!(Ty::from_name("duration"), Some(Ty::Duration));
-    assert_eq!(Ty::from_name("Duration"), Some(Ty::Duration));
+    assert_eq!(Ty::from_name("Duration"), None); // uppercase removed per Q57/R14
     assert_eq!(Ty::from_name("()"), Some(Ty::Unit));
     assert_eq!(Ty::from_name("!"), Some(Ty::Never));
 }
@@ -266,6 +266,8 @@ fn from_name_unknown_returns_none() {
     assert_eq!(Ty::from_name("HashMap"), None);
     assert_eq!(Ty::from_name("NonExistent"), None);
     assert_eq!(Ty::from_name(""), None);
+    assert_eq!(Ty::from_name("String"), None); // uppercase removed per Q57/R14
+    assert_eq!(Ty::from_name("Duration"), None); // uppercase removed per Q57/R14
 }
 
 #[test]

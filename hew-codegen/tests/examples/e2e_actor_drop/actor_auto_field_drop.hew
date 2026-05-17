@@ -1,5 +1,5 @@
 // Regression: an actor whose state holds a plain struct (no `impl Drop`)
-// with an owned field (e.g. `String`) must release that owned field when
+// with an owned field (e.g. `string`) must release that owned field when
 // the actor is killed.
 //
 // Before routing the per-actor state-drop body through the shared
@@ -10,13 +10,13 @@
 // `unreconciled unrealized_conversion_cast` build failure (or, after
 // lowering rewrites, a link error against `__auto_field_drop`). Routing
 // through the helper resolves the sentinel by recursion, so the program
-// builds, runs, and the inner `String` field is released by
+// builds, runs, and the inner `string` field is released by
 // `hew_string_drop` at teardown.
 //
 // The expected output is just the program output; resource release is
 // tracked by ASAN/LSAN in CI rather than printed.
 type Holder {
-    text: String;
+    text: string;
 }
 
 actor Owner {
@@ -30,7 +30,7 @@ actor Owner {
 }
 
 fn main() {
-    let s: String = f"auto-field-drop-ok";
+    let s: string = f"auto-field-drop-ok";
     let h = Holder { text: s };
     let a = spawn Owner(h: h);
     let n = await a.ping();

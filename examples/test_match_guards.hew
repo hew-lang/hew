@@ -1,7 +1,7 @@
 // Regression: enum variant match guards with short-circuit conditions
 enum Event {
     Number(i32);
-    Text(String);
+    Text(string);
     Empty;
 }
 

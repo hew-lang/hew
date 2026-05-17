@@ -26,9 +26,9 @@ fn main() {
     println(outer.value.first);
     println(outer.value.second);
 
-    // Box<Pair<String>> — nested with String
-    let sp = make_pair<String>("hello", "world");
-    let sb = box_new<Pair<String>>(sp);
+    // Box<Pair<string>> — nested with string
+    let sp = make_pair<string>("hello", "world");
+    let sb = box_new<Pair<string>>(sp);
     println(sb.value.first);
     println(sb.value.second);
 

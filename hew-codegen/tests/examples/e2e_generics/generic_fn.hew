@@ -5,6 +5,6 @@ fn identity<T>(x: T) -> T {
 fn main() {
     let a = identity<int>(42);
     println(a);
-    let s = identity<String>("hello");
+    let s = identity<string>("hello");
     println(s);
 }

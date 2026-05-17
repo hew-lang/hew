@@ -15,12 +15,12 @@
 //   - outer binding is not accessible after the closure moves it
 //   - report shows CaptureIntoClosure: consume
 
-fn accept_string(consuming s: String) {
+fn accept_string(consuming s: string) {
     let _ = s;
 }
 
 fn main() {
-    let greeting = "hello";  // CowValue<String>
+    let greeting = "hello";  // CowValue<string>
 
     // The closure consumes `greeting` (passes it to a consuming callee).
     // Capture mode is consume; greeting is moved into the closure at construction.

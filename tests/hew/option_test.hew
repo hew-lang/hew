@@ -92,7 +92,7 @@ fn test_contains_int_none() {
     testing.assert_false(option.contains_int(x, 42));
 }
 
-// ── String variants ────────────────────────────────────────────────────
+// ── string variants ────────────────────────────────────────────────────
 
 #[test]
 fn test_is_some_str_with_value() {
@@ -102,7 +102,7 @@ fn test_is_some_str_with_value() {
 
 #[test]
 fn test_is_none_str_with_none() {
-    let x: Option<String> = None;
+    let x: Option<string> = None;
     testing.assert_true(option.is_none_str(x));
 }
 
@@ -114,21 +114,21 @@ fn test_unwrap_or_str_some() {
 
 #[test]
 fn test_unwrap_or_str_none() {
-    let x: Option<String> = None;
+    let x: Option<string> = None;
     testing.assert_eq_str(option.unwrap_or_str(x, "fallback"), "fallback");
 }
 
 #[test]
 fn test_map_str_some() {
     let x = Some("hello");
-    let mapped = option.map_str(x, (s: String) => s + "!");
+    let mapped = option.map_str(x, (s: string) => s + "!");
     testing.assert_eq_str(option.unwrap_str(mapped), "hello!");
 }
 
 #[test]
 fn test_map_str_none() {
-    let x: Option<String> = None;
-    let mapped = option.map_str(x, (s: String) => s + "!");
+    let x: Option<string> = None;
+    let mapped = option.map_str(x, (s: string) => s + "!");
     testing.assert_true(option.is_none_str(mapped));
 }
 
@@ -155,7 +155,7 @@ fn test_unwrap_str_some() {
 #[test]
 #[should_panic]
 fn test_unwrap_str_none_panics() {
-    let x: Option<String> = None;
+    let x: Option<string> = None;
     option.unwrap_str(x);
 }
 

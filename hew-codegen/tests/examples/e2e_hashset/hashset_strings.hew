@@ -1,5 +1,5 @@
 fn main() {
-    let s: HashSet<String> = HashSet::new();
+    let s: HashSet<string> = HashSet::new();
     s.insert("hello");
     s.insert("world");
     s.insert("hello");  // duplicate

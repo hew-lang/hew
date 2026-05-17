@@ -581,6 +581,7 @@ static ast::SupervisorStrategy parseSupervisorStrategy(const msgpack::object &ob
   if (s == "OneForOne") return ast::SupervisorStrategy::OneForOne;
   if (s == "OneForAll") return ast::SupervisorStrategy::OneForAll;
   if (s == "RestForOne") return ast::SupervisorStrategy::RestForOne;
+  if (s == "SimpleOneForOne") return ast::SupervisorStrategy::SimpleOneForOne;
   fail("unknown SupervisorStrategy: " + s);
 }
 

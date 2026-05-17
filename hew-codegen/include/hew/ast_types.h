@@ -921,7 +921,7 @@ struct ActorDecl {
 
 // ── Supervisor ────────────────────────────────────────────────────────────
 
-enum class SupervisorStrategy { OneForOne, OneForAll, RestForOne };
+enum class SupervisorStrategy { OneForOne, OneForAll, RestForOne, SimpleOneForOne };
 enum class RestartPolicy { Permanent, Transient, Temporary };
 
 struct ChildSpec {

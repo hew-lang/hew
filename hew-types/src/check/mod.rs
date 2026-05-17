@@ -36,8 +36,8 @@ mod util;
 
 pub use self::types::{
     ActorSendAliasing, ActorSendCopyReason, AllocationClass, AssignTargetKind, AssignTargetShape,
-    Checker, ChildKind, ChildSlot, DynCoercion, FnSig, MethodCallReceiverKind, MethodCallRewrite,
-    SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    Checker, ChildKind, ChildSlot, DynCoercion, DynMethodCall, FnSig, MethodCallReceiverKind,
+    MethodCallRewrite, SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -361,6 +361,7 @@ impl Checker {
             record_init_type_args: resolved_record_init_type_args,
             stack_hints: std::mem::take(&mut self.stack_hints),
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),
+            dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
         };
 
         // Detect actor reference cycles and emit warnings.

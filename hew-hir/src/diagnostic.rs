@@ -185,6 +185,24 @@ pub enum HirDiagnosticKind {
         /// The method name the user wrote (e.g. `send`).
         method: String,
     },
+    /// A method-call expression whose receiver typed as `Ty::TraitObject`
+    /// has no entry in `TypeCheckOutput.dyn_trait_method_calls` for its
+    /// span. Fail-closed per `checker-output-boundary`: HIR lowering
+    /// never re-derives the trait/slot resolution. Surfaces compile-time,
+    /// not as a runtime panic.
+    TraitObjectMethodNoSideTableEntry {
+        /// The method name the user wrote.
+        method: String,
+    },
+    /// A `T → dyn Trait` coercion site has no entry in
+    /// `TypeCheckOutput.dyn_trait_coercions` for the argument expression
+    /// span — yet the destination type is `Ty::TraitObject`. Fail-closed
+    /// per `checker-output-boundary`: HIR/MIR never construct a fat
+    /// pointer without checker-authority resolution of the impl-fn keys.
+    TraitObjectCoercionMissing {
+        /// Trait name targeted by the coercion (e.g. `"Display"`).
+        trait_name: String,
+    },
     /// A checker-owned `expr_types` entry failed the `ResolvedTy::from_ty`
     /// boundary conversion.  This means the checker left an unresolved
     /// inference variable, a `Ty::Error` placeholder, or an unmaterialized

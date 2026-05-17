@@ -1711,6 +1711,27 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
             }
             let _ = ctx;
         }
+        // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,
+        // `Instr::CallTraitMethod`); TO-4 (runtime-trait-object-abi.md
+        // §D-3 / §D-4) adds the LLVM emission (vtable static + GEP /
+        // load / call). Fail closed until TO-4 wires the arms — better
+        // a deterministic compile error than a silent miscompile.
+        Instr::CoerceToDynTrait { trait_name, .. } => {
+            return Err(CodegenError::Llvm(format!(
+                "Instr::CoerceToDynTrait (trait `{trait_name}`) reached LLVM emission \
+                 before the TO-4 vtable-emission slice landed"
+            )));
+        }
+        Instr::CallTraitMethod {
+            trait_name,
+            method_name,
+            ..
+        } => {
+            return Err(CodegenError::Llvm(format!(
+                "Instr::CallTraitMethod `{trait_name}::{method_name}` reached LLVM emission \
+                 before the TO-4 vtable-dispatch slice landed"
+            )));
+        }
     }
     Ok(())
 }

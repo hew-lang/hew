@@ -575,6 +575,19 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Per-call-site `T → dyn Trait` coercion side-table. Keyed by the
+    /// argument expression span. `lower_expr` consults this at every
+    /// expression's exit; if the just-lowered expression's span has an
+    /// entry, the result is wrapped in `HirExprKind::CoerceToDynTrait`.
+    /// Carries the checker's authoritative method-table resolution.
+    dyn_trait_coercions: HashMap<SpanKey, hew_types::DynCoercion>,
+    /// Per-call-site `dyn Trait` method-dispatch side-table. Keyed by the
+    /// method-call expression span. `lower_method_call` consults this
+    /// before the `method_call_rewrites` branch so that
+    /// `obj.method()` on a `dyn`-typed receiver lowers to
+    /// `HirExprKind::CallDynMethod` (vtable slot index attached) rather
+    /// than failing closed on the missing rewrite entry.
+    dyn_trait_method_calls: HashMap<SpanKey, hew_types::DynMethodCall>,
     /// Checker-inferred types for every expression, keyed by expression span.
     /// Consulted at `Expr::Call` sites to determine the call-result type from
     /// checker authority rather than re-deriving from the callee's HIR type.
@@ -725,6 +738,8 @@ impl LowerCtx {
             type_classes,
             diagnostics: Vec::new(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
+            dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
             scope_depth: 0,
             statement_position: false,
@@ -2577,15 +2592,64 @@ impl LowerCtx {
                 )
             }
         };
-        HirExpr {
+        let inner = HirExpr {
             node: self.ids.node(),
             site,
             value_class: ValueClass::of_ty(&ty, &self.type_classes),
             ty,
             intent,
             kind,
-            span,
+            span: span.clone(),
+        };
+        // Checker-authority coercion: if the just-lowered expression sits at
+        // a `T → dyn Trait` coercion site (recorded by the type checker at
+        // the *argument* expression span), wrap the result in
+        // `HirExprKind::CoerceToDynTrait`. MIR lowers this 1:1 to
+        // `Instr::CoerceToDynTrait`. The wrapping ResolvedTy is the
+        // destination trait-object type, which the wrapping HirExpr
+        // carries; the inner expression keeps its concrete type.
+        let coercion_key = SpanKey::from(&span);
+        if let Some(coercion) = self.dyn_trait_coercions.get(&coercion_key).cloned() {
+            let dyn_ty = ResolvedTy::TraitObject {
+                traits: coercion
+                    .trait_name
+                    .split('+')
+                    .map(|name| hew_types::ResolvedTraitBound {
+                        trait_name: name.to_string(),
+                        args: vec![],
+                    })
+                    .collect(),
+            };
+            let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
+                Ok(r) => r,
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "dyn-trait coercion".to_string(),
+                            reason: err.to_string(),
+                        },
+                        span.clone(),
+                        "concrete type from dyn_trait_coercions failed boundary conversion",
+                    ));
+                    return inner;
+                }
+            };
+            return HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                value_class: ValueClass::of_ty(&dyn_ty, &self.type_classes),
+                ty: dyn_ty,
+                intent,
+                kind: HirExprKind::CoerceToDynTrait {
+                    value: Box::new(inner),
+                    trait_name: coercion.trait_name,
+                    concrete_type: concrete_resolved,
+                    method_table: coercion.method_table,
+                },
+                span,
+            };
         }
+        inner
     }
 
     /// Lower a parsed `select { ... }` expression to HIR.
@@ -3159,6 +3223,13 @@ impl LowerCtx {
     /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
     /// other rewrite variants are rejected as unsupported (they target the C++/MLIR
     /// pipeline, not the Rust MIR pipeline).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single linear lowering path with three exclusive branches \
+                  (dyn-method dispatch / dyn-receiver fail-closed / legacy \
+                  rewrite); splitting would scatter related fail-closed \
+                  diagnostics across helpers"
+    )]
     fn lower_method_call(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -3167,6 +3238,60 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         let key = SpanKey::from(&span);
+        // `dyn Trait` receivers take precedence: the checker's
+        // `dyn_trait_method_calls` side-table pins the trait/method/slot
+        // resolution authoritatively, and these calls do NOT have a
+        // `method_call_rewrites` entry (a direct-call rewrite would
+        // collapse the dispatch indirection that the vtable provides).
+        if let Some(dyn_call) = self.dyn_trait_method_calls.get(&key).cloned() {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let lowered_args: Vec<HirExpr> = args
+                .iter()
+                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                .collect();
+            // Result type comes from the checker's expr_types side-table
+            // (the call's full span). Fail-closed if absent or poisoned.
+            let ret_ty = self
+                .expr_types
+                .get(&key)
+                .cloned()
+                .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+                .unwrap_or(ResolvedTy::Unit);
+            return (
+                HirExprKind::CallDynMethod {
+                    receiver: Box::new(lowered_receiver),
+                    trait_name: dyn_call.trait_name,
+                    method_name: dyn_call.method_name,
+                    slot: dyn_call.slot,
+                    args: lowered_args,
+                    ret_ty: ret_ty.clone(),
+                },
+                ret_ty,
+            );
+        }
+        // Receiver typed as `Ty::TraitObject` but no side-table entry:
+        // fail-closed per `checker-output-boundary`. The checker MUST
+        // populate `dyn_trait_method_calls` for every accepted call on
+        // a trait-object receiver; missing entry is a hard diagnostic.
+        if let Some(receiver_ty) = self.expr_types.get(&SpanKey::from(&receiver.1)) {
+            if matches!(receiver_ty, hew_types::Ty::TraitObject { .. }) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::TraitObjectMethodNoSideTableEntry {
+                        method: method.to_string(),
+                    },
+                    span.clone(),
+                    "method call on `dyn Trait` receiver has no \
+                     dyn_trait_method_calls side-table entry; the \
+                     checker must record one before HIR lowering",
+                ));
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "method call `.{method}` on dyn-trait with no side-table entry"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            }
+        }
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
             Some(MethodCallRewrite::RewriteToFunction { c_symbol }) => {
@@ -3678,6 +3803,15 @@ fn collect_captures_walk(
             }
             if let Some(e) = end {
                 collect_captures_walk(e, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_captures_walk(value, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::CallDynMethod { receiver, args, .. } => {
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            for arg in args {
+                collect_captures_walk(arg, param_ids, seen, captures, self_id);
             }
         }
     }

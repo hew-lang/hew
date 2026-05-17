@@ -1599,6 +1599,62 @@ impl Builder {
                     .push(Instr::IdentityCompare { dest, lhs, rhs });
                 Some(dest)
             }
+            HirExprKind::CoerceToDynTrait {
+                value,
+                trait_name,
+                concrete_type,
+                method_table,
+            } => {
+                // Materialise the concrete value into a Place, then emit
+                // `Instr::CoerceToDynTrait` to construct the fat pointer.
+                // The dest is typed `ResolvedTy::TraitObject` (inherited
+                // from `expr.ty`), so codegen can pick the 2-word layout.
+                let value_place = self.lower_value(value)?;
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::CoerceToDynTrait {
+                    value: value_place,
+                    dest,
+                    trait_name: trait_name.clone(),
+                    concrete_type: concrete_type.clone(),
+                    method_table: method_table.clone(),
+                });
+                Some(dest)
+            }
+            HirExprKind::CallDynMethod {
+                receiver,
+                trait_name,
+                method_name,
+                slot,
+                args,
+                ret_ty,
+            } => {
+                // Lower the receiver (a `dyn Trait` fat pointer) and the
+                // ordinary args. `Instr::CallTraitMethod` GEPs into the
+                // vtable at `slot`, loads the function pointer, and calls
+                // it with `fat_pointer.data` as the implicit receiver —
+                // codegen materialises the data-ptr argument from the
+                // fat pointer, so the args list here is the source-level
+                // args without the synthetic receiver entry.
+                let fat_pointer = self.lower_value(receiver)?;
+                let mut lowered_args: Vec<Place> = Vec::with_capacity(args.len());
+                for arg in args {
+                    lowered_args.push(self.lower_value(arg)?);
+                }
+                let dest = if matches!(ret_ty, ResolvedTy::Unit) {
+                    None
+                } else {
+                    Some(self.alloc_local(ret_ty.clone()))
+                };
+                self.instructions.push(Instr::CallTraitMethod {
+                    fat_pointer,
+                    dest,
+                    trait_name: trait_name.clone(),
+                    method_name: method_name.clone(),
+                    slot: *slot,
+                    args: lowered_args,
+                });
+                dest
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
                 // CutoverUnsupported and the driver should have stopped
@@ -4199,6 +4255,20 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             }
             places
         }
+        Instr::CoerceToDynTrait { value, dest, .. } => vec![*value, *dest],
+        Instr::CallTraitMethod {
+            fat_pointer,
+            dest,
+            args,
+            ..
+        } => {
+            let mut places: Vec<Place> = vec![*fat_pointer];
+            places.extend(args.iter().copied());
+            if let Some(d) = dest {
+                places.push(*d);
+            }
+            places
+        }
     }
 }
 
@@ -4222,13 +4292,31 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
 /// boundary-fail-closed (kind is selected by Place; mismatching
 /// Place + `DropKind` is structurally impossible because this function
 /// is the single source of truth).
+/// Test-only re-export: forwards to the private `drop_kind_for`.
+/// Lives in this module so the function-private invariants stay
+/// non-public while still being exercisable from the integration
+/// test that pins the `dyn Trait` → `DropKind::TraitObject` contract.
+#[doc(hidden)]
 #[must_use]
-fn drop_kind_for(place: Place, _ty: &ResolvedTy) -> DropKind {
+pub fn drop_kind_for_test_only(place: Place, ty: &ResolvedTy) -> DropKind {
+    drop_kind_for(place, ty)
+}
+
+#[must_use]
+fn drop_kind_for(place: Place, ty: &ResolvedTy) -> DropKind {
     match place {
         Place::DuplexHandle(_) => DropKind::DuplexClose,
         Place::LambdaActorHandle(_) => DropKind::LambdaActorRelease,
         Place::SendHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Send),
         Place::RecvHalf(_) => DropKind::DuplexHalfClose(crate::model::Direction::Recv),
+        // `dyn Trait` locals carry their drop ritual in the vtable's slot 0
+        // (`drop_in_place`); codegen emits the GEP-to-slot-0 dispatch.
+        // Discriminated by `ResolvedTy::TraitObject` rather than a Place
+        // variant because trait objects share `Place::Local` storage with
+        // every other by-value owned binding.
+        Place::Local(_) | Place::ReturnSlot if matches!(ty, ResolvedTy::TraitObject { .. }) => {
+            DropKind::TraitObject
+        }
         Place::Local(_) | Place::ReturnSlot => DropKind::Resource,
     }
 }
@@ -4928,7 +5016,7 @@ mod slice3_invariants {
                     }
                     DropKind::DuplexHalfClose(Direction::Send) => s_count += 1,
                     DropKind::DuplexHalfClose(Direction::Recv) => r_count += 1,
-                    DropKind::Resource | DropKind::LambdaActorRelease => {}
+                    DropKind::Resource | DropKind::LambdaActorRelease | DropKind::TraitObject => {}
                 }
             }
             assert!(

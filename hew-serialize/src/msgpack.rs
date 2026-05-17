@@ -2104,6 +2104,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2192,6 +2193,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2399,6 +2401,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2488,6 +2491,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let entries = build_assign_target_kind_entries(&program, &tco);
@@ -2572,6 +2576,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let entries = build_lowering_fact_entries(&program, &tco);
@@ -2686,6 +2691,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3019,6 +3025,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3113,6 +3120,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3200,6 +3208,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);
@@ -3286,6 +3295,7 @@ mod tests {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);

@@ -356,6 +356,41 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 writeln!(out, "{pad}    end (open)").expect("write to string");
             }
         }
+        HirExprKind::CoerceToDynTrait {
+            value,
+            trait_name,
+            concrete_type,
+            method_table,
+        } => {
+            writeln!(
+                out,
+                "{pad}  coerce-to-dyn {} <- {} (slots={})",
+                trait_name,
+                concrete_type.user_facing(),
+                method_table.len()
+            )
+            .expect("write to string");
+            dump_expr(out, value, indent + 4);
+        }
+        HirExprKind::CallDynMethod {
+            receiver,
+            trait_name,
+            method_name,
+            slot,
+            args,
+            ret_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  call-dyn {trait_name}::{method_name} slot={slot} -> {}",
+                ret_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            for arg in args {
+                dump_expr(out, arg, indent + 4);
+            }
+        }
         HirExprKind::Unsupported(reason) => {
             writeln!(out, "{pad}  unsupported {reason}").expect("write to string");
         }

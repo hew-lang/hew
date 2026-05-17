@@ -222,6 +222,15 @@ impl Verifier {
                     self.expr(e);
                 }
             }
+            HirExprKind::CoerceToDynTrait { value, .. } => {
+                self.expr(value);
+            }
+            HirExprKind::CallDynMethod { receiver, args, .. } => {
+                self.expr(receiver);
+                for arg in args {
+                    self.expr(arg);
+                }
+            }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: an Unsupported node should never survive
                 // to verification without a prior CutoverUnsupported diagnostic.

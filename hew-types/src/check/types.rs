@@ -171,6 +171,17 @@ pub struct TypeCheckOutput {
     /// order; each entry's method name is prefixed by the originating trait
     /// (`Trait::method`) so downstream consumers can recover the binding.
     pub dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// Per-method-call-site resolution for `obj.method()` where `obj` has
+    /// resolved type `Ty::TraitObject`. Each entry pins the originating trait,
+    /// the method name, and the vtable slot index (`3 + method_decl_order` —
+    /// see [`DynMethodCall::slot`] for the prefix-triple convention).
+    ///
+    /// Populated alongside [`MethodCallReceiverKind::TraitObject`] at every
+    /// accepted method-call on a trait-object receiver. Downstream HIR / MIR
+    /// lowering consume this fail-closed: a method-call whose receiver typed
+    /// as a trait object but whose span is absent from this map is a HIR
+    /// diagnostic, not a runtime panic.
+    pub dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
 }
 
 /// Checker-resolved metadata for a `T → dyn Trait` coercion call site.
@@ -207,6 +218,37 @@ pub struct DynCoercion {
     ///   impl signature itself lives in
     ///   [`Checker::primitive_trait_impls`].
     pub method_table: Vec<(String, String)>,
+}
+
+/// Checker-resolved metadata for a method call on a `dyn Trait` receiver.
+///
+/// Populated by the checker at every accepted `obj.method(args)` where
+/// `obj`'s resolved type is [`Ty::TraitObject`]. The MIR producer reads
+/// this side-table to emit `Instr::CallTraitMethod` with a pre-computed
+/// vtable slot; HIR lowering reads it to choose `HirExprKind::CallDynMethod`
+/// over the `method_call_rewrites` direct-call path.
+///
+/// The slot convention follows
+/// `hew-runtime/src/trait_object.rs::HewVtable`:
+///
+/// | Slot | Contents              |
+/// |------|-----------------------|
+/// | 0    | `drop_in_place`       |
+/// | 1    | `size_of` (data)      |
+/// | 2    | `align_of` (data)     |
+/// | 3..N | trait method slots, in trait declaration order |
+///
+/// `slot` is therefore `3 + method_decl_order` for the originating trait.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynMethodCall {
+    /// Originating trait name (resolved from the receiver's `Ty::TraitObject`
+    /// bound that defined the called method).
+    pub trait_name: String,
+    /// Trait method name as declared in the trait body.
+    pub method_name: String,
+    /// Vtable slot index: `3 + 0-based method declaration order` within
+    /// the originating trait.
+    pub slot: u32,
 }
 
 /// Compile-time slot descriptor for a supervisor child access.
@@ -279,6 +321,7 @@ impl Default for TypeCheckOutput {
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
         }
     }
 }
@@ -995,6 +1038,11 @@ pub struct Checker {
     /// into `TypeCheckOutput::dyn_trait_coercions` at the end of
     /// `check_program`.
     pub(super) dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
+    /// Side-table populated during method-call type-checking on a `dyn Trait`
+    /// receiver. Keyed by the `SpanKey` of the method-call expression. Moved
+    /// into `TypeCheckOutput::dyn_trait_method_calls` at the end of
+    /// `check_program`.
+    pub(super) dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
     /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
     ///
     /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
@@ -1168,6 +1216,7 @@ impl Checker {
             supervisor_children: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),

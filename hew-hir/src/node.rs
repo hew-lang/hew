@@ -648,6 +648,39 @@ pub enum HirExprKind {
         left: Box<HirExpr>,
         right: Box<HirExpr>,
     },
+    /// Wrap a concrete value in a `dyn Trait` fat pointer. Emitted at
+    /// every accepted `T → dyn Trait` coercion site (the checker's
+    /// `TypeCheckOutput::dyn_trait_coercions` side table). MIR lowers
+    /// 1:1 to `Instr::CoerceToDynTrait`.
+    ///
+    /// The carried `method_table` mirrors `DynCoercion::method_table` —
+    /// codegen consumes it to materialise per-trait vtable statics.
+    /// `concrete_type` is the resolved `Self` type at the coercion site
+    /// (after `materialize_literal_defaults`), which doubles as the
+    /// `(Trait, ImplType)` dedup key for the vtable static.
+    CoerceToDynTrait {
+        value: Box<HirExpr>,
+        trait_name: String,
+        concrete_type: ResolvedTy,
+        method_table: Vec<(String, String)>,
+    },
+    /// Dispatch a method call through a `dyn Trait` fat pointer's
+    /// vtable. Emitted in place of an `HirExprKind::Call` whenever
+    /// the receiver typed as `Ty::TraitObject` (the checker's
+    /// `TypeCheckOutput::dyn_trait_method_calls` side table). MIR
+    /// lowers 1:1 to `Instr::CallTraitMethod`.
+    ///
+    /// `slot` is the pre-computed vtable index
+    /// (`3 + method_decl_order` for the originating trait — see
+    /// `DynMethodCall::slot`). HIR/MIR never re-derive the slot.
+    CallDynMethod {
+        receiver: Box<HirExpr>,
+        trait_name: String,
+        method_name: String,
+        slot: u32,
+        args: Vec<HirExpr>,
+        ret_ty: ResolvedTy,
+    },
     Unsupported(String),
 }
 

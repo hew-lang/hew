@@ -3286,6 +3286,34 @@ impl Checker {
                                 trait_name: bound.trait_name.clone(),
                             },
                         );
+                        // Record the per-call-site vtable-slot resolution that
+                        // HIR/MIR lowering will consume to emit
+                        // `Instr::CallTraitMethod`. Slot convention follows
+                        // `hew-runtime/src/trait_object.rs::HewVtable`: slots
+                        // 0..3 are the fixed prefix triple
+                        // (`drop_in_place`/`size_of`/`align_of`), trait methods
+                        // start at slot 3 in trait-declaration order.
+                        if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
+                            if let Some(method_idx) =
+                                trait_info.methods.iter().position(|m| m.name == method)
+                            {
+                                // Slot index is bounded by the trait's
+                                // method count, which Hew limits to
+                                // u32-sized vtables long before any
+                                // truncation risk. `try_from` keeps the
+                                // boundary explicit (LESSONS:
+                                // `boundary-fail-closed`).
+                                let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
+                                self.dyn_trait_method_calls.insert(
+                                    SpanKey::from(span),
+                                    crate::check::types::DynMethodCall {
+                                        trait_name: bound.trait_name.clone(),
+                                        method_name: method.to_string(),
+                                        slot,
+                                    },
+                                );
+                            }
+                        }
                         let qualified = format!("{}::{method}", bound.trait_name);
                         self.apply_consume_receiver_if_flagged(
                             &qualified,

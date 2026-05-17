@@ -95,9 +95,9 @@ fn main() {
 
     // ── Part 3: StrictPool with one_for_all ──
     println("--- StrictPool (one_for_all) ---");
-    let pool = spawn StrictPool;
+    let sup = spawn StrictPool;
     sleep_ms(50);
-    let a = supervisor_child(pool, 0);
+    let a = supervisor_child(sup, 0);
     a.tick();
     sleep_ms(10);
     a.tick();

@@ -74,7 +74,7 @@ supervisor AppSupervisor {
     max_restarts: 5;
     window: 60;
 
-    child pool: WorkerPool;
+    child workers: WorkerPool;
     child cache_mgr: CacheManager;
 }
 
@@ -85,13 +85,13 @@ fn main() {
     sleep_ms(100);
 
     // Get inner supervisors
-    let pool = supervisor_child(app, 0);
+    let workers_sup = supervisor_child(app, 0);
     let cache_mgr = supervisor_child(app, 1);
     sleep_ms(50);
 
     // Get individual workers and cache
-    let w1 = supervisor_child(pool, 0);
-    let w2 = supervisor_child(pool, 1);
+    let w1 = supervisor_child(workers_sup, 0);
+    let w2 = supervisor_child(workers_sup, 1);
     let cache = supervisor_child(cache_mgr, 0);
     // Normal operation
     println("--- Normal Operation ---");
@@ -109,7 +109,7 @@ fn main() {
     sleep_ms(500);
 
     // Fresh worker is operational
-    let w1b = supervisor_child(pool, 0);
+    let w1b = supervisor_child(workers_sup, 0);
     w1b.process(101);
     sleep_ms(20);
 

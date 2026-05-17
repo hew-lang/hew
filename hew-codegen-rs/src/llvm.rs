@@ -1275,6 +1275,22 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 "record codegen (RecordInit/RecordFieldLoad) is deferred to A-7".into(),
             ));
         }
+        Instr::FloatLit { .. }
+        | Instr::FloatAdd { .. }
+        | Instr::FloatSub { .. }
+        | Instr::FloatMul { .. }
+        | Instr::FloatDiv { .. }
+        | Instr::FloatRem { .. } => {
+            // M6 P3 Float-arithmetic variants land in MIR; codegen-rs
+            // LLVM emission (build_float_add/sub/mul/div/rem +
+            // const_float for literals) is the follow-up slice. Until
+            // it lands, fail-closed so any float-bearing program is
+            // diagnosed rather than silently mis-codegened.
+            return Err(CodegenError::FailClosed(
+                "float codegen (FloatLit/FloatAdd/Sub/Mul/Div/Rem) is deferred to the next slice"
+                    .into(),
+            ));
+        }
     }
     Ok(())
 }

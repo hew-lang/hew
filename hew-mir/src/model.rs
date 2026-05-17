@@ -392,6 +392,23 @@ pub enum IntSignedness {
     Unsigned,
 }
 
+/// Width discriminator for float instructions. Carried on every
+/// `Instr::FloatLit` and `Instr::Float*` variant so codegen can select
+/// the correct LLVM float type (`float` vs `double`) without re-deriving
+/// the width from operand locals. Mirrors `IntSignedness` for integers.
+///
+/// No implicit widening: `f32 + f64` is rejected by the type checker
+/// before MIR construction. Same-width operands only reach these
+/// variants, so a single `width` field is sufficient — matches the
+/// design invariant in `IntArithChecked.signed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatWidth {
+    /// IEEE 754 single-precision (32-bit).
+    F32,
+    /// IEEE 754 double-precision (64-bit).
+    F64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instr {
     /// `dest = const <value>` as i64.
@@ -619,6 +636,63 @@ pub enum Instr {
         field_offset: FieldOffset,
         /// Destination place that receives the loaded field value.
         dest: Place,
+    },
+    /// `dest = const <float>` stored as a bit pattern.
+    ///
+    /// `value_bits` is the IEEE 754 bit-pattern of the float constant:
+    /// - For `F32`: `(value as f32).to_bits() as u64` (upper 32 bits zero).
+    /// - For `F64`: `value.to_bits()`.
+    ///
+    /// Storing the bit pattern avoids f32/f64 coercion in the MIR model
+    /// and lets codegen reconstruct the exact constant via
+    /// `f32_type().const_float_from_apfloat` / `f64_type().const_float`.
+    ///
+    /// Producer: `lower_literal` for `HirLiteral::Float`, width from `expr.ty`.
+    FloatLit {
+        dest: Place,
+        value_bits: u64,
+        width: FloatWidth,
+    },
+    /// IEEE 754 float addition `dest = lhs + fadd rhs`. No overflow trap —
+    /// out-of-range results produce `+inf`/`-inf` per IEEE 754 §6.1.
+    FloatAdd {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
+    /// IEEE 754 float subtraction `dest = lhs - rhs` (`fsub`).
+    FloatSub {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
+    /// IEEE 754 float multiplication `dest = lhs * rhs` (`fmul`).
+    FloatMul {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
+    /// IEEE 754 float division `dest = lhs / rhs` (`fdiv`).
+    ///
+    /// Division by zero yields `+inf`, `-inf`, or `NaN` per IEEE 754 §7.3 —
+    /// there is no runtime trap. Producers MUST NOT add a divisor-zero check
+    /// (contrast with `IntDiv`, which requires one). No trap blocks are emitted.
+    FloatDiv {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
+    },
+    /// IEEE 754 float remainder `dest = lhs % rhs` (`frem`, equivalent to
+    /// C99 `fmod`). IEEE 754 semantics: `frem(x, 0)` → `NaN`; no trap.
+    FloatRem {
+        dest: Place,
+        lhs: Place,
+        rhs: Place,
+        width: FloatWidth,
     },
 }
 

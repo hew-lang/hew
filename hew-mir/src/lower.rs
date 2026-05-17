@@ -10,9 +10,9 @@ use hew_types::ResolvedTy;
 use crate::dataflow;
 use crate::model::{
     BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IntArithOp, IntSignedness,
-    IrPipeline, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, Strategy, Terminator, ThirFunction, TrapKind,
+    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, Instr, IntArithOp,
+    IntSignedness, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind,
+    MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction, TrapKind,
 };
 
 /// Classify a resolved integer type as signed or unsigned. Returns
@@ -64,6 +64,18 @@ fn integer_bit_width(ty: &ResolvedTy) -> Option<i64> {
         ResolvedTy::I64 | ResolvedTy::U64 => Some(64),
         // Isize / Usize are platform-sized (see doc comment) and all
         // other types are non-integer — both arms return None.
+        _ => None,
+    }
+}
+
+/// Classify a resolved type as a float width. Returns `None` for
+/// non-float types. Used to dispatch float arithmetic lowering in
+/// `lower_binary` and `lower_div_rem` before falling through to the
+/// integer-only `IntArithChecked` / `lower_div_rem` paths.
+fn float_width(ty: &ResolvedTy) -> Option<FloatWidth> {
+    match ty {
+        ResolvedTy::F32 => Some(FloatWidth::F32),
+        ResolvedTy::F64 => Some(FloatWidth::F64),
         _ => None,
     }
 }
@@ -1149,7 +1161,52 @@ impl Builder {
                 });
                 return Some(dest);
             }
-            HirLiteral::Float(_) => "float literal",
+            HirLiteral::Float(value) => {
+                // `HirLiteral::Float` always carries an `f64` regardless of
+                // the declared type. When the resolved type is `f32`, narrow
+                // to single precision before encoding as a bit pattern so the
+                // constant round-trips exactly through the MIR → codegen boundary.
+                // Storing as bits avoids a floating-point field in the MIR model
+                // (which would need special PartialEq treatment for NaN) while
+                // keeping the round-trip exact (mirrors `ConstI64.value`).
+                let (value_bits, width) = match ty {
+                    ResolvedTy::F32 => {
+                        // Narrow to f32 before encoding — f64 bits for a value
+                        // that will be stored in an f32 slot would be wrong.
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "literal coercion from f64 source value to f32 slot is \
+                                      the intended semantics; checker accepted the source as \
+                                      f32, so any precision loss is the developer's call"
+                        )]
+                        let narrowed = *value as f32;
+                        (u64::from(narrowed.to_bits()), FloatWidth::F32)
+                    }
+                    ResolvedTy::F64 => (value.to_bits(), FloatWidth::F64),
+                    _ => {
+                        // Type mismatch: float literal with non-float resolved
+                        // type is a checker bug. Fail closed per LESSONS
+                        // `boundary-fail-closed`.
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: "float literal with non-float resolved type".to_string(),
+                                site,
+                            },
+                            note: "HirLiteral::Float reached MIR lowering with a \
+                                   non-float resolved type — checker invariant violated"
+                                .to_string(),
+                        });
+                        return None;
+                    }
+                };
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::FloatLit {
+                    dest,
+                    value_bits,
+                    width,
+                });
+                return Some(dest);
+            }
             HirLiteral::String(_) => "string literal",
             HirLiteral::Char(_) => "char literal",
             HirLiteral::Unit => "unit literal",
@@ -1167,6 +1224,12 @@ impl Builder {
         None
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "lower_binary is a flat dispatch over the BinaryOp enum; line count grows \
+                  with the operator set (int + float arms). Splitting would obscure the \
+                  per-operator codegen path each reader expects to find here."
+    )]
     fn lower_binary(
         &mut self,
         op: BinaryOp,
@@ -1263,6 +1326,34 @@ impl Builder {
                 return None;
             }
         };
+        // Float `+` / `-` / `*`: emit `Instr::Float{Add,Sub,Mul}` directly —
+        // no trap blocks, no overflow flag. IEEE 754 overflow produces
+        // ±inf, not a runtime trap.
+        if let Some(width) = float_width(ty) {
+            let float_instr = match arith_op {
+                IntArithOp::Add => Instr::FloatAdd {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+                IntArithOp::Sub => Instr::FloatSub {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+                IntArithOp::Mul => Instr::FloatMul {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+            };
+            self.instructions.push(float_instr);
+            return Some(dest);
+        }
+
         // B-2 overflow-trap lowering. The default `+` / `-` / `*` on
         // integer types lowers to the checked LLVM intrinsic family
         // (`llvm.{s,u}{add,sub,mul}.with.overflow.iN`) with a hard
@@ -1277,18 +1368,17 @@ impl Builder {
         // default arithmetic IS the boundary; trap-on-overflow is
         // fail-closed for accidental overflow).
         let Some(signed) = integer_signedness(ty) else {
-            // Non-integer reaching `+` / `-` / `*` would be a B-1
-            // mixed-width or non-integer violation upstream. Fail
-            // closed rather than emit unchecked arithmetic.
+            // Non-integer, non-float reaching `+` / `-` / `*` is a
+            // B-1 mixed-width or unsupported-type violation upstream.
+            // Fail closed rather than emit unchecked arithmetic.
             self.locals.pop();
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::CutoverUnsupported {
-                    construct: format!("binary operator `{op}` on non-integer type"),
+                    construct: format!("binary operator `{op}` on non-integer, non-float type"),
                     site,
                 },
                 note: "B-2 overflow-trap lowering requires an integer-typed result \
-                       (i8/i16/i32/i64/u8/u16/u32/u64/isize/usize); float arithmetic \
-                       does not use the checked intrinsics and is not yet wired here"
+                       (i8/i16/i32/i64/u8/u16/u32/u64/isize/usize)"
                     .to_string(),
             });
             return None;
@@ -1382,12 +1472,35 @@ impl Builder {
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
+        // Float `/` and `%`: emit `Instr::FloatDiv` / `Instr::FloatRem`
+        // directly. IEEE 754 defines `x / 0.0` → ±inf and `x % 0.0` →
+        // NaN — neither traps. Do NOT add a zero-check CFG split here.
+        if let Some(width) = float_width(ty) {
+            let float_instr = match op {
+                BinaryOp::Divide => Instr::FloatDiv {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+                BinaryOp::Modulo => Instr::FloatRem {
+                    dest,
+                    lhs,
+                    rhs,
+                    width,
+                },
+                _ => unreachable!("lower_div_rem called with non-div/rem op"),
+            };
+            self.instructions.push(float_instr);
+            return Some(dest);
+        }
+
         let Some(signed) = integer_signedness(ty) else {
-            // Non-integer reaching `/` or `%` — B-1 violation upstream.
+            // Non-integer, non-float reaching `/` or `%` — B-1 violation upstream.
             self.locals.pop();
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::CutoverUnsupported {
-                    construct: format!("binary operator `{op}` on non-integer type"),
+                    construct: format!("binary operator `{op}` on non-integer, non-float type"),
                     site,
                 },
                 note: "B-5 div/rem trap lowering requires an integer-typed result".to_string(),
@@ -3295,6 +3408,12 @@ fn transfer_block_split(
 /// Return every `Place` mentioned by a backend `Instr`. Used by the
 /// cross-block split-state seed pass to discover which parent
 /// locals participate in the dataflow.
+#[allow(
+    clippy::match_same_arms,
+    reason = "int and float arithmetic arms share the same place-extraction shape but \
+              represent semantically distinct ops; consolidating would force a later \
+              re-split when codegen needs per-op dispatch"
+)]
 fn instr_places(instr: &Instr) -> Vec<Place> {
     match instr {
         Instr::ConstI64 { dest, .. } => vec![*dest],
@@ -3334,6 +3453,12 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
+        Instr::FloatLit { dest, .. } => vec![*dest],
+        Instr::FloatAdd { dest, lhs, rhs, .. }
+        | Instr::FloatSub { dest, lhs, rhs, .. }
+        | Instr::FloatMul { dest, lhs, rhs, .. }
+        | Instr::FloatDiv { dest, lhs, rhs, .. }
+        | Instr::FloatRem { dest, lhs, rhs, .. } => vec![*dest, *lhs, *rhs],
     }
 }
 

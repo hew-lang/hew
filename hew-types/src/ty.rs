@@ -779,6 +779,34 @@ impl Ty {
         }
     }
 
+    /// Construct `NarrowError` — error type returned by `.try_to_<W>()` width-conversion
+    /// methods when the source value does not fit in the target integer width.
+    #[must_use]
+    pub fn narrow_error() -> Ty {
+        Ty::Named {
+            name: "NarrowError".to_string(),
+            args: vec![],
+        }
+    }
+
+    /// Return the fixed bit-width of this integer type, or `None` for
+    /// platform-sized types (`isize`/`usize`) whose width is target-dependent.
+    ///
+    /// Used by the width-conversion method family to determine admissibility of
+    /// infallible `.to_<W>()`: only fixed-width, same-sign, strictly-wider pairs
+    /// are permitted without a fallible wrapper.
+    #[must_use]
+    pub fn integer_bit_width(&self) -> Option<u8> {
+        match self {
+            Ty::I8 | Ty::U8 => Some(8),
+            Ty::I16 | Ty::U16 => Some(16),
+            Ty::I32 | Ty::U32 => Some(32),
+            Ty::I64 | Ty::U64 => Some(64),
+            // isize/usize and non-integer types have no fixed width.
+            _ => None,
+        }
+    }
+
     /// Construct `CloseError` — error type for `Duplex::close` / half-close calls.
     ///
     /// Distinct from the process-resource `CloseError` registered by the

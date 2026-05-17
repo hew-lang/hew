@@ -2366,41 +2366,248 @@ impl Checker {
                     Ty::Error
                 }
             },
-            // Numeric type conversion methods (§10.1 intrinsics)
-            // .to_i8(), .to_i16(), .to_i32(), .to_i64(), .to_u8(), .to_u16(),
-            // .to_u32(), .to_u64(), .to_f32(), .to_f64(), .to_isize(), .to_usize()
+            // Infallible width-widening: `.to_<W>()` — same signedness, strictly wider.
+            //
+            // Rule (B-1c): For integer sources, only same-sign strictly-wider fixed-width
+            // targets are admitted. Same-width, narrowing, cross-sign, and platform-sized
+            // (isize/usize) sources must use `.try_to_<W>()` instead.
+            //
+            // Float sources retain the legacy permissive behaviour: any numeric source
+            // may call `.to_f32()`/`.to_f64()`.  Float-to-integer is also unchanged.
+            //
+            // Admitted pairs:
+            //   signed:   i8→{i16,i32,i64}, i16→{i32,i64}, i32→{i64}
+            //   unsigned: u8→{u16,u32,u64}, u16→{u32,u64}, u32→{u64}
+            //   float:    any numeric → f32/f64  (legacy, unchanged)
+            //   to_f*:    any numeric source     (legacy, unchanged)
             (resolved, method) if resolved.is_numeric() && method.starts_with("to_") => {
-                match method {
-                    "to_i8" => Ty::I8,
-                    "to_i16" => Ty::I16,
-                    "to_i32" => Ty::I32,
-                    "to_i64" => Ty::I64,
-                    // to_isize returns the platform-sized signed integer
-                    // (Ty::Isize), not fixed-64 Ty::I64. B-D1 / Q42.
-                    "to_isize" => Ty::Isize,
-                    "to_u8" => Ty::U8,
-                    "to_u16" => Ty::U16,
-                    "to_u32" => Ty::U32,
-                    "to_u64" => Ty::U64,
-                    // to_usize returns the platform-sized unsigned integer.
-                    "to_usize" => Ty::Usize,
-                    "to_f32" => Ty::F32,
-                    "to_f64" => Ty::F64,
-                    _ => {
-                        for arg in args {
-                            let (expr, sp) = arg.expr();
-                            self.synthesize(expr, sp);
-                        }
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!(
-                                "no conversion method `{method}` on `{}`",
-                                resolved.user_facing()
-                            ),
-                        );
-                        Ty::Error
+                // Resolve target type from method name.
+                let target_opt: Option<Ty> = match method {
+                    "to_i8" => Some(Ty::I8),
+                    "to_i16" => Some(Ty::I16),
+                    "to_i32" => Some(Ty::I32),
+                    "to_i64" => Some(Ty::I64),
+                    "to_isize" => Some(Ty::Isize),
+                    "to_u8" => Some(Ty::U8),
+                    "to_u16" => Some(Ty::U16),
+                    "to_u32" => Some(Ty::U32),
+                    "to_u64" => Some(Ty::U64),
+                    "to_usize" => Some(Ty::Usize),
+                    "to_f32" => Some(Ty::F32),
+                    "to_f64" => Some(Ty::F64),
+                    _ => None,
+                };
+                let Some(target) = target_opt else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
                     }
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no conversion method `{method}` on `{}`",
+                            resolved.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                };
+                // Float targets: always admitted regardless of source width.
+                if matches!(target, Ty::F32 | Ty::F64) {
+                    return target;
+                }
+                // Float source converting to integer: always admitted (legacy).
+                if resolved.is_float() {
+                    return target;
+                }
+                // Integer-to-integer: enforce strict widening rules.
+                // Reject platform-sized source (isize/usize have no fixed width).
+                if matches!(resolved, Ty::Isize | Ty::Usize) {
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "`{}` is platform-sized; use `.try_to_{}()` for width conversion",
+                            resolved.user_facing(),
+                            target.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                // Reject platform-sized target (to_isize/to_usize on integer source).
+                if matches!(target, Ty::Isize | Ty::Usize) {
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "`.{}()` targets a platform-sized type; use `.try_to_{}()` \
+                             for width conversion",
+                            method,
+                            target.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                // Both are fixed-width integers. Check sign and width.
+                let src_unsigned = resolved.is_unsigned();
+                let tgt_unsigned = target.is_unsigned();
+                if src_unsigned != tgt_unsigned {
+                    // Cross-sign: must use try_to_*.
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "`.{}()` crosses integer signedness; use `.try_to_{}()` for \
+                             cross-sign conversion",
+                            method,
+                            target.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                let src_bits = resolved.integer_bit_width().unwrap(); // non-None: fixed-width checked above
+                let tgt_bits = target.integer_bit_width().unwrap();
+                if src_bits >= tgt_bits {
+                    // Same width or narrowing: must use try_to_*.
+                    let hint = if src_bits == tgt_bits {
+                        format!(
+                            "source and target are the same width ({src_bits}); no conversion needed"
+                        )
+                    } else {
+                        let tgt_name = target.user_facing();
+                        format!("use `.try_to_{tgt_name}()` for narrowing conversions")
+                    };
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!("`.{method}()` is not an infallible widening; {hint}"),
+                    );
+                    return Ty::Error;
+                }
+                // Admitted: same sign, strictly wider fixed-width target.
+                target
+            }
+            // Fallible narrowing / cross-sign: `.try_to_<W>() -> Result<W, NarrowError>`.
+            //
+            // Admitted for all integer-to-integer pairs that are NOT covered by the
+            // infallible `.to_<W>()` family: narrowing, cross-sign, isize/usize source
+            // or target.  Also admitted for same-width (caller may not know widths).
+            (resolved, method) if resolved.is_integer() && method.starts_with("try_to_") => {
+                let suffix = &method["try_to_".len()..];
+                let target_opt: Option<Ty> = match suffix {
+                    "i8" => Some(Ty::I8),
+                    "i16" => Some(Ty::I16),
+                    "i32" => Some(Ty::I32),
+                    "i64" => Some(Ty::I64),
+                    "isize" => Some(Ty::Isize),
+                    "u8" => Some(Ty::U8),
+                    "u16" => Some(Ty::U16),
+                    "u32" => Some(Ty::U32),
+                    "u64" => Some(Ty::U64),
+                    "usize" => Some(Ty::Usize),
+                    _ => None,
+                };
+                if let Some(target) = target_opt {
+                    Ty::result(target, Ty::narrow_error())
+                } else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                    let receiver_name = resolved.user_facing();
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no method `{method}` on `{receiver_name}`; supported targets: \
+                             i8, i16, i32, i64, isize, u8, u16, u32, u64, usize",
+                        ),
+                    );
+                    Ty::Error
+                }
+            }
+            // Explicit-wrap width reinterpretation: `.wrapping_as_<W>() -> W`.
+            //
+            // Admitted for all integer-to-integer pairs (any width, any sign).
+            // Truncates / sign-extends / zero-extends bits per LLVM trunc/sext/zext.
+            // MIR lowering is a follow-up slice; a CutoverUnsupported stub is emitted.
+            //
+            // Guard: `wrapping_as_` must be checked BEFORE the arithmetic `wrapping_*`
+            // arm so the suffix "as_<W>" does not fall through to the op-name matcher.
+            (resolved, method) if resolved.is_integer() && method.starts_with("wrapping_as_") => {
+                let suffix = &method["wrapping_as_".len()..];
+                let target_opt: Option<Ty> = match suffix {
+                    "i8" => Some(Ty::I8),
+                    "i16" => Some(Ty::I16),
+                    "i32" => Some(Ty::I32),
+                    "i64" => Some(Ty::I64),
+                    "isize" => Some(Ty::Isize),
+                    "u8" => Some(Ty::U8),
+                    "u16" => Some(Ty::U16),
+                    "u32" => Some(Ty::U32),
+                    "u64" => Some(Ty::U64),
+                    "usize" => Some(Ty::Usize),
+                    _ => None,
+                };
+                if let Some(target) = target_opt {
+                    target
+                } else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                    let receiver_name = resolved.user_facing();
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no method `{method}` on `{receiver_name}`; supported targets: \
+                             i8, i16, i32, i64, isize, u8, u16, u32, u64, usize",
+                        ),
+                    );
+                    Ty::Error
+                }
+            }
+            // Saturating-clamp width conversion: `.saturating_as_<W>() -> W`.
+            //
+            // Admitted for all integer-to-integer pairs (any width, any sign).
+            // Returns W::MAX / W::MIN on overflow.
+            // MIR lowering is a follow-up slice; a CutoverUnsupported stub is emitted.
+            //
+            // Guard: `saturating_as_` must be checked BEFORE the arithmetic `saturating_*`
+            // arm so the suffix "as_<W>" does not fall through to the op-name matcher.
+            (resolved, method) if resolved.is_integer() && method.starts_with("saturating_as_") => {
+                let suffix = &method["saturating_as_".len()..];
+                let target_opt: Option<Ty> = match suffix {
+                    "i8" => Some(Ty::I8),
+                    "i16" => Some(Ty::I16),
+                    "i32" => Some(Ty::I32),
+                    "i64" => Some(Ty::I64),
+                    "isize" => Some(Ty::Isize),
+                    "u8" => Some(Ty::U8),
+                    "u16" => Some(Ty::U16),
+                    "u32" => Some(Ty::U32),
+                    "u64" => Some(Ty::U64),
+                    "usize" => Some(Ty::Usize),
+                    _ => None,
+                };
+                if let Some(target) = target_opt {
+                    target
+                } else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                    let receiver_name = resolved.user_facing();
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no method `{method}` on `{receiver_name}`; supported targets: \
+                             i8, i16, i32, i64, isize, u8, u16, u32, u64, usize",
+                        ),
+                    );
+                    Ty::Error
                 }
             }
             // Numeric opt-out arithmetic methods: .wrapping_*, .checked_*, .saturating_*
@@ -2408,6 +2615,10 @@ impl Checker {
             // Only add/sub/mul are in scope here; div/mod/shift are separate slices.
             // Wrapping variants map to non-trapping MIR ops; checked variants return
             // Option<W>; saturating variants clamp to MAX/MIN (codegen slice pending).
+            //
+            // Note: `.wrapping_as_<W>` and `.saturating_as_<W>` (width-conversion family)
+            // are handled by the arms above; those arms must appear first so that the
+            // `_as_` suffix does not reach this arm's op-name matcher.
             (resolved, method)
                 if resolved.is_integer()
                     && (method.starts_with("wrapping_")

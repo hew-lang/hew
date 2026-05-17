@@ -170,6 +170,18 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_vec_slice_range_i64",
     "hew_vec_slice_range_ptr",
     "hew_vec_slice_range_str",
+    // --- Trait-object dispatch diagnostics (TO-1) ---------------
+    // `hew_vtable_dispatch_panic_on_oob(slot: u32, max: u32) -> !`
+    // (`hew-runtime/src/trait_object.rs`). Diagnostic trap codegen
+    // wires on the unreachable arm of a vtable-slot match (LESSONS
+    // P0 `exhaustive-coverage`: no wildcard fallthrough in dispatch).
+    // Also the wire target for a null-vtable fail-closed. Lane plan
+    // `runtime-trait-object-abi.md` design D-4 rejects routing the
+    // *actual* dispatch through a runtime helper — codegen emits
+    // GEP+load+call inline — so this is the only trait-object symbol
+    // the runtime exposes today; per-trait dispatch sites name it
+    // only on the OOB / null-vtable arms.
+    "hew_vtable_dispatch_panic_on_oob",
 ];
 
 /// Error returned when a `RuntimeCall` is constructed with a symbol that

@@ -212,6 +212,7 @@ pub mod random;
 pub mod rc;
 pub mod result;
 pub mod string;
+pub mod trait_object;
 pub mod vec;
 pub mod vecdeque;
 

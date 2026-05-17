@@ -574,7 +574,75 @@ pub enum Instr {
         ty: ResolvedTy,
         drop_fn: Option<String>,
     },
+    /// Construct a record value by storing each field into a freshly
+    /// allocated destination place. `fields` carries `(offset, src)`
+    /// pairs in declaration order; `dest` receives the completed record.
+    ///
+    /// The `FieldOffset` is the 0-based index of the field within the
+    /// record's declared field order — the same ordinal that
+    /// `RecordFieldLoad` uses for reads. Codegen (A-7) uses the offset
+    /// to select the struct GEP index for each field store.
+    ///
+    /// Functional-update (`R { x: 1, ..base }`) is desugared by the MIR
+    /// producer: for every field absent from the explicit list it emits a
+    /// `RecordFieldLoad` from the base place, then includes the loaded
+    /// place here as if it were an explicit field. No `base` field is
+    /// needed on this Instr — codegen sees only flat store-each-field.
+    ///
+    /// WHY flat: keeps codegen dumb, makes the checker stream see every
+    /// field read from the base (important for use-after-consume), and
+    /// leaves the memcpy optimisation to A-7 pattern recognition.
+    /// WHEN-OBSOLETE: if A-7 determines a memcpy path is always better
+    ///   for large records, it can introduce a `RecordCopy { base, dest }`
+    ///   variant and route functional-update through it instead.
+    RecordInit {
+        /// Resolved type of the constructed record (used by codegen to
+        /// look up the LLVM struct type for the alloca).
+        ty: ResolvedTy,
+        /// `(field_offset, source_place)` pairs in declaration order.
+        fields: Vec<(FieldOffset, Place)>,
+        /// Destination place that receives the constructed record value.
+        dest: Place,
+    },
+    /// Load a single field from a record value by its declaration-order
+    /// offset. `dest` receives the field value.
+    ///
+    /// Produced from `HirExprKind::FieldAccess { object, field }` after
+    /// the MIR producer resolves the field name to its 0-based
+    /// `FieldOffset` via the record-field-order table.
+    ///
+    /// Codegen (A-7) lowers this to a GEP + load on the record's alloca.
+    RecordFieldLoad {
+        /// The record value to read from.
+        record: Place,
+        /// 0-based index of the field within the record's declared field order.
+        field_offset: FieldOffset,
+        /// Destination place that receives the loaded field value.
+        dest: Place,
+    },
 }
+
+/// 0-based declaration-order index of a field within a `record` type.
+///
+/// For named records (`record Point { x: int, y: int }`) the offset of
+/// `x` is `0` and the offset of `y` is `1`, matching the order in which
+/// fields were declared. This ordinal is the number codegen passes to the
+/// LLVM GEP `struct_gep` call to address the field's alloca slot.
+///
+/// For tuple records the field order matches the positional declaration
+/// (`record Pair(int, int)` → field 0 and field 1), but tuple records
+/// use the function-call constructor and are NOT reachable via
+/// `HirExprKind::StructInit` — they never produce `RecordInit` or
+/// `RecordFieldLoad` instructions. The offset type is shared for
+/// symmetry and for future use if tuple destructuring is added.
+///
+/// WHY u32: matches the existing convention for `Place::Local(u32)` and
+/// `BasicBlock::id: u32`. A record with > 4 billion fields is impossible
+/// in practice; the cast from `usize` at the construction site is checked
+/// via `try_from` so an impossibly large offset would panic at MIR time
+/// rather than silently truncate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FieldOffset(pub u32);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedMirFunction {

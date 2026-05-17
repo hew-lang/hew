@@ -1265,6 +1265,16 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
             }
             let _ = ctx;
         }
+        Instr::RecordInit { .. } | Instr::RecordFieldLoad { .. } => {
+            // A-6b produces RecordInit and RecordFieldLoad MIR variants.
+            // A-7 (separate slice) owns the LLVM struct layout, alloca,
+            // GEP+store/GEP+load emission, and drop tracing. Until A-7
+            // lands, fail-closed so any record-bearing program is
+            // diagnosed rather than silently mis-codegened.
+            return Err(CodegenError::FailClosed(
+                "record codegen (RecordInit/RecordFieldLoad) is deferred to A-7".into(),
+            ));
+        }
     }
     Ok(())
 }

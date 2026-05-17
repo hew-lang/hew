@@ -471,6 +471,26 @@ struct Builder {
     /// WHAT: replace with `Place::Projection { base, index }` variant or a
     ///   `Terminator::Call`-style multi-dest encoding.
     tuple_decomp: HashMap<u32, Vec<Place>>,
+    /// Declaration-order field names for every `record` type in the module.
+    ///
+    /// Key: record type name (e.g. `"Point"`).
+    /// Value: field names in declaration order (e.g. `["x", "y"]`).
+    ///
+    /// Used by `StructInit` and `FieldAccess` lowering to resolve a field
+    /// name to its 0-based `FieldOffset`. Built from `HirItem::Record`
+    /// items in `lower_hir_module` and threaded through to the builder.
+    ///
+    /// Tuple records have an empty field list by design (`HirRecordDecl.fields`
+    /// is empty for tuple records — their constructor is a `Call`, not a
+    /// `StructInit`). They will never be looked up here.
+    #[allow(
+        dead_code,
+        reason = "A-6b lays the foundation (variants + record-field-order table); \
+                  the HirExprKind::StructInit/FieldAccess producer wiring is the \
+                  next slice (A-6c). Until then this field is populated by \
+                  lower_hir_module but not yet consulted."
+    )]
+    record_field_orders: HashMap<String, Vec<String>>,
 }
 
 impl Builder {
@@ -3308,6 +3328,12 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             }
             places
         }
+        Instr::RecordInit { fields, dest, .. } => {
+            let mut places: Vec<Place> = fields.iter().map(|(_, p)| *p).collect();
+            places.push(*dest);
+            places
+        }
+        Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
     }
 }
 

@@ -27,6 +27,7 @@ pub enum HirItem {
     Function(HirFn),
     TypeDecl(HirTypeDecl),
     Machine(HirMachineDecl),
+    Record(HirRecordDecl),
 }
 
 // ── Machine declarations ─────────────────────────────────────────────────────
@@ -93,6 +94,28 @@ pub struct HirMachineTransition {
     pub body_writes: Vec<String>,
     /// Event names emitted directly from the transition body (used for emit-cycle checking).
     pub body_emits: Vec<String>,
+    pub span: Span,
+}
+
+/// Lowered `record` declaration.
+///
+/// Carries the record name, optional type parameters, and the field set
+/// (named-form fields, resolved to `ResolvedTy`). Tuple-form records have an
+/// empty `fields` vec at this HIR level — their constructor is reached via
+/// `Expr::Call` → `fn_registry`, not via `StructInit`. Methods and `@resource`
+/// / `@linear` markers are not permitted on records by the parser; the field
+/// guard (below) rejects `@linear`-typed fields at HIR lowering time.
+///
+/// MIR lowering for record construction, field access, and functional-update
+/// is deferred to slice A-7 (codegen-rs layer); this HIR node provides the
+/// structural substrate that A-7 will consume.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirRecordDecl {
+    pub id: ItemId,
+    pub node: HirNodeId,
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub fields: Vec<HirField>,
     pub span: Span,
 }
 
@@ -204,6 +227,27 @@ pub enum HirExprKind {
         name: String,
         type_args: Vec<ResolvedTy>,
         fields: Vec<(String, HirExpr)>,
+        /// Functional-update base: the record value from which un-overridden
+        /// fields are copied. `None` for plain construction (`R { x: 1 }`),
+        /// `Some(base_expr)` for `R { x: 1, ..base }`.
+        ///
+        /// MIR lowering (slice A-7) will desugar this into individual field
+        /// reads from the base expression for every field absent from
+        /// `fields`. The HIR carries it verbatim for checker-stream coverage.
+        base: Option<Box<HirExpr>>,
+    },
+    /// `object.field` — named-field read on a record or struct type.
+    ///
+    /// The checker (`check_field_access`) resolves the field type and records
+    /// it in `expr_types`; this HIR node is produced only when the checker
+    /// has already confirmed the field exists.
+    ///
+    /// MIR lowering (slice A-7) will emit the field-read instruction. For
+    /// A-6 the MIR producer walks the `object` sub-expression for
+    /// checker-stream coverage and defers via `CutoverUnsupported`.
+    FieldAccess {
+        object: Box<HirExpr>,
+        field: String,
     },
     /// A `scope { stmts }` block. Every statement-call inside the body is a
     /// child-task spawn (TI-1). Named bindings (`fork name = call(...)`)

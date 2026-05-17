@@ -163,7 +163,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 elaborated_mir.push(lowered.elaborated);
                 diagnostics.extend(lowered.diagnostics);
             }
-            HirItem::TypeDecl(_) | HirItem::Machine(_) => {
+            HirItem::Record(_) | HirItem::TypeDecl(_) | HirItem::Machine(_) => {
                 // Neither type declarations nor Lane A machine declarations
                 // have executable MIR bodies. TypeDecl markers are consumed
                 // via `HirModule.type_classes`; machine codegen (step()
@@ -852,6 +852,14 @@ impl Builder {
                 for (_, field) in fields {
                     let _ = self.lower_value(field);
                 }
+                None
+            }
+            HirExprKind::FieldAccess { object, .. } => {
+                // A-6 added the HIR FieldAccess variant. MIR producer for
+                // record field-load is A-6b; for now walk the object so
+                // nested diagnostics still surface and fail closed by
+                // returning None.
+                let _ = self.lower_value(object);
                 None
             }
             HirExprKind::Scope { body } => {

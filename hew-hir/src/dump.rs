@@ -93,6 +93,13 @@ pub fn dump_hir(module: &HirModule) -> String {
                     .expect("write to string");
                 }
             }
+            HirItem::Record(record) => {
+                writeln!(out, "record {} {}", record.id, record.name).expect("write to string");
+                for field in &record.fields {
+                    writeln!(out, "  field {}: {}", field.name, field.ty.user_facing())
+                        .expect("write to string");
+                }
+            }
         }
     }
     out
@@ -145,11 +152,22 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::If { .. } => {
             writeln!(out, "{pad}  if").expect("write to string");
         }
-        HirExprKind::StructInit { name, fields, .. } => {
+        HirExprKind::StructInit {
+            name, fields, base, ..
+        } => {
             writeln!(out, "{pad}  struct-init {name}").expect("write to string");
-            for (_, value) in fields {
-                dump_expr(out, value, indent + 4);
+            for (field_name, value) in fields {
+                writeln!(out, "{pad}    .{field_name}").expect("write to string");
+                dump_expr(out, value, indent + 6);
             }
+            if let Some(base) = base {
+                writeln!(out, "{pad}    ..base").expect("write to string");
+                dump_expr(out, base, indent + 6);
+            }
+        }
+        HirExprKind::FieldAccess { object, field } => {
+            writeln!(out, "{pad}  field-access .{field}").expect("write to string");
+            dump_expr(out, object, indent + 4);
         }
         HirExprKind::Scope { body } => {
             writeln!(out, "{pad}  scope scope={}", body.scope).expect("write to string");

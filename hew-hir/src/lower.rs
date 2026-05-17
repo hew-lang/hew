@@ -1178,23 +1178,27 @@ impl LowerCtx {
                 // slice rejects user types at the MIR boundary anyway, so
                 // dropping the args here cannot widen an accepted program.
                 type_args: _,
-                // Functional-update base: the checker has already validated
-                // type-compatibility and coverage; HIR lowers the base the
-                // same as if all its fields were listed explicitly.
-                // Full HIR/MIR lowering of functional-update (reading base
-                // fields not overridden by the explicit list) is deferred to
-                // the A-6 HIR slice.
-                base: _,
+                base,
             } => {
-                let fields = fields
+                let hir_fields = fields
                     .iter()
-                    .map(|(name, expr)| (name.clone(), self.lower_expr(expr, IntentKind::Read)))
+                    .map(|(fname, expr)| (fname.clone(), self.lower_expr(expr, IntentKind::Read)))
                     .collect();
+                // Lower the functional-update base if present. The checker has
+                // already validated type-compatibility and field coverage; HIR
+                // carries it verbatim so MIR lowering (A-7) can read the
+                // un-overridden fields from the base value.
+                let hir_base = base.as_deref().map(|(base_expr, base_span)| {
+                    Box::new(
+                        self.lower_expr(&(base_expr.clone(), base_span.clone()), IntentKind::Read),
+                    )
+                });
                 (
                     HirExprKind::StructInit {
                         name: name.clone(),
                         type_args: Vec::new(),
-                        fields,
+                        fields: hir_fields,
+                        base: hir_base,
                     },
                     ResolvedTy::Named {
                         name: name.clone(),
@@ -1442,6 +1446,49 @@ impl LowerCtx {
                         right: Box::new(right),
                     },
                     ResolvedTy::Bool,
+                )
+            }
+            Expr::FieldAccess { object, field } => {
+                // Named-field read on a record or struct type. The checker has
+                // already resolved the field and recorded the result type in
+                // `expr_types`. LESSONS: `checker-authority` P0 — the type of
+                // the field read comes exclusively from the checker side-table,
+                // never re-derived here.
+                let hir_object = self.lower_expr(object, IntentKind::Read);
+                let checker_key = SpanKey::from(&span);
+                let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                    match ResolvedTy::from_ty(&ty) {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: field.clone(),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "field-access result type failed checker-boundary conversion",
+                            ));
+                            ResolvedTy::Unit
+                        }
+                    }
+                } else {
+                    // No checker entry: malformed checker output. Fail-closed.
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: field.clone(),
+                            reason: "expr_types has no entry for field-access site".into(),
+                        },
+                        span.clone(),
+                        "field-access result type missing from checker side-table",
+                    ));
+                    ResolvedTy::Unit
+                };
+                (
+                    HirExprKind::FieldAccess {
+                        object: Box::new(hir_object),
+                        field: field.clone(),
+                    },
+                    field_ty,
                 )
             }
             _ => {
@@ -2481,10 +2528,16 @@ fn collect_captures_walk(
                 collect_captures_walk(else_expr, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::StructInit { fields, .. } => {
+        HirExprKind::StructInit { fields, base, .. } => {
             for (_, field) in fields {
                 collect_captures_walk(field, param_ids, seen, captures, self_id);
             }
+            if let Some(base) = base {
+                collect_captures_walk(base, param_ids, seen, captures, self_id);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => {
+            collect_captures_walk(object, param_ids, seen, captures, self_id);
         }
         HirExprKind::AwaitTask { binding_id, .. } => {
             // The awaited task handle is captured from the enclosing

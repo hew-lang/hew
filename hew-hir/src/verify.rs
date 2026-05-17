@@ -45,6 +45,13 @@ impl Verifier {
                     // the machine's own node ID.
                     self.node(machine.node, machine.span.clone());
                 }
+                HirItem::Record(record) => {
+                    // Record declarations contribute only their HirNodeId
+                    // uniqueness to the verifier — they carry no bindings,
+                    // sites, or expressions to validate. The @linear-field
+                    // guard fires upstream in `lower_record_decl`.
+                    self.node(record.node, record.span.clone());
+                }
             }
         }
     }
@@ -111,10 +118,16 @@ impl Verifier {
                     self.expr(else_expr);
                 }
             }
-            HirExprKind::StructInit { fields, .. } => {
+            HirExprKind::StructInit { fields, base, .. } => {
                 for (_, field) in fields {
                     self.expr(field);
                 }
+                if let Some(base) = base {
+                    self.expr(base);
+                }
+            }
+            HirExprKind::FieldAccess { object, .. } => {
+                self.expr(object);
             }
             HirExprKind::Literal(_) => {}
             HirExprKind::Scope { body } => self.block(body),

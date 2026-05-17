@@ -591,27 +591,29 @@ fn lower_unsupported_binop_fails_closed_with_diagnostic() {
     // `CutoverUnsupported` so the CLI rejection surface catches the
     // construct.
     //
-    // B-5 wired `/`, `%`, `<<`, `>>` — use a bitwise `&` which is
-    // still genuinely unsupported in the v0.5 spine to exercise the
-    // fail-closed path.
-    let parsed = hew_parser::parse("fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a & b }");
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
-    assert!(
-        output.diagnostics.is_empty(),
-        "Bitwise-AND should parse + lower cleanly through HIR: {:?}",
-        output.diagnostics
-    );
-    let pipeline = lower_hir_module(&output.module);
-    assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
-                if construct.contains("binary operator")
-        )),
-        "Bitwise `&` must emit CutoverUnsupported at MIR: {:?}",
-        pipeline.diagnostics
-    );
+    // Bitwise (&, |, ^) and shift (<<, >>), divide, and modulo are now
+    // all wired. This test verifies the complementary property: that
+    // implemented operators do NOT emit CutoverUnsupported. Regression
+    // against the earlier fail-soft: if lower_binary were to accidentally
+    // fall through to the catch-all for a wired operator, no instruction
+    // would be emitted and a CutoverUnsupported would appear.
+    for src in [
+        "fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a & b }",
+        "fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a | b }",
+        "fn main() -> i64 { let a: i64 = 1; let b: i64 = 2; a ^ b }",
+    ] {
+        let parsed = hew_parser::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = lower_program(&parsed.program, &TypeCheckOutput::default(), &ResolutionCtx);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let pipeline = lower_hir_module(&output.module);
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "Implemented bitwise op must not emit CutoverUnsupported: \
+             {src} => {:?}",
+            pipeline.diagnostics
+        );
+    }
 }
 
 #[test]

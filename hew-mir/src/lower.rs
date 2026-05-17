@@ -834,6 +834,15 @@ impl Builder {
             }
             HirExprKind::BindingRef { .. } => None,
             HirExprKind::Binary { op, left, right } => {
+                // Short-circuit logical operators must intercept BEFORE the rhs
+                // is lowered: evaluating `right` unconditionally would break
+                // the short-circuit contract (rhs side effects would run even
+                // when lhs already determines the result).
+                match op {
+                    BinaryOp::And => return self.lower_logical_and(left, right, &expr.ty),
+                    BinaryOp::Or => return self.lower_logical_or(left, right, &expr.ty),
+                    _ => {}
+                }
                 let lhs = self.lower_value(left);
                 let rhs = self.lower_value(right);
                 match (lhs, rhs) {
@@ -1514,17 +1523,29 @@ impl Builder {
             _ => {}
         }
 
+        // Bitwise operators: well-defined for any integer width × signedness.
+        // No traps, no overflow checks — emit a single instruction directly.
+        let bitwise_instr = match op {
+            BinaryOp::BitAnd => Some(Instr::IntBitAnd { dest, lhs, rhs }),
+            BinaryOp::BitOr => Some(Instr::IntBitOr { dest, lhs, rhs }),
+            BinaryOp::BitXor => Some(Instr::IntBitXor { dest, lhs, rhs }),
+            _ => None,
+        };
+        if let Some(instr) = bitwise_instr {
+            self.instructions.push(instr);
+            return Some(dest);
+        }
+
         let arith_op = match op {
             BinaryOp::Add => IntArithOp::Add,
             BinaryOp::Subtract => IntArithOp::Sub,
             BinaryOp::Multiply => IntArithOp::Mul,
-            // The spine subset still rejects logical / range / send /
-            // regex / bitwise binops. Previously this arm silently
-            // popped the dest local and returned `None`, letting the
-            // parent expression succeed with a missing producer (quiet
-            // fail-soft — caller's `decide` ran, `MirDiagnostic` did
-            // not). Fail closed now: drop the dest local, emit a
-            // `CutoverUnsupported` so the CLI rejection surface sees
+            // The spine subset still rejects range / send / regex binops.
+            // Previously this arm silently popped the dest local and returned
+            // `None`, letting the parent expression succeed with a missing
+            // producer (quiet fail-soft — caller's `decide` ran,
+            // `MirDiagnostic` did not). Fail closed now: drop the dest local,
+            // emit a `CutoverUnsupported` so the CLI rejection surface sees
             // the offending construct, and return `None`.
             // LESSONS `boundary-fail-closed`.
             _ => {
@@ -2033,6 +2054,128 @@ impl Builder {
         // Join. Subsequent lowering continues in this block; the If
         // expression's value Place is the result_local (loads happen
         // through the same Place that both arms wrote into).
+        self.start_block(join_bb);
+        Some(result_place)
+    }
+
+    /// Lower `lhs && rhs` with short-circuit semantics.
+    ///
+    /// CFG shape:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   result_place = false          // pessimistic default
+    ///   lhs_place = lower(lhs)
+    ///   Branch { cond: lhs_place, then: rhs_bb, else: join_bb }
+    ///
+    /// rhs_bb:
+    ///   rhs_place = lower(rhs)
+    ///   Move { dest: result_place, src: rhs_place }
+    ///   Goto join_bb
+    ///
+    /// join_bb:
+    ///   -- result_place holds the final bool --
+    /// ```
+    ///
+    /// The rhs block is only entered when lhs is true, so rhs side effects
+    /// are correctly guarded. On the false path, `result_place` retains the
+    /// `false` constant written in the entry block.
+    fn lower_logical_and(
+        &mut self,
+        lhs_expr: &HirExpr,
+        rhs_expr: &HirExpr,
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let result_place = self.alloc_local(result_ty.clone());
+        // Write `false` as the pessimistic default (the join block reads
+        // result_place, and the else path never writes to it).
+        self.instructions.push(Instr::ConstI64 {
+            dest: result_place,
+            value: 0,
+        });
+
+        let lhs_place = self.lower_value(lhs_expr)?;
+
+        let rhs_bb = self.alloc_block();
+        let join_bb = self.alloc_block();
+
+        self.finish_current_block(Terminator::Branch {
+            cond: lhs_place,
+            then_target: rhs_bb,
+            else_target: join_bb,
+        });
+
+        // rhs_bb: lhs was true, evaluate rhs and move into result.
+        self.start_block(rhs_bb);
+        if let Some(rhs_place) = self.lower_value(rhs_expr) {
+            self.instructions.push(Instr::Move {
+                dest: result_place,
+                src: rhs_place,
+            });
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        self.start_block(join_bb);
+        Some(result_place)
+    }
+
+    /// Lower `lhs || rhs` with short-circuit semantics.
+    ///
+    /// CFG shape:
+    ///
+    /// ```text
+    /// entry_bb (current):
+    ///   result_place = true           // optimistic default
+    ///   lhs_place = lower(lhs)
+    ///   Branch { cond: lhs_place, then: join_bb, else: rhs_bb }
+    ///
+    /// rhs_bb:
+    ///   rhs_place = lower(rhs)
+    ///   Move { dest: result_place, src: rhs_place }
+    ///   Goto join_bb
+    ///
+    /// join_bb:
+    ///   -- result_place holds the final bool --
+    /// ```
+    ///
+    /// The rhs block is only entered when lhs is false, so rhs side effects
+    /// are correctly guarded. On the true path, `result_place` retains the
+    /// `true` constant written in the entry block.
+    fn lower_logical_or(
+        &mut self,
+        lhs_expr: &HirExpr,
+        rhs_expr: &HirExpr,
+        result_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let result_place = self.alloc_local(result_ty.clone());
+        // Write `true` as the optimistic default (the then path never writes
+        // to result_place; the else path writes the rhs value into it).
+        self.instructions.push(Instr::ConstI64 {
+            dest: result_place,
+            value: 1,
+        });
+
+        let lhs_place = self.lower_value(lhs_expr)?;
+
+        let rhs_bb = self.alloc_block();
+        let join_bb = self.alloc_block();
+
+        self.finish_current_block(Terminator::Branch {
+            cond: lhs_place,
+            then_target: join_bb,
+            else_target: rhs_bb,
+        });
+
+        // rhs_bb: lhs was false, evaluate rhs and move into result.
+        self.start_block(rhs_bb);
+        if let Some(rhs_place) = self.lower_value(rhs_expr) {
+            self.instructions.push(Instr::Move {
+                dest: result_place,
+                src: rhs_place,
+            });
+        }
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
         self.start_block(join_bb);
         Some(result_place)
     }
@@ -3638,6 +3781,9 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntMul { dest, lhs, rhs }
         | Instr::IntDiv { dest, lhs, rhs, .. }
         | Instr::IntRem { dest, lhs, rhs, .. }
+        | Instr::IntBitAnd { dest, lhs, rhs }
+        | Instr::IntBitOr { dest, lhs, rhs }
+        | Instr::IntBitXor { dest, lhs, rhs }
         | Instr::IntShl { dest, lhs, rhs }
         | Instr::IntShr { dest, lhs, rhs, .. }
         | Instr::IntCmp { dest, lhs, rhs, .. }

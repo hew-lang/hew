@@ -480,6 +480,16 @@ pub enum Instr {
         lhs: Place,
         rhs: Place,
     },
+    /// Bitwise AND `dest = lhs & rhs`. Well-defined for all bit widths and
+    /// signednesses; no traps, no overflow. Operands and dest must share the
+    /// same integer type (enforced upstream by the type checker).
+    IntBitAnd { dest: Place, lhs: Place, rhs: Place },
+    /// Bitwise OR `dest = lhs | rhs`. Same well-defined semantics as
+    /// `IntBitAnd`; no traps or overflow conditions.
+    IntBitOr { dest: Place, lhs: Place, rhs: Place },
+    /// Bitwise XOR `dest = lhs ^ rhs`. Same well-defined semantics as
+    /// `IntBitAnd`; no traps or overflow conditions.
+    IntBitXor { dest: Place, lhs: Place, rhs: Place },
     /// Left shift `dest = lhs << rhs`. No signedness on the shift
     /// itself (LLVM `shl`). Producers must check `(rhs as unsigned) >=
     /// bit_width(dest)` before emitting this instruction and branch to

@@ -1021,6 +1021,50 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 .build_store(dest_ptr, result)
                 .map_err(|e| CodegenError::Llvm(format!("shr store: {e:?}")))?;
         }
+        // Bitwise &, |, ^. Well-defined for all integer widths/signednesses;
+        // no traps, no overflow checks. Operands and dest share the same int
+        // type (enforced upstream by the checker).
+        Instr::IntBitAnd { dest, lhs, rhs }
+        | Instr::IntBitOr { dest, lhs, rhs }
+        | Instr::IntBitXor { dest, lhs, rhs } => {
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_int = match lhs_ty {
+                BasicTypeEnum::IntType(t) => t,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "IntBitwise lhs is not an int".into(),
+                    ))
+                }
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "IntBitwise operands and dest must share the same int type".into(),
+                ));
+            }
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, lhs_ptr, "bitwise_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("bitwise lhs load: {e:?}")))?
+                .into_int_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_int, rhs_ptr, "bitwise_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("bitwise rhs load: {e:?}")))?
+                .into_int_value();
+            let result = match instr {
+                Instr::IntBitAnd { .. } => fn_ctx.builder.build_and(lhs_v, rhs_v, "bitand"),
+                Instr::IntBitOr { .. } => fn_ctx.builder.build_or(lhs_v, rhs_v, "bitor"),
+                Instr::IntBitXor { .. } => fn_ctx.builder.build_xor(lhs_v, rhs_v, "bitxor"),
+                _ => unreachable!("matched on three bitwise variants above"),
+            }
+            .map_err(|e| CodegenError::Llvm(format!("bitwise: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("bitwise store: {e:?}")))?;
+        }
         Instr::IntArithChecked {
             op,
             signed,

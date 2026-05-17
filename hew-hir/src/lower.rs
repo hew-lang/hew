@@ -952,16 +952,20 @@ impl LowerCtx {
     /// the same origin record with different concrete args;
     /// `RecordLayoutCapExceeded` (at most once per invocation) when the
     /// registry cap is hit.
-    fn record_record_layout(&mut self, record_name: &str, init_span: &std::ops::Range<usize>) {
+    fn record_record_layout(
+        &mut self,
+        record_name: &str,
+        init_span: &std::ops::Range<usize>,
+    ) -> Option<Vec<ResolvedTy>> {
         let Some(entry) = self.record_registry.get(record_name) else {
             // Builtin or unresolved record — not a user-declared
             // generic type, so it has no record-layout registry entry.
-            return;
+            return None;
         };
         if entry.type_params.is_empty() {
             // Monomorphic record — bare-name layout (handled by MIR's
             // existing record-decl emission) is sufficient.
-            return;
+            return None;
         }
         let origin = entry.id;
         let origin_name = record_name.to_string();
@@ -976,7 +980,7 @@ impl LowerCtx {
             // pruned at the boundary) or when an explicit type-arg
             // syntax took a path that doesn't re-record. Either way
             // there's nothing to monomorphise here.
-            return;
+            return None;
         };
 
         // Boundary conversion: any leaked inference var, error, or
@@ -994,7 +998,7 @@ impl LowerCtx {
                         init_span.clone(),
                         "checker-authoritative record_init_type_args entry failed boundary conversion",
                     ));
-                    return;
+                    return None;
                 }
             }
         }
@@ -1002,7 +1006,7 @@ impl LowerCtx {
         // Arity guard: the checker enforces matching arity, but be
         // defensive — substitution panics on a mismatch.
         if type_args.len() != type_params.len() {
-            return;
+            return None;
         }
 
         // Substitute the type-params with the concrete args to produce
@@ -1034,34 +1038,35 @@ impl LowerCtx {
                      type arguments, which would force unbounded layout \
                      expansion (deferred to v0.6)",
                 ));
-                return;
+                return None;
             }
         }
 
+        let returned_type_args = type_args.clone();
         let key = RecordMonoKey {
             origin,
             origin_name,
             type_args,
         };
-        match self
+        if self
             .record_layout_registry
             .insert(key, substituted_fields, init_span.clone())
+            .is_err()
         {
-            Ok(_) => {}
-            Err(()) => {
-                if !self.record_layout_cap_diag_emitted {
-                    self.record_layout_cap_diag_emitted = true;
-                    let cap = self.record_layout_registry.cap();
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::RecordLayoutCapExceeded { cap },
-                        init_span.clone(),
-                        "too many distinct generic-record instantiations; the \
-                         compiler refuses to monomorphise beyond the configured \
-                         cap (suspect polymorphic recursion or runaway inference)",
-                    ));
-                }
+            if !self.record_layout_cap_diag_emitted {
+                self.record_layout_cap_diag_emitted = true;
+                let cap = self.record_layout_registry.cap();
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::RecordLayoutCapExceeded { cap },
+                    init_span.clone(),
+                    "too many distinct generic-record instantiations; the \
+                     compiler refuses to monomorphise beyond the configured \
+                     cap (suspect polymorphic recursion or runaway inference)",
+                ));
             }
+            return None;
         }
+        Some(returned_type_args)
     }
 }
 
@@ -2239,17 +2244,20 @@ impl LowerCtx {
             Expr::StructInit {
                 name,
                 fields,
-                // The v0.5 vertical-slice HIR lowering does not yet honour
-                // explicit type arguments at struct literal sites; the
-                // slice rejects user types at the MIR boundary anyway, so
-                // dropping the args here cannot widen an accepted program.
+                // Surface-level explicit type arguments (`Box<int> { ... }`).
+                // The HIR-recorded `type_args` below comes from the checker's
+                // `record_init_type_args` side-table (which already reconciled
+                // inferred-vs-explicit and substituted enclosing-fn type-params
+                // where applicable), so we ignore the raw surface args here.
                 type_args: _,
                 base,
             } => {
                 // Record the per-instantiation `RecordLayout` for
-                // generic user records. Skips silently for monomorphic
-                // records and builtins (see `record_record_layout`).
-                self.record_record_layout(name, &span);
+                // generic user records and capture the concrete type-args
+                // for propagation onto this expression's resolved type.
+                // `None` indicates a monomorphic record or builtin; for
+                // those, the resulting `Named` carries `args: []` as before.
+                let resolved_type_args = self.record_record_layout(name, &span).unwrap_or_default();
                 let hir_fields = fields
                     .iter()
                     .map(|(fname, expr)| (fname.clone(), self.lower_expr(expr, IntentKind::Read)))
@@ -2266,13 +2274,13 @@ impl LowerCtx {
                 (
                     HirExprKind::StructInit {
                         name: name.clone(),
-                        type_args: Vec::new(),
+                        type_args: resolved_type_args.clone(),
                         fields: hir_fields,
                         base: hir_base,
                     },
                     ResolvedTy::Named {
                         name: name.clone(),
-                        args: Vec::new(),
+                        args: resolved_type_args,
                     },
                 )
             }

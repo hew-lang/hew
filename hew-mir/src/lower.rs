@@ -187,27 +187,78 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
     let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
     for item in &module.items {
-        if let HirItem::Record(decl) = item {
-            let fields: Vec<(String, ResolvedTy)> = decl
-                .fields
-                .iter()
-                .map(|f| (f.name.clone(), f.ty.clone()))
-                .collect();
-            // Named-form records have a non-empty `fields` list; tuple-form
-            // records have an empty list (their positional layout lives on
-            // the parser's `RecordKind::Tuple` discriminator and is not
-            // promoted into HIR fields). Tuple records construct via
-            // `Expr::Call`, never via `StructInit`, so they need no layout
-            // descriptor in this slice — codegen will fail-closed on any
-            // `ResolvedTy::Named` reach-through that names a tuple record.
-            if !fields.is_empty() {
-                record_layouts.push(crate::model::RecordLayout {
-                    name: decl.name.clone(),
-                    field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
-                });
+        match item {
+            HirItem::Record(decl) => {
+                // Generic record decls (`record Box<T> { ... }`) emit zero
+                // bare-name layouts: their per-instantiation layouts come
+                // from `module.record_layouts` under mangled names. Only
+                // monomorphic records register a bare-name field order.
+                if !decl.type_params.is_empty() {
+                    continue;
+                }
+                let fields: Vec<(String, ResolvedTy)> = decl
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect();
+                // Named-form records have a non-empty `fields` list;
+                // tuple-form records have an empty list (their positional
+                // layout lives on the parser's `RecordKind::Tuple`
+                // discriminator and is not promoted into HIR fields). Tuple
+                // records construct via `Expr::Call`, never via
+                // `StructInit`, so they need no layout descriptor in this
+                // slice — codegen will fail-closed on any
+                // `ResolvedTy::Named` reach-through that names a tuple
+                // record.
+                if !fields.is_empty() {
+                    record_layouts.push(crate::model::RecordLayout {
+                        name: decl.name.clone(),
+                        field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                    });
+                }
+                record_field_orders.insert(decl.name.clone(), fields);
             }
-            record_field_orders.insert(decl.name.clone(), fields);
+            HirItem::TypeDecl(decl) => {
+                // `pub type Foo { ... }` and `pub type Foo<T> { ... }` are
+                // structurally the named-record substrate that
+                // `Expr::StructInit` targets. Generic `pub type Foo<T>`
+                // declarations emit zero bare-name layouts (same rule as
+                // generic records); their per-instantiation layouts come
+                // from `module.record_layouts` under mangled names.
+                if !decl.type_params.is_empty() {
+                    continue;
+                }
+                let fields: Vec<(String, ResolvedTy)> = decl
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect();
+                if !fields.is_empty() {
+                    record_layouts.push(crate::model::RecordLayout {
+                        name: decl.name.clone(),
+                        field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                    });
+                    record_field_orders.insert(decl.name.clone(), fields);
+                }
+            }
+            _ => {}
         }
+    }
+
+    // Emit one MIR `RecordLayout` per HIR `record_layouts` entry under the
+    // mangled symbol name. The HIR registry has already substituted the
+    // type-parameter symbols with concrete `ResolvedTy`s, so the MIR layer
+    // can read the field list verbatim. Insertion-ordered to keep codegen
+    // deterministic; per-instantiation field_orders are keyed by the
+    // mangled name so `StructInit` / `FieldAccess` lowering can find them
+    // by mangling `(record_name, type_args)` from the expression's type.
+    for layout in &module.record_layouts {
+        let fields: Vec<(String, ResolvedTy)> = layout.fields.clone();
+        record_layouts.push(crate::model::RecordLayout {
+            name: layout.mangled_name.clone(),
+            field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+        });
+        record_field_orders.insert(layout.mangled_name.clone(), fields);
     }
 
     // Collect the names every user-defined function will use as its
@@ -1159,33 +1210,45 @@ impl Builder {
             HirExprKind::StructInit {
                 name, fields, base, ..
             } => {
+                // Resolve the record-key for the field-order table. For a
+                // generic record instantiation the HIR-recorded `expr.ty`
+                // is `Named { name, args: <concrete> }` and the layout was
+                // registered under the mangled name; for a monomorphic
+                // record `args` is empty and the bare name is the key.
+                let record_key = match &expr.ty {
+                    ResolvedTy::Named { name: tname, args } if !args.is_empty() => {
+                        hew_hir::mangle(tname, args)
+                    }
+                    _ => name.clone(),
+                };
                 // Look up the declaration-order field list for this record.
                 // If it's missing, the checker allowed a type that was never
                 // registered — fail closed rather than silently producing
                 // malformed MIR.
-                let field_order = if let Some(order) = self.record_field_orders.get(name.as_str()) {
-                    order.clone()
-                } else {
-                    // Walk sub-expressions for checker-stream coverage.
-                    for (_, fexpr) in fields {
-                        let _ = self.lower_value(fexpr);
-                    }
-                    if let Some(base_expr) = base {
-                        let _ = self.lower_value(base_expr);
-                    }
-                    self.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::CutoverUnsupported {
-                            construct: format!(
-                                "record type `{name}` (not registered in field-order table)"
-                            ),
-                            site: expr.site,
-                        },
-                        note: "record type was not found in the field-order table; \
+                let field_order =
+                    if let Some(order) = self.record_field_orders.get(record_key.as_str()) {
+                        order.clone()
+                    } else {
+                        // Walk sub-expressions for checker-stream coverage.
+                        for (_, fexpr) in fields {
+                            let _ = self.lower_value(fexpr);
+                        }
+                        if let Some(base_expr) = base {
+                            let _ = self.lower_value(base_expr);
+                        }
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "record type `{name}` (not registered in field-order table)"
+                                ),
+                                site: expr.site,
+                            },
+                            note: "record type was not found in the field-order table; \
                                this is a checker bug (the type must be declared before use)"
-                            .to_string(),
-                    });
-                    return None;
-                };
+                                .to_string(),
+                        });
+                        return None;
+                    };
 
                 // Lower each explicit field value to a Place, keyed by name.
                 let mut explicit: HashMap<String, Place> = HashMap::new();
@@ -1250,9 +1313,15 @@ impl Builder {
                 Some(dest)
             }
             HirExprKind::FieldAccess { object, field } => {
-                // Resolve the record type name from the object's type so we can
-                // look up the field offset in the field-order table.
+                // Resolve the record type key from the object's type so we
+                // can look up the field offset in the field-order table.
+                // For a generic record instantiation (`b: Box<int>` reading
+                // `b.value`) the key is the mangled name `Box$$i64`; for a
+                // monomorphic record the key is the bare name.
                 let type_name = match &object.ty {
+                    ResolvedTy::Named { name, args } if !args.is_empty() => {
+                        hew_hir::mangle(name, args)
+                    }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
                         let _ = self.lower_value(object);

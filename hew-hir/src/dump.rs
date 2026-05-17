@@ -157,6 +157,9 @@ pub fn dump_hir(module: &HirModule) -> String {
                     .expect("write to string");
                 }
             }
+            HirItem::Supervisor(sup) => {
+                writeln!(out, "supervisor {} {}", sup.id, sup.name).expect("write to string");
+            }
         }
     }
     out

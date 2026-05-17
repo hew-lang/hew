@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal,
     MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker,
-    SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    RestartPolicy, SelectArm, Span, Spanned, Stmt, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
     AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
@@ -17,8 +18,9 @@ use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
     HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
     HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirModule, HirRecordDecl, HirSelect, HirSelectArm,
-    HirSelectArmKind, HirStmt, HirStmtKind, HirTypeDecl,
+    HirMachineState, HirMachineTransition, HirModule, HirRecordDecl, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -123,6 +125,11 @@ pub fn lower_program(
             }
             Item::Record(decl) => {
                 items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
+            }
+            Item::Supervisor(decl) => {
+                items.push(HirItem::Supervisor(
+                    ctx.lower_supervisor(decl, span.clone()),
+                ));
             }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
@@ -427,6 +434,47 @@ impl LowerCtx {
             name: decl.name.clone(),
             type_params,
             fields,
+            span,
+        }
+    }
+
+    /// Lower a `supervisor` declaration to `HirSupervisorDecl`.
+    ///
+    /// Bodies (MIR producer wiring, codegen) are deferred to slices S-C/S-D.
+    /// This function mirrors `lower_record_decl` in structure: structural lift
+    /// only, no HIR expression lowering.
+    fn lower_supervisor(&mut self, decl: &SupervisorDecl, span: Span) -> HirSupervisorDecl {
+        let strategy = decl.strategy.map(|s| match s {
+            SupervisorStrategy::OneForOne => HirSupervisorStrategy::OneForOne,
+            SupervisorStrategy::OneForAll => HirSupervisorStrategy::OneForAll,
+            SupervisorStrategy::RestForOne => HirSupervisorStrategy::RestForOne,
+            SupervisorStrategy::SimpleOneForOne => HirSupervisorStrategy::SimpleOneForOne,
+        });
+
+        let children = decl
+            .children
+            .iter()
+            .map(|child| HirSupervisorChild {
+                name: child.name.clone(),
+                ty: child.actor_type.clone(),
+                restart_policy: child.restart.map(|r| match r {
+                    RestartPolicy::Permanent => HirRestartPolicy::Permanent,
+                    RestartPolicy::Transient => HirRestartPolicy::Transient,
+                    RestartPolicy::Temporary => HirRestartPolicy::Temporary,
+                }),
+                wired_to: child.wired_to.clone(),
+                is_pool: child.is_pool,
+            })
+            .collect();
+
+        HirSupervisorDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            name: decl.name.clone(),
+            strategy,
+            max_restarts: decl.max_restarts,
+            window: decl.window.clone(),
+            children,
             span,
         }
     }

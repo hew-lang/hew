@@ -239,12 +239,16 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 elaborated_mir.push(lowered.elaborated);
                 diagnostics.extend(lowered.diagnostics);
             }
-            HirItem::Record(_) | HirItem::TypeDecl(_) | HirItem::Machine(_) | HirItem::Actor(_) => {
-                // Neither type declarations nor Lane A machine / actor
-                // declarations have executable MIR bodies. TypeDecl markers
-                // are consumed via `HirModule.type_classes`; machine codegen
-                // (step() dispatch, tagged-union layout) is Lane B; actor
-                // body lowering is the next M6 slice.
+            HirItem::Record(_)
+            | HirItem::TypeDecl(_)
+            | HirItem::Machine(_)
+            | HirItem::Actor(_)
+            | HirItem::Supervisor(_) => {
+                // Neither type declarations nor Lane A machine / actor /
+                // supervisor declarations have executable MIR bodies in S-A.
+                // TypeDecl markers are consumed via `HirModule.type_classes`;
+                // machine codegen is Lane B; actor body lowering is the next
+                // M6 slice; supervisor lowering is S-C (separate slice).
             }
         }
     }

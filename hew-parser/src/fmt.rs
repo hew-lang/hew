@@ -1210,6 +1210,7 @@ impl<'a> Formatter<'a> {
                 SupervisorStrategy::OneForOne => self.write("one_for_one"),
                 SupervisorStrategy::OneForAll => self.write("one_for_all"),
                 SupervisorStrategy::RestForOne => self.write("rest_for_one"),
+                SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
             }
             self.write(";\n");
         }

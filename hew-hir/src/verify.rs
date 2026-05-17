@@ -61,6 +61,12 @@ impl Verifier {
                     // enforced upstream by the checker.
                     self.node(actor.node, actor.span.clone());
                 }
+                HirItem::Supervisor(sup) => {
+                    // Supervisor declarations contribute only their HirNodeId
+                    // uniqueness in S-A; children-list resolution and
+                    // wired_to validation are S-B's job.
+                    self.node(sup.node, sup.span.clone());
+                }
             }
         }
     }

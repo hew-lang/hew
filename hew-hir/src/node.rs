@@ -29,6 +29,7 @@ pub enum HirItem {
     Machine(HirMachineDecl),
     Record(HirRecordDecl),
     Actor(HirActorDecl),
+    Supervisor(HirSupervisorDecl),
 }
 
 // ── Actor declarations ───────────────────────────────────────────────────────
@@ -261,6 +262,57 @@ pub struct HirRecordDecl {
     pub type_params: Vec<String>,
     pub fields: Vec<HirField>,
     pub span: Span,
+}
+
+// ── Supervisor declarations ──────────────────────────────────────────────────
+
+/// Lowered supervisor declaration.
+///
+/// Carries the structural shape of a `supervisor` item — strategy, restart
+/// budget, time window, and child/pool specifications. Bodies (MIR producer
+/// wiring, codegen) are deferred to slices S-C/S-D. The Rust MIR producer
+/// treats `HirItem::Supervisor` as a no-op tier alongside `Record`/`Actor`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSupervisorDecl {
+    pub id: ItemId,
+    pub node: HirNodeId,
+    pub name: String,
+    pub strategy: Option<HirSupervisorStrategy>,
+    pub max_restarts: Option<i64>,
+    /// Window duration as a raw string from the parser (e.g. `"60s"`).
+    /// Parsed to a concrete `Duration` in S-C when wiring is lowered.
+    pub window: Option<String>,
+    pub children: Vec<HirSupervisorChild>,
+    pub span: Span,
+}
+
+/// One child or pool entry within a supervisor declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSupervisorChild {
+    pub name: String,
+    pub ty: String,
+    pub restart_policy: Option<HirRestartPolicy>,
+    /// Declarative sibling wiring: init-param name → sibling child name.
+    /// `None` means no `wired_to:` clause. S-B validates key correctness.
+    pub wired_to: Option<std::collections::HashMap<String, String>>,
+    /// `true` when declared with `pool name: Type`; `false` for `child name: Type`.
+    pub is_pool: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirSupervisorStrategy {
+    OneForOne,
+    OneForAll,
+    RestForOne,
+    /// Dynamic pool strategy; used with `pool` child declarations.
+    SimpleOneForOne,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirRestartPolicy {
+    Permanent,
+    Transient,
+    Temporary,
 }
 
 /// Lowered top-level type declaration.

@@ -2863,6 +2863,10 @@ impl<'src> Parser<'src> {
                             self.advance();
                             Some(SupervisorStrategy::RestForOne)
                         }
+                        Some(Token::SimpleOneForOne) => {
+                            self.advance();
+                            Some(SupervisorStrategy::SimpleOneForOne)
+                        }
                         _ => None,
                     };
                     if !self.eat(&Token::Semicolon) {
@@ -2902,7 +2906,8 @@ impl<'src> Parser<'src> {
                         self.eat(&Token::Comma);
                     }
                 }
-                Some(Token::Child) => {
+                Some(Token::Child | Token::Pool) => {
+                    let is_pool = matches!(self.peek(), Some(Token::Pool));
                     self.advance();
                     let child_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
@@ -2919,7 +2924,8 @@ impl<'src> Parser<'src> {
                         self.expect(&Token::RightParen)?;
                     }
 
-                    let restart = match self.peek() {
+                    // Legacy bare restart keyword (e.g. `child n: T permanent`)
+                    let mut restart = match self.peek() {
                         Some(Token::Permanent) => {
                             self.advance();
                             Some(RestartPolicy::Permanent)
@@ -2935,7 +2941,61 @@ impl<'src> Parser<'src> {
                         _ => None,
                     };
 
-                    // Skip inline modifiers like restart(...) budget(...) strategy(...)
+                    // New-surface: `with restart: <policy>` clause
+                    if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "with") {
+                        self.advance(); // consume `with`
+                        if self.eat(&Token::Restart) {
+                            self.expect(&Token::Colon)?;
+                            restart = match self.peek() {
+                                Some(Token::Permanent) => {
+                                    self.advance();
+                                    Some(RestartPolicy::Permanent)
+                                }
+                                Some(Token::Transient) => {
+                                    self.advance();
+                                    Some(RestartPolicy::Transient)
+                                }
+                                Some(Token::Temporary) => {
+                                    self.advance();
+                                    Some(RestartPolicy::Temporary)
+                                }
+                                _ => None,
+                            };
+                        }
+                    }
+
+                    // New-surface: `wired_to: { key: sibling, bare_sibling }` clause
+                    let wired_to = if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "wired_to")
+                    {
+                        self.advance(); // consume `wired_to`
+                        self.expect(&Token::Colon)?;
+                        self.expect(&Token::LeftBrace)?;
+                        let mut map = std::collections::HashMap::new();
+                        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                            let key = self.expect_ident()?;
+                            if self.eat(&Token::Colon) {
+                                // explicit `key: sibling_name` form
+                                let val = self.expect_ident()?;
+                                map.insert(key, val);
+                            } else {
+                                // shorthand `sibling_name` — key and value are the same
+                                map.insert(key.clone(), key);
+                            }
+                            if !self.eat(&Token::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(&Token::RightBrace)?;
+                        if map.is_empty() {
+                            None
+                        } else {
+                            Some(map)
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Skip legacy inline modifiers like restart(...) budget(...) strategy(...)
                     while matches!(
                         self.peek(),
                         Some(
@@ -2971,6 +3031,8 @@ impl<'src> Parser<'src> {
                         actor_type,
                         args,
                         restart,
+                        wired_to,
+                        is_pool,
                     });
                 }
                 _ => {

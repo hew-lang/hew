@@ -7248,6 +7248,80 @@ fn demo() {}
         assert_eq!(result.program.items.len(), 1);
     }
 
+    // ── extern "rt" block tests ──────────────────────────────────────────
+
+    #[test]
+    fn extern_rt_block_empty() {
+        let result = parse("extern \"rt\" { }");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.program.items.len(), 1);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "rt");
+        assert!(block.functions.is_empty());
+    }
+
+    #[test]
+    fn extern_rt_block_single_fn() {
+        let result = parse("extern \"rt\" { fn println(s: string); }");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.program.items.len(), 1);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "rt");
+        assert_eq!(block.functions.len(), 1);
+        assert_eq!(block.functions[0].name, "println");
+        assert_eq!(block.functions[0].params.len(), 1);
+        assert_eq!(block.functions[0].params[0].name, "s");
+    }
+
+    #[test]
+    fn extern_rt_block_multiple_fns() {
+        let result = parse(
+            "extern \"rt\" { fn println(s: string); fn print(s: string); fn assert(cond: bool); }",
+        );
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "rt");
+        assert_eq!(block.functions.len(), 3);
+        assert_eq!(block.functions[0].name, "println");
+        assert_eq!(block.functions[1].name, "print");
+        assert_eq!(block.functions[2].name, "assert");
+    }
+
+    #[test]
+    fn extern_rt_block_fn_with_body_rejected() {
+        // Bodies are forbidden in extern blocks (any ABI): the parser expects `;`
+        // after the parameter list. A `{` in its place produces a parse error.
+        let result = parse("extern \"rt\" { fn println(s: string) { todo() } }");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("expected `;`")),
+            "expected a 'expected `;`' error, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_unknown_abi_accepted_at_parse_level() {
+        // The parser is ABI-agnostic; unknown ABI strings parse successfully.
+        // Rejection of unsupported ABIs is deferred to the type-checker.
+        let result = parse("extern \"xyz\" { fn foo(); }");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "xyz");
+        assert_eq!(block.functions.len(), 1);
+        assert_eq!(block.functions[0].name, "foo");
+    }
+
     #[test]
     fn parse_timeout_combinator() {
         let source = "fn main() { let r = foo() | after 5000; }";

@@ -2794,6 +2794,19 @@ extern \"C\" {
         assert_eq!(formatted, src);
     }
 
+    #[test]
+    fn extern_rt_block_roundtrip() {
+        let src = "\
+extern \"rt\" {
+    fn println(s: string);
+    fn print(s: string);
+    fn assert(cond: bool);
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
     fn roundtrip_source(src: &str) -> String {
         let result = parse(src);
         assert!(

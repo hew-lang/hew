@@ -215,6 +215,7 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        record_layouts: vec![],
     }
 }
 

@@ -21,6 +21,37 @@ pub struct IrPipeline {
     pub checked_mir: Vec<CheckedMirFunction>,
     pub elaborated_mir: Vec<ElaboratedMirFunction>,
     pub diagnostics: Vec<MirDiagnostic>,
+    /// Layout descriptors for every named-form `record` declaration in the
+    /// module. Populated by `lower_hir_module` from the same `HirItem::Record`
+    /// walk that builds the field-order table. Codegen (`hew-codegen-rs`)
+    /// consumes this to register LLVM named struct types and resolve the
+    /// `ResolvedTy::Named { name, .. }` of record-typed locals to the
+    /// corresponding struct layout for alloca / GEP emission.
+    ///
+    /// Tuple-form records (`record Pair(int, int)`) are NOT included here:
+    /// their `HirRecordDecl.fields` is empty (the parser keeps positional
+    /// fields on the `RecordKind::Tuple` discriminator, which the HIR lowerer
+    /// does not promote into `HirField`s). Tuple records construct via
+    /// `Expr::Call`, not `StructInit`, so they never produce `RecordInit`
+    /// or `RecordFieldLoad` instructions and need no codegen layout entry
+    /// in this slice.
+    pub record_layouts: Vec<RecordLayout>,
+}
+
+/// Layout descriptor for a named-form `record` declaration. The codegen
+/// emitter materialises this as an LLVM named struct type whose body is the
+/// field-type list in declaration order. Field-name resolution to the
+/// `FieldOffset` ordinal has already been performed by the MIR producer at
+/// `RecordInit` / `RecordFieldLoad` construction time, so codegen consumes
+/// only the positional type list here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordLayout {
+    /// Record type name. Matches the `name` field on
+    /// `ResolvedTy::Named { name, .. }` for a record-typed local.
+    pub name: String,
+    /// Field types in declaration order. Index `i` corresponds to
+    /// `FieldOffset(i)`.
+    pub field_tys: Vec<ResolvedTy>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

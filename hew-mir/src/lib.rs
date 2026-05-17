@@ -15,7 +15,7 @@ pub use model::{
     BasicBlock, BlockKind, BorrowKind, CaptureKind, CheckedMirFunction, CmpPred, CoroutineSchema,
     DecisionFact, Direction, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction,
     ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, LambdaCapture,
-    MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, RuntimeCall,
-    SelectArm, SelectArmKind, Strategy, Terminator, ThirFunction, TrapKind,
+    MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction, RecordLayout,
+    RuntimeCall, SelectArm, SelectArmKind, Strategy, Terminator, ThirFunction, TrapKind,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;

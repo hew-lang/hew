@@ -82,6 +82,7 @@ fn pipeline_with_task_abi_call(
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        record_layouts: vec![],
     }
 }
 

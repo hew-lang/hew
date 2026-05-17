@@ -60,8 +60,8 @@ use std::path::Path;
 use std::process::Command;
 
 use hew_mir::{
-    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, Instr, IntArithOp,
-    IntSignedness, IrPipeline, Place, RawMirFunction, Terminator, TrapKind,
+    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr, IntArithOp,
+    IntSignedness, IrPipeline, Place, RawMirFunction, RecordLayout, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -70,7 +70,7 @@ use inkwell::context::Context;
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetMachine;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
+use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum, StructType};
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
@@ -369,6 +369,14 @@ struct FnCtx<'a, 'ctx> {
     /// borrows `FnCtx` immutably) can register new declarations lazily
     /// from inside `Instr::CallRuntimeAbi` and `Instr::Drop` arms.
     runtime_decls: RefCell<RuntimeDeclMap<'ctx>>,
+    /// Module-wide record layouts (A-7). Keyed by record name; values are
+    /// the LLVM named struct types registered up front in `build_module`
+    /// via `register_record_layouts`. `Instr::RecordInit` /
+    /// `Instr::RecordFieldLoad` consult this through `record_struct_for`
+    /// to resolve a record-typed local's slot to its `StructType` for GEP
+    /// indexing. The map is borrowed (no ownership) — the registered
+    /// `StructType<'ctx>` values share the codegen context's lifetime.
+    record_layouts: &'a RecordLayoutMap<'ctx>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -536,6 +544,79 @@ fn intern_runtime_decl<'ctx>(
 // ---------------------------------------------------------------------------
 // Type mapping
 // ---------------------------------------------------------------------------
+
+/// Per-module map from a `record` type's name to its registered LLVM named
+/// struct type. Populated once per `build_module` from
+/// `IrPipeline.record_layouts` (A-7 slice). Codegen consults this map in
+/// `resolve_ty` before falling to `primitive_to_llvm` so that
+/// `ResolvedTy::Named { name, .. }` references to user records resolve to
+/// the struct type rather than tripping the D10-violation fail-closed arm.
+///
+/// The map is keyed by the bare record name (no generic-args mangling)
+/// because A-7's surface is monomorphic — generic records are deferred.
+type RecordLayoutMap<'ctx> = HashMap<String, StructType<'ctx>>;
+
+/// Register every named-form record from `layouts` as an LLVM named struct
+/// type on `ctx`, populating the body with each field's LLVM lowering.
+///
+/// Two-pass to support records that reference each other by name (forward /
+/// mutual references are valid Hew; the struct body resolution must see
+/// every record's opaque type before we attempt to set any body):
+/// 1. Pass 1: create an opaque named struct for every record so cross-
+///    references can resolve.
+/// 2. Pass 2: lower each field type and call `set_body` on the opaque
+///    struct.
+///
+/// Returns the populated map. Fails closed if any field type cannot be
+/// lowered — e.g. a record field with a `Tuple` or `Array` type (Cluster 2
+/// composite lowering pending), or a `Named` type that names neither a
+/// registered record nor a built-in handle. The MIR producer + checker
+/// would have rejected such a record at HIR-validation time, so reaching
+/// the fail-closed arm here is itself a bug.
+fn register_record_layouts<'ctx>(
+    ctx: &'ctx Context,
+    layouts: &[RecordLayout],
+) -> CodegenResult<RecordLayoutMap<'ctx>> {
+    let mut map: RecordLayoutMap<'ctx> = HashMap::new();
+    // Pass 1: opaque named structs.
+    for layout in layouts {
+        let st = ctx.opaque_struct_type(&layout.name);
+        map.insert(layout.name.clone(), st);
+    }
+    // Pass 2: set body for each. Records-of-records resolve via the map's
+    // opaque entries created in pass 1.
+    for layout in layouts {
+        let st = map
+            .get(&layout.name)
+            .copied()
+            .expect("pass 1 populated every record name");
+        let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(layout.field_tys.len());
+        for fty in &layout.field_tys {
+            field_tys.push(resolve_ty(ctx, fty, &map)?);
+        }
+        // packed = false: use the target's natural alignment per
+        // `RecordLayout` doc (A-6b). LESSONS: parity-or-tracked-gap.
+        st.set_body(&field_tys, false);
+    }
+    Ok(map)
+}
+
+/// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
+/// record-layout map first for named user records. This is the codegen-side
+/// entry point for type lowering — it replaces direct calls to
+/// `primitive_to_llvm` at any site that may encounter a record-typed value.
+fn resolve_ty<'ctx>(
+    ctx: &'ctx Context,
+    ty: &ResolvedTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+) -> CodegenResult<BasicTypeEnum<'ctx>> {
+    if let ResolvedTy::Named { name, .. } = ty {
+        if let Some(st) = record_layouts.get(name) {
+            return Ok((*st).into());
+        }
+    }
+    primitive_to_llvm(ctx, ty)
+}
 
 fn primitive_to_llvm<'ctx>(
     ctx: &'ctx Context,
@@ -1321,15 +1402,17 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 .map_err(|e| CodegenError::Llvm(format!("StringLit store: {e:?}")))?;
             let _ = ctx;
         }
-        Instr::RecordInit { .. } | Instr::RecordFieldLoad { .. } => {
-            // A-6b produces RecordInit and RecordFieldLoad MIR variants.
-            // A-7 (separate slice) owns the LLVM struct layout, alloca,
-            // GEP+store/GEP+load emission, and drop tracing. Until A-7
-            // lands, fail-closed so any record-bearing program is
-            // diagnosed rather than silently mis-codegened.
-            return Err(CodegenError::FailClosed(
-                "record codegen (RecordInit/RecordFieldLoad) is deferred to A-7".into(),
-            ));
+        Instr::RecordInit { ty, fields, dest } => {
+            lower_record_init(fn_ctx, ty, fields, *dest)?;
+            let _ = ctx;
+        }
+        Instr::RecordFieldLoad {
+            record,
+            field_offset,
+            dest,
+        } => {
+            lower_record_field_load(fn_ctx, *record, *field_offset, *dest)?;
+            let _ = ctx;
         }
         Instr::FloatLit {
             dest,
@@ -1483,6 +1566,170 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
             let _ = ctx;
         }
     }
+    Ok(())
+}
+
+/// Resolve the LLVM `StructType` for a record-typed place by inspecting the
+/// place's `ResolvedTy::Named { name, .. }` name against the registered
+/// record layout map. Fails closed if `ty` is not a `Named` type or if the
+/// named type is not in the layout map — both indicate the MIR producer
+/// emitted a `RecordInit` / `RecordFieldLoad` against a Place whose type
+/// wasn't a registered record, which is an upstream invariant violation.
+fn record_struct_for<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ty: &ResolvedTy,
+) -> CodegenResult<StructType<'ctx>> {
+    match ty {
+        ResolvedTy::Named { name, .. } => {
+            fn_ctx.record_layouts.get(name).copied().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "record codegen: type `{name}` reached RecordInit/RecordFieldLoad \
+                 but is not in the registered record-layout map; either the MIR \
+                 producer emitted the instruction against a non-record type, or \
+                 `IrPipeline.record_layouts` was not populated for this module"
+                ))
+            })
+        }
+        other => Err(CodegenError::FailClosed(format!(
+            "record codegen: expected a Named record type, got {other:?}"
+        ))),
+    }
+}
+
+/// Lower `Instr::RecordInit { ty, fields, dest }` to per-field GEP+store
+/// into the record's destination alloca.
+///
+/// `dest` is a `Place::Local(N)` whose slot was already allocated by
+/// `lower_function`'s prologue with the struct type (via `resolve_ty`). The
+/// alloca itself IS the destination record value — no second allocation is
+/// needed. We GEP into each field offset and store the source value loaded
+/// from its place.
+///
+/// Field source values may be either scalar (loaded with `build_load`) or
+/// composite (a nested record, loaded as a struct value). The LLVM
+/// `build_load` call uses the field's declared LLVM type from the parent
+/// struct's element-types list, so both shapes go through the same path.
+///
+/// Functional-update (`R { x: 1, ..base }`) is handled by the MIR producer
+/// expanding to per-field `RecordFieldLoad` from the base + `RecordInit`
+/// with all field-pairs explicit — A-7 sees only the flat store-each-field
+/// shape; no `base` parameter is consumed here.
+fn lower_record_init(
+    fn_ctx: &FnCtx<'_, '_>,
+    ty: &ResolvedTy,
+    fields: &[(FieldOffset, Place)],
+    dest: Place,
+) -> CodegenResult<()> {
+    let struct_ty = record_struct_for(fn_ctx, ty)?;
+    let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, dest)?;
+    // Sanity: the destination slot must already be allocated as the struct
+    // type. If it's a different type, `lower_function`'s alloca prologue
+    // did not see the same `ResolvedTy::Named` for this local — a
+    // producer/codegen disagreement.
+    if dest_slot_ty != BasicTypeEnum::StructType(struct_ty) {
+        return Err(CodegenError::FailClosed(format!(
+            "RecordInit dest slot type does not match registered struct: \
+             slot={dest_slot_ty:?}, struct={struct_ty:?}"
+        )));
+    }
+    let element_tys = struct_ty.get_field_types();
+    for (offset, src_place) in fields {
+        let idx = offset.0;
+        let idx_usize = usize::try_from(idx).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "RecordInit field offset {idx} exceeds usize::MAX — impossible"
+            ))
+        })?;
+        let field_ty = *element_tys.get(idx_usize).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "RecordInit field offset {idx} is out of bounds for struct with \
+                 {} fields",
+                element_tys.len()
+            ))
+        })?;
+        let (src_ptr, src_slot_ty) = place_pointer(fn_ctx, *src_place)?;
+        if src_slot_ty != field_ty {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordInit field {idx} source slot type does not match struct field \
+                 type: src={src_slot_ty:?}, field={field_ty:?}"
+            )));
+        }
+        // GEP to the field within the destination struct alloca.
+        let field_ptr = fn_ctx
+            .builder
+            .build_struct_gep(struct_ty, dest_ptr, idx, &format!("field_{idx}_init_ptr"))
+            .map_err(|e| CodegenError::Llvm(format!("RecordInit struct_gep field {idx}: {e:?}")))?;
+        // Load the source value (scalar or struct), store it into the field.
+        let src_val = fn_ctx
+            .builder
+            .build_load(field_ty, src_ptr, &format!("field_{idx}_init_src"))
+            .map_err(|e| CodegenError::Llvm(format!("RecordInit field {idx} load: {e:?}")))?;
+        fn_ctx
+            .builder
+            .build_store(field_ptr, src_val)
+            .map_err(|e| CodegenError::Llvm(format!("RecordInit field {idx} store: {e:?}")))?;
+    }
+    Ok(())
+}
+
+/// Lower `Instr::RecordFieldLoad { record, field_offset, dest }` to a
+/// GEP+load on the record's alloca, storing the loaded field value into
+/// the dest place.
+///
+/// The record's `Place` must reference a struct-typed local slot (allocated
+/// by `lower_function` from a `ResolvedTy::Named` record-typed local). We
+/// recover the struct type from the slot's LLVM type, GEP to the field, and
+/// load using the field's declared element type from the parent struct.
+fn lower_record_field_load(
+    fn_ctx: &FnCtx<'_, '_>,
+    record: Place,
+    field_offset: FieldOffset,
+    dest: Place,
+) -> CodegenResult<()> {
+    let (record_ptr, record_slot_ty) = place_pointer(fn_ctx, record)?;
+    let struct_ty = match record_slot_ty {
+        BasicTypeEnum::StructType(st) => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordFieldLoad record place has non-struct slot type: {other:?}"
+            )))
+        }
+    };
+    let idx = field_offset.0;
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "RecordFieldLoad field offset {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let element_tys = struct_ty.get_field_types();
+    let field_ty = *element_tys.get(idx_usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "RecordFieldLoad field offset {idx} is out of bounds for struct with \
+             {} fields",
+            element_tys.len()
+        ))
+    })?;
+    let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, dest)?;
+    if dest_slot_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "RecordFieldLoad dest slot type does not match field type: \
+             dest={dest_slot_ty:?}, field={field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, record_ptr, idx, &format!("field_{idx}_load_ptr"))
+        .map_err(|e| {
+            CodegenError::Llvm(format!("RecordFieldLoad struct_gep field {idx}: {e:?}"))
+        })?;
+    let field_val = fn_ctx
+        .builder
+        .build_load(field_ty, field_ptr, &format!("field_{idx}_load"))
+        .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, field_val)
+        .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} store: {e:?}")))?;
     Ok(())
 }
 
@@ -2692,13 +2939,14 @@ fn declare_function<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     func: &RawMirFunction,
+    record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<(FunctionValue<'ctx>, BasicTypeEnum<'ctx>)> {
     let linkage = if func.name == "main" {
         Some(Linkage::External)
     } else {
         Some(Linkage::Internal)
     };
-    let return_ty_llvm = primitive_to_llvm(ctx, &func.return_ty)?;
+    let return_ty_llvm = resolve_ty(ctx, &func.return_ty, record_layouts)?;
     // Accept integer and pointer return types. Integer covers the original
     // Cluster 1 spine; pointer covers `String` (a `*mut c_char` / opaque
     // `ptr` in LLVM IR) which is now lowerable via `Instr::StringLit`.
@@ -2750,6 +2998,7 @@ fn lower_function<'ctx>(
     func: &RawMirFunction,
     fn_symbols: &FnSymbolMap<'ctx>,
     elab: Option<&ElaboratedMirFunction>,
+    record_layouts: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<()> {
     let (llvm_fn, return_ty_llvm) = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -2779,7 +3028,12 @@ fn lower_function<'ctx>(
 
     let mut locals: HashMap<u32, (PointerValue, BasicTypeEnum)> = HashMap::new();
     for (idx, ty) in func.locals.iter().enumerate() {
-        let llvm_ty = primitive_to_llvm(ctx, ty)?;
+        // Use `resolve_ty` (not bare `primitive_to_llvm`) so record-typed
+        // locals materialise as struct allocas rather than tripping the
+        // D10-violation arm. Record-typed locals get an alloca sized to
+        // the full struct; codegen for `RecordInit` writes into this slot
+        // in place via per-field GEP+store.
+        let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
         let idx_u32 = u32::try_from(idx).map_err(|_| {
             CodegenError::FailClosed("function exceeds u32::MAX locals — impossible".into())
         })?;
@@ -2798,6 +3052,7 @@ fn lower_function<'ctx>(
         locals,
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),
+        record_layouts,
     };
 
     // Extract drop_plans from the matched elaborated function, or use an
@@ -2834,9 +3089,17 @@ fn build_module<'ctx>(
     name: &str,
 ) -> CodegenResult<LlvmModule<'ctx>> {
     let llvm_mod = ctx.create_module(name);
+    // Register every named-form record from `pipeline.record_layouts` as an
+    // LLVM named struct on `ctx` BEFORE any function declaration or body
+    // lowering touches `resolve_ty`. Records can appear in function return
+    // types (declare_function) and in local slot types (lower_function);
+    // both paths consult `record_layouts` via `resolve_ty`, so the map must
+    // be populated up front. Empty `record_layouts` (most existing pipelines)
+    // produces an empty map and changes no behaviour for record-free code.
+    let record_layouts = register_record_layouts(ctx, &pipeline.record_layouts)?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     for func in &pipeline.raw_mir {
-        let sym = declare_function(ctx, &llvm_mod, func)?;
+        let sym = declare_function(ctx, &llvm_mod, func, &record_layouts)?;
         fn_symbols.insert(func.name.clone(), sym);
     }
     for func in &pipeline.raw_mir {
@@ -2845,7 +3108,7 @@ fn build_module<'ctx>(
         // elaborated_mir empty; `find` returns `None` in that case and
         // `lower_function` falls back to the inline Instr::Drop path.
         let elab = pipeline.elaborated_mir.iter().find(|e| e.name == func.name);
-        lower_function(ctx, &llvm_mod, func, &fn_symbols, elab)?;
+        lower_function(ctx, &llvm_mod, func, &fn_symbols, elab, &record_layouts)?;
     }
     llvm_mod
         .verify()
@@ -2951,6 +3214,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
         }
     }
 
@@ -2997,6 +3261,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let m =
@@ -3032,6 +3297,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
         };
         let ctx = Context::create();
         let err =
@@ -3076,6 +3342,7 @@ mod tests {
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
             diagnostics: Vec::new(),
+            record_layouts: Vec::new(),
         }
     }
 

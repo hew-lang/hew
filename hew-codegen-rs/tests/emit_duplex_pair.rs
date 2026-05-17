@@ -133,6 +133,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        record_layouts: vec![],
     }
 }
 

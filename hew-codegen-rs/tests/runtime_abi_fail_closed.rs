@@ -68,6 +68,7 @@ fn pipeline_with_call_runtime_abi(symbol: &str) -> IrPipeline {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        record_layouts: vec![],
     }
 }
 

@@ -174,6 +174,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     // records have an empty field list and their constructor is a Call, not a
     // StructInit, so they never appear here.
     let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
     for item in &module.items {
         if let HirItem::Record(decl) = item {
             let fields: Vec<(String, ResolvedTy)> = decl
@@ -181,6 +182,19 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
                 .iter()
                 .map(|f| (f.name.clone(), f.ty.clone()))
                 .collect();
+            // Named-form records have a non-empty `fields` list; tuple-form
+            // records have an empty list (their positional layout lives on
+            // the parser's `RecordKind::Tuple` discriminator and is not
+            // promoted into HIR fields). Tuple records construct via
+            // `Expr::Call`, never via `StructInit`, so they need no layout
+            // descriptor in this slice — codegen will fail-closed on any
+            // `ResolvedTy::Named` reach-through that names a tuple record.
+            if !fields.is_empty() {
+                record_layouts.push(crate::model::RecordLayout {
+                    name: decl.name.clone(),
+                    field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                });
+            }
             record_field_orders.insert(decl.name.clone(), fields);
         }
     }
@@ -211,6 +225,7 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         checked_mir,
         elaborated_mir,
         diagnostics,
+        record_layouts,
     }
 }
 

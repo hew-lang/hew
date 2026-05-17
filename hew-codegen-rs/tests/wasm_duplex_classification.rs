@@ -98,6 +98,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        record_layouts: vec![],
     }
 }
 
@@ -152,6 +153,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        record_layouts: vec![],
     }
 }
 
@@ -210,6 +212,7 @@ fn pipeline_no_duplex() -> IrPipeline {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        record_layouts: vec![],
     }
 }
 

@@ -482,6 +482,43 @@ fn intern_runtime_decl<'ctx>(
         | "hew_vec_slice_range_str" => {
             ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
         }
+        // ── scope{}/spawn/await task ABI (Phase 2, inventory rows 2/3/4) ──────
+        //
+        // hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32
+        // (`hew-runtime/src/scope.rs:169`). Adds an actor to the scope's
+        // actor list; returns 0 on success, -1 if full. i32 return is a
+        // runtime-internal signal — MIR producers discard it (dest: None).
+        "hew_scope_spawn" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_task_new() -> *mut HewTask
+        // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
+        // in the Ready state. Producer calls this to obtain a task handle
+        // before calling hew_task_spawn_thread.
+        "hew_task_new" => ptr_ty.fn_type(&[], false),
+        // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
+        // (`hew-runtime/src/task_scope.rs:368`). Spawns task_fn(task) on
+        // a new OS thread. TaskFn = unsafe extern "C" fn(*mut HewTask).
+        // Both args are opaque pointers at the LLVM level — the task handle
+        // is ptr-typed; the function pointer is also ptr-typed in opaque-
+        // pointer mode (LLVM 15+ ptr is used for all pointee types).
+        "hew_task_spawn_thread" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_task_await_blocking(task: *mut HewTask) -> *mut c_void
+        // (`hew-runtime/src/task_scope.rs:411`). Blocks until the task
+        // completes and returns its result pointer (null for void tasks).
+        // Producer must supply a dest for the result pointer; callers that
+        // ignore the result still need the blocking guarantee.
+        "hew_task_await_blocking" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_task_get_result(task: *mut HewTask) -> *mut c_void
+        // (`hew-runtime/src/task_scope.rs:283`). Returns the result pointer
+        // if Done, null otherwise. Called after hew_task_await_blocking
+        // when the producer needs to read the result separately.
+        "hew_task_get_result" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_task_free(task: *mut HewTask) -> void
+        // (`hew-runtime/src/task_scope.rs:237`). Frees the Box-allocated
+        // HewTask and its result buffer. Called by the scope teardown path
+        // after all tasks have been awaited.
+        "hew_task_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "intern_runtime_decl: codegen has no LLVM signature for runtime \
@@ -586,6 +623,29 @@ fn primitive_to_llvm<'ctx>(
             // so `load_ptr_arg` can load the raw pointer from the slot and
             // pass it to `hew_vec_len` / `hew_vec_get_T`. LESSONS:
             // exhaustive-traversal-and-lowering, boundary-fail-closed.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
+        ResolvedTy::Named { name, .. } if name == "HewTask" => {
+            // Phase 2 task handle. A `HewTask` local holds a `*mut HewTask`
+            // opaque pointer — the Box-allocated task struct returned by
+            // `hew_task_new` and consumed by `hew_task_free`. The MIR
+            // producer for `spawn fn(...)` (inventory row 3) allocates a
+            // `ResolvedTy::Named { name: "HewTask", .. }` local for each
+            // spawned task and uses `Place::DuplexHandle(N)` to reference
+            // it (reusing the duplex-handle tag — the underlying alloca
+            // shape is identical: an opaque ptr slot). Codegen materialises
+            // this as an opaque `ptr` alloca, same as Duplex and Vec handles.
+            // LESSONS: exhaustive-traversal-and-lowering.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
+        ResolvedTy::Named { name, .. } if name == "HewScope" => {
+            // Phase 2 scope handle. A `HewScope` local holds a `*mut HewScope`
+            // opaque pointer — returned by `hew_scope_create` and consumed by
+            // `hew_scope_free`. The MIR producer for `scope {}` (inventory row
+            // 2) allocates a `ResolvedTy::Named { name: "HewScope", .. }` local
+            // and references it via `Place::DuplexHandle(N)`. Codegen emits an
+            // opaque `ptr` alloca, same as other runtime handle types.
+            // LESSONS: exhaustive-traversal-and-lowering.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
@@ -1569,6 +1629,205 @@ fn lower_call_runtime_abi(
                 .builder
                 .build_store(dest_ptr, result_val)
                 .map_err(|e| CodegenError::Llvm(format!("{symbol} store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // ── scope{}/spawn/await task ABI (Phase 2, inventory rows 2/3/4) ──────
+        //
+        // hew_scope_spawn(scope: *mut HewScope, actor: *mut c_void) -> i32
+        // args[0]: scope ptr. args[1]: actor ptr (opaque c_void).
+        // Destination: None — the i32 return is a runtime-internal signal.
+        "hew_scope_spawn" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_scope_spawn): expected 2 args \
+                     (scope, actor), got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_scope_spawn arg0")?;
+            let actor_ptr = load_duplex_handle(fn_ctx, args[1], "hew_scope_spawn arg1")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[scope_ptr.into(), actor_ptr.into()],
+                    "hew_scope_spawn_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_scope_spawn call: {e:?}")))?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_scope_spawn i32 return is runtime-internal; \
+                     producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_task_new() -> *mut HewTask
+        // No args. dest: Place holding the task pointer.
+        "hew_task_new" => {
+            if !args.is_empty() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_new): expected 0 args, got {}",
+                    args.len()
+                )));
+            }
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[], "hew_task_new_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_new call: {e:?}")))?;
+            let task_ptr = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_task_new returned void".into()))?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_task_new: producer must supply a dest place for the task ptr".into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, task_ptr)
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_new store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
+        // args[0]: task ptr. args[1]: function pointer (ptr-typed in opaque-ptr mode).
+        //
+        // SHIM(row3→producer): the upcoming MIR producer for `spawn fn(...)` has
+        // not landed yet (inventory row 3). The Place shape for a function-pointer
+        // argument is an open design question — no existing arm loads a fn-ptr from
+        // a Place. When the producer lands it must pick one of:
+        //   (a) Place::Local(N) of a ptr-typed alloca storing the fn ptr, using
+        //       `load_duplex_handle` (which loads any ptr from a ptr alloca).
+        //   (b) A new Place variant specifically for function pointers.
+        // Emitting a fail-closed arm now locks in the allowlist guard without
+        // committing to the wrong ABI shape prematurely. WHEN-OBSOLETE: when the
+        // `spawn fn(...)` MIR producer lands and picks a Place convention; replace
+        // this shim with a real two-arg call matching that convention. WHAT: load
+        // task ptr from args[0], load fn-ptr from args[1] using the chosen Place
+        // shape, call void hew_task_spawn_thread(task, fn_ptr).
+        "hew_task_spawn_thread" => {
+            return Err(CodegenError::FailClosed(
+                "Instr::CallRuntimeAbi(hew_task_spawn_thread): no MIR producer for \
+                 spawn fn(...) has landed yet (inventory row 3). The fn-ptr Place \
+                 convention is undecided. Wire this arm when the spawn producer lands \
+                 and picks a Place shape for the function-pointer argument."
+                    .to_string(),
+            ));
+        }
+        // hew_task_await_blocking(task: *mut HewTask) -> *mut c_void
+        // args[0]: task ptr. dest: Place for the result pointer (may be None for
+        // void-result tasks; the blocking guarantee is unconditional).
+        "hew_task_await_blocking" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_await_blocking): expected 1 arg \
+                     (task), got {}",
+                    args.len()
+                )));
+            }
+            let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_await_blocking arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[task_ptr.into()], "hew_task_await_blocking_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_await_blocking call: {e:?}")))?;
+            // Result pointer — optional; void-result tasks may pass dest: None.
+            if let Some(dest_place) = dest {
+                let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed("hew_task_await_blocking returned void".into())
+                })?;
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, result_val)
+                    .map_err(|e| {
+                        CodegenError::Llvm(format!("hew_task_await_blocking store: {e:?}"))
+                    })?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_task_get_result(task: *mut HewTask) -> *mut c_void
+        // args[0]: task ptr. dest: Place for the result pointer.
+        // Must be called after hew_task_await_blocking (task is Done).
+        "hew_task_get_result" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_get_result): expected 1 arg \
+                     (task), got {}",
+                    args.len()
+                )));
+            }
+            let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_get_result arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[task_ptr.into()], "hew_task_get_result_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_get_result call: {e:?}")))?;
+            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_task_get_result returned void".into())
+            })?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_task_get_result: producer must supply a dest place for the result ptr"
+                        .into(),
+                )
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result_val)
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_get_result store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        // hew_task_free(task: *mut HewTask) -> void
+        // args[0]: task ptr. dest: None — frees the task allocation.
+        "hew_task_free" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_free): expected 1 arg (task), got {}",
+                    args.len()
+                )));
+            }
+            let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_free arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[task_ptr.into()], "hew_task_free_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_free call: {e:?}")))?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_task_free returns void; producer must not supply dest={d:?}"
+                )));
+            }
             let _ = (i32_ty, ptr_ty);
         }
         other => {

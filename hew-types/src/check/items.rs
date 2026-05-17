@@ -22,8 +22,329 @@ impl Checker {
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
             | Item::Wire(_)
-            | Item::ExternBlock(_)
-            | Item::Supervisor(_) => {}
+            | Item::ExternBlock(_) => {}
+            Item::Supervisor(sd) => self.check_supervisor(sd, span),
+        }
+    }
+
+    /// Validate a `supervisor` declaration at the structural level.
+    ///
+    /// Checks:
+    /// - Duplicate child names (`E_SUPERVISOR_DUPLICATE_CHILD`).
+    /// - `wired_to` keys each reference a declared sibling (`E_SUPERVISOR_WIRED_TO_UNKNOWN_SIBLING`).
+    /// - `wired_to` sibling ref type matches the dependent actor's init param type
+    ///   (`E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`).
+    /// - No `wired_to` dependency cycles (`E_SUPERVISOR_WIRED_CYCLE`).
+    /// - `simple_one_for_one` strategy requires exactly one `pool` child and no `child` decls
+    ///   (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
+    /// - Any other strategy rejects `pool` decls (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
+    pub(super) fn check_supervisor(&mut self, sd: &SupervisorDecl, span: &Span) {
+        // ── 1. Duplicate child names ─────────────────────────────────────────
+        self.check_supervisor_duplicate_children(sd, span);
+
+        // ── 2. Strategy / pool consistency ──────────────────────────────────
+        self.check_supervisor_strategy_pool(sd, span);
+
+        // ── 3. wired_to key resolution + type compatibility ──────────────────
+        self.check_supervisor_wired_to(sd, span);
+
+        // ── 4. Dependency cycle detection ────────────────────────────────────
+        self.check_supervisor_wired_to_cycles(sd, span);
+    }
+
+    fn check_supervisor_duplicate_children(&mut self, sd: &SupervisorDecl, span: &Span) {
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (i, child) in sd.children.iter().enumerate() {
+            match seen.entry(child.name.as_str()) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(i);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::DuplicateDefinition,
+                        span.clone(),
+                        format!(
+                            "E_SUPERVISOR_DUPLICATE_CHILD: supervisor `{}` declares child `{}` \
+                             more than once; child names must be unique within a supervisor",
+                            sd.name, child.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn check_supervisor_strategy_pool(&mut self, sd: &SupervisorDecl, span: &Span) {
+        let pool_children: Vec<&ChildSpec> = sd.children.iter().filter(|c| c.is_pool).collect();
+        let static_children: Vec<&ChildSpec> = sd.children.iter().filter(|c| !c.is_pool).collect();
+
+        let is_soo = matches!(sd.strategy, Some(SupervisorStrategy::SimpleOneForOne));
+
+        if is_soo {
+            // simple_one_for_one: exactly one pool child, no static children.
+            if pool_children.len() != 1 {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!(
+                        "E_SUPERVISOR_STRATEGY_POOL_MISMATCH: supervisor `{}` uses \
+                         `simple_one_for_one` strategy but has {} `pool` child declaration(s); \
+                         exactly one `pool` child is required",
+                        sd.name,
+                        pool_children.len()
+                    ),
+                ));
+            }
+            if !static_children.is_empty() {
+                let names: Vec<&str> = static_children.iter().map(|c| c.name.as_str()).collect();
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!(
+                        "E_SUPERVISOR_STRATEGY_POOL_MISMATCH: supervisor `{}` uses \
+                         `simple_one_for_one` strategy but has `child` declarations ({}); \
+                         `simple_one_for_one` supervisors may only contain a single `pool` child",
+                        sd.name,
+                        names.join(", ")
+                    ),
+                ));
+            }
+        } else if !pool_children.is_empty() {
+            // Any non-simple_one_for_one strategy (or no strategy specified) rejects pool children.
+            let names: Vec<&str> = pool_children.iter().map(|c| c.name.as_str()).collect();
+            let strategy_label = sd.strategy.map_or("default (one_for_one)", |s| match s {
+                SupervisorStrategy::OneForOne => "one_for_one",
+                SupervisorStrategy::OneForAll => "one_for_all",
+                SupervisorStrategy::RestForOne => "rest_for_one",
+                SupervisorStrategy::SimpleOneForOne => unreachable!(),
+            });
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_STRATEGY_POOL_MISMATCH: supervisor `{}` uses `{}` strategy \
+                     but has `pool` child declarations ({}); `pool` children require \
+                     `simple_one_for_one` strategy",
+                    sd.name,
+                    strategy_label,
+                    names.join(", ")
+                ),
+            ));
+        }
+    }
+
+    fn check_supervisor_wired_to(&mut self, sd: &SupervisorDecl, span: &Span) {
+        // Build a sibling-name → actor-type map for fast resolution.
+        let sibling_types: std::collections::HashMap<&str, &str> = sd
+            .children
+            .iter()
+            .map(|c| (c.name.as_str(), c.actor_type.as_str()))
+            .collect();
+
+        for child in &sd.children {
+            let Some(wired_to) = &child.wired_to else {
+                continue;
+            };
+
+            for (param_key, sibling_name) in wired_to {
+                // ── Key resolution: sibling must exist ──────────────────────
+                let Some(&sibling_type) = sibling_types.get(sibling_name.as_str()) else {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        format!(
+                            "E_SUPERVISOR_WIRED_TO_UNKNOWN_SIBLING: in supervisor `{}`, \
+                             child `{}` has `wired_to: {{ {param_key}: {sibling_name} }}` but \
+                             `{sibling_name}` is not a declared child of this supervisor",
+                            sd.name, child.name
+                        ),
+                    ));
+                    continue;
+                };
+
+                // Self-reference is a degenerate cycle — caught separately but
+                // the unknown-sibling check fires first if the name doesn't exist.
+                // If the child wires itself, it's a cycle; we flag it during cycle
+                // detection rather than here to avoid double-reporting.
+                if sibling_name.as_str() == child.name.as_str() {
+                    // Will be caught by cycle detection.
+                    continue;
+                }
+
+                // ── Type compatibility ──────────────────────────────────────
+                // The dependent child's actor init must have a param named `param_key`
+                // with type `ActorRef<sibling_type>`.
+                self.check_supervisor_wired_to_type_compat(
+                    &sd.name,
+                    &child.name,
+                    &child.actor_type,
+                    param_key,
+                    sibling_type,
+                    span,
+                );
+            }
+        }
+    }
+
+    /// Verify that `dependent_actor`'s init has a parameter `param_key` typed
+    /// `ActorRef<sibling_type>`. Emits `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH` on failure.
+    ///
+    /// If the actor type is completely unknown (not registered at all), the check
+    /// is skipped — a separate undefined-type diagnostic covers that case.
+    /// Actors registered with no `init` block have an empty param list; the
+    /// "no parameter named X" branch below fires for those.
+    fn check_supervisor_wired_to_type_compat(
+        &mut self,
+        supervisor_name: &str,
+        dependent_child_name: &str,
+        dependent_actor_type: &str,
+        param_key: &str,
+        expected_sibling_type: &str,
+        span: &Span,
+    ) {
+        let Some(params) = self.actor_init_params.get(dependent_actor_type).cloned() else {
+            // Actor not registered at all (unknown type). A separate undefined-type
+            // diagnostic covers the missing actor. Skip here to avoid double-reporting.
+            return;
+        };
+
+        let Some(param) = params.iter().find(|(name, _, _)| name == param_key) else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
+                     child `{dependent_child_name}` (`{dependent_actor_type}`) is wired via key \
+                     `{param_key}` but `{dependent_actor_type}::init` has no parameter named \
+                     `{param_key}`"
+                ),
+            ));
+            return;
+        };
+
+        let (_, outer_type, first_inner_type) = param;
+
+        // Expected: outer = "ActorRef", inner = expected_sibling_type.
+        let type_ok = outer_type == "ActorRef"
+            && first_inner_type
+                .as_deref()
+                .is_some_and(|t| t == expected_sibling_type);
+
+        if !type_ok {
+            let actual_type = if first_inner_type.is_some() {
+                format!(
+                    "{}<{}>",
+                    outer_type,
+                    first_inner_type.as_deref().unwrap_or("?")
+                )
+            } else {
+                outer_type.clone()
+            };
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
+                     child `{dependent_child_name}` wires `{param_key}` to sibling of type \
+                     `{expected_sibling_type}`, but `{dependent_actor_type}::init` parameter \
+                     `{param_key}` has type `{actual_type}` (expected `ActorRef<{expected_sibling_type}>`)"
+                ),
+            ));
+        }
+    }
+
+    /// Topological sort of children by `wired_to` deps. If a cycle is found,
+    /// emits `E_SUPERVISOR_WIRED_CYCLE`. Self-references are also rejected here.
+    fn check_supervisor_wired_to_cycles(&mut self, sd: &SupervisorDecl, span: &Span) {
+        use std::collections::VecDeque;
+
+        // Build an adjacency list: child_name → set of child_names it depends on.
+        let child_names: std::collections::HashSet<&str> =
+            sd.children.iter().map(|c| c.name.as_str()).collect();
+
+        // Only track deps that actually exist as siblings (unknown siblings already reported).
+        // Maps child_name → list of siblings it depends on (via wired_to values).
+        let deps: std::collections::HashMap<&str, Vec<&str>> = sd
+            .children
+            .iter()
+            .map(|c| {
+                let dep_list: Vec<&str> = c
+                    .wired_to
+                    .as_ref()
+                    .map(|wt| {
+                        wt.values()
+                            .filter(|s| child_names.contains(s.as_str()))
+                            .map(std::string::String::as_str)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (c.name.as_str(), dep_list)
+            })
+            .collect();
+
+        // Kahn's algorithm for cycle detection.
+        // Dependency graph: if child A wired_to B, edge A→B means A depends on B.
+        // For Kahn's: build reverse edges (dep → dependents) and count in-degrees
+        // (how many deps each child still has).
+        let mut reverse_deps: std::collections::HashMap<&str, Vec<&str>> =
+            child_names.iter().map(|&n| (n, vec![])).collect();
+        let mut in_degree: std::collections::HashMap<&str, usize> =
+            child_names.iter().map(|&n| (n, 0usize)).collect();
+
+        for (&child, dep_list) in &deps {
+            for &dep in dep_list {
+                // child depends on dep → dep must come before child.
+                // In topo-sort: dep→child edge; dep has in-degree += 0; child in-degree += 1.
+                if let Some(v) = reverse_deps.get_mut(dep) {
+                    v.push(child);
+                }
+                if let Some(d) = in_degree.get_mut(child) {
+                    *d += 1;
+                }
+            }
+        }
+
+        let mut queue: VecDeque<&str> = in_degree
+            .iter()
+            .filter(|(_, &d)| d == 0)
+            .map(|(&n, _)| n)
+            .collect();
+
+        let mut visited = 0usize;
+        while let Some(node) = queue.pop_front() {
+            visited += 1;
+            if let Some(dependents) = reverse_deps.get(node) {
+                for &dep in &dependents.clone() {
+                    if let Some(d) = in_degree.get_mut(dep) {
+                        *d -= 1;
+                        if *d == 0 {
+                            queue.push_back(dep);
+                        }
+                    }
+                }
+            }
+        }
+
+        if visited < child_names.len() {
+            // Cycle exists. Collect the names in the cycle.
+            let cycle_nodes: Vec<&str> = in_degree
+                .iter()
+                .filter(|(_, &d)| d > 0)
+                .map(|(&n, _)| n)
+                .collect();
+            let mut sorted_cycle = cycle_nodes.clone();
+            sorted_cycle.sort_unstable();
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "E_SUPERVISOR_WIRED_CYCLE: supervisor `{}` has a `wired_to` dependency \
+                     cycle involving children: {}; children must form a DAG so start order \
+                     can be determined",
+                    sd.name,
+                    sorted_cycle.join(", ")
+                ),
+            ));
         }
     }
 

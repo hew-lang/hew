@@ -1,0 +1,352 @@
+mod common;
+
+use common::typecheck_isolated as typecheck;
+
+// ── Accept cases ──────────────────────────────────────────────────────────────
+
+/// A static supervisor with multiple children and one `wired_to` reference compiles cleanly.
+#[test]
+fn multi_child_with_wired_to_accepted() {
+    let output = typecheck(
+        r"
+        actor DbSupervisor {}
+        actor Broadcaster {}
+        actor WorkerPool {}
+        actor ConnectionAcceptor {
+            init(workers: ActorRef<WorkerPool>, broadcaster: ActorRef<Broadcaster>) {}
+        }
+        actor MessageCache {}
+
+        supervisor ChatApp {
+            strategy: one_for_one
+            max_restarts: 5
+
+            child db: DbSupervisor
+            child broadcaster: Broadcaster
+            child worker_pool: WorkerPool
+            child acceptor: ConnectionAcceptor wired_to: { workers: worker_pool, broadcaster: broadcaster }
+            child cache: MessageCache with restart: transient
+        }
+
+        fn main() {}
+        ",
+    );
+    let supervisor_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("E_SUPERVISOR"))
+        .collect();
+    assert!(
+        supervisor_errors.is_empty(),
+        "valid supervisor with wired_to should not produce supervisor errors: {supervisor_errors:#?}"
+    );
+}
+
+/// A `simple_one_for_one` supervisor with a single pool child is valid.
+#[test]
+fn simple_one_for_one_with_pool_accepted() {
+    let output = typecheck(
+        r"
+        actor Worker {}
+
+        supervisor WorkerPool {
+            strategy: simple_one_for_one
+            max_restarts: 10
+
+            pool worker: Worker
+        }
+
+        fn main() {}
+        ",
+    );
+    let supervisor_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("E_SUPERVISOR"))
+        .collect();
+    assert!(
+        supervisor_errors.is_empty(),
+        "simple_one_for_one + pool should be valid: {supervisor_errors:#?}"
+    );
+}
+
+// ── Reject: wired_to unknown sibling ─────────────────────────────────────────
+
+/// `wired_to` referencing a name that is not a declared sibling is rejected.
+#[test]
+fn wired_to_unknown_sibling_rejected() {
+    let output = typecheck(
+        r"
+        actor ConnectionAcceptor {
+            init(workers: ActorRef<WorkerPool>) {}
+        }
+        actor WorkerPool {}
+
+        supervisor App {
+            strategy: one_for_one
+
+            child acceptor: ConnectionAcceptor wired_to: { workers: nonexistent_sibling }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_WIRED_TO_UNKNOWN_SIBLING")),
+        "wired_to with unknown sibling should fail: {:#?}",
+        output.errors
+    );
+}
+
+// ── Reject: wired_to type mismatch ───────────────────────────────────────────
+
+/// `wired_to` where the init param is typed for a different actor is rejected.
+#[test]
+fn wired_to_type_mismatch_rejected() {
+    let output = typecheck(
+        r"
+        actor DbPool {}
+        actor WorkerPool {}
+        actor ConnectionAcceptor {
+            init(workers: ActorRef<WorkerPool>) {}
+        }
+
+        supervisor App {
+            strategy: one_for_one
+
+            child db_pool: DbPool
+            child acceptor: ConnectionAcceptor wired_to: { workers: db_pool }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH")),
+        "wired_to type mismatch (DbPool vs WorkerPool) should fail: {:#?}",
+        output.errors
+    );
+}
+
+// ── Reject: dependency cycle ──────────────────────────────────────────────────
+
+/// A two-child cycle (a -> b -> a) is rejected.
+#[test]
+fn wired_to_cycle_rejected() {
+    let output = typecheck(
+        r"
+        actor ActorA {
+            init(dep: ActorRef<ActorB>) {}
+        }
+        actor ActorB {
+            init(dep: ActorRef<ActorA>) {}
+        }
+
+        supervisor CycleApp {
+            strategy: one_for_one
+
+            child a: ActorA wired_to: { dep: b }
+            child b: ActorB wired_to: { dep: a }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_WIRED_CYCLE")),
+        "wired_to cycle a->b->a should fail: {:#?}",
+        output.errors
+    );
+}
+
+// ── Reject: simple_one_for_one + child decl ───────────────────────────────────
+
+/// `simple_one_for_one` strategy with child decls (not pool) is rejected.
+#[test]
+fn simple_one_for_one_with_child_decl_rejected() {
+    let output = typecheck(
+        r"
+        actor Worker {}
+        actor Helper {}
+
+        supervisor BadPool {
+            strategy: simple_one_for_one
+
+            child helper: Helper
+            pool worker: Worker
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_STRATEGY_POOL_MISMATCH")),
+        "simple_one_for_one with child decl should fail: {:#?}",
+        output.errors
+    );
+}
+
+// ── Reject: one_for_one + pool decl ──────────────────────────────────────────
+
+/// A non-simple_one_for_one strategy with a pool child is rejected.
+#[test]
+fn one_for_one_with_pool_decl_rejected() {
+    let output = typecheck(
+        r"
+        actor Worker {}
+
+        supervisor StaticApp {
+            strategy: one_for_one
+
+            pool worker: Worker
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_STRATEGY_POOL_MISMATCH")),
+        "one_for_one with pool decl should fail: {:#?}",
+        output.errors
+    );
+}
+
+// ── Reject: duplicate child names ─────────────────────────────────────────────
+
+/// Two children with the same name are rejected.
+#[test]
+fn duplicate_child_name_rejected() {
+    let output = typecheck(
+        r"
+        actor Worker {}
+
+        supervisor DupApp {
+            strategy: one_for_one
+
+            child worker: Worker
+            child worker: Worker
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_DUPLICATE_CHILD")),
+        "duplicate child name should fail: {:#?}",
+        output.errors
+    );
+}
+
+// ── Reject: wired_to self-reference (degenerate cycle) ────────────────────────
+
+/// A child that wires itself (`wired_to: { x: self_name }`) is a cycle and is rejected.
+#[test]
+fn wired_to_self_reference_rejected() {
+    let output = typecheck(
+        r"
+        actor LoopActor {
+            init(dep: ActorRef<LoopActor>) {}
+        }
+
+        supervisor SelfLoop {
+            strategy: one_for_one
+
+            child looper: LoopActor wired_to: { dep: looper }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_WIRED_CYCLE")),
+        "self-reference wired_to should fail as a cycle: {:#?}",
+        output.errors
+    );
+}
+
+// ── Accept: wired_to sibling that has no init block ───────────────────────────
+
+/// Wiring to a sibling with no `init` block is valid when the dependent actor's
+/// init param type matches `ActorRef<SiblingType>`. The sibling having no `init`
+/// is irrelevant — only the dependent's `init` params are checked.
+#[test]
+fn wired_to_no_init_sibling_accepted() {
+    let output = typecheck(
+        r"
+        actor NoInit {}
+        actor Consumer {
+            init(dep: ActorRef<NoInit>) {}
+        }
+
+        supervisor App {
+            strategy: one_for_one
+
+            child no_init: NoInit
+            child consumer: Consumer wired_to: { dep: no_init }
+        }
+
+        fn main() {}
+        ",
+    );
+    let supervisor_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("E_SUPERVISOR"))
+        .collect();
+    assert!(
+        supervisor_errors.is_empty(),
+        "wired_to a no-init sibling with a matching ActorRef param should be valid: {supervisor_errors:#?}"
+    );
+}
+
+// ── Reject: wired_to key names param from actor with no init ──────────────────
+
+/// When the *dependent* actor has no `init` block, any `wired_to` key is rejected
+/// because there is no parameter for it to map to.
+#[test]
+fn wired_to_dependent_has_no_init_rejected() {
+    let output = typecheck(
+        r"
+        actor Helper {}
+        actor NoInitConsumer {}
+
+        supervisor App {
+            strategy: one_for_one
+
+            child helper: Helper
+            child consumer: NoInitConsumer wired_to: { dep: helper }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH")),
+        "wired_to on no-init dependent actor should fail with type mismatch: {:#?}",
+        output.errors
+    );
+}

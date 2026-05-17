@@ -1909,6 +1909,41 @@ impl Checker {
 
         self.type_defs.insert(ad.name.clone(), type_def);
         self.record_type_def_inference_holes(&ad.name, hole_vars);
+
+        // Collect init() parameter shapes for supervisor wired_to type-compatibility checks.
+        // Stores (param_name, outer_type, first_type_arg) for each init param.
+        // Only `TypeExpr::Named` params are represented; complex types store the outer name only.
+        //
+        // Always insert — actors with no init block get an empty vec so that a
+        // `wired_to:` reference to such an actor correctly fires
+        // "no parameter named X" (`E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`) rather
+        // than silently passing through the "unknown actor" early-return.
+        let params: Vec<(String, String, Option<String>)> = if let Some(init) = &ad.init {
+            init.params
+                .iter()
+                .map(|p| {
+                    let (outer, inner) = match &p.ty.0 {
+                        TypeExpr::Named { name, type_args } => (
+                            name.clone(),
+                            type_args.as_ref().and_then(|args| {
+                                args.first().and_then(|(te, _)| {
+                                    if let TypeExpr::Named { name: n, .. } = te {
+                                        Some(n.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }),
+                        ),
+                        _ => (String::new(), None),
+                    };
+                    (p.name.clone(), outer, inner)
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        self.actor_init_params.insert(ad.name.clone(), params);
     }
 
     pub(super) fn register_wire_decl(&mut self, wd: &WireDecl) {

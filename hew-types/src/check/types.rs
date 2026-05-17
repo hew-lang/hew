@@ -846,6 +846,12 @@ pub struct Checker {
     pub(super) primitive_trait_impls: HashMap<(String, String), HashMap<String, FnSig>>,
     /// Maps supervisor name to `(child_name, actor_type)` pairs for `supervisor_child`
     pub(super) supervisor_children: HashMap<String, Vec<(String, String)>>,
+    /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
+    ///
+    /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
+    /// `first_type_arg` is the first generic argument's name if present (e.g. `"WorkerPool"`).
+    /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
+    pub(super) actor_init_params: HashMap<String, Vec<(String, String, Option<String>)>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
     pub(super) lambda_capture_depth: Option<usize>,
@@ -1001,6 +1007,7 @@ impl Checker {
             trait_impls_set: HashSet::new(),
             primitive_trait_impls: HashMap::new(),
             supervisor_children: HashMap::new(),
+            actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),
             import_spans: HashMap::new(),

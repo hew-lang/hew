@@ -14083,6 +14083,8 @@ mod wasm_rejects {
     // ── Reject-level features now fail closed on WASM ────────────────────────
 
     fn supervisor_calls_source() -> &'static str {
+        // `pool` is a reserved keyword from S-A (supervisor `pool` child decls).
+        // Use `wp` for the local WorkerPool ref to avoid the keyword conflict.
         r"
             actor Worker {
                 receive fn ping() {}
@@ -14096,9 +14098,9 @@ mod wasm_rejects {
             }
 
             fn main() {
-                let pool = spawn WorkerPool;
-                let worker = supervisor_child(pool, 0);
-                supervisor_stop(pool);
+                let wp = spawn WorkerPool;
+                let worker = supervisor_child(wp, 0);
+                supervisor_stop(wp);
                 worker.ping();
             }
         "

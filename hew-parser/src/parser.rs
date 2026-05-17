@@ -3737,6 +3737,18 @@ impl<'src> Parser<'src> {
     fn parse_type_params(&mut self) -> Option<Vec<TypeParam>> {
         let mut params = Vec::new();
 
+        // Detect and reject empty `<>` immediately — a declaration like
+        // `pub type Box<>` has no meaningful semantics; the author almost
+        // certainly forgot to name the type parameter.
+        if self.at_closing_angle() {
+            self.error(
+                "empty type parameter list: add at least one type parameter, e.g. `<T>`"
+                    .to_string(),
+            );
+            self.eat_closing_angle();
+            return None;
+        }
+
         while !self.at_end() && !self.at_closing_angle() {
             let name = self.expect_ident()?;
 

@@ -977,6 +977,7 @@ impl Checker {
     /// checking can construct local values. The import path's later
     /// `register_type_decl` call overwrites those signatures for `pub` types
     /// with the fully side-effected version.
+    #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     fn pre_register_type_decl(&mut self, td: &TypeDecl) {
         if self.type_defs.contains_key(&td.name) {
             return;
@@ -988,6 +989,23 @@ impl Checker {
         let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
+
+        // Reject duplicate type parameter names — same check as `register_type_decl`.
+        {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for name in &type_param_names {
+                if !seen.insert(name.as_str()) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::DuplicateDefinition,
+                        0..0,
+                        format!(
+                            "type parameter `{name}` is defined more than once in `{}`",
+                            td.name
+                        ),
+                    ));
+                }
+            }
+        }
 
         let mut fields = HashMap::new();
         let mut variants = HashMap::new();
@@ -1141,6 +1159,26 @@ impl Checker {
         let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
+
+        // Reject duplicate type parameter names within the same declaration.
+        // The parser cannot catch this because `parse_type_params` has no
+        // seen-name accumulator; the checker is the authoritative gatekeeper.
+        {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for name in &type_param_names {
+                if !seen.insert(name.as_str()) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::DuplicateDefinition,
+                        0..0,
+                        format!(
+                            "type parameter `{name}` is defined more than once in `{}`",
+                            td.name
+                        ),
+                    ));
+                }
+            }
+        }
+
         let type_param_bounds =
             self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
         let enum_return_args: Vec<Ty> = type_param_names

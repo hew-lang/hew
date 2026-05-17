@@ -1,6 +1,6 @@
 use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
 use hew_mir::{
-    lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement, Terminator,
+    lower_hir_module, CmpPred, Instr, MirCheck, MirDiagnosticKind, MirStatement, Place, Terminator,
     TrapKind,
 };
 use hew_types::TypeCheckOutput;
@@ -1054,5 +1054,58 @@ fn linear_consumed_only_in_then_branch_rejects() {
         "@linear binding consumed on only one branch must fire MustConsume \
          from MaybeConsumed-at-Return: {:?}",
         func.checks
+    );
+}
+
+#[test]
+fn lower_string_literal_emits_string_lit_instr() {
+    // `let s = "hello"` must lower to `Instr::StringLit` with the decoded
+    // bytes `b"hello"` in the raw MIR instruction stream.
+    let pipeline = pipeline(r#"fn main() -> i64 { let s = "hello"; 0 }"#);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "string literal must lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let func = &pipeline.raw_mir[0];
+    let found = func.blocks[0].instructions.iter().find_map(|i| match i {
+        Instr::StringLit { bytes, dest } => Some((bytes.clone(), *dest)),
+        _ => None,
+    });
+    let (bytes, dest) =
+        found.expect("string literal `\"hello\"` must produce Instr::StringLit in raw MIR");
+    assert_eq!(
+        bytes, b"hello",
+        "Instr::StringLit bytes must be the decoded UTF-8 literal"
+    );
+    assert!(
+        matches!(dest, Place::Local(_)),
+        "Instr::StringLit dest must be a Local place"
+    );
+}
+
+#[test]
+fn lower_escaped_string_literal_carries_decoded_bytes() {
+    // Escape sequences are decoded by the parser; MIR must carry the
+    // decoded bytes, not the source escape notation.
+    let pipeline = pipeline(r#"fn main() -> i64 { let s = "foo\nbar"; 0 }"#);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "escaped string literal must lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let func = &pipeline.raw_mir[0];
+    let bytes = func.blocks[0]
+        .instructions
+        .iter()
+        .find_map(|i| match i {
+            Instr::StringLit { bytes, .. } => Some(bytes.clone()),
+            _ => None,
+        })
+        .expect("escaped string literal must produce Instr::StringLit");
+    // Parser decodes `\n` to a single newline byte (0x0A).
+    assert_eq!(
+        bytes, b"foo\nbar",
+        "Instr::StringLit bytes must carry the decoded byte, not the escape notation"
     );
 }

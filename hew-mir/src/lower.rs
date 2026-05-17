@@ -1129,14 +1129,14 @@ impl Builder {
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Spine subset: only integer + bool literals reach the backend in
-        // the CFG-construction lane. Float/String/Char/Duration/Unit
-        // literals remain out of scope (Cluster 2 takes String; Cluster 4
-        // takes the rest). Bool lands here because the CFG-construction
-        // surface needs a constructible condition Place for `If`:
-        // without bool literals, no non-trivial `If` condition compiles.
-        // Fail closed so the emitter never produces a binary with an
-        // uninitialised return slot (LESSONS `boundary-fail-closed`).
+        // Spine subset: integer, bool, and string literals reach the backend
+        // in the current lane. Float/Char/Duration/Unit literals remain out
+        // of scope (Char/Float will follow; Duration/Unit are lower-priority).
+        // Bool lands here because the CFG-construction surface needs a
+        // constructible condition Place for `If`: without bool literals, no
+        // non-trivial `If` condition compiles. String lands here to close
+        // inventory row 7. Fail closed so the emitter never produces a binary
+        // with an uninitialised return slot (LESSONS `boundary-fail-closed`).
         let construct = match lit {
             HirLiteral::Integer(value) => {
                 let dest = self.alloc_local(ty.clone());
@@ -1207,7 +1207,24 @@ impl Builder {
                 });
                 return Some(dest);
             }
-            HirLiteral::String(_) => "string literal",
+            HirLiteral::String(s) => {
+                // String literal lowering: allocate a `ResolvedTy::String`
+                // local (an opaque pointer at the LLVM level) and emit
+                // `Instr::StringLit` to fill it. The codegen emitter will
+                // produce an LLVM global constant for the bytes + a pointer
+                // store into the dest alloca — matching the C++ codegen's
+                // `hew.global_string` / `llvm.mlir.addressof` pattern.
+                //
+                // Escape decoding: the parser's `unescape_string` already
+                // ran; `s` is a decoded Rust String and `as_bytes()` gives
+                // the correct UTF-8 byte sequence.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::StringLit {
+                    bytes: s.as_bytes().to_vec(),
+                    dest,
+                });
+                return Some(dest);
+            }
             HirLiteral::Char(_) => "char literal",
             HirLiteral::Unit => "unit literal",
             HirLiteral::Duration(_) => "duration literal",
@@ -3416,7 +3433,8 @@ fn transfer_block_split(
 )]
 fn instr_places(instr: &Instr) -> Vec<Place> {
     match instr {
-        Instr::ConstI64 { dest, .. } => vec![*dest],
+        // ConstI64 and StringLit both produce only their dest place.
+        Instr::ConstI64 { dest, .. } | Instr::StringLit { dest, .. } => vec![*dest],
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }

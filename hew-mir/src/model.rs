@@ -591,6 +591,33 @@ pub enum Instr {
         ty: ResolvedTy,
         drop_fn: Option<String>,
     },
+    /// `dest = <global_str_ptr>` — emit an LLVM-level global constant for
+    /// `bytes` (null-terminated, internal linkage, read-only) and store the
+    /// pointer into `dest`. The `dest` local's type is `ResolvedTy::String`,
+    /// which codegen maps to an opaque `ptr` (matching the runtime's
+    /// `*const c_char` ABI). No runtime call is made: the pointer refers to
+    /// data in the compiled binary's read-only data segment, so
+    /// `hew_string_drop` safely skips freeing it via its `is_static_string`
+    /// guard. This mirrors the C++ codegen's `hew.global_string` →
+    /// `llvm.mlir.global` + `llvm.mlir.addressof` pattern (codegen.cpp
+    /// `ConstantOpLowering` / `GlobalStringOpLowering`).
+    ///
+    /// Escape decoding: `bytes` carries the already-decoded UTF-8 byte
+    /// sequence from `HirLiteral::String` — the parser's `unescape_string`
+    /// function runs at parse time, so MIR sees decoded bytes. No re-decoding
+    /// is needed here.
+    ///
+    /// Embedded NUL: Hew strings are NUL-terminated C strings at the runtime
+    /// boundary. A literal with an embedded NUL byte would be truncated
+    /// silently at the first NUL by all C-string runtime operations. The
+    /// parser does not produce such literals today; this variant makes no
+    /// additional guarantee beyond what the runtime's C-string contract implies.
+    StringLit {
+        /// Decoded UTF-8 bytes of the literal. LLVM global is emitted as
+        /// `bytes` + one NUL terminator byte.
+        bytes: Vec<u8>,
+        dest: Place,
+    },
     /// Construct a record value by storing each field into a freshly
     /// allocated destination place. `fields` carries `(offset, src)`
     /// pairs in declaration order; `dest` receives the completed record.

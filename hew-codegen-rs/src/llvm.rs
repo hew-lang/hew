@@ -575,13 +575,17 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::Unit => Ok(ctx.i8_type().into()),
         ResolvedTy::F32 => Ok(ctx.f32_type().into()),
         ResolvedTy::F64 => Ok(ctx.f64_type().into()),
-        // Cluster 1's spine subset is integer-only; heap and composite
-        // types belong to Cluster 2/3/4. Fail closed so an unexpected
-        // shape doesn't silently produce a malformed binary
-        // (LESSONS `boundary-fail-closed`).
-        ResolvedTy::String => Err(CodegenError::Unsupported(
-            "String type — Cluster 2 will add owned-string lowering",
-        )),
+        // `String` is a null-terminated heap string at the runtime ABI
+        // boundary (`*mut c_char`). LLVM represents it as an opaque `ptr`
+        // in the alloca — the same representation used for Duplex/Vec/Task
+        // handles. `Instr::StringLit` stores the address of an LLVM global
+        // constant into this slot; C-string runtime ops (`hew_string_*`) load
+        // from it. Matches the C++ codegen's `hew.global_string` →
+        // `llvm.mlir.addressof` pattern (codegen.cpp ~line 264).
+        ResolvedTy::String => Ok(ctx.ptr_type(AddressSpace::default()).into()),
+        // Cluster 1's spine subset. Heap and composite types below belong to
+        // Cluster 2/3/4. Fail closed so an unexpected shape doesn't silently
+        // produce a malformed binary (LESSONS `boundary-fail-closed`).
         ResolvedTy::Char => Err(CodegenError::Unsupported(
             "Char type — Cluster 2 lowering pending",
         )),
@@ -1263,6 +1267,57 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
             if let Some(name) = drop_fn {
                 lower_drop(fn_ctx, *place, name)?;
             }
+            let _ = ctx;
+        }
+        Instr::StringLit { bytes, dest } => {
+            // Emit an LLVM global constant for the string bytes (NUL-terminated,
+            // internal linkage, read-only) and store its address into the `dest`
+            // alloca. Matches the C++ codegen's `hew.global_string` →
+            // `llvm.mlir.addressof` pattern (codegen.cpp `ConstantOpLowering` /
+            // `GlobalStringOpLowering`, ~lines 257-265).
+            //
+            // The `dest` local must have been allocated with `ResolvedTy::String`,
+            // which `primitive_to_llvm` maps to an opaque `ptr`. The pointer to the
+            // global is the `String` value at the ABI boundary (`*const c_char`).
+            // `hew_string_drop` skips freeing static-segment pointers via its
+            // `is_static_string` guard, so no clone or heap allocation is needed.
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::StringLit dest is not a pointer type: dest_ty={dest_ty:?}"
+                )));
+            }
+            // `build_global_string_ptr` emits:
+            //   @.str.N = private unnamed_addr constant [len+1 x i8] c"...\00"
+            // and returns a GlobalValue whose as_pointer_value() is the address
+            // of the first byte (an opaque `ptr` in LLVM 17+ opaque-pointer mode).
+            //
+            // Safety note: `build_global_string_ptr` takes `&str` and internally
+            // calls `to_c_str` which NUL-terminates via CString. Since Hew source
+            // strings are UTF-8 and `bytes` carries the parser-decoded sequence,
+            // `from_utf8` is infallible for valid programs. The SHIM note below
+            // covers the embedded-NUL edge case.
+            //
+            // SHIM: embedded NUL bytes in the literal byte sequence would be
+            // truncated at the first NUL by `to_c_str` → `CStr::from_bytes_until_nul`.
+            // WHY: the Hew runtime treats all strings as null-terminated C strings;
+            //      embedded NULs are silently truncated by every C-string runtime op.
+            // WHEN: obsolete if Hew ever adopts a length-prefixed or fat-pointer
+            //       string representation.
+            // WHAT: replace `build_global_string_ptr` with a manual `add_global` +
+            //       set_initializer using an i8 array to preserve bytes exactly.
+            let s = std::str::from_utf8(bytes).map_err(|e| {
+                CodegenError::FailClosed(format!("Instr::StringLit bytes are not valid UTF-8: {e}"))
+            })?;
+            let global = fn_ctx
+                .builder
+                .build_global_string_ptr(s, "str_lit")
+                .map_err(|e| CodegenError::Llvm(format!("build_global_string_ptr: {e:?}")))?;
+            let ptr_val = global.as_pointer_value();
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, ptr_val)
+                .map_err(|e| CodegenError::Llvm(format!("StringLit store: {e:?}")))?;
             let _ = ctx;
         }
         Instr::RecordInit { .. } | Instr::RecordFieldLoad { .. } => {
@@ -2508,16 +2563,21 @@ fn declare_function<'ctx>(
         Some(Linkage::Internal)
     };
     let return_ty_llvm = primitive_to_llvm(ctx, &func.return_ty)?;
-    // Cluster 1's spine subset only lowers integer-returning functions.
+    // Accept integer and pointer return types. Integer covers the original
+    // Cluster 1 spine; pointer covers `String` (a `*mut c_char` / opaque
+    // `ptr` in LLVM IR) which is now lowerable via `Instr::StringLit`.
     // Bool/Unit/F32/F64 all reach `primitive_to_llvm` with valid shapes,
     // but the MIR `Instr` stream cannot populate the return slot for them
     // — the function body would emit `ret` against an uninitialised
     // alloca. Reject the return type at declaration time so the failure
     // is loud and well-located (LESSONS `boundary-fail-closed`).
-    if !matches!(return_ty_llvm, BasicTypeEnum::IntType(_)) {
+    if !matches!(
+        return_ty_llvm,
+        BasicTypeEnum::IntType(_) | BasicTypeEnum::PointerType(_)
+    ) {
         return Err(CodegenError::Unsupported(
-            "Cluster 1 only lowers integer-returning functions; \
-             non-integer return types are out of the spine subset",
+            "only integer- and pointer-returning functions are lowerable; \
+             non-integer/non-pointer return types are out of the current spine subset",
         ));
     }
     // Cluster 1 functions are zero-arg. When Cluster 2 adds params it
@@ -2766,9 +2826,58 @@ mod tests {
         assert!(m.verify().is_ok(), "const-42 module must pass LLVM verify");
     }
 
+    // `String` is now a lowerable return type (maps to opaque `ptr`).
+    // This test exercises a String-returning function with a `StringLit`
+    // instruction that populates the return slot. It must build and verify.
     #[test]
-    fn unsupported_string_return_fails_closed() {
+    fn string_literal_return_builds_and_verifies() {
+        // fn main() -> String { "hello" }
+        // Locals: [0: String (the lit dest), ReturnSlot: String]
         let return_ty = ResolvedTy::String;
+        let main = RawMirFunction {
+            name: "main".to_string(),
+            return_ty: return_ty.clone(),
+            locals: vec![return_ty.clone()],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::StringLit {
+                        bytes: b"hello".to_vec(),
+                        dest: Place::Local(0),
+                    },
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(0),
+                    },
+                ],
+                terminator: Terminator::Return,
+            }],
+            decisions: Vec::new(),
+        };
+        let pipeline = IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![main],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        let ctx = Context::create();
+        let m =
+            build_module(&ctx, &pipeline, "string_lit_test").expect("StringLit module must build");
+        assert!(m.verify().is_ok(), "StringLit module must pass LLVM verify");
+        // Confirm the textual IR contains the global string constant.
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("hello"),
+            "emitted IR must contain the literal bytes: {ir}"
+        );
+    }
+
+    // Float return is still unsupported — verify the fail-closed boundary.
+    #[test]
+    fn unsupported_float_return_fails_closed() {
+        let return_ty = ResolvedTy::F64;
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
@@ -2789,11 +2898,11 @@ mod tests {
             diagnostics: Vec::new(),
         };
         let ctx = Context::create();
-        let err = build_module(&ctx, &pipeline, "string_return")
-            .expect_err("String return must be rejected");
+        let err =
+            build_module(&ctx, &pipeline, "float_return").expect_err("F64 return must be rejected");
         assert!(
             matches!(err, CodegenError::Unsupported(_)),
-            "String return must surface as Unsupported, got: {err:?}"
+            "F64 return must surface as Unsupported, got: {err:?}"
         );
     }
 

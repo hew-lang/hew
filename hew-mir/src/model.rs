@@ -680,6 +680,55 @@ pub enum Instr {
         value_bits: u64,
         width: FloatWidth,
     },
+    /// `dest = const <char>` stored as its Unicode scalar value.
+    ///
+    /// Hew `char` is a Unicode scalar value (U+0000 to U+D7FF and U+E000 to
+    /// U+10FFFF). The scalar value is stored as a `u32` bit pattern; codegen
+    /// maps it to an `i32` constant (matching C's `int32_t` convention for
+    /// Unicode code points). The `u32` encoding is total — Rust's `char as u32`
+    /// never produces a surrogate or out-of-range value.
+    ///
+    /// Producer: `lower_literal` for `HirLiteral::Char`, cast via `c as u32`.
+    CharLit {
+        /// Unicode scalar value of the character constant.
+        value: u32,
+        dest: Place,
+    },
+    /// `dest = ()` — a unit value with no data content.
+    ///
+    /// Unit is zero-sized. The MIR producer emits this variant to give the
+    /// dest place a definition point in the instruction stream; codegen may
+    /// emit nothing, a zero-size alloca, or an undef constant depending on
+    /// whether `dest` is ever read after this point. In practice, unit-typed
+    /// bindings are dropped before they reach codegen in well-typed programs,
+    /// so the variant is primarily a completeness placeholder.
+    ///
+    /// NOTE: `HirLiteral::Unit` is currently never produced by the HIR
+    /// lowerer (no parser `Literal::Unit` exists; unit expressions reach MIR
+    /// via other HIR node kinds). This variant is present for exhaustiveness
+    /// so that a future producer arm has a corresponding MIR representation.
+    ///
+    /// Producer: `lower_literal` for `HirLiteral::Unit`.
+    UnitLit { dest: Place },
+    /// `dest = const <duration>` stored as nanoseconds in an `i64`.
+    ///
+    /// Hew duration literals (`100ms`, `5s`, `1h`, `10ns`, etc.) are
+    /// resolved to nanoseconds at parse time by `parse_duration_literal`.
+    /// The `i64` nanosecond encoding can represent durations from ~−292 years
+    /// to ~+292 years, which covers all practical use cases.
+    ///
+    /// The runtime representation (nanoseconds as `i64`) is consistent with
+    /// `HirLiteral::Duration(i64)` and the parser's `Literal::Duration(i64)`,
+    /// which both carry nanoseconds. No representation decision is made here;
+    /// the upstream has already committed to `i64` nanoseconds.
+    ///
+    /// Producer: `lower_literal` for `HirLiteral::Duration`, forwarding the
+    /// pre-computed nanosecond value directly.
+    DurationLit {
+        /// Duration value in nanoseconds.
+        nanos: i64,
+        dest: Place,
+    },
     /// IEEE 754 float addition `dest = lhs + fadd rhs`. No overflow trap —
     /// out-of-range results produce `+inf`/`-inf` per IEEE 754 §6.1.
     FloatAdd {

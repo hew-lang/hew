@@ -52,10 +52,11 @@ fn v05_pipeline_accepts_bool_literal_return() {
     );
 }
 
-/// As above for float literals — `1.5` cannot be moved into the return slot
-/// because `Instr::ConstF64` does not exist in the Cluster 1 spine.
+/// Float literals now lower to `Instr::FloatLit` in the MIR. The MIR
+/// diagnostic stream must be empty — no `CutoverUnsupported` — for a
+/// simple `fn main() -> f64 { 1.5 }` program.
 #[test]
-fn v05_pipeline_rejects_float_literal_return_before_codegen() {
+fn v05_pipeline_accepts_float_literal_in_mir() {
     let parsed = hew_parser::parse("fn main() -> f64 { 1.5 }");
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
@@ -63,19 +64,15 @@ fn v05_pipeline_rejects_float_literal_return_before_codegen() {
     let verify = verify_hir(&output.module);
     assert!(
         output.diagnostics.is_empty() && verify.is_empty(),
-        "hir gate must accept this; cutover happens at MIR: hir={:?} verify={:?}",
+        "hir must accept float literal: hir={:?} verify={:?}",
         output.diagnostics,
         verify
     );
 
     let pipeline = hew_mir::lower_hir_module(&output.module);
     assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
-                if construct == "float literal"
-        )),
-        "float literal must surface a CutoverUnsupported diagnostic: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "float literal must lower without MIR diagnostics: {:?}",
         pipeline.diagnostics
     );
 }

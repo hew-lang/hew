@@ -1293,22 +1293,19 @@ impl Builder {
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Spine subset: integer, bool, and string literals reach the backend
-        // in the current lane. Float/Char/Duration/Unit literals remain out
-        // of scope (Char/Float will follow; Duration/Unit are lower-priority).
-        // Bool lands here because the CFG-construction surface needs a
-        // constructible condition Place for `If`: without bool literals, no
-        // non-trivial `If` condition compiles. String lands here to close
-        // inventory row 7. Fail closed so the emitter never produces a binary
-        // with an uninitialised return slot (LESSONS `boundary-fail-closed`).
-        let construct = match lit {
+        // All HirLiteral variants are wired. Each arm allocates a dest local,
+        // pushes the corresponding Instr, and returns early with `Some(dest)`.
+        // Fail-closed behaviour (LESSONS `boundary-fail-closed`) is preserved
+        // through the float arm's type-mismatch guard, which still returns
+        // `None` on checker-invariant violations.
+        match lit {
             HirLiteral::Integer(value) => {
                 let dest = self.alloc_local(ty.clone());
                 self.instructions.push(Instr::ConstI64 {
                     dest,
                     value: *value,
                 });
-                return Some(dest);
+                Some(dest)
             }
             HirLiteral::Bool(value) => {
                 // Bool lowers as an integer truth value (1 / 0) into the
@@ -1323,7 +1320,7 @@ impl Builder {
                     dest,
                     value: i64::from(*value),
                 });
-                return Some(dest);
+                Some(dest)
             }
             HirLiteral::Float(value) => {
                 // `HirLiteral::Float` always carries an `f64` regardless of
@@ -1369,7 +1366,7 @@ impl Builder {
                     value_bits,
                     width,
                 });
-                return Some(dest);
+                Some(dest)
             }
             HirLiteral::String(s) => {
                 // String literal lowering: allocate a `ResolvedTy::String`
@@ -1387,22 +1384,44 @@ impl Builder {
                     bytes: s.as_bytes().to_vec(),
                     dest,
                 });
-                return Some(dest);
+                Some(dest)
             }
-            HirLiteral::Char(_) => "char literal",
-            HirLiteral::Unit => "unit literal",
-            HirLiteral::Duration(_) => "duration literal",
-        };
-        self.diagnostics.push(MirDiagnostic {
-            kind: MirDiagnosticKind::CutoverUnsupported {
-                construct: construct.to_string(),
-                site,
-            },
-            note: "non-integer literals are not yet lowered to the backend \
-                   instruction stream in the Cluster 1 spine subset"
-                .to_string(),
-        });
-        None
+            HirLiteral::Char(c) => {
+                // Hew `char` is a Unicode scalar value. Store as `u32` bit
+                // pattern; codegen maps it to an `i32` constant. The cast is
+                // total — Rust's `char` guarantees scalar-value range.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::CharLit {
+                    value: *c as u32,
+                    dest,
+                });
+                Some(dest)
+            }
+            HirLiteral::Unit => {
+                // Unit is zero-sized; codegen may emit nothing. The dest
+                // place is allocated so that any downstream use-after-consume
+                // tracking has a definition point.
+                //
+                // NOTE: `HirLiteral::Unit` is currently unreachable from
+                // real Hew source — no parser `Literal::Unit` exists and
+                // the HIR lowerer does not produce this variant. This arm
+                // exists for exhaustiveness so a future producer has a
+                // corresponding MIR variant.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::UnitLit { dest });
+                Some(dest)
+            }
+            HirLiteral::Duration(nanos) => {
+                // Duration literals carry nanoseconds already (`i64`) from
+                // parse time. Forward directly — no conversion needed.
+                let dest = self.alloc_local(ty.clone());
+                self.instructions.push(Instr::DurationLit {
+                    nanos: *nanos,
+                    dest,
+                });
+                Some(dest)
+            }
+        }
     }
 
     #[allow(
@@ -3641,6 +3660,14 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         | Instr::FloatMul { dest, lhs, rhs, .. }
         | Instr::FloatDiv { dest, lhs, rhs, .. }
         | Instr::FloatRem { dest, lhs, rhs, .. } => vec![*dest, *lhs, *rhs],
+        // Char, Unit, and Duration literals each produce only their dest place
+        // (no operand places). Grouped with the existing dest-only pattern
+        // for clarity; kept as separate arms per the `match_same_arms` allow
+        // above — they are semantically distinct even if the extraction shape
+        // is identical.
+        Instr::CharLit { dest, .. } | Instr::UnitLit { dest } | Instr::DurationLit { dest, .. } => {
+            vec![*dest]
+        }
     }
 }
 

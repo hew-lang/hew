@@ -1346,6 +1346,17 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                     .into(),
             ));
         }
+        Instr::CharLit { .. } | Instr::UnitLit { .. } | Instr::DurationLit { .. } => {
+            // M6 P3 char/unit/duration literal MIR variants are wired; LLVM
+            // emission (const i32 for char, zero-size/undef for unit, const i64
+            // for duration) is the follow-up slice. Until it lands, fail-closed
+            // so any program using these literals is diagnosed rather than
+            // silently mis-codegened. LESSONS: boundary-fail-closed,
+            // parity-or-tracked-gap.
+            return Err(CodegenError::FailClosed(
+                "char/unit/duration literal codegen is deferred to the next slice".into(),
+            ));
+        }
     }
     Ok(())
 }

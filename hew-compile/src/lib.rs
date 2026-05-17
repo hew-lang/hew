@@ -2453,7 +2453,7 @@ mod tests {
         write_source(
             dir.path(),
             "helper.hew",
-            "fn helper() -> String { let value = \"ok\"; value }\n",
+            "fn helper() -> string { let value = \"ok\"; value }\n",
         );
 
         let source = fs::read_to_string(&root_input).expect("read root source");

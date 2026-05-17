@@ -157,6 +157,32 @@ pub unsafe extern "C" fn hew_pool_size(pool: *const HewActorPool) -> usize {
     }
 }
 
+/// Return the PID of the member at a given index within the pool.
+///
+/// Returns `0` if `pool` is null, `index` is out of range, or the pool state
+/// is inaccessible. The index is **unstable**: members are stored as an
+/// unordered set, and a `hew_pool_remove` call may shift other indices via
+/// `swap_remove`. Do not cache an index across removals.
+///
+/// # Safety
+///
+/// `pool` must be a valid pointer returned by [`hew_pool_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_pool_get_at(pool: *const HewActorPool, index: usize) -> u64 {
+    if pool.is_null() {
+        return 0;
+    }
+    // SAFETY: Caller guarantees `pool` is valid.
+    let pool = unsafe { &*pool };
+    if pool_is_freed(pool) {
+        return 0;
+    }
+    match lock_state(pool) {
+        Some(s) => s.members.get(index).copied().unwrap_or(0),
+        None => 0,
+    }
+}
+
 /// Select a member PID according to the pool strategy.
 ///
 /// Returns `0` when the pool is null or has no members.

@@ -19,6 +19,7 @@ use crate::actor::{self, HewActor, HewActorOpts};
 use crate::internal::types::{HewActorState, HewDispatchFn, HewOverflowPolicy};
 use crate::io_time::hew_now_ms;
 use crate::mailbox;
+use crate::pool::{HewActorPool, PoolStrategy};
 use crate::scheduler;
 use crate::set_last_error;
 use crate::util::{CondvarExt, MutexExt};
@@ -130,6 +131,16 @@ fn append_supervisor_rows(
     for child_sup in &supervisor.child_supervisors {
         append_supervisor_rows(json, first, *child_sup, depth + 1);
     }
+
+    for (i, pool) in supervisor.pool_slots.iter().enumerate() {
+        let spec = &supervisor.pool_specs[i];
+        let name = child_name(spec.name, &format!("pool[{i}]"));
+        // SAFETY: pool pointer is Box-owned by this supervisor and valid while
+        // the supervisor lock is held.
+        let member_count = unsafe { crate::pool::hew_pool_size(*pool) };
+        let label = format!("  {name} (members: {member_count})");
+        append_tree_row(json, first, depth + 1, &label, "Pool");
+    }
 }
 
 #[cfg(feature = "profiler")]
@@ -144,6 +155,151 @@ pub fn snapshot_tree_json() -> String {
     json.push(']');
     json
 }
+
+// ---------------------------------------------------------------------------
+// Child lookup result types (shared by static and pool ABI)
+// ---------------------------------------------------------------------------
+
+/// Reasons for non-`Live` slot results returned by child-lookup ABI functions.
+///
+/// C ABI: `u8`. Six reasons cover the v0.5 surface; the enum is extensible by
+/// adding variants without breaking the `tag` discriminant.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildSlotReason {
+    /// `tag = Live`; reason field unused.
+    Ok = 0,
+    /// Slot transiently null mid-restart.
+    Restarting = 1,
+    /// Exponential-backoff window not yet elapsed.
+    BackoffDelay = 2,
+    /// Circuit breaker tripped; restart suppressed.
+    CircuitOpen = 3,
+    /// `max_restarts` hit in window; child is Dead.
+    BudgetExhausted = 4,
+    /// Supervisor is shut down (`cancelled || running == 0`).
+    SupervisorShutdown = 5,
+    /// Key out of range or pool slot unknown; codegen bug → fail-closed.
+    UnknownSlot = 6,
+}
+
+/// Result of a typed child-slot or pool-slot lookup.
+///
+/// C ABI: 16-byte struct passed by value (`tag + reason + padding + handle`).
+/// Matches the `RecvError`-style tagged-union pattern used elsewhere in
+/// `hew-runtime`.
+///
+/// # Ownership
+///
+/// `handle` is a **borrow**, not a transfer of ownership. The supervisor owns
+/// the pointed-to actor for the slot's lifetime. The caller must not free it.
+/// A subsequent restart may replace the pointer; treat any captured `handle`
+/// as valid only within the current scheduler turn.
+#[repr(C)]
+#[derive(Debug)]
+#[allow(
+    clippy::pub_underscore_fields,
+    reason = "C ABI struct: _pad is part of the wire layout"
+)]
+pub struct ChildLookupResult {
+    /// Discriminant: 0 = Live, 1 = Transient, 2 = Dead.
+    pub tag: u8,
+    /// When `tag` is 1 or 2: a [`ChildSlotReason`] discriminant.
+    pub reason: u8,
+    /// Reserved alignment padding (callers treat as 0).
+    pub _pad: [u8; 6],
+    /// When `tag = 0`: the live `*mut HewActor`.
+    ///
+    /// For pool-slot lookups (`hew_supervisor_pool_child_get`), this field
+    /// carries the actor PID (u64) encoded as a pointer-width integer. Use
+    /// `hew_pid_resolve` (when available) or `hew_actor_send_by_pid` to
+    /// route messages to pool members without dereferencing the value as a
+    /// pointer.
+    ///
+    /// When `tag` is non-zero: null.
+    pub handle: *mut HewActor,
+}
+
+impl ChildLookupResult {
+    /// Construct a `Live` result carrying a valid actor pointer.
+    #[must_use]
+    pub fn live(handle: *mut HewActor) -> Self {
+        Self {
+            tag: 0,
+            reason: ChildSlotReason::Ok as u8,
+            _pad: [0; 6],
+            handle,
+        }
+    }
+
+    /// Construct a `Transient` result (slot is temporarily unavailable).
+    #[must_use]
+    pub fn transient(reason: ChildSlotReason) -> Self {
+        Self {
+            tag: 1,
+            reason: reason as u8,
+            _pad: [0; 6],
+            handle: ptr::null_mut(),
+        }
+    }
+
+    /// Construct a `Dead` result (slot will not recover without intervention).
+    #[must_use]
+    pub fn dead(reason: ChildSlotReason) -> Self {
+        Self {
+            tag: 2,
+            reason: reason as u8,
+            _pad: [0; 6],
+            handle: ptr::null_mut(),
+        }
+    }
+
+    /// Returns true if this result is `Live`.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.tag == 0
+    }
+}
+
+// SAFETY: `handle` is a raw pointer to a `HewActor`. `HewActor` is `Send`;
+// the pointer is only read by the receiver under the supervisor's slot lock.
+unsafe impl Send for ChildLookupResult {}
+
+// ---------------------------------------------------------------------------
+// Pool slot substrate
+// ---------------------------------------------------------------------------
+
+/// Internal specification for a pool declared in a supervisor surface.
+///
+/// Parallel to `InternalChildSpec` for static children, but tracks
+/// pool-specific attributes: routing strategy, capacity, and name.
+struct InternalPoolSpec {
+    /// Human-readable pool name (C string, heap-allocated via `libc::strdup`).
+    name: *mut c_char,
+    /// Routing strategy recorded for diagnostics; the live strategy is owned
+    /// by the parallel `HewActorPool` in `pool_slots`.
+    #[expect(
+        dead_code,
+        reason = "strategy is in HewActorPool; recorded here for diagnostics only"
+    )]
+    strategy: PoolStrategy,
+    /// Soft cap on pool members (0 = unlimited).
+    max_members: usize,
+}
+
+impl Drop for InternalPoolSpec {
+    fn drop(&mut self) {
+        if !self.name.is_null() {
+            // SAFETY: name was allocated with libc::strdup.
+            unsafe { libc::free(self.name.cast::<c_void>()) };
+            self.name = ptr::null_mut();
+        }
+    }
+}
+
+// SAFETY: `name` is a heap-allocated C string owned exclusively by this spec.
+// The supervisor serializes all access; no concurrent &-refs occur.
+unsafe impl Send for InternalPoolSpec {}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -402,6 +558,16 @@ pub struct HewSupervisor {
     /// budget exhaustion), and `hew_supervisor_set_restart_notify` resets it
     /// for deterministic test sequencing.
     restart_notify: Option<Arc<(Mutex<usize>, Condvar)>>,
+
+    /// Pool children declared via `pool name: Type` in the supervisor surface.
+    ///
+    /// Indexed by checker-assigned pool slot index. Disjoint from the static
+    /// `children` slot space — a `pool_key` of 0 is the first *pool* child,
+    /// not the first static child. Each entry is a `Box`-owned `HewActorPool`.
+    pool_slots: Vec<*mut HewActorPool>,
+    /// Parallel spec for pool children. `pool_slots[i]` and `pool_specs[i]`
+    /// always have the same length.
+    pool_specs: Vec<InternalPoolSpec>,
 }
 
 /// Circuit breaker configuration and state for a child.
@@ -1041,6 +1207,15 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
         }
         s.self_actor = ptr::null_mut();
     }
+
+    // Free pool slots. Each pool was Box-allocated by hew_supervisor_pool_add_slot;
+    // pool_specs Drop impl handles name deallocation.
+    for pool in std::mem::take(&mut s.pool_slots) {
+        if !pool.is_null() {
+            // SAFETY: pool was created by Box::into_raw in hew_supervisor_pool_add_slot.
+            unsafe { drop(Box::from_raw(pool)) };
+        }
+    }
 }
 
 /// Restart a child from its spec, returning the new actor pointer.
@@ -1510,6 +1685,8 @@ pub unsafe extern "C" fn hew_supervisor_new(
         self_actor: ptr::null_mut(),
         children_lock: Mutex::new(()),
         restart_notify: Some(Arc::new((Mutex::new(0), Condvar::new()))),
+        pool_slots: Vec::new(),
+        pool_specs: Vec::new(),
     });
     Box::into_raw(sup)
 }
@@ -2737,4 +2914,444 @@ pub unsafe extern "C" fn hew_supervisor_wait_restart(
         }
     }
     *count
+}
+
+// ---------------------------------------------------------------------------
+// Pool slot substrate — Phase 2.0.b
+// ---------------------------------------------------------------------------
+
+/// Register a new pool slot on the supervisor.
+///
+/// Allocates a fresh `HewActorPool` and appends it to `pool_slots`/`pool_specs`,
+/// returning the pool slot index (≥ 0) on success, or -1 on error.
+///
+/// The checker assigns pool slot indices in source-declaration order, matching
+/// the order this function is called during supervisor construction. The returned
+/// index is the `pool_key` parameter for [`hew_supervisor_pool_child_get`] and
+/// sibling pool ABI functions.
+///
+/// # Safety
+///
+/// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+/// - `name` must be a valid, null-terminated C string pointer; it is copied
+///   internally and the caller retains ownership.
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_pool_add_slot(
+    sup: *mut HewSupervisor,
+    name: *const c_char,
+    strategy: c_int,
+    max_members: usize,
+) -> c_int {
+    cabi_guard!(sup.is_null(), -1);
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &mut *sup };
+
+    let pool_strategy = match strategy {
+        1 => PoolStrategy::Random,
+        _ => PoolStrategy::RoundRobin,
+    };
+
+    // SAFETY: name is guaranteed valid by caller; hew_pool_new copies nothing —
+    // we strdup separately so InternalPoolSpec owns the allocation.
+    let name_copy: *mut c_char = if name.is_null() {
+        ptr::null_mut()
+    } else {
+        // SAFETY: caller guarantees name is a valid C string.
+        unsafe { libc::strdup(name) }
+    };
+
+    // Allocate the pool. hew_pool_new takes a *const c_char that must stay
+    // valid for the pool's lifetime; we pass name_copy which is owned by the
+    // parallel InternalPoolSpec and freed in InternalPoolSpec::drop after the
+    // pool itself is freed.
+    // SAFETY: name_copy is valid (non-null checked below); if null, we pass null.
+    let pool = unsafe { crate::pool::hew_pool_new(name_copy, pool_strategy as c_int) };
+    if pool.is_null() {
+        // Free the duplicated name on allocation failure.
+        if !name_copy.is_null() {
+            // SAFETY: name_copy was allocated with libc::strdup.
+            unsafe { libc::free(name_copy.cast::<c_void>()) };
+        }
+        return -1;
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "pool slot count fits in c_int for any realistic supervisor"
+    )]
+    let index = s.pool_slots.len() as c_int;
+
+    s.pool_slots.push(pool);
+    s.pool_specs.push(InternalPoolSpec {
+        name: name_copy,
+        strategy: pool_strategy,
+        max_members,
+    });
+
+    index
+}
+
+/// Add an actor PID to an existing pool slot.
+///
+/// `pool_key` is the index returned by [`hew_supervisor_pool_add_slot`].
+///
+/// Returns 0 on success, -1 if `sup` is null, `pool_key` is out of range, or
+/// the pool's `max_members` limit would be exceeded.
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_pool_member_add(
+    sup: *mut HewSupervisor,
+    pool_key: u32,
+    actor_pid: u64,
+) -> c_int {
+    cabi_guard!(sup.is_null(), -1);
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &*sup };
+    let i = pool_key as usize;
+    if i >= s.pool_slots.len() {
+        set_last_error("hew_supervisor_pool_member_add: pool_key out of range");
+        return -1;
+    }
+    let pool = s.pool_slots[i];
+    if pool.is_null() {
+        set_last_error("hew_supervisor_pool_member_add: pool slot is null");
+        return -1;
+    }
+    // Enforce max_members if configured.
+    let max = s.pool_specs[i].max_members;
+    if max > 0 {
+        // SAFETY: pool is valid.
+        let current = unsafe { crate::pool::hew_pool_size(pool) };
+        if current >= max {
+            set_last_error("hew_supervisor_pool_member_add: pool at max_members capacity");
+            return -1;
+        }
+    }
+    // SAFETY: pool is valid.
+    unsafe { crate::pool::hew_pool_add(pool, actor_pid) }
+}
+
+/// Remove an actor PID from a pool slot.
+///
+/// Returns 0 on success, -1 if the pool or PID is not found.
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_pool_member_remove(
+    sup: *mut HewSupervisor,
+    pool_key: u32,
+    actor_pid: u64,
+) -> c_int {
+    cabi_guard!(sup.is_null(), -1);
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &*sup };
+    let i = pool_key as usize;
+    if i >= s.pool_slots.len() {
+        set_last_error("hew_supervisor_pool_member_remove: pool_key out of range");
+        return -1;
+    }
+    let pool = s.pool_slots[i];
+    if pool.is_null() {
+        return -1;
+    }
+    // SAFETY: pool is valid.
+    unsafe { crate::pool::hew_pool_remove(pool, actor_pid) }
+}
+
+/// Resolve a pool member by its position index within the pool's current
+/// membership snapshot.
+///
+/// Returns a [`ChildLookupResult`] discriminated as:
+///
+/// - `Live(handle)` — `handle` carries the actor PID (u64) of the indexed
+///   member, encoded as a pointer-width integer. Callers route messages via
+///   the PID rather than dereferencing the value as a raw pointer. Use
+///   `hew_pid_resolve` (when available) to obtain the `*mut HewActor` for
+///   direct dispatch.
+/// - `Dead(UnknownSlot)` — `pool_key` is out of range, the pool slot is null,
+///   the supervisor is shut down, or `index` is beyond the current member
+///   count (which may have shrunk due to dynamic pool member removal).
+///
+/// The index is **unstable**: pool members are stored as an unordered set
+/// internally. A member removed between two calls (via
+/// [`hew_supervisor_pool_member_remove`]) may shift other members' indices
+/// because the pool uses `swap_remove`. Do not cache an index across removals.
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_pool_child_get(
+    sup: *mut HewSupervisor,
+    pool_key: u32,
+    index: u32,
+) -> ChildLookupResult {
+    if sup.is_null() {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &*sup };
+
+    // Fast-path: supervisor-level shutdown.
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    }
+
+    let i = pool_key as usize;
+    if i >= s.pool_slots.len() {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    }
+
+    let pool = s.pool_slots[i];
+    if pool.is_null() {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    }
+
+    // Resolve the index within the pool's member list via the public ABI so
+    // we stay within the module's encapsulation boundary.
+    // SAFETY: pool was created by hew_pool_new and has not been freed.
+    let pid = unsafe { crate::pool::hew_pool_get_at(pool, index as usize) };
+    if pid == 0 {
+        // 0 is returned both for out-of-range and for an empty pool;
+        // both cases are dead from the caller's perspective.
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    }
+
+    // Encode the PID as a *mut HewActor. Callers must treat this as an
+    // opaque u64 PID — not a dereferenceable pointer — until hew_pid_resolve
+    // is available to translate it.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "u64 PID encoded as pointer-width integer; caller interprets as u64"
+    )]
+    let handle = pid as usize as *mut HewActor;
+    ChildLookupResult::live(handle)
+}
+
+/// Return the number of live members in a pool slot.
+///
+/// Returns -1 if `sup` is null or `pool_key` is out of range.
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+#[no_mangle]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "member count fits in i64 for any realistic pool"
+)]
+pub unsafe extern "C" fn hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_key: u32) -> i64 {
+    if sup.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &*sup };
+    let i = pool_key as usize;
+    if i >= s.pool_slots.len() {
+        return -1;
+    }
+    let pool = s.pool_slots[i];
+    if pool.is_null() {
+        return -1;
+    }
+    // SAFETY: pool is valid.
+    unsafe { crate::pool::hew_pool_size(pool) as i64 }
+}
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "pool slot unit tests — safety invariants are documented per-test in comments"
+)]
+mod pool_slot_tests {
+    //! Unit tests for the pool slot substrate.
+    //!
+    //! Tests use a stopped supervisor (running == 0) deliberately: pool slot
+    //! lookup checks supervisor shutdown state and returns
+    //! `Dead(SupervisorShutdown)` when `running == 0`. Tests that need `Live`
+    //! results call `hew_supervisor_start` first or set `running` directly
+    //! via the returned raw pointer.
+
+    use std::ptr;
+    use std::sync::atomic::Ordering;
+
+    use super::{ChildSlotReason, HewSupervisor};
+    use crate::supervisor::{
+        hew_supervisor_new, hew_supervisor_pool_add_slot, hew_supervisor_pool_child_get,
+        hew_supervisor_pool_len, hew_supervisor_pool_member_add, hew_supervisor_pool_member_remove,
+        hew_supervisor_stop,
+    };
+
+    const STRATEGY_ONE_FOR_ONE: std::ffi::c_int = 0;
+    const ROUND_ROBIN: std::ffi::c_int = 0;
+
+    unsafe fn make_sup() -> *mut HewSupervisor {
+        unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 3, 5) }
+    }
+
+    /// Mark the supervisor running so `pool_child_get` doesn't short-circuit.
+    unsafe fn mark_running(sup: *mut HewSupervisor) {
+        unsafe { (*sup).running.store(1, Ordering::Release) };
+    }
+
+    #[test]
+    fn pool_child_get_live_returns_pid_as_handle() {
+        // Arrange: supervisor with one pool slot, two members.
+        let sup = unsafe { make_sup() };
+        assert!(!sup.is_null());
+
+        let name = std::ffi::CString::new("workers").unwrap();
+        let key = unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
+        assert_eq!(key, 0, "first pool slot index should be 0");
+
+        assert_eq!(unsafe { hew_supervisor_pool_member_add(sup, 0, 1001) }, 0);
+        assert_eq!(unsafe { hew_supervisor_pool_member_add(sup, 0, 2002) }, 0);
+
+        unsafe { mark_running(sup) };
+
+        // Act: look up index 0 and index 1.
+        let r0 = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
+        let r1 = unsafe { hew_supervisor_pool_child_get(sup, 0, 1) };
+
+        // Assert: both are Live; handles encode the PIDs.
+        assert!(r0.is_live(), "index 0 should be Live");
+        assert!(r1.is_live(), "index 1 should be Live");
+        assert_eq!(r0.handle as u64, 1001, "handle encodes PID 1001");
+        assert_eq!(r1.handle as u64, 2002, "handle encodes PID 2002");
+
+        // Cleanup.
+        unsafe { hew_supervisor_stop(sup) };
+    }
+
+    #[test]
+    fn pool_child_get_out_of_range_index_returns_dead_unknown_slot() {
+        let sup = unsafe { make_sup() };
+        let name = std::ffi::CString::new("workers").unwrap();
+        unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
+        unsafe { hew_supervisor_pool_member_add(sup, 0, 42) };
+        unsafe { mark_running(sup) };
+
+        // Index 1 is beyond the single member.
+        let r = unsafe { hew_supervisor_pool_child_get(sup, 0, 1) };
+        assert_eq!(r.tag, 2, "should be Dead");
+        assert_eq!(r.reason, ChildSlotReason::UnknownSlot as u8);
+        assert!(r.handle.is_null());
+
+        unsafe { hew_supervisor_stop(sup) };
+    }
+
+    #[test]
+    fn pool_child_get_after_member_removal_returns_dead_unknown_slot() {
+        // Simulates "pool member dynamically scaled out": remove a member,
+        // then look up by the (now-invalid) index → Dead(UnknownSlot).
+        let sup = unsafe { make_sup() };
+        let name = std::ffi::CString::new("workers").unwrap();
+        unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
+        unsafe { hew_supervisor_pool_member_add(sup, 0, 100) };
+        unsafe { mark_running(sup) };
+
+        // Verify it's Live before removal.
+        let before = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
+        assert!(before.is_live(), "should be Live before removal");
+
+        // Remove the member.
+        assert_eq!(unsafe { hew_supervisor_pool_member_remove(sup, 0, 100) }, 0);
+
+        // Now index 0 is beyond the empty member list.
+        let after = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
+        assert_eq!(after.tag, 2, "should be Dead after removal");
+        assert_eq!(after.reason, ChildSlotReason::UnknownSlot as u8);
+
+        unsafe { hew_supervisor_stop(sup) };
+    }
+
+    #[test]
+    fn pool_child_get_unknown_pool_key_returns_dead() {
+        let sup = unsafe { make_sup() };
+        unsafe { mark_running(sup) };
+
+        // No pools added — pool_key 0 is invalid.
+        let r = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
+        assert_eq!(r.tag, 2, "should be Dead");
+        assert_eq!(r.reason, ChildSlotReason::UnknownSlot as u8);
+
+        unsafe { hew_supervisor_stop(sup) };
+    }
+
+    #[test]
+    fn pool_child_get_null_supervisor_returns_dead_shutdown() {
+        // SAFETY: intentionally passing null to verify guard.
+        let r = unsafe { hew_supervisor_pool_child_get(ptr::null_mut(), 0, 0) };
+        assert_eq!(r.tag, 2, "should be Dead");
+        assert_eq!(r.reason, ChildSlotReason::SupervisorShutdown as u8);
+    }
+
+    #[test]
+    fn pool_child_get_stopped_supervisor_returns_dead_shutdown() {
+        let sup = unsafe { make_sup() };
+        // Supervisor was never started (running == 0).
+        let r = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
+        assert_eq!(r.tag, 2, "should be Dead (supervisor not running)");
+        assert_eq!(r.reason, ChildSlotReason::SupervisorShutdown as u8);
+
+        unsafe { hew_supervisor_stop(sup) };
+    }
+
+    #[test]
+    fn pool_len_tracks_member_add_and_remove() {
+        let sup = unsafe { make_sup() };
+        let name = std::ffi::CString::new("sizers").unwrap();
+        let key = unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
+        assert_eq!(key, 0);
+
+        assert_eq!(unsafe { hew_supervisor_pool_len(sup, 0) }, 0);
+        unsafe { hew_supervisor_pool_member_add(sup, 0, 11) };
+        unsafe { hew_supervisor_pool_member_add(sup, 0, 22) };
+        assert_eq!(unsafe { hew_supervisor_pool_len(sup, 0) }, 2);
+        unsafe { hew_supervisor_pool_member_remove(sup, 0, 11) };
+        assert_eq!(unsafe { hew_supervisor_pool_len(sup, 0) }, 1);
+
+        unsafe { hew_supervisor_stop(sup) };
+    }
+
+    #[test]
+    fn pool_len_invalid_key_returns_minus_one() {
+        let sup = unsafe { make_sup() };
+        assert_eq!(unsafe { hew_supervisor_pool_len(sup, 99) }, -1);
+        unsafe { hew_supervisor_stop(sup) };
+    }
+
+    #[test]
+    fn multiple_pool_slots_have_disjoint_key_spaces() {
+        let sup = unsafe { make_sup() };
+        let n0 = std::ffi::CString::new("alpha").unwrap();
+        let n1 = std::ffi::CString::new("beta").unwrap();
+
+        let k0 = unsafe { hew_supervisor_pool_add_slot(sup, n0.as_ptr(), ROUND_ROBIN, 0) };
+        let k1 = unsafe { hew_supervisor_pool_add_slot(sup, n1.as_ptr(), ROUND_ROBIN, 0) };
+        assert_eq!(k0, 0);
+        assert_eq!(k1, 1);
+
+        // Add different PIDs to each pool.
+        unsafe { hew_supervisor_pool_member_add(sup, 0, 111) };
+        unsafe { hew_supervisor_pool_member_add(sup, 1, 222) };
+        unsafe { mark_running(sup) };
+
+        let r0 = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
+        let r1 = unsafe { hew_supervisor_pool_child_get(sup, 1, 0) };
+
+        assert!(r0.is_live());
+        assert!(r1.is_live());
+        assert_eq!(r0.handle as u64, 111);
+        assert_eq!(r1.handle as u64, 222);
+
+        unsafe { hew_supervisor_stop(sup) };
+    }
 }

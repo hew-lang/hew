@@ -65,7 +65,7 @@ fn duration_emission_lit_emits_i64_nanoseconds() {
     // i64 (from `primitive_to_llvm(Duration)`) and the `DurationLit` arm
     // stores the constant nanosecond value into it.
     let ll = emit_ll(
-        "fn main() -> i64 { let d: Duration = 5s; 0 }",
+        "fn main() -> i64 { let d: duration = 5s; 0 }",
         "duration_lit_5s",
     );
     // 5 seconds = 5_000_000_000 nanoseconds. LLVM renders i64 constants

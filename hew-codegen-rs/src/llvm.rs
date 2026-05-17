@@ -60,8 +60,8 @@ use std::path::Path;
 use std::process::Command;
 
 use hew_mir::{
-    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, Instr, IntArithOp, IntSignedness,
-    IrPipeline, Place, RawMirFunction, Terminator, TrapKind,
+    CmpPred, ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, Instr, IntArithOp,
+    IntSignedness, IrPipeline, Place, RawMirFunction, Terminator, TrapKind,
 };
 use hew_types::ResolvedTy;
 
@@ -586,15 +586,16 @@ fn primitive_to_llvm<'ctx>(
         // Cluster 1's spine subset. Heap and composite types below belong to
         // Cluster 2/3/4. Fail closed so an unexpected shape doesn't silently
         // produce a malformed binary (LESSONS `boundary-fail-closed`).
-        ResolvedTy::Char => Err(CodegenError::Unsupported(
-            "Char type — Cluster 2 lowering pending",
-        )),
+        // `Char` is a Unicode scalar value (U+0000..U+10FFFF). Stored as i32
+        // (matching the C `int32_t` convention for code points). The upper two
+        // billion i32 values are unused — all scalar values fit in 21 bits.
+        ResolvedTy::Char => Ok(ctx.i32_type().into()),
         ResolvedTy::Bytes => Err(CodegenError::Unsupported(
             "Bytes type — Cluster 2 lowering pending",
         )),
-        ResolvedTy::Duration => Err(CodegenError::Unsupported(
-            "Duration type — Cluster 2 lowering pending",
-        )),
+        // `Duration` is i64 nanoseconds. The `i64` encoding covers ±292 years
+        // of nanosecond precision, which is sufficient for all practical use.
+        ResolvedTy::Duration => Ok(ctx.i64_type().into()),
         ResolvedTy::Never => Err(CodegenError::Unsupported(
             "Never type cannot occur in a value-bearing position",
         )),
@@ -1330,32 +1331,156 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 "record codegen (RecordInit/RecordFieldLoad) is deferred to A-7".into(),
             ));
         }
-        Instr::FloatLit { .. }
-        | Instr::FloatAdd { .. }
-        | Instr::FloatSub { .. }
-        | Instr::FloatMul { .. }
-        | Instr::FloatDiv { .. }
-        | Instr::FloatRem { .. } => {
-            // M6 P3 Float-arithmetic variants land in MIR; codegen-rs
-            // LLVM emission (build_float_add/sub/mul/div/rem +
-            // const_float for literals) is the follow-up slice. Until
-            // it lands, fail-closed so any float-bearing program is
-            // diagnosed rather than silently mis-codegened.
-            return Err(CodegenError::FailClosed(
-                "float codegen (FloatLit/FloatAdd/Sub/Mul/Div/Rem) is deferred to the next slice"
-                    .into(),
-            ));
+        Instr::FloatLit {
+            dest,
+            value_bits,
+            width,
+        } => {
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let float_ty = match dest_ty {
+                BasicTypeEnum::FloatType(f) => f,
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "FloatLit dest is not a float type: dest_ty={dest_ty:?}"
+                    )))
+                }
+            };
+            // Reconstruct the IEEE 754 value from its stored bit pattern.
+            // For F32: lower 32 bits are the f32 pattern; widen to f64 for
+            // inkwell's `const_float(f64)` API (exact for all finite values
+            // that Hew literal syntax can produce).
+            // For F64: all 64 bits are the f64 pattern.
+            let value_f64 = match width {
+                FloatWidth::F32 => f32::from_bits(*value_bits as u32) as f64,
+                FloatWidth::F64 => f64::from_bits(*value_bits),
+            };
+            let v = float_ty.const_float(value_f64);
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, v)
+                .map_err(|e| CodegenError::Llvm(format!("FloatLit store: {e:?}")))?;
+            let _ = ctx;
         }
-        Instr::CharLit { .. } | Instr::UnitLit { .. } | Instr::DurationLit { .. } => {
-            // M6 P3 char/unit/duration literal MIR variants are wired; LLVM
-            // emission (const i32 for char, zero-size/undef for unit, const i64
-            // for duration) is the follow-up slice. Until it lands, fail-closed
-            // so any program using these literals is diagnosed rather than
-            // silently mis-codegened. LESSONS: boundary-fail-closed,
-            // parity-or-tracked-gap.
-            return Err(CodegenError::FailClosed(
-                "char/unit/duration literal codegen is deferred to the next slice".into(),
-            ));
+        Instr::FloatAdd { dest, lhs, rhs, .. }
+        | Instr::FloatSub { dest, lhs, rhs, .. }
+        | Instr::FloatMul { dest, lhs, rhs, .. }
+        | Instr::FloatDiv { dest, lhs, rhs, .. }
+        | Instr::FloatRem { dest, lhs, rhs, .. } => {
+            // IEEE 754 float arithmetic. No `nsw`/`nuw` flags — those are
+            // integer-only. Out-of-range results produce ±inf or NaN per
+            // IEEE 754; no trap path is emitted.
+            let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
+            let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let lhs_float = match lhs_ty {
+                BasicTypeEnum::FloatType(f) => f,
+                _ => {
+                    return Err(CodegenError::FailClosed(
+                        "float arithmetic lhs is not a float type".into(),
+                    ))
+                }
+            };
+            if rhs_ty != lhs_ty || dest_ty != lhs_ty {
+                return Err(CodegenError::FailClosed(
+                    "float arithmetic operands and dest must share the same float type".into(),
+                ));
+            }
+            let lhs_v = fn_ctx
+                .builder
+                .build_load(lhs_float, lhs_ptr, "farith_lhs")
+                .map_err(|e| CodegenError::Llvm(format!("farith lhs load: {e:?}")))?
+                .into_float_value();
+            let rhs_v = fn_ctx
+                .builder
+                .build_load(lhs_float, rhs_ptr, "farith_rhs")
+                .map_err(|e| CodegenError::Llvm(format!("farith rhs load: {e:?}")))?
+                .into_float_value();
+            let result = match instr {
+                Instr::FloatAdd { .. } => {
+                    fn_ctx.builder.build_float_add(lhs_v, rhs_v, "farith_add")
+                }
+                Instr::FloatSub { .. } => {
+                    fn_ctx.builder.build_float_sub(lhs_v, rhs_v, "farith_sub")
+                }
+                Instr::FloatMul { .. } => {
+                    fn_ctx.builder.build_float_mul(lhs_v, rhs_v, "farith_mul")
+                }
+                Instr::FloatDiv { .. } => {
+                    fn_ctx.builder.build_float_div(lhs_v, rhs_v, "farith_div")
+                }
+                Instr::FloatRem { .. } => {
+                    fn_ctx.builder.build_float_rem(lhs_v, rhs_v, "farith_rem")
+                }
+                _ => unreachable!("matched on five float-arith variants above"),
+            }
+            .map_err(|e| CodegenError::Llvm(format!("float arith: {e:?}")))?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, result)
+                .map_err(|e| CodegenError::Llvm(format!("farith store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::CharLit { value, dest } => {
+            // `char` is i32: the Unicode scalar value U+0000..U+10FFFF.
+            // Stored as `u32` in MIR; emit as an i32 constant (sign-extension
+            // is harmless — no scalar value exceeds 0x10FFFF, well within i32
+            // positive range).
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let int_ty = match dest_ty {
+                BasicTypeEnum::IntType(i) => i,
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "CharLit dest is not an int: dest_ty={dest_ty:?}"
+                    )))
+                }
+            };
+            let v = int_ty.const_int(*value as u64, false);
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, v)
+                .map_err(|e| CodegenError::Llvm(format!("CharLit store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::UnitLit { dest } => {
+            // Unit is zero-sized. `primitive_to_llvm(Unit)` maps to i8 as a
+            // stand-in. Store 0 to give the slot a well-defined value; the
+            // consumer never observes it in well-typed programs (unit bindings
+            // are dropped before escaping the codegen boundary).
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let int_ty = match dest_ty {
+                BasicTypeEnum::IntType(i) => i,
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "UnitLit dest is not an int (expected i8 stand-in): dest_ty={dest_ty:?}"
+                    )))
+                }
+            };
+            let v = int_ty.const_int(0, false);
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, v)
+                .map_err(|e| CodegenError::Llvm(format!("UnitLit store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::DurationLit { nanos, dest } => {
+            // Duration is i64 nanoseconds. `nanos` is already the final
+            // nanosecond representation — no conversion needed.
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            let int_ty = match dest_ty {
+                BasicTypeEnum::IntType(i) => i,
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "DurationLit dest is not an int: dest_ty={dest_ty:?}"
+                    )))
+                }
+            };
+            #[allow(clippy::cast_sign_loss)]
+            let v = int_ty.const_int(*nanos as u64, true);
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, v)
+                .map_err(|e| CodegenError::Llvm(format!("DurationLit store: {e:?}")))?;
+            let _ = ctx;
         }
     }
     Ok(())

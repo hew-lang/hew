@@ -1240,27 +1240,27 @@ impl Builder {
                 // the indexed DuplexHandle Place directly without emitting any
                 // additional instructions.  This is the complement of the
                 // `lower_runtime_call` path that stores the output Places into
-                // `tuple_decomp`.  Any `TupleIndex` on a tuple whose producer
-                // did NOT populate `tuple_decomp` falls through to fail-closed.
-                let inner_place = self.lower_value(tuple);
-                if let Some(Place::Local(local_idx)) = inner_place {
+                // `tuple_decomp`.
+                let inner_place = self.lower_value(tuple)?;
+                if let Place::Local(local_idx) = inner_place {
                     if let Some(parts) = self.tuple_decomp.get(&local_idx) {
                         if *index < parts.len() {
                             return Some(parts[*index]);
                         }
                     }
                 }
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: format!("tuple-index .{index}"),
-                        site: expr.site,
-                    },
-                    note: "TupleIndex MIR lowering is only implemented for runtime-call \
-                           outputs registered in the tuple_decomp table; general tuple \
-                           projection is not yet supported"
-                        .to_string(),
+                // General case: the tuple is a regular tuple-typed local.
+                // Emit `Instr::TupleFieldLoad` — codegen lowers this to a
+                // GEP at `field_index` into the struct alloca + load.
+                let field_index = u32::try_from(*index)
+                    .expect("tuple index exceeds u32::MAX — impossible in Hew");
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::TupleFieldLoad {
+                    tuple: inner_place,
+                    field_index,
+                    dest,
                 });
-                None
+                Some(dest)
             }
             HirExprKind::Index { container, index } => {
                 self.lower_vec_index(container, index, &expr.ty, expr.site)
@@ -3815,6 +3815,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
+        Instr::TupleFieldLoad { tuple, dest, .. } => vec![*tuple, *dest],
         Instr::FloatLit { dest, .. } => vec![*dest],
         Instr::FloatAdd { dest, lhs, rhs, .. }
         | Instr::FloatSub { dest, lhs, rhs, .. }

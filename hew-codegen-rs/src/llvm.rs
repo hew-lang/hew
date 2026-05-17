@@ -605,6 +605,20 @@ fn register_record_layouts<'ctx>(
 /// record-layout map first for named user records. This is the codegen-side
 /// entry point for type lowering — it replaces direct calls to
 /// `primitive_to_llvm` at any site that may encounter a record-typed value.
+///
+/// Tuples lower as anonymous LLVM struct types with fields in declaration order
+/// (`packed = false` for natural alignment). The struct type is constructed
+/// on demand; anonymous structs are not interned by LLVM and share the same
+/// `StructType` ABI as named structs, so GEP field-index addressing works
+/// identically to `RecordFieldLoad`. Field types are resolved recursively via
+/// `resolve_ty` so records nested inside tuples resolve through the layout map.
+///
+/// WHY anonymous (not opaque/named): tuple types have no canonical name in
+/// Hew source; the positional field list is the entire identity. Constructing
+/// an anonymous struct per call is safe — LLVM deduplicates structurally
+/// identical anonymous types within the same `Context`.
+/// WHEN-OBSOLETE: if Hew adds named tuple types (type aliases with struct
+/// semantics) this arm can be updated to look up the map first.
 fn resolve_ty<'ctx>(
     ctx: &'ctx Context,
     ty: &ResolvedTy,
@@ -614,6 +628,13 @@ fn resolve_ty<'ctx>(
         if let Some(st) = record_layouts.get(name) {
             return Ok((*st).into());
         }
+    }
+    if let ResolvedTy::Tuple(elems) = ty {
+        let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(elems.len());
+        for elem in elems {
+            field_tys.push(resolve_ty(ctx, elem, record_layouts)?);
+        }
+        return Ok(ctx.struct_type(&field_tys, false).into());
     }
     primitive_to_llvm(ctx, ty)
 }
@@ -1458,6 +1479,14 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
             lower_record_field_load(fn_ctx, *record, *field_offset, *dest)?;
             let _ = ctx;
         }
+        Instr::TupleFieldLoad {
+            tuple,
+            field_index,
+            dest,
+        } => {
+            lower_tuple_field_load(fn_ctx, *tuple, *field_index, *dest)?;
+            let _ = ctx;
+        }
         Instr::FloatLit {
             dest,
             value_bits,
@@ -1774,6 +1803,73 @@ fn lower_record_field_load(
         .builder
         .build_store(dest_ptr, field_val)
         .map_err(|e| CodegenError::Llvm(format!("RecordFieldLoad field {idx} store: {e:?}")))?;
+    Ok(())
+}
+
+/// Lower `Instr::TupleFieldLoad { tuple, field_index, dest }` to a GEP+load on
+/// the tuple's struct alloca, storing the loaded element value into the dest place.
+///
+/// Tuples are laid out as anonymous LLVM struct types (positional field order,
+/// `packed = false`). The GEP+load pattern is identical to `RecordFieldLoad`;
+/// the only difference is that the struct type is recovered from the slot's
+/// LLVM type rather than from the named record-layout map, since tuple types are
+/// anonymous and carry no layout registration entry.
+///
+/// Fail-closed when:
+/// - The tuple place does not reference a struct-typed alloca (i.e. the MIR
+///   producer allocated the wrong type for the local — a bug in the lowerer).
+/// - `field_index` is out of bounds for the struct's field count.
+/// - The dest slot type does not match the element type (type-mismatch in MIR).
+fn lower_tuple_field_load(
+    fn_ctx: &FnCtx<'_, '_>,
+    tuple: Place,
+    field_index: u32,
+    dest: Place,
+) -> CodegenResult<()> {
+    let (tuple_ptr, tuple_slot_ty) = place_pointer(fn_ctx, tuple)?;
+    let struct_ty = match tuple_slot_ty {
+        BasicTypeEnum::StructType(st) => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "TupleFieldLoad tuple place has non-struct slot type: {other:?}"
+            )))
+        }
+    };
+    let idx = field_index;
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "TupleFieldLoad field index {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let element_tys = struct_ty.get_field_types();
+    let field_ty = *element_tys.get(idx_usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "TupleFieldLoad field index {idx} is out of bounds for tuple with \
+             {} elements",
+            element_tys.len()
+        ))
+    })?;
+    let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, dest)?;
+    if dest_slot_ty != field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "TupleFieldLoad dest slot type does not match element type: \
+             dest={dest_slot_ty:?}, element={field_ty:?}"
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, tuple_ptr, idx, &format!("tuple_{idx}_load_ptr"))
+        .map_err(|e| {
+            CodegenError::Llvm(format!("TupleFieldLoad struct_gep element {idx}: {e:?}"))
+        })?;
+    let field_val = fn_ctx
+        .builder
+        .build_load(field_ty, field_ptr, &format!("tuple_{idx}_load"))
+        .map_err(|e| CodegenError::Llvm(format!("TupleFieldLoad element {idx} load: {e:?}")))?;
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, field_val)
+        .map_err(|e| CodegenError::Llvm(format!("TupleFieldLoad element {idx} store: {e:?}")))?;
     Ok(())
 }
 

@@ -705,6 +705,30 @@ pub enum Instr {
         /// Destination place that receives the loaded field value.
         dest: Place,
     },
+    /// Load a single element from a tuple value by its 0-based positional index.
+    ///
+    /// Produced from `HirExprKind::TupleIndex { tuple, index }` when the tuple
+    /// sub-expression resolves to a regular tuple-typed local (not a
+    /// `tuple_decomp` runtime-call proxy). The tuple local is laid out as a
+    /// packed LLVM struct (declaration-order positional fields, `packed = false`
+    /// for natural alignment); codegen emits `build_struct_gep(field_index) +
+    /// build_load`.
+    ///
+    /// The `tuple_decomp` proxy path (runtime multi-output calls) bypasses this
+    /// instruction entirely and recovers the individual `Place`s from the side-
+    /// table without emitting any additional instructions. This variant handles
+    /// every other `TupleIndex` site.
+    ///
+    /// Producer: `lower_value`'s `HirExprKind::TupleIndex` arm (general case).
+    /// Codegen: GEP at `field_index` into the tuple's struct alloca + load.
+    TupleFieldLoad {
+        /// The tuple value to read from.
+        tuple: Place,
+        /// 0-based element index (positional declaration order).
+        field_index: u32,
+        /// Destination place that receives the loaded element value.
+        dest: Place,
+    },
     /// `dest = const <float>` stored as a bit pattern.
     ///
     /// `value_bits` is the IEEE 754 bit-pattern of the float constant:

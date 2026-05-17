@@ -1661,7 +1661,10 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                     CodegenError::FailClosed(format!(
                         "Instr::CallDirect: callee `{callee_symbol}` was not found in fn_symbols; \
                      the MIR producer must only emit CallDirect for functions declared in the \
-                     same module (module_fn_names gate)"
+                     same module (module_fn_names gate). If the callee name is a mangled \
+                     monomorphisation (contains `$$`), the HIR/MIR registry did not emit a \
+                     specialised function for this (fn, type-args) pair — check that the call \
+                     site's concrete type arguments are recorded in HirModule.monomorphisations."
                     ))
                 })?;
             let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =

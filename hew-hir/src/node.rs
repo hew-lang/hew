@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
 use hew_types::ResolvedTy;
 
@@ -35,6 +37,23 @@ pub struct HirModule {
     /// LESSONS: `producer-bridge-before-codegen` (P1),
     /// `checker-authority` (P0).
     pub monomorphisations: Vec<MonomorphizedFn>,
+    /// Per-call-site type arguments observed at generic function calls.
+    /// Keyed by the `SiteId` of the `HirExpr` whose `kind` is
+    /// `HirExprKind::Call` and whose callee is a generic top-level user
+    /// function.
+    ///
+    /// The recorded `ResolvedTy`s mirror the checker's `call_type_args`
+    /// side-table, with one important nuance: when a call appears
+    /// inside a generic function body, its recorded type arguments may
+    /// reference the enclosing function's type-parameter symbols as
+    /// `ResolvedTy::Named { name: "T", args: [] }`. MIR lowering of a
+    /// specialised body substitutes those symbols with concrete types
+    /// via the per-monomorphisation substitution map, producing the
+    /// concrete mangled callee for the inner call.
+    ///
+    /// Empty when no generic-fn call sites exist (a fully monomorphic
+    /// program).
+    pub call_site_type_args: HashMap<SiteId, Vec<ResolvedTy>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -451,19 +451,36 @@ impl LowerCtx {
             SupervisorStrategy::SimpleOneForOne => HirSupervisorStrategy::SimpleOneForOne,
         });
 
+        // Assign slot indices by partitioning children into static and pool spaces.
+        // Each partition uses its own 0-based counter so the indices are disjoint,
+        // matching the runtime layout (children[] for static, pool_slots[] for pool).
+        let mut static_slot = 0u32;
+        let mut pool_slot = 0u32;
         let children = decl
             .children
             .iter()
-            .map(|child| HirSupervisorChild {
-                name: child.name.clone(),
-                ty: child.actor_type.clone(),
-                restart_policy: child.restart.map(|r| match r {
-                    RestartPolicy::Permanent => HirRestartPolicy::Permanent,
-                    RestartPolicy::Transient => HirRestartPolicy::Transient,
-                    RestartPolicy::Temporary => HirRestartPolicy::Temporary,
-                }),
-                wired_to: child.wired_to.clone(),
-                is_pool: child.is_pool,
+            .map(|child| {
+                let slot_index = if child.is_pool {
+                    let idx = pool_slot;
+                    pool_slot += 1;
+                    idx
+                } else {
+                    let idx = static_slot;
+                    static_slot += 1;
+                    idx
+                };
+                HirSupervisorChild {
+                    name: child.name.clone(),
+                    ty: child.actor_type.clone(),
+                    restart_policy: child.restart.map(|r| match r {
+                        RestartPolicy::Permanent => HirRestartPolicy::Permanent,
+                        RestartPolicy::Transient => HirRestartPolicy::Transient,
+                        RestartPolicy::Temporary => HirRestartPolicy::Temporary,
+                    }),
+                    wired_to: child.wired_to.clone(),
+                    is_pool: child.is_pool,
+                    slot_index,
+                }
             })
             .collect();
 

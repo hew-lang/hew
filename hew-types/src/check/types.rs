@@ -120,6 +120,62 @@ pub struct TypeCheckOutput {
     /// Codegen reads this map to decide whether to call `hew_arena_new_with_cap`
     /// or `hew_arena_new` when spawning an actor.
     pub actor_max_heap: HashMap<String, u64>,
+    /// Compile-time slot assignment for supervisor child accesses.
+    ///
+    /// Keyed by the `SpanKey` of the field-access expression (e.g. the span of
+    /// `app.cache` in `app.cache.query(req)`). Populated during type-checking
+    /// of field-access expressions whose object resolves to an `ActorRef<S>`
+    /// where `S` is a known supervisor type.
+    ///
+    /// The `index` field is the position of the child within its own slot space:
+    /// - `Static` children index into `HewSupervisor.children[]` (0-based, source order).
+    /// - `Pool` children index into `HewSupervisor.pool_slots[]` (0-based, source order).
+    ///
+    /// Missing entry means the checker could not resolve the child (e.g. unknown
+    /// field); MIR lowering must fail closed on a missing entry.
+    pub supervisor_child_slots: HashMap<SpanKey, ChildSlot>,
+}
+
+/// Compile-time slot descriptor for a supervisor child access.
+///
+/// Produced by the checker at every `supervisor.child_name` field-access site.
+/// MIR lowering reads this to emit the correct `hew_supervisor_child_get` (for
+/// `Static`) or `hew_supervisor_pool_route` (for `Pool`) ABI call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildSlot {
+    /// Whether this child occupies a static slot or a pool slot.
+    pub kind: ChildKind,
+    /// 0-based index within the child's slot space (static or pool, disjoint).
+    pub index: u32,
+    /// Declared actor type of the child (e.g. `"CacheActor"`).
+    pub child_ty: String,
+}
+
+/// Discriminates a static child slot from a pool child slot.
+///
+/// Static and pool indices live in disjoint spaces, matching the runtime layout
+/// (`HewSupervisor.children[]` for static, `HewSupervisor.pool_slots[]` for pool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildKind {
+    /// Child declared with `child name: Type`. Indexed in `HewSupervisor.children[]`.
+    Static,
+    /// Child declared with `pool name: Type`. Indexed in `HewSupervisor.pool_slots[]`.
+    Pool,
+}
+
+/// Partitioned child lists for a supervisor declaration.
+///
+/// Static and pool children occupy disjoint slot spaces. The slot index for each
+/// child is its 0-based position within its own list (`statics` or `pools`).
+/// Supervisor names map to this type via `Checker::supervisor_children`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SupervisorChildren {
+    /// Children declared with `child name: Type`, in source order.
+    /// Slot index = position in this vec.
+    pub(crate) statics: Vec<(String, String)>,
+    /// Children declared with `pool name: Type`, in source order.
+    /// Slot index = position in this vec.
+    pub(crate) pools: Vec<(String, String)>,
 }
 
 impl Default for TypeCheckOutput {
@@ -147,6 +203,7 @@ impl Default for TypeCheckOutput {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         }
     }
 }
@@ -844,8 +901,19 @@ pub struct Checker {
     /// Outer key: (`canonical_primitive_or_builtin_name`, `trait_name`).
     /// Inner: method name → resolved `FnSig` (receiver already filtered).
     pub(super) primitive_trait_impls: HashMap<(String, String), HashMap<String, FnSig>>,
-    /// Maps supervisor name to `(child_name, actor_type)` pairs for `supervisor_child`
-    pub(super) supervisor_children: HashMap<String, Vec<(String, String)>>,
+    /// Maps supervisor name to its partitioned child lists.
+    ///
+    /// Static children (declared with `child name: Type`) are in `statics`,
+    /// pool children (declared with `pool name: Type`) are in `pools`.
+    /// The slot index for each child is its 0-based position within its own list,
+    /// matching the runtime layout (`HewSupervisor.children[]` for static,
+    /// `HewSupervisor.pool_slots[]` for pool).
+    pub(super) supervisor_children: HashMap<String, SupervisorChildren>,
+    /// Side-table populated during field-access type-checking for supervisor children.
+    ///
+    /// Keyed by the `SpanKey` of the field-access expression. Moved into
+    /// `TypeCheckOutput::supervisor_child_slots` at the end of `check_program`.
+    pub(super) supervisor_child_slots: HashMap<SpanKey, ChildSlot>,
     /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
     ///
     /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
@@ -1007,6 +1075,7 @@ impl Checker {
             trait_impls_set: HashSet::new(),
             primitive_trait_impls: HashMap::new(),
             supervisor_children: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),

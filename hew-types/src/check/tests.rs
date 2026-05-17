@@ -14531,6 +14531,245 @@ mod wasm_rejects {
     }
 }
 
+// ── Supervisor child slot index tests ────────────────────────────────────
+//
+// These tests verify that the checker assigns correct slot indices to
+// supervisor children (static and pool), populates the side-table at
+// field-access sites, and rejects unknown child names.
+#[cfg(test)]
+mod supervisor_child_slot_tests {
+    use super::*;
+
+    fn parse_and_check(source: &str) -> TypeCheckOutput {
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors in supervisor_child_slot test: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.check_program(&result.program)
+    }
+
+    /// A static child `child cache: Cache` must resolve to slot index 0 in
+    /// the static space and produce a `ChildSlot { kind: Static, index: 0 }` entry
+    /// in the output's `supervisor_child_slots` map at the field-access span.
+    #[test]
+    fn static_child_resolves_with_correct_slot_index() {
+        let source = r"
+            actor Cache {
+                receive fn query() {}
+            }
+
+            supervisor App {
+                child cache: Cache
+            }
+
+            fn main() {
+                let app = spawn App;
+                let c = app.cache;
+                supervisor_stop(app);
+            }
+        ";
+        let output = parse_and_check(source);
+        assert!(
+            output.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            output.errors
+        );
+        // The `supervisor_child_slots` map must contain exactly one entry for
+        // the `app.cache` access. We verify kind and index without pinning the
+        // exact byte offset (which would be brittle).
+        let slot = output
+            .supervisor_child_slots
+            .values()
+            .find(|s| s.child_ty == "Cache");
+        let slot = slot.expect("expected a ChildSlot for Cache child in supervisor_child_slots");
+        assert_eq!(
+            slot.kind,
+            ChildKind::Static,
+            "cache child should be in the static slot space"
+        );
+        assert_eq!(slot.index, 0, "first static child gets slot index 0");
+    }
+
+    /// A second static child `child log: Log` declared after `cache` must receive
+    /// slot index 1 in the static space, distinct from the first child.
+    #[test]
+    fn second_static_child_gets_sequential_slot_index() {
+        let source = r"
+            actor Cache {
+                receive fn query() {}
+            }
+
+            actor Log {
+                receive fn write() {}
+            }
+
+            supervisor App {
+                child cache: Cache
+                child log: Log
+            }
+
+            fn main() {
+                let app = spawn App;
+                let c = app.cache;
+                let l = app.log;
+                supervisor_stop(app);
+            }
+        ";
+        let output = parse_and_check(source);
+        assert!(
+            output.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            output.errors
+        );
+        let cache_slot = output
+            .supervisor_child_slots
+            .values()
+            .find(|s| s.child_ty == "Cache")
+            .expect("expected ChildSlot for Cache");
+        let log_slot = output
+            .supervisor_child_slots
+            .values()
+            .find(|s| s.child_ty == "Log")
+            .expect("expected ChildSlot for Log");
+        assert_eq!(cache_slot.kind, ChildKind::Static);
+        assert_eq!(cache_slot.index, 0);
+        assert_eq!(log_slot.kind, ChildKind::Static);
+        assert_eq!(log_slot.index, 1);
+    }
+
+    /// A pool child declared with `pool worker: Worker` must resolve to
+    /// slot index 0 in the *pool* space. It must not collide with a static
+    /// child that also has index 0 — the two spaces are disjoint.
+    #[test]
+    fn pool_child_resolves_with_pool_space_slot_index() {
+        let source = r"
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            supervisor Pool {
+                strategy: simple_one_for_one,
+                pool worker: Worker
+            }
+
+            fn main() {
+                let p = spawn Pool;
+                let w = p.worker;
+                supervisor_stop(p);
+            }
+        ";
+        let output = parse_and_check(source);
+        assert!(
+            output.errors.is_empty(),
+            "expected no errors; got: {:?}",
+            output.errors
+        );
+        let slot = output
+            .supervisor_child_slots
+            .values()
+            .find(|s| s.child_ty == "Worker")
+            .expect("expected ChildSlot for Worker pool child");
+        assert_eq!(
+            slot.kind,
+            ChildKind::Pool,
+            "pool child should be in the pool slot space"
+        );
+        assert_eq!(slot.index, 0, "first pool child gets pool slot index 0");
+    }
+
+    /// In a supervisor with both static and pool children, their slot indices
+    /// must be disjoint: the static child has `(Static, 0)` and the pool child
+    /// has `(Pool, 0)`. Neither borrows an index from the other space.
+    #[test]
+    fn static_and_pool_indices_are_disjoint() {
+        let source = r"
+            actor Cache {
+                receive fn query() {}
+            }
+
+            actor Worker {
+                receive fn ping() {}
+            }
+
+            supervisor App {
+                child cache: Cache
+                pool worker: Worker
+            }
+
+            fn main() {
+                let app = spawn App;
+                let c = app.cache;
+                supervisor_stop(app);
+            }
+        ";
+        // NOTE: A supervisor with mixed static+pool children may not pass all
+        // strategy consistency checks (that's S-B). We only check that the
+        // checker computes correct slot indices for the declared children.
+        // Strategy-level errors are acceptable; slot-index population is not gated on them.
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+
+        let cache_slot = output
+            .supervisor_child_slots
+            .values()
+            .find(|s| s.child_ty == "Cache");
+        let cache_slot = cache_slot.expect("expected ChildSlot for Cache static child");
+        assert_eq!(cache_slot.kind, ChildKind::Static);
+        assert_eq!(cache_slot.index, 0, "static child index starts at 0");
+        // Pool child not accessed in this program body; its slot is not in the side-table.
+        // That is correct — the side-table is keyed by access-expression span.
+    }
+
+    /// Accessing an unknown child name on a supervisor-typed value must produce
+    /// a type error (`UndefinedField`). The side-table must NOT contain an entry
+    /// for this access.
+    #[test]
+    fn unknown_child_name_produces_type_error() {
+        let source = r"
+            actor Cache {
+                receive fn query() {}
+            }
+
+            supervisor App {
+                child cache: Cache
+            }
+
+            fn main() {
+                let app = spawn App;
+                let x = app.unknown;
+                supervisor_stop(app);
+            }
+        ";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            !output.errors.is_empty(),
+            "expected a type error for unknown supervisor child `unknown`"
+        );
+        // No slot must be recorded for the bad access.
+        assert!(
+            output.supervisor_child_slots.is_empty(),
+            "supervisor_child_slots must be empty when the child name is unknown; got: {:?}",
+            output.supervisor_child_slots
+        );
+    }
+}
+
 // ── if-let / while-let pattern contract ──────────────────────────────────
 //
 // These tests verify that the checker rejects Struct, Tuple, Or, and

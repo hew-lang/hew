@@ -3061,15 +3061,79 @@ impl Checker {
             Ty::Named { name, args } => {
                 // Named supervisor child access: sup.child_name → ActorRef<ChildType>
                 if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_ref() {
-                    if let Some(children) = self.supervisor_children.get(sup_name) {
-                        if let Some((_child_name, child_type)) =
-                            children.iter().find(|(cn, _)| cn == field)
-                        {
+                    if let Some(sup_children) = self.supervisor_children.get(sup_name) {
+                        // Check static children first, then pool children.
+                        let resolved_slot =
+                            sup_children
+                                .statics
+                                .iter()
+                                .enumerate()
+                                .find_map(|(idx, (cn, ty))| {
+                                    (cn == field).then(|| {
+                                    (
+                                        crate::check::types::ChildSlot {
+                                            kind: crate::check::types::ChildKind::Static,
+                                            #[expect(
+                                                clippy::cast_possible_truncation,
+                                                reason = "supervisor child count is always small; \
+                                                          u32 is the ABI type"
+                                            )]
+                                            index: idx as u32,
+                                            child_ty: ty.clone(),
+                                        },
+                                        ty.clone(),
+                                    )
+                                })
+                                });
+                        let resolved_slot = resolved_slot.or_else(|| {
+                            sup_children
+                                .pools
+                                .iter()
+                                .enumerate()
+                                .find_map(|(idx, (cn, ty))| {
+                                    (cn == field).then(|| {
+                                    (
+                                        crate::check::types::ChildSlot {
+                                            kind: crate::check::types::ChildKind::Pool,
+                                            #[expect(
+                                                clippy::cast_possible_truncation,
+                                                reason = "supervisor child count is always small; \
+                                                          u32 is the ABI type"
+                                            )]
+                                            index: idx as u32,
+                                            child_ty: ty.clone(),
+                                        },
+                                        ty.clone(),
+                                    )
+                                })
+                                })
+                        });
+                        if let Some((slot, child_type)) = resolved_slot {
+                            self.supervisor_child_slots
+                                .insert(SpanKey::from(span), slot);
                             return Ty::actor_ref(Ty::Named {
-                                name: child_type.clone(),
+                                name: child_type,
                                 args: vec![],
                             });
                         }
+                        // The supervisor is known but this child name is not declared.
+                        // Emit a clear diagnostic and stop — the fallthrough branch
+                        // would silently return Ty::Error because ActorRef has no type
+                        // definition in the checker's type_defs map.
+                        let all_names: Vec<&str> = sup_children
+                            .statics
+                            .iter()
+                            .chain(sup_children.pools.iter())
+                            .map(|(cn, _)| cn.as_str())
+                            .collect();
+                        let similar = crate::error::find_similar(field, all_names.iter().copied());
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!("supervisor `{sup_name}` has no child named `{field}`"),
+                            similar,
+                        );
+                        return Ty::Error;
                     }
                 }
                 if let Some(td) = self.lookup_type_def(name) {

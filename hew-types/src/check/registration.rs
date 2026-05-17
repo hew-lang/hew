@@ -923,12 +923,23 @@ impl Checker {
                 }
                 Item::Supervisor(sd) => {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
-                    let children: Vec<(String, String)> = sd
-                        .children
-                        .iter()
-                        .map(|c| (c.name.clone(), c.actor_type.clone()))
-                        .collect();
-                    self.supervisor_children.insert(sd.name.clone(), children);
+                    // Partition children by kind in source order. Slot index for each
+                    // child is its 0-based position within its own partition, matching
+                    // the runtime layout (children[] for static, pool_slots[] for pool).
+                    let mut statics = Vec::new();
+                    let mut pools = Vec::new();
+                    for c in &sd.children {
+                        let entry = (c.name.clone(), c.actor_type.clone());
+                        if c.is_pool {
+                            pools.push(entry);
+                        } else {
+                            statics.push(entry);
+                        }
+                    }
+                    self.supervisor_children.insert(
+                        sd.name.clone(),
+                        crate::check::types::SupervisorChildren { statics, pools },
+                    );
                 }
                 Item::Machine(md) => {
                     if !self.register_machine_type_namespace_names(&md.name, span) {

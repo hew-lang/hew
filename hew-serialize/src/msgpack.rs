@@ -2101,6 +2101,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2186,6 +2187,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let (entries, errors) = build_call_type_args_entries(&program, &tco);
@@ -2390,6 +2392,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2476,6 +2479,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let entries = build_assign_target_kind_entries(&program, &tco);
@@ -2557,6 +2561,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let entries = build_lowering_fact_entries(&program, &tco);
@@ -2664,6 +2669,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -2732,26 +2738,7 @@ mod tests {
     /// Mirrors the shape used elsewhere in this module's tests; the only
     /// field these tests exercise is `actor_send_aliasing`.
     fn empty_tco_for_aliasing_tests() -> TypeCheckOutput {
-        TypeCheckOutput {
-            expr_types: HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            lowering_facts: HashMap::new(),
-            method_call_rewrites: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs: HashMap::new(),
-            fn_sigs: HashMap::new(),
-            handle_bearing_structs: std::collections::HashSet::new(),
-            method_call_consumes_receiver: HashSet::new(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-            call_type_args: HashMap::new(),
-            actor_send_aliasing: HashMap::new(),
-            actor_max_heap: HashMap::new(),
-            stack_hints: Vec::new(),
-        }
+        TypeCheckOutput::default()
     }
 
     #[test]
@@ -3013,6 +3000,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3104,6 +3092,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let entries = build_method_call_receiver_kind_entries(&program, &tco);
@@ -3188,6 +3177,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);
@@ -3271,6 +3261,7 @@ mod tests {
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
         };
 
         let entries = build_assign_target_shape_entries(&program, &tco);

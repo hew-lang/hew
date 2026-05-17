@@ -3928,30 +3928,8 @@ mod tests {
     // User module call rewriting tests
     // -----------------------------------------------------------------------
 
-    /// Helper: create a `TypeCheckOutput` with `user_modules` set.
-    use std::collections::{HashMap, HashSet};
-
     fn empty_tco() -> TypeCheckOutput {
-        TypeCheckOutput {
-            expr_types: HashMap::new(),
-            lowering_facts: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs: HashMap::new(),
-            fn_sigs: HashMap::new(),
-            handle_bearing_structs: std::collections::HashSet::new(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-            call_type_args: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_send_aliasing: HashMap::new(),
-            actor_max_heap: HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            method_call_consumes_receiver: HashSet::new(),
-            method_call_rewrites: HashMap::new(),
-        }
+        TypeCheckOutput::default()
     }
 
     fn make_tco_with_user_modules(modules: Vec<&str>) -> TypeCheckOutput {

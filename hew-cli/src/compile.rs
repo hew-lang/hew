@@ -812,26 +812,7 @@ mod tests {
     }
 
     fn empty_tco() -> TypeCheckOutput {
-        TypeCheckOutput {
-            expr_types: HashMap::new(),
-            lowering_facts: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs: HashMap::new(),
-            fn_sigs: HashMap::new(),
-            handle_bearing_structs: std::collections::HashSet::new(),
-            method_call_consumes_receiver: HashSet::new(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-            call_type_args: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_send_aliasing: HashMap::new(),
-            actor_max_heap: HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            method_call_rewrites: HashMap::new(),
-        }
+        TypeCheckOutput::default()
     }
 
     #[test]

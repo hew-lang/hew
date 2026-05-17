@@ -547,7 +547,9 @@ impl Checker {
                 self.check_against(idx_expr, idx_sp, &Ty::I64);
 
                 if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_ref() {
-                    if let Some(children) = self.supervisor_children.get(sup_name) {
+                    if let Some(sup_children) = self.supervisor_children.get(sup_name) {
+                        // `supervisor_child` builtin indexes into the static slot space.
+                        let statics = &sup_children.statics;
                         if let Expr::Literal(hew_parser::ast::Literal::Integer {
                             value: idx, ..
                         }) = idx_expr
@@ -558,8 +560,8 @@ impl Checker {
                                 reason = "supervisor child index is always non-negative and small"
                             )]
                             let i = *idx as usize;
-                            if i < children.len() {
-                                let child_type = &children[i].1;
+                            if i < statics.len() {
+                                let child_type = &statics[i].1;
                                 return Ty::actor_ref(Ty::Named {
                                     name: child_type.clone(),
                                     args: vec![],

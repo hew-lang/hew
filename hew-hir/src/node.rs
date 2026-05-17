@@ -297,6 +297,15 @@ pub struct HirSupervisorChild {
     pub wired_to: Option<std::collections::HashMap<String, String>>,
     /// `true` when declared with `pool name: Type`; `false` for `child name: Type`.
     pub is_pool: bool,
+    /// Compile-time-assigned slot index within the child's own slot space.
+    ///
+    /// Static children (`is_pool = false`) are indexed into `HewSupervisor.children[]`.
+    /// Pool children (`is_pool = true`) are indexed into `HewSupervisor.pool_slots[]`.
+    /// Both spaces start at 0 and are disjoint.
+    ///
+    /// Assigned by the HIR lowering pass by counting each partition in source order.
+    /// MIR lowering reads this field to emit the correct runtime ABI call.
+    pub slot_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

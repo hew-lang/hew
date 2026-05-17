@@ -55,6 +55,7 @@ fn pipeline_with_task_abi_call(
         raw_mir: vec![RawMirFunction {
             name: "probe".to_string(),
             return_ty: ResolvedTy::Unit,
+            params: vec![],
             locals: locals.clone(),
             blocks: raw_blocks.clone(),
             decisions: vec![],

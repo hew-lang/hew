@@ -67,6 +67,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            params: vec![],
             locals: vec![
                 ResolvedTy::I64, // 0 return value
                 duplex_ty(),     // 1 Duplex handle A
@@ -211,6 +212,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            params: vec![],
             locals: vec![ResolvedTy::I64],
             blocks: raw_blocks.clone(),
             decisions: vec![],

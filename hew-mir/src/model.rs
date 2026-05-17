@@ -65,10 +65,22 @@ pub struct ThirFunction {
 pub struct RawMirFunction {
     pub name: String,
     pub return_ty: ResolvedTy,
+    /// Declared parameter types in declaration order. `params[i]` is the
+    /// `ResolvedTy` of the i-th function parameter. Codegen uses this to
+    /// declare the LLVM function signature and to emit the parameter-prologue
+    /// (store each `llvm_fn.get_nth_param(i)` into `locals[i]`).
+    ///
+    /// Invariant: `params.len()` equals the number of initial `locals` entries
+    /// that correspond to parameter slots. The lowering pass allocates one
+    /// `Place::Local` per parameter at the top of `function_body` — these
+    /// occupy `locals[0..params.len()]` — and subsequent body-local
+    /// allocations begin at `locals[params.len()]`.
+    pub params: Vec<ResolvedTy>,
     /// Type-indexed local registers consumed by the backend-authority `Instr`
     /// stream. `locals[i]` is the `ResolvedTy` of `Place::Local(i as u32)`.
     /// The lowering pass allocates one local per value-producing HIR
-    /// expression and per `Let`-introduced binding.
+    /// expression and per `Let`-introduced binding. Parameters occupy
+    /// `locals[0..params.len()]` (see `params` invariant above).
     pub locals: Vec<ResolvedTy>,
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
@@ -619,6 +631,35 @@ pub enum Instr {
     /// impossible because `RuntimeCall`'s fields are private
     /// (LESSONS P0 `boundary-fail-closed`).
     CallRuntimeAbi(RuntimeCall),
+    /// Direct call to a user-defined function in the same module. The callee
+    /// is identified by its bare function name (the same string that appears
+    /// as `RawMirFunction::name` for the target function). Arguments are
+    /// passed in declaration order and must match the callee's `params` list
+    /// in count; type agreement is enforced by the HIR checker upstream.
+    ///
+    /// `dest = Some(place)` writes the call's return value into `place`;
+    /// `dest = None` is emitted when the caller discards the return value
+    /// (e.g. a void-result call in a statement context). Codegen looks up the
+    /// callee in the `fn_symbols` map populated by `declare_function`, which
+    /// runs over ALL module functions before any body is lowered, so forward
+    /// references are handled correctly.
+    ///
+    /// Indirect calls (closures, higher-order function values) are out of
+    /// scope for this instruction; the producer emits `CutoverUnsupported`
+    /// for those. Only static callee names that appear in the module's
+    /// function-item registry are lowered here.
+    ///
+    /// LESSONS: `boundary-fail-closed` — the callee name is validated against
+    /// `module_fn_names` at MIR construction in `lower_value`; an unrecognised
+    /// name never silently produces a broken `CallDirect`.
+    CallDirect {
+        /// Bare function name matching the callee's `RawMirFunction::name`.
+        callee_symbol: String,
+        /// Argument Places in declaration order.
+        args: Vec<Place>,
+        /// Destination for the return value, or `None` if discarded.
+        dest: Option<Place>,
+    },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
     /// `drop_fn = Some(name)` calls the `@resource` type's declared
     /// `close(consuming self)` method; `drop_fn = None` is a trivial drop

@@ -120,6 +120,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            params: vec![],
             locals: vec![
                 vec_ty,           // 0 Vec handle
                 ResolvedTy::I64,  // 1 index

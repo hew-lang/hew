@@ -389,14 +389,12 @@ fn checked_mir_accepts_spine_integer_function() {
 }
 
 #[test]
-fn cross_function_call_types_typecheck_then_fail_closed_at_mir() {
-    // With the function registry, calling add() returns i64, not Unit — so
-    // HIR no longer produces a ReturnTypeMismatch. The MIR boundary is the
-    // next gate: Cluster 1's spine subset does not yet lower Call
-    // expressions, and function parameters do not bind to backend
-    // `Place`s, so the program must fail closed at the MIR boundary
-    // (LESSONS `boundary-fail-closed`). The pipeline() helper already
-    // asserts HIR is clean; this test pins the MIR rejection shape.
+fn cross_function_call_types_lower_via_call_direct() {
+    // Direct calls to user-defined functions in the same module are now
+    // lowered via `Instr::CallDirect` — no `CutoverUnsupported` for function
+    // calls to module functions. The pipeline() helper asserts HIR is clean;
+    // this test pins the MIR acceptance shape: both functions appear in
+    // `raw_mir` and the diagnostic stream is clean.
     let pipeline = pipeline(
         "fn add(a: i64, b: i64) -> i64 { return a + b; } \
          fn main() -> i64 { return add(0, 1); }",
@@ -410,13 +408,20 @@ fn cross_function_call_types_typecheck_then_fail_closed_at_mir() {
         names.contains(&"main"),
         "raw_mir must include main: {names:?}"
     );
+    // Direct user-function calls must not produce CutoverUnsupported.
+    let cutover_diags: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(&d.kind, MirDiagnosticKind::CutoverUnsupported { .. }))
+        .collect();
     assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::CutoverUnsupported { construct, .. }
-                if construct == "function call"
-        )),
-        "call expressions must fail closed at the MIR boundary: {:?}",
+        cutover_diags.is_empty(),
+        "direct user-function calls must lower without CutoverUnsupported: {cutover_diags:?}"
+    );
+    // Must have no diagnostics at all.
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "direct user-function call pipeline must have no MIR diagnostics: {:?}",
         pipeline.diagnostics
     );
 }

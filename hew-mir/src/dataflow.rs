@@ -317,7 +317,7 @@ pub struct DataflowResult {
 
 #[must_use]
 pub fn check_blocks(blocks: &[BasicBlock], type_classes: &TypeClassTable) -> Vec<MirCheck> {
-    analyze(blocks, type_classes).checks
+    analyze(blocks, type_classes, &[]).checks
 }
 
 /// Run the full dataflow pass and return both diagnostics and the
@@ -325,8 +325,20 @@ pub fn check_blocks(blocks: &[BasicBlock], type_classes: &TypeClassTable) -> Vec
 /// filter the function-wide LIFO drop sequence down to per-exit
 /// live sets (plan §5 Slice 4: "per-exit drop list with Place
 /// threading").
+///
+/// `param_bindings` is the list of function parameter `BindingId`s that are
+/// implicitly `Live` at function entry (supplied by the calling convention;
+/// never produced by a `Bind` statement). These are seeded as `Live` in the
+/// entry block's initial state so the dataflow checker does not flag uses of
+/// parameters as `InitialisedBeforeUse`. An empty slice is correct for
+/// zero-parameter functions and for hand-built test pipelines where no
+/// parameters exist.
 #[must_use]
-pub fn analyze(blocks: &[BasicBlock], type_classes: &TypeClassTable) -> DataflowResult {
+pub fn analyze(
+    blocks: &[BasicBlock],
+    type_classes: &TypeClassTable,
+    param_bindings: &[BindingId],
+) -> DataflowResult {
     if blocks.is_empty() {
         return DataflowResult::default();
     }
@@ -352,7 +364,17 @@ pub fn analyze(blocks: &[BasicBlock], type_classes: &TypeClassTable) -> Dataflow
             continue;
         };
         let entry = if bb_id == entry_id {
-            BTreeMap::new()
+            // Seed parameters as `Live` at function entry. Parameters are
+            // initialised by the calling convention (their values arrive via
+            // LLVM function arguments + the parameter prologue in codegen);
+            // they never appear as `Bind` statements in the checker-authority
+            // stream. Without this seeding the dataflow would flag every use
+            // of a parameter as `InitialisedBeforeUse`.
+            let mut entry_state: BTreeMap<BindingId, BindingState> = BTreeMap::new();
+            for &id in param_bindings {
+                entry_state.insert(id, BindingState::Live);
+            }
+            entry_state
         } else {
             let empty = Vec::new();
             let preds_of_bb = preds.get(&bb_id).unwrap_or(&empty);

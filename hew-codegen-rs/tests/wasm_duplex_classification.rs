@@ -67,6 +67,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            params: vec![],
             locals: vec![
                 ResolvedTy::I64, // 0 cap
                 duplex_ty(),     // 1 Duplex A
@@ -126,6 +127,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            params: vec![],
             locals: vec![duplex_ty()], // 0 Duplex handle
             blocks: raw_blocks.clone(),
             decisions: vec![],
@@ -185,6 +187,7 @@ fn pipeline_no_duplex() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            params: vec![],
             locals: vec![ResolvedTy::I64, ResolvedTy::I64],
             blocks: raw_blocks.clone(),
             decisions: vec![],

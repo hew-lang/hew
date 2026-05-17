@@ -377,6 +377,13 @@ struct FnCtx<'a, 'ctx> {
     /// indexing. The map is borrowed (no ownership) — the registered
     /// `StructType<'ctx>` values share the codegen context's lifetime.
     record_layouts: &'a RecordLayoutMap<'ctx>,
+    /// Module-wide function symbol table. Populated before any body is
+    /// lowered by the `declare_function` pass in `build_module`. Carried
+    /// here so `Instr::CallDirect` arms in `lower_instruction` can resolve
+    /// the callee without being promoted to a terminator. The borrow is
+    /// shared (read-only) — no new declarations are added during body
+    /// lowering.
+    fn_symbols: &'a FnSymbolMap<'ctx>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -1636,6 +1643,69 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
                 .builder
                 .build_store(dest_ptr, v)
                 .map_err(|e| CodegenError::Llvm(format!("DurationLit store: {e:?}")))?;
+            let _ = ctx;
+        }
+        Instr::CallDirect {
+            callee_symbol,
+            args,
+            dest,
+        } => {
+            // Direct call to a user-defined function in the same module.
+            // The callee is resolved from `fn_symbols` (populated up front
+            // by `declare_function` for every `raw_mir` function). Arguments
+            // are loaded from their local slots and passed as LLVM value
+            // arguments in declaration order; the return value (if any) is
+            // stored into the `dest` slot.
+            let (llvm_fn, callee_ret_ty) =
+                *fn_ctx.fn_symbols.get(callee_symbol).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Instr::CallDirect: callee `{callee_symbol}` was not found in fn_symbols; \
+                     the MIR producer must only emit CallDirect for functions declared in the \
+                     same module (module_fn_names gate)"
+                    ))
+                })?;
+            let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
+                Vec::with_capacity(args.len());
+            for arg in args {
+                let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
+                let loaded = fn_ctx
+                    .builder
+                    .build_load(arg_ty, arg_ptr, "direct_call_arg")
+                    .map_err(|e| CodegenError::Llvm(format!("CallDirect arg load: {e:?}")))?;
+                arg_vals.push(match loaded {
+                    BasicValueEnum::IntValue(v) => v.into(),
+                    BasicValueEnum::FloatValue(v) => v.into(),
+                    BasicValueEnum::PointerValue(v) => v.into(),
+                    BasicValueEnum::StructValue(v) => v.into(),
+                    BasicValueEnum::ArrayValue(v) => v.into(),
+                    BasicValueEnum::VectorValue(v) => v.into(),
+                    BasicValueEnum::ScalableVectorValue(v) => v.into(),
+                });
+            }
+            let call_site = fn_ctx
+                .builder
+                .build_call(llvm_fn, &arg_vals, "direct_call_result")
+                .map_err(|e| CodegenError::Llvm(format!("CallDirect build_call: {e:?}")))?;
+            if let Some(dest_place) = dest {
+                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+                if dest_ty != callee_ret_ty {
+                    return Err(CodegenError::FailClosed(format!(
+                        "Instr::CallDirect(`{callee_symbol}`): dest type {dest_ty:?} does not \
+                         match callee return type {callee_ret_ty:?}; type-checker invariant \
+                         violation"
+                    )));
+                }
+                let ret_val = call_site.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Instr::CallDirect(`{callee_symbol}`): callee returns void but dest \
+                         place is present; MIR producer must not emit a dest for void callees"
+                    ))
+                })?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, ret_val)
+                    .map_err(|e| CodegenError::Llvm(format!("CallDirect store result: {e:?}")))?;
+            }
             let _ = ctx;
         }
     }
@@ -3104,9 +3174,24 @@ fn declare_function<'ctx>(
              non-integer/non-pointer return types are out of the current spine subset",
         ));
     }
-    // Cluster 1 functions are zero-arg. When Cluster 2 adds params it
-    // grows this loop; the shape is here so the diff is small.
-    let param_tys: Vec<BasicMetadataTypeEnum> = Vec::new();
+    // Resolve parameter types from `func.params`. Each parameter type must
+    // be representable as a `BasicMetadataTypeEnum` (integers and pointers
+    // are both legal LLVM value-param types for the current spine subset).
+    // The parameter-prologue in `lower_function` stores each LLVM function
+    // argument into the corresponding `locals[i]` alloca slot.
+    let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(func.params.len());
+    for param_ty in &func.params {
+        let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
+        param_tys.push(match llvm_ty {
+            BasicTypeEnum::IntType(t) => t.into(),
+            BasicTypeEnum::PointerType(t) => t.into(),
+            BasicTypeEnum::FloatType(t) => t.into(),
+            BasicTypeEnum::StructType(t) => t.into(),
+            BasicTypeEnum::ArrayType(t) => t.into(),
+            BasicTypeEnum::VectorType(t) => t.into(),
+            BasicTypeEnum::ScalableVectorType(t) => t.into(),
+        });
+    }
     let fn_ty = match return_ty_llvm {
         BasicTypeEnum::IntType(i) => i.fn_type(&param_tys, false),
         // Other shapes are pre-filtered above; keep the arms exhaustive so
@@ -3183,6 +3268,34 @@ fn lower_function<'ctx>(
         locals.insert(idx_u32, (slot, llvm_ty));
     }
 
+    // Parameter prologue: store each LLVM function argument into the
+    // corresponding `locals[i]` alloca slot. Parameters occupy
+    // `locals[0..func.params.len()]` by the invariant established in
+    // `RawMirFunction` (see `lower_params` in hew-mir/src/lower.rs).
+    // This runs after all allocas so the store is always in the entry
+    // block and dominates every use in successor blocks.
+    for (param_idx, _param_ty) in func.params.iter().enumerate() {
+        let param_idx_u32 = u32::try_from(param_idx).map_err(|_| {
+            CodegenError::FailClosed("function exceeds u32::MAX params — impossible".into())
+        })?;
+        let llvm_param = llvm_fn.get_nth_param(param_idx as u32).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "function `{}` has no LLVM param at index {param_idx}; \
+                     declare_function and lower_function param counts disagree",
+                func.name
+            ))
+        })?;
+        let (slot, _slot_ty) = *locals.get(&param_idx_u32).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "function `{}` has no local slot for param index {param_idx}",
+                func.name
+            ))
+        })?;
+        builder
+            .build_store(slot, llvm_param)
+            .map_err(|e| CodegenError::Llvm(format!("param store {param_idx}: {e:?}")))?;
+    }
+
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
@@ -3193,6 +3306,7 @@ fn lower_function<'ctx>(
         blocks: blocks.clone(),
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts,
+        fn_symbols,
     };
 
     // Extract drop_plans from the matched elaborated function, or use an
@@ -3330,6 +3444,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            params: vec![],
             locals: vec![return_ty.clone()],
             blocks: vec![BasicBlock {
                 id: 0,
@@ -3377,6 +3492,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            params: vec![],
             locals: vec![return_ty.clone()],
             blocks: vec![BasicBlock {
                 id: 0,
@@ -3422,6 +3538,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: return_ty.clone(),
+            params: vec![],
             locals: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
@@ -3460,6 +3577,7 @@ mod tests {
         let main = RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            params: vec![],
             locals: vec![ResolvedTy::I64],
             blocks: vec![BasicBlock {
                 id: 0,

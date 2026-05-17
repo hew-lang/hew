@@ -126,9 +126,14 @@ fn signed_min_value(ty: &ResolvedTy) -> Option<i64> {
 fn check_function(
     builder: &Builder,
     blocks: &[BasicBlock],
-    _func: &HirFn,
+    func: &HirFn,
 ) -> dataflow::DataflowResult {
-    let mut result = dataflow::analyze(blocks, &builder.type_classes);
+    // Collect the BindingId of each parameter so the dataflow checker can
+    // pre-seed them as `Live` at function entry.  Parameters are initialised
+    // by the calling convention (LLVM function argument + parameter prologue
+    // in codegen), never by a `Bind` statement in the checker-authority stream.
+    let param_ids: Vec<hew_hir::BindingId> = func.params.iter().map(|p| p.id).collect();
+    let mut result = dataflow::analyze(blocks, &builder.type_classes, &param_ids);
     let checks = &mut result.checks;
 
     // DecisionMapTotal. Every `DecisionFact` on this function must
@@ -199,10 +204,35 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
         }
     }
 
+    // Collect the names of every user-defined function in the module.
+    // This set is threaded into each function's Builder so the `Call`
+    // lowering arm can distinguish user-fn callees (→ `Instr::CallDirect`)
+    // from runtime-ABI callees (→ `Instr::CallRuntimeAbi`) and from
+    // indirect/unknown callees (→ `CutoverUnsupported`). Name-string
+    // matching is the right discriminator here because the HIR bridge
+    // does not yet emit `ResolvedRef::Item` for function callees (see
+    // the SHIM comment at `lower_value` HirExprKind::Call).
+    let module_fn_names: HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let HirItem::Function(f) = item {
+                Some(f.name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
-                let lowered = lower_function(func, &module.type_classes, &record_field_orders);
+                let lowered = lower_function(
+                    func,
+                    &module.type_classes,
+                    &record_field_orders,
+                    &module_fn_names,
+                );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
@@ -242,12 +272,24 @@ fn lower_function(
     func: &HirFn,
     type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    module_fn_names: &HashSet<String>,
 ) -> LoweredFunction {
     let mut builder = Builder {
         type_classes: type_classes.clone(),
         record_field_orders: record_field_orders.clone(),
+        module_fn_names: module_fn_names.clone(),
         ..Builder::default()
     };
+    // Allocate parameter locals BEFORE lowering the function body so
+    // that `BindingRef` expressions that reference parameters resolve
+    // to real `Place::Local(i)` slots instead of hitting `UnresolvedPlace`.
+    //
+    // Each parameter gets its own `Place::Local` in declaration order;
+    // subsequent body-local allocations are appended after these slots
+    // (enforced by `alloc_local`'s monotone `locals.len()` counter).
+    // Codegen emits a parameter-prologue that stores each LLVM function
+    // argument into the corresponding alloca slot before the first instruction.
+    builder.lower_params(func);
     builder.function_body(func);
 
     // Drain the in-flight current block into a sealed `BasicBlock` with
@@ -278,6 +320,7 @@ fn lower_function(
     let raw = RawMirFunction {
         name: func.name.clone(),
         return_ty: func.return_ty.clone(),
+        params: func.params.iter().map(|p| p.ty.clone()).collect(),
         locals: builder.locals.clone(),
         blocks,
         decisions: builder.decisions.clone(),
@@ -538,9 +581,36 @@ struct Builder {
     /// is empty for tuple records — their constructor is a `Call`, not a
     /// `StructInit`). They will never be looked up here.
     record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
+    /// Names of every user-defined function declared in the module. Used by
+    /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
+    /// (→ `Instr::CallDirect`) from runtime-ABI callees (→
+    /// `Instr::CallRuntimeAbi`) and from indirect/closure callees
+    /// (→ `CutoverUnsupported`). Name-string matching is the reliable
+    /// discriminator here because the HIR bridge does not yet emit
+    /// `ResolvedRef::Item` for function-item callees (see the SHIM comment
+    /// at the Call lowering arm). The set is populated once per module by
+    /// `lower_hir_module` before any function body is lowered, so forward
+    /// references (calling a function declared later in the file) are
+    /// handled correctly.
+    module_fn_names: HashSet<String>,
 }
 
 impl Builder {
+    /// Allocate one `Place::Local` per function parameter and register each
+    /// in `binding_locals` so that `BindingRef` expressions in the function
+    /// body resolve to a real slot.
+    ///
+    /// Must be called BEFORE `function_body`. The allocated locals occupy
+    /// `locals[0..params.len()]`; all subsequent `alloc_local` calls
+    /// produce indices ≥ `params.len()`, maintaining the invariant documented
+    /// on `RawMirFunction.params`.
+    fn lower_params(&mut self, func: &HirFn) {
+        for param in &func.params {
+            let slot = self.alloc_local(param.ty.clone());
+            self.binding_locals.insert(param.id, slot);
+        }
+    }
+
     fn alloc_local(&mut self, ty: ResolvedTy) -> Place {
         // u32::MAX locals per function is well beyond any realistic Hew
         // function size; the cast is bounded by `locals.len()` growing one
@@ -851,19 +921,21 @@ impl Builder {
                 }
             }
             HirExprKind::Call { callee, args } => {
-                // SHIM(E2→checker): runtime-symbol detection uses the callee
-                // name string rather than a checker-resolved `ResolvedRef::Builtin`.
+                // SHIM(E2→checker): callee classification uses the callee name
+                // string rather than a checker-resolved `ResolvedRef`.
                 // WHY: the typecheck→HIR bridge (E1) emits `BindingRef { name:
                 //   c_symbol, resolved: ResolvedRef::Unresolved }` for every
                 //   runtime-symbol callee because the Rust MIR pipeline does not
                 //   thread `TypeCheckOutput.method_call_rewrites` resolver IDs
                 //   into HIR's `ResolvedRef`.  The name is the only available
-                //   discriminator at MIR time.
-                // WHEN obsolete: when HIR emits `ResolvedRef::Builtin { c_symbol }`
-                //   for runtime-symbol callees and MIR can match on the resolved
-                //   variant instead of the name string.
-                // WHAT: replace with `matches!(callee.resolved, ResolvedRef::Builtin { .. })`
-                //   and remove the `is_known_runtime_symbol` name check.
+                //   discriminator at MIR time. User functions are identified by
+                //   membership in `module_fn_names` (collected in
+                //   `lower_hir_module` before any body is lowered).
+                // WHEN obsolete: when HIR emits `ResolvedRef::Item` for user-fn
+                //   callees and `ResolvedRef::Builtin` for runtime callees so MIR
+                //   can match on the resolved variant instead of name strings.
+                // WHAT: replace with variant-based dispatch; remove the
+                //   `is_known_runtime_symbol` and `module_fn_names` checks.
                 let callee_name = match &callee.kind {
                     HirExprKind::BindingRef { name, .. } => Some(name.as_str()),
                     _ => None,
@@ -881,24 +953,30 @@ impl Builder {
                     if let Some(c_sym) = crate::runtime_symbols::user_name_to_c_symbol(name) {
                         return self.lower_runtime_call(c_sym, args, expr.site);
                     }
+                    // User-defined function in the same module: emit CallDirect.
+                    // The callee symbol is the bare function name as declared;
+                    // codegen resolves it against the module's fn_symbols table.
+                    if self.module_fn_names.contains(name) {
+                        return self.lower_direct_call(name, args, &expr.ty, expr.site);
+                    }
                 }
-                // Non-runtime calls: Cluster 1 does not lower these to backend
-                // instructions yet (Terminator::Call is wired but the spine subset
-                // accepts only literal/binary/return). Walk the children so any
-                // Unsupported inside an argument still surfaces, then fail closed so
-                // the emitter never sees a return slot with no producer
-                // (LESSONS `boundary-fail-closed`).
+                // Indirect calls (closures, higher-order function values,
+                // or unresolved bindings): not yet supported. Walk the children
+                // so any Unsupported inside an argument still surfaces, then
+                // fail closed so the emitter never sees a return slot with no
+                // producer (LESSONS `boundary-fail-closed`).
                 let _ = self.lower_value(callee);
                 for arg in args {
                     let _ = self.lower_value(arg);
                 }
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "function call".to_string(),
+                        construct: "indirect or unresolved function call".to_string(),
                         site: expr.site,
                     },
-                    note: "non-runtime call expressions are not yet lowered to the \
-                           backend instruction stream in the Cluster 1 spine subset"
+                    note: "only direct calls to module-declared user functions and \
+                           runtime-ABI builtins are supported; indirect/closure/\
+                           higher-order calls are not yet lowered"
                         .to_string(),
                 });
                 None
@@ -2572,6 +2650,52 @@ impl Builder {
     // WHY: MIR names semantics; address materialisation is a codegen-target concern.
     // WHEN obsolete: when E4's lower_instr arm is wired and tested for each of these conventions.
     // WHAT: replace with direct LLVMBuildCall emission for each symbol group.
+    /// Emit `Instr::CallDirect` for a static call to a user-defined function
+    /// in the same module. Arguments are lowered left-to-right; if any
+    /// argument fails to produce a Place (an unsupported construct in its
+    /// own right), the whole call fails closed and returns `None` —
+    /// diagnostics from the argument lowering already capture the root cause.
+    ///
+    /// The `dest` Place is allocated here and written by the emitted
+    /// `Instr::CallDirect`. For void-return functions (`ret_ty` is
+    /// `ResolvedTy::Unit`) the dest is `None`; the instruction emits
+    /// only the call with no result binding. For all other return types
+    /// a fresh local is allocated and returned so the caller can bind it.
+    fn lower_direct_call(
+        &mut self,
+        callee_symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        ret_ty: &ResolvedTy,
+        _site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Lower each argument left-to-right.  If any fails to produce a
+        // Place, fail the whole call — argument diagnostics already capture
+        // the root cause.
+        let mut arg_places = Vec::with_capacity(hir_args.len());
+        for arg in hir_args {
+            match self.lower_value(arg) {
+                Some(p) => arg_places.push(p),
+                None => return None,
+            }
+        }
+
+        // Allocate a destination local for the return value, unless the
+        // callee is declared void (Unit return type).
+        let dest = if matches!(ret_ty, ResolvedTy::Unit) {
+            None
+        } else {
+            Some(self.alloc_local(ret_ty.clone()))
+        };
+
+        self.instructions.push(Instr::CallDirect {
+            callee_symbol: callee_symbol.to_string(),
+            args: arg_places,
+            dest,
+        });
+
+        dest
+    }
+
     fn lower_runtime_call(
         &mut self,
         symbol: &str,
@@ -3829,6 +3953,23 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         // is identical.
         Instr::CharLit { dest, .. } | Instr::UnitLit { dest } | Instr::DurationLit { dest, .. } => {
             vec![*dest]
+        }
+        Instr::CallDirect {
+            callee_symbol: _,
+            args,
+            dest,
+        } => {
+            // All argument Places are live at the call site (read),
+            // and the dest Place (if present) is written. Surface all
+            // so the cross-block split-state seed pass and dataflow
+            // passes can observe value movement through user function
+            // calls. Field names are all destructured explicitly (no `..`)
+            // so a future field addition produces a compile error here.
+            let mut places: Vec<Place> = args.clone();
+            if let Some(d) = dest {
+                places.push(*d);
+            }
+            places
         }
     }
 }

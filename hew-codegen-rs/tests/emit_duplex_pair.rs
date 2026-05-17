@@ -100,6 +100,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
         raw_mir: vec![RawMirFunction {
             name: "main".to_string(),
             return_ty: ResolvedTy::I64,
+            params: vec![],
             locals: vec![
                 ResolvedTy::I64,   // 0 cap
                 duplex_ty.clone(), // 1 Duplex A

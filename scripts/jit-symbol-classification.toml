@@ -599,6 +599,7 @@ stable = [
   "hew_transport_quic_new",
   "hew_transport_tcp_new",
   "hew_transport_unix_new",
+  "hew_trap_with_code",
   "hew_u64_to_string",
   "hew_uint_to_string",
   "hew_vec_abort_oob",

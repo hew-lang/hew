@@ -1969,15 +1969,75 @@ fn lower_terminator<'ctx>(
                 .map_err(|e| CodegenError::Llvm(format!("call br: {e:?}")))?;
         }
         Terminator::Trap { kind } => {
-            // Emit `llvm.trap` followed by `unreachable`. The `kind`
-            // discriminant is carried only in the MIR; at the LLVM IR
-            // level all trap causes lower identically to a hard abort
-            // (LLVM will remove the block if it proves it unreachable;
-            // on the taken path the trap fires before the unreachable).
+            // Per-kind trap lowering. Each `TrapKind` is mapped to a
+            // stable i32 exit code (mirrors `HEW_TRAP_HEAP_EXCEEDED` =
+            // 200 in `hew-runtime/src/supervisor.rs`); we emit a call
+            // to the runtime entry-point `hew_trap_with_code(code)`
+            // and then fall through to `llvm.trap` + `unreachable`.
             //
-            // `llvm.trap` is a non-overloaded void intrinsic so
-            // `get_declaration` takes an empty type slice.
-            let _kind: TrapKind = *kind; // exhaustiveness: future arms may discriminate
+            // Inside an actor-dispatch context, `hew_trap_with_code`
+            // longjmps back to the scheduler with `code` stored as
+            // the actor's `error_code`, so the supervisor sees
+            // `ExitReason::IntegerOverflow` (etc.) instead of a
+            // generic `Signal(4)`. Outside a dispatch context (top-
+            // level `main`, `hew eval`, JIT preview) the runtime
+            // function returns and the following `llvm.trap` aborts
+            // the process with SIGILL — matching today's behaviour
+            // for non-actor crashes.
+            //
+            // The trailing `llvm.trap` + `unreachable` is mandatory:
+            // (1) it terminates the LLVM basic block when the
+            //     longjmp path is inactive, satisfying the verifier;
+            // (2) regression tests that assert `ll.contains("@llvm.trap")`
+            //     for the trap path still hold.
+            //
+            // WASM: `hew_trap_with_code` resolves to a stub that
+            // returns without longjmping (signal.rs WASM module);
+            // `llvm.trap` is the actual terminator on WASM. No
+            // codegen branch is needed.
+            //
+            // The exit-code constants here MUST stay in lock-step
+            // with `HEW_TRAP_*` in `hew-runtime/src/supervisor.rs`.
+            const HEW_TRAP_INTEGER_OVERFLOW: u64 = 201;
+            const HEW_TRAP_DIVIDE_BY_ZERO: u64 = 202;
+            const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: u64 = 203;
+            const HEW_TRAP_SHIFT_OUT_OF_RANGE: u64 = 204;
+            const HEW_TRAP_INDEX_OUT_OF_BOUNDS: u64 = 205;
+            let code: u64 = match *kind {
+                TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
+                TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
+                TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+                TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
+                TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+            };
+
+            // Look up (or declare on first use) the runtime trap
+            // entry-point. Declared directly on the LLVM module —
+            // this is a fixed runtime FFI seam, not an
+            // `Instr::CallRuntimeAbi` (no `M2_RUNTIME_SYMBOLS`
+            // allowlist participation; the codegen-side declaration
+            // is the source of truth).
+            let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
+                Some(fv) => fv,
+                None => {
+                    let i32_ty = fn_ctx.ctx.i32_type();
+                    let fn_ty = fn_ctx.ctx.void_type().fn_type(&[i32_ty.into()], false);
+                    fn_ctx.llvm_mod.add_function(
+                        "hew_trap_with_code",
+                        fn_ty,
+                        Some(Linkage::External),
+                    )
+                }
+            };
+            let code_val = fn_ctx.ctx.i32_type().const_int(code, false);
+            fn_ctx
+                .builder
+                .build_call(trap_with_code_fn, &[code_val.into()], "trap_with_code")
+                .map_err(|e| CodegenError::Llvm(format!("hew_trap_with_code call: {e:?}")))?;
+
+            // Fallback / verifier-required terminator: `llvm.trap`
+            // is a non-overloaded void intrinsic so `get_declaration`
+            // takes an empty type slice.
             let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
                 CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
             })?;
@@ -2336,6 +2396,16 @@ fn link_wasm_module(obj: &Path, out: &Path) -> CodegenResult<()> {
         command
             .arg("--no-entry")
             .arg("--export=main")
+            // `--import-undefined`: undefined runtime symbols (e.g.
+            // `hew_trap_with_code` from `Terminator::Trap` lowering) become
+            // wasm imports the host module provides. The native link path
+            // resolves these against the hew-runtime static archive in
+            // `hew-cli/src/link.rs`; the codegen-internal wasm link in this
+            // helper does not pull in the runtime, so the symbols must be
+            // host-imports instead of hard link errors. WASM-TODO(#1451):
+            // a follow-up wires per-kind trap reporting into a real wasm
+            // runtime stub.
+            .arg("--import-undefined")
             .arg("-o")
             .arg(out)
             .arg(obj);

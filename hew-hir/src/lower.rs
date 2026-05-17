@@ -14,7 +14,10 @@ use hew_types::{
 use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef, SiteId};
-use crate::monomorph::{MonoKey, MonoRegistry, MONOMORPHISATION_REGISTRY_CAP};
+use crate::monomorph::{
+    contains_recursive_polymorphic_self, substitute_type_params, MonoKey, MonoRegistry,
+    RecordLayoutRegistry, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
+};
 use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
     HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
@@ -47,6 +50,31 @@ struct FnEntry {
     type_params: Vec<String>,
 }
 
+/// Pre-collected shape of a top-level user record or `pub type` item.
+///
+/// Populated in the type-decl / record pre-pass and consulted at
+/// `Expr::StructInit` lowering to (a) decide whether a record-init site
+/// needs a per-instantiation `RecordLayout` and (b) substitute the
+/// type-params with the concrete args from `record_init_type_args` to
+/// produce the layout's field shape.
+///
+/// Tuple-form records are admitted with `fields = vec![]` — their
+/// constructor is reached via `Expr::Call`, not `StructInit`, so they
+/// never hit the record-layout registry. The entry is kept for shape
+/// uniformity with the named-form path.
+#[derive(Debug)]
+struct RecordEntry {
+    id: ItemId,
+    /// Source-declared generic type-parameter names, in order. Empty for
+    /// monomorphic record/type declarations.
+    type_params: Vec<String>,
+    /// Field shape as written in source — types still mention the
+    /// declaration's type params verbatim (no substitution yet). The
+    /// record-layout registry walks these and substitutes per
+    /// instantiation.
+    fields: Vec<(String, ResolvedTy)>,
+}
+
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -67,6 +95,11 @@ pub fn lower_program(
 /// production entry point [`lower_program`] always uses
 /// `MONOMORPHISATION_REGISTRY_CAP`.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "three structured passes (fn pre-pass, record/type-decl pre-pass, \
+              source-order emit) read more clearly here than across helpers"
+)]
 pub fn lower_program_with_mono_cap(
     program: &Program,
     type_check_output: &TypeCheckOutput,
@@ -103,7 +136,65 @@ pub fn lower_program_with_mono_cap(
             );
         }
     }
-    // Discard first-pass diagnostics; the second pass will re-emit any real ones.
+    // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
+    // lowering in the source-order pass can answer "is this a generic
+    // user record?" regardless of declaration order relative to the
+    // function that uses it. This mirrors the fn pre-pass above and is
+    // the producer half of the record-layout registry.
+    for (item, _) in &program.items {
+        match item {
+            Item::TypeDecl(decl) => {
+                let id = ctx.ids.item();
+                let type_params: Vec<String> = decl
+                    .type_params
+                    .as_ref()
+                    .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
+                let mut fields: Vec<(String, ResolvedTy)> = Vec::new();
+                for body_item in &decl.body {
+                    if let TypeBodyItem::Field { name, ty, .. } = body_item {
+                        fields.push((name.clone(), ctx.lower_type(ty)));
+                    }
+                }
+                ctx.record_registry.insert(
+                    decl.name.clone(),
+                    RecordEntry {
+                        id,
+                        type_params,
+                        fields,
+                    },
+                );
+            }
+            Item::Record(decl) => {
+                let id = ctx.ids.item();
+                let type_params: Vec<String> = decl
+                    .type_params
+                    .as_ref()
+                    .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
+                let fields: Vec<(String, ResolvedTy)> = match &decl.kind {
+                    RecordKind::Named(rfs) => rfs
+                        .iter()
+                        .map(|rf| (rf.name.clone(), ctx.lower_type(&rf.ty)))
+                        .collect(),
+                    // Tuple-form records are reached via Expr::Call, not
+                    // Expr::StructInit, so their record-layout registry
+                    // entry would never be exercised. Record an empty
+                    // field list for shape uniformity.
+                    RecordKind::Tuple(_) => Vec::new(),
+                };
+                ctx.record_registry.insert(
+                    decl.name.clone(),
+                    RecordEntry {
+                        id,
+                        type_params,
+                        fields,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
+    // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
 
     // Second pass: lower type declarations and populate the per-module
@@ -169,6 +260,7 @@ pub fn lower_program_with_mono_cap(
 
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
+    let record_layouts = ctx.record_layout_registry.into_vec();
 
     // Closure under substitution: walk every monomorphisation's origin
     // body, find inner generic-fn call sites, substitute their recorded
@@ -189,6 +281,7 @@ pub fn lower_program_with_mono_cap(
             type_classes: ctx.type_classes,
             monomorphisations,
             call_site_type_args,
+            record_layouts,
         },
         diagnostics: ctx.diagnostics,
     }
@@ -587,6 +680,35 @@ struct LowerCtx {
     /// substitution map; the registry's closure-under-substitution pass
     /// uses the same data to discover inner monomorphisations.
     call_site_type_args: HashMap<SiteId, Vec<ResolvedTy>>,
+    /// Pre-collected record/type-decl shape registry. Populated in the
+    /// type-decl pre-pass before function bodies lower, so that
+    /// `Expr::StructInit` lowering can answer "is this a generic user
+    /// record?" and look up its source field shape. Tuple-form records
+    /// land here with `fields = []`; they never trigger record-layout
+    /// emission (their constructor goes through `Expr::Call`).
+    record_registry: HashMap<String, RecordEntry>,
+    /// Checker-resolved type arguments for generic record-init sites
+    /// (`R { ... }` against a `pub type R<T>` or `record R<T>`),
+    /// keyed by the struct-init expression span.
+    ///
+    /// Consumed at `Expr::StructInit` lowering: every init site whose
+    /// record has non-empty `type_params` is paired with the entry here
+    /// and inserted into `record_layout_registry`. A poisoned entry
+    /// (failing the `ResolvedTy::from_ty` boundary conversion) emits
+    /// `RecordLayoutTypeArgsViolation`; a generic init site with no
+    /// entry at all is skipped (the checker only records sites whose
+    /// args resolved fully concretely).
+    /// (LESSONS: `checker-authority` P0, `producer-bridge-before-codegen` P1)
+    record_init_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Distinct user-record instantiations observed at `StructInit`
+    /// sites, accumulated as expression lowering walks the program.
+    /// Drained into `HirModule.record_layouts` at the end of
+    /// `lower_program`. Cap is configurable via
+    /// `lower_program_with_mono_cap` (shared with the fn registry).
+    record_layout_registry: RecordLayoutRegistry,
+    /// Tracks whether the `RecordLayoutCapExceeded` diagnostic has
+    /// already been emitted for this lowering invocation.
+    record_layout_cap_diag_emitted: bool,
 }
 
 impl LowerCtx {
@@ -615,6 +737,10 @@ impl LowerCtx {
             mono_registry: MonoRegistry::with_cap(mono_cap),
             mono_cap_diag_emitted: false,
             call_site_type_args: HashMap::new(),
+            record_registry: HashMap::new(),
+            record_init_type_args: tc_output.record_init_type_args.clone(),
+            record_layout_registry: RecordLayoutRegistry::with_cap(mono_cap),
+            record_layout_cap_diag_emitted: false,
         }
     }
 
@@ -803,6 +929,140 @@ impl LowerCtx {
             }
         }
     }
+
+    /// Try to record a generic record-init site in the record-layout
+    /// registry. Mirrors `record_monomorphisation` for the
+    /// record-type surface.
+    ///
+    /// Skips silently when:
+    /// - the record is not in `record_registry` (builtin Vec/Option/
+    ///   Result/HashMap/Range/channel-handle types are never registered
+    ///   because they have no `Item::TypeDecl`/`Item::Record` AST node),
+    /// - the record has empty `type_params` (monomorphic record — no
+    ///   per-instantiation layout needed; the bare-name layout in MIR
+    ///   suffices),
+    /// - no `record_init_type_args` entry exists for the site (the
+    ///   checker filters out sites whose args still contain inference
+    ///   vars; a missing entry means the init is trivially monomorphic
+    ///   at the checker's seam).
+    ///
+    /// Emits `RecordLayoutTypeArgsViolation` when a recorded entry
+    /// fails the `ResolvedTy::from_ty` boundary conversion;
+    /// `RecursiveGenericTypeUnsupported` when substituted fields name
+    /// the same origin record with different concrete args;
+    /// `RecordLayoutCapExceeded` (at most once per invocation) when the
+    /// registry cap is hit.
+    fn record_record_layout(&mut self, record_name: &str, init_span: &std::ops::Range<usize>) {
+        let Some(entry) = self.record_registry.get(record_name) else {
+            // Builtin or unresolved record — not a user-declared
+            // generic type, so it has no record-layout registry entry.
+            return;
+        };
+        if entry.type_params.is_empty() {
+            // Monomorphic record — bare-name layout (handled by MIR's
+            // existing record-decl emission) is sufficient.
+            return;
+        }
+        let origin = entry.id;
+        let origin_name = record_name.to_string();
+        let type_params = entry.type_params.clone();
+        let source_fields = entry.fields.clone();
+
+        let key = SpanKey::from(init_span);
+        let Some(type_args_raw) = self.record_init_type_args.get(&key).cloned() else {
+            // Generic record-init with no recorded type args at this
+            // site. Per the checker output contract this can only
+            // happen when the site failed type-checking (and was
+            // pruned at the boundary) or when an explicit type-arg
+            // syntax took a path that doesn't re-record. Either way
+            // there's nothing to monomorphise here.
+            return;
+        };
+
+        // Boundary conversion: any leaked inference var, error, or
+        // unmaterialised literal is fail-closed per checker-authority.
+        let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
+        for ty in &type_args_raw {
+            match ResolvedTy::from_ty(ty) {
+                Ok(resolved) => type_args.push(resolved),
+                Err(err) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::RecordLayoutTypeArgsViolation {
+                            record: origin_name.clone(),
+                            reason: err.to_string(),
+                        },
+                        init_span.clone(),
+                        "checker-authoritative record_init_type_args entry failed boundary conversion",
+                    ));
+                    return;
+                }
+            }
+        }
+
+        // Arity guard: the checker enforces matching arity, but be
+        // defensive — substitution panics on a mismatch.
+        if type_args.len() != type_params.len() {
+            return;
+        }
+
+        // Substitute the type-params with the concrete args to produce
+        // this layout's field shape.
+        let substituted_fields: Vec<(String, ResolvedTy)> = source_fields
+            .iter()
+            .map(|(fname, fty)| {
+                (
+                    fname.clone(),
+                    substitute_type_params(fty, &type_params, &type_args),
+                )
+            })
+            .collect();
+
+        // Recursive polymorphic-self detection: a substituted field
+        // type that names `origin_name` with *different* concrete args
+        // than `type_args` is unbounded (each layer demands another
+        // distinct layout). Same-arg self-reference is fine — that's
+        // an ordinary recursive shape and converges to one layout.
+        for (_, fty) in &substituted_fields {
+            if contains_recursive_polymorphic_self(fty, &origin_name, &type_args) {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::RecursiveGenericTypeUnsupported {
+                        name: origin_name.clone(),
+                    },
+                    init_span.clone(),
+                    "recursive generic type definition: a field substitutes to \
+                     a reference to the same record with different concrete \
+                     type arguments, which would force unbounded layout \
+                     expansion (deferred to v0.6)",
+                ));
+                return;
+            }
+        }
+
+        let key = RecordMonoKey {
+            origin,
+            origin_name,
+            type_args,
+        };
+        match self
+            .record_layout_registry
+            .insert(key, substituted_fields, init_span.clone())
+        {
+            Ok(_) => {}
+            Err(()) => {
+                if !self.record_layout_cap_diag_emitted {
+                    self.record_layout_cap_diag_emitted = true;
+                    let cap = self.record_layout_registry.cap();
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::RecordLayoutCapExceeded { cap },
+                        init_span.clone(),
+                        "too many distinct generic-record instantiations; the \
+                         compiler refuses to monomorphise beyond the configured \
+                         cap (suspect polymorphic recursion or runaway inference)",
+                    ));
+                }
+            }
+        }
+    }
 }
 
 impl LowerCtx {
@@ -919,12 +1179,24 @@ impl LowerCtx {
             // belongs to enum bodies and is similarly out of slice scope.
         }
 
+        // Reuse the stable ItemId pre-allocated during the record/
+        // type-decl pre-pass. Falling back to a fresh id keeps
+        // the path safe if the pre-pass ever skips a decl.
+        let id = self
+            .record_registry
+            .get(&decl.name)
+            .map_or_else(|| self.ids.item(), |entry| entry.id);
+        let type_params: Vec<String> = decl
+            .type_params
+            .as_ref()
+            .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
         HirTypeDecl {
-            id: self.ids.item(),
+            id,
             node: self.ids.node(),
             name: decl.name.clone(),
             marker: decl.resource_marker,
             consuming_methods: decl.consuming_methods.clone(),
+            type_params,
             fields,
             span,
         }
@@ -960,8 +1232,15 @@ impl LowerCtx {
             RecordKind::Tuple(_) => vec![],
         };
 
+        // Reuse the stable ItemId pre-allocated during the record/
+        // type-decl pre-pass. Falling back to a fresh id keeps
+        // the path safe if the pre-pass ever skips a decl.
+        let id = self
+            .record_registry
+            .get(&decl.name)
+            .map_or_else(|| self.ids.item(), |entry| entry.id);
         HirRecordDecl {
-            id: self.ids.item(),
+            id,
             node: self.ids.node(),
             name: decl.name.clone(),
             type_params,
@@ -1967,6 +2246,10 @@ impl LowerCtx {
                 type_args: _,
                 base,
             } => {
+                // Record the per-instantiation `RecordLayout` for
+                // generic user records. Skips silently for monomorphic
+                // records and builtins (see `record_record_layout`).
+                self.record_record_layout(name, &span);
                 let hir_fields = fields
                     .iter()
                     .map(|(fname, expr)| (fname.clone(), self.lower_expr(expr, IntentKind::Read)))

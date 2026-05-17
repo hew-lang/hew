@@ -220,4 +220,38 @@ pub enum HirDiagnosticKind {
         /// `MONOMORPHISATION_REGISTRY_CAP`).
         cap: usize,
     },
+    /// A generic record-init site's recorded `record_init_type_args`
+    /// failed the `ResolvedTy::from_ty` boundary conversion. Same shape
+    /// as `MonomorphisationCallTypeArgsViolation` but for the record-
+    /// layout registry. Fail-closed per `checker-authority` (P0).
+    RecordLayoutTypeArgsViolation {
+        /// Record name at the offending site.
+        record: String,
+        /// Human-readable description of the `BoundaryError`.
+        reason: String,
+    },
+    /// HIR lowering produced more distinct record-layout
+    /// monomorphisations than the configured cap admits. Almost always
+    /// the symptom of polymorphic-recursive record types whose layout
+    /// expansion would not converge (each layer introduces a fresh
+    /// arg). Surfaced at the registry seam so codegen never sees an
+    /// unbounded layout set.
+    RecordLayoutCapExceeded {
+        /// The configured cap (typically
+        /// `MONOMORPHISATION_REGISTRY_CAP`, shared with the fn
+        /// registry).
+        cap: usize,
+    },
+    /// A generic record's substituted field shape mentions the same
+    /// origin record with *different* concrete type arguments — e.g.
+    /// `pub type Node<T> { next: Box<Node<int>> }` instantiated at
+    /// `T = string` would force a `Node<int>` layout, which in turn
+    /// would force a `Node<int>` re-expansion, never converging unless
+    /// `int = string`. Recursive *same-arg* self-reference is fine
+    /// (it's an ordinary recursive type and converges to one layout).
+    /// Deferred to v0.6.
+    RecursiveGenericTypeUnsupported {
+        /// Origin record name.
+        name: String,
+    },
 }

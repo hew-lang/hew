@@ -4,7 +4,7 @@ use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
 use hew_types::ResolvedTy;
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
-use crate::monomorph::MonomorphizedFn;
+use crate::monomorph::{MonomorphizedFn, RecordLayout};
 use crate::value_class::TypeClassTable;
 use crate::{IntentKind, ValueClass};
 
@@ -54,6 +54,24 @@ pub struct HirModule {
     /// Empty when no generic-fn call sites exist (a fully monomorphic
     /// program).
     pub call_site_type_args: HashMap<SiteId, Vec<ResolvedTy>>,
+    /// Distinct record-type instantiations observed at user struct-init
+    /// sites against a generic `pub type` / `record`. Populated from the
+    /// checker's `record_init_type_args` side-table during HIR lowering.
+    /// Each entry pairs a generic origin `ItemId` with a concrete
+    /// `Vec<ResolvedTy>`, a mangled symbol name, and the field shape after
+    /// type-parameter substitution. Insertion-ordered for deterministic
+    /// codegen.
+    ///
+    /// Empty when no user generic record-init sites exist. Downstream MIR
+    /// and LLVM consumers iterate this list to emit one `RecordLayout` per
+    /// entry under the mangled name. Builtin-injected generic types (`Vec`,
+    /// `Option`, `Result`, `HashMap`, channel / stream handles) never enter
+    /// this list — they remain compiler-injected for v0.5 by the generics
+    /// scoping decision.
+    ///
+    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// `checker-authority` (P0).
+    pub record_layouts: Vec<RecordLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -373,6 +391,12 @@ pub struct HirTypeDecl {
     /// Names of methods declared with a `consuming self` receiver in the
     /// type body. Lifted verbatim from `TypeDecl.consuming_methods`.
     pub consuming_methods: Vec<String>,
+    /// Source-declared generic type-parameter names, in order. Empty for
+    /// non-generic type decls. Consumed by the record-layout
+    /// registry to (a) decide whether a `StructInit` site needs a
+    /// per-instantiation layout and (b) substitute field types when
+    /// constructing one.
+    pub type_params: Vec<String>,
     pub fields: Vec<HirField>,
     pub span: Span,
 }

@@ -28,6 +28,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::ops::Range;
 
 use hew_types::ResolvedTy;
 
@@ -264,6 +265,275 @@ impl MonoRegistry {
     }
 }
 
+// ── Record-layout monomorphisation ──────────────────────────────────────────
+//
+// The record-layout registry is the structural sibling of `MonoRegistry`:
+// it records every distinct `(record_origin_id, Vec<ResolvedTy>)` pair
+// observed at user struct-init sites against a generic `pub type` (or
+// `record` with type params). Each entry becomes one `RecordLayout` with
+// concretely-substituted field types and a mangled symbol name that
+// matches the function-mangling scheme (`mangle(origin_name, type_args)`).
+//
+// Producer side-table: `TypeCheckOutput.record_init_type_args`. Downstream
+// MIR and LLVM consumers iterate this list to emit one layout per entry.
+//
+// LESSONS: `producer-bridge-before-codegen` (P1), `checker-authority` (P0).
+
+/// Stable identity for one record-layout monomorphisation. Two struct-
+/// init sites that instantiate the same generic record with the same
+/// concrete type args produce equal `RecordMonoKey`s and collapse to
+/// one registry entry.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RecordMonoKey {
+    /// `ItemId` of the originating user record/type declaration, as
+    /// allocated in the HIR first pass. Pairing on `ItemId` (rather than
+    /// name) defends against module-qualified shadowing.
+    pub origin: ItemId,
+    /// Origin record name as written in source. Retained for diagnostics
+    /// and the mangled-name scheme.
+    pub origin_name: String,
+    /// Concrete type arguments in source-declared order. Always
+    /// `ResolvedTy` because the boundary conversion `ResolvedTy::from_ty`
+    /// rejects any leaked `Var`/`Error`/`IntLiteral`/`FloatLiteral` — the
+    /// registry is fail-closed at the side-table seam.
+    pub type_args: Vec<ResolvedTy>,
+}
+
+/// One specialised record layout the downstream MIR/LLVM stages must
+/// emit. Carries identity, a mangled symbol name, and substituted field
+/// types; downstream consumers iterate `HirModule.record_layouts` to
+/// emit one layout entry per record instantiation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordLayout {
+    /// Identity of this monomorphisation.
+    pub key: RecordMonoKey,
+    /// Symbol name downstream codegen will emit for this layout.
+    /// Built by [`mangle`] from `key.origin_name` and `key.type_args`,
+    /// so a record-layout symbol shares the same `$$<args>` shape as a
+    /// fn-monomorphisation symbol.
+    pub mangled_name: String,
+    /// Concrete field shape after substituting `key.type_args` for the
+    /// origin record's `type_params`. Field order is source order.
+    pub fields: Vec<(String, ResolvedTy)>,
+    /// Span of one observed struct-init site (the first one inserted).
+    /// Used for diagnostics that need to cite a concrete source location
+    /// when complaining about the layout (e.g. recursive-generic
+    /// detection). Not load-bearing for codegen.
+    pub span: Range<usize>,
+}
+
+/// Insertion-ordered registry for record-layout monomorphisations.
+/// Mirrors `MonoRegistry`'s shape.
+#[derive(Debug, Default)]
+pub(crate) struct RecordLayoutRegistry {
+    seen: HashMap<RecordMonoKey, usize>,
+    order: Vec<RecordLayout>,
+    cap: usize,
+}
+
+impl RecordLayoutRegistry {
+    pub(crate) fn with_cap(cap: usize) -> Self {
+        Self {
+            seen: HashMap::new(),
+            order: Vec::new(),
+            cap,
+        }
+    }
+
+    /// Attempt to insert a new layout. Returns `Ok(true)` if a fresh
+    /// entry landed, `Ok(false)` if the key was already present, and
+    /// `Err(())` if the cap was exceeded.
+    pub(crate) fn insert(
+        &mut self,
+        key: RecordMonoKey,
+        fields: Vec<(String, ResolvedTy)>,
+        span: Range<usize>,
+    ) -> Result<bool, ()> {
+        if self.seen.contains_key(&key) {
+            return Ok(false);
+        }
+        if self.order.len() >= self.cap {
+            return Err(());
+        }
+        let mangled_name = mangle(&key.origin_name, &key.type_args);
+        let idx = self.order.len();
+        self.order.push(RecordLayout {
+            key: key.clone(),
+            mangled_name,
+            fields,
+            span,
+        });
+        self.seen.insert(key, idx);
+        Ok(true)
+    }
+
+    pub(crate) fn cap(&self) -> usize {
+        self.cap
+    }
+
+    pub(crate) fn into_vec(self) -> Vec<RecordLayout> {
+        self.order
+    }
+}
+
+/// Substitute generic type-parameter symbols inside `ty` with the
+/// concrete `args`. Parameters are matched by name against `params`; the
+/// resolved argument at the corresponding index replaces every
+/// `ResolvedTy::Named { name, args: [] }` whose name appears in
+/// `params`.
+///
+/// Recursion descends into compound types so nested occurrences are also
+/// substituted (e.g. `Box<T>`'s field type `Vec<T>` substitutes to
+/// `Vec<i64>` when `T = i64`).
+///
+/// The traversal is a pure rewrite — it does not touch the registry. The
+/// caller is responsible for detecting recursive polymorphic
+/// instantiations after substitution.
+#[must_use]
+pub fn substitute_type_params(
+    ty: &ResolvedTy,
+    params: &[String],
+    args: &[ResolvedTy],
+) -> ResolvedTy {
+    debug_assert_eq!(
+        params.len(),
+        args.len(),
+        "param/arg arity mismatch — caller must validate before substituting"
+    );
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args: named_args,
+        } => {
+            // Bare type-parameter reference (e.g. `T`) — substitute.
+            if named_args.is_empty() {
+                if let Some(idx) = params.iter().position(|p| p == name) {
+                    return args[idx].clone();
+                }
+            }
+            // Otherwise descend into the args so `Vec<T>` becomes `Vec<i64>`.
+            ResolvedTy::Named {
+                name: name.clone(),
+                args: named_args
+                    .iter()
+                    .map(|a| substitute_type_params(a, params, args))
+                    .collect(),
+            }
+        }
+        ResolvedTy::Tuple(items) => ResolvedTy::Tuple(
+            items
+                .iter()
+                .map(|t| substitute_type_params(t, params, args))
+                .collect(),
+        ),
+        ResolvedTy::Array(elem, n) => {
+            ResolvedTy::Array(Box::new(substitute_type_params(elem, params, args)), *n)
+        }
+        ResolvedTy::Slice(elem) => {
+            ResolvedTy::Slice(Box::new(substitute_type_params(elem, params, args)))
+        }
+        ResolvedTy::Function {
+            params: fn_params,
+            ret,
+        } => ResolvedTy::Function {
+            params: fn_params
+                .iter()
+                .map(|p| substitute_type_params(p, params, args))
+                .collect(),
+            ret: Box::new(substitute_type_params(ret, params, args)),
+        },
+        ResolvedTy::Closure {
+            params: fn_params,
+            ret,
+            captures,
+        } => ResolvedTy::Closure {
+            params: fn_params
+                .iter()
+                .map(|p| substitute_type_params(p, params, args))
+                .collect(),
+            ret: Box::new(substitute_type_params(ret, params, args)),
+            captures: captures
+                .iter()
+                .map(|c| substitute_type_params(c, params, args))
+                .collect(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable: *is_mutable,
+            pointee: Box::new(substitute_type_params(pointee, params, args)),
+        },
+        ResolvedTy::Task(inner) => {
+            ResolvedTy::Task(Box::new(substitute_type_params(inner, params, args)))
+        }
+        // Primitives and trait objects: nothing to substitute. Trait
+        // objects are not exercised by user generic records in v0.5 —
+        // leave their args verbatim; methods on generic records will
+        // revisit this if needed.
+        _ => ty.clone(),
+    }
+}
+
+/// Detect whether `ty` contains a reference to `origin_name` with
+/// different concrete type args than `current_args`. Used to fail-closed
+/// on recursive polymorphic instantiations like
+/// `pub type Node<T> { next: Box<Node<int>> }` — observed `Node<T>` has
+/// `args = [T_concrete]`, but the field mentions `Node<int>`, a
+/// different arg set, which would force unbounded layout expansion.
+///
+/// Self-reference with the *same* args is fine (`pub type Box<T> { next:
+/// Box<T> }` is a recursive shape but expansion converges at one
+/// layout). Self-reference with *different* args is the unbounded case.
+#[must_use]
+pub(crate) fn contains_recursive_polymorphic_self(
+    ty: &ResolvedTy,
+    origin_name: &str,
+    current_args: &[ResolvedTy],
+) -> bool {
+    match ty {
+        ResolvedTy::Named { name, args } => {
+            if name == origin_name && args.as_slice() != current_args {
+                return true;
+            }
+            args.iter()
+                .any(|a| contains_recursive_polymorphic_self(a, origin_name, current_args))
+        }
+        ResolvedTy::Tuple(items) => items
+            .iter()
+            .any(|t| contains_recursive_polymorphic_self(t, origin_name, current_args)),
+        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
+            contains_recursive_polymorphic_self(elem, origin_name, current_args)
+        }
+        ResolvedTy::Function { params, ret } => {
+            params
+                .iter()
+                .any(|p| contains_recursive_polymorphic_self(p, origin_name, current_args))
+                || contains_recursive_polymorphic_self(ret, origin_name, current_args)
+        }
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            params
+                .iter()
+                .any(|p| contains_recursive_polymorphic_self(p, origin_name, current_args))
+                || contains_recursive_polymorphic_self(ret, origin_name, current_args)
+                || captures
+                    .iter()
+                    .any(|c| contains_recursive_polymorphic_self(c, origin_name, current_args))
+        }
+        ResolvedTy::Pointer { pointee, .. } => {
+            contains_recursive_polymorphic_self(pointee, origin_name, current_args)
+        }
+        ResolvedTy::Task(inner) => {
+            contains_recursive_polymorphic_self(inner, origin_name, current_args)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +581,122 @@ mod tests {
         assert_eq!(reg.insert(key.clone()), Ok(true));
         assert_eq!(reg.insert(key), Ok(false));
         assert_eq!(reg.into_vec().len(), 1);
+    }
+
+    #[test]
+    fn substitute_replaces_bare_type_param() {
+        let params = vec!["T".to_string()];
+        let args = vec![ResolvedTy::I64];
+        let ty = ResolvedTy::Named {
+            name: "T".into(),
+            args: vec![],
+        };
+        assert_eq!(substitute_type_params(&ty, &params, &args), ResolvedTy::I64);
+    }
+
+    #[test]
+    fn substitute_descends_into_nested_named() {
+        // Vec<T> with T=i64 -> Vec<i64>
+        let params = vec!["T".to_string()];
+        let args = vec![ResolvedTy::I64];
+        let ty = ResolvedTy::Named {
+            name: "Vec".into(),
+            args: vec![ResolvedTy::Named {
+                name: "T".into(),
+                args: vec![],
+            }],
+        };
+        assert_eq!(
+            substitute_type_params(&ty, &params, &args),
+            ResolvedTy::Named {
+                name: "Vec".into(),
+                args: vec![ResolvedTy::I64]
+            }
+        );
+    }
+
+    #[test]
+    fn substitute_leaves_unrelated_named_alone() {
+        let params = vec!["T".to_string()];
+        let args = vec![ResolvedTy::I64];
+        let ty = ResolvedTy::Named {
+            name: "Label".into(),
+            args: vec![],
+        };
+        assert_eq!(substitute_type_params(&ty, &params, &args), ty);
+    }
+
+    #[test]
+    fn record_layout_registry_dedupes_identical_keys() {
+        let mut reg = RecordLayoutRegistry::with_cap(8);
+        let key = RecordMonoKey {
+            origin: ItemId(0),
+            origin_name: "Box".into(),
+            type_args: vec![ResolvedTy::I64],
+        };
+        let fields = vec![("value".to_string(), ResolvedTy::I64)];
+        assert_eq!(reg.insert(key.clone(), fields.clone(), 0..0), Ok(true));
+        assert_eq!(reg.insert(key, fields, 0..0), Ok(false));
+        assert_eq!(reg.into_vec().len(), 1);
+    }
+
+    #[test]
+    fn record_layout_mangles_match_fn_scheme() {
+        // The fn-mangling and record-mangling schemes share `mangle()`,
+        // so a record `Box<i64>` and a hypothetical fn `Box<i64>` mangle
+        // the same. This is intentional — codegen disambiguates by the
+        // declaration kind (a record symbol is never called as a fn),
+        // and the shared scheme means cross-IR debugging tooling can
+        // round-trip a single mangler.
+        assert_eq!(mangle("Box", &[ResolvedTy::I64]), "Box$$i64");
+        assert_eq!(
+            mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]),
+            "Pair$$i64$string"
+        );
+    }
+
+    #[test]
+    fn recursive_polymorphic_self_detects_different_args() {
+        // Node<T> with field `next: Box<Node<int>>` — the field
+        // mentions Node with a different arg set than T.
+        let current_args = vec![ResolvedTy::Named {
+            name: "T".into(),
+            args: vec![],
+        }];
+        let field_ty = ResolvedTy::Named {
+            name: "Box".into(),
+            args: vec![ResolvedTy::Named {
+                name: "Node".into(),
+                args: vec![ResolvedTy::I64],
+            }],
+        };
+        assert!(contains_recursive_polymorphic_self(
+            &field_ty,
+            "Node",
+            &current_args
+        ));
+    }
+
+    #[test]
+    fn recursive_polymorphic_self_ignores_matching_args() {
+        // Box<T> with field `next: Box<T>` — same args, not a
+        // polymorphic-recursion hazard (the layout converges).
+        let current_args = vec![ResolvedTy::Named {
+            name: "T".into(),
+            args: vec![],
+        }];
+        let field_ty = ResolvedTy::Named {
+            name: "Box".into(),
+            args: vec![ResolvedTy::Named {
+                name: "T".into(),
+                args: vec![],
+            }],
+        };
+        assert!(!contains_recursive_polymorphic_self(
+            &field_ty,
+            "Box",
+            &current_args
+        ));
     }
 
     #[test]

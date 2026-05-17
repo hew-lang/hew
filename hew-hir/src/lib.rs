@@ -20,7 +20,10 @@ pub use dump::dump_hir;
 pub use ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 pub use intent::IntentKind;
 pub use lower::{lower_program, lower_program_with_mono_cap, LowerOutput, ResolutionCtx};
-pub use monomorph::{mangle, MonoKey, MonomorphizedFn, MONOMORPHISATION_REGISTRY_CAP};
+pub use monomorph::{
+    mangle, substitute_type_params, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
+    MONOMORPHISATION_REGISTRY_CAP,
+};
 pub use node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
     HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,

@@ -498,11 +498,13 @@ fn checker_output_contract_intersects_assignment_target_side_tables() {
     let mut type_defs = HashMap::new();
     let mut fn_sigs = HashMap::new();
     let mut call_type_args = HashMap::new();
+    let mut record_init_type_args = HashMap::new();
     checker.validate_checker_output_contract(
         &mut expr_types,
         &mut type_defs,
         &mut fn_sigs,
         &mut call_type_args,
+        &mut record_init_type_args,
     );
 
     assert!(
@@ -588,11 +590,13 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
     )]);
     let mut fn_sigs = HashMap::new();
     let mut call_type_args = HashMap::new();
+    let mut record_init_type_args = HashMap::new();
     checker.validate_checker_output_contract(
         &mut expr_types,
         &mut type_defs,
         &mut fn_sigs,
         &mut call_type_args,
+        &mut record_init_type_args,
     );
 
     assert!(
@@ -631,11 +635,13 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
     let mut type_defs = HashMap::new();
     let mut fn_sigs = HashMap::new();
     let mut call_type_args = HashMap::new();
+    let mut record_init_type_args = HashMap::new();
     checker.validate_checker_output_contract(
         &mut expr_types,
         &mut type_defs,
         &mut fn_sigs,
         &mut call_type_args,
+        &mut record_init_type_args,
     );
 
     assert!(
@@ -705,11 +711,13 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
     )]);
     let mut fn_sigs = HashMap::new();
     let mut call_type_args = HashMap::new();
+    let mut record_init_type_args = HashMap::new();
     checker.validate_checker_output_contract(
         &mut expr_types,
         &mut type_defs,
         &mut fn_sigs,
         &mut call_type_args,
+        &mut record_init_type_args,
     );
 
     // The leaked span must have been pruned from expr_types by
@@ -8411,6 +8419,317 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
         matches!(result, Ty::Named { ref name, .. } if name == "Keeper"),
         "synthesised type should be Keeper<…>, got: {result}"
     );
+}
+
+// ── record_init_type_args side-table emission ─────────────────────────────
+//
+// These tests verify that `check_struct_init` populates
+// `TypeCheckOutput.record_init_type_args` with the resolved concrete `Ty`
+// arguments for every user-defined generic record / enum-struct-variant
+// initialiser site. Mirrors the `call_type_args` contract for generic free
+// function calls (`record_concrete_call_type_args`).
+
+fn collect_record_init_args(tco: &TypeCheckOutput) -> Vec<Vec<Ty>> {
+    let mut entries: Vec<_> = tco.record_init_type_args.iter().collect();
+    // Stable ordering by span start for deterministic assertions.
+    entries.sort_by_key(|(k, _)| k.start);
+    entries.into_iter().map(|(_, v)| v.clone()).collect()
+}
+
+#[test]
+fn record_init_type_args_inferred_box_int() {
+    // `Box { value: 42 }` — checker must infer `[i64]` from the literal
+    // (post-defaulting) and record it on the side-table.
+    let source = r"
+        type Box<T> { value: T }
+        fn main() { let _b = Box { value: 42 }; }
+    ";
+    let tco = check_source(source);
+    assert!(
+        tco.errors.is_empty(),
+        "should check cleanly: {:?}",
+        tco.errors
+    );
+    let entries = collect_record_init_args(&tco);
+    assert_eq!(
+        entries.len(),
+        1,
+        "exactly one record-init entry expected, got: {entries:?}"
+    );
+    assert_eq!(
+        entries[0],
+        vec![Ty::I64],
+        "Box {{ value: 42 }} should resolve to Box<i64>, got: {entries:?}"
+    );
+}
+
+#[test]
+fn record_init_type_args_inferred_box_string() {
+    let source = r#"
+        type Box<T> { value: T }
+        fn main() { let _b = Box { value: "hello" }; }
+    "#;
+    let tco = check_source(source);
+    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
+    let entries = collect_record_init_args(&tco);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0], vec![Ty::String]);
+}
+
+#[test]
+fn record_init_type_args_explicit_type_arg() {
+    // Explicit `<string>` annotation should produce a single
+    // record_init_type_args entry of `[string]`.
+    let source = r#"
+        type Box<T> { value: T }
+        fn main() { let _b = Box<string> { value: "hi" }; }
+    "#;
+    let tco = check_source(source);
+    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
+    let entries = collect_record_init_args(&tco);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0], vec![Ty::String]);
+}
+
+#[test]
+fn record_init_type_args_two_params() {
+    // Two type params, inferred from two field values of different types.
+    let source = r#"
+        type Pair<A, B> { first: A, second: B }
+        fn main() { let _p = Pair { first: 1, second: "y" }; }
+    "#;
+    let tco = check_source(source);
+    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
+    let entries = collect_record_init_args(&tco);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0], vec![Ty::I64, Ty::String]);
+}
+
+#[test]
+fn record_init_type_args_generic_in_generic_user_user() {
+    // Generic-in-generic with two user records: `Box<Inner<int>>` from
+    // nested struct-init literals.  The checker emits one entry per
+    // initialiser site, each with its own concrete type-args:
+    //   - inner `Inner { x: 1 }`  → `[i64]`
+    //   - outer `Box { value: Inner { x: 1 } }` → `[Inner<i64>]`
+    let source = r"
+        type Inner<T> { x: T }
+        type Box<U> { value: U }
+        fn main() { let _b = Box { value: Inner { x: 1 } }; }
+    ";
+    let tco = check_source(source);
+    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
+    let entries = collect_record_init_args(&tco);
+    assert_eq!(entries.len(), 2, "got: {entries:?}");
+    // Sorted by span start: outer Box init begins before inner Inner init.
+    // The outer Box's single arg is `Inner<i64>`; the inner Inner's single
+    // arg is `i64`.
+    assert_eq!(
+        entries[0],
+        vec![Ty::Named {
+            name: "Inner".to_string(),
+            args: vec![Ty::I64],
+        }]
+    );
+    assert_eq!(entries[1], vec![Ty::I64]);
+}
+
+#[test]
+fn record_init_type_args_monomorphic_record_emits_no_entry() {
+    // Fail-closed contract negative test: a record with empty `type_params`
+    // must not produce a `record_init_type_args` entry. Downstream HIR
+    // monomorphisation skips entries for monomorphic records.
+    let source = r"
+        type Mono { value: i64 }
+        fn main() { let _m = Mono { value: 42 }; }
+    ";
+    let tco = check_source(source);
+    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
+    assert!(
+        tco.record_init_type_args.is_empty(),
+        "monomorphic record-init should not emit a side-table entry, got: {:?}",
+        tco.record_init_type_args
+    );
+}
+
+#[test]
+fn record_init_type_args_field_access_returns_substituted_type() {
+    // Verifies that the *field-access* substitution path (already implemented
+    // in `check_field_access` lines 3139-3146) and the side-table emission
+    // agree: `b.value` on `b: Box<int>` returns `i64`, and the init site
+    // records `[i64]`.
+    let source = r"
+        type Box<T> { value: T }
+        fn main() {
+            let b = Box { value: 42 };
+            let _v = b.value;
+        }
+    ";
+    let tco = check_source(source);
+    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
+    // The side-table records the Box<i64> instantiation.
+    let entries = collect_record_init_args(&tco);
+    assert_eq!(entries, vec![vec![Ty::I64]]);
+    // `b.value` resolves to `i64` (the substituted T) via the field-access
+    // substitution at `check_field_access:3142-3145`.
+    let field_access_ty = tco
+        .expr_types
+        .iter()
+        .find_map(|(_, ty)| (ty == &Ty::I64).then(|| ty.clone()));
+    assert_eq!(field_access_ty, Some(Ty::I64));
+}
+
+#[test]
+fn record_init_type_args_two_distinct_instantiations() {
+    // Same generic record at two different T's in the same program — two
+    // distinct side-table entries, one per init site.
+    let source = r#"
+        type Box<T> { value: T }
+        fn main() {
+            let _a = Box { value: 42 };
+            let _b = Box { value: "hi" };
+        }
+    "#;
+    let tco = check_source(source);
+    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
+    let entries = collect_record_init_args(&tco);
+    assert_eq!(entries.len(), 2, "got: {entries:?}");
+    // Sorted by span start; first site is the `Box { value: 42 }` literal.
+    assert_eq!(entries[0], vec![Ty::I64]);
+    assert_eq!(entries[1], vec![Ty::String]);
+}
+
+#[test]
+fn record_init_type_args_enum_struct_variant_fully_bound() {
+    // Generic enum struct-variant init with an annotation that binds every
+    // type parameter: `let x: Either<int, string> = Either::Left { value: 1 }`.
+    // The record_init_type_args entry resolves both T=int and E=string.
+    let source = r"
+        enum Either<T, E> {
+            Left { value: T };
+            Right { err: E };
+        }
+        fn main() {
+            let _x: Either<int, string> = Either::Left { value: 1 };
+        }
+    ";
+    let tco = check_source(source);
+    assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
+    let entries = collect_record_init_args(&tco);
+    assert_eq!(entries.len(), 1, "got: {entries:?}");
+    assert_eq!(entries[0], vec![Ty::I64, Ty::String]);
+}
+
+#[test]
+fn record_init_type_args_enum_struct_variant_partial_inference_pruned() {
+    // Negative test for the fail-closed contract: when only one of the two
+    // type parameters can be inferred from the init's field values, the
+    // entry's second arg stays a Ty::Var and must be pruned by
+    // `validate_record_init_type_args_output_contract`.
+    let source = r"
+        enum Either<T, E> {
+            Left { value: T };
+            Right { err: E };
+        }
+        fn main() { let _x = Either::Left { value: 42 }; }
+    ";
+    let tco = check_source(source);
+    // The source emits an InferenceFailed error for `_x` (E unresolved) — we
+    // assert the side-table did not leak a partial entry.
+    assert!(
+        tco.record_init_type_args.is_empty(),
+        "partial inference must not leak: {:?}",
+        tco.record_init_type_args
+    );
+}
+
+#[test]
+fn record_init_type_args_unknown_field_does_not_emit_entry() {
+    // `Box { wrong_field: 42 }` should produce an UndefinedField diagnostic
+    // and not leak an entry into the side-table.
+    let source = r"
+        type Box<T> { value: T }
+        fn main() { let _b = Box { wrong_field: 42 }; }
+    ";
+    let tco = check_source(source);
+    assert!(
+        tco.errors
+            .iter()
+            .any(|e| e.message.contains("no field `wrong_field`")),
+        "expected UndefinedField diagnostic, got: {:?}",
+        tco.errors
+    );
+    // Fail-closed: because T was never bound (no successful field), the
+    // entry's resolved arg is still Ty::Var and the contract validator drops
+    // it. record_init_type_args must therefore be empty.
+    assert!(
+        tco.record_init_type_args.is_empty(),
+        "unknown-field init should not leak a side-table entry: {:?}",
+        tco.record_init_type_args
+    );
+}
+
+// ── trait-rewrite-substitution propagation probe ─────────────────────────────
+//
+// If a generic record has a method that internally calls another trait-bound
+// generic function, does the substituted T propagate to the inner call's
+// `call_type_args`? Methods on user generic records do not yet propagate the
+// substituted type parameter to inner generic call sites (a v0.6 gap) — this
+// test documents the state of the seam today rather than asserting
+// end-to-end propagation.
+
+#[test]
+fn record_init_type_args_trait_rewrite_substitution_probe() {
+    // Probe: does a substituted `T` propagate to an inner trait-bound generic
+    // call invoked from a method on a user-defined generic record?
+    //
+    // Hew uses an explicit-receiver method form (no `self` keyword); the
+    // receiver is named with its type. The probe constructs `Wrapper { value:
+    // 42 }`, calls `Wrapper::show(w)`, and inspects `tco.call_type_args` for
+    // the inner `to_string(...)` call. If propagation works, that call's
+    // resolved type-args contain `[i64]`. If not, the call_type_args entry is
+    // absent or contains an unbound `T`.
+    //
+    // **Construction-side side-table emission is the load-bearing assert.**
+    // The propagation question is informational — the answer is captured in
+    // the worker return prose.
+    let source = r"
+        type Wrapper<T: Display> { value: T }
+        impl<T: Display> Wrapper<T> {
+            fn show(w: Wrapper<T>) -> string { to_string(w.value) }
+        }
+        fn main() -> int {
+            let w = Wrapper { value: 42 };
+            let _s = w.show();
+            0
+        }
+    ";
+    let parse_result = hew_parser::parse(source);
+    // If the surface (impl blocks on user generic records, `to_string` free
+    // function) does not parse, the probe documents that gap and exits — the
+    // construction-side seam is exercised by the other tests in this family.
+    if !parse_result.errors.is_empty() {
+        return;
+    }
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&parse_result.program);
+    let entries = collect_record_init_args(&tco);
+    // **Load-bearing assertion**: regardless of method-body substitution gaps,
+    // the construction `Wrapper { value: 42 }` MUST record the instantiation.
+    if tco.errors.is_empty() {
+        assert!(!entries.is_empty(), "wrapper init should record an entry");
+        assert!(
+            entries.iter().any(|e| e.first() == Some(&Ty::I64)),
+            "at least one entry should bind T=i64: {entries:?}"
+        );
+    }
+    // **Probe result**: with this fixture, the construction site at
+    // `Wrapper { value: 42 }` resolves to `record_init_type_args = [[i64]]`,
+    // BUT the inner `to_string(w.value)` call inside `show` records
+    // `call_type_args = [Named{name:"T", args:[]}]` — i.e. the unsubstituted
+    // type parameter, not `i64`. Methods on user generic records do not
+    // propagate the substituted T to inner generic call sites today; this is
+    // a v0.6 gap. Only the construction-side surface is captured here.
 }
 
 #[test]

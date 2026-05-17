@@ -2098,6 +2098,7 @@ mod tests {
                 },
                 vec![Ty::I32, Ty::String],
             )]),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -2184,6 +2185,7 @@ mod tests {
                 },
                 vec![Ty::Error],
             )]),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -2389,6 +2391,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -2476,6 +2479,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -2558,6 +2562,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -2575,6 +2580,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fixture test: full TypeCheckOutput literal + module graph setup"
+    )]
     fn build_method_call_receiver_kind_entries_follow_module_graph_items() {
         use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
@@ -2666,6 +2675,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -2997,6 +3007,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -3089,6 +3100,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -3174,6 +3186,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -3258,6 +3271,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),

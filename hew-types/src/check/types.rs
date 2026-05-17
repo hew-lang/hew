@@ -85,6 +85,26 @@ pub struct TypeCheckOutput {
     /// Inferred type arguments for generic function calls that lack explicit
     /// type annotations.  Keyed by the call expression's span.
     pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Inferred or explicit type arguments for record / enum-struct-variant
+    /// initialiser sites on user-defined generic types.  Keyed by the
+    /// initialiser expression's span.
+    ///
+    /// Populated for every accepted `StructInit` against a user `TypeDef` whose
+    /// `type_params` is non-empty.  Monomorphic record inits produce no entry.
+    ///
+    /// Entries are emitted unconditionally at the call site (args may still
+    /// carry a `Ty::Var` when an outer annotation such as
+    /// `let b: Box<int> = Box { value: 1 }` makes them concrete only after
+    /// `check_struct_init` returns).  The fail-closed contract (no `Ty::Var`
+    /// crosses into HIR) is *established*, not re-asserted, by
+    /// `validate_record_init_type_args_output_contract` (`admissibility.rs`)
+    /// at the output boundary, after `subst.resolve` and
+    /// `materialize_literal_defaults` have settled.
+    ///
+    /// The downstream HIR monomorphisation registry reads this map to build
+    /// per-instantiation record layouts.  Until that consumer lands the
+    /// side-table is dormant.
+    pub record_init_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Diagnostic-only escape-analysis hints produced by the stack-hint walker.
     ///
     /// One entry per `let` / `var` binding whose right-hand side resolves to a
@@ -200,6 +220,7 @@ impl Default for TypeCheckOutput {
             cycle_capable_actors: HashSet::default(),
             user_modules: HashSet::default(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
@@ -986,6 +1007,16 @@ pub struct Checker {
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Inferred or explicit type arguments for record / enum-struct-variant
+    /// initialiser sites on user-defined generic types. Populated by
+    /// `record_concrete_record_init_type_args` at each emission site.
+    ///
+    /// Entries are emitted unconditionally (args may still carry a `Ty::Var`
+    /// when a coercion arm resolves them only after `check_struct_init`
+    /// returns). The fail-closed contract (no `Ty::Var` crosses into HIR) is
+    /// enforced at the output boundary by
+    /// `validate_record_init_type_args_output_contract` in `admissibility.rs`.
+    pub(super) record_init_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Builtin `Ok`/`Err` constructor calls whose output type may need
     /// checked-output fallback when one side remains unconstrained.
     pub(super) builtin_result_output_type_args: HashMap<SpanKey, (Ty, Ty)>,
@@ -1105,6 +1136,7 @@ impl Checker {
             current_machine_transition: None,
             const_values: HashMap::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),
             deferred_bound_checks: Vec::new(),
             lambda_poly_sig_map: HashMap::new(),

@@ -2340,6 +2340,7 @@ mod tests {
             cycle_capable_actors: std::collections::HashSet::new(),
             user_modules: std::collections::HashSet::new(),
             call_type_args: std::collections::HashMap::new(),
+            record_init_type_args: std::collections::HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: std::collections::HashMap::new(),
             actor_max_heap: std::collections::HashMap::new(),

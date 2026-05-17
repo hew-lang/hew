@@ -80,6 +80,34 @@ impl Checker {
         }
     }
 
+    /// Record the resolved type arguments for a record (or enum-struct-variant)
+    /// initialiser site on a user-defined generic type.
+    ///
+    /// Mirrors [`record_concrete_call_type_args`] for the record-init
+    /// monomorphisation surface, with one structural difference: a
+    /// record-init's type args may only become fully concrete *after*
+    /// `check_struct_init` returns — via an outer annotation
+    /// (`let x: Box<int> = Box { value: 1 }`) or an enclosing return-type
+    /// unification.  Eagerly rejecting at emission time when an arg still
+    /// carries a `Ty::Var` would drop entries the post-inference boundary
+    /// resolve in `check_program` would have made fully concrete.
+    ///
+    /// Discipline: snapshot through `subst.resolve` here so later updates to
+    /// the substitution propagate at the boundary; rely on
+    /// [`Self::validate_record_init_type_args_output_contract`] to prune
+    /// entries that are still partial after `materialize_literal_defaults`
+    /// settles.  The fail-closed invariant (no `Ty::Var` crosses into HIR)
+    /// is preserved — it is just enforced at the output boundary rather
+    /// than at emission, parallel to how `expr_types` works.
+    pub(super) fn record_concrete_record_init_type_args(&mut self, span: &Span, type_args: &[Ty]) {
+        if type_args.is_empty() {
+            return;
+        }
+        let snapshot: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
+        self.record_init_type_args
+            .insert(SpanKey::from(span), snapshot);
+    }
+
     fn record_builtin_result_output_type_args(&mut self, span: &Span, ok_ty: &Ty, err_ty: &Ty) {
         self.builtin_result_output_type_args
             .insert(SpanKey::from(span), (ok_ty.clone(), err_ty.clone()));

@@ -1693,6 +1693,25 @@ impl Checker {
                             }
                         }
 
+                        // Also record the inferred / annotation-bound type args
+                        // from this coercion arm.  Without this,
+                        // `let b: Box<int> = Box { value: 1 }` would bypass
+                        // `check_struct_init` entirely and the side-table would
+                        // miss the instantiation.  Emits unconditionally;
+                        // `validate_record_init_type_args_output_contract` in
+                        // `admissibility.rs` prunes any entry whose args still
+                        // carry a `Ty::Var` after substitution settles.
+                        let resolved_args: Vec<Ty> = td
+                            .type_params
+                            .iter()
+                            .map(|tp| {
+                                type_arg_map
+                                    .get(tp)
+                                    .cloned()
+                                    .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
+                            })
+                            .collect();
+                        self.record_concrete_record_init_type_args(span, &resolved_args);
                         self.record_type(span, expected);
                         return expected.clone();
                     }
@@ -1819,6 +1838,18 @@ impl Checker {
                                         );
                                     }
                                 }
+                                // Emit unconditionally; see the struct coercion
+                                // arm above for the boundary-prune rationale.
+                                let resolved_args: Vec<Ty> = type_params
+                                    .iter()
+                                    .map(|tp| {
+                                        type_arg_map
+                                            .get(tp)
+                                            .cloned()
+                                            .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
+                                    })
+                                    .collect();
+                                self.record_concrete_record_init_type_args(span, &resolved_args);
                                 self.record_type(span, expected);
                             }
                         }
@@ -3599,6 +3630,18 @@ impl Checker {
                         .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
                 })
                 .collect();
+            // Record the resolved type arguments for downstream monomorphisation
+            // (HIR registry, MIR per-instantiation RecordLayout).
+            //
+            // Emit unconditionally: a record-init's type args may only become
+            // fully concrete *after* `check_struct_init` returns (e.g. via an
+            // outer annotation `let b: Box<int> = Box { value: 1 }`), so
+            // eagerly rejecting at emission time would drop entries that the
+            // post-inference boundary resolve in `check_program` would have made
+            // concrete.  The fail-closed contract (no `Ty::Var` crosses into HIR)
+            // is enforced at the output boundary by
+            // `validate_record_init_type_args_output_contract` in `admissibility.rs`.
+            self.record_concrete_record_init_type_args(span, &type_args);
             Ty::Named {
                 name: name.to_string(),
                 args: type_args,
@@ -3716,6 +3759,9 @@ impl Checker {
                         .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
                 })
                 .collect();
+            // Emit unconditionally; see the struct-init branch above for the
+            // boundary-prune rationale and validator location.
+            self.record_concrete_record_init_type_args(span, &type_args);
             Ty::Named {
                 name: enum_name,
                 args: type_args,

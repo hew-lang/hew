@@ -268,6 +268,21 @@ impl Checker {
                 })
                 .collect();
 
+        // Same boundary resolution for record-init type args.
+        // Mirrors `resolved_call_type_args` so downstream consumers see
+        // fully-resolved, literal-defaulted `Ty` values.
+        let mut resolved_record_init_type_args: HashMap<SpanKey, Vec<Ty>> =
+            std::mem::take(&mut self.record_init_type_args)
+                .into_iter()
+                .map(|(k, args)| {
+                    let resolved: Vec<Ty> = args
+                        .iter()
+                        .map(|a| self.subst.resolve(a).materialize_literal_defaults())
+                        .collect();
+                    (k, resolved)
+                })
+                .collect();
+
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
         // substitution so the enrichment layer sees concrete types, then
@@ -304,6 +319,7 @@ impl Checker {
             &mut resolved_type_defs,
             &mut resolved_fn_sigs,
             &mut resolved_call_type_args,
+            &mut resolved_record_init_type_args,
         );
         let mut resolved_lowering_facts = self.finalize_lowering_facts();
         admissibility::validate_lowering_facts_output_contract(
@@ -342,6 +358,7 @@ impl Checker {
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
             call_type_args: resolved_call_type_args,
+            record_init_type_args: resolved_record_init_type_args,
             stack_hints: std::mem::take(&mut self.stack_hints),
         };
 

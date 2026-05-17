@@ -653,6 +653,7 @@ mod tests {
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),

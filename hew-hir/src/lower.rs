@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, Expr, FnDecl, Item, LambdaParam, Literal,
-    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, ResourceMarker, SelectArm, Span, Spanned,
-    Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
+    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker,
+    SelectArm, Span, Spanned, Stmt, TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
     AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
@@ -17,8 +17,8 @@ use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
     HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
     HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirModule, HirSelect, HirSelectArm, HirSelectArmKind,
-    HirStmt, HirStmtKind, HirTypeDecl,
+    HirMachineState, HirMachineTransition, HirModule, HirRecordDecl, HirSelect, HirSelectArm,
+    HirSelectArmKind, HirStmt, HirStmtKind, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -120,6 +120,9 @@ pub fn lower_program(
             }
             Item::Actor(actor) => {
                 items.push(HirItem::Actor(ctx.lower_actor(actor, span.clone())));
+            }
+            Item::Record(decl) => {
+                items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
             }
             _ => ctx.unsupported(span.clone(), "top-level-item", "slice-2"),
         }
@@ -383,6 +386,46 @@ impl LowerCtx {
             name: decl.name.clone(),
             marker: decl.resource_marker,
             consuming_methods: decl.consuming_methods.clone(),
+            fields,
+            span,
+        }
+    }
+
+    /// Lower a `record` declaration into `HirRecordDecl`.
+    ///
+    /// Only named-form records produce a field list; tuple-form records have an
+    /// empty field list (`HirRecordDecl.fields` is empty) because their
+    /// constructor is a `Call` (`R(a, b)`) rather than a `StructInit`
+    /// (`R { x: a, y: b }`). Tuple records are never looked up in the
+    /// `record_field_orders` table — the MIR producer only handles named-form.
+    fn lower_record_decl(
+        &mut self,
+        decl: &RecordDecl,
+        span: std::ops::Range<usize>,
+    ) -> HirRecordDecl {
+        let type_params: Vec<String> = decl.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+
+        let fields: Vec<HirField> = match &decl.kind {
+            RecordKind::Named(record_fields) => record_fields
+                .iter()
+                .map(|rf| HirField {
+                    name: rf.name.clone(),
+                    ty: self.lower_type(&rf.ty),
+                    span: rf.span.clone(),
+                })
+                .collect(),
+            // Tuple records have no named fields; their constructor fn handles
+            // positional argument binding.
+            RecordKind::Tuple(_) => vec![],
+        };
+
+        HirRecordDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            name: decl.name.clone(),
+            type_params,
             fields,
             span,
         }

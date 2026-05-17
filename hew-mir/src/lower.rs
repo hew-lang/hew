@@ -10,9 +10,10 @@ use hew_types::ResolvedTy;
 use crate::dataflow;
 use crate::model::{
     BasicBlock, BlockKind, CheckedMirFunction, CmpPred, DecisionFact, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, Instr, IntArithOp,
-    IntSignedness, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction, TrapKind,
+    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr,
+    IntArithOp, IntSignedness, IrPipeline, LambdaCapture, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, Strategy, Terminator, ThirFunction,
+    TrapKind,
 };
 
 /// Classify a resolved integer type as signed or unsigned. Returns
@@ -165,10 +166,29 @@ pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
     let mut elaborated_mir = Vec::new();
     let mut diagnostics = Vec::new();
 
+    // Build the declaration-order field descriptor table once for the whole module.
+    // Keys are record type names; values are (field_name, field_ty) pairs in
+    // declaration order. Used by StructInit and FieldAccess lowering to resolve
+    // a field name to its 0-based FieldOffset and to look up field types for
+    // intermediate place allocation during functional-update desugaring. Tuple
+    // records have an empty field list and their constructor is a Call, not a
+    // StructInit, so they never appear here.
+    let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
+    for item in &module.items {
+        if let HirItem::Record(decl) = item {
+            let fields: Vec<(String, ResolvedTy)> = decl
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), f.ty.clone()))
+                .collect();
+            record_field_orders.insert(decl.name.clone(), fields);
+        }
+    }
+
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
-                let lowered = lower_function(func, &module.type_classes);
+                let lowered = lower_function(func, &module.type_classes, &record_field_orders);
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
                 checked_mir.push(lowered.checked);
@@ -203,9 +223,14 @@ struct LoweredFunction {
     diagnostics: Vec<MirDiagnostic>,
 }
 
-fn lower_function(func: &HirFn, type_classes: &hew_hir::TypeClassTable) -> LoweredFunction {
+fn lower_function(
+    func: &HirFn,
+    type_classes: &hew_hir::TypeClassTable,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+) -> LoweredFunction {
     let mut builder = Builder {
         type_classes: type_classes.clone(),
+        record_field_orders: record_field_orders.clone(),
         ..Builder::default()
     };
     builder.function_body(func);
@@ -483,26 +508,21 @@ struct Builder {
     /// WHAT: replace with `Place::Projection { base, index }` variant or a
     ///   `Terminator::Call`-style multi-dest encoding.
     tuple_decomp: HashMap<u32, Vec<Place>>,
-    /// Declaration-order field names for every `record` type in the module.
+    /// Declaration-order field descriptors for every `record` type in the module.
     ///
     /// Key: record type name (e.g. `"Point"`).
-    /// Value: field names in declaration order (e.g. `["x", "y"]`).
+    /// Value: `(field_name, field_ty)` pairs in declaration order.
     ///
     /// Used by `StructInit` and `FieldAccess` lowering to resolve a field
-    /// name to its 0-based `FieldOffset`. Built from `HirItem::Record`
-    /// items in `lower_hir_module` and threaded through to the builder.
+    /// name to its 0-based `FieldOffset` and to look up the field type when
+    /// allocating intermediate places for functional-update base reads.
+    /// Built from `HirItem::Record` items in `lower_hir_module` and threaded
+    /// through to the builder.
     ///
     /// Tuple records have an empty field list by design (`HirRecordDecl.fields`
     /// is empty for tuple records — their constructor is a `Call`, not a
     /// `StructInit`). They will never be looked up here.
-    #[allow(
-        dead_code,
-        reason = "A-6b lays the foundation (variants + record-field-order table); \
-                  the HirExprKind::StructInit/FieldAccess producer wiring is the \
-                  next slice (A-6c). Until then this field is populated by \
-                  lower_hir_module but not yet consulted."
-    )]
-    record_field_orders: HashMap<String, Vec<String>>,
+    record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
 }
 
 impl Builder {
@@ -881,19 +901,163 @@ impl Builder {
                 then_expr,
                 else_expr,
             } => self.lower_if(condition, then_expr, else_expr.as_deref(), &expr.ty),
-            HirExprKind::StructInit { fields, .. } => {
-                for (_, field) in fields {
-                    let _ = self.lower_value(field);
+            HirExprKind::StructInit {
+                name, fields, base, ..
+            } => {
+                // Look up the declaration-order field list for this record.
+                // If it's missing, the checker allowed a type that was never
+                // registered — fail closed rather than silently producing
+                // malformed MIR.
+                let field_order = if let Some(order) = self.record_field_orders.get(name.as_str()) {
+                    order.clone()
+                } else {
+                    // Walk sub-expressions for checker-stream coverage.
+                    for (_, fexpr) in fields {
+                        let _ = self.lower_value(fexpr);
+                    }
+                    if let Some(base_expr) = base {
+                        let _ = self.lower_value(base_expr);
+                    }
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::CutoverUnsupported {
+                            construct: format!(
+                                "record type `{name}` (not registered in field-order table)"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "record type was not found in the field-order table; \
+                               this is a checker bug (the type must be declared before use)"
+                            .to_string(),
+                    });
+                    return None;
+                };
+
+                // Lower each explicit field value to a Place, keyed by name.
+                let mut explicit: HashMap<String, Place> = HashMap::new();
+                for (fname, fexpr) in fields {
+                    if let Some(place) = self.lower_value(fexpr) {
+                        explicit.insert(fname.clone(), place);
+                    }
                 }
-                None
+
+                // Lower the functional-update base, if any.
+                let base_place: Option<Place> = if let Some(base_expr) = base {
+                    self.lower_value(base_expr)
+                } else {
+                    None
+                };
+
+                // Build the (offset, source) pairs in declaration order.
+                // For each field: use the explicit value if present; otherwise
+                // emit a RecordFieldLoad from the base and use that intermediate.
+                let mut field_pairs: Vec<(FieldOffset, Place)> = Vec::new();
+                for (idx, (fname, fty)) in field_order.iter().enumerate() {
+                    let offset = FieldOffset(
+                        u32::try_from(idx)
+                            .expect("record field count exceeds u32::MAX — impossible in Hew"),
+                    );
+                    if let Some(&src) = explicit.get(fname.as_str()) {
+                        field_pairs.push((offset, src));
+                    } else if let Some(base_rec) = base_place {
+                        // Field absent from the explicit list — load it from base.
+                        // The intermediate place carries the declared field type.
+                        let intermediate = self.alloc_local(fty.clone());
+                        self.instructions.push(Instr::RecordFieldLoad {
+                            record: base_rec,
+                            field_offset: offset,
+                            dest: intermediate,
+                        });
+                        field_pairs.push((offset, intermediate));
+                    } else {
+                        // No explicit value and no base — checker should have
+                        // rejected this; fail closed.
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "record `{name}` missing field `{fname}` with no functional-update base"
+                                ),
+                                site: expr.site,
+                            },
+                            note: "field absent from initialiser and no `..base` provided; \
+                                   the checker should have rejected this program"
+                                .to_string(),
+                        });
+                        return None;
+                    }
+                }
+
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::RecordInit {
+                    ty: expr.ty.clone(),
+                    fields: field_pairs,
+                    dest,
+                });
+                Some(dest)
             }
-            HirExprKind::FieldAccess { object, .. } => {
-                // A-6 added the HIR FieldAccess variant. MIR producer for
-                // record field-load is A-6b; for now walk the object so
-                // nested diagnostics still surface and fail closed by
-                // returning None.
-                let _ = self.lower_value(object);
-                None
+            HirExprKind::FieldAccess { object, field } => {
+                // Resolve the record type name from the object's type so we can
+                // look up the field offset in the field-order table.
+                let type_name = match &object.ty {
+                    ResolvedTy::Named { name, .. } => name.clone(),
+                    other => {
+                        let _ = self.lower_value(object);
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!("field access on non-named type `{other:?}`"),
+                                site: expr.site,
+                            },
+                            note: "field access is only supported on named record types"
+                                .to_string(),
+                        });
+                        return None;
+                    }
+                };
+                let field_order =
+                    if let Some(order) = self.record_field_orders.get(type_name.as_str()) {
+                        order.clone()
+                    } else {
+                        let _ = self.lower_value(object);
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CutoverUnsupported {
+                                construct: format!(
+                                    "field access on unregistered record type `{type_name}`"
+                                ),
+                                site: expr.site,
+                            },
+                            note: "record type was not found in the field-order table; \
+                                   this is a checker bug"
+                                .to_string(),
+                        });
+                        return None;
+                    };
+                let field_offset = if let Some(idx) =
+                    field_order.iter().position(|(f, _)| f == field.as_str())
+                {
+                    FieldOffset(
+                        u32::try_from(idx)
+                            .expect("field index exceeds u32::MAX — impossible in Hew"),
+                    )
+                } else {
+                    let _ = self.lower_value(object);
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::CutoverUnsupported {
+                            construct: format!("unknown field `{field}` on record `{type_name}`"),
+                            site: expr.site,
+                        },
+                        note: "field not found in declaration-order table; \
+                                   this is a checker bug"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let record_place = self.lower_value(object)?;
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::RecordFieldLoad {
+                    record: record_place,
+                    field_offset,
+                    dest,
+                });
+                Some(dest)
             }
             HirExprKind::Scope { body } => {
                 // TODO: MIR lowering for scope{} bodies. Required runtime contract:

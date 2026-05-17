@@ -900,6 +900,48 @@ pub enum Instr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldOffset(pub u32);
 
+/// Discriminates the two kinds of yield-check site the cooperate-site
+/// analysis identifies. Consumed by codegen to select the injection point
+/// within the LLVM function.
+///
+/// - `FunctionEntry`: cooperate call emitted in the function prologue,
+///   after alloca slots are set up and before the first user instruction.
+///   Present for every non-leaf function. Ensures that calling into a
+///   non-trivial function always decrements the reductions counter.
+///
+/// - `LoopBackEdge`: cooperate call emitted in the back-edge block —
+///   the block whose terminator is `Goto { target }` where `target` is
+///   an ancestor block in the CFG. Armed but dormant in v0.5 because the
+///   current MIR lowering only produces acyclic CFGs (loop lowering is
+///   deferred). The field is populated by the analysis when synthetic
+///   back-edge CFGs are constructed in tests and fires automatically once
+///   loop lowering lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CooperateKind {
+    /// Inject cooperate at function entry (prologue).
+    FunctionEntry,
+    /// Inject cooperate at the loop back-edge block (before the `Goto`
+    /// terminator that returns control to the loop header).
+    LoopBackEdge,
+}
+
+/// One cooperate-check site identified by the cooperate-site analysis.
+/// Carried by `CheckedMirFunction::cooperate_sites` for codegen to consume.
+///
+/// `bb_id` identifies the block where the cooperate call must be injected;
+/// `kind` tells codegen whether this is a function-entry or loop-back-edge
+/// site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CooperateSite {
+    /// Basic-block id in the owning function's `blocks` vec. For
+    /// `FunctionEntry`, this is always block 0 (the entry block). For
+    /// `LoopBackEdge`, this is the id of the block whose `Goto`
+    /// terminator targets an earlier block.
+    pub bb_id: u32,
+    /// Injection kind — function-entry prologue or loop back-edge.
+    pub kind: CooperateKind,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedMirFunction {
     pub name: String,
@@ -914,6 +956,22 @@ pub struct CheckedMirFunction {
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
     pub checks: Vec<MirCheck>,
+    /// Yield-check injection sites identified by the cooperate-site analysis.
+    ///
+    /// Codegen iterates this vec to decide where to emit
+    /// `call @hew_actor_cooperate()`. Empty means the function is a leaf
+    /// (< 10 MIR statements, no calls, no loops) or has a yield-equivalent
+    /// entry terminator (receive handler) — no cooperate call is emitted.
+    ///
+    /// WHY here and not on `ElaboratedMirFunction`: cooperate-site injection
+    /// is a pure analysis result with no effect on drop elaboration or
+    /// type-checker decisions. Placing it on `CheckedMirFunction` lets
+    /// codegen read it without threading through the elaboration pass.
+    ///
+    /// WHEN-OBSOLETE: if a future change decides cooperate injection interacts
+    /// with drop elaboration (e.g. a cooperate inside a cleanup block), the
+    /// field can be migrated to `ElaboratedMirFunction` at that time.
+    pub cooperate_sites: Vec<CooperateSite>,
 }
 
 /// Per-function legality findings produced by Checked MIR. A

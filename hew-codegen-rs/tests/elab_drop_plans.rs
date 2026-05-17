@@ -81,6 +81,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
             blocks: raw_blocks,
             decisions: vec![],
             checks: vec![],
+            cooperate_sites: vec![],
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
@@ -223,6 +224,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
             blocks: raw_blocks,
             decisions: vec![],
             checks: vec![],
+            cooperate_sites: vec![],
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),

@@ -65,7 +65,9 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use hew_hir::{BindingId, IntentKind, SiteId, TypeClassTable, ValueClass};
 use hew_types::ResolvedTy;
 
-use crate::model::{BasicBlock, MirCheck, MirStatement, Terminator};
+use crate::model::{
+    BasicBlock, CooperateKind, CooperateSite, Instr, MirCheck, MirStatement, Terminator,
+};
 
 /// Per-binding state in the four-state lattice. `Uninit` is the
 /// implicit default — a binding not present in the state map is
@@ -472,11 +474,191 @@ pub fn analyze(
     }
 }
 
+// ---------- Cooperate-site analysis ----------
+
+/// Threshold for the leaf-function heuristic. Functions with fewer than
+/// this many total `MirStatement` entries across all blocks, no call
+/// instructions, and no back-edges are classified as leaves and receive
+/// no cooperate-check site.
+///
+/// WHY 10: matches the skip-eligibility threshold ("≤ N … Threshold: 8
+/// instructions"). We use 10 MIR-statement entries (the checker-
+/// authority stream) as the observable boundary; the backend `Instr`
+/// count is checked separately for call instructions. The value is a
+/// first-cut conservative estimate — a future performance lane can lower
+/// the threshold if benchmarks show overhead from injecting into short
+/// non-leaf functions.
+///
+/// WHEN-OBSOLETE: a future tuning pass may expose this as a named
+/// constant the caller passes in so integration tests can override it.
+const LEAF_STATEMENT_THRESHOLD: usize = 10;
+
+/// Determine whether a block has a back-edge terminator — i.e., a
+/// `Goto` whose target block id is less than the current block's id.
+///
+/// WHY `target < block.id`: The MIR lowering emits blocks in
+/// monotonically increasing id order, with entry block id = 0. A
+/// forward edge always targets a block with a higher id than the
+/// source; a back-edge (loop) targets an earlier block. The invariant
+/// holds for all CFGs the v0.5 lowering constructs — forward Gotos
+/// target the join block (always allocated after the arm blocks).
+/// Synthetic test CFGs must respect this convention.
+///
+/// WHEN-OBSOLETE: if a future lowering phase emits blocks in non-
+/// topological order, replace this predicate with a full DFS-ancestry
+/// check using a discovered DFS tree over the CFG.
+fn is_back_edge_goto(block: &BasicBlock) -> bool {
+    match block.terminator {
+        Terminator::Goto { target } => target < block.id,
+        _ => false,
+    }
+}
+
+/// Return true if a block contains a call instruction — `Instr::CallDirect`,
+/// `Instr::CallRuntimeAbi`, or `Terminator::Call`.
+///
+/// Used by the leaf-function heuristic: a function that calls other
+/// functions is not a leaf and cannot be skipped.
+fn block_has_call(block: &BasicBlock) -> bool {
+    let instr_has_call = block
+        .instructions
+        .iter()
+        .any(|i| matches!(i, Instr::CallDirect { .. } | Instr::CallRuntimeAbi(_)));
+    let terminator_is_call = matches!(block.terminator, Terminator::Call { .. });
+    instr_has_call || terminator_is_call
+}
+
+/// Classify whether a function is a short leaf that should receive no
+/// cooperate-check site.
+///
+/// A function is a leaf when ALL of the following hold:
+/// 1. Total `MirStatement` count across all blocks is < `LEAF_STATEMENT_THRESHOLD`.
+/// 2. No block contains a `CallDirect`, `CallRuntimeAbi`, or `Terminator::Call`.
+/// 3. No block has a back-edge `Goto` (no loops).
+///
+/// WHY factor this out: the future `#[no_reductions_check]` attribute and
+/// the receive-handler skip will hook into this predicate. Keeping it as
+/// a named function makes the extension point visible without requiring an
+/// `Instr` variant or a new MIR pass.
+///
+/// WHEN-OBSOLETE: once a caller-supplied eligibility override (attribute
+/// flag) is wired, that gates this check entirely.
+fn is_leaf_function(blocks: &[BasicBlock]) -> bool {
+    let total_statements: usize = blocks.iter().map(|b| b.statements.len()).sum();
+    if total_statements >= LEAF_STATEMENT_THRESHOLD {
+        return false;
+    }
+    let has_call = blocks.iter().any(block_has_call);
+    if has_call {
+        return false;
+    }
+    let has_back_edge = blocks.iter().any(is_back_edge_goto);
+    if has_back_edge {
+        return false;
+    }
+    true
+}
+
+/// Yield-equivalent terminators already cause the actor to surrender the
+/// scheduler; no cooperate call is needed before them.
+///
+/// Returns `true` when a block's terminator is a yield-equivalent:
+/// `Yield`, `Send`, `Ask`, or `Select`. `Terminator::Call` is NOT
+/// yield-equivalent — it is a synchronous function call.
+///
+/// WHY checked per-block: the suppression rule ("don't add a cooperate
+/// site whose entry terminator is yield-equivalent") applies at the
+/// function-entry block only in theory (a function that immediately
+/// yields doesn't need a prologue cooperate). In practice the v0.5 spine
+/// never constructs these terminators, so the suppressor is a no-op; it
+/// is factored out so codegen can extend it without touching the main logic.
+fn is_yield_equivalent(block: &BasicBlock) -> bool {
+    matches!(
+        block.terminator,
+        Terminator::Yield { .. }
+            | Terminator::Send { .. }
+            | Terminator::Ask { .. }
+            | Terminator::Select { .. }
+    )
+}
+
+/// Compute the cooperate-check sites for a function.
+///
+/// Returns a `Vec<CooperateSite>` that codegen injects
+/// `call @hew_actor_cooperate()` at. Empty means no injection is
+/// needed (leaf function or yield-equivalent first block).
+///
+/// ## Algorithm
+///
+/// 1. **Leaf check**: if the function is a short leaf (`is_leaf_function`),
+///    return an empty vec.
+/// 2. **Function-entry site**: add a `FunctionEntry` site for block 0
+///    unless that block's terminator is yield-equivalent (the actor
+///    will cooperate via the yield anyway).
+/// 3. **Back-edge sweep**: for every block whose `Goto` target id is
+///    less than the block's own id, add a `LoopBackEdge` site — unless
+///    the back-edge target block itself has a yield-equivalent
+///    terminator (the loop header yields on every iteration).
+///
+/// ## Skip-eligibility extension point
+///
+/// This function does NOT implement the `#[no_reductions_check]`
+/// attribute or the receive-handler skip. Both are wired via the same
+/// return-empty-vec pattern: before calling `compute_cooperate_sites`,
+/// the caller checks its eligibility predicate and skips the call if
+/// ineligible. This keeps the analysis pure and testable in isolation.
+///
+/// ## Acyclicity note (v0.5)
+///
+/// The v0.5 MIR lowering never constructs back-edges (loops are deferred).
+/// `LoopBackEdge` sites only appear for hand-built synthetic CFGs in tests.
+/// The code is armed and correct; it fires once the loop-lowering lane lands.
+#[must_use]
+pub fn compute_cooperate_sites(blocks: &[BasicBlock]) -> Vec<CooperateSite> {
+    if blocks.is_empty() || is_leaf_function(blocks) {
+        return Vec::new();
+    }
+
+    let mut sites: Vec<CooperateSite> = Vec::new();
+
+    // Function-entry site: block 0, unless its terminator already yields.
+    let entry_block = &blocks[0];
+    if !is_yield_equivalent(entry_block) {
+        sites.push(CooperateSite {
+            bb_id: 0,
+            kind: CooperateKind::FunctionEntry,
+        });
+    }
+
+    // Back-edge sites: every block whose Goto targets an earlier block.
+    // Suppress if the loop-header block itself has a yield-equivalent
+    // terminator (the actor already cooperates at the loop header).
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
+    for block in blocks {
+        if let Terminator::Goto { target } = block.terminator {
+            if target < block.id {
+                // Back-edge found. Check whether the loop-header block
+                // itself is yield-equivalent — if so, no cooperate needed.
+                let header_yields = by_id.get(&target).is_some_and(|h| is_yield_equivalent(h));
+                if !header_yields {
+                    sites.push(CooperateSite {
+                        bb_id: block.id,
+                        kind: CooperateKind::LoopBackEdge,
+                    });
+                }
+            }
+        }
+    }
+
+    sites
+}
+
 // ---------- Property tests for the lattice ----------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Place;
 
     fn states() -> Vec<BindingState> {
         vec![
@@ -713,6 +895,233 @@ mod tests {
     }
 
     // Original property tests below — kept for narrow-space coverage.
+
+    // ---------- Cooperate-site analysis tests ----------
+
+    /// Build a minimal `BasicBlock` for test CFG construction.
+    /// `statements` and `instructions` are empty — the cooperate-site
+    /// analysis only inspects the terminator and the statement count.
+    fn bb(id: u32, terminator: Terminator) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: vec![],
+            instructions: vec![],
+            terminator,
+        }
+    }
+
+    /// Build a `BasicBlock` with `n` dummy `MirStatement::Evaluate`
+    /// entries so the leaf heuristic can be tested at the threshold.
+    fn bb_with_stmts(id: u32, terminator: Terminator, n: usize) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: vec![
+                MirStatement::Evaluate {
+                    site: SiteId(0),
+                    ty: ResolvedTy::I64,
+                };
+                n
+            ],
+            instructions: vec![],
+            terminator,
+        }
+    }
+
+    /// A simple leaf function: two blocks, no loops, no calls, fewer than
+    /// `LEAF_STATEMENT_THRESHOLD` statements total.
+    ///
+    ///   block 0: stmt×0, Goto { target: 1 }
+    ///   block 1: stmt×0, Return
+    ///
+    /// Expected: zero sites (leaf skip).
+    #[test]
+    fn leaf_function_produces_no_sites() {
+        let blocks = vec![
+            bb(0, Terminator::Goto { target: 1 }),
+            bb(1, Terminator::Return),
+        ];
+        let sites = compute_cooperate_sites(&blocks);
+        assert!(
+            sites.is_empty(),
+            "leaf function should produce no cooperate sites, got {sites:?}"
+        );
+    }
+
+    /// A non-leaf return-only function (over the statement threshold, no loops).
+    ///
+    ///   block 0: stmt×10, Return
+    ///
+    /// Expected: one `FunctionEntry` site at bb 0.
+    #[test]
+    fn non_leaf_return_only_produces_function_entry() {
+        let blocks = vec![bb_with_stmts(
+            0,
+            Terminator::Return,
+            LEAF_STATEMENT_THRESHOLD,
+        )];
+        let sites = compute_cooperate_sites(&blocks);
+        assert_eq!(sites.len(), 1, "expected one cooperate site, got {sites:?}");
+        assert_eq!(
+            sites[0],
+            CooperateSite {
+                bb_id: 0,
+                kind: CooperateKind::FunctionEntry,
+            },
+            "wrong site: {sites:?}"
+        );
+    }
+
+    /// A non-leaf function with a single loop back-edge.
+    ///
+    /// Simulates: `fn loop_sum() -> int { for i in 0..100 { ... } }`.
+    /// The CFG has three non-leaf blocks:
+    ///
+    ///   block 0: stmt×10, Goto { target: 1 }   ← entry; Goto fwd = not a back-edge
+    ///   block 1: stmt×0,  Branch { then: 2, else: 3 } ← loop condition
+    ///   block 2: stmt×0,  Goto { target: 1 }   ← loop back-edge (2 > 1)
+    ///   block 3: stmt×0,  Return                ← loop exit
+    ///
+    /// Expected: `FunctionEntry` at bb 0 + `LoopBackEdge` at bb 2 = two sites.
+    #[test]
+    fn single_loop_produces_entry_and_back_edge_sites() {
+        let blocks = vec![
+            bb_with_stmts(0, Terminator::Goto { target: 1 }, LEAF_STATEMENT_THRESHOLD),
+            bb(
+                1,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 2,
+                    else_target: 3,
+                },
+            ),
+            bb(2, Terminator::Goto { target: 1 }), // back-edge: 2 > 1
+            bb(3, Terminator::Return),
+        ];
+        let sites = compute_cooperate_sites(&blocks);
+        assert_eq!(
+            sites.len(),
+            2,
+            "expected 2 sites (entry + back-edge), got {sites:?}"
+        );
+        assert!(
+            sites.contains(&CooperateSite {
+                bb_id: 0,
+                kind: CooperateKind::FunctionEntry,
+            }),
+            "missing FunctionEntry site: {sites:?}"
+        );
+        assert!(
+            sites.contains(&CooperateSite {
+                bb_id: 2,
+                kind: CooperateKind::LoopBackEdge,
+            }),
+            "missing LoopBackEdge site at bb 2: {sites:?}"
+        );
+    }
+
+    /// A non-leaf function with two nested loops.
+    ///
+    ///   block 0: stmt×10, Goto { target: 1 }    ← entry
+    ///   block 1: Branch { then: 2, else: 6 }     ← outer loop condition
+    ///   block 2: Branch { then: 3, else: 5 }     ← inner loop condition
+    ///   block 3: Goto { target: 2 }              ← inner back-edge (3 > 2)
+    ///   block 4: (unreachable — placeholder)      not needed; collapse to:
+    ///   block 5: Goto { target: 1 }              ← outer back-edge (5 > 1)
+    ///   block 6: Return                           ← exit
+    ///
+    /// Expected: `FunctionEntry` at bb 0 + two `LoopBackEdge` sites = 3 sites.
+    #[test]
+    fn nested_loops_produce_entry_and_two_back_edge_sites() {
+        let blocks = vec![
+            bb_with_stmts(0, Terminator::Goto { target: 1 }, LEAF_STATEMENT_THRESHOLD),
+            bb(
+                1,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 2,
+                    else_target: 6,
+                },
+            ),
+            bb(
+                2,
+                Terminator::Branch {
+                    cond: Place::Local(1),
+                    then_target: 3,
+                    else_target: 5,
+                },
+            ),
+            bb(3, Terminator::Goto { target: 2 }), // inner back-edge: 3 > 2
+            bb(5, Terminator::Goto { target: 1 }), // outer back-edge: 5 > 1
+            bb(6, Terminator::Return),
+        ];
+        let sites = compute_cooperate_sites(&blocks);
+        assert_eq!(
+            sites.len(),
+            3,
+            "expected 3 sites (entry + 2 back-edges), got {sites:?}"
+        );
+        assert!(
+            sites.contains(&CooperateSite {
+                bb_id: 0,
+                kind: CooperateKind::FunctionEntry,
+            }),
+            "missing FunctionEntry: {sites:?}"
+        );
+        assert!(
+            sites.contains(&CooperateSite {
+                bb_id: 3,
+                kind: CooperateKind::LoopBackEdge,
+            }),
+            "missing inner LoopBackEdge at bb 3: {sites:?}"
+        );
+        assert!(
+            sites.contains(&CooperateSite {
+                bb_id: 5,
+                kind: CooperateKind::LoopBackEdge,
+            }),
+            "missing outer LoopBackEdge at bb 5: {sites:?}"
+        );
+    }
+
+    /// A yield-equivalent entry block produces no sites.
+    ///
+    /// Simulates a receive handler: block 0's terminator is `Yield`, which
+    /// already causes the actor to cooperate with the scheduler. No
+    /// function-entry cooperate call is needed.
+    ///
+    ///   block 0: stmt×10, Yield { value: Local(0), next: 1 }
+    ///   block 1: stmt×0,  Return
+    ///
+    /// Expected: zero sites (yield-equivalent suppresses entry; no back-edges).
+    #[test]
+    fn yield_equivalent_entry_produces_no_sites() {
+        let blocks = vec![
+            bb_with_stmts(
+                0,
+                Terminator::Yield {
+                    value: Place::Local(0),
+                    next: 1,
+                },
+                LEAF_STATEMENT_THRESHOLD,
+            ),
+            bb(1, Terminator::Return),
+        ];
+        let sites = compute_cooperate_sites(&blocks);
+        assert!(
+            sites.is_empty(),
+            "yield-equivalent entry should suppress all cooperate sites, got {sites:?}"
+        );
+    }
+
+    /// Empty block list produces no sites (defensive guard).
+    #[test]
+    fn empty_blocks_produces_no_sites() {
+        let sites = compute_cooperate_sites(&[]);
+        assert!(
+            sites.is_empty(),
+            "empty CFG should produce no sites, got {sites:?}"
+        );
+    }
 
     #[test]
     fn meet_consumed_picks_earlier_site() {

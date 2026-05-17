@@ -117,6 +117,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
             blocks: raw_blocks.clone(),
             decisions: vec![],
             checks: vec![],
+            cooperate_sites: vec![],
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),

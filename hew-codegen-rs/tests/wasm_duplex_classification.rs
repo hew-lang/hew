@@ -82,6 +82,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
             blocks: raw_blocks,
             decisions: vec![],
             checks: vec![],
+            cooperate_sites: vec![],
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
@@ -138,6 +139,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
             blocks: raw_blocks,
             decisions: vec![],
             checks: vec![],
+            cooperate_sites: vec![],
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),
@@ -198,6 +200,7 @@ fn pipeline_no_duplex() -> IrPipeline {
             blocks: raw_blocks,
             decisions: vec![],
             checks: vec![],
+            cooperate_sites: vec![],
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "main".to_string(),

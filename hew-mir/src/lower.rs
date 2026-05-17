@@ -482,12 +482,18 @@ fn lower_function(
 
     collect_unknown_type_diagnostics(func, &builder, &mut diagnostics);
 
+    // Compute cooperate-check sites from the CFG. Empty for leaf functions
+    // (< 10 MIR statements, no calls, no loops). Codegen reads
+    // `cooperate_sites` to inject `call @hew_actor_cooperate()`.
+    let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+
     let checked = CheckedMirFunction {
         name: emit_name,
         return_ty: return_ty.clone(),
         blocks: raw.blocks.clone(),
         decisions: builder.decisions.clone(),
         checks: dataflow_result.checks.clone(),
+        cooperate_sites,
     };
     // Drop-elaboration pass. Consumes the CheckedMirFunction we just
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`

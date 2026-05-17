@@ -66,6 +66,7 @@ fn pipeline_with_task_abi_call(
             blocks: raw_blocks.clone(),
             decisions: vec![],
             checks: vec![],
+            cooperate_sites: vec![],
         }],
         elaborated_mir: vec![ElaboratedMirFunction {
             name: "probe".to_string(),

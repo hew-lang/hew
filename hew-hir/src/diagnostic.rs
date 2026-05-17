@@ -198,4 +198,26 @@ pub enum HirDiagnosticKind {
         /// Human-readable description of the `BoundaryError` discriminant.
         reason: String,
     },
+    /// A generic-function call's recorded `call_type_args` failed the
+    /// `ResolvedTy::from_ty` boundary conversion. Same shape as
+    /// `CheckerBoundaryViolation` but specific to the monomorphisation
+    /// side-table so the diagnostic message can point at the registry
+    /// path. Fail-closed per `checker-authority` (P0) — never silently
+    /// drop a poisoned `call_type_args` entry.
+    MonomorphisationCallTypeArgsViolation {
+        /// Callee name at the offending site.
+        callee: String,
+        /// Human-readable description of the `BoundaryError`.
+        reason: String,
+    },
+    /// HIR-lowering produced more distinct generic-function
+    /// monomorphisations than the configured cap admits. Almost always
+    /// the symptom of polymorphic recursion that — once G-1.b's
+    /// substitution lands — would expand without bound. G-1.a surfaces
+    /// the cap at the registry seam so downstream stages don't OOM.
+    MonomorphisationCapExceeded {
+        /// The configured cap (typically
+        /// `MONOMORPHISATION_REGISTRY_CAP`).
+        cap: usize,
+    },
 }

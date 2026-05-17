@@ -14,6 +14,7 @@ use hew_types::{
 use crate::builtin_type_classes::seed_builtin_type_classes;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, IdGen, ItemId, ResolvedRef};
+use crate::monomorph::{MonoKey, MonoRegistry, MONOMORPHISATION_REGISTRY_CAP};
 use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
     HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
@@ -39,15 +40,40 @@ struct FnEntry {
     id: ItemId,
     return_ty: ResolvedTy,
     param_tys: Vec<ResolvedTy>,
+    /// Source-declared generic type parameter names, in order. Empty for
+    /// non-generic functions. Consulted at `Expr::Call` lowering sites to
+    /// decide whether the callee is a generic top-level user fn that
+    /// requires a monomorphisation-registry entry.
+    type_params: Vec<String>,
 }
 
 #[must_use]
 pub fn lower_program(
     program: &Program,
     type_check_output: &TypeCheckOutput,
-    _ctx: &ResolutionCtx,
+    ctx: &ResolutionCtx,
 ) -> LowerOutput {
-    let mut ctx = LowerCtx::new(type_check_output);
+    lower_program_with_mono_cap(
+        program,
+        type_check_output,
+        ctx,
+        MONOMORPHISATION_REGISTRY_CAP,
+    )
+}
+
+/// Variant of [`lower_program`] with an explicit monomorphisation-registry
+/// cap. Intended for tests that exercise the
+/// `MonomorphisationCapExceeded` diagnostic with a small fixture; the
+/// production entry point [`lower_program`] always uses
+/// `MONOMORPHISATION_REGISTRY_CAP`.
+#[must_use]
+pub fn lower_program_with_mono_cap(
+    program: &Program,
+    type_check_output: &TypeCheckOutput,
+    _ctx: &ResolutionCtx,
+    mono_cap: usize,
+) -> LowerOutput {
+    let mut ctx = LowerCtx::new(type_check_output, mono_cap);
 
     // First pass: collect all function signatures so that forward and mutual
     // references in call expressions resolve to the correct return type.
@@ -61,12 +87,18 @@ pub fn lower_program(
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ty| ctx.lower_type(ty));
             let param_tys = func.params.iter().map(|p| ctx.lower_type(&p.ty)).collect();
+            let type_params = func
+                .type_params
+                .as_ref()
+                .map(|params| params.iter().map(|p| p.name.clone()).collect())
+                .unwrap_or_default();
             ctx.fn_registry.insert(
                 func.name.clone(),
                 FnEntry {
                     id,
                     return_ty,
                     param_tys,
+                    type_params,
                 },
             );
         }
@@ -135,10 +167,13 @@ pub fn lower_program(
         }
     }
 
+    let monomorphisations = ctx.mono_registry.into_vec();
+
     LowerOutput {
         module: HirModule {
             items,
             type_classes: ctx.type_classes,
+            monomorphisations,
         },
         diagnostics: ctx.diagnostics,
     }
@@ -190,17 +225,18 @@ struct LowerCtx {
     /// `mem::replace` so the outer self-binding doesn't leak into an inner
     /// lambda's classification.
     current_actor_self: Option<(BindingId, String)>,
-    /// Checker-resolved type arguments for generic function calls that lack
-    /// explicit type annotations.  Keyed by the call expression span.
+    /// Checker-resolved type arguments for generic function calls that
+    /// lack explicit type annotations. Keyed by the call expression span.
     ///
-    /// Passive pass-through: HIR does not yet lower generic monomorphization.
-    /// Future consumer: generic-call lowering in the MIR elaborator or E4
-    /// codegen once generic stdlib calls appear in v0.5 programs.
+    /// Consumed at `Expr::Call` lowering (G-1.a, producer-bridge wakeup):
+    /// every callsite whose callee is a generic top-level user fn
+    /// (non-empty `FnEntry.type_params`) is paired with the entry here
+    /// and inserted into `mono_registry`. A poisoned entry (failing the
+    /// `ResolvedTy::from_ty` boundary conversion) emits
+    /// `MonomorphisationCallTypeArgsViolation`; a generic callsite with
+    /// no entry at all is treated as the trivially-monomorphic case
+    /// (e.g. a builtin or runtime-symbol call) and skipped.
     /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is generic-call monomorphization in E4 codegen"
-    )]
     call_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Checker-authoritative ABI-selector facts for erased runtime types.
     /// Currently covers `HashSet` element-type dispatch (`i64`/`u64`/`str`
@@ -244,10 +280,20 @@ struct LowerCtx {
     /// (refcount-cycle-breaking strategy selection).
     /// (LESSONS: producer-bridge-before-codegen P1)
     cycle_capable_actors: HashSet<String>,
+    /// Distinct concrete instantiations of generic top-level user fns,
+    /// accumulated as `Expr::Call` lowering walks the program. Drained
+    /// into `HirModule.monomorphisations` at the end of `lower_program`.
+    /// Cap is configurable via `lower_program_with_mono_cap` for
+    /// fail-closed-diagnostic tests.
+    mono_registry: MonoRegistry,
+    /// Tracks whether the `MonomorphisationCapExceeded` diagnostic has
+    /// already been emitted for this lowering invocation, to avoid
+    /// spamming one diagnostic per overflowing callsite.
+    mono_cap_diag_emitted: bool,
 }
 
 impl LowerCtx {
-    fn new(tc_output: &TypeCheckOutput) -> Self {
+    fn new(tc_output: &TypeCheckOutput, mono_cap: usize) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
         // Seed compiler-known M2 substrate types before source-order TypeDecls.
         // This ensures `ValueClass::of_ty` resolves Duplex/Sink/Stream as
@@ -269,6 +315,183 @@ impl LowerCtx {
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
             assign_target_shapes: tc_output.assign_target_shapes.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
+            mono_registry: MonoRegistry::with_cap(mono_cap),
+            mono_cap_diag_emitted: false,
+        }
+    }
+
+    /// Try to record a generic-fn callsite in the monomorphisation
+    /// registry. Returns silently for non-generic callees, callees not
+    /// in `fn_registry` (builtins/runtime symbols/lambda bindings), and
+    /// callsites with no `call_type_args` entry — the latter being the
+    /// trivially-monomorphic case from the checker's perspective (an
+    /// explicit `<T>` instantiation that already resolved to concrete
+    /// types and was not recorded per `calls.rs:183` `record_call_type_args`).
+    ///
+    /// Emits `MonomorphisationCallTypeArgsViolation` when a recorded
+    /// entry fails the `ResolvedTy::from_ty` boundary conversion, and
+    /// `MonomorphisationCapExceeded` (at most once per invocation) when
+    /// the registry cap is hit.
+    /// Recursive check: does this `ResolvedTy` contain a `Named` whose
+    /// name matches any type parameter declared on any top-level fn in
+    /// this module? If so, the value is "still abstract" — the call
+    /// site we're looking at is inside a generic body and the type-arg
+    /// has not yet been substituted. Such entries must not enter the
+    /// monomorphisation registry; G-1.b's body substitution pass will
+    /// re-walk these callsites with substituted args and produce real
+    /// entries.
+    ///
+    /// The check is a conservative over-approximation: a user-declared
+    /// type with the same name as a type param (e.g. `pub type T { ... }`)
+    /// would also be skipped. This is fine — that's not idiomatic Hew,
+    /// and the checker uses `Named` for both cases; the only correct
+    /// resolution requires bound-symbol metadata the checker side-table
+    /// does not currently expose. Skipping is safe at G-1.a (no false
+    /// emissions); a real `T`-named user type still produces the entry
+    /// at the outer non-generic callsite where `type_args` is `[]`.
+    fn contains_abstract_type_param(&self, ty: &ResolvedTy) -> bool {
+        match ty {
+            ResolvedTy::Named { name, args } => {
+                if self.is_type_param_symbol(name) {
+                    return true;
+                }
+                args.iter().any(|a| self.contains_abstract_type_param(a))
+            }
+            ResolvedTy::Tuple(items) => items.iter().any(|t| self.contains_abstract_type_param(t)),
+            ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
+                self.contains_abstract_type_param(elem)
+            }
+            ResolvedTy::Function { params, ret } => {
+                params.iter().any(|p| self.contains_abstract_type_param(p))
+                    || self.contains_abstract_type_param(ret)
+            }
+            ResolvedTy::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                params.iter().any(|p| self.contains_abstract_type_param(p))
+                    || self.contains_abstract_type_param(ret)
+                    || captures
+                        .iter()
+                        .any(|c| self.contains_abstract_type_param(c))
+            }
+            ResolvedTy::Pointer { pointee, .. } => self.contains_abstract_type_param(pointee),
+            ResolvedTy::TraitObject { traits } => traits
+                .iter()
+                .any(|tb| tb.args.iter().any(|a| self.contains_abstract_type_param(a))),
+            ResolvedTy::Task(inner) => self.contains_abstract_type_param(inner),
+            _ => false,
+        }
+    }
+
+    /// Does `name` match any type-parameter declared on any top-level
+    /// fn in `fn_registry`? Used to filter "still-abstract" type args
+    /// from the monomorphisation registry. See
+    /// `contains_abstract_type_param` for the rationale.
+    fn is_type_param_symbol(&self, name: &str) -> bool {
+        self.fn_registry
+            .values()
+            .any(|entry| entry.type_params.iter().any(|p| p == name))
+    }
+
+    fn record_monomorphisation(
+        &mut self,
+        callee_expr: &hew_parser::ast::Expr,
+        call_span: &std::ops::Range<usize>,
+    ) {
+        let Expr::Identifier(name) = callee_expr else {
+            // Only direct-name callees are candidates for top-level-fn
+            // monomorphisation. Method calls, indirect calls through
+            // bindings, and complex callee expressions are out of scope
+            // for G-1.a.
+            return;
+        };
+        let Some(entry) = self.fn_registry.get(name) else {
+            // Callee is not a top-level user fn — skip (builtin,
+            // runtime-symbol, or unresolved). Filtering on `fn_registry`
+            // membership inherently excludes runtime-symbol callees
+            // since they have no AST `fn` item and therefore no
+            // `fn_registry` insertion (`lower_program` first pass at
+            // line 79).
+            return;
+        };
+        if entry.type_params.is_empty() {
+            // Non-generic callee — nothing to monomorphise.
+            return;
+        }
+        let origin = entry.id;
+        let origin_name = name.clone();
+        let key = SpanKey::from(call_span);
+        let Some(type_args_raw) = self.call_type_args.get(&key).cloned() else {
+            // Generic callee with no recorded type args at this site.
+            // The checker records every callsite whose freshened type
+            // args were resolved to fully concrete `Ty`s
+            // (`calls.rs:78`); the only ways to miss a site are
+            // (a) an explicit `<T>` syntax that doesn't re-record
+            //     (`calls.rs:183`'s `record_call_type_args` guard), or
+            // (b) the call failed to type-check.
+            // In (a) the call is trivially monomorphic at the source
+            // surface but downstream stages still need a registry
+            // entry — that wiring lands in G-1.b once the explicit
+            // type-args path is examined end-to-end.
+            // (Per plan G-1.a: do not re-infer; treat as out of scope.)
+            return;
+        };
+        let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
+        for ty in &type_args_raw {
+            match ResolvedTy::from_ty(ty) {
+                Ok(resolved) => type_args.push(resolved),
+                Err(err) => {
+                    // Fail-closed: poisoned side-table for this call.
+                    // Emit a diagnostic; skip the registry entry so the
+                    // downstream MIR/LLVM emit doesn't reach an
+                    // unresolved type. (LESSONS: checker-output-boundary P0)
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
+                            callee: origin_name.clone(),
+                            reason: err.to_string(),
+                        },
+                        call_span.clone(),
+                        "checker-authoritative call_type_args entry failed boundary conversion",
+                    ));
+                    return;
+                }
+            }
+        }
+        // Skip "still-abstract" entries — call sites inside a generic
+        // body where the type arg is `T` (the surrounding fn's own
+        // type-param symbol) rather than a concrete substitution.
+        // These appear with `ResolvedTy::Named { name: "T", args: [] }`
+        // because the checker treats unbound type params as opaque
+        // named types for body-checking purposes. G-1.b's substitution
+        // pass will re-walk these sites with concrete args.
+        if type_args
+            .iter()
+            .any(|t| self.contains_abstract_type_param(t))
+        {
+            return;
+        }
+        let mono_key = MonoKey {
+            origin,
+            origin_name: origin_name.clone(),
+            type_args,
+        };
+        match self.mono_registry.insert(mono_key) {
+            Ok(_) => {}
+            Err(()) => {
+                if !self.mono_cap_diag_emitted {
+                    self.mono_cap_diag_emitted = true;
+                    let cap = self.mono_registry.cap();
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::MonomorphisationCapExceeded { cap },
+                        call_span.clone(),
+                        "too many distinct generic-function instantiations; the \
+                         compiler refuses to monomorphise beyond the configured \
+                         cap (suspect polymorphic recursion or runaway inference)",
+                    ));
+                }
+            }
         }
     }
 }
@@ -1318,6 +1541,14 @@ impl LowerCtx {
                     .iter()
                     .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
                     .collect();
+                // G-1.a: record the per-instantiation monomorphisation if
+                // the callee is a generic top-level user fn. Direct-name
+                // callees only; `record_monomorphisation` filters out
+                // non-generic callees, non-`fn_registry` callees (builtins,
+                // runtime symbols, local bindings), and callsites the
+                // checker did not record. Fail-closed on poisoned entries
+                // and on registry-cap exhaustion.
+                self.record_monomorphisation(&function.0, &span);
                 // Checker authority takes precedence: consult expr_types at the
                 // full call-expression span.  The checker records the call result
                 // type here — including for checker-registered builtins like

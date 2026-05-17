@@ -2,6 +2,7 @@ use hew_parser::ast::{BinaryOp, OverflowPolicy, ResourceMarker, Span};
 use hew_types::ResolvedTy;
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
+use crate::monomorph::MonomorphizedFn;
 use crate::value_class::TypeClassTable;
 use crate::{IntentKind, ValueClass};
 
@@ -20,6 +21,20 @@ pub struct HirModule {
     /// reads from here. No phase re-derives the answer by walking the parser
     /// AST. LESSONS: `type-info-survival`.
     pub type_classes: TypeClassTable,
+    /// Distinct generic-function instantiations observed at call sites in
+    /// this module. Populated from the checker's `call_type_args`
+    /// side-table during HIR lowering (G-1.a). Each entry pairs a
+    /// generic origin `ItemId` with a concrete `Vec<ResolvedTy>` and a
+    /// downstream-stable mangled symbol name. Insertion-ordered for
+    /// deterministic codegen.
+    ///
+    /// Empty when no generic-fn callsites exist (a fully monomorphic
+    /// program). Downstream MIR (G-1.b) and LLVM (G-1.c) iterate this
+    /// list to emit one specialised function per entry.
+    ///
+    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// `checker-authority` (P0).
+    pub monomorphisations: Vec<MonomorphizedFn>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

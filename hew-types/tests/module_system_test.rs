@@ -326,26 +326,26 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     let root_source = r#"
         import myapp::widgets::*;
 
-        fn main() -> String {
+        fn main() -> string {
             describe(Label { text: "hello" })
         }
     "#;
     let module_source = r"
         pub trait Describable {
-            fn describe(val: Self) -> String;
+            fn describe(val: Self) -> string;
         }
 
         pub type Label {
-            text: String;
+            text: string;
         }
 
         impl Describable for Label {
-            fn describe(label: Label) -> String {
+            fn describe(label: Label) -> string {
                 label.text
             }
         }
 
-        pub fn describe<T: Describable>(item: T) -> String {
+        pub fn describe<T: Describable>(item: T) -> string {
             item.describe()
         }
     ";

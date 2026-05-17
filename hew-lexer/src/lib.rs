@@ -800,7 +800,7 @@ mod tests {
         assert_eq!(toks.len(), 70);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
-        assert_eq!(toks[67], Token::Is);
+        assert_eq!(toks[69], Token::Is);
     }
 
     #[test]

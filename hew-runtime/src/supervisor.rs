@@ -2203,6 +2203,202 @@ mod tests {
             hew_supervisor_stop(sup);
         }
     }
+
+    // ---------------------------------------------------------------------------
+    // Tests for hew_supervisor_child_get and hew_supervisor_nested_get
+    // ---------------------------------------------------------------------------
+
+    /// A running child returns Live with its actor pointer.
+    #[test]
+    fn child_get_live_returns_handle() {
+        // SAFETY: test owns the supervisor tree; cleans up after assertions.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+
+            let result = hew_supervisor_child_get(sup, 0);
+            assert_eq!(result.tag, 0, "expected Live (tag=0)");
+            assert_eq!(result.reason, ChildSlotReason::Ok as u8);
+            assert_eq!(result.handle, child);
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// An out-of-range key returns Dead(UnknownSlot).
+    #[test]
+    fn child_get_unknown_key_returns_dead_unknown_slot() {
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+
+            // Key 1 is out of range (only key 0 is declared).
+            let result = hew_supervisor_child_get(sup, 1);
+            assert_eq!(result.tag, 2, "expected Dead (tag=2)");
+            assert_eq!(result.reason, ChildSlotReason::UnknownSlot as u8);
+            assert!(result.handle.is_null());
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// A null supervisor pointer returns Dead(SupervisorShutdown).
+    #[test]
+    fn child_get_null_sup_returns_dead_supervisor_shutdown() {
+        // SAFETY: null pointer is the input we are testing; the function must
+        // handle it gracefully and return Dead(SupervisorShutdown) without UB.
+        let result = unsafe { hew_supervisor_child_get(ptr::null_mut(), 0) };
+        assert_eq!(result.tag, 2, "expected Dead (tag=2)");
+        assert_eq!(result.reason, ChildSlotReason::SupervisorShutdown as u8);
+        assert!(result.handle.is_null());
+    }
+
+    /// After `hew_supervisor_stop`, the supervisor has `running == 0` and
+    /// subsequent lookups return Dead(SupervisorShutdown).
+    #[test]
+    fn child_get_stopped_supervisor_returns_dead_supervisor_shutdown() {
+        // SAFETY: test owns the supervisor tree; stop is called before the
+        // pointer is last used.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+
+            // Force running to 0 directly so we can query without spawning threads.
+            (*sup).running.store(0, Ordering::Release);
+
+            let result = hew_supervisor_child_get(sup, 0);
+            assert_eq!(result.tag, 2, "expected Dead (tag=2)");
+            assert_eq!(result.reason, ChildSlotReason::SupervisorShutdown as u8);
+            assert!(result.handle.is_null());
+
+            // Restore to allow normal stop.
+            (*sup).running.store(1, Ordering::Release);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// While the slot is null (simulating mid-restart), the lookup returns
+    /// Transient(Restarting).
+    #[test]
+    fn child_get_null_slot_returns_transient_restarting() {
+        // SAFETY: test owns the supervisor tree; we manually null the slot to
+        // simulate the restart-in-progress window, then restore it.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+
+            // Simulate the restart-in-progress window: null the slot under lock.
+            store_child_slot(&mut *sup, 0, ptr::null_mut());
+
+            let result = hew_supervisor_child_get(sup, 0);
+            assert_eq!(result.tag, 1, "expected Transient (tag=1)");
+            assert_eq!(result.reason, ChildSlotReason::Restarting as u8);
+            assert!(result.handle.is_null());
+
+            // Restore the slot so teardown can reach the actor.
+            store_child_slot(&mut *sup, 0, child);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// When the circuit breaker is OPEN (state == 1), a null slot returns
+    /// Transient(CircuitOpen).
+    #[test]
+    fn child_get_circuit_open_null_slot_returns_transient_circuit_open() {
+        // SAFETY: test owns the supervisor tree; we manually set state fields.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+
+            // Null the slot and open the circuit breaker.
+            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            (&mut (*sup).child_specs)[0].circuit_breaker.state = 1; // HEW_CIRCUIT_BREAKER_OPEN
+
+            let result = hew_supervisor_child_get(sup, 0);
+            assert_eq!(result.tag, 1, "expected Transient (tag=1)");
+            assert_eq!(result.reason, ChildSlotReason::CircuitOpen as u8);
+            assert!(result.handle.is_null());
+
+            // Restore before teardown.
+            (&mut (*sup).child_specs)[0].circuit_breaker.state = 0; // HEW_CIRCUIT_BREAKER_CLOSED
+            store_child_slot(&mut *sup, 0, child);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// When `next_restart_time_ns` is in the future (backoff window active),
+    /// a null slot returns Transient(BackoffDelay).
+    #[test]
+    fn child_get_backoff_active_null_slot_returns_transient_backoff_delay() {
+        // SAFETY: test owns the supervisor tree; we manually set next_restart_time_ns.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+
+            // Null the slot and set the backoff deadline far in the future.
+            store_child_slot(&mut *sup, 0, ptr::null_mut());
+            // 1 hour from now in nanoseconds
+            (&mut (*sup).child_specs)[0].next_restart_time_ns =
+                monotonic_time_ns().saturating_add(3_600_000_000_000);
+
+            let result = hew_supervisor_child_get(sup, 0);
+            assert_eq!(result.tag, 1, "expected Transient (tag=1)");
+            assert_eq!(result.reason, ChildSlotReason::BackoffDelay as u8);
+            assert!(result.handle.is_null());
+
+            // Restore before teardown.
+            (&mut (*sup).child_specs)[0].next_restart_time_ns = 0;
+            store_child_slot(&mut *sup, 0, child);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// Verify `ChildLookupResult` is 16 bytes and has the expected field layout.
+    #[test]
+    fn child_lookup_result_size_and_layout() {
+        use std::mem;
+        assert_eq!(
+            mem::size_of::<ChildLookupResult>(),
+            16,
+            "ChildLookupResult must be 16 bytes for C ABI compatibility"
+        );
+        assert_eq!(
+            mem::align_of::<ChildLookupResult>(),
+            mem::align_of::<*mut HewActor>(),
+            "ChildLookupResult must align to pointer size"
+        );
+    }
+
+    /// A non-null child supervisor returns Live with the bit-cast pointer.
+    #[test]
+    fn nested_get_live_returns_handle() {
+        // SAFETY: test owns both supervisor trees; cleans up after assertions.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let child_sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
+            assert!(!child_sup.is_null());
+            assert_eq!(hew_supervisor_add_child_supervisor(sup, child_sup), 0);
+
+            let result = hew_supervisor_nested_get(sup, 0);
+            assert_eq!(result.tag, 0, "expected Live (tag=0)");
+            assert_eq!(result.reason, ChildSlotReason::Ok as u8);
+            // The handle carries the *mut HewSupervisor bit-pattern.
+            assert_eq!(result.handle, child_sup.cast::<HewActor>());
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// A key beyond `child_supervisors.len()` returns `Dead(UnknownSlot)`.
+    #[test]
+    fn nested_get_unknown_key_returns_dead_unknown_slot() {
+        // SAFETY: test owns the supervisor tree.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            // No nested supervisors added; key 0 is out of range.
+            let result = hew_supervisor_nested_get(sup, 0);
+            assert_eq!(result.tag, 2, "expected Dead (tag=2)");
+            assert_eq!(result.reason, ChildSlotReason::UnknownSlot as u8);
+            assert!(result.handle.is_null());
+
+            hew_supervisor_stop(sup);
+        }
+    }
 }
 
 /// Free a supervisor struct without stopping actors or spin-waiting.
@@ -2492,6 +2688,167 @@ pub unsafe extern "C" fn hew_supervisor_child_count(sup: *mut HewSupervisor) -> 
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &*sup };
     (s.child_count + s.child_supervisors.len()) as c_int
+}
+
+/// Look up a static child by its compile-time-assigned slot index.
+///
+/// Non-blocking. Acquires `children_lock` briefly to read the slot pointer
+/// and discriminator fields atomically, then releases it and returns a
+/// [`ChildLookupResult`] reflecting the slot state at observation time.
+///
+/// Discrimination logic (in priority order):
+///
+/// 1. Null or invalid `sup` → `Dead(SupervisorShutdown)`.
+/// 2. `cancelled || running == 0` → `Dead(SupervisorShutdown)`.
+/// 3. `key >= child_count` → `Dead(UnknownSlot)` (codegen bug; fail closed).
+/// 4. Slot is non-null → `Live(handle)`.
+/// 5. Slot is null, `circuit_breaker.state == OPEN` → `Transient(CircuitOpen)`.
+/// 6. Slot is null, `next_restart_time_ns > now` → `Transient(BackoffDelay)`.
+/// 7. Slot is null, otherwise → `Transient(Restarting)`.
+///
+/// `BudgetExhausted` is returned only when `running == 0` has not yet
+/// propagated — in practice the supervisor sets `running = 0` in the same
+/// call that exhausts the budget, so callers see `SupervisorShutdown`.
+/// The variant is retained in [`ChildSlotReason`] for ABI stability when
+/// per-child budget tracking is added in a future release.
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`] (or by a
+/// nested-supervisor lookup). Behaviour is undefined if `sup` has been freed.
+///
+/// # C ABI
+///
+/// This function is part of the Hew v0.5 static-child lookup surface.
+/// It is added to the MIR runtime-ABI allowlist in `hew-mir/src/runtime_symbols.rs`.
+/// The MIR `CallRuntimeAbi` producer for dotted-access lowering is deferred
+/// until the `Instr::CallRuntimeAbi` emitter shape is established.
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_child_get(
+    sup: *mut HewSupervisor,
+    key: u32,
+) -> ChildLookupResult {
+    if sup.is_null() {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &*sup };
+
+    // Fast-path: supervisor-level shutdown check (no lock required — atomics).
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    }
+
+    let i = key as usize;
+    if i >= s.child_count {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    }
+
+    // Critical section: read the slot pointer AND the per-slot discriminator
+    // fields under the same lock so the (pointer, CB-state, backoff-timer)
+    // triple is consistent with one lifecycle state from the FSM in §2.2.
+    //
+    // v0.5 single-threaded scheduler: the mutex provides exclusion against
+    // the restart machinery (store_child_slot / restart_child_from_spec).
+    // v0.6 SMP path: migrate to AtomicPtr<HewActor> + atomic discriminator
+    // fields so readers can avoid the mutex on the common Live path.
+    let _guard = s.children_lock.lock_or_recover();
+
+    // Re-check shutdown under the lock (the supervisor could have been
+    // cancelled or run out of budget between the atomic check above and
+    // acquiring the lock).
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    }
+
+    let slot = s.children.get(i).copied().unwrap_or(ptr::null_mut());
+    if !slot.is_null() {
+        return ChildLookupResult::live(slot);
+    }
+
+    // Slot is null — classify why using the per-child spec.
+    // child_specs is parallel to children and has the same length after
+    // hew_supervisor_start, so the index is always valid here.
+    let spec = &s.child_specs[i];
+
+    // CB OPEN = circuit breaker is suppressing restarts during cooldown.
+    // Value 1 = HEW_CIRCUIT_BREAKER_OPEN (from hew_supervisor_set_circuit_breaker).
+    if spec.circuit_breaker.state == 1 {
+        return ChildLookupResult::transient(ChildSlotReason::CircuitOpen);
+    }
+
+    // Backoff delay: next_restart_time_ns is a monotonic nanosecond deadline
+    // set by restart_child_from_spec when exponential backoff is configured.
+    // A non-zero value > now means the timer hasn't fired yet.
+    let now_ns = monotonic_time_ns();
+    if spec.next_restart_time_ns > 0 && spec.next_restart_time_ns > now_ns {
+        return ChildLookupResult::transient(ChildSlotReason::BackoffDelay);
+    }
+
+    // Default transient: slot is null, no CB suppression, no pending backoff —
+    // the restart machinery is actively spawning the replacement actor.
+    ChildLookupResult::transient(ChildSlotReason::Restarting)
+}
+
+/// Look up a nested child supervisor by its compile-time-assigned slot index.
+///
+/// Used for traversing supervision trees one dot segment at a time:
+/// `app.api.auth` calls this for `.api` (returning `*mut HewSupervisor`
+/// cast as `handle`), then [`hew_supervisor_child_get`] for `.auth`.
+///
+/// The returned `handle` field carries a `*mut HewSupervisor` bit-pattern.
+/// The compile-time type at the call site disambiguates — codegen reinterprets
+/// the pointer without an additional tag because the checker has already typed
+/// the dot segment as a supervisor child.
+///
+/// Discrimination: same FSM as [`hew_supervisor_child_get`], but over
+/// `child_supervisors` and `child_supervisor_specs`. A null supervisor slot
+/// (child supervisor being restarted) returns `Transient(Restarting)`;
+/// an out-of-range `key` returns `Dead(UnknownSlot)`.
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`] (or by a
+/// prior nested lookup). Behaviour is undefined if `sup` has been freed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_nested_get(
+    sup: *mut HewSupervisor,
+    key: u32,
+) -> ChildLookupResult {
+    if sup.is_null() {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &*sup };
+
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
+        return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
+    }
+
+    let i = key as usize;
+    if i >= s.child_supervisors.len() {
+        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+    }
+
+    // child_supervisors is not protected by children_lock (it uses its own
+    // replacement pattern via child_supervisor_specs). Read it without the
+    // lock — the pointer is set during supervisor construction or restart
+    // under single-threaded scheduling. This is safe for v0.5; the SMP
+    // migration note from hew_supervisor_child_get applies here too.
+    let child_sup = s.child_supervisors[i];
+    if !child_sup.is_null() {
+        // Reinterpret the supervisor pointer as HewActor* for the shared
+        // result struct. Codegen reconstructs the *mut HewSupervisor at the
+        // typed call site. The cast is a bit-pattern reinterpretation only;
+        // neither type is read through at this point.
+        // SAFETY: cast is a pointer-size-preserving reinterpretation; the
+        // MIR call site at the dotted-access lowering casts back to
+        // *mut HewSupervisor before dereferencing.
+        return ChildLookupResult::live(child_sup.cast::<HewActor>());
+    }
+
+    // Null slot — child supervisor is being restarted or was never started.
+    ChildLookupResult::transient(ChildSlotReason::Restarting)
 }
 
 /// Return whether the supervisor is still running (1) or stopped (0).

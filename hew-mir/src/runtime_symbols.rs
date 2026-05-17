@@ -99,6 +99,19 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // --- SendHalf<T> ---------------------------------------------
     "hew_send_half_send",
     "hew_send_half_try_send",
+    // --- Supervisor static-child slot lookup ---------------------------------
+    // `hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32) -> ChildLookupResult`
+    // (`hew-runtime/src/supervisor.rs`). Non-blocking typed slot lookup for
+    // static (non-pool) supervisor children. Returns a 16-byte discriminated
+    // result: tag 0=Live (handle non-null), 1=Transient, 2=Dead. The MIR
+    // producer arm for dotted-access lowering is deferred until the
+    // `Instr::CallRuntimeAbi` emitter shape is established.
+    "hew_supervisor_child_get",
+    // `hew_supervisor_nested_get(sup: *mut HewSupervisor, key: u32) -> ChildLookupResult`
+    // (`hew-runtime/src/supervisor.rs`). Same as hew_supervisor_child_get but
+    // over child_supervisors; the handle field carries a *mut HewSupervisor
+    // bit-pattern for multi-segment dotted access (`app.api.auth`).
+    "hew_supervisor_nested_get",
     // --- Task ABI (scope{}/spawn/await) — Phase 2, rows 2/3/4 ----------------
     // `hew_task_await_blocking(task: *mut HewTask) -> *mut c_void`
     // (`hew-runtime/src/task_scope.rs:411`). Blocks the calling thread until

@@ -311,6 +311,19 @@ impl TaskDoneSignal {
             done = self.cond.wait_or_recover(done);
         }
     }
+
+    /// Block until `keep_waiting` returns `false`.
+    ///
+    /// Unlike [`wait_until_done`], this method re-evaluates `keep_waiting` on
+    /// every condvar wake-up — including spurious ones triggered by a
+    /// best-effort notify (e.g. from `hew_task_scope_cancel_one` on a Running
+    /// task). Use this when the "done" predicate is external to the signal itself.
+    fn wait_while<F: FnMut() -> bool>(&self, mut keep_waiting: F) {
+        let mut guard = self.lock.lock_or_recover();
+        while keep_waiting() {
+            guard = self.cond.wait_or_recover(guard);
+        }
+    }
 }
 
 #[expect(
@@ -670,12 +683,19 @@ pub unsafe extern "C" fn hew_task_await_blocking(task: *mut HewTask) -> *mut c_v
         return t.result;
     }
 
-    // Wait on the done signal.
+    // Wait until the task state transitions to Done.
+    //
+    // `wait_while` re-evaluates the predicate on every condvar wake-up,
+    // including best-effort notifies fired by `hew_task_scope_cancel_one`
+    // when the task is still Running. Without this loop a spurious notify
+    // could unblock the awaiter before the worker has written the result or
+    // transitioned the state to Done.
     if let Some(ref signal) = t.done_signal {
-        signal.wait_until_done();
+        signal.wait_while(|| t.load_state() != HewTaskState::Done);
     }
 
-    // SAFETY: Task is now Done; result is safe to read.
+    // SAFETY: state is Done (Acquire-loaded inside wait_while's loop exit);
+    // the worker's Release store guarantees result data is visible here.
     unsafe { &*task }.result
 }
 
@@ -2463,6 +2483,124 @@ mod tests {
 
             // Restore to Done so destroy can clean up cleanly.
             (*task).mark_done(HewTaskError::None);
+            (*scope).completed_count += 1;
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    /// `hew_task_await_blocking` must not return until the task is truly Done,
+    /// even when `hew_task_scope_cancel_one` fires a best-effort notify while
+    /// the task is still Running.
+    ///
+    /// Without the `wait_while` fix, `cancel_one` sets the `TaskDoneSignal`
+    /// boolean to `true`, causing `wait_until_done` to return immediately with
+    /// a stale (non-Done, null-result) state.
+    ///
+    /// Test structure:
+    /// 1. Spawn a real OS thread that blocks until `WORKER_RELEASE` is set.
+    /// 2. Spawn an awaiter thread calling `hew_task_await_blocking`; the
+    ///    awaiter sets `AWAITER_RETURNED` as soon as the call returns.
+    /// 3. Call `cancel_one` while the worker is still blocked.
+    /// 4. Sleep briefly to give a spurious-unblock time to propagate.
+    /// 5. Assert `AWAITER_RETURNED` is still false — the awaiter must not have
+    ///    returned yet (the task is still Running).
+    /// 6. Release the worker → it calls `hew_task_complete_threaded`.
+    /// 7. Assert `AWAITER_RETURNED` becomes true; task state is Done.
+    #[test]
+    fn cancel_one_running_awaiter_stays_blocked_until_done() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
+        static WORKER_RELEASE: AtomicBool = AtomicBool::new(false);
+        static AWAITER_RETURNED: AtomicBool = AtomicBool::new(false);
+
+        unsafe extern "C" fn blocking_worker_cancel_one(task: *mut HewTask) {
+            WORKER_STARTED.store(true, Ordering::SeqCst);
+            while !WORKER_RELEASE.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // SAFETY: `task` is valid; called from the task's own thread.
+            unsafe { hew_task_complete_threaded(task) };
+        }
+
+        WORKER_STARTED.store(false, Ordering::SeqCst);
+        WORKER_RELEASE.store(false, Ordering::SeqCst);
+        AWAITER_RETURNED.store(false, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        // The awaiter thread receives a raw pointer address (usize) and
+        // reconstructs it; the scope keeps the task alive until destroy.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            hew_task_spawn_thread(task, blocking_worker_cancel_one);
+
+            // Wait until the worker is inside its blocking loop.
+            let started_deadline = Instant::now() + Duration::from_secs(2);
+            while !WORKER_STARTED.load(Ordering::SeqCst) && Instant::now() < started_deadline {
+                std::thread::yield_now();
+            }
+            assert!(
+                WORKER_STARTED.load(Ordering::SeqCst),
+                "worker did not start in time"
+            );
+
+            // Spawn the awaiter thread before cancel_one so it is parked in
+            // wait_while when the spurious notify arrives.
+            // `AWAITER_RETURNED` is set immediately after `hew_task_await_blocking`
+            // returns, providing a reliable cross-thread signal.
+            // Return the pointer as a usize so the closure is Send (*mut c_void is not).
+            let task_addr = task as usize;
+            let awaiter = std::thread::spawn(move || {
+                let t = task_addr as *mut HewTask;
+                // SAFETY: scope keeps task alive until destroy; awaiter joins before destroy.
+                let ptr = hew_task_await_blocking(t);
+                AWAITER_RETURNED.store(true, Ordering::SeqCst);
+                ptr as usize
+            });
+
+            // Give the awaiter time to enter wait_while and park on the condvar.
+            std::thread::sleep(Duration::from_millis(20));
+
+            // Fire cancel_one — this sends a best-effort notify on the done_signal.
+            // The task is still Running; without the fix `wait_until_done` returns here
+            // because it trusts the boolean, not the task state.
+            let ret = hew_task_scope_cancel_one(scope, task);
+            assert_eq!(ret, 0, "cancel_one must return 0 for a Running task");
+
+            // Give any spurious unblock 20 ms to propagate through the awaiter thread.
+            // If the fix is absent, `AWAITER_RETURNED` will be true by now.
+            std::thread::sleep(Duration::from_millis(20));
+
+            assert!(
+                !AWAITER_RETURNED.load(Ordering::SeqCst),
+                "awaiter unblocked early — cancel_one spurious notify bypassed wait_while"
+            );
+
+            // Release the worker so it transitions the task to Done and fires the
+            // real notify.
+            WORKER_RELEASE.store(true, Ordering::SeqCst);
+
+            // The awaiter must now return within a reasonable timeout.
+            let done_deadline = Instant::now() + Duration::from_secs(2);
+            while !AWAITER_RETURNED.load(Ordering::SeqCst) && Instant::now() < done_deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(
+                AWAITER_RETURNED.load(Ordering::SeqCst),
+                "awaiter did not unblock after the task genuinely completed"
+            );
+            awaiter.join().expect("awaiter thread panicked");
+
+            // Task must be Done after the worker completed.
+            assert_eq!(
+                (*task).load_state(),
+                HewTaskState::Done,
+                "task must be Done after worker completes"
+            );
+
             (*scope).completed_count += 1;
             hew_task_scope_destroy(scope);
         }

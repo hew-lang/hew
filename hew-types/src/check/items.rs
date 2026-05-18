@@ -559,12 +559,10 @@ impl Checker {
         }
 
         // Separate lifecycle-hook fns from regular methods. Hooks carry
-        // one of `#[on(start)]`, `#[on(stop)]`, `#[on(crash)]`, or
-        // `#[on(upgrade)]`. The start/stop variants have a fixed
-        // signature checked here; the crash/upgrade variants are
-        // recognised in E1 but their signature shape is owned by E2
-        // (failure-philosophy phase 2). Regular methods carry no
-        // attributes and are checked as ordinary actor methods.
+        // one of `#[on(start)]`, `#[on(stop)]`, or `#[on(crash)]`.
+        // `#[on(upgrade)]` is parsed but rejected below until runtime
+        // invocation is wired. Regular methods carry no attributes and
+        // are checked as ordinary actor methods.
         //
         // `#[on(start)]` is at most once per actor; `#[on(stop)]` may
         // appear multiple times (lexical declaration order is the
@@ -631,18 +629,15 @@ impl Checker {
                 }
             }
 
-            // `#[on(crash)]` and `#[on(upgrade)]` diverge from start/stop
-            // signature-wise: crash takes a `PanicInfo` parameter and returns
-            // `CrashAction`; upgrade is a reserved marker with the same
-            // no-params/unit shape as stop but no runtime invocation in v0.5
-            // (tracked in #1817).
+            // `#[on(crash)]` diverges from start/stop signature-wise:
+            // crash takes a `PanicInfo` parameter and returns `CrashAction`.
             match hook_kind_str {
                 "crash" => {
                     self.check_crash_hook(&ad.name, method, &ad.fields);
                     continue;
                 }
                 "upgrade" => {
-                    self.check_upgrade_hook(&ad.name, method, &ad.fields);
+                    self.reject_upgrade_hook(&ad.name, &method.name, hook_attr.span.clone());
                     continue;
                 }
                 _ => {}
@@ -692,11 +687,11 @@ impl Checker {
         }
         let hook_kind_str = hook_kind.unwrap();
 
-        // Reject `#[on(crash, …)]` / `#[on(upgrade, …)]` with extra arguments.
+        // Reject `#[on(crash, …)]` with extra arguments.
         // start/stop already reject extra args via `check_lifecycle_hook`'s
-        // signature checks; for crash/upgrade we validate the attribute
-        // shape here because their signature/body checking is owned by E2.
-        if matches!(hook_kind_str, "crash" | "upgrade") && hook_attr.args.len() > 1 {
+        // signature checks; for crash we validate the attribute shape here
+        // because its signature/body checking is event-specific.
+        if hook_kind_str == "crash" && hook_attr.args.len() > 1 {
             self.errors.push(TypeError::new(
                 TypeErrorKind::InvalidOperation,
                 hook_attr.span.clone(),
@@ -709,6 +704,20 @@ impl Checker {
         }
 
         Some(hook_kind_str)
+    }
+
+    fn reject_upgrade_hook(&mut self, actor_name: &str, method_name: &str, attr_span: Span) {
+        // TODO(v0.6 upgrade-runtime invocation track): lift this diagnostic
+        // only when the runtime actually invokes `#[on(upgrade)]` hooks.
+        self.errors.push(TypeError::new(
+            TypeErrorKind::OnUpgradeNotYetWired,
+            attr_span,
+            format!(
+                "`#[on(upgrade)]` on `{actor_name}::{method_name}` is reserved but not yet wired: \
+                 runtime invocation is pending on the v0.6 upgrade-runtime plan track, so this \
+                 hook would silently never run; remove the attribute until that slice lands"
+            ),
+        ));
     }
 
     pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
@@ -1039,30 +1048,6 @@ impl Checker {
 
         self.current_function = prev_function;
         self.env.pop_scope();
-    }
-
-    /// Type-check an actor `#[on(upgrade)]` hook.
-    ///
-    /// v0.5 reserves the surface but defers runtime invocation. The hook
-    /// must therefore have the minimal shape that the runtime can ignore
-    /// safely: no parameters, return type `()` — identical to the
-    /// `#[on(stop)]` shape today.  Runtime invocation, state-handoff,
-    /// and WASM hot-reload land later; tracked in #1817.
-    ///
-    /// `WASM-TODO(#1817)`: `#[on(upgrade)]` codegen and runtime
-    /// invocation are deferred to a follow-up slice (failure-philosophy
-    /// E3+).  The actor method serializes as a regular function symbol
-    /// through the existing actor-method path; no invocation site exists
-    /// in the v0.5 runtime or WASM scheduler.
-    pub(super) fn check_upgrade_hook(
-        &mut self,
-        actor_name: &str,
-        hook: &FnDecl,
-        fields: &[FieldDecl],
-    ) {
-        // Same shape constraints as `#[on(stop)]`, expressed inline so the
-        // diagnostic carries the `on(upgrade)` kind string.
-        self.check_lifecycle_hook(actor_name, hook, "on(upgrade)", fields);
     }
 
     /// Validate `#[every(duration)]` attributes on a receive fn.

@@ -1225,9 +1225,9 @@ impl<'src> Parser<'src> {
                 }
                 let _ = self.expect(&Token::RightParen);
             }
-            let end = self.peek_span().start;
-            let _ = self.expect(&Token::RightBracket);
-            let end = self.peek_span().start.max(end);
+            let end = self
+                .expect(&Token::RightBracket)
+                .map_or_else(|| self.peek_span().start, |span| span.end);
             attrs.push(Attribute {
                 name,
                 args,

@@ -398,6 +398,8 @@ pub enum TypeErrorKind {
     OrphanImpl,
     /// Feature is not available on the selected compilation target
     PlatformLimitation,
+    /// `#[on(upgrade)]` is parsed but rejected until the runtime invokes it.
+    OnUpgradeNotYetWired,
     /// Machine state × event exhaustiveness violation
     MachineExhaustivenessError,
     /// Import cannot be resolved: module not found or failed to parse
@@ -510,6 +512,7 @@ impl TypeErrorKind {
             Self::PurityViolation => "PurityViolation",
             Self::OrphanImpl => "OrphanImpl",
             Self::PlatformLimitation => "PlatformLimitation",
+            Self::OnUpgradeNotYetWired => "OnUpgradeNotYetWired",
             Self::MachineExhaustivenessError => "MachineExhaustivenessError",
             Self::UnresolvedImport => "UnresolvedImport",
             Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",

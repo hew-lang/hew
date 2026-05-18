@@ -2267,6 +2267,7 @@ machine Traffic {
             TypeErrorKind::PurityViolation,
             TypeErrorKind::OrphanImpl,
             TypeErrorKind::PlatformLimitation,
+            TypeErrorKind::OnUpgradeNotYetWired,
             TypeErrorKind::MachineExhaustivenessError,
         ];
         for kind in &kinds {

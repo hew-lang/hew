@@ -10,6 +10,7 @@
 mod common;
 
 use common::typecheck_isolated as typecheck;
+use hew_types::error::TypeErrorKind;
 
 // ── Accept fixtures ──────────────────────────────────────────────────
 
@@ -217,21 +218,14 @@ fn reject_unknown_hook_kind() {
     );
 }
 
-// ── E1: `#[on(crash)]` / `#[on(upgrade)]` recognition ───────────────
+// ── E1: `#[on(crash)]` recognition / `#[on(upgrade)]` fail-closed ─────
 //
-// Phase 1 slice E1 of the failure-philosophy plan adds two new event
-// names to the `#[on(<event>)]` family. v0.5 only needs the parser/
-// checker to *recognise* them; signature shape (params, return type,
-// body) and the reserved-marker emission for `upgrade` are owned by
-// E2. These fixtures pin recognition: well-formed declarations are
-// accepted, malformed ones produce a hook-specific diagnostic.
+// `#[on(crash)]` remains a live lifecycle hook. `#[on(upgrade)]` remains
+// parser-recognised but must fail closed until the runtime invocation
+// path lands, because accepting it today would create code that never runs.
 
 #[test]
-fn accept_on_crash_recognised_as_hook() {
-    // E1: `#[on(crash)]` is a recognised hook event.  E2 pins the
-    // signature: `(info: PanicInfo) -> CrashAction`.  This fixture asserts
-    // the recognition path AND the E2 conforming shape: a well-formed
-    // hook produces no errors.
+fn on_crash_still_works() {
     let output = typecheck(
         r"
         actor Worker {
@@ -254,26 +248,38 @@ fn accept_on_crash_recognised_as_hook() {
 }
 
 #[test]
-fn accept_on_upgrade_recognised_as_hook() {
-    // E1: `#[on(upgrade)]` is a recognised hook event.  E2 keeps the
-    // reserved-marker shape: no parameters, unit return type — matches
-    // `#[on(stop)]`. Runtime invocation is deferred (see #1817).
-    let output = typecheck(
-        r"
+fn on_upgrade_attribute_compile_errors() {
+    let source = r"
         actor Worker {
             let count: i32;
 
             #[on(upgrade)]
             fn on_upgrade() {
+                count
             }
         }
 
         fn main() {}
-        ",
+        ";
+    let output = typecheck(source);
+    let error = output
+        .errors
+        .iter()
+        .find(|e| matches!(&e.kind, TypeErrorKind::OnUpgradeNotYetWired))
+        .expect("`#[on(upgrade)]` should produce OnUpgradeNotYetWired");
+    let attr_start = source
+        .find("#[on(upgrade)]")
+        .expect("fixture should contain upgrade attribute");
+    let attr_span = attr_start..attr_start + "#[on(upgrade)]".len();
+    assert_eq!(
+        error.span, attr_span,
+        "diagnostic should point at the `#[on(upgrade)]` attribute"
     );
     assert!(
-        output.errors.is_empty(),
-        "well-formed reserved-marker `#[on(upgrade)]` should type-check: {:?}",
+        error.message.contains("v0.6")
+            && error.message.contains("runtime invocation")
+            && error.message.contains("remove the attribute"),
+        "diagnostic should explain the pending runtime wiring and removal advice: {:?}",
         output.errors
     );
 }
@@ -282,8 +288,8 @@ fn accept_on_upgrade_recognised_as_hook() {
 fn reject_on_crash_with_extra_args() {
     // `#[on(crash, foo)]` is malformed — the event slot takes exactly
     // one identifier. start/stop reach this through `check_lifecycle_hook`,
-    // but crash/upgrade bypass that signature checker in E1, so the
-    // attribute-shape check lives in the event dispatch itself.
+    // but crash has event-specific signature checking, so the attribute-shape
+    // check lives in the event dispatch itself.
     let output = typecheck(
         r"
         actor Worker {
@@ -320,9 +326,8 @@ fn reject_on_upgrade_with_extra_args() {
         output
             .errors
             .iter()
-            .any(|e| e.message.contains("on(upgrade)")
-                && e.message.contains("does not accept extra arguments")),
-        "`#[on(upgrade, …)]` with extra args should be rejected: {:?}",
+            .any(|e| matches!(&e.kind, TypeErrorKind::OnUpgradeNotYetWired)),
+        "`#[on(upgrade, …)]` should fail closed before runtime wiring lands: {:?}",
         output.errors
     );
 }
@@ -481,89 +486,4 @@ fn accept_on_crash_all_three_variants_assignable() {
             output.errors
         );
     }
-}
-
-// ── E2: `#[on(upgrade)]` signature pinning ───────────────────────────
-//
-// v0.5 reserves the `#[on(upgrade)]` surface but defers runtime
-// invocation (tracked in issue #1817 — the deferred-WASM anchor). The hook
-// signature is therefore the same shape as `#[on(stop)]`: no
-// parameters, unit return. Adding a `PrevVersion` parameter or any
-// non-unit return must wait for the runtime invocation lane.
-
-#[test]
-fn on_upgrade_signature_pinned() {
-    let output = typecheck(
-        r"
-        actor Worker {
-            let count: i32;
-
-            #[on(upgrade)]
-            fn on_upgrade() {
-                count
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "reserved-marker `#[on(upgrade)]` shape should type-check: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn reject_on_upgrade_with_param() {
-    // v0.5 has no `PrevVersion` type — parameters are rejected so the
-    // surface stays free for the runtime invocation lane (#1817) to
-    // ratify the eventual shape without breaking existing code.
-    let output = typecheck(
-        r"
-        actor Worker {
-            #[on(upgrade)]
-            fn on_upgrade(prev: i32) {
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("on(upgrade)")
-                && e.message.contains("must take")
-                && e.message.contains("no parameters")),
-        "`#[on(upgrade)]` with parameters should be rejected: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn reject_on_upgrade_non_unit_return() {
-    let output = typecheck(
-        r"
-        actor Worker {
-            #[on(upgrade)]
-            fn on_upgrade() -> i32 {
-                0
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("on(upgrade)")
-                && e.message.contains("must")
-                && e.message.contains("return")),
-        "`#[on(upgrade)]` with non-unit return should be rejected: {:?}",
-        output.errors
-    );
 }

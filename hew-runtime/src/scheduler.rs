@@ -1060,7 +1060,7 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
     let scope = crate::task_scope::current_task_scope();
     if !scope.is_null() {
         // SAFETY: scope is valid per hew_task_scope_set_current contract.
-        let _ = unsafe { (*scope).cancelled.load(Ordering::Acquire) };
+        let _ = unsafe { crate::task_scope::hew_task_scope_is_cancelled(scope) };
     }
 
     thread::yield_now();

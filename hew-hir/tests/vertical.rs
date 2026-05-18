@@ -610,6 +610,37 @@ fn task_handle_ti2_fork_child_non_call_rhs_rejects() {
     );
 }
 
+#[test]
+fn scope_deadline_derives_cancellation_token() {
+    let output = lower(
+        "fn long_op() { } \
+         fn main() { scope { fork { long_op(); } after(5s) { } } }",
+    );
+    let real_diags: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| !matches!(d.kind, HirDiagnosticKind::CutoverUnsupported { .. }))
+        .collect();
+    assert!(
+        real_diags.is_empty(),
+        "fork-block plus scope deadline should lower without HIR errors: {real_diags:?}"
+    );
+
+    let dump = dump_hir(&output.module);
+    assert!(
+        dump.contains("fork-block"),
+        "HIR dump must carry the fork block cancellation child: {dump}"
+    );
+    assert!(
+        dump.contains("scope-deadline"),
+        "HIR dump must carry the scope deadline cancellation edge: {dump}"
+    );
+    assert!(
+        dump.contains("<task<()>>"),
+        "fork-block should be represented as an anonymous Task<Unit>: {dump}"
+    );
+}
+
 /// TI-5 (structural): the `lower_type` path rejects `Task` as a user-written
 /// type annotation via `TaskNotNameable` (wired through the `Named` arm for
 /// the name "Task"). This test exercises the type-annotation wall.

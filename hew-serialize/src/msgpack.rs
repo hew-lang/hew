@@ -715,7 +715,13 @@ fn walk_program<V: SideTableVisitor>(
                     collect_expr(arg, tco, visitor, out);
                 }
             }
-            Expr::Scope { body } => collect_block(body, tco, visitor, out),
+            Expr::Scope { body } | Expr::ForkBlock { body } => {
+                collect_block(body, tco, visitor, out);
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                collect_expr(duration, tco, visitor, out);
+                collect_block(body, tco, visitor, out);
+            }
             Expr::ForkChild { expr, .. } => collect_expr(expr, tco, visitor, out),
             Expr::InterpolatedString(parts) => {
                 for part in parts {

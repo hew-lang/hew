@@ -1034,8 +1034,12 @@ fn walk_expr_children(expr: &mut Spanned<Expr>, v: &mut impl AstVisitor) {
                 v.visit_expr(&mut arm.body);
             }
         }
-        Expr::Block(block) | Expr::Scope { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
             v.visit_block(block);
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            v.visit_expr(duration);
+            v.visit_block(body);
         }
         Expr::UnsafeBlock(block) => {
             v.visit_block(block);

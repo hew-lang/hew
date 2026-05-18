@@ -270,6 +270,64 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, arg, indent + 4);
             }
         }
+        HirExprKind::ForkBlock { body, task_ty } => {
+            writeln!(out, "{pad}  fork-block task_ty={}", task_ty.user_facing())
+                .expect("write to string");
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Let(binding, value) => {
+                        writeln!(
+                            out,
+                            "{pad}    let {} {}: {}",
+                            binding.id,
+                            binding.name,
+                            binding.ty.user_facing()
+                        )
+                        .expect("write to string");
+                        if let Some(value) = value {
+                            dump_expr(out, value, indent + 6);
+                        }
+                    }
+                    HirStmtKind::Expr(expr) => dump_expr(out, expr, indent + 4),
+                    HirStmtKind::Return(Some(expr)) => {
+                        writeln!(out, "{pad}    return").expect("write to string");
+                        dump_expr(out, expr, indent + 6);
+                    }
+                    HirStmtKind::Return(None) => {
+                        writeln!(out, "{pad}    return unit").expect("write to string");
+                    }
+                }
+            }
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            writeln!(out, "{pad}  scope-deadline").expect("write to string");
+            dump_expr(out, duration, indent + 4);
+            for stmt in &body.statements {
+                match &stmt.kind {
+                    HirStmtKind::Let(binding, value) => {
+                        writeln!(
+                            out,
+                            "{pad}    let {} {}: {}",
+                            binding.id,
+                            binding.name,
+                            binding.ty.user_facing()
+                        )
+                        .expect("write to string");
+                        if let Some(value) = value {
+                            dump_expr(out, value, indent + 6);
+                        }
+                    }
+                    HirStmtKind::Expr(expr) => dump_expr(out, expr, indent + 4),
+                    HirStmtKind::Return(Some(expr)) => {
+                        writeln!(out, "{pad}    return").expect("write to string");
+                        dump_expr(out, expr, indent + 6);
+                    }
+                    HirStmtKind::Return(None) => {
+                        writeln!(out, "{pad}    return unit").expect("write to string");
+                    }
+                }
+            }
+        }
         HirExprKind::AwaitTask {
             binding_name,
             binding_id,

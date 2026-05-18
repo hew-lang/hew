@@ -455,7 +455,13 @@ fn collect_call_sites_in_expr(expr: &HirExpr, out: &mut Vec<(String, SiteId)>) {
             }
         }
         HirExprKind::FieldAccess { object, .. } => collect_call_sites_in_expr(object, out),
-        HirExprKind::Scope { body } => collect_call_sites_in_block(body, out),
+        HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => {
+            collect_call_sites_in_block(body, out);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_call_sites_in_expr(duration, out);
+            collect_call_sites_in_block(body, out);
+        }
         HirExprKind::TupleIndex { tuple, .. } => collect_call_sites_in_expr(tuple, out),
         HirExprKind::Index { container, index } => {
             collect_call_sites_in_expr(container, out);
@@ -2412,6 +2418,54 @@ impl LowerCtx {
                     )
                 }
             }
+            Expr::ForkBlock { body } => {
+                if self.scope_depth == 0 || !in_stmt_position {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::AwaitOutOfPosition,
+                        span.clone(),
+                        "`fork { ... }` child-task blocks are only legal as statements inside a `scope{}` body",
+                    ));
+                    (
+                        HirExprKind::Unsupported(
+                            "`fork { ... }` outside scope statement".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    )
+                } else {
+                    let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
+                    (
+                        HirExprKind::ForkBlock {
+                            body: self.lower_cancellation_clause_block(body),
+                            task_ty: task_ty.clone(),
+                        },
+                        task_ty,
+                    )
+                }
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                if self.scope_depth == 0 || !in_stmt_position {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::AwaitOutOfPosition,
+                        span.clone(),
+                        "`after(duration) { ... }` deadline clauses are only legal as statements inside a `scope{}` body",
+                    ));
+                    (
+                        HirExprKind::Unsupported(
+                            "`after(duration) { ... }` outside scope statement".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    )
+                } else {
+                    let duration = self.lower_expr(duration, IntentKind::Read);
+                    (
+                        HirExprKind::ScopeDeadline {
+                            duration: Box::new(duration),
+                            body: self.lower_cancellation_clause_block(body),
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+            }
             Expr::Await(inner) => {
                 // `await expr` — only legal as the direct statement-expression
                 // inside a `scope{}` body in v0.5 (TI-4). Sub-expression positions
@@ -3567,6 +3621,14 @@ impl LowerCtx {
         self.scopes.pop();
     }
 
+    fn lower_cancellation_clause_block(&mut self, block: &Block) -> HirBlock {
+        let saved_scope_depth = self.scope_depth;
+        self.scope_depth = 0;
+        let lowered = self.lower_block(block, &ResolvedTy::Unit);
+        self.scope_depth = saved_scope_depth;
+        lowered
+    }
+
     fn unsupported(
         &mut self,
         span: std::ops::Range<usize>,
@@ -3870,8 +3932,14 @@ fn collect_captures_walk(
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::Block(block) | HirExprKind::Scope { body: block } => {
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. } => {
             collect_captures_walk_block(block, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_captures_walk(duration, param_ids, seen, captures, self_id);
+            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
         HirExprKind::If {
             condition,

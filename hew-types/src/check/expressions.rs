@@ -3086,6 +3086,8 @@ impl Checker {
             | Expr::SpawnLambdaActor { .. }
             | Expr::Scope { .. }
             | Expr::ForkChild { .. }
+            | Expr::ForkBlock { .. }
+            | Expr::ScopeDeadline { .. }
             | Expr::InterpolatedString(_)
             | Expr::Call { .. }
             | Expr::MethodCall { .. }

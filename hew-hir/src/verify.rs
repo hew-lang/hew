@@ -145,7 +145,11 @@ impl Verifier {
                 self.expr(object);
             }
             HirExprKind::Literal(_) => {}
-            HirExprKind::Scope { body } => self.block(body),
+            HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => self.block(body),
+            HirExprKind::ScopeDeadline { duration, body } => {
+                self.expr(duration);
+                self.block(body);
+            }
             HirExprKind::AwaitTask { binding_id, .. } => {
                 // Verify the binding-id referenced by the await is known to the verifier.
                 // If it's not in `self.bindings`, that indicates a dangling reference.

@@ -543,6 +543,18 @@ pub enum HirExprKind {
         args: Vec<HirExpr>,
         task_ty: ResolvedTy,
     },
+    /// `fork { ... }` inside a scope. The block is an anonymous child task
+    /// body; later MIR slices attach a derived cancellation token and spawn it.
+    ForkBlock {
+        body: HirBlock,
+        task_ty: ResolvedTy,
+    },
+    /// `after(duration) { ... }` inside a scope. The clause is the lexical
+    /// deadline edge that later MIR slices lower to scope-token cancellation.
+    ScopeDeadline {
+        duration: Box<HirExpr>,
+        body: HirBlock,
+    },
     /// `await name` consumes a `Task<T>` binding and produces `T`. Legal
     /// positions in v0.5: statement-position inside a `scope{}` body. Future
     /// versions extend this to select-arm source expressions (cluster-5).

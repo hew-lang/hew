@@ -1452,6 +1452,39 @@ impl Builder {
                 });
                 None
             }
+            HirExprKind::ForkBlock { body, .. } => {
+                for stmt in &body.statements {
+                    self.stmt(stmt);
+                }
+                let _ = body.tail.as_ref().map(|t| self.lower_value(t));
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "fork block cancellation child".to_string(),
+                        site: expr.site,
+                    },
+                    note: "ForkBlock MIR lowering is not yet implemented; \
+                           cancellation-token task spawn wiring lands in CT-4"
+                        .to_string(),
+                });
+                None
+            }
+            HirExprKind::ScopeDeadline { duration, body } => {
+                let _ = self.lower_value(duration);
+                for stmt in &body.statements {
+                    self.stmt(stmt);
+                }
+                let _ = body.tail.as_ref().map(|t| self.lower_value(t));
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "scope deadline cancellation edge".to_string(),
+                        site: expr.site,
+                    },
+                    note: "ScopeDeadline MIR lowering is not yet implemented; \
+                           timer-to-cancellation-token wiring lands in CT-4"
+                        .to_string(),
+                });
+                None
+            }
             HirExprKind::AwaitTask { .. } => {
                 // TODO: MIR lowering for await-task (task-join ABI). Required
                 // runtime contract:

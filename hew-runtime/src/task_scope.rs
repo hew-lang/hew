@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::internal::types::{HewTaskError, HewTaskState};
@@ -41,6 +41,203 @@ pub unsafe extern "C" fn hew_task_scope_set_current(scope: *mut HewTaskScope) ->
     CURRENT_TASK_SCOPE.with(|c| c.replace(scope))
 }
 
+// ── Cancellation tokens ─────────────────────────────────────────────────
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HewCancellationState {
+    Active = 0,
+    CancelRequested = 1,
+    Observed = 2,
+    Trapped = 3,
+    Completed = 4,
+}
+
+impl HewCancellationState {
+    fn from_i32(raw: i32) -> Self {
+        match raw {
+            0 => Self::Active,
+            1 => Self::CancelRequested,
+            2 => Self::Observed,
+            3 => Self::Trapped,
+            4 => Self::Completed,
+            _ => panic!("HewCancellationToken.state contained an invalid discriminant"),
+        }
+    }
+
+    fn is_requested(self) -> bool {
+        matches!(self, Self::CancelRequested | Self::Observed | Self::Trapped)
+    }
+}
+
+/// Opaque, ref-counted cancellation token used by scope-owned tasks.
+///
+/// Tokens form a parent-child tree: cancelling a parent is observed by every
+/// descendant through [`hew_cancel_token_is_requested`]. The tree is owned by
+/// task scopes and tasks; raw FFI handles returned by scope accessors are
+/// borrowed unless the function explicitly says otherwise.
+#[derive(Debug)]
+pub struct HewCancellationToken {
+    refs: AtomicUsize,
+    state: AtomicI32,
+    reason: AtomicI32,
+    parent: *mut HewCancellationToken,
+    children_total: AtomicI32,
+    #[expect(
+        dead_code,
+        reason = "diagnostic counters are populated by later cancellation slices"
+    )]
+    children_terminal: AtomicI32,
+    #[expect(
+        dead_code,
+        reason = "diagnostic counters are populated by later cancellation slices"
+    )]
+    last_nonterminal_child: AtomicUsize,
+}
+
+// SAFETY: all mutable token state is atomic. The parent pointer is retained
+// for the token lifetime, and released only when this token's ref-count
+// reaches zero.
+unsafe impl Send for HewCancellationToken {}
+// SAFETY: all shared token state is atomic and parent lifetime is retained by
+// token ref-counting.
+unsafe impl Sync for HewCancellationToken {}
+
+unsafe fn hew_cancel_token_retain(token: *mut HewCancellationToken) {
+    if !token.is_null() {
+        // SAFETY: caller guarantees `token` is a live token pointer.
+        unsafe { (*token).refs.fetch_add(1, Ordering::Relaxed) };
+    }
+}
+
+unsafe fn hew_cancel_token_release(token: *mut HewCancellationToken) {
+    if token.is_null() {
+        return;
+    }
+
+    // SAFETY: caller guarantees `token` is a live token pointer.
+    if unsafe { (*token).refs.fetch_sub(1, Ordering::Release) } != 1 {
+        return;
+    }
+
+    std::sync::atomic::fence(Ordering::Acquire);
+    // SAFETY: this was the last reference, so reclaim the Box allocation.
+    let boxed = unsafe { Box::from_raw(token) };
+    if !boxed.parent.is_null() {
+        // SAFETY: child construction retained the parent for this token.
+        unsafe { hew_cancel_token_release(boxed.parent) };
+    }
+}
+
+fn token_state(token: &HewCancellationToken) -> HewCancellationState {
+    HewCancellationState::from_i32(token.state.load(Ordering::Acquire))
+}
+
+/// Create a cancellation token derived from `parent`.
+///
+/// Passing null creates a root token. The returned token is owned by the caller
+/// and must be attached to a scope/task that will release it.
+///
+/// # Safety
+///
+/// If `parent` is non-null, it must be a valid pointer returned by
+/// [`hew_cancel_token_new_child`] or borrowed from
+/// [`hew_task_scope_cancel_token`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_cancel_token_new_child(
+    parent: *mut HewCancellationToken,
+) -> *mut HewCancellationToken {
+    if !parent.is_null() {
+        // SAFETY: caller guarantees `parent` is valid.
+        unsafe {
+            hew_cancel_token_retain(parent);
+            (*parent).children_total.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let token = Box::new(HewCancellationToken {
+        refs: AtomicUsize::new(1),
+        state: AtomicI32::new(HewCancellationState::Active as i32),
+        reason: AtomicI32::new(0),
+        parent,
+        children_total: AtomicI32::new(0),
+        children_terminal: AtomicI32::new(0),
+        last_nonterminal_child: AtomicUsize::new(0),
+    });
+    Box::into_raw(token)
+}
+
+/// Request cancellation on `token`.
+///
+/// The transition from `Active` to `CancelRequested` happens at most once.
+/// Descendant tokens observe the request transitively.
+///
+/// # Safety
+///
+/// `token` must be a valid pointer returned by [`hew_cancel_token_new_child`]
+/// or borrowed from [`hew_task_scope_cancel_token`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToken, reason: i32) {
+    cabi_guard!(token.is_null());
+    // SAFETY: caller guarantees `token` is valid.
+    let t = unsafe { &*token };
+    if t.state
+        .compare_exchange(
+            HewCancellationState::Active as i32,
+            HewCancellationState::CancelRequested as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        t.reason.store(reason, Ordering::Release);
+    }
+}
+
+unsafe fn cancel_token_is_requested_raw(token: *mut HewCancellationToken) -> bool {
+    if token.is_null() {
+        return false;
+    }
+
+    // SAFETY: caller guarantees `token` is valid.
+    let t = unsafe { &*token };
+    if token_state(t).is_requested() {
+        return true;
+    }
+
+    // SAFETY: token construction retained the parent for this child.
+    unsafe { cancel_token_is_requested_raw(t.parent) }
+}
+
+/// Return whether `token` or any ancestor has requested cancellation.
+///
+/// Returns `1` when cancellation is requested, otherwise `0`.
+///
+/// # Safety
+///
+/// `token` must be a valid pointer returned by [`hew_cancel_token_new_child`]
+/// or borrowed from [`hew_task_scope_cancel_token`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_cancel_token_is_requested(token: *mut HewCancellationToken) -> i32 {
+    cabi_guard!(token.is_null(), 0);
+    i32::from(
+        // SAFETY: caller guarantees `token` is valid.
+        unsafe { cancel_token_is_requested_raw(token) },
+    )
+}
+
+fn cancel_token_is_requested(token: *mut HewCancellationToken) -> bool {
+    // SAFETY: callers only pass live token pointers or null.
+    unsafe { cancel_token_is_requested_raw(token) }
+}
+
+unsafe fn cancel_token_cancel_if_present(token: *mut HewCancellationToken, reason: i32) {
+    if !token.is_null() {
+        // SAFETY: caller guarantees non-null token is live.
+        unsafe { hew_cancel_token_cancel(token, reason) };
+    }
+}
+
 // ── Task ───────────────────────────────────────────────────────────────
 
 /// A single task representing concurrent work within a scope.
@@ -62,6 +259,8 @@ pub struct HewTask {
     pub result_size: usize,
     /// Parent scope (structured lifetime).
     pub scope: *mut HewTaskScope,
+    /// Cancellation token owned by this task.
+    pub cancel_token: *mut HewCancellationToken,
     /// Intrusive linked-list pointer within the scope.
     pub next: *mut HewTask,
     /// Thread-safe completion signal for `await` blocking.
@@ -153,6 +352,15 @@ impl HewTask {
         self.store_state(HewTaskState::Done, Ordering::Release);
         self.notify_done_signal();
     }
+
+    fn mark_terminal_from_current_token(&mut self, default_error: HewTaskError) {
+        let error = if cancel_token_is_requested(self.cancel_token) {
+            HewTaskError::Cancelled
+        } else {
+            default_error
+        };
+        self.mark_done(error);
+    }
 }
 
 fn take_detached_task_handles(scope: &mut HewTaskScope) -> Vec<std::thread::JoinHandle<()>> {
@@ -218,6 +426,7 @@ pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
         result: ptr::null_mut(),
         result_size: 0,
         scope: ptr::null_mut(),
+        cancel_token: ptr::null_mut(),
         next: ptr::null_mut(),
         done_signal: None,
         thread_handle: None,
@@ -246,6 +455,8 @@ pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
         // SAFETY: env_ptr was set by hew_task_set_env from a valid Rc allocation.
         unsafe { hew_rc_drop(t.env_ptr.cast()) };
     }
+    // SAFETY: cancel_token, when present, is owned by this task.
+    unsafe { hew_cancel_token_release(t.cancel_token) };
 }
 
 /// Associate an environment pointer with a task.
@@ -342,6 +553,29 @@ pub unsafe extern "C" fn hew_task_is_cancelled(task: *mut HewTask) -> i32 {
     cabi_guard!(task.is_null(), 0);
     // SAFETY: Caller guarantees `task` is valid.
     i32::from(unsafe { (*task).error } == HewTaskError::Cancelled)
+}
+
+/// Attach an owned cancellation token to `task`.
+///
+/// The task takes ownership of `token` and releases any token it previously
+/// owned. Passing null clears the task token.
+///
+/// # Safety
+///
+/// - `task` must be a valid pointer returned by [`hew_task_new`].
+/// - `token` must be null or an owned pointer returned by
+///   [`hew_cancel_token_new_child`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_set_cancel_token(
+    task: *mut HewTask,
+    token: *mut HewCancellationToken,
+) {
+    cabi_guard!(task.is_null());
+    // SAFETY: caller guarantees `task` is valid.
+    let t = unsafe { &mut *task };
+    let old = std::mem::replace(&mut t.cancel_token, token);
+    // SAFETY: old, when present, was owned by this task.
+    unsafe { hew_cancel_token_release(old) };
 }
 
 // ── Thread-spawned tasks ───────────────────────────────────────────────
@@ -446,8 +680,7 @@ pub unsafe extern "C" fn hew_task_complete_threaded(task: *mut HewTask) {
     let t = unsafe { &mut *task };
     // Release store: ensures all preceding writes (result data, result_size)
     // are visible to any thread that subsequently Acquire-loads `Done`.
-    t.store_state(HewTaskState::Done, Ordering::Release);
-    t.notify_done_signal();
+    t.mark_terminal_from_current_token(HewTaskError::None);
 }
 
 /// Wait for all tasks in a scope to complete (join all threads).
@@ -469,7 +702,7 @@ pub unsafe extern "C" fn hew_task_scope_join_all(scope: *mut HewTaskScope) {
         let t = unsafe { &mut *cur };
 
         let detach_cancelled_worker =
-            s.cancelled.load(Ordering::Acquire) && t.thread_handle.is_some();
+            cancel_token_is_requested(s.cancel_token) && t.thread_handle.is_some();
 
         if detach_cancelled_worker {
             t.detached_on_cancel = true;
@@ -510,7 +743,7 @@ pub unsafe extern "C" fn hew_task_scope_join_all(scope: *mut HewTaskScope) {
 pub unsafe extern "C" fn hew_task_scope_is_cancelled(scope: *mut HewTaskScope) -> i32 {
     cabi_guard!(scope.is_null(), 0);
     // SAFETY: Caller guarantees `scope` is valid.
-    i32::from(unsafe { (*scope).cancelled.load(Ordering::Acquire) })
+    i32::from(unsafe { cancel_token_is_requested((*scope).cancel_token) })
 }
 
 // ── Task scope ─────────────────────────────────────────────────────────
@@ -518,7 +751,8 @@ pub unsafe extern "C" fn hew_task_scope_is_cancelled(scope: *mut HewTaskScope) -
 /// Intra-actor cooperative task scope.
 ///
 /// Owns a linked list of tasks and tracks completion counts.
-/// The `cancelled` flag is atomic (tasks run on OS threads).
+/// The cancellation token is the semantic authority; `cancelled` remains a
+/// compatibility mirror while older call sites migrate.
 #[derive(Debug)]
 pub struct HewTaskScope {
     /// Head of the intrusive linked list of child tasks.
@@ -529,6 +763,8 @@ pub struct HewTaskScope {
     completed_count: i32,
     /// Cooperative cancellation flag (atomic: tasks run on OS threads).
     pub(crate) cancelled: AtomicBool,
+    /// Scope-root cancellation token owned by this task scope.
+    pub(crate) cancel_token: *mut HewCancellationToken,
     /// Parent scope for nesting (reserved for future nested scope support).
     #[expect(dead_code, reason = "reserved for future nested scope tree support")]
     parent: *mut HewTaskScope,
@@ -537,6 +773,13 @@ pub struct HewTaskScope {
 // SAFETY: Task scopes are only accessed from the single actor thread.
 unsafe impl Send for HewTaskScope {}
 
+impl Drop for HewTaskScope {
+    fn drop(&mut self) {
+        // SAFETY: cancel_token, when present, is owned by this scope.
+        unsafe { hew_cancel_token_release(self.cancel_token) };
+    }
+}
+
 /// Create a new empty task scope.
 ///
 /// # Safety
@@ -544,14 +787,34 @@ unsafe impl Send for HewTaskScope {}
 /// Returned pointer must be freed with [`hew_task_scope_destroy`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_new() -> *mut HewTaskScope {
+    // SAFETY: null parent creates a root token.
+    let cancel_token = unsafe { hew_cancel_token_new_child(ptr::null_mut()) };
     let scope = Box::new(HewTaskScope {
         tasks: ptr::null_mut(),
         task_count: 0,
         completed_count: 0,
         cancelled: AtomicBool::new(false),
+        cancel_token,
         parent: ptr::null_mut(),
     });
     Box::into_raw(scope)
+}
+
+/// Return the borrowed cancellation token owned by `scope`.
+///
+/// The returned pointer is valid until [`hew_task_scope_destroy`] and must not
+/// be released by the caller.
+///
+/// # Safety
+///
+/// `scope` must be a valid pointer returned by [`hew_task_scope_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_scope_cancel_token(
+    scope: *mut HewTaskScope,
+) -> *mut HewCancellationToken {
+    cabi_guard!(scope.is_null(), ptr::null_mut());
+    // SAFETY: caller guarantees `scope` is valid.
+    unsafe { (*scope).cancel_token }
 }
 
 /// Spawn a task into the scope.
@@ -570,6 +833,12 @@ pub unsafe extern "C" fn hew_task_scope_spawn(scope: *mut HewTaskScope, task: *m
     // SAFETY: caller guarantees task is valid.
     let t = unsafe { &mut *task };
     t.scope = scope;
+    if t.cancel_token.is_null() {
+        // SAFETY: `s.cancel_token` is valid for the scope lifetime.
+        let token = unsafe { hew_cancel_token_new_child(s.cancel_token) };
+        // SAFETY: `task` is valid and takes ownership of the child token.
+        unsafe { hew_task_set_cancel_token(task, token) };
+    }
     t.store_state(HewTaskState::Ready, Ordering::Relaxed);
     // Prepend to task list.
     t.next = s.tasks;
@@ -630,6 +899,8 @@ pub unsafe extern "C" fn hew_task_scope_cancel(scope: *mut HewTaskScope) {
     // SAFETY: Caller guarantees `scope` is valid.
     let s = unsafe { &mut *scope };
     s.cancelled.store(true, Ordering::Release);
+    // SAFETY: `s.cancel_token` is valid for the scope lifetime.
+    unsafe { hew_cancel_token_cancel(s.cancel_token, HewTaskError::Cancelled as i32) };
 
     let mut cur = s.tasks;
     while !cur.is_null() {
@@ -702,10 +973,18 @@ pub unsafe extern "C" fn hew_task_scope_cancel_one(
 
     match t.load_state() {
         HewTaskState::Ready | HewTaskState::Suspended => {
+            // SAFETY: task token, when present, is valid while the task lives.
+            unsafe {
+                cancel_token_cancel_if_present(t.cancel_token, HewTaskError::Cancelled as i32);
+            };
             t.mark_done(HewTaskError::Cancelled);
             s.completed_count += 1;
         }
         HewTaskState::Running => {
+            // SAFETY: task token, when present, is valid while the task lives.
+            unsafe {
+                cancel_token_cancel_if_present(t.cancel_token, HewTaskError::Cancelled as i32);
+            };
             // Best-effort cooperative cancel: wake any parked waiter so it
             // can observe the Done transition once the worker finishes its
             // quantum. Does not force completion.
@@ -739,7 +1018,7 @@ pub unsafe extern "C" fn hew_task_scope_complete_task(
         return; // Already terminal.
     }
 
-    t.mark_done(HewTaskError::None);
+    t.mark_terminal_from_current_token(HewTaskError::None);
     s.completed_count += 1;
 }
 
@@ -958,6 +1237,89 @@ mod tests {
             assert_eq!((*t).error, HewTaskError::Cancelled);
             assert_eq!(hew_task_is_cancelled(t), 1);
             assert_eq!(hew_task_scope_is_done(scope), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn cancellation_token_scope_cancel_marks_ready_and_suspended() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let ready = hew_task_new();
+            let suspended = hew_task_new();
+            hew_task_scope_spawn(scope, ready);
+            hew_task_scope_spawn(scope, suspended);
+            (*suspended).store_state(HewTaskState::Suspended, Ordering::Release);
+
+            assert_eq!(
+                hew_cancel_token_is_requested(hew_task_scope_cancel_token(scope)),
+                0
+            );
+            assert_eq!(hew_cancel_token_is_requested((*ready).cancel_token), 0);
+            assert_eq!(hew_cancel_token_is_requested((*suspended).cancel_token), 0);
+
+            hew_task_scope_cancel(scope);
+
+            assert_eq!(hew_task_scope_is_cancelled(scope), 1);
+            assert_eq!(
+                hew_cancel_token_is_requested(hew_task_scope_cancel_token(scope)),
+                1
+            );
+            assert_eq!(hew_cancel_token_is_requested((*ready).cancel_token), 1);
+            assert_eq!(hew_cancel_token_is_requested((*suspended).cancel_token), 1);
+            assert_eq!((*ready).load_state(), HewTaskState::Done);
+            assert_eq!((*ready).error, HewTaskError::Cancelled);
+            assert_eq!((*suspended).load_state(), HewTaskState::Done);
+            assert_eq!((*suspended).error, HewTaskError::Cancelled);
+            assert_eq!(hew_task_scope_is_done(scope), 1);
+
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn cancellation_token_transitive_child_observes_parent() {
+        // SAFETY: test owns all token pointers exclusively; all are valid.
+        unsafe {
+            let parent = hew_cancel_token_new_child(ptr::null_mut());
+            let child = hew_cancel_token_new_child(parent);
+
+            assert_eq!(hew_cancel_token_is_requested(parent), 0);
+            assert_eq!(hew_cancel_token_is_requested(child), 0);
+
+            hew_cancel_token_cancel(parent, HewTaskError::Cancelled as i32);
+
+            assert_eq!(hew_cancel_token_is_requested(parent), 1);
+            assert_eq!(hew_cancel_token_is_requested(child), 1);
+
+            hew_cancel_token_release(child);
+            hew_cancel_token_release(parent);
+        }
+    }
+
+    #[test]
+    fn cancellation_token_parent_cancel_reaches_child() {
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+
+            hew_cancel_token_cancel(
+                hew_task_scope_cancel_token(scope),
+                HewTaskError::Cancelled as i32,
+            );
+
+            assert_eq!(hew_cancel_token_is_requested((*task).cancel_token), 1);
+            hew_task_scope_complete_task(scope, task);
+            assert_eq!((*task).load_state(), HewTaskState::Done);
+            assert_eq!(
+                (*task).error,
+                HewTaskError::Cancelled,
+                "completion after parent cancellation must not look successful"
+            );
 
             hew_task_scope_destroy(scope);
         }

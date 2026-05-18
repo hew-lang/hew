@@ -363,8 +363,12 @@ fn collect_inlay_hints_from_expr(
         Expr::SpawnLambdaActor { body, .. } => {
             collect_inlay_hints_from_expr(source, &body.0, tc, hints);
         }
-        Expr::Block(block) | Expr::Scope { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
             collect_inlay_hints_from_block(source, block, tc, hints);
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            collect_inlay_hints_from_expr(source, &duration.0, tc, hints);
+            collect_inlay_hints_from_block(source, body, tc, hints);
         }
         Expr::UnsafeBlock(block) => {
             collect_inlay_hints_from_block(source, block, tc, hints);

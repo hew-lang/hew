@@ -397,6 +397,10 @@ pub struct Parser<'src> {
     /// True while parsing an impl-method parameter list that accepts bare
     /// `self` as sugar for a `Self` receiver parameter.
     allow_implicit_self_params: bool,
+    /// Number of enclosing `scope { ... }` expression bodies being parsed.
+    scope_expr_depth: usize,
+    /// Number of enclosing `fork { ... }` child-task block bodies being parsed.
+    fork_block_depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,6 +502,8 @@ impl<'src> Parser<'src> {
             depth: Cell::new(0),
             angle_mutations: Vec::new(),
             allow_implicit_self_params: false,
+            scope_expr_depth: 0,
+            fork_block_depth: 0,
         }
     }
 
@@ -863,6 +869,36 @@ impl<'src> Parser<'src> {
             Token::Emit => Some("emit"),
             _ => None,
         }
+    }
+
+    fn looks_like_scope_deadline(&self) -> bool {
+        if !matches!(self.peek(), Some(Token::After)) {
+            return false;
+        }
+        if !matches!(
+            self.tokens.get(self.pos + 1).map(|(token, _)| token),
+            Some(Token::LeftParen)
+        ) {
+            return false;
+        }
+
+        let mut paren_depth = 0usize;
+        for idx in (self.pos + 1)..self.tokens.len() {
+            match &self.tokens[idx].0 {
+                Token::LeftParen => paren_depth += 1,
+                Token::RightParen => {
+                    paren_depth = paren_depth.saturating_sub(1);
+                    if paren_depth == 0 {
+                        return matches!(
+                            self.tokens.get(idx + 1).map(|(token, _)| token),
+                            Some(Token::LeftBrace)
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Returns true if the token can be used as an identifier (regular or contextual keyword).
@@ -4081,6 +4117,8 @@ impl<'src> Parser<'src> {
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
                 | Expr::Scope { .. }
+                | Expr::ForkBlock { .. }
+                | Expr::ScopeDeadline { .. }
                 | Expr::UnsafeBlock(_)
                 | Expr::Select { .. }
         )
@@ -4146,7 +4184,10 @@ impl<'src> Parser<'src> {
                     }
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));
-                } else if self.peek() != Some(&Token::RightBrace) && Self::is_block_expr(&expr.0) {
+                } else if Self::is_block_expr(&expr.0)
+                    && (self.peek() != Some(&Token::RightBrace)
+                        || matches!(expr.0, Expr::ForkBlock { .. } | Expr::ScopeDeadline { .. }))
+                {
                     // Block-like expressions (if, match, blocks, loops) don't need semicolons
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));
@@ -5460,33 +5501,70 @@ impl<'src> Parser<'src> {
                     );
                     return None;
                 }
-                Expr::Scope {
-                    body: self.parse_block()?,
-                }
+                self.scope_expr_depth += 1;
+                let body = self.parse_block()?;
+                self.scope_expr_depth -= 1;
+                Expr::Scope { body }
             }
             Token::Fork => {
+                let fork_span = self.peek_span();
                 self.advance();
                 // `fork` is now exclusively the child-start verb inside a scope block:
                 // `fork name = call(...);` or bare `fork call(...);`.
-                // The legacy `fork { ... }` block form was removed; use `scope { ... }`.
                 if self.peek() == Some(&Token::LeftBrace) {
-                    self.error(
-                        "'fork { ... }' block syntax has been removed; use 'scope { ... }' for structured concurrency"
+                    if self.scope_expr_depth == 0 {
+                        self.error_at(
+                            "`fork { ... }` child-task blocks are only valid inside `scope { ... }`"
+                                .to_string(),
+                            fork_span,
+                        );
+                        return None;
+                    }
+                    if self.fork_block_depth > 0 {
+                        self.error_at(
+                            "nested `fork { ... }` blocks are not a CT-2 surface; use an inner `scope { ... }`"
+                                .to_string(),
+                            fork_span,
+                        );
+                        return None;
+                    }
+                    self.fork_block_depth += 1;
+                    let body = self.parse_block()?;
+                    self.fork_block_depth -= 1;
+                    Expr::ForkBlock { body }
+                } else {
+                    let binding = if self.fork_starts_child_binding() {
+                        let name = self.expect_ident()?;
+                        self.expect(&Token::Equal)?;
+                        Some(name)
+                    } else {
+                        None
+                    };
+                    let expr = self.parse_expr()?;
+                    Expr::ForkChild {
+                        binding,
+                        expr: Box::new(expr),
+                    }
+                }
+            }
+            Token::After if self.looks_like_scope_deadline() => {
+                let after_span = self.peek_span();
+                if self.scope_expr_depth == 0 {
+                    self.error_at(
+                        "`after(duration) { ... }` deadline clauses are only valid inside `scope { ... }`"
                             .to_string(),
+                        after_span,
                     );
                     return None;
                 }
-                let binding = if self.fork_starts_child_binding() {
-                    let name = self.expect_ident()?;
-                    self.expect(&Token::Equal)?;
-                    Some(name)
-                } else {
-                    None
-                };
-                let expr = self.parse_expr()?;
-                Expr::ForkChild {
-                    binding,
-                    expr: Box::new(expr),
+                self.advance();
+                self.expect(&Token::LeftParen)?;
+                let duration = self.parse_expr()?;
+                self.expect(&Token::RightParen)?;
+                let body = self.parse_block()?;
+                Expr::ScopeDeadline {
+                    duration: Box::new(duration),
+                    body,
                 }
             }
             Token::Try => {
@@ -7912,6 +7990,41 @@ wire type Msg {
             body.trailing_expr.as_deref(),
             Some((Expr::Identifier(name), _)) if name == "child"
         ));
+    }
+
+    #[test]
+    fn parse_scope_fork_block_after_deadline() {
+        let expr = parse_let_expr("scope { fork { long_op(); } after(5s) { } }");
+        let Expr::Scope { body } = expr else {
+            panic!("expected scope block");
+        };
+        assert_eq!(body.stmts.len(), 2, "expected fork block and deadline");
+        let Stmt::Expression((Expr::ForkBlock { body: fork_body }, _)) = &body.stmts[0].0 else {
+            panic!("expected fork block: {:?}", body.stmts[0]);
+        };
+        assert_eq!(fork_body.stmts.len(), 1);
+        let Stmt::Expression((Expr::ScopeDeadline { duration, body }, _)) = &body.stmts[1].0 else {
+            panic!("expected scope deadline: {:?}", body.stmts[1]);
+        };
+        assert!(
+            matches!(duration.0, Expr::Literal(Literal::Duration(5_000_000_000))),
+            "deadline duration should be parsed as 5s duration literal: {:?}",
+            duration.0
+        );
+        assert!(body.stmts.is_empty(), "deadline body should be empty");
+    }
+
+    #[test]
+    fn parse_unscoped_fork_block_rejects() {
+        let result = parse("fn main() { fork { long_op(); } }");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|err| err.message.contains("only valid inside `scope")),
+            "unscoped fork block must be rejected: {:?}",
+            result.errors
+        );
     }
 
     #[test]

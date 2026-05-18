@@ -2091,6 +2091,16 @@ impl<'a> Formatter<'a> {
                 }
                 self.format_expr(&expr.0);
             }
+            Expr::ForkBlock { body } => {
+                self.write("fork ");
+                self.format_block(body, self.source.len());
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                self.write("after(");
+                self.format_expr(&duration.0);
+                self.write(") ");
+                self.format_block(body, self.source.len());
+            }
             Expr::InterpolatedString(parts) => {
                 self.write("f\"");
                 for part in parts {

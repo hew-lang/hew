@@ -43,7 +43,7 @@
 //!   synthetic-MIR fixtures in `tests/elaborate.rs`.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, DropKind, IrPipeline, Place};
+use hew_mir::{lower_hir_module, DropKind, ExitPath, IrPipeline, Place};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -63,8 +63,9 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
     lower_hir_module(&output.module)
 }
 
-/// Collect every `ElabDrop` from every `(ExitPath, DropPlan)` entry of
-/// the named function's elaborated MIR, preserving in-plan order.
+/// Collect every Return-exit `ElabDrop` from the named function's elaborated
+/// MIR, preserving in-plan order. Cancel-exit plans are now emitted for
+/// cooperate sites and are covered by cancellation-specific tests.
 fn all_plan_drops(p: &IrPipeline, fn_name: &str) -> Vec<hew_mir::ElabDrop> {
     p.elaborated_mir
         .iter()
@@ -72,6 +73,7 @@ fn all_plan_drops(p: &IrPipeline, fn_name: &str) -> Vec<hew_mir::ElabDrop> {
         .expect("function must be present in elaborated_mir")
         .drop_plans
         .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
         .flat_map(|(_, plan)| plan.drops.iter().cloned())
         .collect()
 }

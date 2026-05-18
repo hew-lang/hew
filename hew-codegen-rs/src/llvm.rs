@@ -525,6 +525,19 @@ fn intern_runtime_decl<'ctx>(
         // in the Ready state. Producer calls this to obtain a task handle
         // before calling hew_task_spawn_thread.
         "hew_task_new" => ptr_ty.fn_type(&[], false),
+        "hew_task_complete_threaded" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        "hew_task_get_error" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_scope_new" => ptr_ty.fn_type(&[], false),
+        "hew_task_scope_destroy" | "hew_task_scope_join_all" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
+        "hew_task_scope_spawn" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_task_scope_set_current" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_task_scope_cancel_after_ns" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
         // (`hew-runtime/src/task_scope.rs:368`). Spawns task_fn(task) on
         // a new OS thread. TaskFn = unsafe extern "C" fn(*mut HewTask).
@@ -778,6 +791,9 @@ fn primitive_to_llvm<'ctx>(
             // LESSONS: exhaustive-traversal-and-lowering.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
+        ResolvedTy::Named { name, .. } if name == "HewTaskScope" => {
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
         ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
             "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"
@@ -794,14 +810,7 @@ fn primitive_to_llvm<'ctx>(
         ResolvedTy::TraitObject { .. } => Err(CodegenError::Unsupported(
             "TraitObject type — Cluster 4 lowering",
         )),
-        // Task<T> lowers to a `*mut HewTask` pointer (i64* on the spine).
-        // Full task-spawn ABI lowering lands in a later slice (MIR/codegen
-        // glue: hew_task_new + hew_task_spawn_thread + hew_task_free). Until
-        // that slice lands, reaching this arm is a codegen error — a
-        // Task<T>-typed value cannot be emitted by the spine subset.
-        ResolvedTy::Task(_) => Err(CodegenError::Unsupported(
-            "Task<T> type — task-spawn lowering lands in a later slice",
-        )),
+        ResolvedTy::Task(_) => Ok(ctx.ptr_type(AddressSpace::default()).into()),
     }
 }
 
@@ -851,6 +860,94 @@ fn place_pointer<'ctx>(
             ))
         }
     }
+}
+
+fn task_wrapper_name(callee_symbol: &str) -> String {
+    let sanitized: String = callee_symbol
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    format!("__hew_task_wrapper_{sanitized}")
+}
+
+fn get_or_create_task_wrapper<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    callee_symbol: &str,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let wrapper_name = task_wrapper_name(callee_symbol);
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&wrapper_name) {
+        return Ok(existing);
+    }
+
+    let (callee, callee_ret_ty) = *fn_ctx.fn_symbols.get(callee_symbol).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SpawnTaskDirect callee `{callee_symbol}` was not declared"
+        ))
+    })?;
+    if !matches!(callee_ret_ty, BasicTypeEnum::IntType(_)) {
+        return Err(CodegenError::FailClosed(format!(
+            "SpawnTaskDirect callee `{callee_symbol}` must be unit-lowered to the i8 \
+             stand-in return type; got {callee_ret_ty:?}"
+        )));
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let wrapper_ty = fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    let wrapper = fn_ctx
+        .llvm_mod
+        .add_function(&wrapper_name, wrapper_ty, Some(Linkage::Internal));
+    let bb = fn_ctx.ctx.append_basic_block(wrapper, "entry");
+    let builder = fn_ctx.ctx.create_builder();
+    builder.position_at_end(bb);
+    builder
+        .build_call(callee, &[], "task_body_call")
+        .map_err(|e| CodegenError::Llvm(format!("task wrapper body call: {e:?}")))?;
+
+    let complete = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_complete_threaded",
+    )?;
+    let task_param = wrapper.get_nth_param(0).ok_or_else(|| {
+        CodegenError::FailClosed("task wrapper missing HewTask* parameter".into())
+    })?;
+    builder
+        .build_call(
+            complete,
+            &[task_param.into()],
+            "hew_task_complete_threaded_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_complete_threaded call: {e:?}")))?;
+    builder
+        .build_return(None)
+        .map_err(|e| CodegenError::Llvm(format!("task wrapper return: {e:?}")))?;
+    Ok(wrapper)
+}
+
+fn emit_spawn_task_direct(
+    fn_ctx: &FnCtx<'_, '_>,
+    task: Place,
+    callee_symbol: &str,
+) -> CodegenResult<()> {
+    let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskDirect task")?;
+    let wrapper = get_or_create_task_wrapper(fn_ctx, callee_symbol)?;
+    let spawn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_spawn_thread",
+    )?;
+    let fn_ptr = wrapper.as_global_value().as_pointer_value();
+    fn_ctx
+        .builder
+        .build_call(
+            spawn,
+            &[task_ptr.into(), fn_ptr.into()],
+            "hew_task_spawn_thread_call",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("hew_task_spawn_thread call: {e:?}")))?;
+    Ok(())
 }
 
 fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()> {
@@ -1727,6 +1824,13 @@ fn lower_instruction(fn_ctx: &FnCtx<'_, '_>, instr: &Instr) -> CodegenResult<()>
             }
             let _ = ctx;
         }
+        Instr::SpawnTaskDirect {
+            task,
+            callee_symbol,
+        } => {
+            emit_spawn_task_direct(fn_ctx, *task, callee_symbol)?;
+            let _ = ctx;
+        }
         // TO-3 lands the MIR shape (`Instr::CoerceToDynTrait`,
         // `Instr::CallTraitMethod`); TO-4 (runtime-trait-object-abi.md
         // §D-3 / §D-4) adds the LLVM emission (vtable static + GEP /
@@ -2415,6 +2519,150 @@ fn lower_call_runtime_abi(
                 .builder
                 .build_store(dest_ptr, task_ptr)
                 .map_err(|e| CodegenError::Llvm(format!("hew_task_new store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_task_scope_new" => {
+            if !args.is_empty() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_scope_new): expected 0 args, got {}",
+                    args.len()
+                )));
+            }
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[], "hew_task_scope_new_call")
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_scope_new call: {e:?}")))?;
+            let scope_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_task_scope_new returned void".into())
+            })?;
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed("hew_task_scope_new requires a dest".into())
+            })?;
+            let (dest_ptr, _) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, scope_ptr)
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_scope_new store: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_task_scope_set_current" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_scope_set_current): expected 1 arg, got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_scope_set_current arg0")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[scope_ptr.into()], "hew_task_scope_set_current_call")
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("hew_task_scope_set_current call: {e:?}"))
+                })?;
+            if let Some(dest_place) = dest {
+                let prev = call.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed("hew_task_scope_set_current returned void".into())
+                })?;
+                let (dest_ptr, _) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx.builder.build_store(dest_ptr, prev).map_err(|e| {
+                    CodegenError::Llvm(format!("hew_task_scope_set_current store: {e:?}"))
+                })?;
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_task_scope_destroy" | "hew_task_scope_join_all" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg, got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr = load_duplex_handle(fn_ctx, args[0], symbol)?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[scope_ptr.into()], &format!("{symbol}_call"))
+                .map_err(|e| CodegenError::Llvm(format!("{symbol} call: {e:?}")))?;
+            if let Some(d) = dest {
+                return Err(CodegenError::FailClosed(format!(
+                    "{symbol} returns void; producer must not supply dest={d:?}"
+                )));
+            }
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_task_scope_spawn" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_scope_spawn): expected 2 args, got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_scope_spawn arg0")?;
+            let task_ptr = load_duplex_handle(fn_ctx, args[1], "hew_task_scope_spawn arg1")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[scope_ptr.into(), task_ptr.into()],
+                    "hew_task_scope_spawn_call",
+                )
+                .map_err(|e| CodegenError::Llvm(format!("hew_task_scope_spawn call: {e:?}")))?;
+            let _ = (i32_ty, ptr_ty);
+        }
+        "hew_task_scope_cancel_after_ns" => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_task_scope_cancel_after_ns): expected 2 args, got {}",
+                    args.len()
+                )));
+            }
+            let scope_ptr =
+                load_duplex_handle(fn_ctx, args[0], "hew_task_scope_cancel_after_ns arg0")?;
+            let nanos = load_int_arg(
+                fn_ctx,
+                args[1],
+                i64_ty,
+                "hew_task_scope_cancel_after_ns duration",
+            )?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[scope_ptr.into(), nanos.into()],
+                    "hew_task_scope_cancel_after_ns_call",
+                )
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("hew_task_scope_cancel_after_ns call: {e:?}"))
+                })?;
             let _ = (i32_ty, ptr_ty);
         }
         // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
@@ -3181,17 +3429,95 @@ fn lower_terminator<'ctx>(
     Ok(())
 }
 
-fn emit_cooperate_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
+fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
+    match fn_ctx.return_ty {
+        BasicTypeEnum::IntType(i) => {
+            let ret = i.const_zero();
+            fn_ctx
+                .builder
+                .build_return(Some(&ret))
+                .map_err(|e| CodegenError::Llvm(format!("cancel return: {e:?}")))?;
+        }
+        BasicTypeEnum::PointerType(p) => {
+            let ret = p.const_null();
+            fn_ctx
+                .builder
+                .build_return(Some(&ret))
+                .map_err(|e| CodegenError::Llvm(format!("cancel return: {e:?}")))?;
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "cancel exit cannot synthesize return for {other:?}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+fn emit_cancel_drops(
+    fn_ctx: &FnCtx<'_, '_>,
+    block_id: u32,
+    drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+) -> CodegenResult<()> {
+    if let Some((_, plan)) = drop_plans
+        .iter()
+        .find(|(exit, _)| matches!(exit, ExitPath::Cancel { block } if *block == block_id))
+    {
+        for drop in &plan.drops {
+            emit_one_elab_drop(fn_ctx, drop)?;
+        }
+    }
+    Ok(())
+}
+
+fn emit_cooperate_check<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    block_id: u32,
+    drop_plans: &[(ExitPath, hew_mir::DropPlan)],
+) -> CodegenResult<()> {
     let cooperate_fn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_actor_cooperate",
     )?;
+    let call = fn_ctx
+        .builder
+        .build_call(cooperate_fn, &[], "hew_actor_cooperate")
+        .map_err(|e| CodegenError::Llvm(format!("hew_actor_cooperate call: {e:?}")))?;
+    let signal = call
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_cooperate returned void".into()))?
+        .into_int_value();
+    let cancel_code = fn_ctx.ctx.i32_type().const_int(2, false);
+    let is_cancel = fn_ctx
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            signal,
+            cancel_code,
+            "hew_cooperate_is_cancel",
+        )
+        .map_err(|e| CodegenError::Llvm(format!("cooperate cancel compare: {e:?}")))?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("cooperate check outside function".into()))?;
+    let cancel_bb = fn_ctx.ctx.append_basic_block(parent, "cancel_exit");
+    let continue_bb = fn_ctx.ctx.append_basic_block(parent, "after_cooperate");
     fn_ctx
         .builder
-        .build_call(cooperate_fn, &[], "")
-        .map_err(|e| CodegenError::Llvm(format!("hew_actor_cooperate call: {e:?}")))?;
+        .build_conditional_branch(is_cancel, cancel_bb, continue_bb)
+        .map_err(|e| CodegenError::Llvm(format!("cooperate cancel branch: {e:?}")))?;
+
+    fn_ctx.builder.position_at_end(cancel_bb);
+    emit_cancel_drops(fn_ctx, block_id, drop_plans)?;
+    emit_cancel_trap_or_return(fn_ctx)?;
+
+    fn_ctx.builder.position_at_end(continue_bb);
     Ok(())
 }
 
@@ -3410,7 +3736,7 @@ fn lower_function<'ctx>(
         .iter()
         .any(|site| cooperate_site_matches(site, entry_block.id, CooperateKind::FunctionEntry))
     {
-        emit_cooperate_call(&fn_ctx)?;
+        emit_cooperate_check(&fn_ctx, entry_block.id, drop_plans)?;
     }
     fn_ctx
         .builder
@@ -3423,16 +3749,16 @@ fn lower_function<'ctx>(
         for instr in &block.instructions {
             lower_instruction(&fn_ctx, instr)?;
         }
-        // Emit LIFO drops from the elaborated drop plan BEFORE the
-        // terminator so the alloca null-stores precede the ret/br.
-        // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
-        emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
         if cooperate_sites
             .iter()
             .any(|site| cooperate_site_matches(site, block.id, CooperateKind::LoopBackEdge))
         {
-            emit_cooperate_call(&fn_ctx)?;
+            emit_cooperate_check(&fn_ctx, block.id, drop_plans)?;
         }
+        // Emit LIFO drops from the elaborated drop plan BEFORE the
+        // terminator so the alloca null-stores precede the ret/br.
+        // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
+        emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
         lower_terminator(&fn_ctx, fn_symbols, &block.terminator)?;
     }
 

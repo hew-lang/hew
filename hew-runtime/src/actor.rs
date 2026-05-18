@@ -3313,6 +3313,14 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
 
     // Store error code only after winning the CAS race.
     a.error_code.store(error_code, Ordering::Release);
+    if terminal == HewActorState::Crashed as i32 {
+        let scope = crate::task_scope::current_task_scope();
+        if !scope.is_null() {
+            // SAFETY: CURRENT_TASK_SCOPE is installed only while the scope is
+            // live on this dispatch thread.
+            unsafe { crate::task_scope::hew_task_scope_cancel(scope) };
+        }
+    }
     let lifecycle_event = if terminal == HewActorState::Crashed as i32 {
         crate::tracing::SPAN_CRASH
     } else {
@@ -4713,6 +4721,28 @@ mod tests {
         // the now-untracked actor ID instead of crashing.
         let rc = unsafe { hew_actor_send_by_id(actor_id, 1, ptr::null_mut(), 0) };
         assert_eq!(rc, -1);
+    }
+
+    #[test]
+    fn actor_crash_cancels_current_task_scope() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // SAFETY: test owns the scope pointer and restores TLS before teardown.
+        unsafe {
+            let scope = crate::task_scope::hew_task_scope_new();
+            let previous = crate::task_scope::hew_task_scope_set_current(scope);
+
+            hew_actor_trap(actor, 99);
+
+            assert_eq!(crate::task_scope::hew_task_scope_is_cancelled(scope), 1);
+            let _ = crate::task_scope::hew_task_scope_set_current(previous);
+            crate::task_scope::hew_task_scope_destroy(scope);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
     }
 
     #[test]

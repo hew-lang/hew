@@ -122,11 +122,13 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // the task completes, then returns the result pointer (or null if no
     // result). Needed for `await task` (row 4).
     "hew_task_await_blocking",
+    "hew_task_complete_threaded",
     // `hew_task_free(task: *mut HewTask) -> void`
     // (`hew-runtime/src/task_scope.rs:237`). Frees a Box-allocated HewTask
     // and its result buffer. Called by the scope teardown path and by the
     // await-sequence after consuming the result. Part of row 4.
     "hew_task_free",
+    "hew_task_get_error",
     // `hew_task_get_result(task: *mut HewTask) -> *mut c_void`
     // (`hew-runtime/src/task_scope.rs:283`). Returns the task's result
     // pointer if done, null otherwise. Must be called after
@@ -139,6 +141,12 @@ const M2_RUNTIME_SYMBOLS: &[&str] = &[
     // for spawned calls (row 3) — producer calls this before
     // `hew_task_spawn_thread`.
     "hew_task_new",
+    "hew_task_scope_cancel_after_ns",
+    "hew_task_scope_destroy",
+    "hew_task_scope_join_all",
+    "hew_task_scope_new",
+    "hew_task_scope_set_current",
+    "hew_task_scope_spawn",
     // `hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void`
     // (`hew-runtime/src/task_scope.rs:368`). Spawns `task_fn(task)` on a
     // new OS thread. `TaskFn = unsafe extern "C" fn(*mut HewTask)`. The

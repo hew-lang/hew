@@ -93,6 +93,68 @@ fn read_ll(out_dir: &std::path::Path) -> String {
     std::fs::read_to_string(&ll).unwrap_or_else(|e| panic!("could not read {}: {e}", ll.display()))
 }
 
+fn pipeline_with_spawn_task_direct() -> IrPipeline {
+    let main_block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![Instr::SpawnTaskDirect {
+            task: Place::Local(0),
+            callee_symbol: "long_op".to_string(),
+        }],
+        terminator: Terminator::Return,
+    };
+    let long_op_block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![Instr::UnitLit {
+            dest: Place::Local(0),
+        }],
+        terminator: Terminator::Return,
+    };
+    IrPipeline {
+        thir: vec![],
+        raw_mir: vec![
+            RawMirFunction {
+                name: "main".to_string(),
+                return_ty: ResolvedTy::Unit,
+                params: vec![],
+                locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))],
+                blocks: vec![main_block.clone()],
+                decisions: vec![],
+            },
+            RawMirFunction {
+                name: "long_op".to_string(),
+                return_ty: ResolvedTy::Unit,
+                params: vec![],
+                locals: vec![ResolvedTy::Unit],
+                blocks: vec![long_op_block.clone()],
+                decisions: vec![],
+            },
+        ],
+        checked_mir: vec![
+            CheckedMirFunction {
+                name: "main".to_string(),
+                return_ty: ResolvedTy::Unit,
+                blocks: vec![main_block],
+                decisions: vec![],
+                checks: vec![],
+                cooperate_sites: vec![],
+            },
+            CheckedMirFunction {
+                name: "long_op".to_string(),
+                return_ty: ResolvedTy::Unit,
+                blocks: vec![long_op_block],
+                decisions: vec![],
+                checks: vec![],
+                cooperate_sites: vec![],
+            },
+        ],
+        elaborated_mir: vec![],
+        diagnostics: vec![],
+        record_layouts: vec![],
+    }
+}
+
 /// `hew_task_new` must produce a `declare ptr @hew_task_new()` in the IR
 /// and emit a call that stores the result into the dest place.
 #[test]
@@ -210,6 +272,32 @@ fn task_abi_emission_scope_spawn_declare() {
     assert!(
         ir.contains("@hew_scope_spawn"),
         "emitted IR must declare @hew_scope_spawn; got:\n{ir}",
+    );
+}
+
+#[test]
+fn task_abi_emission_spawn_task_direct_synthesizes_wrapper() {
+    let pipeline = pipeline_with_spawn_task_direct();
+    let tmp = std::env::temp_dir().join("hew-task-abi-spawn-task-direct");
+    let options = EmitOptions {
+        module_name: "probe",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+    };
+    emit_module(&pipeline, &options).expect("SpawnTaskDirect emission should succeed");
+    let ir = read_ll(&tmp);
+    assert!(
+        ir.contains("@hew_task_spawn_thread"),
+        "emitted IR must call @hew_task_spawn_thread; got:\n{ir}",
+    );
+    assert!(
+        ir.contains("__hew_task_wrapper_long_op"),
+        "emitted IR must synthesize a task wrapper for long_op; got:\n{ir}",
+    );
+    assert!(
+        ir.contains("@hew_task_complete_threaded"),
+        "task wrapper must complete the task; got:\n{ir}",
     );
 }
 

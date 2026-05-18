@@ -660,6 +660,12 @@ pub enum Instr {
         /// Destination for the return value, or `None` if discarded.
         dest: Option<Place>,
     },
+    /// Spawn a no-argument, unit-returning user function as a scope-owned task.
+    ///
+    /// Codegen synthesises the C-ABI task wrapper (`void (*)(HewTask*)`) and
+    /// passes it to `hew_task_spawn_thread`. MIR only constructs this after
+    /// validating the fork body is directly observable by cancellation.
+    SpawnTaskDirect { task: Place, callee_symbol: String },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
     /// `drop_fn = Some(name)` calls the `@resource` type's declared
     /// `close(consuming self)` method; `drop_fn = None` is a trivial drop

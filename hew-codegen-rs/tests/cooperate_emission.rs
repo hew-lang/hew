@@ -111,6 +111,10 @@ fn loop_cooperate_sites_emit_runtime_calls() {
         2,
         "function-entry and loop back-edge sites must each emit one cooperate call;\n--- IR ---\n{ll}"
     );
+    assert!(
+        ll.contains("cancel_exit"),
+        "cooperate emission must materialize cancel-exit branches;\n--- IR ---\n{ll}"
+    );
 
     let entry_call = ll
         .find("call i32 @hew_actor_cooperate()")

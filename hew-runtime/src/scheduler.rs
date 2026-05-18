@@ -1019,7 +1019,8 @@ fn activate_actor(actor: *mut HewActor) {
 /// When it reaches 0 the actor yields to the scheduler via
 /// [`std::thread::yield_now`], and the counter is reset.
 ///
-/// Returns 0 if the actor should continue, 1 if it yielded.
+/// Returns 0 if the actor should continue, 1 if it yielded, and 2 if the
+/// current task scope has requested cancellation.
 ///
 /// # Safety
 ///
@@ -1028,6 +1029,14 @@ fn activate_actor(actor: *mut HewActor) {
 /// a no-op.
 #[no_mangle]
 pub extern "C" fn hew_actor_cooperate() -> c_int {
+    let scope = crate::task_scope::current_task_scope();
+    if !scope.is_null() {
+        // SAFETY: scope is valid per hew_task_scope_set_current contract.
+        if unsafe { crate::task_scope::hew_task_scope_is_cancelled(scope) } != 0 {
+            return 2;
+        }
+    }
+
     let actor = actor::hew_actor_self();
     if actor.is_null() {
         return 0;
@@ -1045,23 +1054,6 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
     // Budget exhausted — reset counter and yield to OS scheduler.
     a.reductions
         .store(HEW_DEFAULT_REDUCTIONS, Ordering::Relaxed);
-
-    // SHIM: scaffold for cooperative auto-cancellation — not yet wired up.
-    //
-    // WHY: proves the cancellation signal is readable at yield points before
-    //   the full cancellation protocol exists. The load is intentionally
-    //   discarded so the scheduler does not act on it prematurely.
-    //
-    // WHEN OBSOLETE: when the γ-scheduler ships and can route this result into
-    //   a yield-or-cancel decision at every budget-exhaustion point.
-    //
-    // REAL SOLUTION: feed the loaded bool into a cancel-check helper; if true,
-    //   unwind the current task cooperatively instead of calling yield_now().
-    let scope = crate::task_scope::current_task_scope();
-    if !scope.is_null() {
-        // SAFETY: scope is valid per hew_task_scope_set_current contract.
-        let _ = unsafe { crate::task_scope::hew_task_scope_is_cancelled(scope) };
-    }
 
     thread::yield_now();
     1

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use hew_hir::{
-    named_type_names, BindingId, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
-    HirStmtKind, IntentKind, ResolvedRef, ValueClass,
+    named_type_names, BindingId, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral,
+    HirModule, HirStmtKind, IntentKind, ResolvedRef, ValueClass,
 };
 use hew_parser::ast::BinaryOp;
 use hew_types::ResolvedTy;
@@ -754,6 +754,7 @@ struct Builder {
     /// substitutes these via `subst_ty` and dispatches to the
     /// per-monomorphisation mangled symbol.
     call_site_type_args: HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    current_task_scope: Option<Place>,
 }
 
 impl Builder {
@@ -1389,130 +1390,21 @@ impl Builder {
                 });
                 Some(dest)
             }
-            HirExprKind::Scope { body } => {
-                // TODO: MIR lowering for scope{} bodies. Required runtime contract:
-                // (a) For each SpawnedCall child: allocate a HewTask slot via
-                //     hew_task_new, bind the closure environment, call
-                //     hew_task_spawn_thread to start the child on the thread pool.
-                // (b) For each named ForkTaskHandle binding (fork name = call):
-                //     same spawn sequence; the task pointer is stored in the
-                //     binding's Place so that a later AwaitTask can load it.
-                // (c) At scope-block exit: iterate the set of anonymous child tasks
-                //     in declaration order; for each call hew_task_await_blocking
-                //     then hew_task_free (lifecycle-symmetry invariant: every
-                //     hew_task_new must be paired with hew_task_free on every
-                //     exit path including panic/cancel).
-                // (d) Named task handles that were explicitly awaited earlier are
-                //     already freed at the AwaitTask site; do NOT double-free.
-                //
-                // Until this is wired, walk the body so nested Unsupported nodes
-                // still surface via the checker stream (fail-closed).
-                for stmt in &body.statements {
-                    self.stmt(stmt);
-                }
-                let _ = body.tail.as_ref().map(|t| self.lower_value(t));
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "scope block".to_string(),
-                        site: expr.site,
-                    },
-                    note: "scope{} MIR lowering is not yet implemented; \
-                           codegen will wire hew_task_new / hew_task_spawn_thread / \
-                           hew_task_await_blocking / hew_task_free"
-                        .to_string(),
-                });
-                None
-            }
-            HirExprKind::SpawnedCall { callee, args, .. } => {
-                // TODO: MIR lowering for a spawned call (task-spawn ABI). Required
-                // runtime contract:
-                // (a) Allocate a HewTask via hew_task_new(parent_scope).
-                // (b) Capture the closure environment for the child function via
-                //     hew_task_set_env — all values the child body closes over must
-                //     be moved into the task's env slot (ownership transferred; the
-                //     parent must not access them after spawn).
-                // (c) Issue hew_task_spawn_thread(task, fn_ptr, stack_size) to
-                //     schedule the child on the thread pool.
-                // (d) Return the HewTask* as the value of this expression so the
-                //     containing fork-block can track it for the implicit join.
-                //
-                // Walk children for checker-stream coverage; fail closed (boundary-fail-closed).
-                let _ = self.lower_value(callee);
-                for arg in args {
-                    let _ = self.lower_value(arg);
-                }
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "spawned call".to_string(),
-                        site: expr.site,
-                    },
-                    note: "SpawnedCall MIR lowering is not yet implemented; \
-                           codegen will emit hew_task_new + hew_task_spawn_thread"
-                        .to_string(),
-                });
-                None
-            }
-            HirExprKind::ForkBlock { body, .. } => {
-                for stmt in &body.statements {
-                    self.stmt(stmt);
-                }
-                let _ = body.tail.as_ref().map(|t| self.lower_value(t));
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "fork block cancellation child".to_string(),
-                        site: expr.site,
-                    },
-                    note: "ForkBlock MIR lowering is not yet implemented; \
-                           cancellation-token task spawn wiring lands in CT-4"
-                        .to_string(),
-                });
-                None
-            }
+            HirExprKind::Scope { body } => Some(self.lower_task_scope(body)),
+            HirExprKind::SpawnedCall {
+                callee,
+                args,
+                task_ty,
+            } => self.lower_spawned_call_task(callee, args, task_ty, expr.site),
+            HirExprKind::ForkBlock { body, .. } => self.lower_fork_block_task(body, expr.site),
             HirExprKind::ScopeDeadline { duration, body } => {
-                let _ = self.lower_value(duration);
-                for stmt in &body.statements {
-                    self.stmt(stmt);
-                }
-                let _ = body.tail.as_ref().map(|t| self.lower_value(t));
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "scope deadline cancellation edge".to_string(),
-                        site: expr.site,
-                    },
-                    note: "ScopeDeadline MIR lowering is not yet implemented; \
-                           timer-to-cancellation-token wiring lands in CT-4"
-                        .to_string(),
-                });
-                None
+                self.lower_scope_deadline(duration, body, expr.site)
             }
-            HirExprKind::AwaitTask { .. } => {
-                // TODO: MIR lowering for await-task (task-join ABI). Required
-                // runtime contract:
-                // (a) Load the HewTask* from the binding's Place.
-                // (b) Call hew_task_await_blocking(task) — parks the current
-                //     coroutine until the child task finishes.
-                // (c) Extract the result via hew_task_get_result(task) → Place
-                //     of type T (the inner type of Task<T>).
-                // (d) Call hew_task_free(task) to release the HewTask allocation.
-                //     Null the binding's Place after free so any subsequent
-                //     reference is caught as UseAfterConsume.
-                // (e) Cancelled-task case: hew_task_get_error returns non-null;
-                //     propagate as Err(TaskError::Cancelled) through the Result<T>
-                //     if T is Result, or trap if T is not a Result type.
-                //
-                // Fail closed until the codegen slice implements this (boundary-fail-closed).
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CutoverUnsupported {
-                        construct: "await task".to_string(),
-                        site: expr.site,
-                    },
-                    note: "AwaitTask MIR lowering is not yet implemented; \
-                           codegen will emit hew_task_await_blocking + hew_task_get_result + \
-                           hew_task_free"
-                        .to_string(),
-                });
-                None
-            }
+            HirExprKind::AwaitTask {
+                binding_id,
+                output_ty,
+                ..
+            } => self.lower_await_task(*binding_id, output_ty, expr.site),
             HirExprKind::Select(_select) => {
                 // Sealed `select{}` construct. The HIR shape is fixed
                 // (see `HirSelect`/`HirSelectArmKind`) and the MIR
@@ -2969,6 +2861,267 @@ impl Builder {
     // WHY: MIR names semantics; address materialisation is a codegen-target concern.
     // WHEN obsolete: when E4's lower_instr arm is wired and tested for each of these conventions.
     // WHAT: replace with direct LLVMBuildCall emission for each symbol group.
+    fn task_scope_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "HewTaskScope".to_string(),
+            args: vec![],
+        }
+    }
+
+    fn push_runtime_call(&mut self, symbol: &str, args: Vec<Place>, dest: Option<Place>) {
+        self.instructions.push(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(symbol, args, dest)
+                .unwrap_or_else(|_| panic!("{symbol} is an allowlisted runtime symbol")),
+        ));
+    }
+
+    fn lower_task_scope(&mut self, body: &HirBlock) -> Place {
+        let scope_place = self.alloc_local(Self::task_scope_ty());
+        self.push_runtime_call("hew_task_scope_new", vec![], Some(scope_place));
+
+        let previous_scope_place = self.alloc_local(Self::task_scope_ty());
+        self.push_runtime_call(
+            "hew_task_scope_set_current",
+            vec![scope_place],
+            Some(previous_scope_place),
+        );
+
+        let saved_scope = self.current_task_scope.replace(scope_place);
+        for stmt in &body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &body.tail {
+            let _ = self.lower_value(tail);
+        }
+        self.current_task_scope = saved_scope;
+
+        self.push_runtime_call("hew_task_scope_join_all", vec![scope_place], None);
+        self.push_runtime_call("hew_task_scope_destroy", vec![scope_place], None);
+        let restored_scope_place = self.alloc_local(Self::task_scope_ty());
+        self.push_runtime_call(
+            "hew_task_scope_set_current",
+            vec![previous_scope_place],
+            Some(restored_scope_place),
+        );
+
+        let unit_place = self.alloc_local(ResolvedTy::Unit);
+        self.instructions.push(Instr::UnitLit { dest: unit_place });
+        unit_place
+    }
+
+    fn direct_no_arg_unit_callee(
+        &mut self,
+        callee: &HirExpr,
+        args: &[HirExpr],
+        ret_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+        construct: &str,
+    ) -> Option<String> {
+        if !args.is_empty() || !matches!(ret_ty, ResolvedTy::Unit) {
+            for arg in args {
+                let _ = self.lower_value(arg);
+            }
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: construct.to_string(),
+                    site,
+                },
+                note: "cancellation-token task lowering currently supports only \
+                       no-argument functions returning unit; value/result task \
+                       propagation remains fail-closed"
+                    .to_string(),
+            });
+            return None;
+        }
+        match &callee.kind {
+            HirExprKind::BindingRef { name, .. } if self.module_fn_names.contains(name) => {
+                Some(name.clone())
+            }
+            _ => {
+                let _ = self.lower_value(callee);
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: construct.to_string(),
+                        site,
+                    },
+                    note: "fork cancellation lowering requires a direct module function callee"
+                        .to_string(),
+                });
+                None
+            }
+        }
+    }
+
+    fn lower_spawned_call_task(
+        &mut self,
+        callee: &HirExpr,
+        args: &[HirExpr],
+        task_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let Some(scope_place) = self.current_task_scope else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawned call without current task scope".to_string(),
+                    site,
+                },
+                note: "task spawn reached MIR without a scope-owned cancellation token; \
+                       refusing to emit an unobservable cancellation edge"
+                    .to_string(),
+            });
+            return None;
+        };
+        let ResolvedTy::Task(inner) = task_ty else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "spawned call with non-Task type".to_string(),
+                    site,
+                },
+                note: "HIR SpawnedCall must carry Task<T>".to_string(),
+            });
+            return None;
+        };
+        let callee_symbol =
+            self.direct_no_arg_unit_callee(callee, args, inner, site, "spawned call")?;
+
+        let task_place = self.alloc_local(task_ty.clone());
+        self.push_runtime_call("hew_task_new", vec![], Some(task_place));
+        self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
+        self.instructions.push(Instr::SpawnTaskDirect {
+            task: task_place,
+            callee_symbol,
+        });
+        Some(task_place)
+    }
+
+    fn lower_fork_block_task(&mut self, body: &HirBlock, site: hew_hir::SiteId) -> Option<Place> {
+        let expr = if body.statements.len() == 1 && body.tail.is_none() {
+            let HirStmtKind::Expr(expr) = &body.statements[0].kind else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "fork block cancellation child".to_string(),
+                        site,
+                    },
+                    note: "fork block task lowering currently supports expression-call statements only"
+                        .to_string(),
+                });
+                return None;
+            };
+            expr
+        } else if body.statements.is_empty() {
+            let Some(tail) = &body.tail else {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::CutoverUnsupported {
+                        construct: "fork block cancellation child".to_string(),
+                        site,
+                    },
+                    note: "fork block task lowering requires a no-argument unit function call"
+                        .to_string(),
+                });
+                return None;
+            };
+            tail
+        } else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "fork block cancellation child".to_string(),
+                    site,
+                },
+                note: "fork block task lowering currently supports exactly one \
+                       statement: a no-argument unit function call"
+                    .to_string(),
+            });
+            return None;
+        };
+        let HirExprKind::Call { callee, args } = &expr.kind else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "fork block cancellation child".to_string(),
+                    site,
+                },
+                note: "fork block task lowering currently supports a direct function call body"
+                    .to_string(),
+            });
+            return None;
+        };
+        let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
+        self.lower_spawned_call_task(callee, args, &task_ty, site)
+    }
+
+    fn lower_scope_deadline(
+        &mut self,
+        duration: &HirExpr,
+        body: &HirBlock,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let Some(scope_place) = self.current_task_scope else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "scope deadline cancellation edge".to_string(),
+                    site,
+                },
+                note: "deadline reached MIR without an active task scope token".to_string(),
+            });
+            return None;
+        };
+        if !body.statements.is_empty() || body.tail.is_some() {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "scope deadline body".to_string(),
+                    site,
+                },
+                note: "deadline cancellation lowering supports empty after(...) bodies only; \
+                       non-empty timeout bodies remain fail-closed until select/arm dispatch lands"
+                    .to_string(),
+            });
+            return None;
+        }
+        let duration_place = self.lower_value(duration)?;
+        self.push_runtime_call(
+            "hew_task_scope_cancel_after_ns",
+            vec![scope_place, duration_place],
+            None,
+        );
+        let unit_place = self.alloc_local(ResolvedTy::Unit);
+        self.instructions.push(Instr::UnitLit { dest: unit_place });
+        Some(unit_place)
+    }
+
+    fn lower_await_task(
+        &mut self,
+        binding_id: BindingId,
+        output_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        if !matches!(output_ty, ResolvedTy::Unit) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::CutoverUnsupported {
+                    construct: "await task result".to_string(),
+                    site,
+                },
+                note: "await lowering currently supports unit tasks only; value task \
+                       cancellation/result propagation remains fail-closed"
+                    .to_string(),
+            });
+            return None;
+        }
+        let Some(task_place) = self.binding_locals.get(&binding_id).copied() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnresolvedPlace {
+                    binding: binding_id,
+                    name: "<await-task>".to_string(),
+                    site,
+                },
+                note: "await task binding has no backend task handle slot".to_string(),
+            });
+            return None;
+        };
+        self.push_runtime_call("hew_task_await_blocking", vec![task_place], None);
+        let unit_place = self.alloc_local(ResolvedTy::Unit);
+        self.instructions.push(Instr::UnitLit { dest: unit_place });
+        Some(unit_place)
+    }
+
     /// Emit `Instr::CallDirect` for a static call to a user-defined function
     /// in the same module. Arguments are lowered left-to-right; if any
     /// argument fails to produce a Place (an unsupported construct in its
@@ -3526,6 +3679,11 @@ fn elaborate(
         &lifo_drops,
         &dataflow_result.exit_states,
         &builder.binding_locals,
+        &checked
+            .cooperate_sites
+            .iter()
+            .map(|site| site.bb_id)
+            .collect::<HashSet<_>>(),
     );
 
     ElaboratedMirFunction {
@@ -4290,6 +4448,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             }
             places
         }
+        Instr::SpawnTaskDirect { task, .. } => vec![*task],
         Instr::CoerceToDynTrait { value, dest, .. } => vec![*value, *dest],
         Instr::CallTraitMethod {
             fat_pointer,
@@ -4466,6 +4625,7 @@ fn enumerate_exits(
         std::collections::BTreeMap<hew_hir::BindingId, dataflow::BindingState>,
     >,
     binding_locals: &HashMap<BindingId, Place>,
+    cancellation_blocks: &HashSet<u32>,
 ) -> (Vec<ElabBlock>, Vec<(ExitPath, DropPlan)>) {
     // Track the highest block id observed so cleanup-block ids can
     // start past it. Slice 2 onwards may emit multiple non-trivial
@@ -4674,6 +4834,14 @@ fn enumerate_exits(
             ),
         };
         plans.push(plan);
+        if cancellation_blocks.contains(&block_id) {
+            plans.push((
+                ExitPath::Cancel { block: block_id },
+                DropPlan {
+                    drops: drops_for_exit(block_id),
+                },
+            ));
+        }
     }
     (elab_blocks, plans)
 }
@@ -5679,7 +5847,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
 
             // Exactly one Return plan for the single block.
             prop_assert_eq!(plans.len(), 1);
@@ -5734,7 +5902,7 @@ mod slice3_narrowing_proptests {
             let lifo = build_lifo(n);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
             let (_, plan) = &plans[0];
 
             // Expected: every binding NOT Consumed survives in the drop
@@ -5773,8 +5941,8 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
-            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
 
             prop_assert_eq!(b1.len(), b2.len());
             prop_assert_eq!(p1.len(), p2.len());
@@ -5800,7 +5968,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals);
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new());
             let (_, plan) = &plans[0];
 
             for d in &plan.drops {

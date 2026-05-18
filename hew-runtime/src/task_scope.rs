@@ -14,6 +14,8 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crate::internal::types::{HewTaskError, HewTaskState};
 use crate::rc::hew_rc_drop;
@@ -272,6 +274,12 @@ pub struct HewTask {
     detached_on_cancel: bool,
     /// Captured environment pointer (Rc-allocated) for scope tasks.
     pub env_ptr: *mut c_void,
+}
+
+struct HewTaskScopeDeadline {
+    cancelled: Arc<AtomicBool>,
+    thread_handle: Option<JoinHandle<()>>,
+    next: *mut HewTaskScopeDeadline,
 }
 
 /// Thread-safe signal for task completion notification.
@@ -621,8 +629,16 @@ pub unsafe extern "C" fn hew_task_spawn_thread(task: *mut HewTask, task_fn: Task
 
         // SAFETY: task_ptr is valid for the lifetime of the thread (scope
         // waits for all tasks before destroying them). fn_ptr is a valid
-        // function compiled by MLIR/LLVM.
+        // function compiled by MLIR/LLVM. The child thread inherits the
+        // lexical task scope so cooperate-sites can observe the child token.
+        let previous_scope = unsafe { hew_task_scope_set_current((*task_ptr).scope) };
+        // SAFETY: fn_ptr is the validated TaskFn supplied to
+        // hew_task_spawn_thread, and task_ptr stays live until scope teardown.
         unsafe { fn_ptr(task_ptr) };
+        // SAFETY: restore the thread-local scope before the worker exits.
+        unsafe {
+            let _ = hew_task_scope_set_current(previous_scope);
+        }
 
         // Signal completion.
         signal.notify_done();
@@ -765,6 +781,7 @@ pub struct HewTaskScope {
     pub(crate) cancelled: AtomicBool,
     /// Scope-root cancellation token owned by this task scope.
     pub(crate) cancel_token: *mut HewCancellationToken,
+    deadlines: *mut HewTaskScopeDeadline,
     /// Parent scope for nesting (reserved for future nested scope support).
     #[expect(dead_code, reason = "reserved for future nested scope tree support")]
     parent: *mut HewTaskScope,
@@ -780,6 +797,21 @@ impl Drop for HewTaskScope {
     }
 }
 
+unsafe fn cancel_scope_deadlines(scope: &mut HewTaskScope) {
+    let mut cur = scope.deadlines;
+    scope.deadlines = ptr::null_mut();
+    while !cur.is_null() {
+        // SAFETY: deadline nodes are Box-allocated and owned by this scope list.
+        let mut deadline = unsafe { Box::from_raw(cur) };
+        cur = deadline.next;
+        deadline.cancelled.store(true, Ordering::Release);
+        if let Some(handle) = deadline.thread_handle.take() {
+            handle.thread().unpark();
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Create a new empty task scope.
 ///
 /// # Safety
@@ -787,14 +819,23 @@ impl Drop for HewTaskScope {
 /// Returned pointer must be freed with [`hew_task_scope_destroy`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_new() -> *mut HewTaskScope {
-    // SAFETY: null parent creates a root token.
-    let cancel_token = unsafe { hew_cancel_token_new_child(ptr::null_mut()) };
+    let parent_scope = current_task_scope();
+    let parent_token = if parent_scope.is_null() {
+        ptr::null_mut()
+    } else {
+        // SAFETY: CURRENT_TASK_SCOPE only stores live scope pointers while a
+        // scope is active on the current thread.
+        unsafe { (*parent_scope).cancel_token }
+    };
+    // SAFETY: null parent creates a root token; non-null parent_token is retained.
+    let cancel_token = unsafe { hew_cancel_token_new_child(parent_token) };
     let scope = Box::new(HewTaskScope {
         tasks: ptr::null_mut(),
         task_count: 0,
         completed_count: 0,
         cancelled: AtomicBool::new(false),
         cancel_token,
+        deadlines: ptr::null_mut(),
         parent: ptr::null_mut(),
     });
     Box::into_raw(scope)
@@ -912,6 +953,50 @@ pub unsafe extern "C" fn hew_task_scope_cancel(scope: *mut HewTaskScope) {
             s.completed_count += 1;
         }
         cur = t.next;
+    }
+}
+
+/// Schedule cancellation of `scope` after `duration_ns` nanoseconds.
+///
+/// The deadline handle is owned by the scope and cancelled/joined during
+/// [`hew_task_scope_destroy`], so the timer thread cannot observe freed scope
+/// memory if the scope exits before the deadline fires.
+///
+/// # Safety
+///
+/// `scope` must be a valid pointer returned by [`hew_task_scope_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_scope_cancel_after_ns(
+    scope: *mut HewTaskScope,
+    duration_ns: i64,
+) {
+    cabi_guard!(scope.is_null());
+    let duration_ns = duration_ns.max(0).cast_unsigned();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled_for_thread = Arc::clone(&cancelled);
+    let scope_addr = scope as usize;
+    let duration = Duration::from_nanos(duration_ns);
+
+    let handle = std::thread::spawn(move || {
+        std::thread::park_timeout(duration);
+        if !cancelled_for_thread.load(Ordering::Acquire) {
+            let scope_ptr = scope_addr as *mut HewTaskScope;
+            // SAFETY: the owning scope joins this deadline thread before freeing
+            // the scope allocation. If cancellation won the race, the flag above
+            // prevents dereferencing the pointer.
+            unsafe { hew_task_scope_cancel(scope_ptr) };
+        }
+    });
+
+    let deadline = Box::into_raw(Box::new(HewTaskScopeDeadline {
+        cancelled,
+        thread_handle: Some(handle),
+        // SAFETY: caller guarantees scope is valid.
+        next: unsafe { (*scope).deadlines },
+    }));
+    // SAFETY: caller guarantees scope is valid.
+    unsafe {
+        (*scope).deadlines = deadline;
     }
 }
 
@@ -1125,6 +1210,8 @@ pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
     unsafe { hew_task_scope_join_all(scope) };
     // SAFETY: Caller guarantees `scope` was Box-allocated.
     let mut scope_box = unsafe { Box::from_raw(scope) };
+    // SAFETY: deadline nodes are owned exclusively by this scope.
+    unsafe { cancel_scope_deadlines(&mut scope_box) };
     let detached_handles = take_detached_task_handles(&mut scope_box);
     if detached_handles.is_empty() {
         // SAFETY: join_all already drained every worker that could still touch
@@ -1322,6 +1409,90 @@ mod tests {
             );
 
             hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn cooperate_observes_current_task_scope_cancel_without_actor() {
+        // SAFETY: test owns the scope pointer and restores TLS before destroy.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let previous = hew_task_scope_set_current(scope);
+            hew_task_scope_cancel(scope);
+
+            assert_eq!(crate::scheduler::hew_actor_cooperate(), 2);
+
+            let _ = hew_task_scope_set_current(previous);
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn spawned_thread_inherits_scope_and_observes_cancel() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        static STARTED: AtomicBool = AtomicBool::new(false);
+        static OBSERVED_CANCEL: AtomicBool = AtomicBool::new(false);
+
+        unsafe extern "C" fn cooperative_task(task: *mut HewTask) {
+            STARTED.store(true, Ordering::SeqCst);
+            while crate::scheduler::hew_actor_cooperate() != 2 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            OBSERVED_CANCEL.store(true, Ordering::SeqCst);
+            // SAFETY: `task` is the live task pointer owned by this worker.
+            unsafe { hew_task_complete_threaded(task) };
+        }
+
+        STARTED.store(false, Ordering::SeqCst);
+        OBSERVED_CANCEL.store(false, Ordering::SeqCst);
+
+        // SAFETY: test owns all scope/task pointers exclusively; all are valid.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+            hew_task_spawn_thread(task, cooperative_task);
+
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !STARTED.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(STARTED.load(Ordering::SeqCst), "worker did not start");
+
+            hew_task_scope_cancel(scope);
+            let _ = hew_task_await_blocking(task);
+
+            assert!(OBSERVED_CANCEL.load(Ordering::SeqCst));
+            assert_eq!((*task).error, HewTaskError::Cancelled);
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn deadline_cancels_scope_and_destroy_cancels_pending_deadline() {
+        use std::time::{Duration, Instant};
+
+        // SAFETY: test owns the scope pointer exclusively.
+        unsafe {
+            let scope = hew_task_scope_new();
+            hew_task_scope_cancel_after_ns(scope, 1_000_000);
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while hew_task_scope_is_cancelled(scope) == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(hew_task_scope_is_cancelled(scope), 1);
+            hew_task_scope_destroy(scope);
+
+            let scope = hew_task_scope_new();
+            hew_task_scope_cancel_after_ns(scope, 1_000_000_000);
+            let destroy_started = Instant::now();
+            hew_task_scope_destroy(scope);
+            assert!(
+                destroy_started.elapsed() < Duration::from_millis(250),
+                "destroy must cancel and unpark pending deadline threads"
+            );
         }
     }
 

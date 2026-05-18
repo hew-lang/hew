@@ -54,6 +54,13 @@ pub struct TypeCheckOutput {
     /// MLIR argument types. Missing entry means the checker could not produce a
     /// concrete lowering fact and downstream codegen must fail closed.
     pub lowering_facts: HashMap<SpanKey, LoweringFact>,
+    /// Checker-owned actor receive-handler state guard policy keyed by the
+    /// receive declaration span.
+    ///
+    /// Every receive handler is `Exclusive` in v0.5. The table is still
+    /// checker-owned so HIR/MIR/codegen consume a produced fact instead of
+    /// rediscovering actor-state safety from syntax downstream.
+    pub actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
     /// Checker-owned method-call lowering decisions keyed by the method call span.
     ///
     /// Populated during type checking for both receiver-based runtime rewrites
@@ -348,6 +355,7 @@ impl Default for TypeCheckOutput {
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
             lowering_facts: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -435,6 +443,14 @@ pub enum ActorSendAliasing {
     /// move-checker to have invalidated the sender's binding so no
     /// post-send observation is possible.
     Alias,
+}
+
+/// Checker-owned actor-state guard policy for a dispatchable actor handler.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorStateGuard {
+    /// Handler receives exclusive mutable access to actor state for its body.
+    Exclusive,
 }
 
 /// Why the type-checker classified an actor-send arg as `Copy` instead
@@ -975,6 +991,9 @@ pub struct Checker {
     /// `enforce_actor_boundary_send` and moved out at the end of
     /// `check_program`.
     pub(super) actor_send_aliasing: HashMap<SpanKey, ActorSendAliasing>,
+    /// Receive-handler actor-state guard policy produced by checker.
+    /// Mirrors [`TypeCheckOutput::actor_handler_state_guards`].
+    pub(super) actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
     /// Per-actor arena cap in bytes, from `#[max_heap(N)]` annotations.
     /// Mirrors [`TypeCheckOutput::actor_max_heap`]; populated in
     /// `check_actor` and moved out at the end of `check_program`.
@@ -1254,6 +1273,7 @@ impl Checker {
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),
             pending_lowering_facts: HashMap::new(),

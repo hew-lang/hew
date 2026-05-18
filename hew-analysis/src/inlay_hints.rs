@@ -656,6 +656,7 @@ mod tests {
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),

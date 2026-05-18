@@ -203,6 +203,13 @@ pub enum HirDiagnosticKind {
         /// Trait name targeted by the coercion (e.g. `"Display"`).
         trait_name: String,
     },
+    /// A receive handler has no checker-produced actor-state guard fact.
+    /// HIR lowering consumes the checker contract fail-closed rather than
+    /// inferring lock requirements from syntax downstream.
+    ActorStateGuardMissing {
+        /// Receive handler name.
+        handler: String,
+    },
     /// A checker-owned `expr_types` entry failed the `ResolvedTy::from_ty`
     /// boundary conversion.  This means the checker left an unresolved
     /// inference variable, a `Ty::Error` placeholder, or an unmaterialized

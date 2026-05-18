@@ -176,6 +176,8 @@ pub struct HirActorReceiveFn {
     pub name: String,
     pub params: Vec<HirActorParam>,
     pub return_ty: ResolvedTy,
+    /// Compiler-inserted actor-state guard required around this receive body.
+    pub state_guard: HirActorStateGuard,
     /// `#[every(<duration>)]` periodic scheduling annotation. `None` if the
     /// receiver is purely message-driven; `Some(ns)` with the duration in
     /// nanoseconds when the checker has validated the attribute.
@@ -183,6 +185,13 @@ pub struct HirActorReceiveFn {
     /// Source span of the `receive fn` declaration (from the parser's
     /// `ReceiveFnDecl.span`).
     pub span: Span,
+}
+
+/// Actor-state guard policy carried by dispatchable actor HIR nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirActorStateGuard {
+    /// Generated dispatch acquires exclusive actor-state access for the body.
+    Exclusive,
 }
 
 /// Lowered plain method on an actor (not a lifecycle hook).

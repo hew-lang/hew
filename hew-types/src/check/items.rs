@@ -1155,6 +1155,8 @@ impl Checker {
     ) {
         // Validate #[every(duration)] attribute if present.
         self.validate_every_attribute(rf);
+        self.actor_handler_state_guards
+            .insert(SpanKey::from(&rf.span), ActorStateGuard::Exclusive);
 
         let prev_in_pure = self.in_pure_function;
         self.in_pure_function = rf.is_pure;

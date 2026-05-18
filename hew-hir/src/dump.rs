@@ -127,10 +127,11 @@ pub fn dump_hir(module: &HirModule) -> String {
                 for rf in &actor.receive_handlers {
                     writeln!(
                         out,
-                        "  receive {} params={} -> {} every_ns={:?}",
+                        "  receive {} params={} -> {} state_guard={:?} every_ns={:?}",
                         rf.name,
                         rf.params.len(),
                         rf.return_ty.user_facing(),
+                        rf.state_guard,
                         rf.every_ns
                     )
                     .expect("write to string");

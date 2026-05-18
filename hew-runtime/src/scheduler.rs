@@ -806,6 +806,19 @@ fn activate_actor(actor: *mut HewActor) {
                     // handle_crash_recovery marks the actor as Crashed and
                     // logs the crash to stderr.
                     //
+                    // Generated actor dispatch wrappers acquire the actor-state
+                    // lock before entering the handler body. Signal recovery
+                    // jumps back into this scheduler frame and bypasses those
+                    // wrapper cleanup edges, so release any guard held by this
+                    // dispatch before the crash path can notify supervisors.
+                    // SAFETY: `actor` is the actor currently being dispatched
+                    // by this scheduler frame; the release helper tolerates an
+                    // unheld or unregistered lock because not every dispatch
+                    // callback is compiler-generated.
+                    unsafe {
+                        let _ = crate::actor::hew_actor_state_lock_release_after_panic(actor);
+                    }
+                    //
                     // SAFETY: called immediately after sigsetjmp returned
                     // non-zero, on the same worker thread.
                     unsafe { crate::signal::handle_crash_recovery() };

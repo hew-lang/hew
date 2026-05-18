@@ -7,8 +7,8 @@ use hew_parser::ast::{
     TimeoutClause, TypeBodyItem, TypeDecl, TypeExpr,
 };
 use hew_types::{
-    AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite, ResolvedTy, SpanKey, Ty,
-    TypeCheckOutput,
+    ActorStateGuard, AssignTargetKind, AssignTargetShape, LoweringFact, MethodCallRewrite,
+    ResolvedTy, SpanKey, Ty, TypeCheckOutput,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -19,12 +19,12 @@ use crate::monomorph::{
     RecordLayoutRegistry, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
 };
 use crate::node::{
-    HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn, HirBinding,
-    HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField, HirFn, HirItem, HirLambdaCapture,
-    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirModule, HirRecordDecl, HirRestartPolicy, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl,
+    HirActorDecl, HirActorInit, HirActorMethod, HirActorParam, HirActorReceiveFn,
+    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirExpr, HirExprKind, HirField,
+    HirFn, HirItem, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
+    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirModule,
+    HirRecordDecl, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt,
+    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
 };
 use crate::{IntentKind, ValueClass};
 
@@ -678,6 +678,8 @@ struct LowerCtx {
         reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
     )]
     assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
+    /// Checker-owned actor receive-handler guard policy keyed by receive span.
+    actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
     /// Actor type names that participate in reference cycles, computed by the
     /// checker's cycle-detection pass. Consumed by `lower_actor` to populate
     /// `HirActorDecl.cycle_capable`. Future runtime consumer: actor codegen
@@ -761,6 +763,7 @@ impl LowerCtx {
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
             assign_target_shapes: tc_output.assign_target_shapes.clone(),
+            actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
             mono_registry: MonoRegistry::with_cap(mono_cap),
             mono_cap_diag_emitted: false,
@@ -1719,6 +1722,23 @@ impl LowerCtx {
             .return_type
             .as_ref()
             .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        let state_guard = match self
+            .actor_handler_state_guards
+            .get(&SpanKey::from(&rf.span))
+            .copied()
+        {
+            Some(ActorStateGuard::Exclusive) => HirActorStateGuard::Exclusive,
+            None => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::ActorStateGuardMissing {
+                        handler: rf.name.clone(),
+                    },
+                    rf.span.clone(),
+                    "missing checker-owned actor-state guard fact",
+                ));
+                HirActorStateGuard::Exclusive
+            }
+        };
         let every_ns = rf
             .attributes
             .iter()
@@ -1729,6 +1749,7 @@ impl LowerCtx {
             name: rf.name.clone(),
             params,
             return_ty,
+            state_guard,
             every_ns,
             span: rf.span.clone(),
         }

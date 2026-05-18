@@ -5,7 +5,8 @@
 
 trait Index {
     type Output;
-    fn at(self, key: i32) -> Self::Output;
+
+    fn at(val: Self, key: i32) -> Self::Output;
 }
 
 type Grid {
@@ -22,7 +23,7 @@ impl Index for Grid {
 
 fn main() {
     let g = Grid { data: [10, 20, 30, 40], width: 2 };
-    let val = g[0];  // desugars to Index::at(g, 0)
+    let val = g[0]; // desugars to Index::at(g, 0)
     let val2 = g[2]; // desugars to Index::at(g, 2)
     println(val);
     println(val2);

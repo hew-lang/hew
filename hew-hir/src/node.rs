@@ -663,6 +663,7 @@ pub enum HirExprKind {
         trait_name: String,
         concrete_type: ResolvedTy,
         method_table: Vec<(String, String)>,
+        vtable_entries: Vec<hew_types::DynVtableEntry>,
     },
     /// Dispatch a method call through a `dyn Trait` fat pointer's
     /// vtable. Emitted in place of an `HirExprKind::Call` whenever

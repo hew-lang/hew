@@ -129,6 +129,8 @@ pub struct ResolvedTraitBound {
     pub trait_name: String,
     /// Resolved type arguments
     pub args: Vec<ResolvedTy>,
+    /// Resolved associated-type bindings, sorted by associated-type name.
+    pub assoc_bindings: Vec<(String, ResolvedTy)>,
 }
 
 /// Reasons a checker-internal [`Ty`] cannot cross the boundary as a
@@ -310,6 +312,11 @@ impl ResolvedTy {
         Ok(ResolvedTraitBound {
             trait_name: bound.trait_name.clone(),
             args: Self::convert_vec(&bound.args)?,
+            assoc_bindings: bound
+                .assoc_bindings
+                .iter()
+                .map(|(name, ty)| Ok((name.clone(), Self::from_ty(ty)?)))
+                .collect::<Result<Vec<_>, BoundaryError>>()?,
         })
     }
 
@@ -372,6 +379,11 @@ impl ResolvedTy {
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
                         args: bound.args.iter().map(Self::to_ty).collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), ty.to_ty()))
+                            .collect(),
                     })
                     .collect(),
             },
@@ -552,12 +564,14 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
                 args: vec![Ty::I32],
+                assoc_bindings: vec![],
             }],
         };
         let expected = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Iterator".into(),
                 args: vec![ResolvedTy::I32],
+                assoc_bindings: vec![],
             }],
         };
         assert_eq!(ResolvedTy::from_ty(&ty), Ok(expected));
@@ -570,6 +584,7 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
                 args: vec![Ty::Var(var)],
+                assoc_bindings: vec![],
             }],
         };
         assert_eq!(

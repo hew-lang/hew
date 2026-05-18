@@ -6,8 +6,8 @@
 //! can consume without its own type inference.
 
 use hew_parser::ast::{
-    ActorDecl, Block, CallArg, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program, Span,
-    Spanned, Stmt, TraitBound, TypeExpr,
+    ActorDecl, AssocTypeBinding, Block, CallArg, Expr, ExternBlock, ExternFnDecl, FnDecl, Item,
+    Param, Program, Span, Spanned, Stmt, TraitBound, TypeExpr,
 };
 use hew_types::builtin_names::{
     QUALIFIED_RECEIVER, QUALIFIED_SENDER, QUALIFIED_SINK, QUALIFIED_STREAM, RECEIVER, SENDER, SINK,
@@ -556,6 +556,23 @@ pub(crate) fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConv
                                     .collect::<Result<Vec<_>, _>>()?,
                             )
                         },
+                        assoc_type_bindings: b
+                            .assoc_bindings
+                            .iter()
+                            .enumerate()
+                            .map(|(binding_index, (name, ty))| {
+                                Ok(AssocTypeBinding {
+                                    name: name.clone(),
+                                    ty: require_converted(
+                                        ty,
+                                        format!(
+                                            "trait object bound {bound_index} (`{}`) associated type binding {binding_index} (`{name}`)",
+                                            b.trait_name
+                                        ),
+                                    )?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, TypeExprConversionError>>()?,
                     })
                 })
                 .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
@@ -5338,6 +5355,7 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Display".into(),
                 args: vec![],
+                assoc_bindings: vec![],
             }],
         };
         let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
@@ -5358,6 +5376,7 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
                 args: vec![Ty::I32],
+                assoc_bindings: vec![],
             }],
         };
         let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
@@ -7478,6 +7497,7 @@ mod tests {
                 },
                 0..0,
             )]),
+            assoc_type_bindings: vec![],
         }]);
         normalize_type_expr(&mut te, &registry);
         if let TypeExpr::TraitObject(bounds) = &te {

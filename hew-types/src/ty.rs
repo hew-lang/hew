@@ -44,6 +44,11 @@ pub struct TraitObjectBound {
     pub trait_name: String,
     /// Type arguments
     pub args: Vec<Ty>,
+    /// Associated-type bindings projected on this trait object bound.
+    ///
+    /// Stored sorted by associated-type name at type-resolution boundaries so
+    /// equality, hashing, display, and vtable-key construction are canonical.
+    pub assoc_bindings: Vec<(String, Ty)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -523,13 +528,23 @@ impl Ty {
                 if traits.len() == 1 {
                     let bound = &traits[0];
                     write!(f, "{}", bound.trait_name)?;
-                    if !bound.args.is_empty() {
+                    if !bound.args.is_empty() || !bound.assoc_bindings.is_empty() {
                         write!(f, "<")?;
-                        for (i, arg) in bound.args.iter().enumerate() {
-                            if i > 0 {
+                        let mut needs_comma = false;
+                        for arg in &bound.args {
+                            if needs_comma {
                                 write!(f, ", ")?;
                             }
                             arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                            needs_comma = true;
+                        }
+                        for (assoc_name, assoc_ty) in &bound.assoc_bindings {
+                            if needs_comma {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{assoc_name} = ")?;
+                            assoc_ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                            needs_comma = true;
                         }
                         write!(f, ">")?;
                     }
@@ -540,13 +555,23 @@ impl Ty {
                             write!(f, " + ")?;
                         }
                         write!(f, "{}", bound.trait_name)?;
-                        if !bound.args.is_empty() {
+                        if !bound.args.is_empty() || !bound.assoc_bindings.is_empty() {
                             write!(f, "<")?;
-                            for (j, arg) in bound.args.iter().enumerate() {
-                                if j > 0 {
+                            let mut needs_comma = false;
+                            for arg in &bound.args {
+                                if needs_comma {
                                     write!(f, ", ")?;
                                 }
                                 arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                                needs_comma = true;
+                            }
+                            for (assoc_name, assoc_ty) in &bound.assoc_bindings {
+                                if needs_comma {
+                                    write!(f, ", ")?;
+                                }
+                                write!(f, "{assoc_name} = ")?;
+                                assoc_ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                                needs_comma = true;
                             }
                             write!(f, ">")?;
                         }
@@ -671,9 +696,13 @@ impl Ty {
                     || captures.iter().any(Ty::has_inference_var)
             }
             Ty::Pointer { pointee, .. } => pointee.has_inference_var(),
-            Ty::TraitObject { traits } => traits
-                .iter()
-                .any(|bound| bound.args.iter().any(Ty::has_inference_var)),
+            Ty::TraitObject { traits } => traits.iter().any(|bound| {
+                bound.args.iter().any(Ty::has_inference_var)
+                    || bound
+                        .assoc_bindings
+                        .iter()
+                        .any(|(_, ty)| ty.has_inference_var())
+            }),
             Ty::Task(inner) => inner.has_inference_var(),
             Ty::AssocType { base, .. } => base.has_inference_var(),
             _ => false,
@@ -1287,6 +1316,11 @@ impl Ty {
                             .iter()
                             .map(|arg| arg.apply_subst_inner(subst, visited))
                             .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), ty.apply_subst_inner(subst, visited)))
+                            .collect(),
                     })
                     .collect(),
             },
@@ -1350,6 +1384,11 @@ impl Ty {
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
                         args: bound.args.iter().map(f).collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), f(ty)))
+                            .collect(),
                     })
                     .collect(),
             },
@@ -1380,7 +1419,9 @@ impl Ty {
                 captures,
             } => params.iter().any(f) || f(ret) || captures.iter().any(f),
             Ty::Pointer { pointee, .. } => f(pointee),
-            Ty::TraitObject { traits } => traits.iter().any(|bound| bound.args.iter().any(f)),
+            Ty::TraitObject { traits } => traits.iter().any(|bound| {
+                bound.args.iter().any(f) || bound.assoc_bindings.iter().any(|(_, ty)| f(ty))
+            }),
             Ty::Task(inner) => f(inner),
             Ty::AssocType { base, .. } => f(base),
             _ => false,
@@ -1453,6 +1494,16 @@ impl Ty {
                             .args
                             .iter()
                             .map(|arg| arg.substitute_named_param(param_name, replacement))
+                            .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| {
+                                (
+                                    name.clone(),
+                                    ty.substitute_named_param(param_name, replacement),
+                                )
+                            })
                             .collect(),
                     })
                     .collect(),

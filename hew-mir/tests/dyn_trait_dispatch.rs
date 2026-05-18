@@ -200,6 +200,7 @@ fn drop_kind_for_dyn_trait_object_selects_trait_object_kind() {
         traits: vec![ResolvedTraitBound {
             trait_name: "Display".to_string(),
             args: vec![],
+            assoc_bindings: vec![],
         }],
     };
     // dyn-Trait locals must route to `DropKind::TraitObject`, NOT

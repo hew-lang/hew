@@ -2610,15 +2610,38 @@ impl LowerCtx {
         // carries; the inner expression keeps its concrete type.
         let coercion_key = SpanKey::from(&span);
         if let Some(coercion) = self.dyn_trait_coercions.get(&coercion_key).cloned() {
+            let mut resolved_bounds = Vec::new();
+            for name in coercion.trait_name.split('+') {
+                let mut assoc_bindings = Vec::new();
+                for binding in coercion
+                    .assoc_bindings
+                    .iter()
+                    .filter(|binding| binding.trait_name == name)
+                {
+                    let Ok(ty) = hew_types::ResolvedTy::from_ty(&binding.ty) else {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "dyn-trait assoc binding".to_string(),
+                                reason: format!(
+                                    "`{}::{}` failed boundary conversion",
+                                    binding.trait_name, binding.assoc_name
+                                ),
+                            },
+                            span.clone(),
+                            "associated type binding from dyn_trait_coercions failed boundary conversion",
+                        ));
+                        return inner;
+                    };
+                    assoc_bindings.push((binding.assoc_name.clone(), ty));
+                }
+                resolved_bounds.push(hew_types::ResolvedTraitBound {
+                    trait_name: name.to_string(),
+                    args: vec![],
+                    assoc_bindings,
+                });
+            }
             let dyn_ty = ResolvedTy::TraitObject {
-                traits: coercion
-                    .trait_name
-                    .split('+')
-                    .map(|name| hew_types::ResolvedTraitBound {
-                        trait_name: name.to_string(),
-                        args: vec![],
-                    })
-                    .collect(),
+                traits: resolved_bounds,
             };
             let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
                 Ok(r) => r,
@@ -2645,6 +2668,7 @@ impl LowerCtx {
                     trait_name: coercion.trait_name,
                     concrete_type: concrete_resolved,
                     method_table: coercion.method_table,
+                    vtable_entries: coercion.vtable_entries,
                 },
                 span,
             };

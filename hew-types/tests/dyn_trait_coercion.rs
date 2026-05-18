@@ -219,6 +219,245 @@ fn self_return_breaks_object_safety_in_dyn_position() {
     );
 }
 
+#[test]
+fn dyn_iterator_with_item_binding_object_safe() {
+    let output = typecheck_isolated(
+        r"
+        trait Iterator {
+            type Item;
+            fn next(iter: Self) -> Option<Self::Item>;
+        }
+
+        type Counter { value: i32; }
+
+        impl Iterator for Counter {
+            type Item = i32;
+            fn next(iter: Counter) -> Option<i32> {
+                Some(iter.value)
+            }
+        }
+
+        fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
+            iter.next()
+        }
+
+        fn main() {
+            use_iter(Counter { value: 1 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected projected dyn Iterator to type-check, got: {:#?}",
+        output.errors
+    );
+    let entry = output
+        .dyn_trait_coercions
+        .values()
+        .next()
+        .expect("coercion entry");
+    assert_eq!(
+        entry.assoc_bindings,
+        vec![hew_types::DynAssocBinding {
+            trait_name: "Iterator".to_string(),
+            assoc_name: "Item".to_string(),
+            ty: Ty::I32,
+        }]
+    );
+    assert_eq!(entry.vtable_entries.len(), 1);
+    assert_eq!(
+        entry.vtable_entries[0].signature.return_type,
+        Ty::option(Ty::I32)
+    );
+}
+
+#[test]
+fn dyn_iterator_without_binding_rejected() {
+    let output = typecheck_isolated(
+        r"
+        trait Iterator {
+            type Item;
+            fn next(iter: Self) -> Option<Self::Item>;
+        }
+
+        type Counter { value: i32; }
+
+        impl Iterator for Counter {
+            type Item = i32;
+            fn next(iter: Counter) -> Option<i32> {
+                Some(iter.value)
+            }
+        }
+
+        fn use_iter(iter: dyn Iterator) {}
+
+        fn main() {
+            use_iter(Counter { value: 1 });
+        }
+        ",
+    );
+    let missing_binding_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            matches!(
+                &e.kind,
+                TypeErrorKind::MissingAssocTypeBinding { trait_name, missing }
+                    if trait_name == "Iterator" && missing == &vec!["Item".to_string()]
+            ) && e.message.contains("Item")
+        })
+        .collect();
+    assert!(
+        !missing_binding_errors.is_empty(),
+        "expected missing Item binding diagnostic, got: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        missing_binding_errors.len(),
+        1,
+        "missing associated-type binding should be reported once, got: {:#?}",
+        output.errors
+    );
+    assert!(output.dyn_trait_coercions.is_empty());
+}
+
+#[test]
+fn dyn_iterator_failed_projection_is_diagnostic() {
+    let output = typecheck_isolated(
+        r"
+        trait Iterator {
+            type Item;
+            fn next(iter: Self) -> Option<Self::Item>;
+        }
+
+        type Counter { value: i32; }
+
+        impl Iterator for Counter {
+            fn next(iter: Counter) -> Option<i32> {
+                Some(iter.value)
+            }
+        }
+
+        fn use_iter(iter: dyn Iterator<Item = i32>) {}
+
+        fn main() {
+            use_iter(Counter { value: 1 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::AssocTypeProjectionFailed {
+                type_name,
+                trait_name,
+                assoc_name,
+            } if type_name == "Counter" && trait_name == "Iterator" && assoc_name == "Item"
+        ) && e.message.contains("<Counter as Iterator>::Item")),
+        "expected failed projection diagnostic for Counter/Iterator/Item, got: {:#?}",
+        output.errors
+    );
+    assert!(output.dyn_trait_coercions.is_empty());
+}
+
+#[test]
+fn dyn_distinct_bindings_get_distinct_vtables() {
+    let output = typecheck_isolated(
+        r#"
+        trait Iterator {
+            type Item;
+            fn next(iter: Self) -> Option<Self::Item>;
+        }
+
+        type IntCounter { value: i32; }
+        type StringCounter { value: string; }
+
+        impl Iterator for IntCounter {
+            type Item = i32;
+            fn next(iter: IntCounter) -> Option<i32> { Some(iter.value) }
+        }
+
+        impl Iterator for StringCounter {
+            type Item = string;
+            fn next(iter: StringCounter) -> Option<string> { Some(iter.value) }
+        }
+
+        fn use_int(iter: dyn Iterator<Item = i32>) {}
+        fn use_string(iter: dyn Iterator<Item = string>) {}
+
+        fn main() {
+            use_int(IntCounter { value: 1 });
+            use_string(StringCounter { value: "x" });
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean check, got: {:#?}",
+        output.errors
+    );
+    let keys: Vec<_> = output
+        .dyn_trait_coercions
+        .values()
+        .map(|entry| entry.vtable_key.clone())
+        .collect();
+    assert_eq!(keys.len(), 2, "expected two vtable keys: {keys:#?}");
+    assert_ne!(keys[0], keys[1]);
+    assert!(keys.iter().any(|key| key
+        .assoc_bindings
+        .iter()
+        .any(|binding| binding.assoc_name == "Item" && binding.ty == Ty::I32)));
+    assert!(keys.iter().any(|key| key
+        .assoc_bindings
+        .iter()
+        .any(|binding| binding.assoc_name == "Item" && binding.ty == Ty::String)));
+}
+
+#[test]
+fn dyn_trait_method_signature_substituted() {
+    let output = typecheck_isolated(
+        r"
+        trait Iterator {
+            type Item;
+            fn next(iter: Self) -> Option<Self::Item>;
+        }
+
+        type Counter { value: i32; }
+
+        impl Iterator for Counter {
+            type Item = i32;
+            fn next(iter: Counter) -> Option<i32> {
+                Some(iter.value)
+            }
+        }
+
+        fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
+            iter.next()
+        }
+
+        fn main() {
+            use_iter(Counter { value: 1 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected method dispatch to see Option<i32>, got: {:#?}",
+        output.errors
+    );
+    let entry = output
+        .dyn_trait_coercions
+        .values()
+        .next()
+        .and_then(|coercion| coercion.vtable_entries.first())
+        .expect("vtable entry");
+    assert_eq!(entry.signature.return_type, Ty::option(Ty::I32));
+    assert!(
+        !matches!(entry.signature.return_type, Ty::AssocType { .. }),
+        "signature leaked abstract associated type: {entry:#?}"
+    );
+}
+
 /// A bare `impl T { fn name(self) -> string }` that structurally matches a
 /// trait `Named { fn name(self) -> string }` (no explicit `impl Named for T`)
 /// still populates the `method_table` for a `T → dyn Named` coercion.  This

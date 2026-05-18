@@ -198,11 +198,55 @@ pub struct TypeCheckOutput {
 /// declaration order, with each bound contributing its trait's methods in
 /// the trait declaration order.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynAssocBinding {
+    /// Originating trait name; qualifies `assoc_name` for multi-bound objects.
+    pub trait_name: String,
+    /// Associated type declared by `trait_name`.
+    pub assoc_name: String,
+    /// Fully projected binding type.
+    pub ty: Ty,
+}
+
+/// Canonical vtable intern key for a concrete-to-dyn coercion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynVtableKey {
+    /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
+    pub trait_name: String,
+    /// Resolved concrete `Self` type at the coercion site.
+    pub concrete_type: Ty,
+    /// Canonical associated-type bindings sorted by `(trait_name, assoc_name)`.
+    pub assoc_bindings: Vec<DynAssocBinding>,
+}
+
+/// Checker-authored vtable slot entry with substituted method signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynVtableEntry {
+    /// Originating trait name for this slot.
+    pub trait_name: String,
+    /// Trait method name as declared in the trait.
+    pub method_name: String,
+    /// Implementer-side function key (`Type::method`).
+    pub impl_fn_key: String,
+    /// Caller-side signature after substituting trait type parameters and
+    /// associated-type bindings (e.g. `Self::Item` -> `int`).
+    pub signature: FnSig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynCoercion {
     /// Trait name (or `Trait1+Trait2` for multi-bound `dyn (A + B)`).
     pub trait_name: String,
     /// Resolved concrete `Self` type at the coercion site.
     pub concrete_type: Ty,
+    /// Canonical vtable key used to distinguish projections such as
+    /// `dyn Iterator<Item = int>` from `dyn Iterator<Item = string>`.
+    pub vtable_key: DynVtableKey,
+    /// Canonical associated-type binding side-table entries, qualified by
+    /// originating trait and sorted by `(trait_name, assoc_name)`.
+    pub assoc_bindings: Vec<DynAssocBinding>,
+    /// Ordered vtable entries. Each entry carries the substituted caller-side
+    /// method signature at the trait-object boundary.
+    pub vtable_entries: Vec<DynVtableEntry>,
     /// Ordered `(method_name, impl_fn_key)` pairs naming the impl-side
     /// resolution for each trait method.
     ///
@@ -843,7 +887,7 @@ pub enum TypeDefKind {
     Record,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnSig {
     pub type_params: Vec<String>,
     pub type_param_bounds: HashMap<String, Vec<String>>,

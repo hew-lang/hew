@@ -1538,6 +1538,11 @@ fn fmt_trait_object_type_roundtrip() {
 }
 
 #[test]
+fn fmt_trait_object_assoc_binding_roundtrip() {
+    exact_roundtrip("fn use_iter(iter: dyn Iterator<Item = i32>) {\n}\n");
+}
+
+#[test]
 fn fmt_trait_associated_type_roundtrip() {
     exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(c: Self) -> Self::Item;\n}\n");
 }

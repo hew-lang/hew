@@ -46,6 +46,9 @@ pub(super) fn collect_unresolved_inference_vars(ty: &Ty, vars: &mut HashSet<Type
                 for arg in &bound.args {
                     collect_unresolved_inference_vars(arg, vars);
                 }
+                for (_, ty) in &bound.assoc_bindings {
+                    collect_unresolved_inference_vars(ty, vars);
+                }
             }
         }
         _ => {}

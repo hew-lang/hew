@@ -1,20 +1,22 @@
 //! Hand-written recursive-descent parser with Pratt precedence for operator expressions.
 
 use crate::ast::{
-    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
-    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
-    ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
-    Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase,
-    OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
-    RecordDecl, RecordField, RecordKind, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned,
-    Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
+    ActorDecl, ActorInit, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block, CallArg,
+    ChildSpec, CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl,
+    FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
+    LambdaParam, Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm,
+    NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program,
+    ReceiveFnDecl, RecordDecl, RecordField, RecordKind, ResourceMarker, RestartPolicy, SelectArm,
+    Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
+    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause,
+    WherePredicate, WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
 use std::cell::Cell;
+
+type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
 
 /// Parse an integer literal string, returning both value and radix.
 ///
@@ -3650,12 +3652,16 @@ impl<'src> Parser<'src> {
                     let mut bounds = Vec::new();
                     loop {
                         let name = self.expect_ident()?;
-                        let type_args = if self.eat(&Token::Less) {
-                            Some(self.parse_type_args()?)
+                        let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
+                            self.parse_trait_bound_args()?
                         } else {
-                            None
+                            (None, Vec::new())
                         };
-                        bounds.push(TraitBound { name, type_args });
+                        bounds.push(TraitBound {
+                            name,
+                            type_args,
+                            assoc_type_bindings,
+                        });
 
                         if !self.eat(&Token::Plus) {
                             break;
@@ -3666,12 +3672,16 @@ impl<'src> Parser<'src> {
                 } else {
                     // Single trait: dyn TraitName
                     let name = self.expect_ident()?;
-                    let type_args = if self.eat(&Token::Less) {
-                        Some(self.parse_type_args()?)
+                    let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
+                        self.parse_trait_bound_args()?
                     } else {
-                        None
+                        (None, Vec::new())
                     };
-                    vec![TraitBound { name, type_args }]
+                    vec![TraitBound {
+                        name,
+                        type_args,
+                        assoc_type_bindings,
+                    }]
                 };
                 TypeExpr::TraitObject(bounds)
             }
@@ -3829,16 +3839,53 @@ impl<'src> Parser<'src> {
         Some(args)
     }
 
+    fn parse_trait_bound_args(&mut self) -> Option<ParsedTraitBoundArgs> {
+        let mut type_args = Vec::new();
+        let mut assoc_type_bindings = Vec::new();
+
+        while !self.at_end() && !self.at_closing_angle() {
+            if matches!(self.peek(), Some(Token::Identifier(_)))
+                && self.peek_at(self.pos + 1) == Some(&Token::Equal)
+            {
+                let name = self.expect_ident()?;
+                self.expect(&Token::Equal)?;
+                let ty = self.parse_type()?;
+                assoc_type_bindings.push(AssocTypeBinding { name, ty });
+            } else {
+                type_args.push(self.parse_type()?);
+            }
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+
+        if !self.eat_closing_angle() {
+            self.error("expected '>'".to_string());
+            return None;
+        }
+        let type_args = if type_args.is_empty() {
+            None
+        } else {
+            Some(type_args)
+        };
+        Some((type_args, assoc_type_bindings))
+    }
+
     fn parse_trait_bound(&mut self) -> Option<TraitBound> {
         let name = self.expect_ident()?;
 
-        let type_args = if self.eat(&Token::Less) {
-            Some(self.parse_type_args()?)
+        let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
+            self.parse_trait_bound_args()?
         } else {
-            None
+            (None, Vec::new())
         };
 
-        Some(TraitBound { name, type_args })
+        Some(TraitBound {
+            name,
+            type_args,
+            assoc_type_bindings,
+        })
     }
 
     #[allow(

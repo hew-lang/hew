@@ -1604,6 +1604,7 @@ impl Builder {
                 trait_name,
                 concrete_type,
                 method_table,
+                vtable_entries,
             } => {
                 // Materialise the concrete value into a Place, then emit
                 // `Instr::CoerceToDynTrait` to construct the fat pointer.
@@ -1617,6 +1618,7 @@ impl Builder {
                     trait_name: trait_name.clone(),
                     concrete_type: concrete_type.clone(),
                     method_table: method_table.clone(),
+                    vtable_entries: vtable_entries.clone(),
                 });
                 Some(dest)
             }

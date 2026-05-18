@@ -6,6 +6,116 @@ use super::coerce::cast_is_valid;
 use super::*;
 
 impl Checker {
+    fn resolve_trait_object_bound(
+        &mut self,
+        bound: &hew_parser::ast::TraitBound,
+        span: &Span,
+        hole_vars: &mut Vec<TypeVar>,
+    ) -> crate::ty::TraitObjectBound {
+        let args = bound.type_args.as_ref().map_or(vec![], |ta| {
+            ta.iter()
+                .map(|t| self.resolve_type_expr_tracking_holes(t, hole_vars))
+                .collect()
+        });
+        let mut assoc_bindings = Vec::with_capacity(bound.assoc_type_bindings.len());
+        let mut seen_assoc = HashSet::new();
+        for binding in &bound.assoc_type_bindings {
+            let ty = self.resolve_type_expr_tracking_holes(&binding.ty, hole_vars);
+            if !seen_assoc.insert(binding.name.clone()) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "duplicate associated type binding `{}` in `dyn {}`",
+                        binding.name, bound.name
+                    ),
+                );
+                continue;
+            }
+            if ty.has_inference_var() {
+                self.report_error(
+                    TypeErrorKind::InferenceFailed,
+                    &binding.ty.1,
+                    format!(
+                        "associated type binding `{}::{}` in a dyn trait object must be fully projected",
+                        bound.name, binding.name
+                    ),
+                );
+            }
+            assoc_bindings.push((binding.name.clone(), ty));
+        }
+        assoc_bindings.sort_by(|a, b| a.0.cmp(&b.0));
+
+        if let Some(associated_type_names) = self.trait_defs.get(&bound.name).map(|trait_info| {
+            trait_info
+                .associated_types
+                .iter()
+                .map(|assoc| assoc.name.clone())
+                .collect::<Vec<_>>()
+        }) {
+            let declared_assoc: HashSet<&str> =
+                associated_type_names.iter().map(String::as_str).collect();
+            let missing: Vec<String> = associated_type_names
+                .iter()
+                .filter(|assoc_name| !seen_assoc.contains(*assoc_name))
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                let already_reported = self.errors.iter().any(|err| {
+                    err.span == span.clone()
+                        && matches!(
+                            &err.kind,
+                            TypeErrorKind::MissingAssocTypeBinding { trait_name, missing: prev }
+                                if trait_name == &bound.name && prev == &missing
+                        )
+                });
+                if !already_reported {
+                    self.report_error(
+                        TypeErrorKind::MissingAssocTypeBinding {
+                            trait_name: bound.name.clone(),
+                            missing: missing.clone(),
+                        },
+                        span,
+                        format!(
+                            "`dyn {}` must bind associated type{} {}; write `dyn {}<{}>`",
+                            bound.name,
+                            if missing.len() == 1 { "" } else { "s" },
+                            missing
+                                .iter()
+                                .map(|name| format!("`{name}`"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            bound.name,
+                            missing
+                                .iter()
+                                .map(|name| format!("{name} = ..."))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    );
+                }
+            }
+            for (assoc_name, _) in &assoc_bindings {
+                if !declared_assoc.contains(assoc_name.as_str()) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "trait `{}` has no associated type `{}` for dyn binding",
+                            bound.name, assoc_name
+                        ),
+                    );
+                }
+            }
+        }
+
+        crate::ty::TraitObjectBound {
+            trait_name: bound.name.clone(),
+            args,
+            assoc_bindings,
+        }
+    }
+
     pub(super) fn resolve_fn_sig(&self, sig: &FnSig) -> FnSig {
         FnSig {
             params: sig
@@ -1033,17 +1143,7 @@ impl Checker {
             TypeExpr::TraitObject(bounds) => {
                 let traits = bounds
                     .iter()
-                    .map(|bound| {
-                        let args = bound.type_args.as_ref().map_or(vec![], |ta| {
-                            ta.iter()
-                                .map(|t| self.resolve_type_expr_tracking_holes(t, hole_vars))
-                                .collect()
-                        });
-                        crate::ty::TraitObjectBound {
-                            trait_name: bound.name.clone(),
-                            args,
-                        }
-                    })
+                    .map(|bound| self.resolve_trait_object_bound(bound, &te.1, hole_vars))
                     .collect();
                 Ty::TraitObject { traits }
             }

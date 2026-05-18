@@ -440,6 +440,7 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 .map(|bound| crate::ty::TraitObjectBound {
                     trait_name: bound.name.clone(),
                     args: vec![],
+                    assoc_bindings: vec![],
                 })
                 .collect(),
         },

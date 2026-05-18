@@ -140,6 +140,9 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
                 for arg in &bound.args {
                     collect_named_type_names(arg, names);
                 }
+                for (_, ty) in &bound.assoc_bindings {
+                    collect_named_type_names(ty, names);
+                }
             }
         }
         // Task<T> is compiler-internal; recurse into T so that a
@@ -179,6 +182,7 @@ mod tests {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Display".to_string(),
                 args: Vec::new(),
+                assoc_bindings: Vec::new(),
             }],
         };
 
@@ -194,6 +198,7 @@ mod tests {
                     name: "Foo".to_string(),
                     args: Vec::new(),
                 }],
+                assoc_bindings: Vec::new(),
             }],
         };
 
@@ -217,9 +222,11 @@ mod tests {
                                 name: "Bar".to_string(),
                                 args: Vec::new(),
                             }],
+                            assoc_bindings: Vec::new(),
                         }],
                     },
                 ])],
+                assoc_bindings: Vec::new(),
             }],
         };
 

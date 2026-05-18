@@ -72,6 +72,7 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
         traits: vec![crate::ty::TraitObjectBound {
             trait_name: "Iterator".to_string(),
             args: vec![Ty::Var(original)],
+            assoc_bindings: vec![],
         }],
     };
     let mut mapping = HashMap::new();
@@ -5967,6 +5968,7 @@ fn orphan_impl_emits_warning() {
         trait_bound: Some(TraitBound {
             name: "SomeTrait".to_string(),
             type_args: None,
+            assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
@@ -6014,6 +6016,7 @@ fn local_type_impl_no_orphan_warning() {
         trait_bound: Some(TraitBound {
             name: "ExternalTrait".to_string(),
             type_args: None,
+            assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
@@ -10640,6 +10643,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         super_traits: Some(vec![hew_parser::ast::TraitBound {
             name: "AssocSuper".to_string(),
             type_args: None,
+            assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
             name: "run".to_string(),
@@ -10728,6 +10732,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         super_traits: Some(vec![hew_parser::ast::TraitBound {
             name: "GenericSuper".to_string(),
             type_args: None,
+            assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
             name: "run".to_string(),
@@ -11449,6 +11454,7 @@ mod non_root_module_inference_scope {
             trait_bound: Some(TraitBound {
                 name: "Answerer".to_string(),
                 type_args: None,
+                assoc_type_bindings: vec![],
             }),
             target_type: (
                 TypeExpr::Named {

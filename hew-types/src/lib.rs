@@ -22,8 +22,9 @@ pub mod unify;
 
 pub use check::{
     builtin_function_names, ActorSendAliasing, ActorSendCopyReason, AssignTargetKind,
-    AssignTargetShape, Checker, ChildKind, ChildSlot, DynCoercion, DynMethodCall,
-    MethodCallReceiverKind, MethodCallRewrite, SpanKey, TypeCheckOutput, VariantDef,
+    AssignTargetShape, Checker, ChildKind, ChildSlot, DynAssocBinding, DynCoercion, DynMethodCall,
+    DynVtableEntry, DynVtableKey, MethodCallReceiverKind, MethodCallRewrite, SpanKey,
+    TypeCheckOutput, VariantDef,
 };
 pub use error::TypeError;
 pub use lowering_facts::{

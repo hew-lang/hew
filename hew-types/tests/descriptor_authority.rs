@@ -149,6 +149,7 @@ fn canonical_string_trait_object_single_bound() {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".into(),
             args: vec![],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(ty.canonical_string(), "dyn(Iterator)");
@@ -161,10 +162,12 @@ fn canonical_string_trait_object_multiple_bounds() {
             ResolvedTraitBound {
                 trait_name: "Send".into(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
             ResolvedTraitBound {
                 trait_name: "Sync".into(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
         ],
     };
@@ -177,6 +180,7 @@ fn canonical_string_trait_object_with_type_arg() {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".into(),
             args: vec![ResolvedTy::I32],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(ty.canonical_string(), "dyn(Iterator<i32>)");

@@ -12,6 +12,31 @@ enum StructuralMethodStatus {
 }
 
 impl Checker {
+    pub(super) fn apply_trait_object_bound_substitutions(
+        &self,
+        sig: &mut FnSig,
+        bound: &crate::ty::TraitObjectBound,
+    ) {
+        if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
+            let type_params = &trait_info.type_params;
+            if type_params.len() == bound.args.len() {
+                for (param_name, replacement) in type_params.iter().zip(bound.args.iter()) {
+                    for param_ty in &mut sig.params {
+                        *param_ty = param_ty.substitute_named_param(param_name, replacement);
+                    }
+                    sig.return_type = sig
+                        .return_type
+                        .substitute_named_param(param_name, replacement);
+                }
+            }
+        }
+        for param_ty in &mut sig.params {
+            *param_ty = substitute_trait_object_assoc_bindings(param_ty, &bound.trait_name, bound);
+        }
+        sig.return_type =
+            substitute_trait_object_assoc_bindings(&sig.return_type, &bound.trait_name, bound);
+    }
+
     pub(super) fn freshen_inner(&self, ty: &Ty, mapping: &mut HashMap<u32, Ty>) -> Ty {
         match ty {
             Ty::Var(v) => {
@@ -53,6 +78,11 @@ impl Checker {
                             .args
                             .iter()
                             .map(|arg| self.freshen_inner(arg, mapping))
+                            .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), self.freshen_inner(ty, mapping)))
                             .collect(),
                     })
                     .collect(),
@@ -822,5 +852,49 @@ impl Checker {
             }
         }
         None
+    }
+}
+
+fn substitute_trait_object_assoc_bindings(
+    ty: &Ty,
+    trait_name: &str,
+    bound: &crate::ty::TraitObjectBound,
+) -> Ty {
+    match ty {
+        Ty::AssocType {
+            base,
+            trait_name: projected_trait,
+            assoc_name,
+        } if projected_trait.as_ref() == trait_name
+            && matches!(
+                base.as_ref(),
+                Ty::Named { name, args } if name == "Self" && args.is_empty()
+            ) =>
+        {
+            bound
+                .assoc_bindings
+                .iter()
+                .find(|(name, _)| name == assoc_name.as_ref())
+                .map_or_else(
+                    || ty.clone(),
+                    |(_, binding_ty)| {
+                        substitute_trait_object_assoc_bindings(binding_ty, trait_name, bound)
+                    },
+                )
+        }
+        Ty::AssocType {
+            base,
+            trait_name: projected_trait,
+            assoc_name,
+        } => Ty::AssocType {
+            base: Box::new(substitute_trait_object_assoc_bindings(
+                base, trait_name, bound,
+            )),
+            trait_name: projected_trait.clone(),
+            assoc_name: assoc_name.clone(),
+        },
+        _ => ty.map_children_pub(&|child| {
+            substitute_trait_object_assoc_bindings(child, trait_name, bound)
+        }),
     }
 }

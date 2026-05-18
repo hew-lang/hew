@@ -3418,27 +3418,8 @@ impl Checker {
                             span,
                         );
                     }
-                    // Apply type substitutions from bound's type arguments
                     if let Some(bound) = found_bound {
-                        if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
-                            let type_params = &trait_info.type_params;
-                            if type_params.len() == bound.args.len() {
-                                // Apply substitutions
-                                for (param_name, replacement) in
-                                    type_params.iter().zip(bound.args.iter())
-                                {
-                                    // Substitute in parameter types
-                                    for param_ty in &mut sig.params {
-                                        *param_ty = param_ty
-                                            .substitute_named_param(param_name, replacement);
-                                    }
-                                    // Substitute in return type
-                                    sig.return_type = sig
-                                        .return_type
-                                        .substitute_named_param(param_name, replacement);
-                                }
-                            }
-                        }
+                        self.apply_trait_object_bound_substitutions(&mut sig, bound);
                     }
                     self.apply_instantiated_call_signature(
                         &sig,

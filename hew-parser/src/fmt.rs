@@ -1408,9 +1408,27 @@ impl<'a> Formatter<'a> {
 
     fn format_trait_bound(&mut self, bound: &TraitBound) {
         self.write(&bound.name);
-        if let Some(args) = &bound.type_args {
+        if bound.type_args.is_some() || !bound.assoc_type_bindings.is_empty() {
             self.write("<");
-            self.comma_sep(args, |f, arg| f.format_type_expr(&arg.0));
+            let mut needs_comma = false;
+            if let Some(args) = &bound.type_args {
+                for arg in args {
+                    if needs_comma {
+                        self.write(", ");
+                    }
+                    self.format_type_expr(&arg.0);
+                    needs_comma = true;
+                }
+            }
+            for binding in &bound.assoc_type_bindings {
+                if needs_comma {
+                    self.write(", ");
+                }
+                self.write(&binding.name);
+                self.write(" = ");
+                self.format_type_expr(&binding.ty.0);
+                needs_comma = true;
+            }
             self.write(">");
         }
     }

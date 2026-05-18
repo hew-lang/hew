@@ -361,13 +361,15 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             trait_name,
             concrete_type,
             method_table,
+            vtable_entries,
         } => {
             writeln!(
                 out,
-                "{pad}  coerce-to-dyn {} <- {} (slots={})",
+                "{pad}  coerce-to-dyn {} <- {} (slots={}, projected={})",
                 trait_name,
                 concrete_type.user_facing(),
-                method_table.len()
+                method_table.len(),
+                vtable_entries.len()
             )
             .expect("write to string");
             dump_expr(out, value, indent + 4);

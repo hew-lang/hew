@@ -127,6 +127,7 @@ fn display_trait_object_single_no_args() {
         traits: vec![TraitObjectBound {
             trait_name: "Display".to_string(),
             args: vec![],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(ty.to_string(), "dyn Display");
@@ -138,6 +139,7 @@ fn display_trait_object_single_with_args() {
         traits: vec![TraitObjectBound {
             trait_name: "Iterator".to_string(),
             args: vec![Ty::I32],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(ty.to_string(), "dyn Iterator<i32>");
@@ -149,6 +151,7 @@ fn display_trait_object_single_with_multiple_args() {
         traits: vec![TraitObjectBound {
             trait_name: "Converter".to_string(),
             args: vec![Ty::I32, Ty::String],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(ty.to_string(), "dyn Converter<i32, string>");
@@ -161,10 +164,12 @@ fn display_trait_object_multi_trait() {
             TraitObjectBound {
                 trait_name: "Display".to_string(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
             TraitObjectBound {
                 trait_name: "Debug".to_string(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
         ],
     };
@@ -178,10 +183,12 @@ fn display_trait_object_multi_trait_with_args() {
             TraitObjectBound {
                 trait_name: "Into".to_string(),
                 args: vec![Ty::String],
+                assoc_bindings: vec![],
             },
             TraitObjectBound {
                 trait_name: "Clone".to_string(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
         ],
     };
@@ -703,6 +710,7 @@ fn contains_var_in_trait_object() {
         traits: vec![TraitObjectBound {
             trait_name: "Foo".to_string(),
             args: vec![Ty::Var(v)],
+            assoc_bindings: vec![],
         }],
     };
     assert!(ty.contains_var(v));
@@ -711,6 +719,7 @@ fn contains_var_in_trait_object() {
         traits: vec![TraitObjectBound {
             trait_name: "Foo".to_string(),
             args: vec![Ty::I32],
+            assoc_bindings: vec![],
         }],
     };
     assert!(!ty_no_var.contains_var(v));
@@ -791,10 +800,12 @@ fn substitute_in_trait_object() {
             TraitObjectBound {
                 trait_name: "Foo".to_string(),
                 args: vec![Ty::Var(v)],
+                assoc_bindings: vec![],
             },
             TraitObjectBound {
                 trait_name: "Bar".to_string(),
                 args: vec![Ty::I32, Ty::Var(v)],
+                assoc_bindings: vec![],
             },
         ],
     };
@@ -806,10 +817,12 @@ fn substitute_in_trait_object() {
                 TraitObjectBound {
                     trait_name: "Foo".to_string(),
                     args: vec![Ty::String],
+                    assoc_bindings: vec![],
                 },
                 TraitObjectBound {
                     trait_name: "Bar".to_string(),
                     args: vec![Ty::I32, Ty::String],
+                    assoc_bindings: vec![],
                 },
             ],
         }
@@ -1081,6 +1094,7 @@ fn apply_subst_through_trait_object() {
         traits: vec![TraitObjectBound {
             trait_name: "Iter".to_string(),
             args: vec![Ty::Var(v)],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(
@@ -1089,6 +1103,7 @@ fn apply_subst_through_trait_object() {
             traits: vec![TraitObjectBound {
                 trait_name: "Iter".to_string(),
                 args: vec![Ty::Char],
+                assoc_bindings: vec![],
             }],
         }
     );

@@ -78,6 +78,16 @@ impl Checker {
                             .iter()
                             .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
                             .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| {
+                                (
+                                    name.clone(),
+                                    Self::lambda_generic_schema_ty(ty, generic_param_names),
+                                )
+                            })
+                            .collect(),
                     })
                     .collect(),
             },

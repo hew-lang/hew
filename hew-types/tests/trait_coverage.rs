@@ -525,6 +525,7 @@ fn trait_object_checks_super_traits() {
         traits: vec![TraitObjectBound {
             trait_name: "Drawable".to_string(),
             args: vec![],
+            assoc_bindings: vec![],
         }],
     };
     assert!(reg.implements_marker(&obj, MarkerTrait::Send));

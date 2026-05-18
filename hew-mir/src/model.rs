@@ -915,6 +915,8 @@ pub enum Instr {
         /// declaration order; multi-bound coercions prefix each method
         /// name with `Trait::`.
         method_table: Vec<(String, String)>,
+        /// Ordered vtable entries with checker-substituted method signatures.
+        vtable_entries: Vec<hew_types::DynVtableEntry>,
     },
     /// Dispatch a method call through a `dyn Trait` fat pointer's vtable.
     ///

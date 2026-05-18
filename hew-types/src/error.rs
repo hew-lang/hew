@@ -448,6 +448,30 @@ pub enum TypeErrorKind {
         /// Short reason: `"generic method"` or `"Self-returning method"`.
         reason: &'static str,
     },
+    /// A trait object omits required associated-type bindings.
+    ///
+    /// Rust-aligned object safety requires every associated type declared by a
+    /// trait to be fully projected in `dyn Trait` position, e.g.
+    /// `dyn Iterator<Item = int>` instead of bare `dyn Iterator`.
+    ///
+    /// Envelope code: `E_MISSING_ASSOC_TYPE_BINDING`.
+    MissingAssocTypeBinding {
+        /// Trait whose dyn-object projection was incomplete.
+        trait_name: String,
+        /// Associated type names missing from the projection.
+        missing: Vec<String>,
+    },
+    /// A dyn associated-type binding could not be projected from the concrete impl.
+    ///
+    /// Envelope code: `E_ASSOC_TYPE_PROJECTION_FAILED`.
+    AssocTypeProjectionFailed {
+        /// Concrete type being coerced into a dyn trait object.
+        type_name: String,
+        /// Trait whose associated type projection failed.
+        trait_name: String,
+        /// Associated type name that failed to project.
+        assoc_name: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -495,6 +519,8 @@ impl TypeErrorKind {
             Self::TaskNotNameable => "TaskNotNameable",
             Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
             Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
+            Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
+            Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
         }
     }
 }

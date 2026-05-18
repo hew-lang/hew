@@ -884,6 +884,10 @@ impl Checker {
                             for (tp, ta) in td.type_params.iter().zip(args.iter()) {
                                 bound = bound.substitute_named_param(tp, ta);
                             }
+                        } else if let Some(type_params) = builtin_generic_type_params(name) {
+                            for (tp, ta) in type_params.iter().zip(args.iter()) {
+                                bound = bound.substitute_named_param(tp, ta);
+                            }
                         }
                         // Recurse: the projected binding may itself contain
                         // further `Ty::AssocType` carriers.
@@ -1153,5 +1157,13 @@ impl Checker {
                 Ty::Var(var)
             }
         }
+    }
+}
+
+fn builtin_generic_type_params(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        "HashMap" => Some(&["K", "V"]),
+        "Vec" | "HashSet" => Some(&["T"]),
+        _ => None,
     }
 }

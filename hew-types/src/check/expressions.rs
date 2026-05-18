@@ -896,6 +896,10 @@ impl Checker {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "index checking covers range slices, Vec runtime indexing, user Index impls, and dyn Index dispatch"
+    )]
     pub(super) fn synthesize_index(
         &mut self,
         object: &Spanned<Expr>,
@@ -942,11 +946,72 @@ impl Checker {
             };
         }
 
-        self.check_against(&index.0, &index.1, &Ty::I64);
-        match &obj_ty {
-            Ty::Array(elem, _) | Ty::Slice(elem) => (**elem).clone(),
-            Ty::Named { name, args } if name == "Vec" && !args.is_empty() => args[0].clone(),
+        let resolved_obj = self.subst.resolve(&obj_ty);
+        if let Ty::TraitObject { traits } = &resolved_obj {
+            for bound in traits {
+                if bound.trait_name != "Index" {
+                    continue;
+                }
+                self.check_against(&index.0, &index.1, &Ty::I32);
+                if let Some((_, output_ty)) = bound
+                    .assoc_bindings
+                    .iter()
+                    .find(|(name, _)| name == "Output")
+                {
+                    self.record_dyn_index_method_call(&bound.trait_name, span);
+                    return output_ty.clone();
+                }
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`[]` over `dyn Index` requires an `Output` associated-type binding"
+                        .to_string(),
+                );
+                return Ty::Error;
+            }
+        }
+
+        match &resolved_obj {
+            // Vec keeps the existing runtime-backed indexing ABI. The std
+            // `Index` impl exposes the trait surface, but MIR still owns the
+            // bounds-check + hew_vec_get_T lowering and that ABI takes i64.
+            Ty::Named { name, args } if name == "Vec" && !args.is_empty() => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                args[0].clone()
+            }
             Ty::Named { name, args } => {
+                if self.type_satisfies_trait_bound(&resolved_obj, "Index") {
+                    let expected_key = self
+                        .lookup_named_method_sig(name, args, "at")
+                        .and_then(|sig| sig.params.first().cloned())
+                        .unwrap_or(Ty::I32);
+                    self.check_against(&index.0, &index.1, &expected_key);
+                    let output = self.project_assoc_types(&Ty::AssocType {
+                        base: Box::new(resolved_obj.clone()),
+                        trait_name: "Index".into(),
+                        assoc_name: "Output".into(),
+                    });
+                    if matches!(output, Ty::AssocType { .. }) {
+                        self.report_error(
+                            TypeErrorKind::AssocTypeProjectionFailed {
+                                type_name: resolved_obj.user_facing().to_string(),
+                                trait_name: "Index".to_string(),
+                                assoc_name: "Output".to_string(),
+                            },
+                            span,
+                            format!(
+                                "could not project associated type `<{} as Index>::Output` \
+                                 while checking `[]`; ensure the impl defines \
+                                 `type Output = ...`",
+                                resolved_obj.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    return output;
+                }
+
+                self.check_against(&index.0, &index.1, &Ty::I64);
                 // Bracket indexing via a named type's `.get()` method is no longer
                 // supported. Use the explicit method call instead.
                 if self.lookup_named_method_sig(name, args, "get").is_some() {
@@ -955,28 +1020,61 @@ impl Checker {
                         span,
                         format!(
                             "cannot index into `{}` with `[]`; use `.get(k)` instead",
-                            obj_ty.user_facing()
+                            resolved_obj.user_facing()
                         ),
-                        vec![format!("use `.get(k)` on `{}`", obj_ty.user_facing())],
+                        vec![format!("use `.get(k)` on `{}`", resolved_obj.user_facing())],
                     );
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        format!("cannot index into `{}`", obj_ty.user_facing()),
+                        format!("cannot index into `{}`", resolved_obj.user_facing()),
                     );
                 }
                 Ty::Error
             }
-            _ => {
+            Ty::Array(elem, _) | Ty::Slice(elem) => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                (**elem).clone()
+            }
+            other => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    format!("cannot index into `{}`", obj_ty.user_facing()),
+                    format!("cannot index into `{}`", other.user_facing()),
                 );
                 Ty::Error
             }
         }
+    }
+
+    fn record_dyn_index_method_call(&mut self, trait_name: &str, span: &Span) {
+        let Some(trait_info) = self.trait_defs.get(trait_name) else {
+            return;
+        };
+        let Some(method_idx) = trait_info
+            .methods
+            .iter()
+            .position(|method| method.name == "at")
+        else {
+            return;
+        };
+        let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
+        self.dyn_trait_method_calls.insert(
+            SpanKey::from(span),
+            crate::check::types::DynMethodCall {
+                trait_name: trait_name.to_string(),
+                method_name: "at".to_string(),
+                slot,
+            },
+        );
+        self.record_method_call_receiver_kind(
+            span,
+            crate::check::types::MethodCallReceiverKind::TraitObject {
+                trait_name: trait_name.to_string(),
+            },
+        );
     }
 
     #[expect(

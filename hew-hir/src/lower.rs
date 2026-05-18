@@ -113,27 +113,23 @@ pub fn lower_program_with_mono_cap(
     // Diagnostics from this pass are discarded — the same types are re-lowered
     // in the second pass, which is where canonical diagnostics are emitted.
     for (item, _) in &program.items {
-        if let Item::Function(func) = item {
-            let id = ctx.ids.item();
-            let return_ty = func
-                .return_type
-                .as_ref()
-                .map_or(ResolvedTy::Unit, |ty| ctx.lower_type(ty));
-            let param_tys = func.params.iter().map(|p| ctx.lower_type(&p.ty)).collect();
-            let type_params = func
-                .type_params
-                .as_ref()
-                .map(|params| params.iter().map(|p| p.name.clone()).collect())
-                .unwrap_or_default();
-            ctx.fn_registry.insert(
-                func.name.clone(),
-                FnEntry {
-                    id,
-                    return_ty,
-                    param_tys,
-                    type_params,
-                },
-            );
+        match item {
+            Item::Function(func) => {
+                ctx.register_fn_entry(&func.name, func);
+            }
+            Item::Impl(impl_decl)
+                if impl_decl
+                    .trait_bound
+                    .as_ref()
+                    .is_some_and(|bound| bound.name == "Index") =>
+            {
+                if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                    for method in &impl_decl.methods {
+                        ctx.register_fn_entry(&format!("{name}::{}", method.name), method);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     // Pre-pass: collect record/type-decl shapes so `Expr::StructInit`
@@ -237,6 +233,23 @@ pub fn lower_program_with_mono_cap(
             }
             Item::Function(func) => {
                 items.push(HirItem::Function(ctx.lower_fn(func, span.clone())));
+            }
+            Item::Impl(impl_decl)
+                if impl_decl
+                    .trait_bound
+                    .as_ref()
+                    .is_some_and(|bound| bound.name == "Index") =>
+            {
+                if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                    for method in &impl_decl.methods {
+                        let fn_name = format!("{name}::{}", method.name);
+                        items.push(HirItem::Function(ctx.lower_fn_with_name(
+                            method,
+                            &fn_name,
+                            span.clone(),
+                        )));
+                    }
+                }
             }
             Item::Machine(machine) => {
                 if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
@@ -1086,11 +1099,43 @@ impl LowerCtx {
 }
 
 impl LowerCtx {
+    fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
+        let id = self.ids.item();
+        let return_ty = func
+            .return_type
+            .as_ref()
+            .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
+        let param_tys = func.params.iter().map(|p| self.lower_type(&p.ty)).collect();
+        let type_params = func
+            .type_params
+            .as_ref()
+            .map(|params| params.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default();
+        self.fn_registry.insert(
+            name.to_string(),
+            FnEntry {
+                id,
+                return_ty,
+                param_tys,
+                type_params,
+            },
+        );
+    }
+
     fn lower_fn(&mut self, func: &FnDecl, span: std::ops::Range<usize>) -> HirFn {
+        self.lower_fn_with_name(func, &func.name, span)
+    }
+
+    fn lower_fn_with_name(
+        &mut self,
+        func: &FnDecl,
+        name: &str,
+        span: std::ops::Range<usize>,
+    ) -> HirFn {
         // Use the stable ItemId pre-allocated during the first pass.
         let id = self
             .fn_registry
-            .get(&func.name)
+            .get(name)
             .map_or_else(|| self.ids.item(), |entry| entry.id);
 
         self.push_scope();
@@ -1111,7 +1156,7 @@ impl LowerCtx {
         HirFn {
             id,
             node: self.ids.node(),
-            name: func.name.clone(),
+            name: name.to_string(),
             type_params: func
                 .type_params
                 .as_ref()
@@ -2514,8 +2559,71 @@ impl LowerCtx {
                         result_ty,
                     )
                 } else {
-                    // C-2 single-element indexing: result type is element type T.
                     let index_expr = self.lower_expr(index, IntentKind::Read);
+                    if let Some(dyn_call) = self
+                        .dyn_trait_method_calls
+                        .get(&SpanKey::from(&span))
+                        .cloned()
+                    {
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site,
+                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                            ty: result_ty.clone(),
+                            intent,
+                            kind: HirExprKind::CallDynMethod {
+                                receiver: Box::new(container),
+                                trait_name: dyn_call.trait_name,
+                                method_name: dyn_call.method_name,
+                                slot: dyn_call.slot,
+                                args: vec![index_expr],
+                                ret_ty: result_ty,
+                            },
+                            span: span.clone(),
+                        };
+                    }
+
+                    if let ResolvedTy::Named { name, .. } = &container.ty {
+                        let callee_name = format!("{name}::at");
+                        if name != "Vec" && self.fn_registry.contains_key(&callee_name) {
+                            let callee_ty = ResolvedTy::Function {
+                                params: vec![container.ty.clone(), index_expr.ty.clone()],
+                                ret: Box::new(result_ty.clone()),
+                            };
+                            let resolved = self
+                                .fn_registry
+                                .get(&callee_name)
+                                .map_or(ResolvedRef::Unresolved, |entry| {
+                                    ResolvedRef::Item(entry.id)
+                                });
+                            let callee = HirExpr {
+                                node: self.ids.node(),
+                                site: self.ids.site(),
+                                value_class: ValueClass::PersistentShare,
+                                ty: callee_ty,
+                                intent: IntentKind::Read,
+                                kind: HirExprKind::BindingRef {
+                                    name: callee_name,
+                                    resolved,
+                                },
+                                span: span.clone(),
+                            };
+                            return HirExpr {
+                                node: self.ids.node(),
+                                site,
+                                value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                                ty: result_ty.clone(),
+                                intent,
+                                kind: HirExprKind::Call {
+                                    callee: Box::new(callee),
+                                    args: vec![container, index_expr],
+                                },
+                                span: span.clone(),
+                            };
+                        }
+                    }
+
+                    // C-2 single-element Vec indexing: result type is element type T.
                     (
                         HirExprKind::Index {
                             container: Box::new(container),

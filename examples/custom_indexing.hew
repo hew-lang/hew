@@ -1,13 +1,7 @@
-//! Status: aspirational (Hew roadmap: Index trait, sibling of Iterator)
+//! Status: runs
 //! Description: `obj[k]` desugars to `Index::at(obj, k)` via the Index trait,
 //! mirroring the trait-based pattern used by Iterator (associated-type `Output`).
-//! Requires: associated types slice 4 + Index trait stdlib + checker desugar.
-
-trait Index {
-    type Output;
-
-    fn at(val: Self, key: i32) -> Self::Output;
-}
+//! Requires: Index trait stdlib + checker desugar.
 
 type Grid {
     data: Vec<i32>;

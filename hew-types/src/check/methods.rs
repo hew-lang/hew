@@ -392,7 +392,11 @@ impl Checker {
         self.errors.extend(new_errors);
     }
 
-    fn record_method_call_receiver_kind(&mut self, span: &Span, kind: MethodCallReceiverKind) {
+    pub(super) fn record_method_call_receiver_kind(
+        &mut self,
+        span: &Span,
+        kind: MethodCallReceiverKind,
+    ) {
         self.method_call_receiver_kinds
             .insert(SpanKey::from(span), kind);
     }

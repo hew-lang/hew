@@ -10121,6 +10121,75 @@ fn hashmap_bracket_index_is_a_compile_error() {
 }
 
 #[test]
+fn index_trait_user_impl_runs() {
+    let output = check_source(
+        r"
+        type Grid {
+            bias: i32;
+        }
+
+        impl Index for Grid {
+            type Output = i32;
+
+            fn at(g: Grid, key: i32) -> i32 {
+                g.bias + key
+            }
+        }
+
+        fn f() -> i32 {
+            let g = Grid { bias: 40 };
+            g[2]
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "user Index impl should type-check: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn index_dispatch_via_trait_for_vec() {
+    let output = check_source("fn f(xs: Vec<i32>) -> i32 { xs[0] }");
+    assert!(
+        output.errors.is_empty(),
+        "Vec indexing should continue to type-check through the auto-impl path: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn index_dispatch_via_trait_for_hashmap_string_key_is_deferred() {
+    let output = check_source(r#"fn f(m: HashMap<string, i32>) -> i32 { m["k"] }"#);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|err| err.message.contains(".get(k)") || err.message.contains("cannot index")),
+        "HashMap<string, _> indexing remains deferred under the i32-key Index contract: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn dyn_index_with_output_binding() {
+    let output = check_source("fn f(idx: dyn Index<Output = i32>) -> i32 { idx[2] }");
+    assert!(
+        output.errors.is_empty(),
+        "dyn Index<Output = i32> indexing should type-check: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .dyn_trait_method_calls
+            .values()
+            .any(|call| call.trait_name == "Index" && call.method_name == "at"),
+        "checker should record a dyn Index::at vtable dispatch for []"
+    );
+}
+
+#[test]
 fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.type_defs.insert(

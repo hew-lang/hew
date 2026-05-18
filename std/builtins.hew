@@ -133,6 +133,25 @@ pub trait Iterator {
 }
 
 // ---------------------------------------------------------------------------
+// Index trait
+// ---------------------------------------------------------------------------
+/// Bracket indexing surface for values that define an element lookup.
+///
+/// `obj[k]` type-checks through this trait for user-defined receivers. Vec
+/// keeps its compiler-backed bounds-check/runtime path, with this impl
+/// providing the same trait surface for bounds and associated-type projection.
+pub trait Index {
+    type Output;
+
+    fn at(self, key: i32) -> Self::Output;
+}
+
+impl<T> Index for Vec<T> {
+    type Output = T;
+    fn at(vec: Vec<T>, key: i32) -> T {}
+}
+
+// ---------------------------------------------------------------------------
 // Display trait
 // ---------------------------------------------------------------------------
 /// Convert a value of type `Self` into a human-readable `string`.

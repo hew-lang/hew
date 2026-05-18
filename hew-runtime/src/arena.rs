@@ -4,23 +4,23 @@
 //!
 //! ```text
 //! hew_arena_new()
-//!   └─► hew_arena_set_current(arena)   ← install as thread-local; alloc/free now redirect here
+//!   └─► ctx.arena = arena              ← install in canonical context
 //!         │
 //!         │  [actor dispatch runs]
 //!         │    hew_arena_malloc(n)   → bump-allocates from the arena
 //!         │    hew_arena_free(ptr)   → **no-op** (bulk-free is cheaper than per-pointer tracking)
 //!         │
-//!       hew_arena_set_current(null)   ← uninstall; alloc/free revert to libc
+//!       ctx.arena = null              ← uninstall; alloc/free fail closed
 //!         │
 //!         ├── hew_arena_reset(arena)  → cursor back to zero, chunks *retained* (fast reuse)
-//!         │     └─► hew_arena_set_current(arena) … repeat for next dispatch
+//!         │     └─► ctx.arena = arena … repeat for next dispatch
 //!         │
 //!         └── hew_arena_free_all(arena) → munmap/VirtualFree every chunk; pointer invalid
 //! ```
 //!
-//! **When no arena is active** (`CURRENT_ARENA` is null) `hew_arena_malloc` delegates to
-//! `libc::malloc` and `hew_arena_free` delegates to `libc::free`, so the C ABI pair is
-//! always safe to call regardless of whether an arena is installed.
+//! When no execution context is installed, C ABI allocation/free readers set
+//! `hew_last_error` and return their sentinel instead of pretending direct
+//! `libc` ownership.
 //!
 //! # Chunk growth
 //!
@@ -38,7 +38,6 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use std::cell::Cell;
 use std::os::raw::c_void;
 use std::ptr;
 
@@ -285,24 +284,35 @@ impl Default for ActorArena {
     }
 }
 
-// Thread-local current arena tracking
-thread_local! {
-    static CURRENT_ARENA: Cell<*mut ActorArena> = const { Cell::new(ptr::null_mut()) };
-}
-
-/// Set the current thread-local arena and return the previous one.
+/// Set the current context's arena lane and return the previous one.
 pub fn set_current_arena(arena: *mut ActorArena) -> *mut ActorArena {
-    CURRENT_ARENA.with(|current| current.replace(arena))
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe {
+        let previous = (*ctx).arena;
+        (*ctx).arena = arena;
+        previous
+    }
 }
 
-/// Get the current thread-local arena.
+/// Get the current context's arena lane.
 fn get_current_arena() -> *mut ActorArena {
-    CURRENT_ARENA.with(std::cell::Cell::get)
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe { (*ctx).arena }
 }
 
 // C ABI functions
 
-/// Allocate memory from the current arena, falling back to libc malloc.
+/// Allocate memory from the current execution context's arena.
 ///
 /// When an arena with a non-zero cap is active and this allocation would
 /// exceed that cap, returns null **and** triggers a `HeapExceeded` actor
@@ -322,9 +332,7 @@ fn get_current_arena() -> *mut ActorArena {
 pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
     let arena_ptr = get_current_arena();
     if arena_ptr.is_null() {
-        // No arena active, use libc malloc
-        // SAFETY: libc malloc is safe for any size
-        unsafe { libc::malloc(size) }
+        ptr::null_mut()
     } else {
         // SAFETY: arena_ptr is valid (set by hew_arena_set_current)
         let arena = unsafe { &mut *arena_ptr };
@@ -352,27 +360,22 @@ pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
     }
 }
 
-/// Free memory - no-op during arena dispatch, forwards to libc free otherwise.
+/// Free memory - no-op during arena dispatch.
 ///
 /// # Contract
 ///
 /// - **Arena active**: this is intentionally a no-op.  Memory is reclaimed in bulk via
 ///   `hew_arena_reset` or `hew_arena_free_all`.  Callers must not mix arena-allocated
 ///   pointers with direct `free()` calls.
-/// - **No arena active**: delegates to `libc::free`.  The pointer must have been obtained
-///   from a matching `hew_arena_malloc` call (or `malloc`) when no arena was installed.
+/// - **No execution context or arena lane**: sets `hew_last_error` at the reader site
+///   and returns without fabricating ownership.
 ///
 /// # Safety
 ///
 /// `ptr` must be a valid pointer returned by `hew_arena_malloc` or `malloc()`, or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_arena_free(ptr: *mut c_void) {
-    let arena_ptr = get_current_arena();
-    if arena_ptr.is_null() {
-        // No arena active, use libc free
-        // SAFETY: caller guarantees ptr is valid
-        unsafe { libc::free(ptr) };
-    }
+pub unsafe extern "C" fn hew_arena_free(_ptr: *mut c_void) {
+    let _arena_ptr = get_current_arena();
     // If arena is active, this is a no-op (arena memory will be reset/freed in bulk)
 }
 
@@ -437,7 +440,7 @@ pub unsafe extern "C" fn hew_arena_free_all(arena: *mut ActorArena) {
     }
 }
 
-/// Set the current thread-local arena.
+/// Set the current context's arena lane.
 ///
 /// # Safety
 ///
@@ -450,6 +453,7 @@ pub unsafe extern "C" fn hew_arena_set_current(arena: *mut ActorArena) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
 
     #[test]
     fn arena_alloc_basic() {
@@ -542,20 +546,28 @@ mod tests {
     }
 
     #[test]
-    fn hew_arena_malloc_free_fallback() {
-        // Test without arena active
-        // SAFETY: testing malloc/free with valid size
+    fn hew_arena_malloc_without_context_fails_closed() {
+        crate::hew_clear_error();
+        // SAFETY: testing fail-closed sentinel with no installed context.
         let ptr = unsafe { hew_arena_malloc(100) };
-        assert!(!ptr.is_null());
+        assert!(ptr.is_null());
+        let err = crate::hew_last_error();
+        assert!(!err.is_null());
+        // SAFETY: hew_last_error returned a non-null C string.
+        let err = unsafe { std::ffi::CStr::from_ptr(err).to_str().unwrap() };
+        assert_eq!(
+            err,
+            crate::execution_context::EXECUTION_CONTEXT_NOT_INSTALLED
+        );
 
-        // SAFETY: ptr is valid from malloc above
-        unsafe { hew_arena_free(ptr) };
+        crate::hew_clear_error();
     }
 
     #[test]
     fn hew_arena_c_api() {
         let arena = hew_arena_new();
         assert!(!arena.is_null());
+        let _ctx = TestExecutionContext::install(HewExecutionContext::default());
 
         // SAFETY: arena is valid from hew_arena_new
         unsafe { hew_arena_set_current(arena) };
@@ -656,6 +668,7 @@ mod tests {
         let cap = 128_usize;
         let arena = hew_arena_new_with_cap(cap);
         assert!(!arena.is_null(), "hew_arena_new_with_cap must succeed");
+        let _ctx = TestExecutionContext::install(HewExecutionContext::default());
 
         // SAFETY: arena is a valid pointer from hew_arena_new_with_cap.
         unsafe { hew_arena_set_current(arena) };

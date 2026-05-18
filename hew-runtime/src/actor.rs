@@ -27,14 +27,6 @@ use crate::reply_channel::{self, HewReplyChannel};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::scheduler;
 
-// ── Thread-local current actor ──────────────────────────────────────────
-
-#[cfg(not(target_arch = "wasm32"))]
-thread_local! {
-    /// The actor currently being dispatched on this worker thread.
-    static CURRENT_ACTOR: Cell<*mut HewActor> = const { Cell::new(ptr::null_mut()) };
-}
-
 // ── Thread-local local ask error ────────────────────────────────────────
 
 thread_local! {
@@ -451,64 +443,25 @@ fn should_fail_actor_state_alloc() -> bool {
     })
 }
 
-#[cfg(target_arch = "wasm32")]
-static mut CURRENT_ACTOR_WASM: *mut HewActor = ptr::null_mut();
-
-/// Set the current actor for this worker thread, returning the previous value.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn set_current_actor(actor: *mut HewActor) -> *mut HewActor {
-    CURRENT_ACTOR.with(|c| c.replace(actor))
-}
-
-/// Set the current actor, returning the previous value.
-#[cfg(target_arch = "wasm32")]
-#[allow(dead_code)]
-pub(crate) fn set_current_actor(actor: *mut HewActor) -> *mut HewActor {
-    // SAFETY: WASM is single-threaded, no data races possible.
-    unsafe {
-        let prev = CURRENT_ACTOR_WASM;
-        CURRENT_ACTOR_WASM = actor;
-        prev
-    }
-}
-
 /// Get the ID of the actor currently being dispatched on this thread.
 ///
 /// Returns -1 if no actor is active (called from main or non-actor context).
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_actor_current_id() -> i64 {
-    CURRENT_ACTOR.with(|c| {
-        let ptr = c.get();
-        if ptr.is_null() {
-            -1
-        } else {
-            // SAFETY: ptr is non-null and points to a valid HewActor set by the scheduler.
-            #[expect(clippy::cast_possible_wrap, reason = "actor IDs fit in i64")]
-            {
-                // SAFETY: ptr is non-null and valid (checked above, set by scheduler).
-                unsafe { &*ptr }.id as i64
-            }
-        }
-    })
-}
-
-/// Get the ID of the actor currently being dispatched.
-///
-/// Returns -1 if no actor is active (called from main or non-actor context).
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_actor_current_id() -> i64 {
-    // SAFETY: WASM is single-threaded.
-    unsafe {
-        if CURRENT_ACTOR_WASM.is_null() {
-            -1
-        } else {
-            #[expect(clippy::cast_possible_wrap, reason = "actor IDs fit in i64")]
-            {
-                (&*CURRENT_ACTOR_WASM).id as i64
-            }
-        }
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return -1;
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    let actor = unsafe { (*ctx).actor };
+    if actor.is_null() {
+        return -1;
+    }
+    #[expect(clippy::cast_possible_wrap, reason = "actor IDs fit in i64")]
+    {
+        // SAFETY: actor is non-null and valid when installed by the scheduler.
+        unsafe { &*actor }.id as i64
     }
 }
 
@@ -650,8 +603,8 @@ pub struct HewActor {
     /// Cumulative nanoseconds spent in dispatch for this actor.
     pub prof_processing_time_ns: AtomicU64,
 
-    /// Per-actor arena bump allocator. Set as thread-local during dispatch
-    /// so `hew_arena_malloc` routes through it. Reset after each activation.
+    /// Per-actor arena bump allocator. Installed in the dispatch context so
+    /// `hew_arena_malloc` routes through it. Reset after each activation.
     #[cfg(not(target_arch = "wasm32"))]
     pub arena: *mut crate::arena::ActorArena,
     /// Per-actor arena bump allocator on WASM.  Allocated during spawn via
@@ -1172,8 +1125,8 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
 
 /// Run the actor's terminate callback exactly once, with crash recovery.
 ///
-/// Sets up `CURRENT_ACTOR` and (on worker threads) a `sigsetjmp` recovery
-/// frame so that Hew panics or signals inside the terminate block are
+/// Sets up the actor lane and (on worker threads) a `sigsetjmp` recovery frame
+/// so that Hew panics or signals inside the terminate block are
 /// caught instead of aborting the process.
 ///
 /// Called at terminal state transitions (→ Stopped), **not** at free time.
@@ -1203,7 +1156,16 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     }
 
     let state = a.state;
-    let prev_actor = set_current_actor(actor);
+    let mut execution_context = crate::execution_context::HewExecutionContext {
+        actor,
+        actor_id: a.id,
+        arena: a.arena,
+        prev_context: crate::execution_context::current_context(),
+        ..crate::execution_context::HewExecutionContext::default()
+    };
+    let prev_context = execution_context.prev_context;
+    let installed_prev = crate::execution_context::set_current_context(&raw mut execution_context);
+    debug_assert_eq!(installed_prev, prev_context);
 
     // Set up crash recovery (returns null on non-worker threads).
     // SAFETY: `actor` is valid and in a terminal state; null msg is fine.
@@ -1246,7 +1208,8 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     }
 
     a.terminate_finished.store(true, Ordering::Release);
-    set_current_actor(prev_actor);
+    let restored_context = crate::execution_context::set_current_context(prev_context);
+    debug_assert_eq!(restored_context, &raw mut execution_context);
 }
 
 /// Run the actor's terminate callback exactly once (WASM version).
@@ -2896,7 +2859,7 @@ unsafe fn actor_send_result_internal_reply(
     let trace_actor_id = if sender.is_null() {
         a.id
     } else {
-        // SAFETY: the scheduler sets CURRENT_ACTOR to a live actor during dispatch.
+        // SAFETY: the scheduler installs a live actor during dispatch.
         unsafe { (*sender).id }
     };
     crate::tracing::record_send(trace_actor_id, msg_type);
@@ -3316,8 +3279,7 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     if terminal == HewActorState::Crashed as i32 {
         let scope = crate::task_scope::current_task_scope();
         if !scope.is_null() {
-            // SAFETY: CURRENT_TASK_SCOPE is installed only while the scope is
-            // live on this dispatch thread.
+            // SAFETY: the task-scope lane is installed only while the scope is live.
             unsafe { crate::task_scope::hew_task_scope_cancel(scope) };
         }
     }
@@ -3362,25 +3324,20 @@ pub unsafe extern "C" fn hew_actor_get_error(actor: *const HewActor) -> i32 {
     unsafe { &*actor }.error_code.load(Ordering::Acquire)
 }
 
-// ── Self (thread-local) ─────────────────────────────────────────────────
+// ── Self (canonical context) ────────────────────────────────────────────
 
-/// Return the actor currently being dispatched on this worker thread.
+/// Return the actor currently installed in the canonical execution context.
 ///
 /// Returns null if called outside of a dispatch context.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_actor_self() -> *mut HewActor {
-    CURRENT_ACTOR.with(Cell::get)
-}
-
-/// Return the actor currently being dispatched.
-///
-/// Returns null if called outside of a dispatch context.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_actor_self() -> *mut HewActor {
-    // SAFETY: WASM is single-threaded.
-    unsafe { CURRENT_ACTOR_WASM }
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe { (*ctx).actor }
 }
 
 /// Trigger a panic in the current execution context.
@@ -3443,33 +3400,17 @@ pub unsafe extern "C" fn hew_actor_pid(actor: *mut HewActor) -> u64 {
     unsafe { &*actor }.pid
 }
 
-/// Return the PID of the actor currently being dispatched on this worker
-/// thread.
+/// Return the PID of the actor currently installed in the canonical execution
+/// context.
 ///
 /// Returns `0` if called outside of a dispatch context.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_actor_self_pid() -> u64 {
-    let actor = CURRENT_ACTOR.with(Cell::get);
+    let actor = hew_actor_self();
     if actor.is_null() {
         return 0;
     }
-    // SAFETY: The thread-local is only set to a valid actor during dispatch.
-    unsafe { &*actor }.pid
-}
-
-/// Return the PID of the actor currently being dispatched.
-///
-/// Returns `0` if called outside of a dispatch context.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_actor_self_pid() -> u64 {
-    // SAFETY: WASM is single-threaded.
-    let actor = unsafe { CURRENT_ACTOR_WASM };
-    if actor.is_null() {
-        return 0;
-    }
-    // SAFETY: The static is only set to a valid actor during dispatch.
+    // SAFETY: The canonical context only installs valid actor pointers during dispatch.
     unsafe { &*actor }.pid
 }
 
@@ -3481,11 +3422,11 @@ pub extern "C" fn hew_actor_self_pid() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_actor_self_stop() {
-    let actor = CURRENT_ACTOR.with(Cell::get);
+    let actor = hew_actor_self();
     if actor.is_null() {
         return;
     }
-    // SAFETY: The thread-local is only set to a valid actor during dispatch.
+    // SAFETY: The canonical context only installs valid actor pointers during dispatch.
     let a = unsafe { &*actor };
 
     // Close the mailbox to reject new messages.
@@ -3536,9 +3477,8 @@ pub(crate) unsafe fn actor_self_stop_wasm_impl(actor: *mut HewActor) {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn hew_actor_self_stop() {
-    // SAFETY: WASM is single-threaded.
-    let actor = unsafe { CURRENT_ACTOR_WASM };
-    // SAFETY: CURRENT_ACTOR_WASM is only set during dispatch.
+    let actor = hew_actor_self();
+    // SAFETY: the canonical context actor lane is only set during dispatch.
     unsafe { actor_self_stop_wasm_impl(actor) };
 }
 
@@ -4216,6 +4156,7 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
 
     static LAST_NATIVE_ASK_REPLY_CHANNEL: AtomicPtr<reply_channel::HewReplyChannel> =
         AtomicPtr::new(ptr::null_mut());
@@ -4311,7 +4252,7 @@ mod tests {
         _size: usize,
     ) {
         if msg_type == -1 {
-            // SAFETY: this runs on the actor's own dispatch thread while `CURRENT_ACTOR` is set.
+            // SAFETY: this runs on the actor's own dispatch thread while its context is installed.
             unsafe { hew_actor_trap(hew_actor_self(), 77) };
             return;
         }
@@ -4537,6 +4478,22 @@ mod tests {
     }
 
     #[test]
+    fn actor_self_without_execution_context_fails_closed() {
+        let _guard = crate::runtime_test_guard();
+        crate::hew_clear_error();
+        assert!(hew_actor_self().is_null());
+        let err = crate::hew_last_error();
+        assert!(!err.is_null());
+        // SAFETY: hew_last_error returned a non-null C string.
+        let err = unsafe { std::ffi::CStr::from_ptr(err).to_str().unwrap() };
+        assert_eq!(
+            err,
+            crate::execution_context::EXECUTION_CONTEXT_NOT_INSTALLED
+        );
+        crate::hew_clear_error();
+    }
+
+    #[test]
     fn null_actor_stop_returns_without_crash() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: null is the input we are testing the guard against.
@@ -4731,8 +4688,9 @@ mod tests {
         let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
         assert!(!actor.is_null());
 
-        // SAFETY: test owns the scope pointer and restores TLS before teardown.
+        // SAFETY: test owns the scope pointer and restores the context before teardown.
         unsafe {
+            let _ctx = TestExecutionContext::install(HewExecutionContext::default());
             let scope = crate::task_scope::hew_task_scope_new();
             let previous = crate::task_scope::hew_task_scope_set_current(scope);
 
@@ -5729,7 +5687,11 @@ mod tests {
                 .actor_state
                 .store(HewActorState::Stopping as i32, Ordering::Release);
 
-            let prev_actor = set_current_actor(actor);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor,
+                actor_id: (*actor).id,
+                ..HewExecutionContext::default()
+            });
             let unblock = defer_state_transition(
                 actor,
                 HewActorState::Stopped,
@@ -5741,7 +5703,6 @@ mod tests {
             let elapsed = start.elapsed();
 
             unblock.join().unwrap();
-            set_current_actor(prev_actor);
 
             let freed =
                 wait_for_condition(std::time::Duration::from_secs(2), || !is_actor_live(actor));
@@ -5783,9 +5744,12 @@ mod tests {
             (*actor).terminate_called.store(true, Ordering::Release);
             (*actor).terminate_finished.store(false, Ordering::Release);
 
-            let prev_actor = set_current_actor(actor);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor,
+                actor_id: (*actor).id,
+                ..HewExecutionContext::default()
+            });
             assert_eq!(hew_actor_free(actor), 0, "self-free should defer");
-            set_current_actor(prev_actor);
 
             let cleanup_started = std::sync::Arc::new(std::sync::Barrier::new(2));
             let cleanup_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -6459,14 +6423,17 @@ mod tests {
             a.terminate_called.store(true, Ordering::Release);
             a.terminate_finished.store(false, Ordering::Release);
 
-            let prev_actor = set_current_actor(actor);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor,
+                actor_id: (*actor).id,
+                ..HewExecutionContext::default()
+            });
 
             let start = std::time::Instant::now();
             let rc = hew_actor_free(actor);
             let elapsed = start.elapsed();
 
             a.terminate_finished.store(true, Ordering::Release);
-            set_current_actor(prev_actor);
 
             let _ = wait_for_condition(std::time::Duration::from_secs(2), || !is_actor_live(actor));
 
@@ -6772,8 +6739,15 @@ mod tests {
         // SAFETY: actor is valid; arena pointer comes from the actor struct.
         let arena = unsafe { (*actor).arena };
         assert!(!arena.is_null(), "actor arena must be allocated");
+        // SAFETY: actor is live for the duration of this test.
+        let actor_id = unsafe { (*actor).id };
+        let _ctx = TestExecutionContext::install(HewExecutionContext {
+            actor,
+            actor_id,
+            ..HewExecutionContext::default()
+        });
 
-        // Install the arena as current so hew_arena_malloc routes through it.
+        // Install the arena lane so hew_arena_malloc routes through it.
         // SAFETY: arena is a valid pointer from hew_arena_new_with_cap.
         unsafe { crate::arena::hew_arena_set_current(arena) };
 
@@ -6827,6 +6801,13 @@ mod tests {
         // SAFETY: actor is valid; arena pointer comes from the actor struct.
         let arena = unsafe { (*actor).arena };
         assert!(!arena.is_null(), "actor arena must be allocated");
+        // SAFETY: actor is live for the duration of this test.
+        let actor_id = unsafe { (*actor).id };
+        let _ctx = TestExecutionContext::install(HewExecutionContext {
+            actor,
+            actor_id,
+            ..HewExecutionContext::default()
+        });
 
         // Install the arena and alloc a large block — must succeed (unbounded).
         // SAFETY: arena is a valid pointer from hew_arena_new.

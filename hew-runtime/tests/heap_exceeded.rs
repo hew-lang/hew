@@ -20,6 +20,29 @@ use hew_runtime::arena::{
     hew_arena_set_current,
 };
 use hew_runtime::supervisor::{ExitReason, HEW_TRAP_HEAP_EXCEEDED};
+use hew_runtime::{set_current_context, HewExecutionContext};
+
+struct ContextGuard {
+    ctx: Box<HewExecutionContext>,
+    prev: *mut HewExecutionContext,
+}
+
+impl ContextGuard {
+    fn install() -> Self {
+        let mut ctx = Box::new(HewExecutionContext::default());
+        let raw = (&raw mut *ctx).cast::<HewExecutionContext>();
+        let prev = set_current_context(raw);
+        Self { ctx, prev }
+    }
+}
+
+impl Drop for ContextGuard {
+    fn drop(&mut self) {
+        let raw = (&raw mut *self.ctx).cast::<HewExecutionContext>();
+        let restored = set_current_context(self.prev);
+        debug_assert_eq!(restored, raw);
+    }
+}
 
 // ── Arena cap enforcement via C ABI ──────────────────────────────────────
 
@@ -28,6 +51,7 @@ use hew_runtime::supervisor::{ExitReason, HEW_TRAP_HEAP_EXCEEDED};
 fn heap_exceeded_malloc_under_cap_succeeds() {
     let arena = hew_arena_new_with_cap(256);
     assert!(!arena.is_null(), "hew_arena_new_with_cap(256) must succeed");
+    let _ctx = ContextGuard::install();
 
     // SAFETY: arena is valid from hew_arena_new_with_cap.
     unsafe { hew_arena_set_current(arena) };
@@ -57,6 +81,7 @@ fn heap_exceeded_malloc_under_cap_succeeds() {
 fn heap_exceeded_malloc_over_cap_returns_null() {
     let arena = hew_arena_new_with_cap(64);
     assert!(!arena.is_null(), "hew_arena_new_with_cap(64) must succeed");
+    let _ctx = ContextGuard::install();
 
     // SAFETY: arena is valid from hew_arena_new_with_cap.
     unsafe { hew_arena_set_current(arena) };
@@ -86,6 +111,7 @@ fn heap_exceeded_malloc_over_cap_returns_null() {
 fn heap_exceeded_reset_allows_fresh_cycle() {
     let arena = hew_arena_new_with_cap(64);
     assert!(!arena.is_null());
+    let _ctx = ContextGuard::install();
 
     // SAFETY: arena is valid.
     unsafe { hew_arena_set_current(arena) };
@@ -128,6 +154,7 @@ fn heap_exceeded_reset_allows_fresh_cycle() {
 fn heap_exceeded_cap_zero_is_unbounded() {
     let arena = hew_arena_new_with_cap(0);
     assert!(!arena.is_null());
+    let _ctx = ContextGuard::install();
 
     // SAFETY: arena is valid.
     unsafe { hew_arena_set_current(arena) };

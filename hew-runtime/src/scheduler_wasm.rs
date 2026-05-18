@@ -946,14 +946,18 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // SAFETY: Single-threaded; no data races possible.
     let saved_reply_channel_consumed: bool = unsafe { CURRENT_REPLY_CHANNEL_CONSUMED };
 
-    // Register this actor in the canonical current-actor slot that actor.rs
-    // self APIs (hew_actor_self, hew_actor_self_pid, hew_actor_self_stop) read.
-    // Returns the previous slot value so we can restore it on exit (Bug #1 fix).
-    // SAFETY: actor is valid; the cast is safe because scheduler_wasm::HewActor
-    // and crate::actor::HewActor have identical C ABI layouts, verified by the
-    // compile-time offset_of! assertions above.
-    let prev_actor =
-        crate::actor::set_current_actor(actor.cast::<c_void>().cast::<crate::actor::HewActor>());
+    // Install the canonical execution context that actor.rs self APIs and arena
+    // routing read during this activation.
+    let mut execution_context = crate::execution_context::HewExecutionContext {
+        actor: actor.cast::<c_void>().cast::<crate::actor::HewActor>(),
+        actor_id: a.id,
+        arena: a.arena.cast::<crate::arena::ActorArena>(),
+        prev_context: crate::execution_context::current_context(),
+        ..crate::execution_context::HewExecutionContext::default()
+    };
+    let prev_context = execution_context.prev_context;
+    let installed_prev = crate::execution_context::set_current_context(&raw mut execution_context);
+    debug_assert_eq!(installed_prev, prev_context);
 
     // Install the actor's arena as the current arena so that
     // `hew_arena_malloc` inside dispatch routes through it.  The return
@@ -1093,8 +1097,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     }
 
     // Restore per-activation globals so the outer activation (if any) sees its
-    // own actor, arena, and reply channel again (Bug #1 + Bug #2 fix).
-    crate::actor::set_current_actor(prev_actor);
+    // own context, arena, and reply channel again (Bug #1 + Bug #2 fix).
     // Restore the arena that was active before this activation and reset the
     // actor's arena for the next dispatch cycle.  Mirroring the native
     // scheduler: install prev_arena (stored in PREV_ARENA) back as current,
@@ -1132,6 +1135,8 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         PENDING_SLEEP_DEADLINE_MS = saved_pending_sleep;
         TASKS_COMPLETED += 1;
     }
+    let restored_context = crate::execution_context::set_current_context(prev_context);
+    debug_assert_eq!(restored_context, &raw mut execution_context);
 
     // ── Post-activation state transitions ───────────────────────────────
 
@@ -1349,9 +1354,8 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
 ///
 /// # Safety
 ///
-/// No preconditions — may be called from any context. When called
-/// outside an actor dispatch (i.e. `CURRENT_ACTOR_WASM` is null), this
-/// is a no-op.
+/// No preconditions — may be called from any context. When called outside an
+/// installed execution context, this sets `hew_last_error` and returns 0.
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 #[must_use]
 pub extern "C" fn hew_actor_cooperate() -> c_int {
@@ -1409,6 +1413,7 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
     use std::ptr;
     #[cfg(not(target_arch = "wasm32"))]
     use std::sync::Arc;
@@ -1604,10 +1609,7 @@ mod tests {
             ptr::addr_of_mut!(INITIALIZED).write(false);
             ptr::addr_of_mut!(ACTIVATING).write(false);
             ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(0);
-            // Reset the canonical current-actor slot (CURRENT_ACTOR_WASM on
-            // wasm32, thread-local on native) rather than the removed
-            // scheduler-local CURRENT_ACTOR static.
-            crate::actor::set_current_actor(ptr::null_mut());
+            // The canonical execution context is restored by each activation.
             ptr::addr_of_mut!(PREV_ARENA).write(ptr::null_mut());
             ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL).write(ptr::null_mut());
             ptr::addr_of_mut!(CURRENT_REPLY_CHANNEL_CONSUMED).write(false);
@@ -2162,9 +2164,8 @@ mod tests {
     /// Bug #1 regression: `hew_actor_self` / `hew_actor_current_id` must return the
     /// dispatching actor's own ID during WASM dispatch, not -1 / null.
     ///
-    /// Before the fix, `scheduler_wasm` set its own `CURRENT_ACTOR` slot while
-    /// actor.rs self APIs read `CURRENT_ACTOR_WASM` — two different statics —
-    /// so self APIs always saw null / returned -1.
+    /// Before the fix, `scheduler_wasm` and actor.rs used different ambient
+    /// current-actor slots, so self APIs always saw null / returned -1.
     #[test]
     fn self_api_sees_current_actor_during_dispatch() {
         let _guard = crate::runtime_test_guard();
@@ -3945,9 +3946,11 @@ mod tests {
         let mut actor = stub_actor();
         actor.reductions.store(100, Ordering::Relaxed);
 
-        // Install the actor as the current dispatch actor.
-        let prev =
-            crate::actor::set_current_actor((&raw mut actor).cast::<crate::actor::HewActor>());
+        let _ctx = TestExecutionContext::install(HewExecutionContext {
+            actor: (&raw mut actor).cast::<crate::actor::HewActor>(),
+            actor_id: actor.id,
+            ..HewExecutionContext::default()
+        });
 
         let result = hew_actor_cooperate();
         assert_eq!(result, 0, "cooperate must return 0 when budget remains");
@@ -3957,7 +3960,6 @@ mod tests {
             "cooperate must decrement reductions by 1"
         );
 
-        crate::actor::set_current_actor(prev);
         hew_sched_shutdown();
     }
 
@@ -3972,8 +3974,11 @@ mod tests {
         // Set reductions to 1 so the next cooperate exhausts the budget.
         actor.reductions.store(1, Ordering::Relaxed);
 
-        let prev =
-            crate::actor::set_current_actor((&raw mut actor).cast::<crate::actor::HewActor>());
+        let _ctx = TestExecutionContext::install(HewExecutionContext {
+            actor: (&raw mut actor).cast::<crate::actor::HewActor>(),
+            actor_id: actor.id,
+            ..HewExecutionContext::default()
+        });
 
         let result = hew_actor_cooperate();
         assert_eq!(result, 1, "cooperate must return 1 when budget exhausted");
@@ -3983,7 +3988,6 @@ mod tests {
             "cooperate must reset reductions to default after yield"
         );
 
-        crate::actor::set_current_actor(prev);
         hew_sched_shutdown();
     }
 
@@ -3998,8 +4002,11 @@ mod tests {
         // Edge case: reductions already at 0 (fetch_sub wraps to -1 < 1).
         actor.reductions.store(0, Ordering::Relaxed);
 
-        let prev =
-            crate::actor::set_current_actor((&raw mut actor).cast::<crate::actor::HewActor>());
+        let _ctx = TestExecutionContext::install(HewExecutionContext {
+            actor: (&raw mut actor).cast::<crate::actor::HewActor>(),
+            actor_id: actor.id,
+            ..HewExecutionContext::default()
+        });
 
         let result = hew_actor_cooperate();
         assert_eq!(result, 1, "cooperate at zero reductions must yield");
@@ -4009,7 +4016,6 @@ mod tests {
             "cooperate must reset reductions after yield at zero"
         );
 
-        crate::actor::set_current_actor(prev);
         hew_sched_shutdown();
     }
 
@@ -4120,8 +4126,11 @@ mod tests {
         // Set reductions to 1 so the next cooperate exhausts the budget.
         actor.reductions.store(1, Ordering::Relaxed);
 
-        let prev =
-            crate::actor::set_current_actor((&raw mut actor).cast::<crate::actor::HewActor>());
+        let _ctx = TestExecutionContext::install(HewExecutionContext {
+            actor: (&raw mut actor).cast::<crate::actor::HewActor>(),
+            actor_id: actor.id,
+            ..HewExecutionContext::default()
+        });
 
         // Simulate being at the maximum depth.
         // SAFETY: Single-threaded test; ptr::addr_of_mut! avoids references.
@@ -4156,7 +4165,6 @@ mod tests {
             ptr::addr_of_mut!(COOPERATIVE_TICK_DEPTH).write(0);
         }
 
-        crate::actor::set_current_actor(prev);
         hew_sched_shutdown();
     }
 

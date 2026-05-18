@@ -1927,6 +1927,7 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
 
     struct OwnedDeferredSupervisorSpawnFailureGuard;
 
@@ -2010,14 +2011,18 @@ mod tests {
     #[test]
     fn stop_supervisor_from_child_dispatch_is_deferred() {
         // SAFETY: this test owns the supervisor tree and only mutates the
-        // current actor/thread-local state within the test thread.
+        // current actor context within the test thread.
         unsafe {
             let (sup, child, self_actor) = make_supervisor_with_child();
             (*child)
                 .actor_state
                 .store(HewActorState::Running as i32, Ordering::Release);
 
-            let prev_actor = actor::set_current_actor(child);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: (*child).id,
+                ..HewExecutionContext::default()
+            });
             let unblock = defer_state_transition(
                 child,
                 HewActorState::Stopped,
@@ -2029,7 +2034,6 @@ mod tests {
             let elapsed = start.elapsed();
 
             unblock.join().unwrap();
-            actor::set_current_actor(prev_actor);
 
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || !actor::is_actor_live(
@@ -2064,13 +2068,16 @@ mod tests {
             child_ref.terminate_called.store(true, Ordering::Release);
             child_ref.terminate_finished.store(false, Ordering::Release);
 
-            let prev_actor = actor::set_current_actor(child);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: (*child).id,
+                ..HewExecutionContext::default()
+            });
             let start = std::time::Instant::now();
             hew_supervisor_stop(sup);
             let elapsed = start.elapsed();
 
             child_ref.terminate_finished.store(true, Ordering::Release);
-            actor::set_current_actor(prev_actor);
 
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || !actor::is_actor_live(
@@ -2110,7 +2117,11 @@ mod tests {
                 .actor_state
                 .store(HewActorState::Running as i32, Ordering::Release);
 
-            let prev_actor = actor::set_current_actor(child);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: (*child).id,
+                ..HewExecutionContext::default()
+            });
             let self_unblock = defer_state_transition(
                 self_actor,
                 HewActorState::Stopped,
@@ -2156,7 +2167,6 @@ mod tests {
             second.join().unwrap();
             self_unblock.join().unwrap();
             child_unblock.join().unwrap();
-            actor::set_current_actor(prev_actor);
 
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || {
@@ -2182,10 +2192,13 @@ mod tests {
             let (sup, child, _self_actor) = make_supervisor_with_child();
             let fail_guard = fail_owned_deferred_supervisor_spawn();
 
-            let prev_actor = actor::set_current_actor(child);
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: (*child).id,
+                ..HewExecutionContext::default()
+            });
             crate::hew_clear_error();
             hew_supervisor_stop(sup);
-            actor::set_current_actor(prev_actor);
 
             assert!(
                 crate::shutdown::is_supervisor_registered_for_test(sup),

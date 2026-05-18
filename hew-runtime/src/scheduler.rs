@@ -34,7 +34,6 @@ use crate::mailbox::{
     self, hew_mailbox_has_messages, hew_mailbox_try_recv, hew_msg_node_free, HewMailbox,
 };
 use crate::set_last_error;
-use crate::tracing::HewTraceContext;
 use crate::util::MutexExt;
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -669,12 +668,6 @@ fn activate_actor(actor: *mut HewActor) {
 
     let _activation_metrics = ActivationMetricsGuard::new();
 
-    // Set thread-local CURRENT_ACTOR so hew_actor_self() works during dispatch.
-    let prev_actor = actor::set_current_actor(actor);
-
-    // Set per-actor arena as thread-local so hew_arena_malloc routes through it.
-    let prev_arena = crate::arena::set_current_arena(a.arena);
-
     let mut msgs_processed: u32 = 0;
     let mut crashed = false;
 
@@ -692,9 +685,6 @@ fn activate_actor(actor: *mut HewActor) {
                 let t0 = std::time::Instant::now();
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
-                crate::tracing::set_context(msg_ref.trace_context);
-                crate::tracing::hew_trace_begin(a.id, msg_ref.msg_type);
-
                 // Prepare crash recovery context (stores actor/msg metadata).
                 //
                 // SAFETY: `actor` is valid (CAS succeeded, we own it) and
@@ -777,7 +767,7 @@ fn activate_actor(actor: *mut HewActor) {
                         cancel_token: std::ptr::null_mut(),
                         task_scope: std::ptr::null_mut(),
                         arena: a.arena,
-                        trace: crate::tracing::current_context(),
+                        trace: msg_ref.trace_context,
                         partition_policy: std::ptr::null_mut(),
                         prev_context: crate::execution_context::current_context(),
                         lock_seat: std::ptr::null_mut(),
@@ -787,16 +777,13 @@ fn activate_actor(actor: *mut HewActor) {
                     let installed_prev =
                         crate::execution_context::set_current_context(&raw mut execution_context);
                     debug_assert_eq!(installed_prev, prev_context);
+                    crate::tracing::hew_trace_begin(a.id, msg_ref.msg_type);
 
                     // SAFETY: `dispatch` and `a.state` are valid; message fields
                     // come from a well-formed `HewMsgNode`.
                     unsafe {
                         dispatch(a.state, msg_ref.msg_type, dispatch_data, dispatch_size);
                     }
-                    let restored_context =
-                        crate::execution_context::set_current_context(prev_context);
-                    debug_assert_eq!(restored_context, &raw mut execution_context);
-
                     let reply_consumed = current_reply_channel_consumed();
                     clear_current_reply_channel();
 
@@ -816,6 +803,9 @@ fn activate_actor(actor: *mut HewActor) {
                     // Dispatch completed successfully — clear recovery point.
                     crate::signal::clear_dispatch_recovery();
                     crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
+                    let restored_context =
+                        crate::execution_context::set_current_context(prev_context);
+                    debug_assert_eq!(restored_context, &raw mut execution_context);
 
                     #[expect(
                         clippy::cast_possible_truncation,
@@ -858,8 +848,7 @@ fn activate_actor(actor: *mut HewActor) {
                     // non-zero, on the same worker thread.
                     unsafe { crate::signal::handle_crash_recovery() };
 
-                    // Restore arena and reset — crash discards all in-flight data.
-                    crate::arena::set_current_arena(prev_arena);
+                    // Reset arena — crash discards all in-flight data.
                     if !actor_arena.is_null() {
                         // SAFETY: Arena was created during spawn; crash discards
                         // all in-flight data. We use the cached `actor_arena`
@@ -919,11 +908,6 @@ fn activate_actor(actor: *mut HewActor) {
             }
         }
     }
-
-    // Restore previous CURRENT_ACTOR and arena.
-    crate::tracing::set_context(HewTraceContext::default());
-    actor::set_current_actor(prev_actor);
-    crate::arena::set_current_arena(prev_arena);
 
     if !crashed && !actor_arena.is_null() {
         // SAFETY: Arena was created during spawn; no references survive past activation.
@@ -1060,24 +1044,39 @@ fn activate_actor(actor: *mut HewActor) {
 /// # Safety
 ///
 /// No preconditions — may be called from any context. When called
-/// outside an actor dispatch (i.e. `CURRENT_ACTOR` is null), this is
-/// a no-op.
+/// outside an installed execution context, this sets `hew_last_error` and
+/// returns 0.
 #[no_mangle]
 pub extern "C" fn hew_actor_cooperate() -> c_int {
-    let scope = crate::task_scope::current_task_scope();
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return 0;
+    }
+
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    let (actor, cancel_token, scope) =
+        unsafe { ((*ctx).actor, (*ctx).cancel_token, (*ctx).task_scope) };
+
+    if !cancel_token.is_null() {
+        // SAFETY: cancel_token is owned by the installed task scope.
+        if unsafe { crate::task_scope::hew_cancel_token_is_requested(cancel_token) } != 0 {
+            return 2;
+        }
+    }
+
     if !scope.is_null() {
-        // SAFETY: scope is valid per hew_task_scope_set_current contract.
+        // SAFETY: scope is valid per canonical context installation contract.
         if unsafe { crate::task_scope::hew_task_scope_is_cancelled(scope) } != 0 {
             return 2;
         }
     }
 
-    let actor = actor::hew_actor_self();
     if actor.is_null() {
         return 0;
     }
 
-    // SAFETY: hew_actor_self returned a valid, non-null actor pointer.
+    // SAFETY: actor was read from the installed canonical context.
     let a = unsafe { &*actor };
 
     // Decrement reduction counter. If still positive, continue.

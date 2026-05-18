@@ -9,6 +9,7 @@
 //! Thread-safe completion notification uses `Mutex` + `Condvar` so that
 //! `await` can block until a task finishes.
 
+#[cfg(test)]
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr;
@@ -21,26 +22,41 @@ use crate::internal::types::{HewTaskError, HewTaskState};
 use crate::rc::hew_rc_drop;
 use crate::util::{CondvarExt, MutexExt};
 
-// ── Thread-local current task scope ────────────────────────────────────
-
-thread_local! {
-    /// The task scope active on this thread (set during scope execution).
-    static CURRENT_TASK_SCOPE: Cell<*mut HewTaskScope> = const { Cell::new(ptr::null_mut()) };
-}
-
-/// Return the current thread's active task scope (null if none).
+/// Return the current context's active task scope (null if none).
 pub(crate) fn current_task_scope() -> *mut HewTaskScope {
-    CURRENT_TASK_SCOPE.with(Cell::get)
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe { (*ctx).task_scope }
 }
 
-/// Set the current task scope for this thread, returning the previous value.
+/// Set the current task scope lane, returning the previous value.
 ///
 /// # Safety
 ///
 /// `scope` must be a valid pointer returned by [`hew_task_scope_new`], or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_set_current(scope: *mut HewTaskScope) -> *mut HewTaskScope {
-    CURRENT_TASK_SCOPE.with(|c| c.replace(scope))
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary. Non-null scope is caller-owned and
+    // valid per this function's contract.
+    unsafe {
+        let previous = (*ctx).task_scope;
+        (*ctx).task_scope = scope;
+        (*ctx).cancel_token = if scope.is_null() {
+            ptr::null_mut()
+        } else {
+            (*scope).cancel_token
+        };
+        previous
+    }
 }
 
 // ── Cancellation tokens ─────────────────────────────────────────────────
@@ -641,17 +657,32 @@ pub unsafe extern "C" fn hew_task_spawn_thread(task: *mut HewTask, task_fn: Task
         let fn_ptr: TaskFn = unsafe { std::mem::transmute(fn_raw) };
 
         // SAFETY: task_ptr is valid for the lifetime of the thread (scope
-        // waits for all tasks before destroying them). fn_ptr is a valid
-        // function compiled by MLIR/LLVM. The child thread inherits the
-        // lexical task scope so cooperate-sites can observe the child token.
-        let previous_scope = unsafe { hew_task_scope_set_current((*task_ptr).scope) };
+        // waits for all tasks before destroying them). The child thread
+        // inherits the lexical task scope through its canonical context so
+        // cooperate-sites can observe the child token.
+        let child_scope = unsafe { (*task_ptr).scope };
+        let child_token = if child_scope.is_null() {
+            ptr::null_mut()
+        } else {
+            // SAFETY: child_scope is owned by the parent scope for the child
+            // thread lifetime.
+            unsafe { (*child_scope).cancel_token }
+        };
+        let mut execution_context = crate::execution_context::HewExecutionContext {
+            cancel_token: child_token,
+            task_scope: child_scope,
+            prev_context: crate::execution_context::current_context(),
+            ..crate::execution_context::HewExecutionContext::default()
+        };
+        let previous_context = execution_context.prev_context;
+        let installed_previous =
+            crate::execution_context::set_current_context(&raw mut execution_context);
+        debug_assert_eq!(installed_previous, previous_context);
         // SAFETY: fn_ptr is the validated TaskFn supplied to
         // hew_task_spawn_thread, and task_ptr stays live until scope teardown.
         unsafe { fn_ptr(task_ptr) };
-        // SAFETY: restore the thread-local scope before the worker exits.
-        unsafe {
-            let _ = hew_task_scope_set_current(previous_scope);
-        }
+        let restored_context = crate::execution_context::set_current_context(previous_context);
+        debug_assert_eq!(restored_context, &raw mut execution_context);
 
         // Signal completion.
         signal.notify_done();
@@ -843,8 +874,8 @@ pub unsafe extern "C" fn hew_task_scope_new() -> *mut HewTaskScope {
     let parent_token = if parent_scope.is_null() {
         ptr::null_mut()
     } else {
-        // SAFETY: CURRENT_TASK_SCOPE only stores live scope pointers while a
-        // scope is active on the current thread.
+        // SAFETY: the task-scope lane only stores live scope pointers while a
+        // scope is active in the current context.
         unsafe { (*parent_scope).cancel_token }
     };
     // SAFETY: null parent creates a root token; non-null parent_token is retained.
@@ -1287,6 +1318,7 @@ fn should_fail_task_reaper_spawn() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_context::{HewExecutionContext, TestExecutionContext};
     use std::ffi::CStr;
 
     #[test]
@@ -1434,8 +1466,9 @@ mod tests {
 
     #[test]
     fn cooperate_observes_current_task_scope_cancel_without_actor() {
-        // SAFETY: test owns the scope pointer and restores TLS before destroy.
+        // SAFETY: test owns the scope pointer and restores the context before destroy.
         unsafe {
+            let _ctx = TestExecutionContext::install(HewExecutionContext::default());
             let scope = hew_task_scope_new();
             let previous = hew_task_scope_set_current(scope);
             hew_task_scope_cancel(scope);
@@ -1445,6 +1478,21 @@ mod tests {
             let _ = hew_task_scope_set_current(previous);
             hew_task_scope_destroy(scope);
         }
+    }
+
+    #[test]
+    fn cooperate_without_execution_context_fails_closed() {
+        crate::hew_clear_error();
+        assert_eq!(crate::scheduler::hew_actor_cooperate(), 0);
+        let err = crate::hew_last_error();
+        assert!(!err.is_null());
+        // SAFETY: hew_last_error returned a non-null C string.
+        let err = unsafe { CStr::from_ptr(err).to_str().unwrap() };
+        assert_eq!(
+            err,
+            crate::execution_context::EXECUTION_CONTEXT_NOT_INSTALLED
+        );
+        crate::hew_clear_error();
     }
 
     #[test]

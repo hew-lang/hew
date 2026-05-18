@@ -1,9 +1,8 @@
 //! Canonical per-dispatch execution context carrier.
 //!
-//! `HewExecutionContext` is the additive substrate for collapsing the runtime's
-//! per-dispatch thread-locals. Slice 1 only defines and installs the carrier;
-//! legacy TLS readers continue to read their existing slots until the migration
-//! slice lands.
+//! `HewExecutionContext` is the substrate for runtime readers that need
+//! per-dispatch state. Reader sites fail closed when the scheduler has not
+//! installed this carrier.
 #![allow(
     clippy::module_name_repetitions,
     reason = "Runtime ABI substrate names intentionally carry the Hew prefix."
@@ -25,6 +24,8 @@ pub use crate::task_scope::{HewCancellationToken as HewCancelToken, HewTaskScope
 pub type HewCancelToken = c_void;
 #[cfg(target_arch = "wasm32")]
 pub type HewTaskScope = c_void;
+
+pub(crate) const EXECUTION_CONTEXT_NOT_INSTALLED: &str = "execution context not installed";
 
 /// Opaque actor-state-lock seat reserved for the D24-1 lock migration.
 #[derive(Debug)]
@@ -101,7 +102,7 @@ pub struct HewExecutionContext {
 }
 
 thread_local! {
-    static CURRENT_CONTEXT: Cell<*mut HewExecutionContext> = const {
+    static CURRENT_EXECUTION_CONTEXT: Cell<*mut HewExecutionContext> = const {
         Cell::new(ptr::null_mut())
     };
 }
@@ -112,7 +113,7 @@ thread_local! {
 /// dispatch boundary exits. Passing null clears the current context.
 #[must_use]
 pub fn set_current_context(ctx: *mut HewExecutionContext) -> *mut HewExecutionContext {
-    CURRENT_CONTEXT.with(|current| current.replace(ctx))
+    CURRENT_EXECUTION_CONTEXT.with(|current| current.replace(ctx))
 }
 
 /// Return the current canonical execution context for this thread.
@@ -120,7 +121,49 @@ pub fn set_current_context(ctx: *mut HewExecutionContext) -> *mut HewExecutionCo
 /// Returns null outside a scheduler dispatch boundary.
 #[must_use]
 pub fn current_context() -> *mut HewExecutionContext {
-    CURRENT_CONTEXT.with(Cell::get)
+    CURRENT_EXECUTION_CONTEXT.with(Cell::get)
+}
+
+#[must_use]
+pub(crate) fn require_current_context() -> *mut HewExecutionContext {
+    let ctx = current_context();
+    if ctx.is_null() {
+        crate::set_last_error(EXECUTION_CONTEXT_NOT_INSTALLED);
+    }
+    ctx
+}
+
+#[cfg(test)]
+pub(crate) struct TestExecutionContext {
+    ctx: *mut HewExecutionContext,
+    prev: *mut HewExecutionContext,
+}
+
+#[cfg(test)]
+impl TestExecutionContext {
+    pub(crate) fn install(ctx: HewExecutionContext) -> Self {
+        let boxed = Box::new(ctx);
+        let raw = Box::into_raw(boxed);
+        debug_assert_ne!(raw, ptr::null_mut());
+        let prev = set_current_context(raw);
+        // SAFETY: raw points to the boxed context owned by this guard.
+        unsafe {
+            (*raw).prev_context = prev;
+        }
+        Self { ctx: raw, prev }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestExecutionContext {
+    fn drop(&mut self) {
+        let restored = set_current_context(self.prev);
+        debug_assert_eq!(restored, self.ctx);
+        // SAFETY: self.ctx came from Box::into_raw in install and is dropped once here.
+        unsafe {
+            drop(Box::from_raw(self.ctx));
+        }
+    }
 }
 
 const _: () = {

@@ -397,6 +397,7 @@ pub mod channel;
 mod channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duplex;
+pub mod execution_context;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lambda_actor;
 #[cfg(not(target_arch = "wasm32"))]
@@ -494,6 +495,14 @@ pub mod otel {
 }
 
 pub mod log_core;
+
+pub use execution_context::{
+    current_context, set_current_context, HewExecutionContext, HEW_CTX_OFFSET_ACTOR,
+    HEW_CTX_OFFSET_ACTOR_ID, HEW_CTX_OFFSET_ARENA, HEW_CTX_OFFSET_CANCEL_TOKEN,
+    HEW_CTX_OFFSET_FLAGS, HEW_CTX_OFFSET_LOCK_SEAT, HEW_CTX_OFFSET_PARENT_SUPERVISOR,
+    HEW_CTX_OFFSET_PARTITION_POLICY, HEW_CTX_OFFSET_PREV_CONTEXT, HEW_CTX_OFFSET_RESERVED,
+    HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX, HEW_CTX_OFFSET_TASK_SCOPE, HEW_CTX_OFFSET_TRACE,
+};
 
 // ── WASM entry point ─────────────────────────────────────────────────────────
 // Provides `_start` for WASI command modules. The compiler renames the user's

@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use crate::actor::{self, HewActor, HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET};
 use crate::deque::{GlobalQueue, WorkDeque, WorkStealer};
+use crate::execution_context::HewExecutionContext;
 use crate::internal::types::HewActorState;
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox::{
@@ -122,6 +123,16 @@ pub(crate) fn mark_current_reply_channel_consumed(ch: *mut c_void) {
 
 fn current_reply_channel_consumed() -> bool {
     CURRENT_REPLY_CHANNEL_CONSUMED.with(std::cell::Cell::get)
+}
+
+fn restore_current_context_after_dispatch() {
+    let ctx = crate::execution_context::current_context();
+    if !ctx.is_null() {
+        // SAFETY: scheduler-installed contexts point to live stack slots until
+        // the dispatch recovery path restores the previously active context.
+        let prev = unsafe { (*ctx).prev_context };
+        let _ = crate::execution_context::set_current_context(prev);
+    }
 }
 
 // ── Global scheduler instance ───────────────────────────────────────────
@@ -757,11 +768,34 @@ fn activate_actor(actor: *mut HewActor) {
                         unsafe { ((*env).payload, (*env).payload_size) }
                     };
 
+                    let mut execution_context = HewExecutionContext {
+                        actor,
+                        actor_id: a.id,
+                        parent_supervisor: a.supervisor,
+                        supervisor_child_index: a.supervisor_child_index,
+                        flags: 0,
+                        cancel_token: std::ptr::null_mut(),
+                        task_scope: std::ptr::null_mut(),
+                        arena: a.arena,
+                        trace: crate::tracing::current_context(),
+                        partition_policy: std::ptr::null_mut(),
+                        prev_context: crate::execution_context::current_context(),
+                        lock_seat: std::ptr::null_mut(),
+                        _reserved: [0],
+                    };
+                    let prev_context = execution_context.prev_context;
+                    let installed_prev =
+                        crate::execution_context::set_current_context(&raw mut execution_context);
+                    debug_assert_eq!(installed_prev, prev_context);
+
                     // SAFETY: `dispatch` and `a.state` are valid; message fields
                     // come from a well-formed `HewMsgNode`.
                     unsafe {
                         dispatch(a.state, msg_ref.msg_type, dispatch_data, dispatch_size);
                     }
+                    let restored_context =
+                        crate::execution_context::set_current_context(prev_context);
+                    debug_assert_eq!(restored_context, &raw mut execution_context);
 
                     let reply_consumed = current_reply_channel_consumed();
                     clear_current_reply_channel();
@@ -818,6 +852,7 @@ fn activate_actor(actor: *mut HewActor) {
                     unsafe {
                         let _ = crate::actor::hew_actor_state_lock_release_after_panic(actor);
                     }
+                    restore_current_context_after_dispatch();
                     //
                     // SAFETY: called immediately after sigsetjmp returned
                     // non-zero, on the same worker thread.

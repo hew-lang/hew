@@ -15,7 +15,7 @@ use std::os::raw::c_char;
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_assert(cond: i64) {
+pub unsafe extern "C" fn hew_assert(cond: u8) {
     if cond == 0 {
         eprintln!("assertion failed");
         // SAFETY: abort() is always safe to call.
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn hew_assert_ne_f64(left: f64, right: f64) {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_assert_eq_bool(left: i32, right: i32) {
+pub unsafe extern "C" fn hew_assert_eq_bool(left: u8, right: u8) {
     if left != right {
         let l = if left != 0 { "true" } else { "false" };
         let r = if right != 0 { "true" } else { "false" };
@@ -149,7 +149,7 @@ pub unsafe extern "C" fn hew_assert_eq_bool(left: i32, right: i32) {
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
-pub unsafe extern "C" fn hew_assert_ne_bool(left: i32, right: i32) {
+pub unsafe extern "C" fn hew_assert_ne_bool(left: u8, right: u8) {
     if left == right {
         let l = if left != 0 { "true" } else { "false" };
         let r = if right != 0 { "true" } else { "false" };

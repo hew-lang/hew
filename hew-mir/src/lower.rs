@@ -3712,8 +3712,9 @@ impl Builder {
         }
 
         // Allocate a destination local for the return value, unless the
-        // callee is declared Unit-returning.
-        let dest = if matches!(ret_ty, ResolvedTy::Unit) {
+        // callee is declared Unit-returning or divergent. Never-returning
+        // runtime shims such as exit()/panic() have no value to materialise.
+        let dest = if matches!(ret_ty, ResolvedTy::Unit | ResolvedTy::Never) {
             None
         } else {
             Some(self.alloc_local(ret_ty.clone()))

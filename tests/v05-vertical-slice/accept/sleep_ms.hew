@@ -1,0 +1,4 @@
+fn main() -> i64 {
+    sleep_ms(0);
+    0
+}

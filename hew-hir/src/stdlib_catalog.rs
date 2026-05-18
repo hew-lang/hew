@@ -202,9 +202,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassA,
         I64,
         BuiltinTy::Never,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "process.exit",
-        },
+        BuiltinLinkage::RuntimeFfiShim { symbol: "hew_exit" },
     ),
     direct(
         "panic",

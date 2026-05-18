@@ -35,6 +35,7 @@
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
+use std::io::Write;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -64,6 +65,26 @@ pub extern "C" fn hew_last_error() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn hew_clear_error() {
     LAST_ERROR.with(|e| *e.borrow_mut() = None);
+}
+
+/// Terminate the current process with a Hew integer exit code.
+#[no_mangle]
+pub extern "C" fn hew_exit(code: i64) {
+    let Ok(code) = i32::try_from(code) else {
+        eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
+        std::process::abort();
+    };
+
+    if let Err(error) = std::io::stdout().flush() {
+        eprintln!("hew_exit: failed to flush stdout before exit: {error}");
+        std::process::abort();
+    }
+    if let Err(error) = std::io::stderr().flush() {
+        eprintln!("hew_exit: failed to flush stderr before exit: {error}");
+        std::process::abort();
+    }
+
+    std::process::exit(code);
 }
 
 macro_rules! cabi_guard {
@@ -273,7 +294,7 @@ pub mod wasm_stubs {
     ///
     /// No preconditions — may be called from any context.
     #[no_mangle]
-    pub unsafe extern "C" fn hew_sleep_ms(ms: c_int) {
+    pub unsafe extern "C" fn hew_sleep_ms(ms: i64) {
         if ms <= 0 {
             return;
         }

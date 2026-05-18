@@ -9,7 +9,40 @@ cargo build -q -p hew-cli
 mkdir -p "${ROOT}/.tmp"
 accept_output="${ROOT}/.tmp/v05-vertical-slice-accept-output.txt"
 reject_output="${ROOT}/.tmp/v05-vertical-slice-reject-output.txt"
-trap 'rm -f "${accept_output}" "${reject_output}"' EXIT
+stdout_output="${ROOT}/.tmp/v05-vertical-slice.stdout"
+stderr_output="${ROOT}/.tmp/v05-vertical-slice.stderr"
+trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}"' EXIT
+
+compile_accept() {
+  local fixture="$1"
+  "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
+}
+
+run_accept_expect_status() {
+  local fixture="$1"
+  local expected_status="$2"
+  compile_accept "${fixture}"
+  local bin="${ROOT}/.tmp/compile-out/${fixture}"
+  local status=0
+  if bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne "${expected_status}" ]]; then
+    echo "expected ${fixture} to exit ${expected_status}, got ${status}" >&2
+    cat "${accept_output}" >&2
+    cat "${stdout_output}" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+}
+
+run_accept_expect_stdout() {
+  local fixture="$1"
+  run_accept_expect_status "${fixture}" 0
+  diff -u "${ROOT}/tests/v05-vertical-slice/accept/${fixture}.expected" "${stdout_output}"
+}
 
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/v05-vertical-slice/accept/string_return.hew" >"${accept_output}"
 grep -q 'return_ty: String' "${accept_output}"
@@ -33,9 +66,26 @@ fi
 "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/accept/hello_println.hew" >"${accept_output}" 2>&1
 hello_println_bin="${ROOT}/.tmp/compile-out/hello_println"
 hello_stdout="${ROOT}/.tmp/hello_println.stdout"
-trap 'rm -f "${accept_output}" "${reject_output}" "${hello_stdout}"' EXIT
+trap 'rm -f "${accept_output}" "${reject_output}" "${stdout_output}" "${stderr_output}" "${hello_stdout}"' EXIT
 "${hello_println_bin}" >"${hello_stdout}"
 diff -u "${ROOT}/tests/v05-vertical-slice/accept/hello_println.expected" "${hello_stdout}"
+
+run_accept_expect_status "assert" 0
+run_accept_expect_status "assert_eq" 0
+run_accept_expect_status "assert_ne" 0
+run_accept_expect_status "sleep_ms" 0
+
+run_accept_expect_status "assert_eq_fail" 134
+grep -q 'assertion failed: assert_eq(4, 5)' "${stderr_output}"
+
+run_accept_expect_status "exit_42" 42
+
+run_accept_expect_stdout "print_int"
+run_accept_expect_stdout "print_bool"
+run_accept_expect_stdout "print_f64"
+
+run_accept_expect_status "panic" 101
+grep -q 'panic fixture' "${stderr_output}"
 
 if "${HEW}" compile "${ROOT}/tests/v05-vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then
   echo "expected unresolved symbol fixture to fail" >&2

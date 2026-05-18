@@ -1,0 +1,4 @@
+fn main() -> i64 {
+    assert_ne(2, 3);
+    0
+}
